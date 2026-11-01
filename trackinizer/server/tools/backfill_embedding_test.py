@@ -27,14 +27,12 @@ import sys
 import time
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.semantic_mapper import IndexUnit
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import (
     SweepStats,
     sweep_session_embeddings,
@@ -47,7 +45,6 @@ from trackinizer.server.values import manifest_bound
 if TYPE_CHECKING:
     from collections.abc import (
         AsyncGenerator,
-        AsyncIterator,
         Callable,
         Coroutine,
         Mapping,
@@ -57,7 +54,8 @@ if TYPE_CHECKING:
 
     from asyncpg import Record
 
-    from trackinizer.lib.postgres import Conn, PostgresEngine
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.server.store.core import Store
 
 
 class _StopFollowError(Exception):
@@ -90,17 +88,10 @@ class _FakeAsyncio:
             raise _StopFollowError
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Bootstrapped store with the session tables emptied."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with built.engine.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE session_embeddings, session_index_state, session_records, "
-            "session_manifests, inquiries CASCADE",
-        )
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _one_record(store: Store) -> UUID:

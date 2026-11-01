@@ -19,13 +19,9 @@ from typing import TYPE_CHECKING, cast
 import uuid
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import tx
 from trackinizer.server.store import read
-from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ValidationError
@@ -45,19 +41,10 @@ from trackinizer.wire.filters import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    yield store
 
 
 async def seed(store: Store) -> None:

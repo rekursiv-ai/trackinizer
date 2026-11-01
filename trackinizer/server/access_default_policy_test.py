@@ -21,7 +21,6 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.addons.deployment import Deployment
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.access_policy import (
     AccessDeniedError,
     DefaultPolicy,
@@ -161,12 +160,12 @@ class _RecordingPolicy:
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def served(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[_Client]:
     """Serve the whole app over a fresh store built as a site with no addon is."""
     async for client in _serve(
-        pglite_engine,
+        pglite_db,
         monkeypatch,
         policy=Deployment.Config().make().access_policy,
     ):
@@ -175,12 +174,12 @@ async def served(
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def recorded(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[tuple[httpx2.AsyncClient, Store, _RecordingPolicy]]:
     """Serve the whole app over a fresh store whose policy records each call."""
     policy = _RecordingPolicy()
-    async for client, store in _serve(pglite_engine, monkeypatch, policy=policy):
+    async for client, store in _serve(pglite_db, monkeypatch, policy=policy):
         yield client, store, policy
 
 
@@ -418,7 +417,8 @@ async def test_every_users_insert_and_role_change_tells_the_policy(
     async with store.engine.acquire() as conn:
         await seed_no_auth_user(conn, policy=policy)
         await seed_no_auth_user(conn, policy=policy)
-    await reset_schema(cast("PGliteEngine", store.engine))
+        # The bootstrap seeds its admin only into a database with no user.
+        await conn.execute("TRUNCATE users CASCADE")
     monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "first@example.com")
     monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "token"))
     await store.bootstrap()
@@ -467,9 +467,7 @@ async def _serve(
     policy: AccessPolicy,
 ) -> AsyncIterator[_Client]:
     """Serve the app over a fresh store asking ``policy``, with everyone seeded."""
-    await reset_schema(engine)
     store = Store(engine, embed=StubEmbedder(), access_policy=policy)
-    await store.bootstrap()
     await _seed_people(store)
     for name, value in (
         ("engine", engine),

@@ -13,11 +13,8 @@ from pydantic import ValidationError
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.preferences import WorkspacesPreference
-from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.canvas_store import new_canvas
 from trackinizer.server.visuals.catalog import default_catalog
 from trackinizer.server.visuals.workspaces import (
@@ -38,9 +35,8 @@ from trackinizer.wire.bodies import SubmitIssue
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.server.store.core import Store
 
 
 _USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -86,20 +82,18 @@ def test_a_new_default_takes_the_lowest_workspace_number_not_taken(
 
 @pytest_asyncio.fixture(loop_scope="session")
 async def context(
-    pglite_engine: PGliteEngine,
-) -> AsyncIterator[tuple[PGliteEngine, Store]]:
+    pglite_db: PGliteEngine,
+    store: Store,
+) -> tuple[PGliteEngine, Store]:
     """Return a fresh store with one active preference owner."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, $2, 'Streams', 'writer', 'active')",
             _USER,
             _EMAIL,
         )
-    yield pglite_engine, store
+    return pglite_db, store
 
 
 @pytest.mark.db_pglite

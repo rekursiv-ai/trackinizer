@@ -17,9 +17,7 @@ from uuid import UUID, uuid4
 from treekle import from_plain
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.audience import (
     NOBODY,
     SessionReader,
@@ -28,18 +26,16 @@ from trackinizer.server.audience import (
     reads_session,
     visible_sql,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_feed import FeedScope
 from trackinizer.server.values import vetted_sql
 from trackinizer.wire.audience import AUDIENCES
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from trackinizer.lib.postgres import PGliteEngine
     from trackinizer.server.config import ChatOrgs
+    from trackinizer.server.store.core import Store
 
 
 pytestmark = [pytest.mark.db_pglite, pytest.mark.asyncio(loop_scope="session")]
@@ -100,15 +96,6 @@ TABLE: Final[Mapping[str, Mapping[str, frozenset[str]]]] = {
         "c_staff": frozenset[str](),
     },
 }
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
 
 
 # The by-id read tests one session at a time, so a run over all nine readers makes

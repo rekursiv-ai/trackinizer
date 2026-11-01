@@ -27,23 +27,14 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.wire.column_shapes import _REAL_TEXT, _TS_TEXT
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator, Sequence
+    from collections.abc import Iterator, Sequence
 
     from trackinizer.lib.postgres import PGliteEngine
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def engine(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
-    """Return the session's shared PGlite engine; a rendering needs no schema."""
-    await reset_schema(pglite_engine)
-    yield pglite_engine
 
 
 # The golden-ratio low-discrepancy sequence rather than a PRNG: it needs no seed to be
@@ -151,7 +142,7 @@ async def _rendered(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_real_template_renders_what_python_str_renders(
-    engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """``_REAL_TEXT`` must equal ``str(float)`` for every reachable float.
 
@@ -163,7 +154,7 @@ async def test_the_real_template_renders_what_python_str_renders(
     values = _reals()
     disagreed = [
         (value, rendered)
-        for value, rendered in await _rendered(engine, "float8", _REAL_TEXT, values)
+        for value, rendered in await _rendered(pglite_db, "float8", _REAL_TEXT, values)
         if rendered != str(value)
     ]
 
@@ -176,7 +167,7 @@ async def test_the_real_template_renders_what_python_str_renders(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_timestamp_template_renders_what_python_str_renders(
-    engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """``_TS_TEXT`` must equal ``str(datetime)`` for every reachable instant.
 
@@ -187,7 +178,12 @@ async def test_the_timestamp_template_renders_what_python_str_renders(
     values = _timestamps()
     disagreed = [
         (value, rendered)
-        for value, rendered in await _rendered(engine, "timestamptz", _TS_TEXT, values)
+        for value, rendered in await _rendered(
+            pglite_db,
+            "timestamptz",
+            _TS_TEXT,
+            values,
+        )
         if rendered != str(value)
     ]
 

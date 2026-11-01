@@ -17,7 +17,6 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, executed_sql, make_conn
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -177,8 +176,6 @@ def _set_flags(
 
 
 async def _seed(engine: PGliteEngine) -> None:
-    await reset_schema(engine)
-    await Store(engine, embed=StubEmbedder()).bootstrap()
     async with engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
@@ -196,18 +193,10 @@ async def _seed(engine: PGliteEngine) -> None:
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def seeded_canvas(pglite_engine: PGliteEngine) -> PGliteEngine:
+async def seeded_canvas(pglite_db: PGliteEngine) -> PGliteEngine:
     """Bootstrap an empty canvas before the measured test call starts."""
-    await _seed(pglite_engine)
-    return pglite_engine
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def empty_canvas_schema(pglite_engine: PGliteEngine) -> PGliteEngine:
-    """Bootstrap only the schema; focused tests insert their rows directly."""
-    await reset_schema(pglite_engine)
-    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
-    return pglite_engine
+    await _seed(pglite_db)
+    return pglite_db
 
 
 async def _canvas_state_without_partner(
@@ -388,11 +377,11 @@ async def test_a_line_carries_its_screen_and_only_the_latest_unsent_marks(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_chat_run_access_requires_the_starters_key_and_a_live_cli(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
-    original = await _original(pglite_engine)
+    original = await _original(pglite_db)
     session, key = original.session, original.own_key
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         conversation = await canvas_store.conversation_of_session(
             conn,
             session_id=session,
@@ -408,7 +397,7 @@ async def test_chat_run_access_requires_the_starters_key_and_a_live_cli(
         conversation_id=conversation,
     )
     inbound = InboundQueue()
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
 
         async def allowed(
             given: CanvasState = state,
@@ -474,16 +463,16 @@ async def _laptop(engine: PGliteEngine, *, clis: list[str]) -> None:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_provider_is_stored_and_a_replay_answers_with_it(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """A retried choice returns its receipt, with the provider it stored."""
-    await _seed(pglite_engine)
-    await _laptop(pglite_engine, clis=["claude"])
+    await _seed(pglite_db)
+    await _laptop(pglite_db, clis=["claude"])
     inbound = InboundQueue()
     key = uuid.uuid4()
 
     chosen = await _apply(
-        pglite_engine,
+        pglite_db,
         _choose(revision=0, provider="claude"),
         key=key,
         inbound=inbound,
@@ -498,7 +487,7 @@ async def test_the_provider_is_stored_and_a_replay_answers_with_it(
     assert chosen.state.revision == 1
 
     replay = await _apply(
-        pglite_engine,
+        pglite_db,
         _choose(revision=0, provider="claude"),
         key=key,
         inbound=inbound,
@@ -508,7 +497,7 @@ async def test_the_provider_is_stored_and_a_replay_answers_with_it(
     assert replay.state.provider == "claude"
 
     read = await read_canvas(
-        pglite_engine,
+        pglite_db,
         user_id=_USER,
         canvas_id=_CANVAS,
         inbound=inbound,
@@ -521,21 +510,21 @@ async def test_the_provider_is_stored_and_a_replay_answers_with_it(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_provider_the_owner_cannot_run_is_refused_with_its_reason(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """Without a machine that lists codex, choosing it changes nothing."""
-    await _seed(pglite_engine)
-    await _laptop(pglite_engine, clis=["claude"])
+    await _seed(pglite_db)
+    await _laptop(pglite_db, clis=["claude"])
 
     with pytest.raises(ProviderUnavailableError, match="install codex on it"):
         _ = await _apply(
-            pglite_engine,
+            pglite_db,
             _choose(revision=0, provider="codex"),
             key=uuid.uuid4(),
             inbound=InboundQueue(),
         )
     kept = await _apply(
-        pglite_engine,
+        pglite_db,
         _choose(revision=0, provider="assistant"),
         key=uuid.uuid4(),
         inbound=InboundQueue(),
@@ -570,11 +559,11 @@ async def _set_provider(engine: PGliteEngine, provider: str) -> None:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_cli_canvas_gets_a_chat_and_a_session_before_any_line(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """The canvas's owner opens it under their key; a second call finds the same."""
-    await _seed(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
+    await _seed(pglite_db)
+    store = Store(pglite_db, embed=StubEmbedder())
     assert (
         await open_chat_session(
             store,
@@ -584,7 +573,7 @@ async def test_a_cli_canvas_gets_a_chat_and_a_session_before_any_line(
         )
         is None
     )
-    await _set_provider(pglite_engine, "claude")
+    await _set_provider(pglite_db, "claude")
     assert (
         await open_chat_session(
             store,
@@ -594,7 +583,7 @@ async def test_a_cli_canvas_gets_a_chat_and_a_session_before_any_line(
         )
         is None
     ), "an owner with no key has nothing to open the session with"
-    key = await _owner_key(pglite_engine)
+    key = await _owner_key(pglite_db)
 
     opened = await open_chat_session(
         store,
@@ -612,7 +601,7 @@ async def test_a_cli_canvas_gets_a_chat_and_a_session_before_any_line(
     assert opened is not None
     assert again == opened
     read = await read_canvas(
-        pglite_engine,
+        pglite_db,
         user_id=_USER,
         canvas_id=_CANVAS,
         inbound=InboundQueue(),
@@ -622,7 +611,7 @@ async def test_a_cli_canvas_gets_a_chat_and_a_session_before_any_line(
     assert read.conversation_id is not None
     assert read.partner is not None
     assert (read.partner.session_id, read.partner.status) == (opened, "offline")
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT account, title, labels, agentsession_cli AS cli, "
             "agentsession_cli_session_id AS chat, "
@@ -659,15 +648,15 @@ async def test_a_cli_canvas_gets_a_chat_and_a_session_before_any_line(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_cli_chats_first_session_opens_with_its_canvas_opens_as(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """A canvas that chose ``private`` opens its chat private; one that did not, open."""
-    await _seed(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    _ = await _owner_key(pglite_engine)
-    await _set_provider(pglite_engine, "claude")
+    await _seed(pglite_db)
+    store = Store(pglite_db, embed=StubEmbedder())
+    _ = await _owner_key(pglite_db)
+    await _set_provider(pglite_db, "claude")
     chosen = uuid.uuid4()
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO visual_canvases (id, user_id, metadata, state) "
             "VALUES ($1, $2, $3, $4)",
@@ -687,7 +676,7 @@ async def test_a_cli_chats_first_session_opens_with_its_canvas_opens_as(
         for canvas_id in (_CANVAS, chosen)
     }
 
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         audiences = {
             canvas_id: await conn.fetchval(
                 "SELECT agentsession_audience FROM inquiries WHERE id = $1",
@@ -701,11 +690,11 @@ async def test_a_cli_chats_first_session_opens_with_its_canvas_opens_as(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_new_canvas_starts_on_its_owners_preferred_provider(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """Unless its maker names one: the named provider wins."""
-    await _seed(pglite_engine)
-    async with pglite_engine.acquire() as conn:
+    await _seed(pglite_db)
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             'UPDATE users SET preferences = \'{"chat_provider": "codex"}\' '
             "WHERE id = $1",
@@ -714,7 +703,7 @@ async def test_a_new_canvas_starts_on_its_owners_preferred_provider(
 
     async def made(provider: ChatProvider | None) -> ChatProvider:
         state = await new_canvas(
-            pglite_engine,
+            pglite_db,
             user_id=_USER,
             catalog=default_catalog(),
             inbound=InboundQueue(),
@@ -907,7 +896,7 @@ async def test_opening_a_chat_unhides_its_canvas(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_clear_chat_copies_source_state_and_canvas_fields(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A clear copies the canvas and canvas fields while resetting its identity flags."""
@@ -952,7 +941,7 @@ async def test_clear_chat_copies_source_state_and_canvas_fields(
         "pinned": True,
         "workspace_id": str(workspace_id),
     }
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await _insert_clear_source(
             conn,
             user_id=_USER,
@@ -963,7 +952,7 @@ async def test_clear_chat_copies_source_state_and_canvas_fields(
 
     key = uuid.uuid4()
     copied = await clear_chat_canvas(
-        empty_canvas_schema,
+        pglite_db,
         user_id=_USER,
         canvas_id=_CANVAS,
         key=key,
@@ -972,7 +961,7 @@ async def test_clear_chat_copies_source_state_and_canvas_fields(
     )
     assert copied is not None
 
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT metadata, state FROM visual_canvases WHERE id = $1",
             copied.id,
@@ -994,7 +983,7 @@ async def test_clear_chat_copies_source_state_and_canvas_fields(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_clear_chat_same_key_reuses_canvas_without_another_row(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A repeated clear key returns the persisted canvas without inserting again."""
@@ -1003,7 +992,7 @@ async def test_clear_chat_same_key_reuses_canvas_without_another_row(
         "_with_partner",
         _canvas_state_without_partner,
     )
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await _insert_clear_source(
             conn,
             user_id=_USER,
@@ -1013,7 +1002,7 @@ async def test_clear_chat_same_key_reuses_canvas_without_another_row(
         )
     key = uuid.uuid4()
     first = await clear_chat_canvas(
-        empty_canvas_schema,
+        pglite_db,
         user_id=_USER,
         canvas_id=_CANVAS,
         key=key,
@@ -1021,7 +1010,7 @@ async def test_clear_chat_same_key_reuses_canvas_without_another_row(
         assistant=None,
     )
     second = await clear_chat_canvas(
-        empty_canvas_schema,
+        pglite_db,
         user_id=_USER,
         canvas_id=_CANVAS,
         key=key,
@@ -1031,7 +1020,7 @@ async def test_clear_chat_same_key_reuses_canvas_without_another_row(
     assert first is not None
     assert second is not None
     assert second.id == first.id
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         count = await conn.fetchval(
             "SELECT count(*) FROM visual_canvases WHERE user_id = $1",
             _USER,
@@ -1049,7 +1038,7 @@ async def test_clear_chat_same_key_reuses_canvas_without_another_row(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_clear_chat_different_keys_make_distinct_canvases(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A new clear key creates a distinct canvas even for the same source."""
@@ -1058,7 +1047,7 @@ async def test_clear_chat_different_keys_make_distinct_canvases(
         "_with_partner",
         _canvas_state_without_partner,
     )
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await _insert_clear_source(
             conn,
             user_id=_USER,
@@ -1069,7 +1058,7 @@ async def test_clear_chat_different_keys_make_distinct_canvases(
     keys = (uuid.uuid4(), uuid.uuid4())
     copies = [
         await clear_chat_canvas(
-            empty_canvas_schema,
+            pglite_db,
             user_id=_USER,
             canvas_id=_CANVAS,
             key=key,
@@ -1082,7 +1071,7 @@ async def test_clear_chat_different_keys_make_distinct_canvases(
     assert copies[1] is not None
     assert copies[0].id != copies[1].id
     copy_ids = [copies[0].id, copies[1].id]
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         count = await conn.fetchval(
             "SELECT count(*) FROM visual_canvases WHERE user_id = $1",
             _USER,
@@ -1099,10 +1088,10 @@ async def test_clear_chat_different_keys_make_distinct_canvases(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_clear_chat_returns_none_for_another_users_source(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """A user cannot clear another user's canvas by guessing its id."""
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, $2, 'T', 'writer', 'active')",
@@ -1117,7 +1106,7 @@ async def test_clear_chat_returns_none_for_another_users_source(
             state={"visuals": []},
         )
     copied = await clear_chat_canvas(
-        empty_canvas_schema,
+        pglite_db,
         user_id=_USER,
         canvas_id=_CANVAS,
         key=uuid.uuid4(),
@@ -1125,7 +1114,7 @@ async def test_clear_chat_returns_none_for_another_users_source(
         assistant=None,
     )
     assert copied is None
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         count = await conn.fetchval("SELECT count(*) FROM visual_canvases")
     assert count == 1
 
@@ -1283,12 +1272,12 @@ def test_a_clear_whose_copy_never_lands_is_an_error(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_session_campaign_keeps_other_app_settings(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """Campaign writes preserve notes and other keys in the session app."""
     session_id = uuid.uuid4()
     conversation_id = uuid.uuid4()
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await insert_inquiry(
             conn,
             session_id,
@@ -1307,7 +1296,7 @@ async def test_session_campaign_keeps_other_app_settings(
                 "agentsession_opened_by_api_key_id": None,
             },
         )
-    store = Store(empty_canvas_schema, embed=StubEmbedder())
+    store = Store(pglite_db, embed=StubEmbedder())
 
     written = await set_session_campaign(
         store,
@@ -1316,7 +1305,7 @@ async def test_session_campaign_keeps_other_app_settings(
         campaign={"hours": 2.0, "scientists": 3},
     )
 
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         app = await conn.fetchval("SELECT app FROM inquiries WHERE id = $1", session_id)
     assert written
     assert app == {
@@ -1715,25 +1704,25 @@ async def _lines(engine: PGliteEngine, session: uuid.UUID) -> list[tuple[str, ..
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_fork_on_claude_opens_holding_the_lines_up_to_its_fork_point(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """Every part as far as the fork point, stamps kept, linked; a retry adds nothing."""
-    original = await _original(pglite_engine)
-    await _set_provider(pglite_engine, "claude")
+    original = await _original(pglite_db)
+    await _set_provider(pglite_db, "claude")
     inbound, key = InboundQueue(), uuid.uuid4()
 
-    sent = await _fork(pglite_engine, original, key=key, inbound=inbound)
-    again = await _fork(pglite_engine, original, key=key, inbound=inbound)
+    sent = await _fork(pglite_db, original, key=key, inbound=inbound)
+    again = await _fork(pglite_db, original, key=key, inbound=inbound)
 
     assert sent is not None
     assert again == sent
     fork = sent.session_id
     assert fork is not None
-    assert await _lines(pglite_engine, fork) == [
+    assert await _lines(pglite_db, fork) == [
         ("sagent", "q1", "a1"),
         ("claude", f"{_ME}: q2", "a2"),
     ]
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         session = await conn.fetchrow(
             "SELECT account, agentsession_cli AS cli, agentsession_cli_session_id "
             "AS chat, agentsession_opened_by_api_key_id AS key FROM inquiries "
@@ -1793,22 +1782,22 @@ async def test_a_fork_on_claude_opens_holding_the_lines_up_to_its_fork_point(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_fork_on_the_assistant_is_opened_under_its_key_for_it_to_resume(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """The line goes to its service session; the copies stay the forker's."""
-    original = await _original(pglite_engine)
-    service = await _service(pglite_engine, original)
+    original = await _original(pglite_db)
+    service = await _service(pglite_db, original)
     inbound = InboundQueue()
     inbound.mark_poller(service)
 
-    sent = await _fork(pglite_engine, original, key=uuid.uuid4(), inbound=inbound)
+    sent = await _fork(pglite_db, original, key=uuid.uuid4(), inbound=inbound)
 
     assert sent is not None
     assert sent.session_id is None
     [heard] = inbound.drain(service)
     assert heard.context is not None
     assert heard.context.conversation_id == sent.conversation_id
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         fork = await conn.fetchrow(
             "SELECT id, account, agentsession_cli AS cli, "
             "agentsession_opened_by_api_key_id AS key FROM inquiries "
@@ -1835,7 +1824,7 @@ async def test_a_fork_on_the_assistant_is_opened_under_its_key_for_it_to_resume(
         "sagent",
         original.assistant_key,
     )
-    assert await _lines(pglite_engine, from_plain(fork["id"], uuid.UUID)) == [
+    assert await _lines(pglite_db, from_plain(fork["id"], uuid.UUID)) == [
         ("sagent", "q1", "a1"),
         ("claude", f"{_ME}: q2", "a2"),
     ]
@@ -1847,14 +1836,14 @@ async def test_a_fork_on_the_assistant_is_opened_under_its_key_for_it_to_resume(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_assistant_hears_a_fork_only_once_its_session_is_committed(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
-    original = await _original(pglite_engine)
-    service = await _service(pglite_engine, original)
+    original = await _original(pglite_db)
+    service = await _service(pglite_db, original)
     inbound = InboundQueue()
     inbound.mark_poller(service)
     # PGlite has one connection, so this is the one the post writes the fork on.
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         pass
 
     async def hear() -> bool:
@@ -1863,7 +1852,7 @@ async def test_the_assistant_hears_a_fork_only_once_its_session_is_committed(
         return conn.is_in_transaction()
 
     hearing = asyncio.create_task(hear())
-    sent = await _fork(pglite_engine, original, key=uuid.uuid4(), inbound=inbound)
+    sent = await _fork(pglite_db, original, key=uuid.uuid4(), inbound=inbound)
 
     assert sent is not None
     assert not await hearing
@@ -1872,18 +1861,18 @@ async def test_the_assistant_hears_a_fork_only_once_its_session_is_committed(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_fork_under_a_used_key_is_refused_and_opens_nothing(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
-    original = await _original(pglite_engine)
-    service = await _service(pglite_engine, original)
+    original = await _original(pglite_db)
+    service = await _service(pglite_db, original)
     inbound, key = InboundQueue(), uuid.uuid4()
     inbound.mark_poller(service)
     _ = inbound.send_once(key, [(service, Inbound(text="hi"))], fingerprint="other")
 
     with pytest.raises(IdempotencyReuseError):
-        _ = await _fork(pglite_engine, original, key=key, inbound=inbound)
+        _ = await _fork(pglite_db, original, key=key, inbound=inbound)
 
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         opened = await conn.fetchval(
             "SELECT count(*) FROM inquiries WHERE agentsession_cli_session_id = $1",
             chat_session_id(key),
@@ -1906,16 +1895,16 @@ async def _service(engine: PGliteEngine, original: _Original) -> uuid.UUID:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_fork_of_a_private_chat_is_refused_and_opens_nothing(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
-    original = await _original(pglite_engine, audience=PRIVATE)
-    await _set_provider(pglite_engine, "claude")
+    original = await _original(pglite_db, audience=PRIVATE)
+    await _set_provider(pglite_db, "claude")
     key = uuid.uuid4()
 
     with pytest.raises(ChatClosedError, match="chat_fork_closed"):
-        _ = await _fork(pglite_engine, original, key=key, inbound=InboundQueue())
+        _ = await _fork(pglite_db, original, key=key, inbound=InboundQueue())
 
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         opened = await conn.fetchval(
             "SELECT count(*) FROM inquiries WHERE agentsession_cli_session_id = $1",
             chat_session_id(key),
@@ -2147,7 +2136,7 @@ def test_a_canvas_that_stays_invisible_after_its_insert_is_an_error() -> None:
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_assistant_name_uses_the_next_free_suffix(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -2156,7 +2145,7 @@ async def test_assistant_name_uses_the_next_free_suffix(
         _canvas_state_without_partner,
     )
     conversation_id = uuid.uuid4()
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, 'user@example.com', 'Test', 'writer', 'active')",
@@ -2176,14 +2165,14 @@ async def test_assistant_name_uses_the_next_free_suffix(
         )
 
     _ = await name_unnamed_canvas(
-        empty_canvas_schema,
+        pglite_db,
         email="user@example.com",
         conversation_id=conversation_id,
         name="Research",
         inbound=InboundQueue(),
         assistant=None,
     )
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         canvas = await conn.fetchval(
             "SELECT metadata FROM visual_canvases WHERE id = $1",
             _CANVAS,
@@ -2193,7 +2182,7 @@ async def test_assistant_name_uses_the_next_free_suffix(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_assistant_name_leaves_an_already_named_canvas_unchanged(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -2202,7 +2191,7 @@ async def test_assistant_name_leaves_an_already_named_canvas_unchanged(
         _canvas_state_without_partner,
     )
     conversation_id = uuid.uuid4()
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, 'user@example.com', 'Test', 'writer', 'active')",
@@ -2222,14 +2211,14 @@ async def test_assistant_name_leaves_an_already_named_canvas_unchanged(
         )
 
     _ = await name_unnamed_canvas(
-        empty_canvas_schema,
+        pglite_db,
         email="user@example.com",
         conversation_id=conversation_id,
         name="Ignored",
         inbound=InboundQueue(),
         assistant=None,
     )
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         canvas = await conn.fetchval(
             "SELECT metadata FROM visual_canvases WHERE id = $1",
             _CANVAS,
@@ -2244,7 +2233,7 @@ async def test_assistant_name_leaves_an_already_named_canvas_unchanged(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_suggestion_updates_chat_canvas_without_creating_an_issue(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -2253,7 +2242,7 @@ async def test_suggestion_updates_chat_canvas_without_creating_an_issue(
         _canvas_state_without_partner,
     )
     conversation_id = uuid.uuid4()
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, 'user@example.com', 'Test', 'writer', 'active')",
@@ -2272,7 +2261,7 @@ async def test_suggestion_updates_chat_canvas_without_creating_an_issue(
         )
 
     _ = await suggest_workspace_for_chat(
-        empty_canvas_schema,
+        pglite_db,
         user_id=_USER,
         email="user@example.com",
         conversation_id=conversation_id,
@@ -2280,7 +2269,7 @@ async def test_suggestion_updates_chat_canvas_without_creating_an_issue(
         inbound=InboundQueue(),
         assistant=None,
     )
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         canvas = await conn.fetchval(
             "SELECT metadata FROM visual_canvases WHERE id = $1",
             _CANVAS,
@@ -2296,7 +2285,7 @@ async def test_suggestion_updates_chat_canvas_without_creating_an_issue(
 
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_suggestion_of_the_chats_own_workspace_reads_back_as_none(
-    empty_canvas_schema: PGliteEngine,
+    pglite_db: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The chat sits in W: W is no suggestion; another workspace still is."""
@@ -2311,7 +2300,7 @@ async def test_a_suggestion_of_the_chats_own_workspace_reads_back_as_none(
         AsyncMock(return_value=True),
     )
     conversation_id, workspace_id, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    async with empty_canvas_schema.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, 'user@example.com', 'Test', 'writer', 'active')",
@@ -2332,7 +2321,7 @@ async def test_a_suggestion_of_the_chats_own_workspace_reads_back_as_none(
 
     async def suggest(target: uuid.UUID) -> CanvasState | None:
         return await suggest_workspace_for_chat(
-            empty_canvas_schema,
+            pglite_db,
             user_id=_USER,
             email="user@example.com",
             conversation_id=conversation_id,
@@ -2756,16 +2745,16 @@ async def _marks_sent(engine: PGliteEngine) -> int:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_claude_chat_queues_a_known_command_bare_and_a_slash_line_as_a_line(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """The command is typed as the CLI's own; the path stays a person's line."""
-    conversation, session = await _claude_chat(pglite_engine)
+    conversation, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude")
 
-    commanded = await _post(pglite_engine, inbound=inbound, text="/Goal ship it")
-    marks_after_command = await _marks_sent(pglite_engine)
-    said = await _post(pglite_engine, inbound=inbound, text="/etc/hosts is broken")
+    commanded = await _post(pglite_db, inbound=inbound, text="/Goal ship it")
+    marks_after_command = await _marks_sent(pglite_db)
+    said = await _post(pglite_db, inbound=inbound, text="/etc/hosts is broken")
 
     assert commanded is not None
     assert said is not None
@@ -2779,36 +2768,36 @@ async def test_a_claude_chat_queues_a_known_command_bare_and_a_slash_line_as_a_l
     assert heard[1].context is not None
     assert heard[1].context.conversation_id == conversation
     # The command sent no marks; the line after it sent all three.
-    assert (marks_after_command, await _marks_sent(pglite_engine)) == (0, 3)
+    assert (marks_after_command, await _marks_sent(pglite_db)) == (0, 3)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_model_or_effort_line_queues_a_settings_post_with_no_page_or_marks(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """The run applies a settings post; it carries no page, trail or marks."""
-    _, session = await _claude_chat(pglite_engine)
+    _, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude")
 
-    _ = await _post(pglite_engine, inbound=inbound, text="/Model opus")
-    _ = await _post(pglite_engine, inbound=inbound, text="/effort High")
+    _ = await _post(pglite_db, inbound=inbound, text="/Model opus")
+    _ = await _post(pglite_db, inbound=inbound, text="/effort High")
 
     heard = inbound.drain(session)
     assert [(each.text, each.kind, each.payload, each.context) for each in heard] == [
         ("/model opus", "settings", {"model": "opus", "effort": None}, None),
         ("/effort high", "settings", {"model": None, "effort": "high"}, None),
     ]
-    assert await _marks_sent(pglite_engine) == 0
+    assert await _marks_sent(pglite_db) == 0
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_bare_model_line_is_refused_with_what_works(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
-    _, session = await _claude_chat(pglite_engine)
+    _, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude")
 
@@ -2816,7 +2805,7 @@ async def test_a_bare_model_line_is_refused_with_what_works(
         CommandRefusedError,
         match=r"^Chat can't open the model menu\. Type /model <name> ",
     ):
-        _ = await _post(pglite_engine, inbound=inbound, text="/model")
+        _ = await _post(pglite_db, inbound=inbound, text="/model")
 
     assert inbound.drain(session) == []
 
@@ -2824,18 +2813,18 @@ async def test_a_bare_model_line_is_refused_with_what_works(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_command_chat_cannot_run_is_refused_and_queues_nothing(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
-    _, session = await _claude_chat(pglite_engine)
+    _, session = await _claude_chat(pglite_db)
     inbound, key = InboundQueue(), uuid.uuid4()
     inbound.mark_poller(session, cli="claude")
 
     with pytest.raises(CommandRefusedError, match=r"^Chat cannot run /resume: "):
-        _ = await _post(pglite_engine, inbound=inbound, text="/resume", key=key)
+        _ = await _post(pglite_db, inbound=inbound, text="/resume", key=key)
 
     assert inbound.drain(session) == []
     assert inbound.key_sender(key) is None
-    assert await _marks_sent(pglite_engine) == 0
+    assert await _marks_sent(pglite_db) == 0
 
 
 @pytest.mark.db_pglite
@@ -2870,15 +2859,15 @@ async def test_an_assistant_canvas_refuses_a_command_before_it_binds_a_chat(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_sharers_command_goes_by_the_chats_provider_not_their_canvas(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """The sharer's own canvas is the assistant's, which would refuse /goal."""
-    conversation, session = await _claude_chat(pglite_engine)
+    conversation, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude")
 
     sent = await _post(
-        pglite_engine,
+        pglite_db,
         inbound=inbound,
         text="/goal ship it",
         conversation_id=conversation,
@@ -2899,17 +2888,17 @@ async def test_a_sharers_command_goes_by_the_chats_provider_not_their_canvas(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_only_the_runs_owner_answers_its_prompts(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """An answer runs a tool on the starter's machine, so a sharer's is refused."""
-    conversation, session = await _claude_chat(pglite_engine)
+    conversation, session = await _claude_chat(pglite_db)
     inbound, key = InboundQueue(), uuid.uuid4()
     inbound.mark_poller(session, cli="claude")
     answer: dict[str, object] = {"prompt_id": "p1", "decision": "allow"}
 
     with pytest.raises(AnswerNotOwnerError) as refused:
         _ = await _post(
-            pglite_engine,
+            pglite_db,
             inbound=inbound,
             text="Yes",
             kind="answer",
@@ -2921,7 +2910,7 @@ async def test_only_the_runs_owner_answers_its_prompts(
     assert inbound.drain(session) == []
     assert inbound.key_sender(key) is None
     answered = await _post(
-        pglite_engine,
+        pglite_db,
         inbound=inbound,
         text="Yes",
         kind="answer",
@@ -2942,17 +2931,17 @@ async def test_only_the_runs_owner_answers_its_prompts(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_only_the_runs_owner_runs_a_command_on_its_machine(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """A clicked command runs on the starter's machine, so a sharer's is refused."""
-    conversation, session = await _claude_chat(pglite_engine)
+    conversation, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude", runs=True)
     run: dict[str, object] = {"run_id": "a" * 32, "block": "l1:0", "stop": False}
 
     with pytest.raises(AnswerNotOwnerError) as refused:
         _ = await _post(
-            pglite_engine,
+            pglite_db,
             inbound=inbound,
             text="date",
             kind="run",
@@ -2962,7 +2951,7 @@ async def test_only_the_runs_owner_runs_a_command_on_its_machine(
         )
     assert inbound.drain(session) == []
     ran = await _post(
-        pglite_engine,
+        pglite_db,
         inbound=inbound,
         text="date",
         kind="run",
@@ -2984,16 +2973,16 @@ async def test_only_the_runs_owner_runs_a_command_on_its_machine(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_command_waits_for_a_run_that_takes_runs(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """A run older than the button would lose the drain that carried the command."""
-    conversation, session = await _claude_chat(pglite_engine)
+    conversation, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude")
 
     with pytest.raises(RunUnsupportedError, match="predates the Run button"):
         _ = await _post(
-            pglite_engine,
+            pglite_db,
             inbound=inbound,
             text="date",
             kind="run",
@@ -3007,7 +2996,7 @@ async def test_a_command_waits_for_a_run_that_takes_runs(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_trust_answer_chat_posts_is_queued_from_the_runs_owner_alone(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """The answer Chat's trust card posts (``web/test/seams/trustAnswer.json``).
 
@@ -3018,13 +3007,13 @@ async def test_the_trust_answer_chat_posts_is_queued_from_the_runs_owner_alone(
     posted = json_loads(seam.read_text(encoding="utf-8"), dict[str, object])
     text = from_plain(posted["text"], str)
     payload = from_plain(posted["payload"], dict[str, object])
-    conversation, session = await _claude_chat(pglite_engine)
+    conversation, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude")
 
     with pytest.raises(AnswerNotOwnerError):
         _ = await _post(
-            pglite_engine,
+            pglite_db,
             inbound=inbound,
             text=text,
             kind="answer",
@@ -3034,7 +3023,7 @@ async def test_the_trust_answer_chat_posts_is_queued_from_the_runs_owner_alone(
         )
     assert inbound.drain(session) == []
     answered = await _post(
-        pglite_engine,
+        pglite_db,
         inbound=inbound,
         text=text,
         kind="answer",
@@ -3055,15 +3044,15 @@ async def test_the_trust_answer_chat_posts_is_queued_from_the_runs_owner_alone(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_post_of_another_kind_is_not_judged_as_a_command(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     """Only a line is classified: an answer that reads like a menu verb is an answer."""
-    _, session = await _claude_chat(pglite_engine)
+    _, session = await _claude_chat(pglite_db)
     inbound = InboundQueue()
     inbound.mark_poller(session, cli="claude")
 
     sent = await _post(
-        pglite_engine,
+        pglite_db,
         inbound=inbound,
         text="/model",
         kind="answer",

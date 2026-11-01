@@ -39,18 +39,18 @@ _WIDE_POOL_SIZE = 40
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def wide_store(pg_dsn: str) -> AsyncIterator[Store]:
-    """Return a Store on its own wide-pool engine, sharing the session's Postgres."""
+async def wide_store(pg_dsn: str, integ_store: Store) -> AsyncIterator[Store]:
+    """Return a Store on its own wide-pool engine, sharing the session's Postgres.
+
+    Asks for ``integ_store`` only for the freshly bootstrapped database it leaves.
+    """
+    del integ_store
     async with postgres.PostgresEngine(
         dsn=pg_dsn,
         listen_channel=NOTIFY_CHANNEL,
         max_size=_WIDE_POOL_SIZE,
     ) as engine:
-        store = Store(engine, embed=StubEmbedder())
-        await store.bootstrap()  # Idempotent: CREATE TABLE IF NOT EXISTS.
-        async with engine.acquire() as conn:
-            await conn.execute("TRUNCATE inquiries, change_log CASCADE")
-        yield store
+        yield Store(engine, embed=StubEmbedder())
 
 
 async def _submit_issue(store: Store, title: str) -> UUID:

@@ -14,13 +14,11 @@ from typing import TYPE_CHECKING, Final, Literal, cast
 from uuid import UUID, uuid4
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, executed_sql, make_conn
 from trackinizer.server.audience import NOBODY, SessionReader, visible_sql
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import sweep_session_embeddings
 from trackinizer.server.store.session_feed import FeedScope
 from trackinizer.server.store.session_search import (
@@ -37,10 +35,10 @@ from trackinizer.wire.audience import AUDIENCES
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
     from unittest.mock import AsyncMock
 
-    from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
+    from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.store.core import Store
 
 
 # Reads every open session; the sessions these tests seed are all open.
@@ -52,17 +50,10 @@ _MODEL = StubEmbedder(dim=1024).name
 _DIM = StubEmbedder(dim=1024).dim
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Bootstrapped store with the session tables emptied (search is global)."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with built.engine.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE session_embeddings, session_records, session_manifests, "
-            "inquiries CASCADE",
-        )
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session(store: Store) -> UUID:

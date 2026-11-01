@@ -14,7 +14,6 @@ from fastapi.routing import APIRoute
 import pytest
 
 from trackinizer.conftest import FakeEngine
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api import workspace_routes
 from trackinizer.server.api.app import ROUTERS
 from trackinizer.server.api.session_access import Asker
@@ -174,20 +173,18 @@ def test_workspace_order_route_precedes_dynamic_id_routes() -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_listing_the_bar_makes_no_default_workspace(
     monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
+    store: Store,
 ) -> None:
     """Only something that lands makes the default, so a renamed one stays alone."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, $2, 'User', 'writer', 'active')",
             _USER,
             _IDENTITY.email,
         )
-    _route_dependencies(monkeypatch, engine=pglite_engine, store=store)
+    _route_dependencies(monkeypatch, engine=pglite_db, store=store)
 
     result = await workspace_routes.list_workspaces_route(
         request=_request(),
@@ -195,7 +192,7 @@ async def test_listing_the_bar_makes_no_default_workspace(
         hidden=True,
     )
 
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         issues = await conn.fetchval("SELECT count(*) FROM inquiries")
     assert result == []
     assert issues == 0
@@ -249,10 +246,10 @@ async def test_assistant_workspace_list_resolves_the_asker(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_create_route_returns_the_created_issue_summary(
     monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
+    store: Store,
 ) -> None:
-    store = Store(pglite_engine, embed=StubEmbedder())
-    _route_dependencies(monkeypatch, engine=pglite_engine, store=store)
+    _route_dependencies(monkeypatch, engine=pglite_db, store=store)
 
     monkeypatch.setattr(
         workspace_routes,
@@ -275,10 +272,10 @@ async def test_create_route_returns_the_created_issue_summary(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_order_route_returns_not_found_for_another_users_id(
     monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
+    store: Store,
 ) -> None:
-    store = Store(pglite_engine, embed=StubEmbedder())
-    _route_dependencies(monkeypatch, engine=pglite_engine, store=store)
+    _route_dependencies(monkeypatch, engine=pglite_db, store=store)
 
     monkeypatch.setattr(
         workspace_routes,
@@ -298,10 +295,10 @@ async def test_order_route_returns_not_found_for_another_users_id(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_info_route_returns_not_found_for_an_unowned_issue(
     monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
+    store: Store,
 ) -> None:
-    store = Store(pglite_engine, embed=StubEmbedder())
-    _route_dependencies(monkeypatch, engine=pglite_engine, store=store)
+    _route_dependencies(monkeypatch, engine=pglite_db, store=store)
 
     monkeypatch.setattr(workspace_routes, "workspace_info", _missing_info_fake)
     with pytest.raises(HTTPException) as error:

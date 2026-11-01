@@ -28,7 +28,6 @@ from uuid import UUID, uuid4
 from treekle import immutable
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.sessions.tail import Tail
@@ -37,17 +36,15 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TurnContext,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
     from trackinizer.lib.agent.sessions.convert import _Adapter
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.core import Store
 
 
 # Asked of the MODULE that owns it, not counted in parents from here: the
@@ -56,12 +53,10 @@ if TYPE_CHECKING:
 _TESTDATA: Final = Path(claude.__file__).resolve().parent / "testdata"
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store on the shared integration database."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session_row(store: Store) -> UUID:

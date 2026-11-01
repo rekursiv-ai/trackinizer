@@ -13,9 +13,7 @@ from typing import TYPE_CHECKING, override
 import asyncio
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.runs.asks import opened_record, resolved_record
 from trackinizer.sagent.session.types import AssistantMessage, SystemMessage
 from trackinizer.server.asks import (
@@ -41,7 +39,7 @@ from trackinizer.wire.bodies import SubmitAgentSession
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Mapping
+    from collections.abc import Mapping
     from uuid import UUID
 
     from treekle import PlainTree
@@ -51,15 +49,6 @@ if TYPE_CHECKING:
 
 _AT = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
 _LATER = datetime(2026, 10, 21, 9, 5, tzinfo=UTC)
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a store on an empty, freshly bootstrapped database."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
 
 
 class TestReleasedRecord:
@@ -325,7 +314,7 @@ class TestReleaseGoneRuns:
     async def test_a_session_that_takes_no_record_does_not_stop_the_pass(
         self,
         store: Store,
-        pglite_engine: PGliteEngine,
+        pglite_db: PGliteEngine,
     ) -> None:
         purged, gone = await _session(store), await _session(store)
         for session in (purged, gone):
@@ -340,7 +329,7 @@ class TestReleaseGoneRuns:
             inbound.forget_poller(session)
 
         released = await release_gone_runs(
-            _Purged(pglite_engine, embed=StubEmbedder(), purged=purged),
+            _Purged(pglite_db, embed=StubEmbedder(), purged=purged),
             inbound=inbound,
             at=_LATER,
         )

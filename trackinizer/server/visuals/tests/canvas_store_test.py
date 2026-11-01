@@ -8,12 +8,9 @@ import uuid
 
 import pytest
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.config import Assistant
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
-from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.canvas_store import (
     CanvasKeyRefusedError,
     agent_may_operate,
@@ -48,12 +45,10 @@ if TYPE_CHECKING:
     ],
 )
 async def test_a_canvas_key_needs_its_starters_live_selected_chat(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
     case: str,
 ) -> None:
     """Exercise the key authorization contract against real persisted sessions."""
-    await reset_schema(pglite_engine)
-    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
     owner_id, assistant_id = uuid.uuid4(), uuid.uuid4()
     owner_key, assistant_key, second_key = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
     canvas_id, conversation_id, session_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
@@ -71,7 +66,7 @@ async def test_a_canvas_key_needs_its_starters_live_selected_chat(
             if case == "wrong-cli"
             else "codex",
         )
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         for user_id, email in (
             (owner_id, "owner@example.com"),
             (assistant_id, assistant.email),
@@ -146,7 +141,7 @@ async def test_a_canvas_key_needs_its_starters_live_selected_chat(
 
     if case in {"live", "other-key", "assistant-opener", "starter-case", "foreign-key"}:
         allowed = await agent_may_operate(
-            pglite_engine,
+            pglite_db,
             user_id=assistant_id if case == "foreign-key" else owner_id,
             canvas_id=canvas_id,
             agent_api_key_id=caller_key,
@@ -157,7 +152,7 @@ async def test_a_canvas_key_needs_its_starters_live_selected_chat(
     else:
         with pytest.raises(CanvasKeyRefusedError):
             await agent_may_operate(
-                pglite_engine,
+                pglite_db,
                 user_id=owner_id,
                 canvas_id=canvas_id,
                 agent_api_key_id=caller_key,

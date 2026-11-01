@@ -23,9 +23,7 @@ from treekle import ReadError, from_plain, mutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store import legacy_retype_runner
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.legacy_retype_runner import (
     retype_all,
     retype_session,
@@ -35,7 +33,8 @@ from trackinizer.server.store.legacy_retype_runner import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from trackinizer.lib.postgres import Conn, PostgresEngine
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.server.store.core import Store
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -58,11 +57,15 @@ _SIGNATURE: Final = "c2lnbmF0dXJl"
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store on the shared integration database."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+async def store(integ_store: Store) -> AsyncIterator[Store]:
+    """Return the store on the shared Postgres database, freshly bootstrapped.
+
+    Drops the retired table a test builds again, so the next test meets the
+    catalog of the build instead of building the database anew.
+    """
+    yield integ_store
+    async with integ_store.engine.acquire() as conn:
+        await conn.execute("DROP TABLE IF EXISTS agent_session_events")
 
 
 async def _legacy_session(store: Store) -> UUID:

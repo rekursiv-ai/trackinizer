@@ -5,29 +5,15 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ConflictError
 from trackinizer.wire.bodies import SubmitExperiment, SubmitIssue
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
     from uuid import UUID
 
-    from trackinizer.lib.postgres import PGliteEngine
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    yield store
+    from trackinizer.server.store.core import Store
 
 
 async def _row_app(store: Store, row_id: UUID) -> dict[str, object] | None:

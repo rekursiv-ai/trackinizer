@@ -1,4 +1,30 @@
-"""The canvas cutover ships an upgrade and an operator-only rollback."""
+"""The canvas cutover ships an upgrade and an operator-only rollback.
+
+Each test is a unit of one step, run on the session's build inside a transaction
+rolled back after it (``pglite_rollback_conn``, ``integ_rollback_conn``), on PGlite and
+on Postgres. One test shows the rollback, run on the build with the DDL that came
+after the cutover taken away, is the independent pre-cutover baseline
+(``testdata/schema_before_canvas_rename.sql``) by its complete catalog; that test
+alone loads the frozen schema. The others start from that rollback and the old rows.
+
+Coverage of the round trip and collisions this file once ran end to end, per engine:
+
+* an upgraded frozen database has a fresh install's catalog: the rollback is the
+  frozen schema (``test_the_rollback_is_the_frozen_schema_*``) and the cutover takes
+  it to the build's catalog (``test_the_cutover_upgrades_the_old_rows_*``);
+* every converted row, timestamp, revision, hash and label:
+  ``test_the_cutover_upgrades_the_old_rows_*``;
+* the rollback restores the old catalog and rows, and a second upgrade the new rows:
+  ``test_the_rollback_restores_*``; a rollback keeps what the new writer wrote:
+  ``test_the_rollback_keeps_what_the_new_writer_wrote_*``;
+* a boot that finds the cutover recorded runs it no more: ``core_test``'s
+  ``test_bootstrap_skips_baseline_for_existing_db``; a replayed operation answers from
+  the receipt the cutover rewrote: the receipt's fields here, and ``canvas_store_test``'s
+  ``test_the_provider_is_stored_and_a_replay_answers_with_it``;
+* each collision refuses the cutover without partial writes or DDL:
+  ``test_a_collision_refuses_the_cutover_*``; nothing records a refused migration:
+  ``core_test``'s ``test_bootstrap_records_no_migration_whose_body_fails``.
+"""
 
 from __future__ import annotations
 
@@ -11,56 +37,30 @@ from treekle import from_plain
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib import postgres
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
-from trackinizer.server.notify import NOTIFY_CHANNEL, tx
+from trackinizer.conftest import savepoint
 from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import load_sql, schema_migrations
-from trackinizer.server.store.core import Store
-from trackinizer.server.visuals.canvas_store import (
-    apply_canvas_operation,
-    state_from_row,
-)
-from trackinizer.server.visuals.canvases import (
-    ApplyCanvasOperation,
-    ChooseProvider,
-)
-from trackinizer.server.visuals.catalog import default_catalog
+from trackinizer.server.visuals.canvas_store import state_from_row
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.lib.postgres import Conn
 
 
 _CWD: Final = Path(__file__).resolve().parent
-_USER: Final = uuid.UUID(int=1)
 _CANVAS: Final = uuid.UUID(int=4)
 
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def rename_pg(pg_dsn: str) -> AsyncIterator[postgres.PostgresEngine]:
-    """Own a sibling database; never alter the shared integration database."""
-    base = pg_dsn.rsplit("/", 1)[0]
-    name = f"canvas_rename_{uuid.uuid4().hex}"
-    admin = await asyncpg.connect(pg_dsn)
-    try:
-        await admin.execute(f'CREATE DATABASE "{name}"')
-        async with postgres.PostgresEngine(
-            dsn=f"{base}/{name}",
-            listen_channel=NOTIFY_CHANNEL,
-        ) as engine:
-            async with engine.acquire() as conn:
-                await conn.execute("CREATE EXTENSION vector")
-            yield engine
-    finally:
-        await admin.execute(f'DROP DATABASE IF EXISTS "{name}"')
-        await admin.close()
+_COLLISIONS: Final = (
+    "UPDATE visual_workspaces SET station = station || '{\"workspace_id\":null}'",
+    "UPDATE visual_workspaces SET station = jsonb_set(station, '{suggestion,workspace_id}', 'null')",
+    "UPDATE users SET preferences = preferences || '{\"workspaces\":{}}'",
+    "UPDATE visual_workspace_operations SET response = response || '{\"workspace_id\":null}'",
+    "UPDATE visual_workspace_operations SET response = jsonb_set(response, '{suggestion,workspace_id}', 'null')",
+    "UPDATE inquiries SET labels = labels || ARRAY['workspace'] WHERE kind = 'Issue'",
+    "UPDATE inquiries SET labels = labels || ARRAY['canvas:00000000-0000-0000-0000-000000000004'] WHERE kind = 'AgentSession'",
+)
+"""Each owned target key or label, already present where the cutover would write it."""
 
 
 async def _catalog(conn: Conn) -> set[tuple[str, str, str]]:
@@ -76,29 +76,15 @@ async def _catalog(conn: Conn) -> set[tuple[str, str, str]]:
     }
 
 
-async def _old_database(engine: DatabaseEngine) -> None:
-    """Load the independent pre-cutover baseline and mark only its migrations."""
+async def _frozen_schema(conn: Conn) -> None:
+    """Load the independent pre-cutover baseline over an emptied schema."""
     body = (_CWD / "testdata" / "schema_before_canvas_rename.sql").read_text()
-    async with engine.acquire() as conn:
-        await conn.execute(substitute_schema_placeholders(body))
-        await conn.execute(
-            "CREATE TABLE applied_migrations (name TEXT PRIMARY KEY, "
-            "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
-        )
-        # Bootstrap must apply the cutover and the later DDL absent from this
-        # frozen baseline; marking that DDL applied hides upgrade/fresh drift.
-        for name, _ in schema_migrations():
-            if name not in {
-                "schema.058.sql",
-                "schema.060.sql",
-                "schema.061.sql",
-                "schema.062.sql",
-            }:
-                await conn.execute(
-                    "INSERT INTO applied_migrations (name) VALUES ($1)",
-                    name,
-                )
-        await conn.execute((_CWD / "testdata" / "canvas_rename_seed.sql").read_text())
+    await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+    await conn.execute(substitute_schema_placeholders(body))
+    await conn.execute(
+        "CREATE TABLE applied_migrations (name TEXT PRIMARY KEY, "
+        "applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
+    )
 
 
 async def _undo_after_canvas_rename(conn: Conn) -> None:
@@ -114,6 +100,19 @@ async def _undo_after_canvas_rename(conn: Conn) -> None:
         "DELETE FROM applied_migrations "
         "WHERE name IN ('schema.060.sql', 'schema.061.sql', 'schema.062.sql')",
     )
+
+
+async def _old_database(conn: Conn) -> None:
+    """Roll the build back to the pre-cutover schema, and give it the old rows."""
+    await conn.execute(load_sql("canvas_rename_down"))
+    await _undo_after_canvas_rename(conn)
+    await conn.execute((_CWD / "testdata" / "canvas_rename_seed.sql").read_text())
+
+
+async def _upgrade(conn: Conn) -> None:
+    """Run what a boot of a pre-cutover database runs: the cutover, then later DDL."""
+    for step in ("schema.058", "schema.060", "schema.061", "schema.062"):
+        await conn.execute(load_sql(step))
 
 
 async def _snapshot(conn: Conn, *, old: bool) -> dict[str, list[dict[str, object]]]:
@@ -147,162 +146,203 @@ async def _snapshot(conn: Conn, *, old: bool) -> dict[str, list[dict[str, object
     }
 
 
-async def _round_trip(engine: DatabaseEngine) -> None:
-    """Upgrade actual old rows; rollback post-up writes; upgrade and bootstrap twice."""
-    await _old_database(engine)
-    async with engine.acquire() as conn:
-        old_catalog = await _catalog(conn)
-        before = await _snapshot(conn, old=True)
-    store = Store(engine, embed=StubEmbedder())
-    await store.bootstrap()
-    async with engine.acquire() as conn:
-        migrated_catalog = await _catalog(conn)
-        assert ("table", "gpu_allowance_resets", "") in migrated_catalog
-        after = await _snapshot(conn, old=False)
-        metadata = from_plain(after["canvases"][0]["metadata"], dict[str, object])
-        state = state_from_row(after["canvases"][0])
-        assert state.workspace_id == uuid.UUID(int=2)
-        assert state.conversation_id == uuid.UUID(int=5)
-        assert state.session_id == uuid.UUID(int=3)
-        assert state.layout is not None
-        assert state.layout.chat_ch == 42
-        assert state.marks_seq == 3
-        assert state.provider == "claude"
-        assert metadata["workspace_id"] == str(uuid.UUID(int=2))
-        assert "workstream_id" not in metadata
-        suggestion = from_plain(metadata["suggestion"], dict[str, object])
-        assert suggestion["workspace_id"] == str(uuid.UUID(int=6))
-        assert after["edges"] == before["edges"]
-        preferences = from_plain(after["users"][0]["preferences"], dict[str, object])
-        old_preferences = from_plain(
-            before["users"][0]["preferences"],
-            dict[str, object],
-        )
-        assert preferences == {
-            "theme": "dark",
-            "workspaces": old_preferences["workstreams"],
-        }
-        receipt = from_plain(after["receipts"][0]["response"], dict[str, object])
-        assert receipt["workspace_id"] == str(uuid.UUID(int=2))
-        assert from_plain(receipt["suggestion"], dict[str, object])[
-            "workspace_id"
-        ] == str(uuid.UUID(int=6))
-        for old, new in zip(before["inquiries"], after["inquiries"], strict=True):
-            assert {key: value for key, value in old.items() if key != "labels"} == {
-                key: value for key, value in new.items() if key != "labels"
-            }
-        assert after["canvases"][0]["created_at"] == before["canvases"][0]["created_at"]
-        assert (
-            after["canvases"][0]["modified_at"] == before["canvases"][0]["modified_at"]
-        )
-        assert after["canvases"][0]["revision"] == 19
-        assert metadata["name"] == "unnamed-workstream#1"
-        assert (
-            after["receipts"][0]["request_hash"]
-            == "694bea63d8f323ca1443d9135181fb1d7e4d056709a4f50e308aeb68c7671e9d"
-        )
-        assert after["inquiries"][0]["labels"] == ["workspace", "scratch"]
-        assert after["inquiries"][1]["labels"] == [
-            f"canvas:{_CANVAS}",
-            "git:https://example.com/repo@main",
-        ]
-        async with tx(conn):
-            await conn.execute(load_sql("canvas_rename_down"))
-            await _undo_after_canvas_rename(conn)
-        assert await _catalog(conn) == old_catalog
-        assert await _snapshot(conn, old=True) == before
-    await store.bootstrap()
-    await store.bootstrap()
-    replay = await apply_canvas_operation(
-        store,
-        user_id=_USER,
-        canvas_id=_CANVAS,
-        key=uuid.UUID(int=7),
-        body=ApplyCanvasOperation(
-            revision=17,
-            operation=ChooseProvider(kind="provider", provider="claude"),
-        ),
-        catalog=default_catalog(),
-        inbound=InboundQueue(),
-        assistant=None,
+async def _rollback_is_frozen(conn: Conn) -> None:
+    """Show the rollback, later DDL aside, leaves exactly the frozen pre-cutover catalog."""
+    await conn.execute(load_sql("canvas_rename_down"))
+    await _undo_after_canvas_rename(conn)
+    rolled = await _catalog(conn)
+    await _frozen_schema(conn)
+    assert rolled == await _catalog(conn)
+
+
+async def _upgrade_old_rows(conn: Conn) -> None:
+    """Show the cutover takes old rows and the old catalog to the build's."""
+    fresh = await _catalog(conn)
+    await _old_database(conn)
+    before = await _snapshot(conn, old=True)
+    await _upgrade(conn)
+    migrated_catalog = await _catalog(conn)
+    assert ("table", "gpu_allowance_resets", "") in migrated_catalog
+    assert migrated_catalog == fresh
+    after = await _snapshot(conn, old=False)
+    metadata = from_plain(after["canvases"][0]["metadata"], dict[str, object])
+    state = state_from_row(after["canvases"][0])
+    assert state.workspace_id == uuid.UUID(int=2)
+    assert state.conversation_id == uuid.UUID(int=5)
+    assert state.session_id == uuid.UUID(int=3)
+    assert state.layout is not None
+    assert state.layout.chat_ch == 42
+    assert state.marks_seq == 3
+    assert state.provider == "claude"
+    assert metadata["workspace_id"] == str(uuid.UUID(int=2))
+    assert "workstream_id" not in metadata
+    suggestion = from_plain(metadata["suggestion"], dict[str, object])
+    assert suggestion["workspace_id"] == str(uuid.UUID(int=6))
+    assert after["edges"] == before["edges"]
+    preferences = from_plain(after["users"][0]["preferences"], dict[str, object])
+    old_preferences = from_plain(
+        before["users"][0]["preferences"],
+        dict[str, object],
     )
-    assert replay is not None
-    assert replay.replayed
-    assert replay.state.revision == 18
-    assert replay.state.workspace_id == uuid.UUID(int=2)
-    async with engine.acquire() as conn:
-        assert await _snapshot(conn, old=False) == after
-        # Exercise rollback of a canvas created by the new writer too.
-        await conn.execute(
-            "INSERT INTO visual_canvases (id, user_id, state, metadata) "
-            'VALUES ($1, $2, \'{"visuals":[]}\', \'{"name":"new canvas",'
-            '"workspace_id":"00000000-0000-0000-0000-000000000002"}\')',
-            uuid.UUID(int=8),
-            _USER,
-        )
-        written = await _snapshot(conn, old=False)
-        async with tx(conn):
-            await conn.execute(load_sql("canvas_rename_down"))
-    await store.bootstrap()
-    async with engine.acquire() as conn:
-        assert await _snapshot(conn, old=False) == written
-        # A separate fresh schema in the same engine avoids comparing PG to PGLite.
-        await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
-    await store.bootstrap()
-    async with engine.acquire() as conn:
-        assert await _catalog(conn) == migrated_catalog
+    assert preferences == {
+        "theme": "dark",
+        "workspaces": old_preferences["workstreams"],
+    }
+    receipt = from_plain(after["receipts"][0]["response"], dict[str, object])
+    assert receipt["workspace_id"] == str(uuid.UUID(int=2))
+    assert from_plain(receipt["suggestion"], dict[str, object])["workspace_id"] == str(
+        uuid.UUID(int=6),
+    )
+    for old, new in zip(before["inquiries"], after["inquiries"], strict=True):
+        assert {key: value for key, value in old.items() if key != "labels"} == {
+            key: value for key, value in new.items() if key != "labels"
+        }
+    assert after["canvases"][0]["created_at"] == before["canvases"][0]["created_at"]
+    assert after["canvases"][0]["modified_at"] == before["canvases"][0]["modified_at"]
+    assert after["canvases"][0]["revision"] == 19
+    assert metadata["name"] == "unnamed-workstream#1"
+    assert (
+        after["receipts"][0]["request_hash"]
+        == "694bea63d8f323ca1443d9135181fb1d7e4d056709a4f50e308aeb68c7671e9d"
+    )
+    assert after["inquiries"][0]["labels"] == ["workspace", "scratch"]
+    assert after["inquiries"][1]["labels"] == [
+        f"canvas:{_CANVAS}",
+        "git:https://example.com/repo@main",
+    ]
 
 
-async def _collisions(engine: DatabaseEngine) -> None:
-    """Every owned target key/label refuses cutover without partial writes or DDL."""
-    for sql in (
-        "UPDATE visual_workspaces SET station = station || '{\"workspace_id\":null}'",
-        "UPDATE visual_workspaces SET station = jsonb_set(station, '{suggestion,workspace_id}', 'null')",
-        "UPDATE users SET preferences = preferences || '{\"workspaces\":{}}'",
-        "UPDATE visual_workspace_operations SET response = response || '{\"workspace_id\":null}'",
-        "UPDATE visual_workspace_operations SET response = jsonb_set(response, '{suggestion,workspace_id}', 'null')",
-        "UPDATE inquiries SET labels = labels || ARRAY['workspace'] WHERE kind = 'Issue'",
-        "UPDATE inquiries SET labels = labels || ARRAY['canvas:00000000-0000-0000-0000-000000000004'] WHERE kind = 'AgentSession'",
-    ):
-        async with engine.acquire() as conn:
-            await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
-        await _old_database(engine)
-        async with engine.acquire() as conn:
-            await conn.execute(sql)
-            before = await _snapshot(conn, old=True)
-            catalog = await _catalog(conn)
-        with pytest.raises(asyncpg.RaiseError, match="Canvas cutover"):
-            await Store(engine, embed=StubEmbedder()).bootstrap()
-        async with engine.acquire() as conn:
-            assert await _snapshot(conn, old=True) == before
-            assert await _catalog(conn) == catalog
-            assert (
-                await conn.fetchval(
-                    "SELECT 1 FROM applied_migrations WHERE name = 'schema.058.sql'",
-                )
-                is None
-            )
-    async with engine.acquire() as conn:
-        await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+async def _rollback_restores(conn: Conn) -> None:
+    """Roll the upgrade back to the old catalog and rows, then upgrade again."""
+    await _old_database(conn)
+    old_catalog = await _catalog(conn)
+    before = await _snapshot(conn, old=True)
+    await _upgrade(conn)
+    after = await _snapshot(conn, old=False)
+    await conn.execute(load_sql("canvas_rename_down"))
+    await _undo_after_canvas_rename(conn)
+    assert await _catalog(conn) == old_catalog
+    assert await _snapshot(conn, old=True) == before
+    await _upgrade(conn)
+    assert await _snapshot(conn, old=False) == after
+
+
+async def _rollback_keeps_new_rows(conn: Conn) -> None:
+    """Keep, through a rollback and the upgrade after it, a canvas the new writer made."""
+    await _old_database(conn)
+    await _upgrade(conn)
+    await conn.execute(
+        "INSERT INTO visual_canvases (id, user_id, state, metadata) "
+        'VALUES ($1, $2, \'{"visuals":[]}\', \'{"name":"new canvas",'
+        '"workspace_id":"00000000-0000-0000-0000-000000000002"}\')',
+        uuid.UUID(int=8),
+        uuid.UUID(int=1),
+    )
+    written = await _snapshot(conn, old=False)
+    await conn.execute(load_sql("canvas_rename_down"))
+    await conn.execute(load_sql("schema.058"))
+    assert await _snapshot(conn, old=False) == written
+
+
+async def _collision_refuses(conn: Conn, collision: str) -> None:
+    """Show an owned target refuses the cutover without partial writes or DDL."""
+    await _old_database(conn)
+    await conn.execute(collision)
+    before = await _snapshot(conn, old=True)
+    catalog = await _catalog(conn)
+    with pytest.raises(asyncpg.RaiseError, match="Canvas cutover"):
+        async with savepoint(conn):
+            await conn.execute(load_sql("schema.058"))
+    assert await _snapshot(conn, old=True) == before
+    assert await _catalog(conn) == catalog
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_canvas_cutover_round_trip_pglite(
-    pglite_engine: postgres.PGliteEngine,
+async def test_the_rollback_is_the_frozen_schema_pglite(
+    pglite_rollback_conn: Conn,
 ) -> None:
-    """PGLite preserves old rows, post-up writes, and the complete named catalog."""
-    await reset_schema(pglite_engine)
-    await _collisions(pglite_engine)
-    await _round_trip(pglite_engine)
+    """On PGlite, the rollback of the build is the frozen pre-cutover schema."""
+    await _rollback_is_frozen(pglite_rollback_conn)
 
 
 @pytest.mark.db_postgres
 @pytest.mark.asyncio(loop_scope="session")
-async def test_canvas_cutover_round_trip_pg(rename_pg: postgres.PostgresEngine) -> None:
-    """PostgreSQL preserves the same rows and catalog under bootstrap and rollback."""
-    await _collisions(rename_pg)
-    await _round_trip(rename_pg)
+async def test_the_rollback_is_the_frozen_schema_pg(integ_rollback_conn: Conn) -> None:
+    """On PostgreSQL, the rollback of the build is the frozen pre-cutover schema."""
+    await _rollback_is_frozen(integ_rollback_conn)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_cutover_upgrades_the_old_rows_pglite(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """PGLite preserves old rows and reaches the complete named catalog."""
+    await _upgrade_old_rows(pglite_rollback_conn)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_cutover_upgrades_the_old_rows_pg(integ_rollback_conn: Conn) -> None:
+    """PostgreSQL preserves the same rows and reaches the same catalog."""
+    await _upgrade_old_rows(integ_rollback_conn)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_rollback_restores_the_old_rows_pglite(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """PGLite rolls back old rows exactly and upgrades again."""
+    await _rollback_restores(pglite_rollback_conn)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_rollback_restores_the_old_rows_pg(integ_rollback_conn: Conn) -> None:
+    """PostgreSQL rolls back old rows exactly and upgrades again."""
+    await _rollback_restores(integ_rollback_conn)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_rollback_keeps_what_the_new_writer_wrote_pglite(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """PGLite keeps a canvas made after the upgrade through a rollback."""
+    await _rollback_keeps_new_rows(pglite_rollback_conn)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_rollback_keeps_what_the_new_writer_wrote_pg(
+    integ_rollback_conn: Conn,
+) -> None:
+    """PostgreSQL keeps a canvas made after the upgrade through a rollback."""
+    await _rollback_keeps_new_rows(integ_rollback_conn)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("collision", _COLLISIONS)
+async def test_a_collision_refuses_the_cutover_pglite(
+    pglite_rollback_conn: Conn,
+    collision: str,
+) -> None:
+    """On PGlite, an owned target refuses the cutover without partial writes or DDL."""
+    await _collision_refuses(pglite_rollback_conn, collision)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("collision", _COLLISIONS)
+async def test_a_collision_refuses_the_cutover_pg(
+    integ_rollback_conn: Conn,
+    collision: str,
+) -> None:
+    """On PostgreSQL, an owned target refuses the cutover without writes or DDL."""
+    await _collision_refuses(integ_rollback_conn, collision)
 
 
 def test_canvas_cutover_ships_up_and_keeps_down_out_of_bootstrap() -> None:

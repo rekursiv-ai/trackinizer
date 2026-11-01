@@ -2681,14 +2681,14 @@ def _fake_visual_catalog(request: Request) -> Canvas:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_new_canvas_in_a_chosen_workspace_opens_no_default(
     monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     calls: list[tuple[str, object]] = []
     default_id, chosen_id = uuid.uuid4(), uuid.uuid4()
-    store = Store(pglite_engine, embed=StubEmbedder())
+    store = Store(pglite_db, embed=StubEmbedder())
     _patch_canvas_route_dependencies(
         monkeypatch,
-        engine=pglite_engine,
+        engine=pglite_db,
         store=store,
     )
     state = CanvasState(
@@ -2734,14 +2734,14 @@ async def test_new_canvas_in_a_chosen_workspace_opens_no_default(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_new_canvas_defaults_to_the_default_workspace(
     monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
     calls: list[tuple[str, object]] = []
     default_id = uuid.uuid4()
-    store = Store(pglite_engine, embed=StubEmbedder())
+    store = Store(pglite_db, embed=StubEmbedder())
     _patch_canvas_route_dependencies(
         monkeypatch,
-        engine=pglite_engine,
+        engine=pglite_db,
         store=store,
     )
 
@@ -2827,12 +2827,12 @@ async def _default_titles(store: Store) -> list[tuple[str, str]]:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_moving_a_canvas_to_an_unknown_workspace_is_not_found(
     monkeypatch: pytest.MonkeyPatch,
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
 ) -> None:
-    store = Store(pglite_engine, embed=StubEmbedder())
+    store = Store(pglite_db, embed=StubEmbedder())
     _patch_canvas_route_dependencies(
         monkeypatch,
-        engine=pglite_engine,
+        engine=pglite_db,
         store=store,
     )
 

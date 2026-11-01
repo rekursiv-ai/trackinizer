@@ -16,14 +16,11 @@ import hashlib
 from treekle import from_plain
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine
 from trackinizer.lib import zstd_compat
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.audience import NOBODY, SessionReader
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store import code_store
 from trackinizer.server.store.code_store import (
     MissingBlobsError,
@@ -40,7 +37,6 @@ from trackinizer.server.store.code_store import (
     read_file,
     read_snapshot,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
 from trackinizer.wire.wire_code import (
@@ -297,12 +293,10 @@ def test_a_blob_is_its_texts_utf8_under_its_hash() -> None:
         assert str(refused.value) == problem
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def engine(pglite_engine: PGliteEngine) -> PGliteEngine:
+@pytest.fixture
+def engine(pglite_db: PGliteEngine) -> PGliteEngine:
     """Return the session's PGlite engine over a freshly bootstrapped schema."""
-    await reset_schema(pglite_engine)
-    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
-    return pglite_engine
+    return pglite_db
 
 
 @pytest.mark.db_pglite
