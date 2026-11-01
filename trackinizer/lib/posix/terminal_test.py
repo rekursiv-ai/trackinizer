@@ -269,6 +269,32 @@ class TestPlainLineSubmit:
 class TestSubmit:
     """Typing into a child's TUI."""
 
+    def test_a_raw_mode_child_reads_the_paste_and_enter_exactly(self) -> None:
+        child = (
+            "import os,tty\n"
+            "tty.setraw(0)\n"
+            "os.write(1, b'READY\\n')\n"
+            "received = b''\n"
+            "while not received.endswith(b'\\r'):\n"
+            "    received += os.read(0, 1)\n"
+            "os.write(1, received)\n"
+        )
+
+        async def run() -> bytes:
+            async with Terminal(
+                [sys.executable, "-u", "-c", child],
+                enter_delay_sec=0.0,
+            ) as term:
+                assert await _read_until(term, b"READY\n", 5.0) == b"READY\n"
+                assert await term.submit("/goal ship it")
+                seen = b"".join([chunk async for chunk in term.output()])
+                assert await term.wait() == 0
+                return seen
+
+        assert asyncio.run(asyncio.wait_for(run(), timeout=5.0)) == (
+            b"\x1b[200~/goal ship it\x1b[201~\r"
+        )
+
     def test_submit_wraps_in_bracketed_paste(self) -> None:
         """A submitted line arrives as one atomic paste, then a separate Enter.
 
