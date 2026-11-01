@@ -24,6 +24,11 @@ from treekle import from_plain
 from trackinizer.server.audience import visible_sql
 from trackinizer.server.values import vetted_sql
 from trackinizer.server.visuals.partners import live_run_states
+from trackinizer.server.visuals.session_lines import (
+    LastLine,
+    SessionLines,
+    session_lines,
+)
 from trackinizer.wire.wire_science_chat import chat_conversation_id
 from trackinizer.wire.wire_sessions import CANVAS_LABEL_PREFIX, RunState
 
@@ -43,19 +48,6 @@ MAX_SESSIONS: Final = 500
 
 MAX_DAYS: Final = 365
 """The widest window of activity one read looks back over."""
-
-LINE_CHARS: Final = 200
-"""The most characters of a first line, a last line or a goal a read carries."""
-
-
-class LastLine(BaseModel):
-    """The last line said in a session, a person's or the agent's, on one line."""
-
-    author: str | None
-    """The person who said it: the one Chat delivered it from, else the session's
-    account, who typed it in its CLI; None for the agent's answer."""
-
-    text: str
 
 
 class ListedSession(BaseModel):
@@ -162,7 +154,7 @@ async def list_own_sessions(
         )
         rows = found[:limit]
         ids = [from_plain(row["id"], uuid.UUID) for row in rows]
-        lines = await _lines(conn, session_ids=ids, account=email)
+        lines = await session_lines(conn, session_ids=ids, account=email)
         places = await _places(conn, user_id=user_id)
         produced = await _produced_by(conn, session_ids=ids)
         issues = await _issues(
@@ -174,7 +166,7 @@ async def list_own_sessions(
         sessions=[
             _listed(
                 row,
-                lines=lines.get(session_id, _Lines()),
+                lines=lines.get(session_id, SessionLines()),
                 places=places,
                 produced_by=produced.get(session_id, []),
                 inbound=inbound,
@@ -185,15 +177,6 @@ async def list_own_sessions(
         issues=issues,
         more=len(found) > limit,
     )
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _Lines:
-    """What a session's records say of it: its goal, its first person's line, its last."""
-
-    goal: str | None = None
-    first_line: str | None = None
-    last_line: LastLine | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -242,115 +225,6 @@ async def _recent(
         vetted_sql(_RECENT, visible, " ORDER BY active DESC, s.id DESC LIMIT $3"),
         *params,
     )
-
-
-# A CLI writes user turns no person typed, the ones ``client/conversation.py`` calls
-# its harness's; the first line and the last pass over them, and the last over a turn
-# with no words, as an answer that only called tools.
-# The goal is the condition claude's ``goal_status`` attachment names, or the objective
-# codex's ``thread_goal_updated`` event names: the fields the agent runner normalises.
-# Audience: gated -- reads only the sessions ``_RECENT`` kept for the caller.
-_LINES: Final = (
-    "SELECT s.id, person.content, person.room, person.source, goal.text AS goal, "
-    "last.kind AS last_kind, last.content AS last_content, last.sender AS last_sender, "
-    "last.room AS last_room, last.source AS last_source "
-    "FROM unnest($1::uuid[]) AS s(id) LEFT JOIN LATERAL ("
-    "SELECT r.kind, r.payload->>'content' AS content, "
-    "r.payload->'extra'->'$inbound'->>'room' AS room, "
-    "r.payload->'extra'->'$inbound'->>'source' AS source "
-    "FROM session_records AS r "
-    "JOIN session_manifests AS m ON m.session_id = r.session_id AND m.part = r.part "
-    "WHERE r.session_id = s.id AND r.idx < m.records "
-    "AND r.kind IN ('UserMessage', 'AgentToAgentMessage') "
-    "AND r.text ~ '\\S' AND r.text !~ "
-    "'^\\s*(<|# AGENTS\\.md instructions|Caveat: The messages below were generated)' "
-    "ORDER BY r.part, r.idx LIMIT 1) AS person ON TRUE LEFT JOIN LATERAL ("
-    "SELECT said.text FROM session_records AS r "
-    "JOIN session_manifests AS m ON m.session_id = r.session_id AND m.part = r.part "
-    "CROSS JOIN LATERAL (SELECT coalesce("
-    "nullif(r.payload->'extra'->'attachment'->>'condition', ''), "
-    "nullif(r.payload->'payload'->'goal'->>'objective', '')) AS text) AS said "
-    "WHERE r.session_id = s.id AND r.idx < m.records AND said.text IS NOT NULL "
-    "AND ((r.kind = 'ContextState' AND r.payload->>'kind' = 'goal_status') "
-    "OR (r.kind = 'UncategorizedRecord' "
-    "AND r.payload->>'kind' = 'event_msg/thread_goal_updated')) "
-    "ORDER BY r.part DESC, r.idx DESC LIMIT 1) AS goal ON TRUE LEFT JOIN LATERAL ("
-    "SELECT r.kind, r.payload->>'content' AS content, r.payload->>'sender' AS sender, "
-    "r.payload->'extra'->'$inbound'->>'room' AS room, "
-    "r.payload->'extra'->'$inbound'->>'source' AS source "
-    "FROM session_records AS r "
-    "JOIN session_manifests AS m ON m.session_id = r.session_id AND m.part = r.part "
-    "WHERE r.session_id = s.id AND r.idx < m.records "
-    "AND r.kind IN ('UserMessage', 'AgentToAgentMessage', 'AssistantMessage') "
-    "AND r.text ~ '\\S' AND (r.kind = 'AssistantMessage' OR r.text !~ "
-    "'^\\s*(<|# AGENTS\\.md instructions|Caveat: The messages below were generated)') "
-    "ORDER BY r.part DESC, r.idx DESC LIMIT 1) AS last ON TRUE"
-)
-
-
-# Audience: gated -- reads only the sessions ``_RECENT`` kept for the caller.
-# ``account`` is the sessions' own, who typed in their CLIs whatever no one delivered
-# from Chat.
-async def _lines(
-    conn: Conn,
-    *,
-    session_ids: Sequence[uuid.UUID],
-    account: str,
-) -> dict[uuid.UUID, _Lines]:
-    """Read each session's goal, the first line a person wrote in it, and its last."""
-    rows = await conn.fetch(_LINES, list(session_ids))
-    return {
-        from_plain(row["id"], uuid.UUID): _Lines(
-            goal=_line(from_plain(row["goal"], str, default="")),
-            first_line=_line(_delivered(row, prefix="")),
-            last_line=_last_line(row, account=account),
-        )
-        for row in rows
-    }
-
-
-def _last_line(row: Record, *, account: str) -> LastLine | None:
-    """Return the session's last line, on one line and cut short, and who said it."""
-    kind = from_plain(row["last_kind"], str, default="")
-    if not kind:
-        return None
-    if kind == "AssistantMessage":
-        author = None
-        said = from_plain(row["last_content"], str, default="")
-    else:
-        author = (
-            from_plain(row["last_sender"], str, default="")
-            or from_plain(row["last_source"], str, default="")
-            or account
-        )
-        said = _delivered(row, prefix="last_")
-    return LastLine(author=author, text=" ".join(said.split())[:LINE_CHARS])
-
-
-# A line Chat delivered reads ``[room] sender: words``, then a trailer of context the
-# agent verifies: what ``client/conversation.py::delivered_text`` takes off too.
-# ``prefix`` names the line's columns: ``""`` for the first line's, ``last_`` for the
-# last line's.
-def _delivered(row: Record, *, prefix: str) -> str:
-    """Return what a person wrote, unwrapped from how the agent runner delivered it."""
-    room = from_plain(row[f"{prefix}room"], str, default="")
-    source = from_plain(row[f"{prefix}source"], str, default="")
-    return (
-        from_plain(row[f"{prefix}content"], str, default="")
-        .removeprefix(f"[{room}] " if room else "")
-        .removeprefix(f"{source}: " if source else "")
-        .split(_TRAILER, 1)[0]
-    )
-
-
-_TRAILER: Final = "\nTrackinizer context (verify with trax): "
-"""Where a delivered line's context trailer begins (``client/conversation.py``)."""
-
-
-def _line(text: str) -> str | None:
-    """Return the first line of ``text`` with words, cut short; None for none."""
-    first = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    return first[:LINE_CHARS] or None
 
 
 async def _places(conn: Conn, *, user_id: uuid.UUID) -> _Places:
@@ -427,7 +301,7 @@ def _issue(row: Record) -> ListedIssue:
 def _listed(
     row: Record,
     *,
-    lines: _Lines,
+    lines: SessionLines,
     places: _Places,
     produced_by: list[uuid.UUID],
     inbound: InboundQueue,

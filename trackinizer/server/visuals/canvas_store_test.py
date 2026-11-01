@@ -16,7 +16,7 @@ from treekle import from_plain, immutable, json_loads
 import pytest
 import pytest_asyncio
 
-from trackinizer.conftest import FakeEngine, executed_sql, make_conn
+from trackinizer.conftest import FakeEngine, executed_sql, make_conn, set_field_row
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -857,7 +857,9 @@ def test_open_latest_makes_a_canvas_in_the_default_when_all_others_are_hidden() 
         "pinned": False,
         "workspace_id": str(_DEFAULT_WORKSPACE),
     }
-    default.assert_awaited_once()
+    default.assert_awaited_once_with(engine, store=ANY, user_id=_USER, email=_EMAIL)
+    assert default.await_args is not None
+    assert isinstance(default.await_args.kwargs["store"], Store)
 
 
 @pytest.mark.db_pglite
@@ -2028,6 +2030,42 @@ def _scripted(
     conn.fetchrow.side_effect = fetchrow
     conn.fetch.side_effect = fetch
     return FakeEngine(conn), asked
+
+
+@pytest.mark.parametrize(
+    ("inserted", "workspace_id", "shown"),
+    [
+        (_ROW, _DEFAULT_WORKSPACE, True),
+        (None, _DEFAULT_WORKSPACE, False),
+        (_ROW, None, False),
+    ],
+    ids=["lands", "name-taken", "no-workspace"],
+)
+def test_a_canvas_that_lands_in_a_workspace_shows_it(
+    inserted: dict[str, object] | None,
+    workspace_id: uuid.UUID | None,
+    shown: bool,
+) -> None:
+    """A workspace its owner hid shows again when a canvas lands in it, and only then."""
+    conn: AsyncMock = make_conn()
+    set_field_row(conn, inserted)
+    show = AsyncMock()
+
+    with patch.object(canvas_store, "show_workspace", show):
+        row = asyncio.run(
+            canvas_store._insert_canvas(
+                cast("Conn", conn),
+                user_id=_USER,
+                name="unnamed-canvas#1",
+                data=CanvasData(visuals=[]),
+                workspace_id=workspace_id,
+            ),
+        )
+
+    assert row == inserted
+    assert show.await_args_list == (
+        [call(conn, user_id=_USER, workspace_id=workspace_id)] if shown else []
+    )
 
 
 def test_the_canvas_changed_last_is_read_and_nothing_is_written() -> None:

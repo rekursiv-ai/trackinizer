@@ -263,8 +263,8 @@ async def read_chat_route(
     Args:
       conversation_id: The conversation.
       request: Request carrying the database engine.
-      identity: The signed-in user; the head of every chat of the assistant is found
-        for every user, and of a chat of a user's own helper for that user. Its
+      identity: The signed-in user; the head of every chat is found for every user,
+        whether the assistant or a run under its starter's own key opened it. Its
         transcript is read by the chat's members alone.
 
     Returns:

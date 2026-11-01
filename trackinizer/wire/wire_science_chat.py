@@ -493,6 +493,17 @@ class ChatHead(BaseModel):
     conversation_id: uuid.UUID
     session_id: uuid.UUID
     title: str
+    cli: str | None
+    """The CLI the session says it runs, which a title its start minted names."""
+
+    goal: str | None
+    """The goal its CLI last reported, as its starter's session list reads it; None
+    for a caller who does not read the chat."""
+
+    first_line: str | None
+    """The first line a person wrote in it, as its starter's session list reads it;
+    None for a caller who does not read the chat."""
+
     account: str
     live: bool
     """Whether the assistant still has the session open."""

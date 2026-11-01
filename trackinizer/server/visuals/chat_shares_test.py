@@ -361,6 +361,7 @@ async def _found(
         session_id=_SESSIONS[0],
         cli_session_id=chat_session_id(_CHAT),
         title="tails",
+        cli="sagent",
         account=_ADA,
         modified=datetime(2026, 1, 1, tzinfo=UTC),
         live=True,

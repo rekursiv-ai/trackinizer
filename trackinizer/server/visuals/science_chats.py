@@ -1,12 +1,12 @@
 """Reading science chats: the sessions of a partner that carry a conversation.
 
-A science chat is an AgentSession the assistant account opened, whose
-``cli_session_id`` is ``chat:<conversation id>`` and whose labels hold
-``science-chat``, and ``poster:<email>`` for each person who posted. Nothing here
-writes: the partner records lines, and these reads find a chat for a conversation id
-(a link, or a line just posted), who it is shared with, what the reader may do to it,
-and which of its records a fork of it copies. A session carrying the same id under
-another account's key is not a chat.
+A science chat is an AgentSession the assistant account opened, or a claude or codex
+run under its own account's key, whose ``cli_session_id`` is ``chat:<conversation
+id>`` and whose labels hold ``science-chat``, and ``poster:<email>`` for each person
+who posted. Nothing here writes: the partner records lines, and these reads find a
+chat for a conversation id (a link, or a line just posted), who it is shared with,
+what the reader may do to it, and which of its records a fork of it copies. A session
+carrying the same id under another account's key is not a chat.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from trackinizer.server.visuals.chat_forks import (
     may_continue,
     may_share,
 )
+from trackinizer.server.visuals.session_lines import SessionLines, session_lines
 from trackinizer.types.errors import ChatDeletedError
 from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_science_chat import (
@@ -60,7 +61,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "Conversation",
-    "chat_openers",
     "chat_readers",
     "conversation_of_session",
     "counts_in_chat",
@@ -79,11 +79,14 @@ __all__ = [
 
 # A conversation holds one session per assistant key that has spoken in it: a rotated
 # key opens a new one, since a session is resumed only by the key that opened it. The
-# reads name a conversation by its live session, else its newest.
+# reads name a conversation by its live session, else its newest. A chat session is one
+# the assistant ($1) opened or its own account's key did, the rule that begins a chat
+# (``chat_beginnings_sql``), whoever reads it: a claude or codex run opens its chat
+# under its person's key, and a canvas view lets in readers who are not that person.
 _CHAT: Final = (
     "WITH chat AS (SELECT sess.id AS session_id, "
     "sess.agentsession_cli_session_id AS cli_session_id, "
-    "sess.agentsession_audience AS audience, "
+    "sess.agentsession_audience AS audience, sess.agentsession_cli AS cli, "
     "sess.title, sess.account, sess.labels, sess.created, "
     "sess.agentsession_opened_by_api_key_id AS opener_key, "
     "credential.user_id AS opener_id, opener.email AS opener_email, "
@@ -95,7 +98,8 @@ _CHAT: Final = (
     "ON credential.id = sess.agentsession_opened_by_api_key_id "
     "JOIN users AS opener ON opener.id = credential.user_id "
     "LEFT JOIN session_liveness AS liveness ON liveness.session_id = sess.id "
-    "WHERE sess.kind = 'AgentSession' AND opener.email = ANY($1::text[]) "
+    "WHERE sess.kind = 'AgentSession' AND (opener.email = $1::text "
+    "OR lower(opener.email) = lower(sess.account)) "
     "AND sess.agentsession_cli_session_id LIKE 'chat:%' AND $2 = ANY(sess.labels)) "
 )
 
@@ -124,7 +128,7 @@ _HEAD: Final = (
     "ON credential.id = sess.agentsession_opened_by_api_key_id "
     "LEFT JOIN users AS opener ON opener.id = credential.user_id "
     "WHERE sess.kind = 'AgentSession' AND sess.agentsession_cli_session_id = $3) "
-    "SELECT head.session_id, head.cli_session_id, head.title, "
+    "SELECT head.session_id, head.cli_session_id, head.title, head.cli, "
     "head.modified, head.live, head.audience, "
     "ARRAY(SELECT taken.id FROM taken ORDER BY taken.id) AS sessions, "
     "(SELECT bool_and(taken.by_caller) FROM taken) AS opened, "
@@ -161,8 +165,7 @@ _FIRST_SESSION: Final = vetted_sql(
 # an edge's labels, so the edge as it stands proves nothing; the audit names the key
 # that added it and the labels it was added with. Both ends must be science chats an
 # allowed key opened. A fork is counted once however many of its conversation's
-# sessions hold the edge. A viewer sees the forks served by the sessions they may find:
-# the assistant's and their own.
+# sessions hold the edge.
 _FORK_EDGES: Final = (
     ", fork_edge AS (SELECT link.from_id, link.to_id, MIN(audit.created) AS added "
     "FROM edges AS link "
@@ -198,6 +201,7 @@ class Conversation(BaseModel):
 
     cli_session_id: str
     title: str
+    cli: str | None
     account: str
     """Who started the conversation, as :func:`read_starter` finds them."""
 
@@ -231,8 +235,7 @@ async def read_head(
     Args:
       engine: Database connection source.
       assistant: The configured assistant, if any.
-      caller: The person asking; their own chats are found too, and what they may do
-        to the chat is said for them.
+      caller: The person asking; what they may do to the chat is said for them.
       conversation_id: The conversation.
       reader: The caller, as the transcript test reads them, which says whether they
         read the chat.
@@ -241,13 +244,14 @@ async def read_head(
       head: The conversation's live session, else its newest, with its starter, how
         often it was forked, what it was forked from, its audience, who it is shared
         with, and whether the caller reads it, may post into, hide, share or delete
-        it; None until its partner has opened it.
+        it; for a caller who reads it, its goal and first line, which name it as its
+        starter's session list does; None until its partner has opened it.
 
     Raises:
       ChatDeletedError: The conversation was deleted.
 
     """
-    openers = chat_openers(assistant, email=caller.email)
+    named = None if assistant is None else assistant.email
     async with engine.acquire() as conn:
         found = await read_conversation(
             conn,
@@ -261,20 +265,32 @@ async def read_head(
             return None
         forks = await conn.fetchval(
             _CHAT + _FORK_EDGES + _FORKS,
-            openers,
+            named,
             SCIENCE_CHAT_LABEL,
             FORK_EDGE_LABEL,
             found.cli_session_id,
         )
         origin = await conn.fetchval(
             _CHAT + _FORK_EDGES + _FORKED_FROM,
-            openers,
+            named,
             SCIENCE_CHAT_LABEL,
             FORK_EDGE_LABEL,
             found.session_id,
         )
         shares = await read_shares(conn, conversation_id=conversation_id)
         reads = await reads_session(conn, reader=reader, session_id=found.session_id)
+        # Audience: gated -- the chat's words go only to a caller who reads it.
+        said = (
+            (
+                await session_lines(
+                    conn,
+                    session_ids=[found.session_id],
+                    account=found.account,
+                )
+            )[found.session_id]
+            if reads
+            else SessionLines()
+        )
     admin = caller.role == "admin"
     sharer = may_share(caller.email, starter=found.account, admin=admin, shared=True)
     unsharer = may_share(caller.email, starter=found.account, admin=admin, shared=False)
@@ -282,6 +298,9 @@ async def read_head(
         conversation_id=conversation_id,
         session_id=found.session_id,
         title=found.title,
+        cli=found.cli,
+        goal=said.goal,
+        first_line=said.first_line,
         account=found.account,
         live=found.live,
         forks=from_plain(forks, int, default=0),
@@ -325,7 +344,7 @@ async def read_conversation(
     Args:
       conn: A database connection.
       assistant: The configured assistant, if any.
-      caller: The person asking; their own chats are found too.
+      caller: The person asking, whose key and audiences say what they did to it.
       conversation_id: The conversation.
 
     Returns:
@@ -341,7 +360,7 @@ async def read_conversation(
         return None
     row = await conn.fetchrow(
         _CHAT + _HEAD,
-        chat_openers(assistant, email=caller.email),
+        None if assistant is None else assistant.email,
         SCIENCE_CHAT_LABEL,
         chat_session_id(conversation_id),
         caller.api_key_id,
@@ -686,7 +705,6 @@ async def science_chat_exists_at(
     conn: Conn,
     *,
     assistant: Assistant | None,
-    email: str,
     fork: ChatForkAt,
     reader: SessionReader,
 ) -> bool:
@@ -703,7 +721,6 @@ async def science_chat_exists_at(
     Args:
       conn: A database connection.
       assistant: The configured assistant, if any.
-      email: The person asking; their own chats are found too.
       fork: The session, part and position.
       reader: The person, as the transcript test reads them.
 
@@ -713,7 +730,7 @@ async def science_chat_exists_at(
 
     """
     params: list[object] = [
-        chat_openers(assistant, email=email),
+        None if assistant is None else assistant.email,
         SCIENCE_CHAT_LABEL,
         fork.session_id,
         fork.part,
@@ -784,20 +801,6 @@ async def read_fork_prefixes(conn: Conn, *, fork: ChatForkAt) -> list[PartPrefix
         ],
         fork=fork,
     )
-
-
-def chat_openers(assistant: Assistant | None, *, email: str) -> list[str]:
-    """Name the accounts whose chats a person may find: the assistant's and their own.
-
-    Args:
-      assistant: The configured assistant, if any.
-      email: The person.
-
-    Returns:
-      emails: The accounts a science chat's session may have been opened by.
-
-    """
-    return [email] if assistant is None else [assistant.email, email]
 
 
 def _fork_prefixes(

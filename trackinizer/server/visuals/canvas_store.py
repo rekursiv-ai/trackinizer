@@ -826,16 +826,15 @@ async def open_latest_canvas(
     )
     async with engine.acquire() as conn:
         row = await conn.fetchrow(latest, user_id)
-    workspace_id = None
     if row is None:
+        # Opened before the connection below is taken: it acquires its own.
         workspace_id = await open_default_workspace(
             engine,
             store=store,
             user_id=user_id,
             email=email,
         )
-    async with engine.acquire() as conn:
-        if row is None:
+        async with engine.acquire() as conn:
             names = await conn.fetch(
                 "SELECT metadata->>'name' AS name FROM visual_canvases "
                 "WHERE user_id = $1 AND metadata->>'name' LIKE $2",
@@ -857,6 +856,7 @@ async def open_latest_canvas(
                     workspace_id=workspace_id,
                 )
                 row = await conn.fetchrow(latest, user_id)
+    async with engine.acquire() as conn:
         if row is None:
             raise RuntimeError("first canvas insert was not visible")
         return await attach_partner(
@@ -2994,7 +2994,6 @@ async def _check_fork_or_membership(
     if body.fork is not None and not await science_chat_exists_at(
         conn,
         assistant=assistant,
-        email=email,
         fork=body.fork,
         reader=reader,
     ):

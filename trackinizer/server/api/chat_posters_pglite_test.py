@@ -204,7 +204,8 @@ async def test_the_head_says_who_posts(
 ) -> None:
     """The browser forks a reader's typing where the head says they do not post.
 
-    A chat its starter's own key opened, as a CLI's is, is found for them alone.
+    A chat its starter's own key opened, as a CLI's is, is found for every reader, as
+    the assistant's is: a view of its canvas lets them in.
     """
     client, store = pglite_route_client
     chat = await _ann_chat(client, store=store, provider=provider)
@@ -220,11 +221,10 @@ async def test_the_head_says_who_posts(
             head.get("forks_on_typing"),
         )
 
-    unfound = (404, None, None)
     assert heads == {
         ANN: (200, True, False),
-        BEA: (200, True, False) if provider == "assistant" else unfound,
-        CAL: (200, False, False) if provider == "assistant" else unfound,
+        BEA: (200, True, False),
+        CAL: (200, False, False),
     }
 
 
@@ -282,42 +282,28 @@ async def test_a_console_relay_reaches_the_chat_from_its_shares_alone(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("provider", _PROVIDERS)
 async def test_a_reader_forks_the_chat_into_a_conversation_of_their_own(
     pglite_route_client: _Client,
+    provider: str,
 ) -> None:
-    """Cal's line opens a copy of Ann's chat on a new canvas; Ann's chat hears none."""
+    """Cal's line opens a copy of Ann's chat on a new canvas; Ann's chat hears none.
+
+    A CLI's fork opens its session at once, under Cal's own key, for his own run.
+    """
     client, store = pglite_route_client
-    chat = await _ann_chat(client, store=store, provider="assistant")
+    chat = await _ann_chat(client, store=store, provider=provider)
     key = uuid.uuid4()
 
     forked = await _fork(client, chat=chat, key=key)
 
     assert forked.status_code == 200, forked.text
     sent = ChatSent.model_validate_json(forked.content)
-    assert (sent.conversation_id, sent.session_id) == (key, None)
+    assert sent.conversation_id == key
+    assert (sent.session_id is None) == (provider == "assistant")
     assert sent.canvas_id not in chat.canvases.values()
     assert _queued(chat.session) == []
-    assert _queued(chat.service) == [(CAL, "line")]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.parametrize("provider", ["claude", "codex"])
-async def test_a_reader_finds_no_line_to_fork_in_a_cli_chat(
-    pglite_route_client: _Client,
-    provider: str,
-) -> None:
-    """A chat its starter's own key opened is found for its starter alone."""
-    client, store = pglite_route_client
-    chat = await _ann_chat(client, store=store, provider=provider)
-
-    forked = await _fork(client, chat=chat, key=uuid.uuid4())
-
-    assert (forked.status_code, forked.json()) == (
-        422,
-        {"detail": "The fork point is not a line of a science chat"},
-    )
-    assert (_queued(chat.session), _queued(chat.service)) == ([], [])
+    assert _queued(chat.service) == ([(CAL, "line")] if provider == "assistant" else [])
 
 
 @pytest.mark.db_pglite

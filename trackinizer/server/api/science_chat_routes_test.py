@@ -26,11 +26,11 @@ from trackinizer.server.api.canvas_test_support import (
     KB_ACTOR,
     KB_EMAIL,
     KB_USER_ID,
+    OTHER_AGENT,
     OTHER_EMAIL,
     OTHER_USER_ID,
     USER_AGENT,
     act_as_assistant,
-    act_as_other_agent,
     act_as_user_agent,
     browser,
     canvas_revision,
@@ -492,27 +492,32 @@ async def test_a_conversation_is_found_by_its_id_once_the_assistant_opened_it(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_session_that_only_carries_the_id_is_not_the_conversation(
+async def test_a_session_under_the_id_begins_its_own_accounts_chat_alone(
     pglite_route_client: _Client,
 ) -> None:
-    """Another account's session under `chat:<id>` is nobody's chat."""
+    """A key's session under `chat:<id>` begins its account's chat, as a CLI's does.
+
+    One it opened in another account's name begins no chat, so nobody finds it.
+    """
     client, store = pglite_route_client
     await seed_accounts(store)
-    conversation = uuid.uuid4()
-    act_as_other_agent("writer")
-    squatter = await start_unpolled(
-        client,
-        actor="squat",
-        cli_session_id=chat_session_id(conversation),
-    )
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE inquiries SET labels = ARRAY['science-chat'] WHERE id = $1",
-            squatter,
+    own, another = uuid.uuid4(), uuid.uuid4()
+    for conversation, account in ((own, OTHER_EMAIL), (another, TEST_USER_EMAIL)):
+        await seed_session(
+            store,
+            OTHER_AGENT,
+            actor=f"squat-{conversation.hex[:6]}",
+            cli_session_id=chat_session_id(conversation),
+            account=account,
+            labels=[SCIENCE_CHAT_LABEL],
+            polled=False,
         )
     browser()
 
-    assert (await client.get(f"/api/chats/{conversation}")).status_code == 404
+    found = await client.get(f"/api/chats/{own}")
+    assert found.status_code == 200, found.text
+    assert json_loads(found.content, dict[str, object])["account"] == OTHER_EMAIL
+    assert (await client.get(f"/api/chats/{another}")).status_code == 404
 
 
 @pytest.mark.db_pglite

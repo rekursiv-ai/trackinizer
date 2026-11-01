@@ -1078,10 +1078,10 @@ async def test_a_session_a_writers_own_key_opens_under_a_chats_id_gives_them_not
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_strangers_session_under_a_helper_chats_id_neither_finds_nor_keeps_it(
+async def test_a_strangers_session_under_a_helper_chats_id_neither_deletes_nor_keeps_it(
     pglite_route_client: _Client,
 ) -> None:
-    """Only its starter finds a helper's chat; a stranger's session goes with it."""
+    """Only its starter deletes a helper's chat; a stranger's session goes with it."""
     client, store = pglite_route_client
     await seed_accounts(store)
     conversation = uuid.uuid4()
@@ -1103,7 +1103,7 @@ async def test_a_strangers_session_under_a_helper_chats_id_neither_finds_nor_kee
     browser()
     by_starter = await client.delete(f"/api/chats/{conversation}")
 
-    assert (by_browser.status_code, by_key.status_code, kept) == (404, 404, 2)
+    assert (_code(by_browser), by_key.status_code, kept) == ("chat_not_starter", 403, 2)
     assert by_starter.status_code == 204
     assert await _sessions_under(store, conversation) == 0
 

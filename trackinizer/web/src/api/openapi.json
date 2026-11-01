@@ -2383,10 +2383,32 @@
             "title": "Audience",
             "type": "string"
           },
+          "cli": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cli"
+          },
           "conversation_id": {
             "format": "uuid",
             "title": "Conversation Id",
             "type": "string"
+          },
+          "first_line": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Line"
           },
           "forked_from": {
             "anyOf": [
@@ -2407,6 +2429,17 @@
           "forks_on_typing": {
             "title": "Forks On Typing",
             "type": "boolean"
+          },
+          "goal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Goal"
           },
           "live": {
             "title": "Live",
@@ -2449,6 +2482,9 @@
           "conversation_id",
           "session_id",
           "title",
+          "cli",
+          "goal",
+          "first_line",
           "account",
           "live",
           "forks",
@@ -17020,7 +17056,7 @@
         "summary": "Delete Chat Route"
       },
       "get": {
-        "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nA chat that was deleted is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; the head of every chat of the assistant is found\n    for every user, and of a chat of a user's own helper for that user. Its\n    transcript is read by the chat's members alone.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, its audience, whether the\n    caller does not read it, who it is shared with, and whether the caller may\n    hide, share or delete it.",
+        "description": "Find a conversation's session; 404 until the assistant has opened it.\n\nA chat that was deleted is 410 ``chat_deleted``.\n\nArgs:\n  conversation_id: The conversation.\n  request: Request carrying the database engine.\n  identity: The signed-in user; the head of every chat is found for every user,\n    whether the assistant or a run under its starter's own key opened it. Its\n    transcript is read by the chat's members alone.\n\nReturns:\n  head: The session, its starter, whether the assistant still has it open, how\n    often it was forked, what it was forked from, its audience, whether the\n    caller does not read it, who it is shared with, and whether the caller may\n    hide, share or delete it.",
         "operationId": "read_chat_route_api_chats__conversation_id__get",
         "parameters": [
           {
