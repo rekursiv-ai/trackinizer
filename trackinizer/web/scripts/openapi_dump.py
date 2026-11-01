@@ -54,8 +54,6 @@ else:
     # The module, not its attributes: an attribute proxy of a tuple cannot be
     # iterated, while an attribute read through a module proxy is the real value.
     app = lazy_import("trackinizer.server.api.app")
-
-
 _CWD: Final = Path(__file__).resolve().parent
 
 OPENAPI_JSON: Final = _CWD.parent / "src" / "api" / "openapi.json"
@@ -86,7 +84,8 @@ def main() -> int:
         if flags.url
         else from_plain(web_app_schema(), dict[str, MutablePlainTree])
     )
-    text = render(core_schema(schema))
+    left_out = frozenset[tuple[str, str]]()
+    text = render(core_schema(schema, left_out=left_out))
     if flags.output == "-":
         sys.stdout.write(text)
     else:
@@ -118,7 +117,11 @@ def web_app_schema() -> Mapping[str, object]:
     return served.openapi()
 
 
-def core_schema(schema: Mapping[str, MutablePlainTree]) -> dict[str, MutablePlainTree]:
+def core_schema(
+    schema: Mapping[str, MutablePlainTree],
+    *,
+    left_out: frozenset[tuple[str, str]] = frozenset(),
+) -> dict[str, MutablePlainTree]:
     """Return ``schema`` without its addon routes and the components only they use.
 
     A component an addon route uses stays when anything else uses it too, and one
@@ -126,26 +129,40 @@ def core_schema(schema: Mapping[str, MutablePlainTree]) -> dict[str, MutablePlai
 
     Args:
       schema: An OpenAPI document, as ``GET /openapi.json`` returns it.
+      left_out: The ``(path, method)`` of more operations to leave out as an addon's
+        are: those the server serves that the web app is not typed against.
 
     Returns:
       core: The document the web app is typed against.
 
     """
     paths = _object(schema.get("paths"))
-    addon = {path: op for path, op in paths.items() if path.startswith(ADDON_ROUTES)}
-    kept_paths: dict[str, MutablePlainTree] = {
-        path: op for path, op in paths.items() if path not in addon
+    gone: dict[str, MutablePlainTree] = {
+        path: op for path, op in paths.items() if path.startswith(ADDON_ROUTES)
     }
+    kept_paths: dict[str, MutablePlainTree] = {}
+    for path, item in paths.items():
+        if path in gone:
+            continue
+        operations = _object(item)
+        taken = {m: op for m, op in operations.items() if (path, m) in left_out}
+        if not taken:
+            kept_paths[path] = item
+            continue
+        gone[path] = taken
+        rest = {m: op for m, op in operations.items() if (path, m) not in left_out}
+        if rest:
+            kept_paths[path] = rest
     core: dict[str, MutablePlainTree] = {**schema, "paths": kept_paths}
     if "components" not in schema:
         return core
     components = _object(schema.get("components"))
     named = _object(components.get("schemas"))
-    by_addons = _closure(_references(addon), named=named)
+    by_gone = _closure(_references(gone), named=named)
     outside: dict[str, MutablePlainTree] = {
         key: value for key, value in core.items() if key != "components"
     }
-    kept = _closure(_references(outside) | (named.keys() - by_addons), named=named)
+    kept = _closure(_references(outside) | (named.keys() - by_gone), named=named)
     schemas: dict[str, MutablePlainTree] = {
         name: value for name, value in named.items() if name in kept
     }
