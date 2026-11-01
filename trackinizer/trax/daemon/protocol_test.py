@@ -667,9 +667,8 @@ def _import_probe_cwd(test_directory: Path, *, module: str) -> Path:
     return import_root.parent if import_root.name == "mutants" else import_root
 
 
-# The sagent conftest exports PYTHONSAFEPATH=1 to every worker that collects it. A
-# probe would then skip its cwd and import whatever checkout the venv installed, so
-# in a worktree it would test that checkout instead of this one.
+# An inherited PYTHONSAFEPATH=1 would make a probe skip its cwd and import whatever
+# checkout the venv installed, so in a worktree it would test that checkout instead.
 def _import_probe_env() -> dict[str, str]:
     """Return this process's environment without ``PYTHONSAFEPATH``."""
     return {
