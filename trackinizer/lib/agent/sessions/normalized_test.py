@@ -30,6 +30,7 @@ from trackinizer.sagent.session.types import (
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
+    stored_plain,
 )
 
 
@@ -128,6 +129,32 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
         from_plain(entry.get("py/object"), str, default="").rpartition(".")[2]
         for entry in document
     ] == ["TurnContext", "UserMessage"]
+
+
+def test_each_entry_is_a_record_as_every_store_writes_it() -> None:
+    """One encoding for a journal line, a row, and a document entry."""
+    records: list[SessionRecord] = [
+        ContextClear(history=(UserMessage(content="u"), AssistantMessage(content="a"))),
+    ]
+    stream = StringIO()
+
+    normalized.denormalize(records, stream)
+
+    assert json.loads(stream.getvalue()) == [stored_plain(r) for r in records]
+
+
+def test_a_document_naming_classes_by_import_path_still_reads() -> None:
+    """An archive written before tags were names reads back, nested members too."""
+    record = ContextClear(
+        history=(UserMessage(content="u"), AssistantMessage(content="a")),
+    )
+    module = ContextClear.__module__
+    old = json.dumps([stored_plain(record)]).replace(
+        '"py/object": "',
+        f'"py/object": "{module}.',
+    )
+
+    assert list(normalized.normalize(StringIO(old))) == [record]
 
 
 @pytest.mark.parametrize(
