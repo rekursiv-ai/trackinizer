@@ -2,6 +2,7 @@
 
 from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
+from functools import partial
 from pathlib import Path
 from typing import Final, cast
 from unittest.mock import MagicMock
@@ -26,8 +27,9 @@ from pytest_postgresql.factories import process
 from pytest_postgresql.plugin import postgresql_proc
 
 from trackinizer import conftest
-from trackinizer.lib.postgres import PGliteEngine
+from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
+from trackinizer.server.notify import tx
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
@@ -167,6 +169,37 @@ async def test_a_postgres_test_meets_none_of_anothers_writes(
     await _write(integ_store, writer)
 
 
+# The HNSW index kept every earlier test's embeddings, and a nearest-neighbour search
+# spent its scan on them: from about the 330th test it stopped reaching a live row.
+# Enough embeddings to fill several index pages show whether the restore left them.
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_pglite_test_meets_none_of_anothers_index_entries(
+    pglite_db: PGliteEngine,
+) -> None:
+    built = await _index_sizes(pglite_db)
+    await _fill_embeddings(pglite_db)
+
+    await conftest.restore_pglite(pglite_db)
+
+    assert await _index_sizes(pglite_db) == built
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_postgres_test_meets_none_of_anothers_index_entries(
+    integ_store: Store,
+    integ_engine: PostgresEngine,
+) -> None:
+    del integ_store  # Restores the build before the test.
+    built = await _index_sizes(integ_engine)
+    await _fill_embeddings(integ_engine)
+
+    await conftest.restore(integ_engine, empty=partial(conftest._emptied, integ_engine))
+
+    assert await _index_sizes(integ_engine) == built
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_changed_catalog_is_built_again(pglite_db: PGliteEngine) -> None:
@@ -239,6 +272,31 @@ async def _write(store: Store, writer: str) -> None:
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES (gen_random_uuid(), $1, 'u', 'writer', 'active')",
             f"{writer}@example.com",
+        )
+
+
+async def _index_sizes(engine: DatabaseEngine) -> dict[str, int]:
+    """Return the size in bytes of each index of schema ``public``."""
+    async with engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT c.relname, pg_relation_size(c.oid) AS size FROM pg_class c "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE n.nspname = 'public' AND c.relkind = 'i'",
+        )
+    return {str(row["relname"]): cast(int, row["size"]) for row in rows}
+
+
+async def _fill_embeddings(engine: DatabaseEngine) -> None:
+    """Write enough embeddings to spread their HNSW index over several pages."""
+    # Replica role skips the foreign key to an inquiry these rows have no need of.
+    async with engine.acquire() as conn, tx(conn):
+        await conn.execute("SET LOCAL session_replication_role = replica")
+        await conn.execute(
+            "INSERT INTO session_embeddings "
+            "(session_id, part, idx, field, mapper, model, embedding, text_md5) "
+            "SELECT gen_random_uuid(), 0, n, 'content', 'footprint', 'stub-1024', "
+            "array_fill(n::real, ARRAY[1024])::halfvec, md5(n::text) "
+            "FROM generate_series(1, 200) n",
         )
 
 
