@@ -14,6 +14,7 @@ import subprocess
 import pytest
 
 from trackinizer.lib.testing.wheel import project_root
+from trackinizer.web.hatch_build import web_lock
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -29,18 +30,20 @@ pytestmark = [
 ]
 
 
-@pytest.mark.parametrize("script", ["typecheck", "test"])
-def test_the_web_app_passes(script: str) -> None:
-    subprocess.run(  # noqa: S603 -- Fixed argv; the project's own npm launcher.
-        [str(_WEB / "npm"), "ci", "--no-audit", "--no-fund"],
-        cwd=_WEB,
-        check=True,
-    )
-    subprocess.run(  # noqa: S603 -- Fixed argv; the project's own npm launcher.
-        [str(_WEB / "npm"), "run", script],
-        cwd=_WEB,
-        check=True,
-    )
+# One test, under the build hook's lock: two cases each ran ``npm ci`` here, and on
+# two workers one wiped ``node_modules`` while the other used it.
+def test_the_web_app_type_checks_and_passes_its_tests() -> None:
+    with web_lock(_WEB):
+        for args in (
+            ("ci", "--no-audit", "--no-fund"),
+            ("run", "typecheck"),
+            ("test",),
+        ):
+            subprocess.run(  # noqa: S603 -- Fixed argv; the project's own npm launcher.
+                [str(_WEB / "npm"), *args],
+                cwd=_WEB,
+                check=True,
+            )
 
 
 if __name__ == "__main__":

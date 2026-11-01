@@ -110,6 +110,34 @@ def test_concurrent_wheel_builds_build_the_app_once(
     assert (web / "dist" / "index.html").is_file()
 
 
+def test_web_lock_lets_one_holder_in_at_a_time(tmp_path: Path) -> None:
+    """The app's own tests take this lock too, so their ``npm ci`` cannot overlap.
+
+    Two parametrized cases each ran ``npm ci`` in ``web/``; on two workers one
+    wiped ``node_modules`` while the other used it.
+    """
+    web = _web(tmp_path, built=False)
+    inside: list[int] = []
+    overlaps: list[int] = []
+    start = threading.Barrier(2)
+
+    def hold() -> None:
+        start.wait()
+        with hatch_build.web_lock(web):
+            inside.append(1)
+            overlaps.append(len(inside))
+            time.sleep(0.1)
+            inside.pop()
+
+    threads = [threading.Thread(target=hold) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert overlaps == [1, 1]
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 
