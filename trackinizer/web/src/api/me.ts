@@ -20,37 +20,14 @@ export type Profile = {
   name: string;
   role: string;
   last_login: string | null;
-  visual_canvas_enabled: boolean;
   /**
    * The user's preferences, every key, defaults filled (`src/preferences.ts`);
    * absent from a server older than them, whose page shows the defaults.
    */
   preferences?: Required<components["schemas"]["Preferences"]>;
-  /** When the caller agreed to the alpha rules; null before they have. */
-  acknowledged_at: string | null;
-  /** The rules version they agreed to; null before they have. */
-  acknowledged_rules_version: string | null;
-  /** The Issue that holds the rules (`Issue#1`); null unless it exists and is locked. */
-  rules_issue_id: string | null;
-  /** The rules as they stand: Issue#1's last change; null while no rules are in force. */
-  rules_version: string | null;
-  /**
-   * Who reads chats and sessions on this server (`TRACKINIZER_CHAT_ORGS`); absent
-   * from a server older than it.
-   */
-  org_mode?: OrgMode;
   /** The audiences whose transcripts the caller reads; absent from a server older than it. */
   read_audiences?: readonly string[];
 };
-
-/**
- * What the server takes as an organisation, and so who reads a chat or a session
- * besides its starter or owner and the people a chat is shared with: everyone
- * signed in (`single`), the people of the same email domain (`domain`), or
- * nobody (`individual`, one person to an organisation). In every mode staff and
- * admins read other people's sessions, hidden ones too, and never their chats.
- */
-export type OrgMode = "single" | "domain" | "individual";
 
 /** One of the caller's API tokens, as `GET /api/me/tokens` lists it: never its secret. */
 export type Token = {

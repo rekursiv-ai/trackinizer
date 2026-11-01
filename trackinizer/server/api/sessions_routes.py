@@ -659,9 +659,7 @@ async def session_end_route(
     # a clean close, so a failed end doesn't discard undelivered messages.
     inbound = get_inbound(request)
     inbound.forget_poller(session_id)
-    released = False
-    if not released:
-        _ = inbound.drain(session_id)
+    _ = inbound.drain(session_id)
     nudge_streams(request)
     return SessionEndResponse(id=session_id, ended=committed_ended)
 

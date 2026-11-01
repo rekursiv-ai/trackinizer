@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { AGREED, stubFetch } from "../api/testing";
+import { stubFetch } from "../api/testing";
 import { FakeEventSource } from "../live/testing";
 import { App } from "./App";
 
@@ -11,7 +11,7 @@ function serve(role = "writer") {
     "/api/meta/enums": { inquiry_kind_all: ["Issue"], status: ["active"] },
     "/api/meta/fields": {},
     "/api/meta/edges": {},
-    "/api/me/profile": { user_id: "u", email: "ada@example.com", name: "Ada", role, last_login: null, visual_canvas_enabled: false, ...AGREED },
+    "/api/me/profile": { user_id: "u", email: "ada@example.com", name: "Ada", role, last_login: null },
     "/api/inquiries": [],
   };
   return stubFetch(async (request) => {

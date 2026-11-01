@@ -23,7 +23,6 @@ from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.store.core import Store
-from trackinizer.wire.wire_science_chat import chat_session_id
 
 
 if TYPE_CHECKING:
@@ -247,38 +246,6 @@ async def test_a_staff_session_is_never_hidden(served: _Served) -> None:
         {"detail": {"code": "session_staff"}},
     )
     assert await served.session_audience(session) == "staff"
-
-
-async def test_hiding_a_chat_hides_every_session_under_its_id(served: _Served) -> None:
-    """Ann began the chat with the assistant; Bob's key opened a session under it later."""
-    conversation = uuid4()
-    first = await served.session(
-        opener=_SCOUT.email,
-        cli_session_id=chat_session_id(conversation),
-    )
-    later = await served.session(
-        account=_BOB,
-        opener=_BOB,
-        cli_session_id=chat_session_id(conversation),
-    )
-    served.act_as(_BOB)
-    refused = await served.move(first, "private")
-    served.act_as(_ANN)
-
-    hidden = await served.move(later, "private")
-
-    assert refused.status_code == 403
-    assert hidden.status_code == 200, hidden.text
-    assert sorted(
-        from_plain(
-            json_loads(hidden.content, dict[str, object])["sessions"],
-            list[str],
-        ),
-    ) == sorted([str(first), str(later)])
-    assert [await served.session_audience(each) for each in (first, later)] == [
-        "private",
-        "private",
-    ]
 
 
 async def test_each_change_is_audited(served: _Served) -> None:

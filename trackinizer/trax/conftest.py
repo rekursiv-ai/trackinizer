@@ -54,7 +54,7 @@ from trackinizer.wire.wire_terminals import TerminalMachines, TerminalOpened
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
     from types import TracebackType
 
@@ -1093,6 +1093,69 @@ class FakeClient:
         """Send message."""
         self.calls.append(("send_message", (actor, text), {"room": room}))
         return [self.target_id]
+
+    def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Read canvas."""
+        self.calls.append(("read_canvas", (canvas_id,), {}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
+
+    def apply_canvas_operation(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        operation: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Apply canvas operation."""
+        self.calls.append(
+            (
+                "apply_canvas_operation",
+                (canvas_id,),
+                {"operation": dict(operation)},
+            ),
+        )
+        return {"id": str(canvas_id), "revision": 1, "visuals": []}
+
+    def navigate(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        route: str,
+    ) -> dict[str, PlainTree]:
+        """Navigate."""
+        self.calls.append(("navigate", (canvas_id,), {"route": route}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
+
+    def highlight(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        ids: Sequence[uuid.UUID],
+    ) -> dict[str, PlainTree]:
+        """Highlight."""
+        self.calls.append(("highlight", (canvas_id,), {"ids": list(ids)}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
+
+    def chat_window(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        hidden: bool,
+    ) -> dict[str, PlainTree]:
+        """Hide or show Chat."""
+        self.calls.append(("chat_window", (canvas_id,), {"hidden": hidden}))
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
+
+    def set_preferences(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        change: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Change the canvas owner's preferences."""
+        self.calls.append(
+            ("set_preferences", (canvas_id,), {"change": dict(change)}),
+        )
+        return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
     def add_subscriber(
         self,

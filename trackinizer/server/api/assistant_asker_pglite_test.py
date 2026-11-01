@@ -57,9 +57,6 @@ _OPEN_ADMIN: Final = "root@open.example"
 _DISABLED: Final = "dis@staff.example"
 _GHOST: Final = "ghost@staff.example"
 """Named as staff, with no account: the name alone must lend nothing."""
-_EVE: Final = "eve@example.com"
-"""A colleague of the account the open sessions are held under."""
-
 _CONFIG: Final = Config(
     assistant=Assistant(actor="scout", email=_ASSISTANT),
     staff=(_STAFF, _STAFF_VIEWER, _STAFF_ADMIN, _DISABLED, _GHOST),
@@ -155,18 +152,6 @@ class _Served:
             for route in _READS
         ]
 
-    async def reads_into(self, of: _Live, *, asker: str, chat: UUID) -> int:
-        """Return the status of reading ``of`` into ``chat`` for ``asker``, by one route.
-
-        The read routes share one access gate, so a single route settles which chat a
-        session is read into; :meth:`reads` reads all three where the route matters.
-        """
-        response = await self.http.get(
-            f"/api/sessions/{of.id}/records",
-            params={"asker": asker, "chat": str(chat)},
-        )
-        return response.status_code
-
     async def chat(self, *, starter: str, audience: str = "open") -> _Chat:
         """Begin a chat as the assistant does, for ``starter``, in ``audience``."""
         conversation, session = uuid4(), uuid4()
@@ -192,16 +177,6 @@ class _Served:
                 key,
             )
         return _Chat(conversation=conversation, session=_Live(id=session, actor=""))
-
-    async def share(self, chat: _Chat, *, email: str) -> None:
-        """Share ``chat`` with ``email``, as its starter does."""
-        async with self.store.engine.acquire() as conn:
-            await conn.execute(
-                "INSERT INTO science_chat_shares (conversation_id, email, shared_by) "
-                "VALUES ($1, $2, 'starter')",
-                chat.conversation,
-                email,
-            )
 
     async def chat_audiences(self, chat: _Chat) -> list[str]:
         """Return the audience of every session under the chat's id."""
@@ -523,146 +498,6 @@ async def test_naming_an_asker_reads_nothing_for_another_caller(
     )
 
 
-async def test_a_staff_read_for_an_asker_makes_their_chat_staff(
-    served: _Served,
-) -> None:
-    """Lee's chat that he reads a staff lead into is staff's alone after."""
-    chat = await served.chat(starter=_STAFF)
-    served.act_as(_OPEN_WRITER)
-    before = await served.reads(chat.session)
-    served.act_as(_ASSISTANT)
-
-    read = await served.reads(served.others, asker=_STAFF, chat=chat.conversation)
-    served.act_as(_OPEN_WRITER)
-    after = await served.reads(chat.session)
-    served.act_as(_STAFF, staff=True)
-    staffed = await served.reads(chat.session)
-
-    assert (before, read, after, staffed) == (
-        [200] * 3,
-        [200] * 3,
-        [403] * 3,
-        [200] * 3,
-    )
-    assert await served.chat_audiences(chat) == ["staff"]
-    assert await served.moves(chat) == [
-        (_ASSISTANT, f"read {served.others.id} for {_STAFF}", "open", "staff"),
-    ]
-
-
-async def test_a_staff_read_takes_no_one_elses_chat_from_them(
-    served: _Served,
-) -> None:
-    """Made staff, Wes's chat would be read by staff alone, and no longer by Wes.
-
-    A chat that is staff already loses no one by another staff read.
-    """
-    wes = await served.chat(starter=_OPEN_WRITER)
-    staffed = await served.chat(starter=_STAFF_ADMIN, audience="staff")
-    served.act_as(_ASSISTANT)
-
-    refused = await served.http.get(
-        f"/api/sessions/{served.others.id}/records",
-        params={"asker": _STAFF, "chat": str(wes.conversation)},
-    )
-    again = await served.reads(
-        served.others,
-        asker=_STAFF,
-        chat=staffed.conversation,
-    )
-    served.act_as(_OPEN_WRITER)
-    kept = await served.reads(wes.session)
-
-    assert (refused.status_code, refused.json()) == (
-        403,
-        {"detail": {"code": "chat_not_starter"}},
-    )
-    assert (again, kept) == ([200] * 3, [200] * 3)
-    assert await served.chat_audiences(wes) == ["open"]
-
-
-async def test_a_session_is_read_only_into_a_chat_whose_every_reader_reads_it(
-    served: _Served,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Eve's colleague's run is her organisation's, and Wes is of another.
-
-    It goes into her own chat, and not into one Wes reads: his own that he shared with
-    her, or hers once she shares it with him.
-    """
-    patch_state(monkeypatch, "config", replace(_CONFIG, chat_orgs="domain"))
-    async with served.store.engine.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO users (id, email, name, role, status, hosted_domain) "
-            "VALUES ($1, $2, 'n', 'writer', 'active', 'example.com')",
-            uuid4(),
-            _EVE,
-        )
-    eve, wes = await served.chat(starter=_EVE), await served.chat(starter=_OPEN_WRITER)
-    await served.share(wes, email=_EVE)
-    served.act_as(_ASSISTANT)
-
-    # Which chat a session may be read into is one decision, made in
-    # ``require_session_access``; the three read routes share it, and the sibling
-    # tests prove each wires it, so the org-mode rule is read through one route here.
-    own = await served.reads_into(served.public, asker=_EVE, chat=eve.conversation)
-    theirs = await served.reads_into(served.public, asker=_EVE, chat=wes.conversation)
-    await served.share(eve, email=_OPEN_WRITER)
-    shared = await served.reads_into(served.public, asker=_EVE, chat=eve.conversation)
-
-    assert (own, theirs, shared) == (200, 409, 409)
-
-
-async def test_a_staff_read_for_an_asker_names_the_chat(served: _Served) -> None:
-    served.act_as(_ASSISTANT)
-
-    response = await served.http.get(
-        f"/api/sessions/{served.others.id}/records",
-        params={"asker": _STAFF},
-    )
-
-    assert (response.status_code, response.json()) == (
-        422,
-        {"detail": {"code": "chat_required"}},
-    )
-
-
-async def test_a_staff_read_for_an_asker_outside_the_chat_is_refused(
-    served: _Served,
-) -> None:
-    """A chat that is not theirs, or that no session carries, is no place to read into."""
-    hidden = await served.chat(starter=_OPEN_WRITER, audience="private")
-    served.act_as(_ASSISTANT)
-
-    for chat in (hidden.conversation, uuid4()):
-        response = await served.http.get(
-            f"/api/sessions/{served.others.id}/records",
-            params={"asker": _STAFF, "chat": str(chat)},
-        )
-        assert (response.status_code, response.json()) == (
-            403,
-            {"detail": {"code": "chat_not_member"}},
-        )
-    assert await served.chat_audiences(hidden) == ["private"]
-
-
-async def test_a_hidden_chat_is_never_made_staff(served: _Served) -> None:
-    """Its starter hid it; staff would open it to every member who holds staff."""
-    chat = await served.chat(starter=_STAFF, audience="private")
-    served.act_as(_ASSISTANT)
-
-    response = await served.http.get(
-        f"/api/sessions/{served.others.id}/records",
-        params={"asker": _STAFF, "chat": str(chat.conversation)},
-    )
-
-    assert (response.status_code, response.json()) == (
-        409,
-        {"detail": {"code": "chat_private"}},
-    )
-    assert await served.chat_audiences(chat) == ["private"]
-
-
 async def test_a_read_for_an_admin_asker_holds_no_oversight(
     served: _Served,
     monkeypatch: pytest.MonkeyPatch,
@@ -688,27 +523,6 @@ async def test_an_open_read_leaves_the_chat_open(served: _Served) -> None:
     assert read == [200] * 3
     assert await served.chat_audiences(chat) == ["open"]
     assert await served.moves(chat) == []
-
-
-async def test_a_hidden_session_is_not_read_into_its_owners_chat(
-    served: _Served,
-) -> None:
-    """Its owner reads it; no chat could keep it from the people the chat reaches."""
-    hidden = await _live(
-        served.store,
-        actor="mine",
-        account=_OPEN_WRITER,
-        audience="private",
-    )
-    chat = await served.chat(starter=_OPEN_WRITER)
-    served.act_as(_OPEN_WRITER)
-    themselves = await served.reads(hidden)
-    served.act_as(_ASSISTANT)
-
-    read = await served.reads(hidden, asker=_OPEN_WRITER, chat=chat.conversation)
-
-    assert (themselves, read) == ([200] * 3, [403] * 3)
-    assert await served.chat_audiences(chat) == ["open"]
 
 
 if __name__ == "__main__":

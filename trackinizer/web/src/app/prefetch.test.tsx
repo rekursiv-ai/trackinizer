@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeAll, beforeEach, expect, onTestFinished, test, vi } from "vitest";
-import { AGREED, type Sent, stubFetch } from "../api/testing";
+import { type Sent, stubFetch } from "../api/testing";
 import { openEarlyStream } from "../live/earlyStream";
 import { FakeEventSource } from "../live/testing";
 import { currentRoute } from "../router/addressBar";
@@ -16,7 +16,7 @@ const ID = "00000000-0000-4000-8000-000000000007";
 const BOOT = ["/api/me/profile", "/api/meta/edges", "/api/meta/enums", "/api/meta/fields"];
 /** Reads the shell sends once it renders, beside its view's: never started early. */
 const SHELL: string[] = [];
-const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_canvas_enabled: false, ...AGREED };
+const PROFILE = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null };
 
 const BODIES: { [path: string]: unknown } = {
   "/api/meta/enums": { inquiry_kind_all: ["Issue", "Paper", "Belief"], status: ["active", "complete"] },

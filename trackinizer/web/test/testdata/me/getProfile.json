@@ -5,8 +5,6 @@
   },
   "response": {
     "body": {
-      "acknowledged_at": null,
-      "acknowledged_rules_version": null,
       "api_key_id": null,
       "email": "no-auth@localhost",
       "last_login": null,
@@ -17,7 +15,6 @@
         "private",
         "staff"
       ],
-      "org_mode": "individual",
       "pinned_audience": null,
       "preferences": {
         "aliases": [],
@@ -91,11 +88,7 @@
         "staff"
       ],
       "role": "admin",
-      "rules_issue_id": null,
-      "rules_version": null,
-      "summary_accounts": [],
-      "user_id": "00000000-0000-4000-9000-000000000001",
-      "visual_canvas_enabled": true
+      "user_id": "00000000-0000-4000-9000-000000000001"
     },
     "headers": {
       "content-type": "application/json"
