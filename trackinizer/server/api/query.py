@@ -24,6 +24,7 @@ from pydantic import TypeAdapter
 from treekle import from_plain, json_loads
 
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import (
@@ -31,8 +32,9 @@ from trackinizer.server.api._routes_shared import (
     parse_fields,
     parse_seq_ranges,
 )
-from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.api.locks import require_writable
 from trackinizer.server.api.session_access import (
+    request_principal,
     require_row_purge,
     require_row_write,
     session_reader,
@@ -41,6 +43,7 @@ from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.columns import (
     flat_column_specs,
@@ -114,8 +117,11 @@ async def next_issue_route(
       result: The MutableJSON | None.
 
     """
-    del identity
-    return tag_kind(await get_store(request).next_issue())
+    return tag_kind(
+        await get_store(request).next_issue(
+            principal=await request_principal(request, identity),
+        ),
+    )
 
 
 # Declared here, beside its read-only twin and ahead of ``/api/inquiries/{kind}``:
@@ -162,6 +168,7 @@ async def claim_next_issue_route(
             api_key_id=identity.api_key_id,
             actor=req.actor or identity.email,
             reason=req.reason,
+            principal=await request_principal(request, identity),
         ),
     )
 
@@ -197,9 +204,15 @@ async def lookup_route(
       body: Mapping with "found" (id->kind dict) and "missing" (unknown ids).
 
     """
-    del identity
-    async with get_store(request).engine.acquire() as conn:
-        kinds = await lookup_kinds(conn, ids)
+    store = get_store(request)
+    principal = await request_principal(request, identity)
+    async with store.engine.acquire() as conn:
+        kinds = await lookup_kinds(
+            conn,
+            ids,
+            policy=store.access_policy,
+            principal=principal,
+        )
     found = {str(rid): kind for rid, kind in kinds.items()}
     missing = [str(rid) for rid in ids if rid not in kinds]
     body: MutableJSON = {"found": {**found}, "missing": [*missing]}
@@ -279,6 +292,7 @@ async def list_inquiries_route(
     edges = names is None or not names.isdisjoint(inquiry_relation_fields())
     listed: list[Inquiry] = []
     store = get_store(request)
+    principal = await request_principal(request, identity)
     # Dedup before iterating: only nine kinds exist, so a repeated param can
     # only re-run a query whose answer is already in hand. Without this, 200
     # copies of ``kind=Issue`` ran 200 queries and returned 9.3MB where one
@@ -312,6 +326,7 @@ async def list_inquiries_route(
                     filters=filters,
                     edges=edges,
                     reader=session_reader(request, identity),
+                    principal=principal,
                 )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -350,7 +365,10 @@ async def list_inquiries_route(
         listed.extend(rows)
     out = [tag_row(r, names) for r in listed]
     if ancestors is not None:
-        ancestry = await store.narrows_ancestors([r.id for r in listed])
+        ancestry = await store.narrows_ancestors(
+            [r.id for r in listed],
+            principal=principal,
+        )
         for row, payload in zip(listed, out, strict=True):
             entries: list[MutableJSONValue] = [
                 _ancestor_json(a) for a in ancestry[row.id]
@@ -363,27 +381,58 @@ async def list_inquiries_route(
 # /{kind}/{seq} route so a UUID in the first segment isn't matched as a
 # kind and rejected by InquiryKind validation. Starlette matches in
 # registration order.
-@router.get("/api/inquiries/{target_id}/cost")
+@router.get("/api/inquiries/{target_id}/cost", description="Cost route.")
 async def cost_route(
     target_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     deep: bool = False,
 ) -> Cost:
-    """Cost route."""
-    del identity
-    return _require_found(await get_store(request).inquiry_cost(target_id, deep=deep))
+    """Cost route.
+
+    Args:
+      target_id: Inquiry identifier.
+      request: Application and request-local principal context.
+      identity: Authenticated viewer.
+      deep: Include costs in the inquiry's subtree.
+
+    Returns:
+      cost: Target cost; a missing or denied target raises 404.
+
+    """
+    return _require_found(
+        await get_store(request).inquiry_cost(
+            target_id,
+            deep=deep,
+            principal=await request_principal(request, identity),
+        ),
+    )
 
 
-@router.get("/api/inquiries/{target_id}/proves_belief")
+@router.get(
+    "/api/inquiries/{target_id}/proves_belief",
+    description="Proves belief route.",
+)
 async def proves_belief_route(
     target_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> list[MutableJSON]:
-    """Proves belief route."""
-    del identity
-    rows = await get_store(request).proves_belief(target_id)
+    """Proves belief route.
+
+    Args:
+      target_id: Belief identifier.
+      request: Application and request-local principal context.
+      identity: Authenticated viewer.
+
+    Returns:
+      artifacts: Readable evidence with readable peer projections.
+
+    """
+    rows = await get_store(request).proves_belief(
+        target_id,
+        principal=await request_principal(request, identity),
+    )
     return [tag_row(r) for r in rows]
 
 
@@ -394,20 +443,39 @@ async def confidence_route(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> dict[str, float]:
     """Return the derived confidence of a Belief/Experiment, 404 if absent."""
-    del identity
-    confidence = await get_store(request).derived_confidence(target_id)
+    confidence = await get_store(request).derived_confidence(
+        target_id,
+        principal=await request_principal(request, identity),
+    )
     return {"confidence": _require_found(confidence)}
 
 
-@router.get("/api/inquiries/{target_id}/authority")
+@router.get(
+    "/api/inquiries/{target_id}/authority",
+    description="Return a row's derived load-bearing authority scores, 404 if absent.",
+)
 async def authority_route(
     target_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> dict[str, float]:
-    """Return a row's derived load-bearing authority scores, 404 if absent."""
-    del identity
-    return _require_found(await get_store(request).derived_authority(target_id))
+    """Return a row's derived load-bearing authority scores, 404 if absent.
+
+    Args:
+      target_id: Inquiry identifier.
+      request: Application and request-local principal context.
+      identity: Authenticated viewer.
+
+    Returns:
+      authority: Target scores; a missing or denied target raises 404.
+
+    """
+    return _require_found(
+        await get_store(request).derived_authority(
+            target_id,
+            principal=await request_principal(request, identity),
+        ),
+    )
 
 
 @router.get("/api/inquiries/{kind}/{seq}")
@@ -429,28 +497,56 @@ async def by_seq_route(
       result: Full inquiry record tagged with kind and seq.
 
     """
-    del identity
-    async with get_store(request).engine.acquire() as conn:
+    store = get_store(request)
+    principal = await request_principal(request, identity)
+    params: list[object] = [kind, seq]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=principal,
+        params=params,
+    )
+    async with store.engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2",
-            kind,
-            seq,
+            vetted_sql(
+                "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
         if row is None:
             raise HTTPException(status_code=404, detail=f"{kind}#{seq} not found")
         target_id = cast(uuid.UUID, row["id"])
-    return _require_found(tag_kind(await get_store(request).get_inquiry(target_id)))
+    return _require_found(
+        tag_kind(await store.get_inquiry(target_id, principal=principal)),
+    )
 
 
-@router.get("/api/inquiries/{target_id}")
+@router.get("/api/inquiries/{target_id}", description="Get inquiry route.")
 async def get_inquiry_route(
     target_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> MutableJSON:
-    """Get inquiry route."""
-    del identity
-    return _require_found(tag_kind(await get_store(request).get_inquiry(target_id)))
+    """Get inquiry route.
+
+    Args:
+      target_id: Inquiry identifier.
+      request: Application and request-local principal context.
+      identity: Authenticated viewer.
+
+    Returns:
+      inquiry: Full tagged row; a missing or denied row raises 404.
+
+    """
+    return _require_found(
+        tag_kind(
+            await get_store(request).get_inquiry(
+                target_id,
+                principal=await request_principal(request, identity),
+            ),
+        ),
+    )
 
 
 # -- Inquiry delete ---------------------------------------------------------
@@ -482,7 +578,7 @@ async def delete_inquiry_route(
       result: Mapping with "id" (inquiry UUID) and "change_id" (purge operation).
 
     """
-    await require_unlocked(request, identity, [target_id], include_peers=True)
+    await require_writable(request, identity, [target_id], include_peers=True)
     await require_row_purge(request, identity, target_id)
     await require_row_write(request, identity, target_id)
     store = get_store(request)
@@ -539,15 +635,27 @@ async def change_log_stream_route(
     )
 
 
-@router.get("/api/change_log/{change_id}")
+@router.get("/api/change_log/{change_id}", description="Get change route.")
 async def get_change_route(
     change_id: uuid.UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> Change:
-    """Get change route."""
-    del identity
-    change = await get_store(request).get_change(change_id)
+    """Get change route.
+
+    Args:
+      change_id: Audit event identifier.
+      request: Application and request-local principal context.
+      identity: Authenticated viewer.
+
+    Returns:
+      change: Visible event; a missing or denied event raises 404.
+
+    """
+    change = await get_store(request).get_change(
+        change_id,
+        principal=await request_principal(request, identity),
+    )
     if change is None:
         raise HTTPException(status_code=404, detail="change not found")
     return change
@@ -595,7 +703,6 @@ async def list_change_log_route(
       result: Newest-first ordered list of changes matching the filters.
 
     """
-    del identity
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
             status_code=400,
@@ -609,6 +716,7 @@ async def list_change_log_route(
         subject_kind=subject_kind,
         kinds=kind or (),
         limit=limit,
+        principal=await request_principal(request, identity),
     )
     if not brief:
         return changes

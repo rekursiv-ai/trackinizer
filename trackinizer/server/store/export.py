@@ -2,9 +2,9 @@
 
 :meth:`export_graph` reads every table in
 :data:`~trackinizer.wire.wire_export.EXPORT_TABLES` and returns the rows as
-plain Python values; the route owns turning them into JSON lines. A pure leaf
-like :class:`_ReadMixin`: it reads through ``self.engine`` and calls no other
-mixin.
+plain Python values; the route owns turning them into JSON lines. It reads
+through ``self.engine`` and inherits :class:`_ReadMixin` for
+:meth:`~_ReadMixin.change_read_filter`.
 
 A selector narrows the export to a subgraph. It picks the inquiries, and
 :data:`_SCOPE_COLUMNS` carries that choice to every other table: a row rides
@@ -20,11 +20,17 @@ org:rekursiv`` and ``labels nre ^machine:``. They AND, which is what a
 partition asks for and all the request asks for; OR would need a grammar, and
 no caller has needed one yet.
 
-Three choices worth knowing before changing this:
+Four choices worth knowing before changing this:
 
 * **One snapshot for every table.** Under ``--engine pg`` a write landing
   between two tables' reads would leave, say, an edge whose inquiry the export
   never saw. ``REPEATABLE READ`` pins every read to one snapshot.
+* **The access policy decides after the snapshot commits.** An auditing policy
+  writes a note as it filters each row it would hide. A read-only snapshot
+  refuses that write, and a repeatable-read one fails with a serialization error
+  when a concurrent read noted the same row first. So the snapshot reads no
+  grant, and one read after it asks the policy which of the read inquiries and
+  changes the reader may keep.
 * **Everything is fetched before the connection goes back.** PGlite serves a
   single connection, so streaming the response straight off a cursor would
   hold it for as long as the slowest client takes to read the body, and every
@@ -46,9 +52,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final, cast
+from uuid import UUID
 
 import json
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.audience import (
     NOBODY,
     SessionReader,
@@ -57,8 +65,7 @@ from trackinizer.server.audience import (
 )
 from trackinizer.server.notify import tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
-from trackinizer.server.store.read import _lower_filter
-from trackinizer.server.store.shared import _StoreShared
+from trackinizer.server.store.read import _lower_filter, _ReadMixin
 from trackinizer.server.values import vetted_sql
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.row_filter import reject_inadmissible
@@ -69,6 +76,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import Principal
 
 
 __all__ = [
@@ -143,7 +151,7 @@ class GraphExport:
     selector: tuple[Filter, ...] = ()
 
 
-class _ExportMixin(_StoreShared):
+class _ExportMixin(_ReadMixin):
     """The logical export for :class:`Store`."""
 
     async def export_graph(
@@ -151,6 +159,7 @@ class _ExportMixin(_StoreShared):
         *,
         reader: SessionReader = NOBODY,
         selector: Sequence[Filter] = (),
+        principal: Principal | None = None,
     ) -> GraphExport:
         """Read the graph, or one selector's subgraph, in one read-only snapshot.
 
@@ -158,9 +167,14 @@ class _ExportMixin(_StoreShared):
         transcript ``reader`` may not read. The session's own row stays, as it does in
         the graph a caller reads: only the transcript is gated.
 
+        Every row hangs off inquiries ``principal`` may read, and a ``change_log`` row
+        stays as :meth:`change_read_filter` keeps it, as the access policy says once
+        the snapshot has committed. A row purged since the snapshot is left out.
+
         Args:
           reader: Who reads.
           selector: Filters on ``inquiries``, ANDed. Empty exports everything.
+          principal: Request reader; None for a trusted internal export.
 
         Returns:
           graph: The applied migrations, every exported table's rows, and how many
@@ -200,21 +214,124 @@ class _ExportMixin(_StoreShared):
             # Counted inside the selection: a session the selector left out is
             # not missing from this file, it was never asked for.
             params: list[object] = list(scope_params)
-            withheld = await conn.fetchval(
-                vetted_sql(
-                    "SELECT count(*) FROM inquiries AS withheld "
-                    "WHERE withheld.kind = 'AgentSession' AND NOT ",
-                    visible_sql("withheld", params=params, reader=reader),
-                    vetted_sql(" AND withheld.id IN (", scope, ")") if scope else "",
-                ),
-                *params,
-            )
+            withheld = [
+                cast(UUID, row["id"])
+                for row in await conn.fetch(
+                    vetted_sql(
+                        "SELECT withheld.id FROM inquiries AS withheld "
+                        "WHERE withheld.kind = 'AgentSession' AND NOT ",
+                        visible_sql("withheld", params=params, reader=reader),
+                        vetted_sql(" AND withheld.id IN (", scope, ")")
+                        if scope
+                        else "",
+                    ),
+                    *params,
+                )
+            ]
+        kept = await self._kept(tables, withheld=withheld, principal=principal)
         return GraphExport(
             migrations=tuple(cast(str, row["name"]) for row in migrations),
             audiences=tuple(sorted(reader.audiences)),
-            withheld_sessions=cast(int, withheld),
-            tables=tuple(tables),
+            # A session the policy hides is not counted: its count would say it exists.
+            withheld_sessions=sum(kept.inquiry(session) for session in withheld),
+            tables=tuple(
+                (table, tuple(row for row in rows if kept.row(table, row)))
+                for table, rows in tables
+            ),
             selector=tuple(selector),
+        )
+
+    async def _kept(
+        self,
+        tables: Sequence[tuple[str, Sequence[Mapping[str, object]]]],
+        *,
+        withheld: Sequence[UUID],
+        principal: Principal | None,
+    ) -> _Kept:
+        """Ask the policy which read inquiries and changes ``principal`` may keep."""
+        if (
+            inquiry_read_filter(
+                "inquiries.id",
+                policy=self.access_policy,
+                principal=principal,
+                params=[],
+            )
+            == "TRUE"
+        ):
+            return _Kept()
+        inquiry_params: list[object] = [
+            list(
+                {
+                    *withheld,
+                    *(
+                        row[column]
+                        for table, rows in tables
+                        if table != "change_log"
+                        for row in rows
+                        for column in _SCOPE_COLUMNS[table]
+                    ),
+                },
+            ),
+        ]
+        change_params: list[object] = [
+            [
+                row["id"]
+                for table, rows in tables
+                if table == "change_log"
+                for row in rows
+            ],
+        ]
+        readable = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=inquiry_params,
+        )
+        changed = self.change_read_filter(
+            "change_log",
+            params=change_params,
+            principal=principal,
+        )
+        async with self.engine.acquire() as conn:
+            kept_inquiries = await conn.fetch(
+                vetted_sql(
+                    "SELECT id FROM inquiries WHERE id = ANY($1::uuid[]) AND (",
+                    readable,
+                    ")",
+                ),
+                *inquiry_params,
+            )
+            kept_changes = await conn.fetch(
+                vetted_sql(
+                    "SELECT id FROM change_log WHERE id = ANY($1::uuid[]) AND (",
+                    changed,
+                    ")",
+                ),
+                *change_params,
+            )
+        return _Kept(
+            inquiries=frozenset(cast(UUID, row["id"]) for row in kept_inquiries),
+            changes=frozenset(cast(UUID, row["id"]) for row in kept_changes),
+        )
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Kept:
+    """The read inquiries and changes the reader may keep; None keeps every one."""
+
+    inquiries: frozenset[UUID] | None = None
+    changes: frozenset[UUID] | None = None
+
+    def inquiry(self, inquiry_id: object) -> bool:
+        """Say whether the reader may keep the inquiry ``inquiry_id``."""
+        return self.inquiries is None or inquiry_id in self.inquiries
+
+    def row(self, table: str, row: Mapping[str, object]) -> bool:
+        """Say whether the reader may keep ``row`` of ``table``."""
+        if table == "change_log":
+            return self.changes is None or row["id"] in self.changes
+        return self.inquiries is None or all(
+            row[column] in self.inquiries for column in _SCOPE_COLUMNS[table]
         )
 
 

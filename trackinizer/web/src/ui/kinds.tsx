@@ -36,4 +36,5 @@ const LOOKS: { readonly [kind: string]: KindLook } = {
   WebSearch: { plural: "Web searches", one: "web search", icon: "textSearch" },
   WebResult: { plural: "Web results", one: "web result", icon: "globe" },
   AgentSession: { plural: "Agent sessions", one: "agent session", icon: "bot" },
+  AccessGroup: { plural: "Access groups", one: "access group", icon: "shield" },
 };

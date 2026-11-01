@@ -14,6 +14,7 @@ from uuid import UUID
 
 from treekle import from_plain
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.audience import (
     NOBODY,
     SessionReader,
@@ -57,6 +58,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import Principal
     from trackinizer.wire.seq_ranges import SeqRange
 
 
@@ -130,30 +132,53 @@ def seq_range_clause(
 class _ReadMixin(_StoreShared):
     """Read-only inquiry, cost, and change queries for :class:`Store`."""
 
-    async def get_inquiry(self, target_id: UUID) -> Inquiry | None:
+    async def get_inquiry(
+        self,
+        target_id: UUID,
+        *,
+        principal: Principal | None = None,
+    ) -> Inquiry | None:
         """Fetch any Inquiry by id; subclass dispatched from ``kind`` column.
 
         Args:
           target_id: Row id to retrieve and materialize with edges.
+          principal: Request reader; None for trusted internal reads.
 
         Returns:
           inquiry: Issue, Belief, CodeChange, Experiment, WebResult,
             WebSearch, or AgentSession, or None if not found.
 
         """
+        params: list[object] = [target_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        where = "" if predicate == "TRUE" else f" AND ({predicate})"
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM inquiries WHERE id = $1",
-                target_id,
+                vetted_sql("SELECT * FROM inquiries WHERE id = $1", where),
+                *params,
             )
             if row is None:
                 return None
-            outbound, inbound = await fetch_edges(conn, target_id)
-        return materialize(row, {target_id: outbound}, {target_id: inbound})
+            outbound, inbound = await fetch_edges(
+                conn,
+                target_id,
+                policy=self.access_policy,
+                principal=principal,
+            )
+        return materialize(
+            row,
+            {target_id: outbound},
+            {target_id: inbound},
+        )
 
     async def list_kind(
         self,
-        kind: Inquiry.InquiryKind,
+        kind: str,
         *,
         status: Inquiry.Status | None = None,
         limit: int = DEFAULT_LIST_LIMIT,
@@ -163,6 +188,7 @@ class _ReadMixin(_StoreShared):
         lowering: bool = True,
         edges: bool = True,
         reader: SessionReader = NOBODY,
+        principal: Principal | None = None,
     ) -> list[Inquiry]:
         """Paginated list of one kind, optionally filtered.
 
@@ -207,6 +233,7 @@ class _ReadMixin(_StoreShared):
             the two edge reads, for a caller that sends none of them.
           reader: Who reads. Only a filter on a record of an ``AgentSession``
             consults it.
+          principal: Request reader; None for trusted internal reads.
 
         Returns:
           rows: Materialized Inquiry rows in created-desc order (newest first),
@@ -215,6 +242,15 @@ class _ReadMixin(_StoreShared):
         """
         params: list[object] = [kind]
         clauses = ["kind = $1"]
+        if principal is not None:
+            predicate = self.access_policy.read_filter(
+                "inquiry",
+                "inquiries",
+                params=params,
+                principal=principal,
+            )
+            if predicate != "TRUE":
+                clauses.append(f"({predicate})")
         if status is not None:
             params.append(status)
             clauses.append(f"status = ${len(params)}")
@@ -271,10 +307,7 @@ class _ReadMixin(_StoreShared):
                     r
                     for r in rows
                     if all(
-                        match_filter(
-                            {**r, **texts.get(cast(UUID, r["id"]), {})},
-                            f,
-                        )
+                        match_filter({**r, **texts.get(cast(UUID, r["id"]), {})}, f)
                         for f in filters
                     )
                 ]
@@ -282,6 +315,8 @@ class _ReadMixin(_StoreShared):
                 outbound, inbound = await fetch_edges_bulk(
                     conn,
                     [cast(UUID, r["id"]) for r in window] if edges else [],
+                    policy=self.access_policy,
+                    principal=principal,
                 )
             return [materialize(row, outbound, inbound) for row in window]
         params.extend([limit, offset])
@@ -304,12 +339,16 @@ class _ReadMixin(_StoreShared):
             outbound, inbound = await fetch_edges_bulk(
                 conn,
                 [cast(UUID, r["id"]) for r in rows] if edges else [],
+                policy=self.access_policy,
+                principal=principal,
             )
         return [materialize(row, outbound, inbound) for row in rows]
 
     async def narrows_ancestors(
         self,
         ids: Sequence[UUID],
+        *,
+        principal: Principal | None = None,
     ) -> dict[UUID, tuple[Ancestor, ...]]:
         """Return each row's ``narrows`` ancestors, nearest first, up to its roots.
 
@@ -317,10 +356,12 @@ class _ReadMixin(_StoreShared):
         most 8 levels up, and at most 200 ancestors in all, nearest first, so a
         deep or wide ancestry stays one bounded query. A row with several parents
         keeps every one. A cycle ends at the depth cap, and no row is listed as
-        its own ancestor.
+        its own ancestor. An ancestor ``principal`` may not read ends its line,
+        as a root does.
 
         Args:
           ids: Rows to walk up from.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           ancestry: For each of ``ids``, its ancestors breadth first, each once,
@@ -329,8 +370,18 @@ class _ReadMixin(_StoreShared):
         """
         if not ids:
             return {}
+        params: list[object] = [list(ids), 8, 200]
+        predicate = inquiry_read_filter(
+            "e.to_id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        sql = NARROWS_ANCESTORS_SQL.format(
+            readable="" if predicate == "TRUE" else f" AND ({predicate})",
+        )
         async with self.engine.acquire() as conn:
-            found = await conn.fetch(NARROWS_ANCESTORS_SQL, list(ids), 8, 200)
+            found = await conn.fetch(sql, *params)
         nodes: dict[UUID, Ancestor] = {}
         parents: dict[UUID, list[UUID]] = {}
         for r in found:
@@ -347,21 +398,43 @@ class _ReadMixin(_StoreShared):
             listed.sort(key=str)
         return {row: _ancestry(row, parents, nodes) for row in ids}
 
-    async def next_issue(self) -> Issue | None:
-        """Return the next active Issue whose prerequisites are all terminal.
+    async def next_issue(self, *, principal: Principal | None = None) -> Issue | None:
+        """Return the next readable active Issue with terminal prerequisites.
+
+        Args:
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
-          result: The Issue | None.
+          issue: Next available Issue, or None when none is readable.
 
         """
+        params: list[object] = []
+        predicate = inquiry_read_filter(
+            "issue.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        sql = NEXT_ISSUE_SQL.format(
+            readable="" if predicate == "TRUE" else f" AND ({predicate})",
+        )
         async with self.engine.acquire() as conn:
-            row = await conn.fetchrow(NEXT_ISSUE_SQL)
+            row = await conn.fetchrow(sql, *params)
             if row is None:
                 return None
             rid = row["id"]
             assert isinstance(rid, UUID)
-            outbound, inbound = await fetch_edges(conn, rid)
-        issue = materialize(row, {rid: outbound}, {rid: inbound})
+            outbound, inbound = await fetch_edges(
+                conn,
+                rid,
+                policy=self.access_policy,
+                principal=principal,
+            )
+        issue = materialize(
+            row,
+            {rid: outbound},
+            {rid: inbound},
+        )
         assert isinstance(issue, Issue)
         return issue
 
@@ -370,33 +443,58 @@ class _ReadMixin(_StoreShared):
         subject_id: UUID,
         *,
         deep: bool = False,
+        principal: Principal | None = None,
     ) -> Cost | None:
-        """Return the running cost for one inquiry, or ``None`` if missing.
+        """Return the running cost for one readable inquiry, or ``None``.
 
         ``deep=True`` rolls up the Issue decomposition subtree via
-        ``cost_subtree.sql``; ``deep=False`` reads the row's own
-        running totals. Both paths return ``None`` for an unknown id so
-        callers can distinguish "no such row" from "zero recorded cost".
+        :data:`COST_SUBTREE_SQL`, over the rows ``principal`` may read;
+        ``deep=False`` reads the row's own running totals. Both paths return
+        ``None`` for an unknown id so callers can distinguish "no such row" from
+        "zero recorded cost".
 
         Args:
           subject_id: Row id to query (Issue, CodeChange, or WebSearch).
           deep: If True, sum costs of all child Issues (recursive); if False,
             return only this row's marginal costs.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           cost: Cost object with agent_usd and resource_usd, or None if the
-            row does not exist.
+            row is absent or denied.
 
         """
+        params: list[object] = [subject_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
         async with self.engine.acquire() as conn:
             exists = await conn.fetchval(
-                "SELECT 1 FROM inquiries WHERE id = $1",
-                subject_id,
+                vetted_sql(
+                    "SELECT 1 FROM inquiries WHERE id = $1",
+                    "" if predicate == "TRUE" else f" AND ({predicate})",
+                ),
+                *params,
             )
             if exists is None:
                 return None
             if deep:
-                row = await conn.fetchrow(COST_SUBTREE_SQL, subject_id)
+                params = [subject_id]
+                predicate = inquiry_read_filter(
+                    "e.from_id",
+                    policy=self.access_policy,
+                    principal=principal,
+                    params=params,
+                )
+                row = await conn.fetchrow(
+                    COST_SUBTREE_SQL.format(
+                        readable="" if predicate == "TRUE" else f" AND ({predicate})",
+                    ),
+                    *params,
+                )
             else:
                 row = await conn.fetchrow(
                     "SELECT marginal_cost_agent_usd AS agent_usd, "
@@ -411,8 +509,13 @@ class _ReadMixin(_StoreShared):
             resource_usd=from_plain(row["resource_usd"], float),
         )
 
-    async def proves_belief(self, belief_id: UUID) -> list[Inquiry]:
-        """Active load-bearing ``proves`` Artifacts for ``belief_id``.
+    async def proves_belief(
+        self,
+        belief_id: UUID,
+        *,
+        principal: Principal | None = None,
+    ) -> list[Inquiry]:
+        """Read active load-bearing ``proves`` Artifacts for ``belief_id``.
 
         Each returned row is projected through :func:`fetch_edges_bulk`
         so its own provenance / citation fields are populated -- callers
@@ -420,17 +523,35 @@ class _ReadMixin(_StoreShared):
 
         Args:
           belief_id: Belief row id to find evidence for.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
-          artifacts: List of non-terminal CodeChange/WebSearch/WebResult rows
-            with proves edges pointing to the belief.
+          artifacts: Readable non-terminal evidence with readable peer projections.
 
         """
+        params: list[object] = [belief_id]
+        predicates = [
+            inquiry_read_filter(
+                reference,
+                policy=self.access_policy,
+                principal=principal,
+                params=params,
+            )
+            for reference in ("e.to_id", "t.id")
+        ]
+        readable = "".join(
+            f" AND ({predicate})" for predicate in predicates if predicate != "TRUE"
+        )
         async with self.engine.acquire() as conn:
-            rows = await conn.fetch(PROVES_BELIEF_SQL, belief_id)
+            rows = await conn.fetch(
+                PROVES_BELIEF_SQL.format(readable=readable),
+                *params,
+            )
             outbound, inbound = await fetch_edges_bulk(
                 conn,
                 [cast(UUID, r["id"]) for r in rows],
+                policy=self.access_policy,
+                principal=principal,
             )
         return [materialize(row, outbound, inbound) for row in rows]
 
@@ -439,6 +560,7 @@ class _ReadMixin(_StoreShared):
         belief_id: UUID,
         *,
         conn: Conn | None = None,
+        principal: Principal | None = None,
     ) -> float | None:
         """Compute derived confidence of a Belief/Experiment; None if missing.
 
@@ -447,7 +569,9 @@ class _ReadMixin(_StoreShared):
         each citation contributes ``citation_confidence * valence``, recursing
         into any citer that is itself a Belief/Experiment so a chain resolves
         bottom-up. Neutral ``0.5`` when no currently-true evidence exists.
-        Purely derived and read-only -- it never writes the stored row.
+        Purely derived and read-only -- it never writes the stored row. Only the
+        rows ``principal`` may read take part: a hidden target is missing, and a
+        hidden citer adds nothing.
 
         ``conn`` joins a caller's open transaction: PGlite's single connection
         deadlocks on a re-entrant ``acquire``, and this walk issues one query
@@ -456,30 +580,57 @@ class _ReadMixin(_StoreShared):
         Args:
           belief_id: Belief or Experiment row id to score.
           conn: Existing connection to reuse, or None to acquire one.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           confidence: Derived confidence in ``(0, 1)``, or None if ``belief_id``
-            does not exist.
+            does not exist or is hidden.
 
         """
         if conn is not None:
-            return await self._confidence_walk(conn, belief_id)
+            return await self._confidence_walk(conn, belief_id, principal=principal)
         async with self.engine.acquire() as new_conn:
-            return await self._confidence_walk(new_conn, belief_id)
+            return await self._confidence_walk(
+                new_conn,
+                belief_id,
+                principal=principal,
+            )
 
     # Confidence is defined only for the kinds a ``proves`` edge can target
     # (Belief/Experiment). For any other kind the proves graph is always empty, so
     # folding it would return a misleading neutral 0.5 -- a real number for a question
     # that does not apply. Return None instead.
-    async def _confidence_walk(self, conn: Conn, belief_id: UUID) -> float | None:
+    async def _confidence_walk(
+        self,
+        conn: Conn,
+        belief_id: UUID,
+        *,
+        principal: Principal | None,
+    ) -> float | None:
         """Resolve derived confidence, or None if absent or a non-claimable kind."""
+        params: list[object] = [belief_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
         kind = await conn.fetchval(
-            "SELECT kind FROM inquiries WHERE id = $1",
-            belief_id,
+            vetted_sql(
+                "SELECT kind FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
         if kind not in _CLAIMABLE_KINDS:
             return None
-        return await self._node_confidence(conn, belief_id, memo={}, visiting=set())
+        return await self._node_confidence(
+            conn,
+            belief_id,
+            memo={},
+            visiting=set(),
+            principal=principal,
+        )
 
     async def _node_confidence(
         self,
@@ -488,6 +639,7 @@ class _ReadMixin(_StoreShared):
         *,
         memo: dict[UUID, float],
         visiting: set[UUID],
+        principal: Principal | None,
     ) -> float:
         """One node's derived confidence, memoized, recursing into claimable citers."""
         if node_id in memo:
@@ -499,7 +651,17 @@ class _ReadMixin(_StoreShared):
             return fold_confidence(0.0)
         visiting.add(node_id)
         log_odds = 0.0
-        for row in await conn.fetch(PROVING_EDGES_SQL, node_id):
+        params: list[object] = [node_id]
+        predicate = inquiry_read_filter(
+            "t.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        sql = PROVING_EDGES_SQL.format(
+            readable="" if predicate == "TRUE" else f" AND ({predicate})",
+        )
+        for row in await conn.fetch(sql, *params):
             from_kind = cast(str, row["from_kind"])
             valence = cast(float, row["valence"])
             citation_confidence = (
@@ -508,6 +670,7 @@ class _ReadMixin(_StoreShared):
                     cast(UUID, row["from_id"]),
                     memo=memo,
                     visiting=visiting,
+                    principal=principal,
                 )
                 if from_kind in _CLAIMABLE_KINDS
                 else 1.0
@@ -518,8 +681,13 @@ class _ReadMixin(_StoreShared):
         memo[node_id] = result
         return result
 
-    async def derived_authority(self, target_id: UUID) -> dict[str, float] | None:
-        """Return a row's derived authority scores, or None if it is absent.
+    async def derived_authority(
+        self,
+        target_id: UUID,
+        *,
+        principal: Principal | None = None,
+    ) -> dict[str, float] | None:
+        """Return a readable row's derived authority scores, or None.
 
         Reads the four load-bearing (PageRank) columns the authority sweep
         writes. Only relations that reach the row carry a score; the rest are
@@ -527,17 +695,28 @@ class _ReadMixin(_StoreShared):
 
         Args:
           target_id: Inquiry row id to read authority for.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           authority: ``column -> score`` for every non-NULL authority column, or
-            None if ``target_id`` does not exist.
+            None if ``target_id`` is absent or denied.
 
         """
+        params: list[object] = [target_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT proves_authority, favors_authority, cited_by_authority, "
-                "issue_authority FROM inquiries WHERE id = $1",
-                target_id,
+                vetted_sql(
+                    "SELECT proves_authority, favors_authority, cited_by_authority, "
+                    "issue_authority FROM inquiries WHERE id = $1",
+                    "" if predicate == "TRUE" else f" AND ({predicate})",
+                ),
+                *params,
             )
         if row is None:
             return None
@@ -647,21 +826,71 @@ class _ReadMixin(_StoreShared):
             )
         return [(Change.from_row(r), cast(int | None, r["subject_seq"])) for r in rows]
 
-    async def get_change(self, change_id: UUID) -> Change | None:
-        """Fetch one ``change_log`` row by id; ``None`` when absent.
+    def change_read_filter(
+        self,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal | None = None,
+    ) -> str:
+        """Gate history by its current subject and both snapshot peers.
+
+        Args:
+          alias: Trusted SQL alias of the change-log row.
+          params: Positional bindings extended by the policy.
+          principal: Request reader; None preserves trusted reads.
+
+        Returns:
+          predicate: Visibility clause, or TRUE for unrestricted history.
+
+        """
+        clauses: list[str] = []
+        for column in ("subject_id", "old_peer_id", "new_peer_id"):
+            reference = f"{alias}.{column}"
+            predicate = inquiry_read_filter(
+                reference,
+                policy=self.access_policy,
+                principal=principal,
+                params=params,
+            )
+            if predicate != "TRUE":
+                clauses.append(
+                    f"({predicate})"
+                    if column == "subject_id"
+                    else f"({reference} IS NULL OR ({predicate}))",
+                )
+        return " AND ".join(clauses) if clauses else "TRUE"
+
+    async def get_change(
+        self,
+        change_id: UUID,
+        *,
+        principal: Principal | None = None,
+    ) -> Change | None:
+        """Fetch one ``change_log`` row by id; ``None`` when absent or denied.
 
         Args:
           change_id: change_log row id to retrieve.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           change: Change object materialized from the row, or None if not
             found.
 
         """
+        params: list[object] = [change_id]
+        predicate = self.change_read_filter(
+            "change_log",
+            params=params,
+            principal=principal,
+        )
         async with self.engine.acquire() as conn:
             row = await conn.fetchrow(
-                "SELECT * FROM change_log WHERE id = $1",
-                change_id,
+                vetted_sql(
+                    "SELECT * FROM change_log WHERE id = $1",
+                    "" if predicate == "TRUE" else f" AND ({predicate})",
+                ),
+                *params,
             )
         return None if row is None else Change.from_row(row)
 
@@ -672,9 +901,10 @@ class _ReadMixin(_StoreShared):
         after_id: UUID | None = None,
         actor: Inquiry.Actor | None = None,
         subject_id: UUID | None = None,
-        subject_kind: Inquiry.InquiryKind | None = None,
-        kinds: Sequence[Change.Kind] = (),
+        subject_kind: str | None = None,
+        kinds: Sequence[str] = (),
         limit: int = 200,
+        principal: Principal | None = None,
     ) -> list[Change]:
         """Return a filtered, newest-first ``change_log`` slice.
 
@@ -693,6 +923,7 @@ class _ReadMixin(_StoreShared):
           subject_kind: Filter on the mutated row kind.
           kinds: Keep changes of any of these discriminators.
           limit: Maximum rows, capped at ``MAX_LIST_LIMIT``. Default 200.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           changes: Up to ``limit`` matching :class:`Change` rows ordered
@@ -704,6 +935,13 @@ class _ReadMixin(_StoreShared):
         async with self.engine.acquire() as conn:
             clauses: list[str] = []
             args: list[object] = []
+            predicate = self.change_read_filter(
+                "change_log",
+                params=args,
+                principal=principal,
+            )
+            if predicate != "TRUE":
+                clauses.append(f"({predicate})")
             for clause, value in (
                 ("created >= {}", since),
                 ("actor = {}", actor),
@@ -720,9 +958,20 @@ class _ReadMixin(_StoreShared):
                 # older rows with larger UUIDs and dupes newer rows with
                 # smaller ones (UUID order is unrelated to ``created``). Look
                 # up the cursor row's ``created`` and bind both halves.
+                cursor_params: list[object] = [after_id]
+                cursor_predicate = self.change_read_filter(
+                    "change_log",
+                    params=cursor_params,
+                    principal=principal,
+                )
                 cursor_created = await conn.fetchval(
-                    "SELECT created FROM change_log WHERE id = $1",
-                    after_id,
+                    vetted_sql(
+                        "SELECT created FROM change_log WHERE id = $1",
+                        ""
+                        if cursor_predicate == "TRUE"
+                        else f" AND ({cursor_predicate})",
+                    ),
+                    *cursor_params,
                 )
                 if cursor_created is None:
                     # An unknown cursor would make ``(created, id) < (NULL, ...)``

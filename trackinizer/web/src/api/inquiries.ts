@@ -467,4 +467,5 @@ const INQUIRY_KINDS: { readonly [Kind in InquiryKind]: true } = {
   WebResult: true,
   WebSearch: true,
   AgentSession: true,
+  AccessGroup: true,
 };

@@ -123,6 +123,8 @@ class Snapshot:
     agentsession_ended: datetime | None = None
     agentsession_rooms: tuple[str, ...] | None = None
     agentsession_audience: str | None = None
+    accessgroup_read_group: UUID | None = None
+    accessgroup_write_group: UUID | None = None
 
     subscribers: tuple[Inquiry.Actor, ...] | None = None
     """Mirrors :attr:`Inquiry.subscribers`."""
@@ -247,6 +249,9 @@ class Change:
         "agentsession_ended",
         "agentsession_rooms",
         "agentsession_audience",
+        # AccessGroup-only.
+        "accessgroup_read_group",
+        "accessgroup_write_group",
         # Edge-table mutations (decomposition, sequencing, provenance,
         # citations, supersedes); the peer triple rides on the Snapshot's
         # peer_* fields. These name an event, not a column, so they keep their
@@ -392,6 +397,8 @@ class _SnapshotKwargs(TypedDict, total=False, closed=True):
     agentsession_ended: datetime | None
     agentsession_rooms: tuple[str, ...] | None
     agentsession_audience: str | None
+    accessgroup_read_group: UUID | None
+    accessgroup_write_group: UUID | None
     subscribers: tuple[Inquiry.Actor, ...] | None
     marginal_cost: Cost | None
 

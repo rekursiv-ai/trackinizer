@@ -293,9 +293,12 @@ const INLINE: { readonly [Kind in InquiryKind]?: Inline<Kind> } = {
   },
 };
 
-/** A citation by `target`; the topology admits no Issue as a citer, and the server checks it too. */
+/**
+ * A citation by `target`; the topology admits no Issue or AccessGroup as a citer,
+ * and the server checks it too.
+ */
 function citation({ id, kind }: Target) {
-  if (kind === "Issue") throw new Error("An issue cannot cite a claim.");
+  if (kind === "Issue" || kind === "AccessGroup") throw new Error(`An ${kind} cannot cite a claim.`);
   return { artifact_id: id, artifact_kind: kind };
 }
 

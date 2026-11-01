@@ -19,6 +19,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
+from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
@@ -716,6 +717,7 @@ class _FakeStore:
     """The two ``Store`` writes ``publish_artifact_content`` delegates."""
 
     db: _Db
+    access_policy: DefaultPolicy = field(default_factory=DefaultPolicy)
     artifact_id: uuid.UUID = field(default_factory=uuid.uuid4)
     submitted: list[tuple[SubmitArtifact, dict[str, object]]] = field(
         default_factory=list,

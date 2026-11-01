@@ -262,7 +262,7 @@ type _EdgeEndpoint = Literal["from", "to"]
 type KindGroup = Literal[
     "issue",
     "inquiry",
-    "artifact",
+    "evidence",
     "belief",
     "experiment",
     "claimable",
@@ -271,41 +271,40 @@ type KindGroup = Literal[
 """A named set of inquiry kinds an edge endpoint admits. Resolved to the
 concrete kind tuple by :func:`kind_group_members`; the schema's edge-validity
 CHECK and the SPA edge picker both derive their topology from the same groups,
-so neither can drift from the other. ``claimable`` is the citation-target set
-``{Belief, Experiment}`` -- the kinds a ``proves`` / ``favors`` edge may point
-at. ``paper`` is the ``Paper``-only endpoint set both sides of a
-``cites_paper`` (historical citation) edge admit."""
+so neither can drift from the other. ``evidence`` is the citing set
+(:data:`Artifact.EvidenceKind`), the kinds a ``proves`` / ``favors`` edge may
+point from; ``claimable`` is the citation-target set ``{Belief, Experiment}``
+-- the kinds it may point at. ``paper`` is the ``Paper``-only endpoint set both
+sides of a ``cites_paper`` (historical citation) edge admit."""
 
 
 def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
     """Return the concrete inquiry kinds a :data:`KindGroup` admits.
 
     The single resolver behind both the schema CHECK (``{inquiry_kinds}`` /
-    ``{artifact_kinds}``) and ``/api/meta/edges``, so the edge topology has one
+    ``{evidence_kinds}``) and ``/api/meta/edges``, so the edge topology has one
     source of truth instead of a hand-typed copy in the SPA.
 
     Args:
-      group: Enum value: "inquiries" or "artifacts".
+      group: The endpoint group, e.g. "inquiry" or "evidence".
 
     Returns:
       kinds: Tuple of inquiry type strings this group permits.
 
     """
-    inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
-        tuple[Inquiry.InquiryKind, ...],
-        get_args(Inquiry.InquiryKind.__value__),
-    )
-    artifact: tuple[Inquiry.InquiryKind, ...] = cast(
-        tuple[Inquiry.InquiryKind, ...],
-        get_args(Artifact.Kind.__value__),
-    )
     match group:
         case "issue":
             return ("Issue",)
         case "inquiry":
-            return tuple(inquiry)
-        case "artifact":
-            return tuple(artifact)
+            return cast(
+                tuple[Inquiry.InquiryKind, ...],
+                get_args(Inquiry.InquiryKind.__value__),
+            )
+        case "evidence":
+            return cast(
+                tuple[Inquiry.InquiryKind, ...],
+                get_args(Artifact.EvidenceKind.__value__),
+            )
         case "belief":
             return ("Belief",)
         case "experiment":
@@ -439,7 +438,7 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
             ),
             forward_label="proves",
             inverse_label="proved_by",
-            from_kinds="artifact",
+            from_kinds="evidence",
             to_kinds="claimable",
             cascade_dependent="to",
         ),
@@ -452,7 +451,7 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
             ),
             forward_label="favors",
             inverse_label="favored_by",
-            from_kinds="artifact",
+            from_kinds="evidence",
             to_kinds="claimable",
             cascade_dependent="to",
         ),

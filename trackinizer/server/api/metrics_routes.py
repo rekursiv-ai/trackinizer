@@ -5,8 +5,8 @@ A run streams batches of step-grained points into ``experiment_metrics``;
 ``GET .../metrics`` reads them back, paginated. The mask query, masked write,
 and cross-experiment rank are the ``trax metric`` grammar's surface. The two
 mutating routes require the ``writer`` role; the reads require ``viewer``.
-There is no per-tenant scoping: any principal holding the role reaches any
-experiment.
+Every route reaches only the experiments the caller may read, as the
+deployment's access policy says: any other is missing.
 
 Thin by construction: ``Store.log_metrics`` / ``read_metrics`` /
 ``write_metrics_masked`` own the Experiment check (raising ``NotFoundError`` /
@@ -18,7 +18,7 @@ other operation's controls, validate pagination, and serialize.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -26,7 +26,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api.query import parse_filter
-from trackinizer.server.auth import require_role
+from trackinizer.server.api.session_access import request_principal
+from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.wire.column_shapes import lowers_into_sql
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
@@ -61,12 +62,24 @@ router = APIRouter()
 
 @router.post(
     EXPERIMENT_METRICS_PATH,
-    dependencies=[Depends(require_role("writer"))],
+    description=(
+        "Batch-append metric points to an experiment.\n\n"
+        "Idempotent on ``(experiment_id, key, step)``: a retried batch reports\n"
+        "``logged=0``. ``Store.log_metrics`` rejects a non-Experiment id (409) or a\n"
+        "missing one (404).\n\n"
+        "Args:\n"
+        "  experiment_id: Target Experiment inquiry id.\n"
+        "  body: Request body with points array.\n"
+        "  request: FastAPI Request context (used to get the store).\n\n"
+        "Returns:\n"
+        "  result: LogMetricsResponse with logged and skipped counts."
+    ),
 )
 async def log_metrics_route(
     experiment_id: UUID,
     body: LogMetricsRequest,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> LogMetricsResponse:
     """Batch-append metric points to an experiment.
 
@@ -78,23 +91,45 @@ async def log_metrics_route(
       experiment_id: Target Experiment inquiry id.
       body: Request body with points array.
       request: FastAPI Request context (used to get the store).
+      identity: Authenticated caller, writer-role-gated.
 
     Returns:
       result: LogMetricsResponse with logged and skipped counts.
 
     """
     store = get_store(request)
-    logged, skipped = await store.log_metrics(experiment_id, body.points)
+    logged, skipped = await store.log_metrics(
+        experiment_id,
+        body.points,
+        principal=await request_principal(request, identity),
+    )
     return LogMetricsResponse(logged=logged, skipped=skipped)
 
 
 @router.get(
     EXPERIMENT_METRICS_PATH,
-    dependencies=[Depends(require_role("viewer"))],
+    description=(
+        "Read one page of an experiment's metric points in ``(key, step)`` order.\n\n"
+        "Paginated so a caller never pulls a whole large run at once; ``key``\n"
+        "narrows to one metric. ``Store.read_metrics`` rejects a non-Experiment id\n"
+        "(409) or a missing one (404), so an empty page means a run with no points.\n\n"
+        "Args:\n"
+        "  experiment_id: Target Experiment inquiry id.\n"
+        "  request: FastAPI Request context (used to get the store).\n"
+        "  limit: Max points per page; must be in [1, MAX_LIST_LIMIT].\n"
+        "  offset: Number of points to skip from the start; must be >= 0.\n"
+        "  key: Optional metric name to filter by.\n\n"
+        "Returns:\n"
+        "  result: ReadMetricsResponse with points array.\n\n"
+        "Raises:\n"
+        "  HTTPException: 400 if limit or offset invalid."
+    ),
 )
 async def read_metrics_route(
     experiment_id: UUID,
     request: Request,
+    *,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     limit: int = DEFAULT_LIST_LIMIT,
     offset: int = 0,
     key: str | None = None,
@@ -108,6 +143,7 @@ async def read_metrics_route(
     Args:
       experiment_id: Target Experiment inquiry id.
       request: FastAPI Request context (used to get the store).
+      identity: Authenticated caller, viewer-role-gated.
       limit: Max points per page; must be in [1, MAX_LIST_LIMIT].
       offset: Number of points to skip from the start; must be >= 0.
       key: Optional metric name to filter by.
@@ -132,18 +168,30 @@ async def read_metrics_route(
         key=key,
         limit=limit,
         offset=offset,
+        principal=await request_principal(request, identity),
     )
     return ReadMetricsResponse(points=points)
 
 
 @router.post(
     EXPERIMENT_METRIC_QUERY_PATH,
-    dependencies=[Depends(require_role("viewer"))],
+    description=(
+        "Read one experiment's masked metric cells (the mask-query surface).\n\n"
+        "Args:\n"
+        "  experiment_id: Experiment id.\n"
+        "  body: Request body with masks, sort, and limit.\n"
+        "  request: FastAPI Request context (used to get the store).\n\n"
+        "Returns:\n"
+        "  result: The MetricQueryResponse.\n\n"
+        "Raises:\n"
+        "  HTTPException: 400 if the body carries a write value."
+    ),
 )
 async def query_metrics_route(
     experiment_id: UUID,
     body: MetricQueryRequest,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> MetricQueryResponse:
     """Read one experiment's masked metric cells (the mask-query surface).
 
@@ -151,6 +199,7 @@ async def query_metrics_route(
       experiment_id: Experiment id.
       body: Request body with masks, sort, and limit.
       request: FastAPI Request context (used to get the store).
+      identity: Authenticated caller, viewer-role-gated.
 
     Returns:
       result: The MetricQueryResponse.
@@ -167,18 +216,30 @@ async def query_metrics_route(
         sort=body.sort,
         limit=body.limit,
         offset=body.offset or 0,
+        principal=await request_principal(request, identity),
     )
     return MetricQueryResponse(points=[point for _eid, point in rows])
 
 
 @router.post(
     EXPERIMENT_METRIC_WRITE_PATH,
-    dependencies=[Depends(require_role("writer"))],
+    description=(
+        "Assign ``body.write`` to every cell the mask selects (bulk upsert).\n\n"
+        "Args:\n"
+        "  experiment_id: Target Experiment inquiry id.\n"
+        "  body: Request body with masks and write value.\n"
+        "  request: FastAPI Request context (used to get the store).\n\n"
+        "Returns:\n"
+        "  result: MetricWriteResponse with count of cells written.\n\n"
+        "Raises:\n"
+        "  HTTPException: 400 if write value is missing."
+    ),
 )
 async def write_metrics_route(
     experiment_id: UUID,
     body: MetricQueryRequest,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> MetricWriteResponse:
     """Assign ``body.write`` to every cell the mask selects (bulk upsert).
 
@@ -186,6 +247,7 @@ async def write_metrics_route(
       experiment_id: Target Experiment inquiry id.
       body: Request body with masks and write value.
       request: FastAPI Request context (used to get the store).
+      identity: Authenticated caller, writer-role-gated.
 
     Returns:
       result: MetricWriteResponse with count of cells written.
@@ -201,17 +263,30 @@ async def write_metrics_route(
         experiment_id,
         masks=body.masks,
         value=body.write,
+        principal=await request_principal(request, identity),
     )
     return MetricWriteResponse(written=written)
 
 
 @router.post(
     METRIC_RANK_PATH,
-    dependencies=[Depends(require_role("viewer"))],
+    description=(
+        "Cross-experiment masked read/rank over the given experiments.\n\n"
+        "Each of ``filters`` is checked as the list route checks a ``filter``\n"
+        "param, on the Experiment's columns, so a bad clause is the same 400.\n\n"
+        "Args:\n"
+        "  body: Request body with experiment_ids or filters, and query (masks, sort, limit, offset).\n"
+        "  request: FastAPI Request context (used to get the store).\n\n"
+        "Returns:\n"
+        "  result: MetricRankResponse with rows array (experiment_id, point pairs).\n\n"
+        "Raises:\n"
+        "  HTTPException: 400 if the query carries a write value."
+    ),
 )
 async def rank_metrics_route(
     body: MetricRankRequest,
     request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> MetricRankResponse:
     """Cross-experiment masked read/rank over the given experiments.
 
@@ -221,6 +296,7 @@ async def rank_metrics_route(
     Args:
       body: Request body with experiment_ids or filters, and query (masks, sort, limit, offset).
       request: FastAPI Request context (used to get the store).
+      identity: Authenticated caller, viewer-role-gated.
 
     Returns:
       result: MetricRankResponse with rows array (experiment_id, point pairs).
@@ -231,6 +307,7 @@ async def rank_metrics_route(
     """
     _reject_write(body.query)
     store = get_store(request)
+    principal = await request_principal(request, identity)
     with regex_failures_as_400():
         rows = await store.query_metrics(
             body.experiment_ids
@@ -240,6 +317,7 @@ async def rank_metrics_route(
             sort=body.query.sort,
             limit=body.query.limit,
             offset=body.query.offset or 0,
+            principal=principal,
         )
     return MetricRankResponse(
         rows=[MetricRankRow(experiment_id=eid, point=point) for eid, point in rows],

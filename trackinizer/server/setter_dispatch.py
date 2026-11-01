@@ -42,6 +42,7 @@ from trackinizer.types.columns import (
     storage_name,
 )
 from trackinizer.types.inquiries import (
+    AccessGroup,
     AgentSession,
     Artifact,
     Belief,
@@ -217,6 +218,7 @@ COLUMN_SPECS: dict[str, ColumnSpec] = _column_specs(
     WebResult,
     WebSearch,
     AgentSession,
+    AccessGroup,
 )
 """``storage_name -> ColumnSpec`` aggregated from every Inquiry subclass.
 

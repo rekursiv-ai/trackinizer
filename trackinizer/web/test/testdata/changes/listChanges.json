@@ -23,6 +23,8 @@
         "id": "00000000-0000-4000-9000-000000000001",
         "kind": "status",
         "new": {
+          "accessgroup_read_group": null,
+          "accessgroup_write_group": null,
           "account": null,
           "agentsession_audience": null,
           "agentsession_cli": null,
@@ -71,6 +73,8 @@
           "websearch_query": null
         },
         "old": {
+          "accessgroup_read_group": null,
+          "accessgroup_write_group": null,
           "account": null,
           "agentsession_audience": null,
           "agentsession_cli": null,

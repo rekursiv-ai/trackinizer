@@ -458,9 +458,9 @@ def _is_transient_pglite_fault(err: BaseException) -> bool:
 
 class Store(
     _LifecycleMixin,
+    _ExportMixin,
     _ReadMixin,
     _AuthorityMixin,
-    _ExportMixin,
     _MetricsMixin,
     _SessionMixin,
     _SessionFeedMixin,

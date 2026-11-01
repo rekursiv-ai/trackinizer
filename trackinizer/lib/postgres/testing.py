@@ -39,6 +39,8 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
     from pathlib import Path
 
+    from trackinizer.lib.postgres import DatabaseEngine
+
 
 @pytest.fixture(scope="session")
 def pglite_workdir(tmp_path_factory: pytest.TempPathFactory) -> Path:
@@ -97,7 +99,7 @@ async def pglite_engine(
     return await pglite_engine_cache.get(extensions)
 
 
-async def reset_schema(engine: PGliteEngine) -> None:
+async def reset_schema(engine: DatabaseEngine) -> None:
     """Drop and recreate ``public`` and the session temp schema.
 
     The isolation a per-test engine provided, at 1/600th the cost. ``CASCADE``

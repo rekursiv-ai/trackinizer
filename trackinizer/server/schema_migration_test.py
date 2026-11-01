@@ -12,7 +12,8 @@ so the two files are read by disjoint populations and can drift with nothing
 noticing until a query hits the column one of them lacks.
 
 Each migration test is a unit test of its steps: it starts from the session's build,
-takes away what the steps add, runs their files itself, and compares with the build,
+takes away what the steps add, runs their files itself, and compares with the build
+(whose catalog ``fresh_install`` reads once a session),
 all inside a transaction rolled back after it (``integ_rollback_conn``,
 ``pglite_rollback_conn``), so the next test meets the build untouched. A CHECK test
 writes to the build itself (``integ_store``, ``pglite_db``). All skip cleanly when the
@@ -32,7 +33,7 @@ take that embedding away.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast, get_args
+from typing import TYPE_CHECKING, Final, Protocol, cast, get_args
 
 import uuid
 
@@ -40,18 +41,22 @@ from treekle import from_plain
 
 import asyncpg
 import pytest
+import pytest_asyncio
 
+from trackinizer.conftest import restore_pglite
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import tx
 from trackinizer.server.preferences import stored_preferences
 from trackinizer.server.primitives import insert_inquiry, upsert_embedding
+from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import load_sql, schema_migrations
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change
 from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Awaitable, Callable, Mapping
 
     from trackinizer.lib.postgres import Conn, PGliteEngine
     from trackinizer.server.store.core import Store
@@ -1556,20 +1561,45 @@ async def test_migration_060_matches_the_baseline_run_places_and_key_machines(
     ) in migrated["api_keys"][1]
 
 
-async def _catalog_names_aside(conn: Conn) -> list[tuple[str, str, str]]:
+# Joined in the database: narrowing each field of ~1,200 rows cost a read as much as the
+# query did.
+_CATALOG_NAMES_ASIDE: Final = vetted_sql(
+    "SELECT coalesce(string_agg(line, E'\\n' ORDER BY line), '') FROM ("
+    " SELECT kind || '|' || CASE WHEN kind = 'constraint'"
+    " THEN split_part(name, '.', 1) ELSE name END || '|' || definition AS line"
+    " FROM (",
+    _CATALOG,
+    ") AS catalog) AS lines",
+)
+"""``_CATALOG`` as sorted ``kind|name|definition`` lines, a constraint named by its table."""
+
+
+async def _catalog_names_aside(conn: Conn) -> list[str]:
     """Return ``_CATALOG``, each constraint keyed by its table rather than its name."""
-    rows = [
-        (
-            from_plain(r["kind"], str),
-            from_plain(r["name"], str),
-            from_plain(r["definition"], str),
-        )
-        for r in await conn.fetch(_CATALOG)
-    ]
-    return sorted(
-        (kind, name.split(".")[0] if kind == "constraint" else name, definition)
-        for kind, name, definition in rows
-    )
+    return from_plain(await conn.fetchval(_CATALOG_NAMES_ASIDE), str).splitlines()
+
+
+class _Engines(Protocol):
+    """The session's started PGlite engines, one per extension set."""
+
+    async def get(self, extensions: tuple[str, ...]) -> PGliteEngine:
+        """Return the started engine loading ``extensions``."""
+        ...
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def fresh_install(
+    pglite_engine_cache: _Engines,
+    pglite_extensions: tuple[str, ...],
+) -> list[str]:
+    """Read the build's catalog once, names aside, as a fresh install has it.
+
+    Every build is the same bootstrap of the same files, so one read serves the session.
+    """
+    engine = await pglite_engine_cache.get(pglite_extensions)
+    await restore_pglite(engine)
+    async with engine.acquire() as conn:
+        return await _catalog_names_aside(conn)
 
 
 # Nor is an audience move audited, which came after, in 047.
@@ -1583,7 +1613,7 @@ async def _make_app_old(conn: Conn) -> None:
         "DROP COLUMN old_app, DROP COLUMN new_app, "
         "DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
-        f"{_change_kinds('app', 'agentsession_audience')}))",
+        f"{_change_kinds('app', 'agentsession_audience', *_ACCESS_GROUP_CHANGES)}))",
     )
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.046.sql'")
 
@@ -1597,46 +1627,49 @@ def _change_kinds(*left_out: str) -> str:
     )
 
 
+# Each 046-048 test checks one thing its migrations do, on the build in a rolled-back
+# transaction. That a database turned back into an older shape and migrated has a
+# fresh install's catalog, and that a replay of its files changes none, is
+# test_a_migrated_database_has_a_fresh_installs_catalog and
+# test_a_replay_over_a_migrated_database_changes_no_catalog, below 066's helpers.
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_046_gives_an_existing_database_the_app_column(
+async def test_migration_046_gives_an_existing_issue_no_app(
     pglite_rollback_conn: Conn,
 ) -> None:
-    """A database migrated by 046 has the catalog a fresh install has, names aside.
-
-    Bootstrap builds the baseline. This takes ``app`` away again (its column, its
-    two audit columns, their CHECKs and its change kind), and what 047 and 048 add
-    after it, leaves an Issue and its ``created`` change behind as such a database
-    holds them, and applies the migrations. Every table, column, constraint, index
-    and sequence must equal the baseline's, and a replay of the files changes
-    nothing.
-    """
+    """An Issue a 045 database holds, with its ``created`` change, comes out with none."""
     conn = pglite_rollback_conn
-    fresh = await _catalog_names_aside(conn)
     await _make_app_old(conn)
-    issue = await conn.fetchval(
-        "INSERT INTO inquiries (id, kind, seq, status, account, title) "
-        "VALUES (gen_random_uuid(), 'Issue', 1, 'active', "
-        "'tester@example.com', 'before') RETURNING id",
+    issue = await _old_issue(conn)
+
+    await conn.execute(load_sql("schema.046"))
+
+    assert await conn.fetchval("SELECT app FROM inquiries WHERE id = $1", issue) is None
+
+
+async def _old_issue(conn: Conn) -> uuid.UUID:
+    """Insert an Issue and its ``created`` change, as an older database holds them."""
+    issue = from_plain(
+        await conn.fetchval(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "VALUES (gen_random_uuid(), 'Issue', 1, 'active', "
+            "'tester@example.com', 'before') RETURNING id",
+        ),
+        uuid.UUID,
     )
     await conn.execute(
         "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind) "
         "VALUES (gen_random_uuid(), 'tester', $1, 'Issue', 'created')",
         issue,
     )
+    return issue
 
-    for step in ("schema.046", "schema.047", "schema.048"):
+
+async def _migrate(conn: Conn, *steps: str) -> None:
+    """Run ``steps`` in order, then 066, as the runner applies them."""
+    for step in steps:
         await conn.execute(load_sql(step))
-    migrated = await _catalog_names_aside(conn)
-    app = await conn.fetchval("SELECT app FROM inquiries WHERE id = $1", issue)
-    await conn.execute(load_sql("schema.046"))
-    await conn.execute(load_sql("schema.047"))
-    await conn.execute(load_sql("schema.048"))
-    replayed = await _catalog_names_aside(conn)
-
-    assert app is None
-    assert migrated == fresh
-    assert replayed == fresh
+    await conn.execute(_MIGRATION_066)
 
 
 @pytest.mark.db_pglite
@@ -1700,7 +1733,7 @@ async def _make_audience_old(conn: Conn) -> None:
         f'DROP CONSTRAINT "{subject}", '
         "DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
-        f"{_change_kinds('agentsession_audience')}))",
+        f"{_change_kinds('agentsession_audience', *_ACCESS_GROUP_CHANGES)}))",
     )
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.047.sql'")
 
@@ -1742,27 +1775,20 @@ async def _seed_chat_titles(conn: Conn) -> dict[str, uuid.UUID]:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_047_audits_audience_and_retitles_chats(
-    pglite_rollback_conn: Conn,
-) -> None:
-    """A database 047 migrates has a fresh catalog, and no chat's line on its row.
+async def test_migration_047_retitles_chats(pglite_rollback_conn: Conn) -> None:
+    """A database 047 migrates holds no chat's line on its row.
 
-    The build's catalog, then titles embedded as they stand, a chat's first line among
-    them. This takes the audience audit away again (its two columns, their CHECKs and
-    its change kind), and the code store 048 adds after it, and applies the migrations.
-    Every table, column, constraint, index and sequence must equal the baseline's, a
-    replay of the files must change nothing, and the chat comes out ``Science chat``:
-    its row, the title change the log kept for it, and its embedding, which 047 takes
-    away so the boot makes it again from the new title. No other row changes.
+    Titles embedded as they stand, a chat's first line among them, in a 046 database.
+    The chat comes out ``Science chat``: its row, the title change the log kept for it,
+    and its embedding, which 047 takes away so the boot makes it again from the new
+    title. No other row changes.
     """
     conn = pglite_rollback_conn
-    fresh = await _catalog_names_aside(conn)
     sessions = await _seed_chat_titles(conn)
     await _make_audience_old(conn)
 
-    for step in ("schema.047", "schema.048"):
-        await conn.execute(load_sql(step))
-    migrated = await _catalog_names_aside(conn)
+    await conn.execute(load_sql("schema.047"))
+
     titles = await conn.fetch(
         "SELECT id, title FROM inquiries WHERE id = ANY($1::uuid[]) ORDER BY title",
         [sessions["chat"], sessions["other"]],
@@ -1778,12 +1804,7 @@ async def test_migration_047_audits_audience_and_retitles_chats(
             list(sessions.values()),
         )
     }
-    await conn.execute(load_sql("schema.047"))
-    await conn.execute(load_sql("schema.048"))
-    replayed = await _catalog_names_aside(conn)
 
-    assert migrated == fresh
-    assert replayed == fresh
     assert [(row["id"], row["title"]) for row in titles] == [
         (sessions["chat"], "Science chat"),
         (sessions["other"], "my run"),
@@ -1793,40 +1814,240 @@ async def test_migration_047_audits_audience_and_retitles_chats(
     assert embedded == {sessions["other"], sessions["reference"]}
 
 
+# Nor is AccessGroup a kind, which came after, in 066.
 async def _make_code_store_old(conn: Conn) -> None:
     """Turn a fresh database back into 047's shape: no code store."""
+    await _make_access_group_old(conn)
     await conn.execute("DROP TABLE code_snapshots, code_blobs")
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.048.sql'")
 
 
+# Dropping a column drops the CHECKs naming it. The kind lists and the subject checks
+# name no AccessGroup column, so they are found by what they say.
+async def _make_access_group_old(conn: Conn) -> None:
+    """Turn a fresh database back into 065's shape: AccessGroup is no kind."""
+    await conn.execute(
+        "ALTER TABLE inquiries DROP COLUMN accessgroup_read_group, "
+        "DROP COLUMN accessgroup_write_group, DROP COLUMN accessgroup_system, "
+        "DROP COLUMN accessgroup_domain",
+    )
+    await conn.execute(
+        "ALTER TABLE change_log "
+        "DROP COLUMN old_accessgroup_read_group, DROP COLUMN new_accessgroup_read_group, "
+        "DROP COLUMN old_accessgroup_write_group, "
+        "DROP COLUMN new_accessgroup_write_group, "
+        "DROP CONSTRAINT change_log_kind_check, "
+        "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
+        f"{_change_kinds(*_ACCESS_GROUP_CHANGES)}))",
+    )
+    for row in await conn.fetch(
+        "SELECT conrelid::regclass::text AS relation, conname, "
+        "pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+        "WHERE conrelid IN ('inquiries'::regclass, 'change_log'::regclass, "
+        "'edges'::regclass) AND pg_get_constraintdef(oid) LIKE '%''AccessGroup''%'",
+    ):
+        relation = from_plain(row["relation"], str)
+        name = from_plain(row["conname"], str)
+        definition = from_plain(row["definition"], str)
+        await conn.execute(f'ALTER TABLE {relation} DROP CONSTRAINT "{name}"')
+        if "subject_kind = 'AccessGroup'" not in definition:
+            await conn.execute(
+                f'ALTER TABLE {relation} ADD CONSTRAINT "{name}" '
+                + definition.replace(", 'AccessGroup'::text", ""),
+            )
+    await conn.execute("DROP SEQUENCE seq_accessgroup")
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.066.sql'")
+
+
+_ACCESS_GROUP_CHANGES: Final = ("accessgroup_read_group", "accessgroup_write_group")
+"""The change kinds 066 adds."""
+
+_MIGRATION_066: Final = substitute_schema_placeholders(load_sql("schema.066"))
+"""The 066 migration as the runner applies it."""
+
+
+# Each 066 test is one step on the build: it turns the build into 065's shape (taking
+# AccessGroup away again: its columns, their audit, its kind in every kind CHECK and
+# its sequence) on the rolled-back connection, and checks one thing 066 does.
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_048_gives_an_existing_database_the_code_store(
+async def test_a_065_database_lacks_what_066_adds(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    conn = pglite_rollback_conn
+
+    await _make_access_group_old(conn)
+
+    assert await _catalog_names_aside(conn) != fresh_install
+
+
+# The 065 shape is the head of main before AccessGroup: 063's change stamp and cursor
+# stand, and the ledger records 063 to 065 but not 066, so a boot runs 066 alone over
+# it.
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_065_database_holds_what_063_added_and_has_not_run_066(
     pglite_rollback_conn: Conn,
 ) -> None:
-    """A database migrated by 048 has the catalog a fresh install has.
+    conn = pglite_rollback_conn
 
-    Bootstrap builds the baseline. This drops both code tables again, as a 047
-    database lacks them, and applies the migration. Every table, column, constraint,
-    index and sequence must equal the baseline's, by name too, and a replay of the
-    file changes nothing.
+    await _make_access_group_old(conn)
+
+    held = await conn.fetchrow(
+        "SELECT to_regclass('session_index_cursor') IS NOT NULL AS cursor, "
+        "EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_name = 'session_records' AND column_name = 'changed_xid') "
+        "AS stamp, "
+        "EXISTS (SELECT 1 FROM pg_trigger "
+        "WHERE tgname = 'session_records_stamp_change') AS stamper, "
+        "ARRAY(SELECT name FROM applied_migrations WHERE name IN ('schema.063.sql', "
+        "'schema.064.sql', 'schema.065.sql', 'schema.066.sql') ORDER BY name) "
+        "AS ledger",
+    )
+    assert held is not None
+    assert (held["cursor"], held["stamp"], held["stamper"]) == (True, True, True)
+    assert from_plain(held["ledger"], list[str]) == [
+        "schema.063.sql",
+        "schema.064.sql",
+        "schema.065.sql",
+    ]
+
+
+# 063 to 065 run between 048 and 066, as the runner runs them. The older shapes keep
+# 063's stamp and cursor, which 046-048 never touch, so 063 runs over them and keeps
+# them; 064 and 065 change rows only.
+_OLDER_SHAPES: Final = (
+    pytest.param(
+        _make_app_old,
+        (
+            "schema.046",
+            "schema.047",
+            "schema.048",
+            "schema.063",
+            "schema.064",
+            "schema.065",
+        ),
+        id="045",
+    ),
+    pytest.param(
+        _make_audience_old,
+        ("schema.047", "schema.048", "schema.063", "schema.064", "schema.065"),
+        id="046",
+    ),
+    pytest.param(
+        _make_code_store_old,
+        ("schema.048", "schema.063", "schema.064", "schema.065"),
+        id="047",
+    ),
+)
+"""Each older shape a test makes of the build, and the steps that migrate it."""
+
+
+# Each older shape is the build with what its migrations add taken away again, and
+# what came after them, as ``_make_app_old`` and the others below it say.
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("make_old", "steps"),
+    [*_OLDER_SHAPES, pytest.param(_make_access_group_old, (), id="065")],
+)
+async def test_a_migrated_database_has_a_fresh_installs_catalog(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+    make_old: Callable[[Conn], Awaitable[None]],
+    steps: tuple[str, ...],
+) -> None:
+    """A database of the older shape, migrated, has a fresh install's catalog.
+
+    Every table, column, constraint, index and sequence equals the build's, names aside.
+    """
+    conn = pglite_rollback_conn
+    await make_old(conn)
+
+    await _migrate(conn, *steps)
+
+    assert await _catalog_names_aside(conn) == fresh_install
+
+
+# A replay meets the constraints as the files named them, not as the baseline did, so
+# it runs over a database the files migrated. The files run again in turn, as the
+# runner runs them: 046 or 047 alone is no invariant, since each sets a kind CHECK
+# that a later file widens.
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(("make_old", "steps"), _OLDER_SHAPES)
+async def test_a_replay_over_a_migrated_database_changes_no_catalog(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+    make_old: Callable[[Conn], Awaitable[None]],
+    steps: tuple[str, ...],
+) -> None:
+    """The files a database of the older shape was migrated by, run again, change nothing."""
+    conn = pglite_rollback_conn
+    await make_old(conn)
+    await _migrate(conn, *steps)
+
+    await _migrate(conn, *steps)
+
+    assert await _catalog_names_aside(conn) == fresh_install
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_replayed_066_changes_no_catalog(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    conn = pglite_rollback_conn
+
+    await _migrate(conn)
+
+    assert await _catalog_names_aside(conn) == fresh_install
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_066_keeps_a_065_databases_rows_and_takes_a_group(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """An Issue and its ``created`` change, as a 065 database holds them, stay."""
+    conn = pglite_rollback_conn
+    await _make_access_group_old(conn)
+    issue = await _old_issue(conn)
+
+    await conn.execute(_MIGRATION_066)
+
+    kept = await conn.fetchval("SELECT title FROM inquiries WHERE id = $1", issue)
+    group = await conn.fetchval(
+        "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+        "accessgroup_read_group, accessgroup_write_group, accessgroup_system) "
+        "VALUES ($1, 'AccessGroup', nextval('seq_accessgroup'), 'active', "
+        "'tester@example.com', 'group', $1, $1, false) RETURNING seq",
+        uuid.uuid4(),
+    )
+    assert (kept, group) == ("before", 1)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_048_gives_the_code_tables_the_baselines_names(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """A 047 database migrated by 048 gets both code tables as the build has them.
+
+    Their columns, constraints and indexes equal the build's, by name too.
     """
     conn = pglite_rollback_conn
     tables = ("code_blobs", "code_snapshots")
-    fresh = await _catalog_names_aside(conn)
     baseline = [await _table_shape(conn, table) for table in tables]
     await _make_code_store_old(conn)
 
     await conn.execute(load_sql("schema.048"))
-    migrated = await _catalog_names_aside(conn)
-    shapes = [await _table_shape(conn, table) for table in tables]
-    await conn.execute(load_sql("schema.048"))
-    replayed = await _catalog_names_aside(conn)
 
+    shapes = [await _table_shape(conn, table) for table in tables]
     assert all(shape[0] for shape in baseline), "the baseline lacks a code table"
-    assert migrated == fresh
     assert shapes == baseline
-    assert replayed == fresh
 
 
 @pytest.mark.db_pglite
@@ -1873,6 +2094,7 @@ async def test_the_code_tables_check_owner_hash_size_and_files(
 @pytest.mark.asyncio(loop_scope="session")
 async def test_migration_049_gives_a_machine_the_owner_who_enrolled_it_last(
     pglite_rollback_conn: Conn,
+    fresh_install: list[str],
 ) -> None:
     """A 048 database gains ``machines.owner``, filled from the latest used enrollment.
 
@@ -1880,7 +2102,6 @@ async def test_migration_049_gives_a_machine_the_owner_who_enrolled_it_last(
     replay keeps an owner already set.
     """
     conn = pglite_rollback_conn
-    fresh = await _catalog_names_aside(conn)
     await conn.execute(
         "ALTER TABLE machines DROP COLUMN owner, DROP COLUMN confirmed_at",
     )
@@ -1910,7 +2131,7 @@ async def test_migration_049_gives_a_machine_the_owner_who_enrolled_it_last(
     await conn.execute(load_sql("schema.049"))
     kept = await conn.fetchval("SELECT DISTINCT owner FROM machines")
 
-    assert migrated == fresh
+    assert migrated == fresh_install
     assert [(row["name"], row["owner"], row["confirmed"]) for row in owners] == [
         ("joined", "new@x.y", True),
         ("never", None, False),
@@ -1984,6 +2205,7 @@ async def _seed_audiences(conn: Conn) -> dict[str, uuid.UUID]:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_migration_051_gives_a_part_the_key_that_opened_it(
     pglite_rollback_conn: Conn,
+    fresh_install: list[str],
 ) -> None:
     """A 050 database's manifests gain ``opened_by_api_key_id``, NULL for each one held.
 
@@ -1991,7 +2213,6 @@ async def test_migration_051_gives_a_part_the_key_that_opened_it(
     """
     conn = pglite_rollback_conn
     session_id, key = uuid.uuid4(), uuid.uuid4()
-    fresh = await _catalog_names_aside(conn)
     await conn.execute(
         "ALTER TABLE session_manifests DROP COLUMN opened_by_api_key_id",
     )
@@ -2028,7 +2249,7 @@ async def test_migration_051_gives_a_part_the_key_that_opened_it(
         session_id,
     )
 
-    assert migrated == fresh
+    assert migrated == fresh_install
     assert held is None
     assert kept == key
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast, override
 from unittest.mock import AsyncMock
 
 import uuid
@@ -12,9 +13,11 @@ from treekle import from_plain
 
 import pytest
 
+from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.api.conftest import install_identity, make_test_identity
-from trackinizer.server.api.locks import referenced_ids, require_unlocked
+from trackinizer.server.api.locks import referenced_ids, require_writable
 from trackinizer.server.auth import AuthIdentity
+from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.bodies import SubmitBatch, SubmitIssue
 
 
@@ -23,6 +26,11 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.server.access_policy import (
+        AccessPolicy,
+        Principal,
+        ResourceKind,
+    )
     from trackinizer.server.auth import Role
     from trackinizer.server.store.core import Store
 
@@ -32,11 +40,12 @@ _KEY = uuid.UUID("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 
 
 class _Engine:
-    """An engine whose one connection answers ``fetch`` with ``rows``."""
+    """An engine whose one connection answers ``fetch`` with ``rows``, finding no hidden row."""
 
     def __init__(self, rows: list[dict[str, object]]) -> None:
         self.conn = AsyncMock()
         self.conn.fetch = AsyncMock(return_value=rows)
+        self.conn.fetchval = AsyncMock(return_value=None)
 
     def acquire(self) -> _Engine:
         return self
@@ -49,17 +58,40 @@ class _Engine:
 
 
 class _Request:
-    """Just enough of a request for ``get_store``: an app whose state holds a store."""
+    """Just enough of a request for ``get_store`` and ``request_principal``."""
 
-    def __init__(self, engine: _Engine) -> None:
-        store = type("_Store", (), {"engine": engine})()
+    def __init__(self, engine: _Engine, policy: AccessPolicy) -> None:
+        store = type("_Store", (), {"engine": engine, "access_policy": policy})()
         state = type("_State", (), {"store": store})()
         self.app = type("_App", (), {"state": state})()
+        self.state = type("_RequestState", (), {})()
 
 
-def _request(rows: list[dict[str, object]]) -> tuple[Request, _Engine]:
+def _request(
+    rows: list[dict[str, object]],
+    *,
+    policy: AccessPolicy | None = None,
+) -> tuple[Request, _Engine]:
     engine = _Engine(rows)
-    return cast("Request", _Request(engine)), engine
+    return cast("Request", _Request(engine, policy or DefaultPolicy())), engine
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _IssuesOnly(DefaultPolicy):
+    """A policy whose readers, admins included, read Issues alone."""
+
+    @override
+    def read_filter(
+        self,
+        kind: ResourceKind,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal,
+    ) -> str:
+        del kind, principal
+        params.append(["Issue"])
+        return f"{alias}.kind = ANY(${len(params)}::text[])"
 
 
 def _who(role: Role) -> AuthIdentity:
@@ -72,32 +104,52 @@ def _who(role: Role) -> AuthIdentity:
 
 
 @pytest.mark.asyncio
-async def test_an_admin_is_never_asked_about() -> None:
+async def test_an_admin_is_never_asked_about_locks() -> None:
     request, engine = _request([{"kind": "Issue", "seq": 1}])
-    await require_unlocked(request, _who("admin"), [_A])
+    await require_writable(request, _who("admin"), [_A])
     assert not engine.conn.fetch.called
 
 
 @pytest.mark.asyncio
 async def test_no_rows_means_no_question() -> None:
     request, engine = _request([{"kind": "Issue", "seq": 1}])
-    await require_unlocked(request, _who("writer"), [])
+    await require_writable(request, _who("writer"), [])
+    assert not engine.conn.fetch.called
+    assert not engine.conn.fetchval.called
+
+
+@pytest.mark.asyncio
+async def test_a_row_the_caller_may_not_read_is_absent_to_an_admin_too() -> None:
+    request, engine = _request([], policy=_IssuesOnly())
+    engine.conn.fetchval = AsyncMock(return_value=_B)
+    with pytest.raises(NotFoundError, match=f"inquiry {_B} not found"):
+        await require_writable(request, _who("admin"), [_A, _B])
+    sql, ids, kinds = engine.conn.fetchval.call_args.args
+    assert (ids, kinds) == ([_A, _B], ["Issue"])
+    assert "WHERE NOT EXISTS" in from_plain(sql, str)
     assert not engine.conn.fetch.called
 
 
 @pytest.mark.asyncio
-async def test_a_locked_row_refuses_a_writer_by_name() -> None:
-    request, _ = _request([{"kind": "Belief", "seq": 7}])
+@pytest.mark.parametrize(
+    ("readable", "named"),
+    [(True, "Belief #7"), (False, "A linked row")],
+)
+async def test_a_locked_row_refuses_a_writer_naming_it_only_if_readable(
+    readable: bool,
+    named: str,
+) -> None:
+    request, _ = _request([{"kind": "Belief", "seq": 7, "readable": readable}])
     with pytest.raises(HTTPException) as refused:
-        await require_unlocked(request, _who("writer"), [_A, _B])
+        await require_writable(request, _who("writer"), [_A, _B])
     assert refused.value.status_code == 403
-    assert refused.value.detail == "Belief #7 is locked; only an admin may change it"
+    assert refused.value.detail == f"{named} is locked; only an admin may change it"
 
 
 @pytest.mark.asyncio
 async def test_no_locked_row_lets_a_writer_through() -> None:
     request, engine = _request([])
-    await require_unlocked(request, _who("writer"), (_A, _B))
+    await require_writable(request, _who("writer"), (_A, _B))
     ids, peers = engine.conn.fetch.call_args.args[1:]
     assert (ids, peers) == ([_A, _B], False)
 
@@ -105,7 +157,7 @@ async def test_no_locked_row_lets_a_writer_through() -> None:
 @pytest.mark.asyncio
 async def test_a_purge_asks_about_the_rows_it_is_linked_to() -> None:
     request, engine = _request([])
-    await require_unlocked(request, _who("viewer"), [_A], include_peers=True)
+    await require_writable(request, _who("viewer"), [_A], include_peers=True)
     assert engine.conn.fetch.call_args.args[2] is True
     assert "FROM edges" in from_plain(engine.conn.fetch.call_args.args[0], str)
 
@@ -158,9 +210,10 @@ class TestSetLock:
             ).status_code
             == 404
         )
-        # The row's account, which the access policy is asked about, then its flag.
+        # No row hidden from the caller, the row's account, which the access policy
+        # is asked about, then its flag.
         engine.conn.fetchval = AsyncMock(
-            side_effect=[make_test_identity().email, True],
+            side_effect=[None, make_test_identity().email, True],
         )
         r = client.put(f"/api/admin/inquiries/{_A}/lock", json={"locked": True})
         assert from_plain(r.json(), dict[str, object]) == {

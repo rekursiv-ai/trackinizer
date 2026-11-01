@@ -20,12 +20,14 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.routing import APIRoute
 from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
+from starlette.datastructures import State
 
 
 if TYPE_CHECKING:
     import asyncpg
 
     from trackinizer.server.store.core import Store
+    from trackinizer.wire.bodies import SubmitBase
 else:
     from wrapt import lazy_import
 
@@ -132,15 +134,19 @@ class _App:
 @dataclass(slots=True, kw_only=True)
 class _Request:
     app: _App
+    state: State
 
 
 def _request(store: object, engine: object) -> _Request:
-    return _Request(app=_App(state=_State(store=store, engine=engine)))
+    return _Request(
+        app=_App(state=_State(store=store, engine=engine)),
+        state=State(),
+    )
 
 
-@dataclass(slots=True, kw_only=True)
-class _Store:
-    engine: FakeEngine
+def _store(engine: FakeEngine) -> Store:
+    store, _ = make_store(engine.conn)
+    return store
 
 
 def _inquiry_row(**overrides: object) -> dict[str, object]:
@@ -547,7 +553,7 @@ class TestRoutes:
     @pytest.mark.asyncio
     async def test_web_search_empty_and_with_kind(self) -> None:
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         assert (
             await web.web_search(
@@ -582,7 +588,7 @@ class TestRoutes:
         # (which requires the query to run inside a transaction) so a viewer
         # cannot DoS the cluster with one expensive regex.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
         await web.web_search(
@@ -615,7 +621,7 @@ class TestRoutes:
         # The two classes are unrelated, so a guard written against the
         # plausible one never fires and the caller gets a 500.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         # Only the SEARCH query fails. ``tx`` rolls back through ``fetch`` as
         # well, so a blanket ``side_effect`` would break the cleanup too and
@@ -641,7 +647,7 @@ class TestRoutes:
         # A generated-SQL defect is our bug. Relabelling it 400 would hide a
         # server fault behind a client error.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
             side_effect=[
@@ -660,7 +666,7 @@ class TestRoutes:
     async def test_recent_lookup_and_get_routes(self) -> None:
         target_id = new_uuid()
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
             return_value=[_change_row(principal="api@example.com")],
@@ -718,7 +724,7 @@ class TestRoutes:
         # and which of them made the 50-row page, to the planner (R21).
         target_id = new_uuid()
         engine = FakeEngine()
-        request = _request(_Store(engine=engine), engine)
+        request = _request(_store(engine), engine)
         engine.conn.fetchrow = AsyncMock(return_value=_inquiry_row(id=target_id))
         engine.conn.fetch = AsyncMock(return_value=[])
         await web.web_get(target_id, cast(Request, request), identity=_TEST_IDENTITY)
@@ -737,7 +743,7 @@ class TestRoutes:
         late = datetime(2026, 5, 18, 9, tzinfo=UTC)
         root_id, child_id = new_uuid(), new_uuid()
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         edge_rows = [
             {
@@ -818,7 +824,7 @@ class TestRoutes:
         # rather than carry a null the SPA would have to special-case.
         a, b = new_uuid(), new_uuid()
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(
             side_effect=[
@@ -848,7 +854,7 @@ class TestRoutes:
         # below 1 is refused. Above it there is no top: the graph view lets a
         # person type any count, and the answer is still at most ``limit`` nodes.
         engine = FakeEngine()
-        store = _Store(engine=engine)
+        store = _store(engine)
         request = _request(store, engine)
         engine.conn.fetch = AsyncMock(return_value=[])
         for bad in (-1, 0):
@@ -1585,7 +1591,7 @@ class TestRouteBounds:
         engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
         app = FastAPI()
         app.state.engine = engine
-        app.state.store = _Store(engine=engine)
+        app.state.store = _store(engine)
         web.attach(app)
         c = self._client(app)
         query = [("q", "title"), ("kind", "Issue")]
@@ -2333,72 +2339,102 @@ class TestOldPathsWithTheApp:
 # ---- Read routes on a real engine ----------------------------------------
 
 
+_ACCOUNT: Final = "alice@example.com"
+_STARTED: Final = datetime(2026, 5, 18, 9, tzinfo=UTC)
+_FILLED_EXPERIMENT: Final = SubmitExperiment(
+    account=_ACCOUNT,
+    title="filled",
+    outcome="ok",
+    config={"lr": 0.1, "nested": {"warmup": 100}},
+    app={"tracker": {"verdict": "works"}},
+)
+_EVERY_KIND_BARE_AND_FILLED: Final = (
+    *(
+        pytest.param(body(account=_ACCOUNT, title="bare"), id=f"{body.__name__}-bare")
+        for body in (
+            SubmitIssue,
+            SubmitArtifact,
+            SubmitExperiment,
+            SubmitPaper,
+            SubmitBelief,
+            SubmitCodeChange,
+            SubmitWebResult,
+            SubmitWebSearch,
+            SubmitAgentSession,
+        )
+    ),
+    pytest.param(
+        SubmitIssue(
+            account=_ACCOUNT,
+            title="filled",
+            owner="bob",
+            description="d",
+            labels=["x"],
+            issue_kind=["bug"],
+            priority=10,
+        ),
+        id="SubmitIssue-filled",
+    ),
+    pytest.param(_FILLED_EXPERIMENT, id="SubmitExperiment-filled"),
+    pytest.param(
+        SubmitPaper(
+            account=_ACCOUNT,
+            title="filled",
+            authors=["a", "b"],
+            publish_date=_STARTED,
+            source="doi:10.1/x",
+        ),
+        id="SubmitPaper-filled",
+    ),
+    pytest.param(
+        SubmitAgentSession(
+            account=_ACCOUNT,
+            title="filled",
+            cli="claude",
+            started=_STARTED,
+            rooms=["lab"],
+        ),
+        id="SubmitAgentSession-filled",
+    ),
+)
+"""Every kind, bare, and four of them filled."""
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_self_is_the_inquiry_route_on_a_real_engine(store: Store) -> None:
+@pytest.mark.parametrize("submitted", _EVERY_KIND_BARE_AND_FILLED)
+async def test_self_is_the_inquiry_route_on_a_real_engine(
+    store: Store,
+    submitted: SubmitBase,
+) -> None:
     """Every kind, bare and filled, reads the same through both routes (R17).
 
     asyncpg decodes each column type its own way, so the agreement is checked
     here as well as against the mock rows.
     """
-    account = "alice@example.com"
-    started = datetime(2026, 5, 18, 9, tzinfo=UTC)
-    ids = await store.submit_batch(
-        [
-            SubmitIssue(account=account, title="bare"),
-            SubmitArtifact(account=account, title="bare"),
-            SubmitExperiment(account=account, title="bare"),
-            SubmitPaper(account=account, title="bare"),
-            SubmitBelief(account=account, title="bare"),
-            SubmitCodeChange(account=account, title="bare"),
-            SubmitWebResult(account=account, title="bare"),
-            SubmitWebSearch(account=account, title="bare"),
-            SubmitAgentSession(account=account, title="bare"),
-            SubmitIssue(
-                account=account,
-                title="filled",
-                owner="bob",
-                description="d",
-                labels=["x"],
-                issue_kind=["bug"],
-                priority=10,
-            ),
-            SubmitExperiment(
-                account=account,
-                title="filled",
-                outcome="ok",
-                config={"lr": 0.1, "nested": {"warmup": 100}},
-                app={"tracker": {"verdict": "works"}},
-            ),
-            SubmitPaper(
-                account=account,
-                title="filled",
-                authors=["a", "b"],
-                publish_date=started,
-                source="doi:10.1/x",
-            ),
-            SubmitAgentSession(
-                account=account,
-                title="filled",
-                cli="claude",
-                started=started,
-                rooms=["lab"],
-            ),
-        ],
+    (target_id,) = await store.submit_batch([submitted], session_audience="open")
+    request = cast(Request, _request(store, store.engine))
+
+    canonical = await get_inquiry_route(target_id, request, identity=_TEST_IDENTITY)
+    detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+
+    assert detail["self"] == {
+        key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_self_carries_an_experiments_app_on_a_real_engine(store: Store) -> None:
+    """A filled Experiment's ``app`` comes back as it was submitted."""
+    (target_id,) = await store.submit_batch(
+        [_FILLED_EXPERIMENT],
         session_audience="open",
     )
     request = cast(Request, _request(store, store.engine))
-    for target_id in ids:
-        canonical = await get_inquiry_route(
-            target_id,
-            request,
-            identity=_TEST_IDENTITY,
-        )
-        detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
-        assert detail["self"] == {
-            key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
-        }
-    filled = await web.web_get(ids[10], request, identity=_TEST_IDENTITY)
+
+    filled = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+
     assert from_plain(filled["self"], dict[str, object])["app"] == {
         "tracker": {"verdict": "works"},
     }
@@ -2544,10 +2580,58 @@ async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
         assert [row["title"] for row in rows] == titles, q
 
 
+# Written as rows, as the 1,000-node test writes them: the graph reads rows and edges,
+# and filing each through the store cost a test ~0.1 s.
+async def _linked_issues(
+    store: Store,
+    titles: tuple[str, ...],
+    links: tuple[tuple[int, int], ...],
+) -> list[uuid.UUID]:
+    """Insert an Issue per title, a minute apart in order, and link each pair by index."""
+    ids = [uuid.uuid4() for _ in titles]
+    async with store.engine.acquire() as conn:
+        # One ``created`` per node, in ``titles`` order, so no order is a tie.
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, account, title, created)"
+            " SELECT id, 'Issue', n, $3, title,"
+            " $4::timestamptz + make_interval(mins => n::int)"
+            " FROM unnest($1::uuid[], $2::text[]) WITH ORDINALITY AS t(id, title, n)",
+            ids,
+            list(titles),
+            _ACCOUNT,
+            datetime(2026, 5, 18, tzinfo=UTC),
+        )
+        await conn.execute(
+            "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind)"
+            " SELECT f, 'Issue', t, 'Issue', 'requires'"
+            " FROM unnest($1::uuid[], $2::uuid[]) AS e(f, t)",
+            [ids[from_index] for from_index, _ in links],
+            [ids[to_index] for _, to_index in links],
+        )
+    return ids
+
+
+_CITED: Final = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
+# Links in both directions: ``cited 0`` points at ``newest``.
+_CITED_LINKS: Final = ((0, 4), (4, 1), (4, 2))
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("limit", "kept"),
+    [
+        pytest.param(1, (4,), id="1"),
+        pytest.param(2, (2, 4), id="2"),
+        # The three nodes ``newest`` links to outrank ``unlinked``, a newer node.
+        pytest.param(4, (0, 1, 2, 4), id="4"),
+        pytest.param(5_000, (0, 1, 2, 3, 4), id="5000"),
+    ],
+)
 async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
     store: Store,
+    limit: int,
+    kept: tuple[int, ...],
 ) -> None:
     """``limit`` bounds the nodes, neighbours included, and edges join them (R3-02).
 
@@ -2555,58 +2639,45 @@ async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
     to many returned them all: ``limit=1`` measured 5,002 nodes. Now the newest
     node comes first, followed by the older nodes it links to, until ``limit``.
     """
-    account = "alice@example.com"
-    titles = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
-    ids = [
-        await store.submit_issue(SubmitIssue(account=account, title=title))
-        for title in titles
-    ]
-    c0, c1, c2, _, newest = ids
-    # Links in both directions: ``c0`` points at ``newest``.
-    for from_id, to_id in ((c0, newest), (newest, c1), (newest, c2)):
-        await store.add_edge(
-            from_id=from_id,
-            to_id=to_id,
-            edge_kind="requires",
-            actor="alice",
-        )
-    # One ``created`` per node, in ``titles`` order, so no order below is a tie.
-    async with store.engine.acquire() as conn:
-        for minute, node in enumerate(ids):
-            await conn.execute(
-                "UPDATE inquiries SET created = $1 WHERE id = $2",
-                datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
-                node,
-            )
+    ids = await _linked_issues(store, _CITED, _CITED_LINKS)
     request = cast(Request, _request(store, store.engine))
     # Each first link also stamps an inferred ``produced_by`` edge, so the
     # expected edges come from the whole graph.
     whole = _edge_ids(
         await web.web_graph(request, identity=_TEST_IDENTITY, limit=5_000),
     )
-    assert (str(c0), str(newest)) in whole
-    for limit, kept in (
-        (1, [newest]),
-        (2, [c2, newest]),
-        # The three nodes ``newest`` links to outrank ``unlinked``, a newer node.
-        (4, [c0, c1, c2, newest]),
-        (5_000, ids),
-    ):
-        graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=limit)
-        nodes = [
-            from_plain(n, dict[str, object])["id"]
-            for n in from_plain(graph["nodes"], list[object])
-        ]
-        assert nodes == [str(n) for n in kept], limit
-        assert _edge_ids(graph) == {
-            (a, b) for a, b in whole if a in nodes and b in nodes
-        }, limit
+
+    graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=limit)
+
+    nodes = [
+        from_plain(n, dict[str, object])["id"]
+        for n in from_plain(graph["nodes"], list[object])
+    ]
+    assert (str(ids[0]), str(ids[4])) in whole
+    assert nodes == [str(ids[index]) for index in kept]
+    assert _edge_ids(graph) == {(a, b) for a, b in whole if a in nodes and b in nodes}
+
+
+_NEIGHBOURS: Final = ("far", "near", "focus", "near 2", "far 2")
+_NEIGHBOUR_LINKS: Final = ((1, 2), (3, 2), (0, 1), (4, 3), (0, 4))
+_FOCUS: Final = 2
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("limit", "hops", "kept"),
+    [
+        pytest.param(None, 2, {0: 2, 1: 1, 2: 0, 3: 1, 4: 2}, id="2-hops"),
+        pytest.param(4, 2, {1: 1, 2: 0, 3: 1, 4: 2}, id="2-hops-limit-4"),
+        pytest.param(None, 1, {1: 1, 2: 0, 3: 1}, id="1-hop"),
+    ],
+)
 async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
     store: Store,
+    limit: int | None,
+    hops: int,
+    kept: dict[int, int],
 ) -> None:
     """``focus`` keeps its nearest nodes, each with its ``hops``, and their edges.
 
@@ -2614,73 +2685,62 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
     hop-2 nodes. ``limit=4`` keeps ``far_2``, the newer of them, and so drops both
     of ``far``'s edges.
     """
-    account = "alice@example.com"
-    titles = ("far", "near", "focus", "near 2", "far 2")
-    ids = [
-        await store.submit_issue(SubmitIssue(account=account, title=title))
-        for title in titles
-    ]
-    far, near, focus, near_2, far_2 = ids
-    for from_id, to_id in (
-        (near, focus),
-        (near_2, focus),
-        (far, near),
-        (far_2, near_2),
-        (far, far_2),
-    ):
-        await store.add_edge(
-            from_id=from_id,
-            to_id=to_id,
-            edge_kind="requires",
-            actor="alice",
-        )
-    async with store.engine.acquire() as conn:
-        for minute, node in enumerate(ids):
-            await conn.execute(
-                "UPDATE inquiries SET created = $1 WHERE id = $2",
-                datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
-                node,
-            )
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
     request = cast(Request, _request(store, store.engine))
     whole = _edge_ids(await web.web_graph(request, identity=_TEST_IDENTITY))
-    assert (str(far), str(far_2)) in whole
-    for limit, hops, kept in (
-        (None, 2, {far: 2, near: 1, focus: 0, near_2: 1, far_2: 2}),
-        (4, 2, {near: 1, focus: 0, near_2: 1, far_2: 2}),
-        (None, 1, {near: 1, focus: 0, near_2: 1}),
-    ):
-        graph = await web.web_graph(
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        limit=limit,
+        focus=ids[_FOCUS],
+        hops=hops,
+    )
+
+    nodes = [
+        from_plain(n, dict[str, object])
+        for n in from_plain(graph["nodes"], list[object])
+    ]
+    assert (str(ids[0]), str(ids[4])) in whole
+    # Oldest first, as without a focus.
+    assert [(n["id"], n["hops"]) for n in nodes] == [
+        (str(ids[index]), distance) for index, distance in kept.items()
+    ]
+    kept_ids = {str(ids[index]) for index in kept}
+    assert _edge_ids(graph) == {
+        (a, b) for a, b in whole if a in kept_ids and b in kept_ids
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("known", "hops", "status"),
+    [
+        pytest.param(False, 2, 404, id="unknown-focus"),
+        pytest.param(True, 0, 400, id="0-hops"),
+        pytest.param(True, 4, 400, id="4-hops"),
+    ],
+)
+async def test_web_graph_refuses_an_unknown_focus_and_hops_outside_1_to_3(
+    store: Store,
+    known: bool,
+    hops: int,
+    status: int,
+) -> None:
+    """A focus no row has is a 404; ``hops`` below 1 or above 3 is a 400."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
             request,
             identity=_TEST_IDENTITY,
-            limit=limit,
-            focus=focus,
+            focus=ids[_FOCUS] if known else uuid.uuid4(),
             hops=hops,
         )
-        nodes = [
-            from_plain(n, dict[str, object])
-            for n in from_plain(graph["nodes"], list[object])
-        ]
-        # Oldest first, as without a focus.
-        assert [(n["id"], n["hops"]) for n in nodes] == [
-            (str(node), distance) for node, distance in kept.items()
-        ], (limit, hops)
-        kept_ids = {str(node) for node in kept}
-        assert _edge_ids(graph) == {
-            (a, b) for a, b in whole if a in kept_ids and b in kept_ids
-        }, (limit, hops)
-    for target, hops, status in (
-        (uuid.uuid4(), 2, 404),
-        (focus, 0, 400),
-        (focus, 4, 400),
-    ):
-        with pytest.raises(HTTPException) as caught:
-            await web.web_graph(
-                request,
-                identity=_TEST_IDENTITY,
-                focus=target,
-                hops=hops,
-            )
-        assert caught.value.status_code == status, (target, hops)
+
+    assert caught.value.status_code == status
 
 
 @pytest.mark.db_pglite

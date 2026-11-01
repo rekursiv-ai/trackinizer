@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 from uuid import UUID
 
 from trackinizer.server.auth import Role
+from trackinizer.server.values import vetted_sql
 
 
 if TYPE_CHECKING:
@@ -29,6 +30,7 @@ __all__ = [
     "Principal",
     "Resource",
     "ResourceKind",
+    "inquiry_read_filter",
 ]
 
 
@@ -117,10 +119,9 @@ class AccessPolicy(Protocol):
     ) -> str:
         """Return a SQL boolean over ``alias`` that holds for each readable row.
 
-        No read calls it yet. Phase 2 ANDs it into the WHERE clause of every read
-        of a resource, so a row it rejects is neither listed nor fetched. For a
-        session, ``session`` is the transcript (its records) and ``inquiry`` is the
-        row, both keyed by the session's inquiry UUID.
+        Readers AND it into their WHERE clauses before pagination. For a session,
+        ``session`` is the transcript (its records) and ``inquiry`` is the row,
+        both keyed by the session's inquiry UUID.
 
         Args:
           kind: The kind of the rows ``alias`` names.
@@ -155,6 +156,10 @@ class AccessPolicy(Protocol):
         """Record a new resource's grants; ``principal`` is ``None`` for the system."""
         ...
 
+    async def prepare_account_change(self, conn: Conn, *, resource: Resource) -> None:
+        """Acquire policy locks before core locks the inquiry being reassigned."""
+        ...
+
     async def validate(self, conn: Conn, *, resource: Resource) -> None:
         """Raise ``ConflictError`` when the resource's state breaks an invariant.
 
@@ -171,6 +176,44 @@ class AccessPolicy(Protocol):
     async def on_user(self, conn: Conn, *, email: str, role: Role) -> None:
         """Note an account's role, at every ``users`` insert and role change."""
         ...
+
+
+def inquiry_read_filter(
+    reference: str,
+    *,
+    policy: AccessPolicy | None,
+    principal: Principal | None,
+    params: list[object],
+) -> str:
+    """Gate a qualified inquiry-id SQL expression by its current row's visibility.
+
+    Args:
+      reference: Trusted, qualified SQL expression naming an inquiry UUID.
+      policy: Deployment policy; None preserves trusted internal reads.
+      principal: Request reader; None preserves trusted internal reads.
+      params: Positional bindings extended by the policy.
+
+    Returns:
+      predicate: TRUE for unrestricted reads, otherwise a correlated EXISTS.
+
+    """
+    if policy is None or principal is None:
+        return "TRUE"
+    predicate = policy.read_filter(
+        "inquiry",
+        "readable_inquiry",
+        params=params,
+        principal=principal,
+    )
+    if predicate == "TRUE":
+        return predicate
+    return vetted_sql(
+        "EXISTS (SELECT 1 FROM inquiries readable_inquiry WHERE readable_inquiry.id = ",
+        reference,
+        " AND (",
+        predicate,
+        "))",
+    )
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -214,6 +257,10 @@ class DefaultPolicy:
     ) -> None:
         """Record nothing: the default policy keeps no grants."""
         del conn, principal, resource
+
+    async def prepare_account_change(self, conn: Conn, *, resource: Resource) -> None:
+        """Acquire no locks: the default policy keeps no mutable grants."""
+        del conn, resource
 
     async def validate(self, conn: Conn, *, resource: Resource) -> None:
         """Accept every state: the default policy holds no invariants."""

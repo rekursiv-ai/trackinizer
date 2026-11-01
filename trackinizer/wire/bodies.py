@@ -62,6 +62,7 @@ __all__ = [
     "FieldMutation",
     "FieldOp",
     "FieldSet",
+    "SubmitAccessGroup",
     "SubmitAgentSession",
     "SubmitArtifact",
     "SubmitBase",
@@ -341,14 +342,14 @@ class Citation(BaseModel):
     artifact_id: uuid.UUID
     """The citing Artifact's id (the edge's stored from-side)."""
 
-    artifact_kind: Artifact.Kind
+    artifact_kind: Artifact.EvidenceKind
     """The citing Artifact's declared kind, verified against the stored row.
 
-    ``Artifact.Kind`` deliberately includes ``Belief`` / ``Experiment``: a claim
-    is itself an Artifact, so it may also *cite* another claim (e.g. one Belief
-    cited as evidence for another). The schema edge CHECK admits this -- the
+    ``Artifact.EvidenceKind`` deliberately includes ``Belief`` / ``Experiment``: a
+    claim is itself an Artifact, so it may also *cite* another claim (e.g. one
+    Belief cited as evidence for another). The schema edge CHECK admits this -- the
     citation target stays ``{Belief, Experiment}`` while the citer may be any
-    Artifact kind, claims included."""
+    evidence kind, claims included. An AccessGroup cites nothing."""
 
     valence: float = Field(default=CITATION_VALENCE_DEFAULT, ge=-1.0, le=1.0)
     """Signed evidential weight: positive for, negative against, magnitude
@@ -465,6 +466,19 @@ class SubmitAgentSession(SubmitBase):
         return self
 
 
+class SubmitAccessGroup(SubmitBase):
+    """Submit body for a new AccessGroup: its base fields alone.
+
+    The server stamps its controls (``read_group = write_group =`` its own id) and
+    makes it neither a system group nor a domain's, so a body naming a control is
+    refused rather than silently dropped.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["AccessGroup"] = "AccessGroup"
+
+
 # A room name must be a single clean token: non-blank (it is matched verbatim against
 # ``agentsession_rooms``) and free of ``,`` (the agent runner exports rooms comma-joined
 # into ``TRAX_ROOMS``, so a room ``'a,b'`` is indistinguishable from two rooms ``'a'``
@@ -523,7 +537,8 @@ SubmitItem = Annotated[
     | SubmitCodeChange
     | SubmitWebResult
     | SubmitWebSearch
-    | SubmitAgentSession,
+    | SubmitAgentSession
+    | SubmitAccessGroup,
     Field(discriminator="kind"),
 ]
 

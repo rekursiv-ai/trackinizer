@@ -589,7 +589,7 @@ the same commit.
 ### Kinds
 
 `Issue`, `Artifact`, `Experiment`, `Paper`, `Belief`, `CodeChange`,
-`WebResult`, `WebSearch`, `AgentSession`.
+`WebResult`, `WebSearch`, `AgentSession`, `AccessGroup`.
 
 ### Issue kinds (`issue_kind`)
 

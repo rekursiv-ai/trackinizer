@@ -19,7 +19,7 @@ from treekle import from_plain
 
 import asyncpg
 
-from trackinizer.server.access_policy import Resource
+from trackinizer.server.access_policy import Resource, inquiry_read_filter
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     upsert_embedding,
@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from datetime import datetime
 
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import Principal
 
 
 __all__ = [
@@ -361,6 +362,15 @@ class _EditMixin(_CascadeAuditMixin):
             )
             if replay is not None:
                 return replay
+            if column == "account":
+                await self.access_policy.prepare_account_change(
+                    conn,
+                    resource=Resource(
+                        kind="inquiry",
+                        id=str(target_id),
+                        account=from_plain(new_value, str),
+                    ),
+                )
             row = await self._read_field(
                 conn,
                 target_id,
@@ -515,6 +525,7 @@ class _EditMixin(_CascadeAuditMixin):
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor,
         reason: str = "",
+        principal: Principal | None = None,
     ) -> Issue | None:
         """Atomically select and claim the next available Issue for ``owner``.
 
@@ -523,7 +534,8 @@ class _EditMixin(_CascadeAuditMixin):
         leaves a window -- seconds wide, with an agent thinking in between --
         in which every caller sees the same unowned row and each silently
         overwrites the last, so N agents duplicate one issue while the rest
-        go untouched.
+        go untouched. Only an Issue ``principal`` may read is a candidate, and
+        the claimed Issue's relations name only the rows it may read.
 
         ``None`` means "nothing claimable right now", NOT "all work is
         finished": an eligible row may simply be locked by another in-flight
@@ -539,6 +551,7 @@ class _EditMixin(_CascadeAuditMixin):
           api_key_id: Authenticated credential recorded in the audit entry.
           actor: Identity recorded in the audit entry.
           reason: Optional audit context, stored on the change log entry.
+          principal: Request reader; None preserves trusted reads.
 
         Returns:
           issue: The claimed Issue, or ``None`` when nothing is available.
@@ -576,10 +589,27 @@ class _EditMixin(_CascadeAuditMixin):
             # Probe AFTER the lock: probing first lets overlapping retries
             # miss a commit that is still in flight, which matters most when
             # it claimed the last available issue.
-            replayed = await self._replay_claim(conn, owner=owner, actor=actor)
+            replayed = await self._replay_claim(
+                conn,
+                owner=owner,
+                actor=actor,
+                principal=principal,
+            )
             if replayed is not None:
                 return replayed
-            row = await conn.fetchrow(CLAIM_NEXT_ISSUE_SQL, owner)
+            params: list[object] = [owner]
+            predicate = inquiry_read_filter(
+                "issue.id",
+                policy=self.access_policy,
+                principal=principal,
+                params=params,
+            )
+            row = await conn.fetchrow(
+                CLAIM_NEXT_ISSUE_SQL.format(
+                    readable="" if predicate == "TRUE" else f" AND ({predicate})",
+                ),
+                *params,
+            )
             if row is None:
                 return None
             claimed_id = cast(UUID, row["id"])
@@ -597,7 +627,12 @@ class _EditMixin(_CascadeAuditMixin):
                 actor=actor,
                 reason=reason,
             )
-            outbound, inbound = await fetch_edges(conn, claimed_id)
+            outbound, inbound = await fetch_edges(
+                conn,
+                claimed_id,
+                policy=self.access_policy,
+                principal=principal,
+            )
         issue = materialize(row, {claimed_id: outbound}, {claimed_id: inbound})
         assert isinstance(issue, Issue)
         return issue
@@ -610,6 +645,7 @@ class _EditMixin(_CascadeAuditMixin):
         *,
         owner: Inquiry.Actor,
         actor: Inquiry.Actor,
+        principal: Principal | None,
     ) -> Issue | None:
         """Return the issue a committed claim under this key already took."""
         client_change_id = _peek_client_change_id()
@@ -640,9 +676,19 @@ class _EditMixin(_CascadeAuditMixin):
                 "different operation",
             )
         subject_id = cast(UUID, existing["subject_id"])
+        params: list[object] = [subject_id]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
         row = await conn.fetchrow(
-            "SELECT * FROM inquiries WHERE id = $1",
-            subject_id,
+            vetted_sql(
+                "SELECT * FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
         if row is None:
             raise NotFoundError(f"claimed issue {subject_id} no longer exists")
@@ -653,7 +699,12 @@ class _EditMixin(_CascadeAuditMixin):
                 f"claimed issue {subject_id} is no longer active and owned by "
                 f"{owner!r}",
             )
-        outbound, inbound = await fetch_edges(conn, subject_id)
+        outbound, inbound = await fetch_edges(
+            conn,
+            subject_id,
+            policy=self.access_policy,
+            principal=principal,
+        )
         issue = materialize(row, {subject_id: outbound}, {subject_id: inbound})
         assert isinstance(issue, Issue)
         return issue

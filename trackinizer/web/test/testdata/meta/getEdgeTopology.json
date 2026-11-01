@@ -72,7 +72,8 @@
           "CodeChange",
           "WebResult",
           "WebSearch",
-          "AgentSession"
+          "AgentSession",
+          "AccessGroup"
         ],
         "inverse": "produces",
         "to_kinds": [
@@ -84,7 +85,8 @@
           "CodeChange",
           "WebResult",
           "WebSearch",
-          "AgentSession"
+          "AgentSession",
+          "AccessGroup"
         ]
       },
       "proves": {
@@ -140,7 +142,8 @@
           "CodeChange",
           "WebResult",
           "WebSearch",
-          "AgentSession"
+          "AgentSession",
+          "AccessGroup"
         ],
         "inverse": "superseded_by",
         "to_kinds": [
@@ -152,7 +155,8 @@
           "CodeChange",
           "WebResult",
           "WebSearch",
-          "AgentSession"
+          "AgentSession",
+          "AccessGroup"
         ]
       }
     },

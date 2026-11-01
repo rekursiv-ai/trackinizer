@@ -37,6 +37,7 @@ from trackinizer.types.errors import ConflictError
 from trackinizer.wire.bodies import (
     BatchEdge,
     Citation,
+    SubmitAccessGroup,
     SubmitAgentSession,
     SubmitArtifact,
     SubmitBase,
@@ -191,6 +192,14 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     principal=principal,
                     conn=conn,
                 )
+            case SubmitAccessGroup():
+                created = self.submit_accessgroup(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    principal=principal,
+                    conn=conn,
+                )
             case _:
                 raise TypeError(f"No submit path for {type(req).__name__}.")
         return await created
@@ -284,8 +293,9 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         post_insert: PostInsert | None = None,
         principal: Principal | None = None,
         conn: Conn | None = None,
+        row_id: UUID | None = None,
     ) -> UUID:
-        """Single insert path for every submit_X."""
+        """Single insert path for every submit_X; ``row_id`` None mints the id."""
         if conn is not None:
             return await self._submit_on_conn(
                 conn,
@@ -297,6 +307,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 pre_insert=pre_insert,
                 post_insert=post_insert,
                 principal=principal,
+                row_id=row_id,
             )
         # Capture the effective idempotency key (body field or header-set slot)
         # BEFORE the tx, so the recovery path below can re-probe even on the
@@ -329,6 +340,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     post_insert=post_insert,
                     principal=principal,
                     embeddings=embeddings,
+                    row_id=row_id,
                 )
         except asyncpg.UniqueViolationError as exc:
             # Classify by the violated constraint, not by whether a re-probe
@@ -383,6 +395,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         post_insert: PostInsert | None,
         principal: Principal | None = None,
         embeddings: list[tuple[str, list[float]]] | None = None,
+        row_id: UUID | None = None,
     ) -> UUID:
         """Probe + insert one inquiry on an already-open transaction."""
         # The effective idempotency key is the body field if present, else the
@@ -412,7 +425,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         # upsert below is still gated behind the row insert.
         if pre_insert is not None:
             await pre_insert(conn)
-        row_id = uuid.uuid4()
+        row_id = row_id or uuid.uuid4()
         # The batch path (``embeddings is None``) embeds inline inside its
         # shared tx, which it cannot avoid; the single path passes a value it
         # computed before opening its own tx.
@@ -757,6 +770,33 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             pre_insert=pre_insert,
             principal=principal,
             conn=conn,
+        )
+
+    async def submit_accessgroup(
+        self,
+        req: SubmitAccessGroup,
+        *,
+        api_key_id: UUID | None = None,
+        actor: Inquiry.Actor = "system",
+        principal: Principal | None = None,
+        conn: Conn | None = None,
+    ) -> UUID:
+        # A new group reads and writes itself until the access policy, the one
+        # writer of its controls, moves them.
+        row_id = uuid.uuid4()
+        return await self._submit_generic(
+            req,
+            kind="AccessGroup",
+            api_key_id=api_key_id,
+            actor=actor,
+            extras={
+                "accessgroup_read_group": row_id,
+                "accessgroup_write_group": row_id,
+                "accessgroup_system": False,
+            },
+            principal=principal,
+            conn=conn,
+            row_id=row_id,
         )
 
     async def submit_batch(

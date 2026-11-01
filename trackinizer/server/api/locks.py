@@ -2,10 +2,11 @@
 
 An admin sets ``inquiries.locked`` through ``PUT /api/admin/inquiries/{id}/lock``.
 While it holds, nobody else edits the row's fields, adds or removes its edges, or
-deletes it; the routes that write call :func:`require_unlocked` with the rows they
+deletes it; the routes that write call :func:`require_writable` with the rows they
 are about to change, and a locked one answers 403. An edge belongs to both its
 endpoints, so an edge write is refused when either end is locked, and a purge when
-the row is linked to a locked one (the purge deletes that edge).
+the row is linked to a locked one (the purge deletes that edge). A row the caller
+may not read answers 404 first, to an admin too, as a read of it does.
 
 Setting the lock records no change: it adds no change kind, and leaves ``modified``
 alone so that locking the rules Issue does not move the rules version. Who set or
@@ -22,13 +23,16 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from treekle import from_plain
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.session_access import (
     check_row_write,
     request_principal,
+    require_readable,
 )
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import tx
+from trackinizer.server.values import vetted_sql
 from trackinizer.wire.json_types import MutableJSON
 
 
@@ -39,7 +43,7 @@ if TYPE_CHECKING:
 __all__ = [
     "LockBody",
     "referenced_ids",
-    "require_unlocked",
+    "require_writable",
     "set_lock_route",
 ]
 
@@ -53,48 +57,66 @@ class LockBody(BaseModel):
     locked: bool
 
 
-async def require_unlocked(
+async def require_writable(
     request: Request,
     identity: AuthIdentity,
     row_ids: Collection[uuid.UUID],
     *,
     include_peers: bool = False,
 ) -> None:
-    """Refuse a write that touches a locked row unless the caller is an admin.
+    """Refuse a write that touches a row the caller may not read, or a locked one.
 
     Args:
       request: The request, which carries the store.
-      identity: Authenticated caller; an admin passes without a query.
+      identity: Authenticated caller; an admin passes the lock without a query.
       row_ids: The rows the route is about to change.
       include_peers: Also refuse when a row is linked by an edge to a locked one,
         for a write that deletes the row's edges.
 
     Raises:
+      NotFoundError: A named row is one the caller may not read
+        (:func:`require_readable`).
       HTTPException: 403 when a named row, or with ``include_peers`` a linked one,
-        is locked and the caller is not an admin.
+        is locked and the caller is not an admin. A linked row the caller may not
+        read is not named.
 
     """
     ids = list(row_ids)
+    await require_readable(request, identity, ids)
     if identity.role == "admin" or not ids:
         return
-    async with get_store(request).engine.acquire() as conn:
+    store = get_store(request)
+    params: list[object] = [ids, include_peers]
+    readable = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
+        params=params,
+    )
+    async with store.engine.acquire() as conn:
         rows = await conn.fetch(
-            "SELECT kind, seq FROM inquiries WHERE locked AND (id = ANY($1) OR ($2 "
-            "AND id IN (SELECT to_id FROM edges WHERE from_id = ANY($1) "
-            "UNION SELECT from_id FROM edges WHERE to_id = ANY($1)))) "
-            "ORDER BY created, id LIMIT 1",
-            ids,
-            include_peers,
+            vetted_sql(
+                "SELECT kind, seq, ",
+                readable,
+                " AS readable FROM inquiries WHERE locked AND (id = ANY($1) OR ($2 "
+                "AND id IN (SELECT to_id FROM edges WHERE from_id = ANY($1) "
+                "UNION SELECT from_id FROM edges WHERE to_id = ANY($1)))) "
+                "ORDER BY created, id LIMIT 1",
+            ),
+            *params,
         )
     row = next(iter(rows), None)
-    if row is not None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"{from_plain(row['kind'], str)} #{from_plain(row['seq'], int)} "
-                "is locked; only an admin may change it"
-            ),
-        )
+    if row is None:
+        return
+    named = (
+        f"{from_plain(row['kind'], str)} #{from_plain(row['seq'], int)}"
+        if row["readable"]
+        else "A linked row"
+    )
+    raise HTTPException(
+        status_code=403,
+        detail=f"{named} is locked; only an admin may change it",
+    )
 
 
 def referenced_ids(body: object) -> set[uuid.UUID]:
@@ -145,6 +167,7 @@ async def set_lock_route(
       result: The inquiry's ``id`` and its ``locked`` flag.
 
     """
+    await require_readable(request, identity, [target_id])
     principal = await request_principal(request, identity)
     store = get_store(request)
     async with store.engine.acquire() as conn, tx(conn):

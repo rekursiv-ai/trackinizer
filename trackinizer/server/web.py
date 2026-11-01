@@ -66,6 +66,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from treekle import from_plain, json_loads
 from treekle.absent import ABSENT
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import (
     get_assistant,
     get_inbound,
@@ -74,7 +75,7 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
-from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_access import request_principal, session_reader
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -118,6 +119,7 @@ if TYPE_CHECKING:
     import asyncpg
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
+    from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.server.store.core import Store
     from trackinizer.types.embedder import QueryEmbedder
 
@@ -178,7 +180,6 @@ async def web_search(
       matches: Matching inquiries, each as ``self`` in ``/get`` renders it.
 
     """
-    del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
     names = parse_fields(fields)
@@ -194,16 +195,24 @@ async def web_search(
         kind_clause = f" AND kind = ${len(params)}"
     else:
         kind_clause = ""
+    store = get_store(request)
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
+        params=params,
+    )
     params.append(limit)
     sql = vetted_sql(
         "SELECT * FROM inquiries WHERE (",
         clause,
         ")",
         kind_clause,
+        "" if predicate == "TRUE" else f" AND ({predicate})",
         " ORDER BY created DESC, id DESC LIMIT $",
         str(len(params)),
     )
-    async with get_store(request).engine.acquire() as conn, tx(conn):
+    async with store.engine.acquire() as conn, tx(conn):
         # A field-scoped ``~*`` regex runs POSIX-side in Postgres, where a
         # pathological pattern (catastrophic backtracking) can pin the backend
         # for an unbounded time. Python ``re.compile`` only validates syntax,
@@ -330,13 +339,23 @@ async def web_recent_changes(
       changes: Change log deltas, newest first.
 
     """
-    del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
-    async with get_store(request).engine.acquire() as conn:
+    store = get_store(request)
+    params: list[object] = [limit]
+    predicate = store.change_read_filter(
+        "c",
+        params=params,
+        principal=await request_principal(request, identity),
+    )
+    async with store.engine.acquire() as conn:
         rows = await conn.fetch(
-            _CHANGE_SELECT + " ORDER BY c.created DESC, c.id DESC LIMIT $1",
-            limit,
+            vetted_sql(
+                _CHANGE_SELECT,
+                "" if predicate == "TRUE" else f" WHERE ({predicate})",
+                " ORDER BY c.created DESC, c.id DESC LIMIT $1",
+            ),
+            *params,
         )
     return [_change_to_dict(r) for r in rows]
 
@@ -358,11 +377,21 @@ async def web_lookup(
       view: Lightweight node with kind and id.
 
     """
-    del identity
-    async with get_store(request).engine.acquire() as conn:
+    store = get_store(request)
+    params: list[object] = [target_id]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=await request_principal(request, identity),
+        params=params,
+    )
+    async with store.engine.acquire() as conn:
         kind = await conn.fetchval(
-            "SELECT kind FROM inquiries WHERE id = $1",
-            target_id,
+            vetted_sql(
+                "SELECT kind FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
     if kind is None:
         raise HTTPException(status_code=404, detail="id not found")
@@ -391,21 +420,49 @@ async def web_get(
       view: ``self``, ``edges``, ``backlinks`` and ``changes``.
 
     """
-    del identity
     store = get_store(request)
+    principal = await request_principal(request, identity)
+    params: list[object] = [target_id]
+    predicate = inquiry_read_filter(
+        "inquiries.id",
+        policy=store.access_policy,
+        principal=principal,
+        params=params,
+    )
     async with store.engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT * FROM inquiries WHERE id = $1",
-            target_id,
+            vetted_sql(
+                "SELECT * FROM inquiries WHERE id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+            ),
+            *params,
         )
         if row is None:
             raise HTTPException(status_code=404, detail="not found")
-        edges = await _grouped_edges(conn, target_id, direction="outbound")
-        backlinks = await _grouped_edges(conn, target_id, direction="inbound")
-        changes = await conn.fetch(
-            _CHANGE_SELECT + " WHERE c.subject_id = $1"
-            " ORDER BY c.created DESC, c.id DESC LIMIT 50",
+        edges = await _grouped_edges(
+            conn,
             target_id,
+            direction="outbound",
+            policy=store.access_policy,
+            principal=principal,
+        )
+        backlinks = await _grouped_edges(
+            conn,
+            target_id,
+            direction="inbound",
+            policy=store.access_policy,
+            principal=principal,
+        )
+        params = [target_id]
+        predicate = store.change_read_filter("c", params=params, principal=principal)
+        changes = await conn.fetch(
+            vetted_sql(
+                _CHANGE_SELECT,
+                " WHERE c.subject_id = $1",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+                " ORDER BY c.created DESC, c.id DESC LIMIT 50",
+            ),
+            *params,
         )
     return {
         "self": _row_to_dict(row),
@@ -431,14 +488,14 @@ _GRAPH_NODE_COLS: Final = (
 # caps every node drawn, and it draws only relationships between drawn nodes.
 _GRAPH_KEPT_IDS: Final = (
     "WITH recent AS ("
-    " SELECT id, created FROM inquiries ORDER BY created DESC, id DESC LIMIT $1"
+    " SELECT id, created FROM inquiries{recent_where} ORDER BY created DESC, id DESC LIMIT $1"
     "), reached AS ("
     " SELECT id, created AS seen FROM recent"
     " UNION ALL SELECT e.to_id, r.created FROM edges e"
     " JOIN recent r ON e.from_id = r.id"
     " UNION ALL SELECT e.from_id, r.created FROM edges e"
     " JOIN recent r ON e.to_id = r.id"
-    ") SELECT r.id FROM reached r JOIN inquiries i ON i.id = r.id"
+    ") SELECT r.id FROM reached r JOIN inquiries i ON i.id = r.id{reached_where}"
     " GROUP BY r.id, i.created"
     " ORDER BY max(r.seen) DESC, i.created DESC, r.id DESC LIMIT $1"
 )
@@ -487,7 +544,8 @@ async def web_graph(
         when ``focus`` names no inquiry.
 
     """
-    del identity
+    store = get_store(request)
+    principal = await request_principal(request, identity)
     # No top: the graph view lets a person type any count, All included, and asks
     # before drawing a large one. On a benchmark of about 100,000 nodes, All answered
     # 42 MB (10 MB gzipped) in 0.7 s, and 20,000 nodes 8.6 MB in 0.16 s. The answer
@@ -496,20 +554,47 @@ async def web_graph(
         raise HTTPException(status_code=400, detail="limit must be at least 1")
     if hops < 1 or hops > 3:
         raise HTTPException(status_code=400, detail="hops must be in [1, 3]")
-    async with get_store(request).engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         distances: dict[UUID, int] = {}
+        params: list[object] = [limit or 1000]
         if focus is None:
-            kept, bound = vetted_sql("IN (", _GRAPH_KEPT_IDS, ")"), limit or 1000
+            recent_filter = inquiry_read_filter(
+                "inquiries.id",
+                policy=store.access_policy,
+                principal=principal,
+                params=params,
+            )
+            reached_filter = inquiry_read_filter(
+                "i.id",
+                policy=store.access_policy,
+                principal=principal,
+                params=params,
+            )
+            kept = vetted_sql(
+                "IN (",
+                _GRAPH_KEPT_IDS.format(
+                    recent_where=""
+                    if recent_filter == "TRUE"
+                    else f" WHERE ({recent_filter})",
+                    reached_where=""
+                    if reached_filter == "TRUE"
+                    else f" WHERE ({reached_filter})",
+                ),
+                ")",
+            )
         else:
             distances = await read_neighbourhood(
                 conn,
                 focus,
                 hops=hops,
                 limit=limit or 60,
+                policy=store.access_policy,
+                principal=principal,
             )
             if not distances:
                 raise HTTPException(status_code=404, detail="focus not found")
-            kept, bound = "= ANY($1)", list(distances)
+            kept = "= ANY($1)"
+            params = [list(distances)]
         node_rows = await conn.fetch(
             vetted_sql(
                 "SELECT ",
@@ -518,7 +603,7 @@ async def web_graph(
                 kept,
                 " ORDER BY created ASC, id ASC",
             ),
-            bound,
+            *params,
         )
         edge_rows = await conn.fetch(
             "SELECT from_id, to_id, edge_kind, valence FROM edges "
@@ -1508,12 +1593,21 @@ async def _grouped_edges(
     target_id: UUID,
     *,
     direction: Literal["outbound", "inbound"],
+    policy: AccessPolicy | None = None,
+    principal: Principal | None = None,
 ) -> WebView:
     """Edges grouped by edge_kind for ``target_id`` in the given direction."""
     if direction == "outbound":
         where_col, join_col, peer_col = "e.from_id", "e.to_id", "to_id"
     else:
         where_col, join_col, peer_col = "e.to_id", "e.from_id", "from_id"
+    params: list[object] = [target_id]
+    predicate = inquiry_read_filter(
+        "t.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
     rows = await conn.fetch(
         vetted_sql(
             "SELECT e.from_id, e.to_id, e.edge_kind, "
@@ -1524,8 +1618,9 @@ async def _grouped_edges(
             " WHERE ",
             where_col,
             " = $1",
+            "" if predicate == "TRUE" else f" AND ({predicate})",
         ),
-        target_id,
+        *params,
     )
     groups: dict[str, list[WebView]] = {}
     for row in rows:
