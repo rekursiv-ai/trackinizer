@@ -14,6 +14,7 @@ import pytest
 
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.sagent.session import projects
+from trackinizer.sagent.session.jsonl import read_record
 from trackinizer.sagent.session.projects import (
     child_journal,
     cwd_slug,
@@ -233,11 +234,10 @@ def test_a_listing_parses_no_window_s_snapshot(
         UserMessage(content="b"),
     )
     parsed: list[bytes] = []
-    record = projects.read_record
 
     def counting(line: bytes) -> SessionRecord:
         parsed.append(line)
-        return record(line)
+        return read_record(line)
 
     monkeypatch.setattr(projects, "read_record", counting)
     (info,) = list_sessions(tmp_path)
