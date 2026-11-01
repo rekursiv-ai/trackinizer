@@ -14,15 +14,15 @@ from uuid import UUID, uuid4
 
 import json
 
-from treekle import from_plain, immutable, mutable, to_plain
+from treekle import from_plain, immutable, mutable
 
 import pytest
 import pytest_asyncio
 
-from trackinizer.sagent.session.types import CONCRETE_TYPES, UncategorizedRecord
+from trackinizer.sagent.session.types import UncategorizedRecord
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
-from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.types.session_records import SessionRecordRow, stored_payload
 
 
 if TYPE_CHECKING:
@@ -148,7 +148,7 @@ async def test_legacy_turns_become_records_at_part_minus_one(store: Store) -> No
 async def test_a_backfilled_row_decodes_through_the_same_path(store: Store) -> None:
     """The migration writes what ``DataclassCodec`` reads -- proven by reading.
 
-    A tag that drifts from the class's dotted name leaves every legacy row
+    A tag that drifts from the one the store writes leaves every legacy row
     undecodable, and nothing else in the system would notice until a reader
     tried.
     """
@@ -161,25 +161,17 @@ async def test_a_backfilled_row_decodes_through_the_same_path(store: Store) -> N
     assert all(isinstance(record, UncategorizedRecord) for record in records)
 
 
-def test_the_dotted_tag_matches_what_the_codec_emits() -> None:
-    """Pinned against the codec, not restated: a moved class fails HERE.
+def test_the_tag_matches_what_the_store_writes() -> None:
+    """Pinned against the store's own encoder, not restated: a changed tag fails HERE.
 
-    No database: the claim is about the MIGRATION TEXT agreeing with what the
-    codec emits, which is decidable by reading both.
+    No database: the claim is about the MIGRATION TEXT agreeing with what
+    ``stored_payload`` writes, which is decidable by reading both. The tag is
+    matched beside its key, as the bare class name is also the row's ``kind``.
     """
-    emitted = from_plain(
-        to_plain(
-            UncategorizedRecord(kind="x"),
-            default_concrete_types=CONCRETE_TYPES,
-        ),
-        dict[str, object],
-    )
-    assert (
-        emitted["py/object"] == "trackinizer.sagent.session.types.UncategorizedRecord"
-    )
-    assert str(emitted["py/object"]) in (_CWD / "assets" / "schema.020.sql").read_text(
-        encoding="utf-8",
-    )
+    tag = stored_payload(UncategorizedRecord(kind="x"))["py/object"]
+    assert tag == "UncategorizedRecord"
+    migration = (_CWD / "assets" / "schema.020.sql").read_text(encoding="utf-8")
+    assert f"'py/object', '{tag}'" in migration
 
 
 @pytest.mark.db_pglite
