@@ -1,7 +1,7 @@
 """The web app type-checks and passes its own tests, where the package publishes.
 
-The monorepo runs these in a CI job of its own; the public repository has no
-such job, so its CI runs them here.
+The monorepo runs these in its ``trackinizer-ui`` CI job; the public repository
+has no such job, so its CI runs them here.
 """
 
 from __future__ import annotations
