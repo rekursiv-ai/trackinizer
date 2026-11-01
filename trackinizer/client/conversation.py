@@ -77,9 +77,10 @@ __all__ = [
 ]
 
 
-# The provider a part's format names, as a person would name it in the conversation.
+# The provider a part's format names, as a person would name it in the conversation:
+# the assistant's own parts are the bot's; a machine's sagent run is ``sagent``.
 _PROVIDER_OF_FORMAT: Final = {
-    "sagent": "bot",
+    "assistant": "bot",
     "claude": "claude",
     "codex": "codex",
 }
@@ -142,7 +143,8 @@ class Segment:
     Attributes:
       part: The part's number within the session.
       name: The source file's basename.
-      format: The adapter that reads the part, such as ``claude`` or ``sagent``.
+      format: Who wrote the part: a CLI's adapter, such as ``claude`` or ``sagent``,
+        or ``assistant`` for the assistant's own.
       records: The part's records in ``idx`` order.
 
     """

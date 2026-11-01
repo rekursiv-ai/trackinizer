@@ -161,8 +161,8 @@ async def cli_partner(
       partner: The live session, with the machine, detached host and folder its
         run's last drain named (:meth:`~.inbound.InboundQueue.poller_run`) and whether it
         takes Run's commands, or ``offline`` naming the session that began the chat
-        (None for no session yet), which a run attaches to, and why its run's last
-        drain was refused (:meth:`~.inbound.InboundQueue.refusal`).
+        (None for no session yet), which a run attaches to, and why its last run never
+        went live (:meth:`~.inbound.InboundQueue.refusal`).
 
     """
     offline = CanvasPartner(
@@ -317,9 +317,9 @@ async def provider_availability(
 ) -> tuple[ProviderFlags, ProviderReasons]:
     """Say which providers a canvas's owner may choose, and why not the others.
 
-    ``claude`` or ``codex`` is available when the owner has a confirmed machine that
-    is online, holds a credential that is not revoked, and lists the CLI in its
-    facts: what ``GET /api/terminals/machines`` offers to start a run on.
+    ``claude``, ``codex`` or ``sagent`` is available when the owner has a confirmed
+    machine that is online, holds a credential that is not revoked, and lists the CLI
+    in its facts: what ``GET /api/terminals/machines`` offers to start a run on.
     ``assistant`` is always available here: the credit ledger that may stop it is the
     site's billing addon, which the browser reads.
 
@@ -349,11 +349,13 @@ async def provider_availability(
     clis = {from_plain(row["cli"], str) for row in rows}
     claude = "claude" in clis
     codex = "codex" in clis
+    sagent = "sagent" in clis
     return (
-        ProviderFlags(claude=claude, codex=codex),
+        ProviderFlags(claude=claude, codex=codex, sagent=sagent),
         ProviderReasons(
             claude="" if claude else NO_MACHINE_REASON.format(cli="claude"),
             codex="" if codex else NO_MACHINE_REASON.format(cli="codex"),
+            sagent="" if sagent else NO_MACHINE_REASON.format(cli="sagent"),
         ),
     )
 

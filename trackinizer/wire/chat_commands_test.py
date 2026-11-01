@@ -39,6 +39,16 @@ _NO_RC: Final = (
     "codex has no remote control for a chat's run: codex remote-control serves "
     "codex's background daemon, not this run"
 )
+_SAGENT_GOAL: Final = "sagent has no /goal; say what it should work toward as a line"
+_SAGENT_RENAME: Final = "sagent has no /rename; its session keeps the chat's name"
+_SAGENT_RC: Final = "sagent has no remote control; attach to its terminal to drive it"
+
+
+def _sagent_bare(verb: str) -> Refused:
+    return Refused(
+        reason=f"Chat cannot show sagent's /{verb} choices. Type /{verb} <value>; "
+        "its terminal lists them.",
+    )
 
 
 def _menu(verb: str) -> Refused:
@@ -301,6 +311,50 @@ def test_each_row_of_the_table(
     expected: Classified,
 ) -> None:
     assert classify(text, provider) == expected
+
+
+# A sagent run is a terminal, which a settings post never reaches: its own /model and
+# /effort take the value as typed commands, as its /compact does.
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("/compact", Command(text="/compact", verb="compact", args="")),
+        (
+            "/compact keep the API",
+            Command(text="/compact keep the API", verb="compact", args="keep the API"),
+        ),
+        (
+            "/model anthropic-cli/claude-opus-4-7",
+            Command(
+                text="/model anthropic-cli/claude-opus-4-7",
+                verb="model",
+                args="anthropic-cli/claude-opus-4-7",
+            ),
+        ),
+        ("/Effort High", Command(text="/effort high", verb="effort", args="high")),
+        ("/model", _sagent_bare("model")),
+        ("/effort  ", _sagent_bare("effort")),
+        ("/model opus please", Refused(reason=_ONE_MODEL)),
+        ("/effort " + "e" * 21, Refused(reason=_ONE_EFFORT)),
+        ("/goal ship it", Refused(reason=_SAGENT_GOAL)),
+        ("/goal", Refused(reason=_SAGENT_GOAL)),
+        ("/goal clear", Refused(reason=_SAGENT_GOAL)),
+        ("/goal pause", Refused(reason=_SAGENT_GOAL)),
+        ("/goal edit", Refused(reason=_SAGENT_GOAL)),
+        ("/rename x", Refused(reason=_SAGENT_RENAME)),
+        ("/rename", Refused(reason=_SAGENT_RENAME)),
+        ("/rc", Refused(reason=_SAGENT_RC)),
+        ("/remote-control", Refused(reason=_SAGENT_RC)),
+        ("/exit", _menu("exit")),
+        ("/compact now\nand later", Refused(reason=_TOO_LONG)),
+        ("/etc/hosts is broken", Line()),
+    ],
+)
+def test_sagent_types_its_own_commands_and_refuses_what_it_lacks(
+    text: str,
+    expected: Classified,
+) -> None:
+    assert classify(text, "sagent") == expected
 
 
 @pytest.mark.parametrize("provider", ["claude", "codex"])

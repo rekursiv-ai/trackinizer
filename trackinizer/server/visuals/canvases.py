@@ -496,9 +496,10 @@ class CanvasPartner(BaseModel):
     ``claude`` when the machine is not known; ``claude: no run`` while offline."""
 
     refused: str = ""
-    """While a CLI is offline, why the server refused the last drain by a run of the
-    chat's own account, so the person sees why a run they started never went live;
-    empty when none was refused since one drained."""
+    """While a CLI is offline, why the last run of the chat's own account never went
+    live: the server refused its drain, or it ended before it asked for its lines and
+    said why. So the person sees why a run they started did not start; empty when none
+    was refused since one drained."""
 
     refused_at: datetime | None = None
     """When ``refused`` was; a new refusal moves it."""
@@ -510,6 +511,7 @@ class ProviderFlags(BaseModel):
     assistant: bool = True
     claude: bool = False
     codex: bool = False
+    sagent: bool = False
 
 
 class ProviderReasons(BaseModel):
@@ -518,6 +520,7 @@ class ProviderReasons(BaseModel):
     assistant: str = ""
     claude: str = NO_MACHINE_REASON.format(cli="claude")
     codex: str = NO_MACHINE_REASON.format(cli="codex")
+    sagent: str = NO_MACHINE_REASON.format(cli="sagent")
 
     def of(self, provider: ChatProvider) -> str:
         """Return why ``provider`` is unavailable.
@@ -536,6 +539,8 @@ class ProviderReasons(BaseModel):
                 return self.claude
             case "codex":
                 return self.codex
+            case "sagent":
+                return self.sagent
 
 
 class CanvasState(CanvasData):

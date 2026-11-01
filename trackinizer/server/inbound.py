@@ -204,7 +204,7 @@ class InboundQueue:
     """Most sessions that remember where their run last said it ran."""
 
     max_refusals: int = 4_096
-    """Most sessions that remember why their run's last drain was refused."""
+    """Most sessions that remember why their run was last refused, or failed to start."""
 
     _clock: Callable[[], float] = field(default=time.monotonic, repr=False)
 
@@ -224,8 +224,8 @@ class InboundQueue:
     # Where each session's run last said it ran, which outlives its lease.
     _places: OrderedDict[UUID, PollerRun] = field(default_factory=OrderedDict)
 
-    # Why each session's own run was last turned away, until a drain is let in: a run
-    # refused at its first drain never goes live, and the canvas says why.
+    # Why each session's own run was last turned away, or ended before it asked for its
+    # lines, until a drain is let in: such a run never goes live, and the canvas says why.
     _refusals: OrderedDict[UUID, DrainRefusal] = field(default_factory=OrderedDict)
 
     _queues: dict[UUID, deque[Inbound]] = field(
@@ -386,11 +386,13 @@ class InboundQueue:
             return self._places.get(session_id)
 
     def refuse(self, session_id: UUID, *, reason: str) -> None:
-        """Keep why a drain by the session's own run was refused, until one is let in.
+        """Keep why the session's own run never went live, until a drain is let in.
+
+        A drain of it was refused, or it ended before it asked for its lines.
 
         Args:
           session_id: The session the run drains.
-          reason: The refusal's message.
+          reason: The refusal's message, or what the run said of its end.
 
         """
         with self._lock:

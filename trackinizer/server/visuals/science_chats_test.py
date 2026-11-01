@@ -319,7 +319,7 @@ def _head(
         "session_id": _SESSION,
         "cli_session_id": chat_session_id(_CONVERSATION),
         "title": "tails",
-        "cli": "sagent",
+        "cli": "assistant",
         "account": "first-heard@example.com",
         "modified": datetime(2026, 1, 1, tzinfo=UTC),
         "live": True,
@@ -393,7 +393,7 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
         "conversation_id": _CONVERSATION,
         "session_id": _SESSION,
         "title": "tails",
-        "cli": "sagent",
+        "cli": "assistant",
         "goal": "CI is green",
         "first_line": "Hi",
         "account": "ada@example.com",
@@ -458,7 +458,7 @@ def test_a_head_with_no_forks_or_origin_and_a_stranger_forking_on_typing() -> No
         None,
         True,
     )
-    assert (head.cli, head.goal, head.first_line) == ("sagent", None, None)
+    assert (head.cli, head.goal, head.first_line) == ("assistant", None, None)
     [shares_call] = engine.conn.fetch.await_args_list
     assert "FROM science_chat_shares" in str(shares_call.args[0])
 

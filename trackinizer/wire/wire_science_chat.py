@@ -135,14 +135,15 @@ _ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
 """A `#/...` hash with no space or control character."""
 
 
-type ChatProvider = Literal["assistant", "claude", "codex"]
-"""Who answers a canvas's Chat.
+type ChatProvider = Literal["assistant", "claude", "codex", "sagent"]
+"""Who answers a canvas's Chat, and the ``cli`` of the sessions and parts it writes.
 
 Values:
   assistant: The server's shared assistant.
   claude: The person's own claude agent run on a machine of theirs, attached to
     the chat's session.
   codex: The same with codex.
+  sagent: The same with sagent.
 """
 
 

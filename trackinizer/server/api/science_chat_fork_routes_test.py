@@ -122,7 +122,7 @@ async def _original(store: Store, *, starter: str) -> _Original:
         name="chat.jsonl",
         metadata={},
         ir_id=uuid.uuid4(),
-        format="sagent",
+        format="assistant",
         records=len(records),
     )
     written, _skipped, _slash = await store.append_session_records(

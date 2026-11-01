@@ -151,7 +151,7 @@ def _start(conversation: uuid.UUID) -> SubmitAgentSession:
     """Return the body the assistant opens a conversation's session with."""
     return SubmitAgentSession(
         title="late",
-        cli="sagent",
+        cli="assistant",
         cli_session_id=chat_session_id(conversation),
         account=TEST_USER_EMAIL,
     )

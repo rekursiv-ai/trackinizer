@@ -67,7 +67,7 @@ class _Session:
             PartBody(
                 part=number,
                 name=f"{number}.jsonl",
-                format="sagent",
+                format="assistant",
                 records=len(each),
             )
             for number, each in reversed(self.parts.items())

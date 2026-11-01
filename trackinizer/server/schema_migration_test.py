@@ -1016,6 +1016,66 @@ async def test_the_audience_column_checks_the_shape_and_the_kind_of_row(
         await conn.execute(issue, None)
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_064_names_the_assistants_sessions_and_parts_assistant(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """Until 064 only the assistant wrote ``sagent``; from it, a machine's sagent run does.
+
+    The assistant's session, its parts and its liveness row take its provider's name;
+    claude's keep theirs, and a replay changes nothing.
+    """
+    conn = pglite_rollback_conn
+    sessions: dict[str, uuid.UUID] = {}
+    for cli in ("sagent", "claude"):
+        session = from_plain(
+            await conn.fetchval(
+                "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+                "agentsession_cli, agentsession_audience) VALUES "
+                "(gen_random_uuid(), 'AgentSession', nextval('seq_agentsession'), "
+                "'active', 'a@x.y', 't', $1, 'open') RETURNING id",
+                cli,
+            ),
+            uuid.UUID,
+        )
+        await conn.execute(
+            "INSERT INTO session_manifests (session_id, part, name, metadata, "
+            "ir_id, format, records) "
+            "VALUES ($1, 0, 'p.jsonl', '{}', gen_random_uuid(), $2, 0)",
+            session,
+            cli,
+        )
+        await conn.execute(
+            "INSERT INTO session_liveness (session_id, last_seen, cli) "
+            "VALUES ($1, now(), $2)",
+            session,
+            cli,
+        )
+        sessions[cli] = session
+
+    await conn.execute(load_sql("schema.064"))
+    await conn.execute(load_sql("schema.064"))
+    named = {
+        cli: tuple(
+            await conn.fetchrow(
+                "SELECT i.agentsession_cli, m.format, l.cli FROM inquiries AS i "
+                "JOIN session_manifests AS m ON m.session_id = i.id "
+                "JOIN session_liveness AS l ON l.session_id = i.id "
+                "WHERE i.id = $1",
+                session,
+            )
+            or (),
+        )
+        for cli, session in sessions.items()
+    }
+
+    assert named == {
+        "sagent": ("assistant", "assistant", "assistant"),
+        "claude": ("claude", "claude", "claude"),
+    }
+
+
 async def _table_shape(
     conn: Conn,
     table: str,

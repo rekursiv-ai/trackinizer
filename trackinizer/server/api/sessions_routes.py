@@ -758,7 +758,8 @@ async def session_end_route(
     took over, and the run holding the chat goes on. Any other end first releases
     the asks the run left open: an ``$interaction_resolved`` record with
     ``by: released`` for each, which the
-    closed session would take no more.
+    closed session would take no more. A chat's run that ended before it asked for its
+    lines says why (``failed``), and the chat's canvas says it as its ``refused``.
 
     Args:
       session_id: UUID of the session to close.
@@ -833,6 +834,10 @@ async def session_end_route(
     # a clean close, so a failed end doesn't discard undelivered messages.
     inbound = get_inbound(request)
     inbound.forget_poller(session_id)
+    # A chat's run that ended before it asked for its lines was seen nowhere: Chat,
+    # waiting for the run it started, says why it did not start, as for a refused drain.
+    if body.failed is not None and provider is not None:
+        inbound.refuse(session_id, reason=body.failed)
     service = await _is_a_chat_service(request, session=session)
     # A service session that names itself is resumed by its next start, which
     # drains what was posted meanwhile; releasing it here would lose lines that

@@ -221,8 +221,8 @@ type IceServers = Annotated[
 ]
 """STUN servers the browser and the host both use to find each other's address."""
 
-type TerminalCommand = Literal["claude", "codex"]
-"""A CLI a terminal may start in place of a login shell; the host allows two."""
+type TerminalCommand = Literal["claude", "codex", "sagent"]
+"""A CLI a terminal may start in place of a login shell; the host allows these."""
 
 type TerminalKind = Literal["shell", "files"]
 """What a terminal carries: a shell, or the host's answers to file requests."""

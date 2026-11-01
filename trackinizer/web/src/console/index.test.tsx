@@ -783,8 +783,8 @@ const OTHER_CHAT = "chat-aaaabbbbcccc";
 const CHAT_A = "00000000-0000-4000-8000-0000000000d1";
 const CHAT_B = "00000000-0000-4000-8000-0000000000d2";
 Object.assign(SESSIONS, {
-  [CHAT_A]: { actor: OWN_CHAT, rooms: [], cli: "sagent" },
-  [CHAT_B]: { actor: OTHER_CHAT, rooms: [], cli: "sagent" },
+  [CHAT_A]: { actor: OWN_CHAT, rooms: [], cli: "assistant" },
+  [CHAT_B]: { actor: OTHER_CHAT, rooms: [], cli: "assistant" },
 });
 const WITH_CHATS = [
   ...EVENTS,

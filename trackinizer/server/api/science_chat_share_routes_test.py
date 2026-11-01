@@ -920,7 +920,7 @@ async def test_a_deleted_chats_id_and_lines_open_no_session_canvas_or_fork(
     reopened = await client.post(
         "/api/sessions/start",
         json={
-            "cli": "sagent",
+            "cli": "assistant",
             "cli_session_id": chat_session_id(chat.conversation),
             "account": ADA,
             "actor": "chat-reopened",
@@ -1434,7 +1434,7 @@ def _person_line(session: uuid.UUID, sender: str) -> dict[str, object]:
         "manifest": ManifestBody(
             name="taken.jsonl",
             ir_id=uuid.uuid4(),
-            format="sagent",
+            format="assistant",
             records=1,
         ).model_dump(mode="json"),
         "records": [RecordBody.of(line).model_dump(mode="json")],
@@ -1477,7 +1477,7 @@ async def _append(
         name=f"{uuid.uuid4()}.jsonl",
         metadata={},
         ir_id=uuid.uuid4(),
-        format="sagent",
+        format="assistant",
         records=len(lines),
     )
     written, _skipped, _slash = await store.append_session_records(

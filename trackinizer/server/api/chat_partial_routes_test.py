@@ -99,7 +99,7 @@ def faked(
     """Serve the routes over a store that holds the three sessions, read as named."""
     client, store, _engine = route_client
     chat = AgentSession(
-        cli="sagent",
+        cli="assistant",
         cli_session_id=chat_session_id(uuid4()),
         audience="open",
         opened_by_api_key_id=KB_KEY_ID,

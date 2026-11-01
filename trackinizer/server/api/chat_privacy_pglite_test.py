@@ -308,7 +308,7 @@ async def test_a_chats_session_row_carries_none_of_the_line_that_began_it(
     started = await world.client.post(
         "/api/sessions/start",
         json={
-            "cli": "sagent",
+            "cli": "assistant",
             "actor": "chat-titled",
             "cli_session_id": chat_session_id(conversation),
             "account": _EMAILS["ann"],
@@ -499,7 +499,7 @@ async def _seed_chat(
         store,
         Agent(key_id=opener.key_id, email=opener.email),
         actor=f"chat-{starter.partition('@')[0]}",
-        cli="sagent",
+        cli="assistant",
         cli_session_id=chat_session_id(conversation),
         account=starter,
         labels=chat_labels(),
@@ -514,7 +514,7 @@ async def _seed_chat(
         name="chat.jsonl",
         metadata={},
         ir_id=uuid4(),
-        format="sagent",
+        format="assistant",
         records=len(records),
     )
     _ = await store.append_session_records(
@@ -547,7 +547,7 @@ async def _write_everything(
         name="run.jsonl",
         metadata={},
         ir_id=uuid4(),
-        format="sagent",
+        format="assistant",
         records=1,
     )
     appended = {
