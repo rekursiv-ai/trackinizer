@@ -9,7 +9,7 @@ the one that would have caught the 11x8192 OOM.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 
 import pytest
 import torch
@@ -186,6 +186,176 @@ async def test_tail_rows_are_padded_and_sliced_back() -> None:
     # The forward ran at the full declared row count for edge 32, not 2 rows.
     rows_seen = {rows for rows, _seq in model.shapes}
     assert rows_seen == {_ROWS[32]}
+
+
+# ---- out of memory ------------------------------------------------------------
+
+
+class _SmallCard(_FakeModel):
+    """A fake model whose forward runs out of memory above ``max_rows`` rows."""
+
+    def __init__(self, *, dim: int, max_rows: int) -> None:
+        super().__init__(dim=dim)
+        self.max_rows = max_rows
+
+    @override
+    def __call__(self, **batch: torch.Tensor) -> _FakeOutput:
+        rows, seq = batch["input_ids"].shape
+        if rows > self.max_rows:
+            self.shapes.append((rows, seq))
+            raise torch.OutOfMemoryError(f"CUDA out of memory at {rows} rows")
+        return super().__call__(**batch)
+
+
+@pytest.mark.asyncio
+async def test_a_bucket_that_runs_out_of_memory_halves_its_rows_for_the_run(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The plan is a ceiling: an OOM halves the bucket's rows and keeps them halved.
+
+    The memory model under-counted short buckets ~1.4x on a 5090, so the first
+    forward of a real backfill ran out of memory; halving lets it go on.
+    """
+    model = _SmallCard(dim=4, max_rows=4)
+    rows = {32: 16, 128: 16}
+    texts = [f"text {i}" for i in range(10)]
+
+    vectors = await bucket_embed.embed_bucketed(
+        model,
+        _FakeTokenizer(len),
+        texts,
+        edges=(32, 128),
+        rows=rows,
+        dim=4,
+    )
+    again = await bucket_embed.embed_bucketed(
+        model,
+        _FakeTokenizer(len),
+        texts[:3],
+        edges=(32, 128),
+        rows=rows,
+        dim=4,
+    )
+
+    assert len(vectors) == len(texts)
+    assert len(again) == 3
+    assert rows == {32: 4, 128: 16}
+    assert model.shapes == [(16, 32), (8, 32), *[(4, 32)] * 3, (4, 32)]
+    assert caplog.messages[:2] == [
+        "bucket 32 ran out of memory at 16 rows; 8 from now on",
+        "bucket 32 ran out of memory at 8 rows; 4 from now on",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_bucket_out_of_memory_at_one_row_is_raised() -> None:
+    model = _SmallCard(dim=4, max_rows=0)
+
+    with pytest.raises(torch.OutOfMemoryError, match="at 1 rows"):
+        await bucket_embed.embed_bucketed(
+            model,
+            _FakeTokenizer(len),
+            ["one"],
+            edges=(32,),
+            rows={32: 2},
+            dim=4,
+        )
+
+
+# ---- a queue that fills across calls ----------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_bucket_waits_across_calls_until_it_fills_a_forward() -> None:
+    """A forward runs only on a full bucket, so pools smaller than a bucket stay cheap.
+
+    Per-call padding to the plan's rows left 4.2% of a production forward's tokens
+    real for the 0.6B (1024-unit pools against thousands of rows, 2026-10-31).
+    """
+    model = _FakeModel(dim=4)
+    queue = bucket_embed.BucketQueue(
+        model,
+        _FakeTokenizer(len),
+        edges=(32,),
+        rows={32: 4},
+        dim=4,
+    )
+
+    first = queue.add(["a", "b", "c"])
+    await queue.run(hold=8)
+    shapes_before_full = list(model.shapes)
+    second = queue.add(["d"])
+    await queue.run(hold=8)
+    shapes_once_full = list(model.shapes)
+    third = queue.add(["e"])
+    await queue.run(hold=8)
+
+    assert shapes_before_full == []
+    assert shapes_once_full == [(4, 32)]
+    assert model.shapes == [(4, 32)]
+    assert (first.done, second.done, third.done) == (True, True, False)
+    await queue.run(hold=0)
+    assert model.shapes == [(4, 32), (4, 32)]
+    assert third.done
+    assert len(third.vectors) == 1
+
+
+@pytest.mark.asyncio
+async def test_holding_past_the_cap_runs_the_bucket_of_the_oldest_text() -> None:
+    """Past ``hold``, the oldest text's bucket runs part-full, so the oldest call ends."""
+    model = _FakeModel(dim=4)
+    queue = bucket_embed.BucketQueue(
+        model,
+        _FakeTokenizer(len),
+        edges=(32, 128),
+        rows={32: 4, 128: 4},
+        dim=4,
+    )
+
+    old = queue.add(["a" * 100])
+    new = queue.add(["b", "c"])
+    await queue.run(hold=2)
+
+    assert model.shapes == [(4, 128)]
+    assert (old.done, new.done) == (True, False)
+
+
+@pytest.mark.asyncio
+async def test_a_queue_returns_each_calls_vectors_in_its_input_order() -> None:
+    """Vectors land in the slot of the text that made them, across buckets and calls."""
+    model = _FakeModel(dim=4)
+    queue = bucket_embed.BucketQueue(
+        model,
+        _FakeTokenizer(len),
+        edges=(32, 128),
+        rows={32: 2, 128: 2},
+        dim=4,
+    )
+
+    first = queue.add(["a" * 100, "b", "c" * 100])
+    second = queue.add(["d"])
+    await queue.run(hold=0)
+
+    # A forward's row ``i`` pools to ``[i, i, ...]`` normalized: 0.0 for row 0, 0.5
+    # for row 1. "b" then "d" fill the short bucket, "a"*100 then "c"*100 the long.
+    assert [vector[0] for vector in first.vectors] == [0.0, 0.0, 0.5]
+    assert [vector[0] for vector in second.vectors] == [0.5]
+
+
+@pytest.mark.asyncio
+async def test_vectors_are_cut_to_dim_then_normalized() -> None:
+    """A wider model's pooled vector keeps its first ``dim`` entries, at unit norm."""
+    vectors = await bucket_embed.embed_bucketed(
+        _FakeModel(dim=8),
+        _FakeTokenizer(len),
+        ["a", "b"],
+        edges=(32,),
+        rows={32: 2},
+        dim=4,
+    )
+
+    # Row 1 pools to [1] * 8; its first four, normalized, are 0.5 each.
+    assert vectors[1] == pytest.approx([0.5] * 4)
 
 
 # ---- scatter / order preservation ------------------------------------------

@@ -72,6 +72,7 @@ _LEFT_OUT: Final = frozenset(
         "session_bodies",
         "session_ciphertext",
         "session_embeddings",
+        "session_index_cursor",
         "session_index_state",
         "session_liveness",
         "users",

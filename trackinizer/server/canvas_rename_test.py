@@ -89,6 +89,12 @@ async def _frozen_schema(conn: Conn) -> None:
 
 async def _undo_after_canvas_rename(conn: Conn) -> None:
     """Remove later DDL before comparing the complete pre-cutover catalog."""
+    await conn.execute("DROP TABLE session_index_cursor")
+    await conn.execute(
+        "DROP TRIGGER session_records_stamp_change ON session_records; "
+        "DROP FUNCTION session_records_stamp_change(); "
+        "ALTER TABLE session_records DROP COLUMN changed_xid",
+    )
     await conn.execute("ALTER TABLE gpu_jobs DROP COLUMN requested_node")
     await conn.execute("DROP TABLE gpu_allowance_resets")
     await conn.execute(
@@ -98,7 +104,8 @@ async def _undo_after_canvas_rename(conn: Conn) -> None:
     await conn.execute("ALTER TABLE api_keys DROP COLUMN machine_id")
     await conn.execute(
         "DELETE FROM applied_migrations "
-        "WHERE name IN ('schema.060.sql', 'schema.061.sql', 'schema.062.sql')",
+        "WHERE name IN ('schema.060.sql', 'schema.061.sql', 'schema.062.sql', "
+        "'schema.063.sql')",
     )
 
 
@@ -111,7 +118,7 @@ async def _old_database(conn: Conn) -> None:
 
 async def _upgrade(conn: Conn) -> None:
     """Run what a boot of a pre-cutover database runs: the cutover, then later DDL."""
-    for step in ("schema.058", "schema.060", "schema.061", "schema.062"):
+    for step in ("schema.058", "schema.060", "schema.061", "schema.062", "schema.063"):
         await conn.execute(load_sql(step))
 
 

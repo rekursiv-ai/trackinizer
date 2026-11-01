@@ -7,6 +7,17 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- The session-embedding sweep reads only the records changed since its last
+  pass instead of rescanning every record. A trigger stamps each record's
+  `changed_xid` on insert and on a text change, and each mapper and model keeps
+  the snapshot it last read through in `session_index_cursor` (migration
+  `schema.063.sql`). A model with no cursor catches up with one full pending
+  scan. A page now pools its records' units into one shortest-first batch.
+  `SweepStats` reports `records_embedded`, `units_written` and `full_scan`.
+- `backfill_embedding.py` takes its models from the server's
+  `TRACKINIZER_SESSION_EMBEDDERS`, else `TRACKINIZER_SESSION_EMBEDDER`, when
+  `--model` is empty. `--follow` with neither set exits 0. The one-shot
+  backfill exits early when nothing is pending. The 4B default is gone.
 - Functions are named for what they return. `Client.cost_for`,
   `confidence_for` and `authority_for` are `inquiry_cost`,
   `derived_confidence` and `derived_authority`, as are the store's;
@@ -22,8 +33,39 @@ All notable trackinizer changes are documented here. This project follows
   `conversation_of` and `revision_of` are `receipt_conversation` and
   `canvas_revision`.
 
+### Fixed
+
+- Qwen-family embedders load with the KV cache off. Nothing reads it, and on a
+  32 GB GPU it held 5-6x the rest of the forward, so the bucketed backfill ran
+  out of memory on its first batch. The bucketed backfill also halves a
+  bucket's rows when a forward runs out of memory, for the rest of the run.
+- A compiled embedder runs a lone text as two rows: torch 2.11's Inductor emits
+  CPU code that does not compile for a batch of one.
+- The GPU backfill fills its forwards. Each 1024-unit pool ran through the
+  length buckets on its own, at the rows the card holds, so most of every
+  forward was padding: 4.2% of the tokens were real for Qwen3-Embedding-0.6B
+  on a 32 GB GPU. A `bucket_embed.BucketQueue` now keeps each bucket's texts
+  across pools and runs a forward once the bucket is full, or oldest-first
+  once more than `--hold-units` (65,536) wait. On one 32 GB GPU the 0.6B went
+  from 24.7 to 354.5 vectors a second and the 4B from 14.9 to 75.1.
+  `QwenFamilyEmbedder.bucket_queue` replaces `embed_bucketed_batch`.
+
 ### Added
 
+- `backfill_embedding.py --follow --gpu-backfill --gpus 0,1` first embeds each
+  model's backlog on the listed GPUs no other process holds, when at least
+  `--gpu-backfill-min-records` are pending, then follows on CPU.
+  `--cpu-threads` caps the follow loop's torch threads (default a quarter of
+  the logical CPUs; torch's own default is every physical core).
+- `archive_embeddings.py DSN archive --model M --out DIR` moves one model's
+  vectors and markers out of the database in one transaction, and
+  `restore --from DIR` loads them back.
+- `session_embed.sole_writer` holds a Postgres advisory lock on one mapper and
+  model. A sweep and a GPU backfill each hold it while they write: a sweep that
+  finds its model held writes nothing and reports `SweepStats.busy`, and a GPU
+  run exits 1 naming the model.
+- A GPU backfill whose run fails runs again from the markers while each run
+  cuts the pending count, rather than leave the rest to the CPU loop.
 - A canvas by its own URL: `GET /api/canvases/{id}/view` shows it, read only,
   to its owner and to whom its chat lets in, with its owner's email; anyone
   else gets a 403 naming the owner to ask, and nothing of the canvas.

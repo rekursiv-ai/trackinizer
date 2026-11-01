@@ -72,6 +72,15 @@ class SemanticMapper(Protocol):
     distinguishable from a model change (``session_embeddings`` keys on
     ``(model, mapper)``)."""
 
+    @property
+    def indexed_kinds(self) -> frozenset[str]:
+        """The kinds :meth:`units` maps to at least one unit for non-empty text.
+
+        The sweep binds them into its pending predicate, so a record no policy
+        indexes is never counted pending forever.
+        """
+        ...
+
     def units(self, *, kind: str, text: str) -> tuple[IndexUnit, ...]:
         """Return the indexable units of one record, possibly none.
 

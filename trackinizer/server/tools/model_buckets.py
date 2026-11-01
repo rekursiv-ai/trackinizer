@@ -23,7 +23,7 @@ card and the chosen ``--dim`` via :func:`resolve_plan`, so a 24 GB or 80 GB card
 (or a Matryoshka dim below native) gets correct counts, not 5090/1024 constants.
 
 Jina models carry no plan (:data:`CONSERVATIVE`): their custom ``encode`` path
-does not route through ``embed_bucketed_batch``, so a precomputed table would be
+does not route through ``bucket_queue``, so a precomputed table would be
 dead config. If a Jina model ever gains the bucketed method, adding a spec here
 is a one-liner (a ``TransformerSpec`` in ``bucket_boundaries`` + an entry below).
 """
@@ -229,7 +229,7 @@ def resolve_plan(
         return plan.edges, rows
     _LOGGER.warning(
         "Model %r has no bucket plan (its custom encode path exposes no "
-        "embed_bucketed_batch), so the backfill uses the conservative fallback "
+        "bucket_queue), so the backfill uses the conservative fallback "
         "(<=%d rows/bucket), never another model's tuning. Add a TransformerSpec "
         "and a MODEL_BUCKETS entry if it gains the bucketed method.",
         name,

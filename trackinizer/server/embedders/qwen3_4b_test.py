@@ -12,18 +12,22 @@ from typing import TYPE_CHECKING, override
 import pytest
 import torch
 
+from trackinizer.server.embedders import qwen_family, registry
 from trackinizer.server.embedders.octen_8b import OctenEmbedder
 from trackinizer.server.embedders.qwen3_4b import (
     QWEN_TRUNCATED_DIM,
     QwenEmbedder,
 )
-from trackinizer.server.embedders.qwen_family import QUERY_INSTRUCT
+from trackinizer.server.embedders.qwen_family import (
+    QUERY_INSTRUCT,
+    QwenFamilyEmbedder,
+)
 from trackinizer.server.tools import bucket_embed
 from trackinizer.types.embedder import Embedder
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
 
 class _FakeTokenizer:
@@ -65,10 +69,12 @@ class _FakeModel:
 
     def __init__(self) -> None:
         self.loaded_on = "unset"
+        self.rows_seen: list[int] = []
 
     def __call__(self, **batch: torch.Tensor) -> _FakeOutput:
 
         rows = batch["attention_mask"].shape[0]
+        self.rows_seen.append(rows)
         prefix = torch.ones((rows, 2, QWEN_TRUNCATED_DIM))
         tail = torch.full((rows, 2, self.native_dim - QWEN_TRUNCATED_DIM), 8.0)
         return _FakeOutput(last_hidden_state=torch.cat([prefix, tail], dim=2))
@@ -92,6 +98,148 @@ def _install_fake(monkeypatch: pytest.MonkeyPatch) -> _FakeModel:
         fake_load,
     )
     return model
+
+
+class _FakeInductorConfig:
+    freezing = False
+
+
+def _uncompiled(model: _FakeModel, *, dynamic: bool) -> _FakeModel:
+    """Stand in for ``torch.compile``: the model itself, so its calls stay visible."""
+    del dynamic
+    return model
+
+
+class _LoadedConfig:
+    use_cache = True
+
+
+class _LoadedModel:
+    """What ``AutoModel.from_pretrained`` returns, recording what ``hf_load`` does."""
+
+    def __init__(self) -> None:
+        self.config = _LoadedConfig()
+        self.device = "unset"
+        self.evaluated = False
+
+    def to(self, device: str) -> _LoadedModel:
+        self.device = device
+        return self
+
+    def eval(self) -> _LoadedModel:
+        self.evaluated = True
+        return self
+
+
+class _Pretrained:
+    """Stands in for an ``Auto*`` class: ``from_pretrained`` returns ``made``."""
+
+    def __init__(self, made: object) -> None:
+        self.made = made
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def from_pretrained(self, model_id: str, **kwargs: object) -> object:
+        self.calls.append((model_id, kwargs))
+        return self.made
+
+
+def test_hf_load_turns_the_kv_cache_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An embedder never reads the KV cache, which held 5-6x the forward on a 5090."""
+    model = _LoadedModel()
+    models = _Pretrained(model)
+    monkeypatch.setattr(qwen_family, "AutoModel", models)
+    monkeypatch.setattr(qwen_family, "AutoTokenizer", _Pretrained("tokenizer"))
+
+    tokenizer, loaded = qwen_family.hf_load("org/model", "cuda:0")
+
+    assert (tokenizer, loaded) == ("tokenizer", model)
+    assert model.config.use_cache is False
+    assert (model.device, model.evaluated) == ("cuda:0", True)
+    assert models.calls == [("org/model", {"dtype": torch.float16})]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("throughput", "device", "compiled", "frozen"),
+    [
+        (True, "cpu", True, True),
+        (True, "cuda:0", True, False),
+        (False, "cpu", False, False),
+    ],
+    ids=["follow on CPU", "GPU backfill", "server query path"],
+)
+async def test_a_throughput_embedder_compiles_and_freezes_only_on_cpu(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    throughput: bool,
+    device: str,
+    compiled: bool,
+    frozen: bool,
+) -> None:
+    """The backfill builder compiles on every device; only a CPU compile freezes.
+
+    Freezing folds the weights into the graph so Inductor prepacks them for the
+    CPU's matmul; the server's query embedder stays eager, so it pays no compile.
+    """
+    _install_fake(monkeypatch)
+    compiles: list[bool] = []
+    config = _FakeInductorConfig()
+
+    def fake_compile(model: _FakeModel, *, dynamic: bool) -> _FakeModel:
+        compiles.append(dynamic)
+        return model
+
+    monkeypatch.setattr(torch, "compile", fake_compile)
+    monkeypatch.setattr(qwen_family, "_inductor_config", lambda: config)
+    embedder = (
+        registry.build_backfill_embedder(
+            "qwen3-embedding-4b@1024",
+            device=device,
+            batch_size=8,
+        )
+        if throughput
+        else registry.build_session_embedder("qwen3-embedding-4b@1024")
+    )
+    assert embedder is not None
+
+    _ = await embedder.embed("compile me")
+
+    assert compiles == ([True] if compiled else [])
+    assert config.freezing is frozen
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("throughput", "rows"), [(True, [2, 3]), (False, [1, 3])])
+async def test_a_compiled_forward_never_sees_a_batch_of_one(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    throughput: bool,
+    rows: list[int],
+) -> None:
+    """One text runs as two rows when compiled; Inductor's CPU code fails on one.
+
+    The vectors are still one per text, and an eager forward is left alone.
+    """
+    model = _install_fake(monkeypatch)
+    monkeypatch.setattr(torch, "compile", _uncompiled)
+    monkeypatch.setattr(qwen_family, "_inductor_config", _FakeInductorConfig)
+    embedder = (
+        registry.build_backfill_embedder(
+            "qwen3-embedding-4b@1024",
+            device="cpu",
+            batch_size=8,
+        )
+        if throughput
+        else registry.build_session_embedder("qwen3-embedding-4b@1024")
+    )
+    assert isinstance(embedder, qwen_family.QwenFamilyEmbedder)
+
+    one = await embedder.embed("alone")
+    three = await embedder.embed_batch(["a", "b", "c"])
+
+    assert model.rows_seen == rows
+    assert len(one) == QWEN_TRUNCATED_DIM
+    assert len(three) == 3
 
 
 def test_satisfies_the_embedder_protocol() -> None:
@@ -217,87 +365,87 @@ async def test_query_side_prefixes_document_side_does_not(
 
 
 @pytest.mark.asyncio
-async def test_embed_bucketed_batch_prefixes_and_configures_once(
+async def test_bucket_queue_configures_recompile_limits_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The bucketed path applies doc_prefix and pins recompile limits ONCE.
+    """Recompile limits are pinned once per embedder, not per queue.
 
-    Glue over ``bucket_embed`` (whose routing/shape logic is tested there): this
-    checks the embedder-side contract -- documents carry ``doc_prefix``, the
-    static shape core is invoked with the model/dim/edges, and
-    ``configure_recompile_limits`` runs exactly once across calls (re-pinning the
-    global accumulated limit mid-run clipped warmup live).
+    Re-pinning the global accumulated limit mid-run clipped warmup live.
     """
     _install_fake(monkeypatch)
     configures: list[tuple[int, ...]] = []
-    seen_texts: list[list[str]] = []
-
-    async def fake_embed_bucketed(
-        model: bucket_embed.ForwardModel,
-        tokenizer: bucket_embed.TokenBatcher,
-        texts: list[str],
-        *,
-        edges: Sequence[int],
-        rows: Mapping[int, int],
-        dim: int,
-    ) -> list[list[float]]:
-        del model, tokenizer, edges, rows, dim
-        seen_texts.append(list(texts))
-        return [[0.0] for _ in texts]
 
     def record_configure(edges: Sequence[int]) -> None:
         configures.append(tuple(edges))
 
     monkeypatch.setattr(bucket_embed, "configure_recompile_limits", record_configure)
-    monkeypatch.setattr(bucket_embed, "embed_bucketed", fake_embed_bucketed)
-
-    embedder = QwenEmbedder()  # doc_prefix "" for stock Qwen.
+    embedder = QwenEmbedder()
     plan = {32: 4, 8192: 2}
-    _ = await embedder.embed_bucketed_batch(["one", "two"], edges=(32, 8192), rows=plan)
-    _ = await embedder.embed_bucketed_batch(["three"], edges=(32, 8192), rows=plan)
 
-    assert configures == [(32, 8192)]  # Configured once, not per call.
-    assert seen_texts == [["one", "two"], ["three"]]  # doc_prefix "" for Qwen.
+    first = await embedder.bucket_queue(edges=(32, 8192), rows=plan)
+    second = await embedder.bucket_queue(edges=(32, 8192), rows=plan)
+
+    assert configures == [(32, 8192)]
+    assert first is not second
 
 
-@pytest.mark.asyncio
-async def test_embed_bucketed_batch_applies_octen_doc_prefix(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A doc_prefix model prepends it on the bucketed path too (Octen ``"- "``)."""
+class _PrefixProbe:
+    """Records each text tokenized; one token per character, padded to the edge."""
 
-    def fake_load(device: str) -> tuple[_FakeTokenizer, _FakeModel]:
-        del device
-        return _FakeTokenizer(), _FakeModel()
+    def __init__(self) -> None:
+        self.seen: list[str] = []
 
-    monkeypatch.setattr("trackinizer.server.embedders.octen_8b._load", fake_load)
-    seen: list[list[str]] = []
-
-    async def fake_embed_bucketed(
-        model: bucket_embed.ForwardModel,
-        tokenizer: bucket_embed.TokenBatcher,
-        texts: list[str],
+    def __call__(
+        self,
+        texts: str | list[str],
         *,
-        edges: Sequence[int],
-        rows: Mapping[int, int],
-        dim: int,
-    ) -> list[list[float]]:
-        del model, tokenizer, edges, rows, dim
-        seen.append(list(texts))
-        return [[0.0] for _ in texts]
+        max_length: int,
+        truncation: bool,
+        padding: str = "do_not_pad",
+        return_tensors: str | None = None,
+    ) -> dict[str, object]:
+        del truncation, padding
+        if isinstance(texts, str):
+            self.seen.append(texts)
+            return {"input_ids": [0] * len(texts)}
+        self.seen.extend(texts)
+        assert return_tensors == "pt"
+        shape = (len(texts), max_length)
+        return {
+            "input_ids": torch.zeros(shape, dtype=torch.long),
+            "attention_mask": torch.ones(shape, dtype=torch.long),
+        }
 
-    def noop_configure(edges: Sequence[int]) -> None:
-        del edges
 
-    monkeypatch.setattr(bucket_embed, "configure_recompile_limits", noop_configure)
-    monkeypatch.setattr(bucket_embed, "embed_bucketed", fake_embed_bucketed)
+@pytest.mark.parametrize(
+    ("module", "build", "seen"),
+    [
+        ("qwen3_4b", QwenEmbedder, ["doc", "doc"]),
+        ("octen_8b", OctenEmbedder, ["- doc", "- doc"]),
+    ],
+)
+@pytest.mark.asyncio
+async def test_bucket_queue_routes_and_pads_each_document_with_its_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+    module: str,
+    build: Callable[[], QwenFamilyEmbedder],
+    seen: list[str],
+) -> None:
+    """The routing count and the forward batch both read Octen's ``"- "``; Qwen's bare."""
+    probe = _PrefixProbe()
 
-    _ = await OctenEmbedder().embed_bucketed_batch(
-        ["doc"],
-        edges=(32, 8192),
-        rows={32: 4, 8192: 2},
-    )
-    assert seen == [["- doc"]]  # Octen's documented document prefix.
+    def fake_load(device: str) -> tuple[_PrefixProbe, _FakeModel]:
+        del device
+        return probe, _FakeModel()
+
+    monkeypatch.setattr(f"trackinizer.server.embedders.{module}._load", fake_load)
+    queue = await build().bucket_queue(edges=(8,), rows={8: 2})
+
+    ticket = queue.add(["doc"])
+    await queue.run(hold=0)
+
+    assert probe.seen == seen
+    assert ticket.done
 
 
 if __name__ == "__main__":

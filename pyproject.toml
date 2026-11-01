@@ -83,7 +83,7 @@ server = [
     # stdlib `compression.zstd` is 3.14-only; the package validates on 3.12.
     "zstandard>=0.25.0",
     # Semantic session search (TRACKINIZER_SESSION_EMBEDDER=<model>@<dim>, e.g.
-    # qwen3-embedding-4b@1024): the embedders run in-process transformers + torch,
+    # qwen3-embedding-0.6b@1024): the embedders run in-process transformers + torch,
     # and the startup weight-presence check reads the HF cache. Every server
     # install carries the model path -- semantic search is a first-class feature.
     # The imports are still deferred at runtime (TYPE_CHECKING + wrapt

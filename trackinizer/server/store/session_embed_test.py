@@ -1,31 +1,43 @@
 """The session-embedding sweep against real Postgres (pglite).
 
-Every test runs the sweep over real ``session_records`` rows: the predicate is
-``md5(text) IS DISTINCT FROM text_md5``, which is the database's, and the
-halfvec(1024) upsert only exists against a live pgvector. StubEmbedder(dim=1024)
-matches the ``session_embeddings`` column; the Store keeps its own 384-dim
-embedder for ``inquiry_embeddings``, untouched here.
+Every test runs the sweep over real ``session_records`` rows: the freshness
+predicate, the ``changed_xid`` trigger and the snapshot visibility the cursor
+reads are the database's, and the halfvec(1024) upsert only exists against a live
+pgvector. StubEmbedder(dim=1024) matches the ``session_embeddings`` column; the
+Store keeps its own 384-dim embedder for ``inquiry_embeddings``, untouched here.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 from uuid import UUID, uuid4
 
 import pytest
 
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.semantic_mapper import IndexUnit
 from trackinizer.server.semantic_mapper_footprint import (
     CHUNK_CHARS,
     FootprintMapper,
 )
+from trackinizer.server.store import session_embed
 from trackinizer.server.store.session_embed import (
-    _embed_units,
+    Pool,
+    SweepStats,
+    embed_texts,
+    pending_page_sql,
+    save_cursor,
+    sole_writer,
     sweep_session_embeddings,
+    write_pool,
 )
+from trackinizer.server.values import manifest_bound
 
 
 if TYPE_CHECKING:
+    from asyncpg import Record
+
+    from trackinizer.lib.postgres import Conn
     from trackinizer.server.store.core import Store
 
 
@@ -36,7 +48,8 @@ def store(integ_store: Store) -> Store:
     The sweep is GLOBAL (it scans every session), so a prior test's records
     would otherwise land in this test's batch counts and stats; ``integ_store``
     empties every table per test, so each sweep sees only the rows the test
-    itself inserts.
+    itself inserts, and with no cursor left each test's first sweep is a full
+    one.
     """
     return integ_store
 
@@ -198,7 +211,6 @@ async def test_fts_only_record_rerun_is_a_no_op(store: Store) -> None:
 
     assert first.records_embedded == 1
     assert second.records_embedded == 0
-    assert second.records_skipped == 1
     assert await _embed_rows(store, session_id) == []
     assert len(await _marker_rows(store, session_id)) == 1
 
@@ -429,15 +441,19 @@ class _BatchStub(StubEmbedder):
 
     def __init__(self) -> None:
         super().__init__(dim=1024)
-        self.batch_sizes: list[int] = []
+        self.received: list[list[str]] = []
 
     @property
     @override
     def name(self) -> str:
         return "stub-batch"
 
+    @property
+    def batch_sizes(self) -> list[int]:
+        return [len(texts) for texts in self.received]
+
     async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        self.batch_sizes.append(len(texts))
+        self.received.append(texts)
         return [await self.embed(text) for text in texts]
 
 
@@ -540,6 +556,218 @@ async def test_sweep_skips_the_stale_tail_after_a_compaction(store: Store) -> No
     assert stats.records_embedded == 1
 
 
+async def _sweep(store: Store, embedder: StubEmbedder | None = None) -> SweepStats:
+    """Run one sweep with the footprint mapper and a 1024-dim stub by default."""
+    return await sweep_session_embeddings(
+        store.engine,
+        mapper=FootprintMapper(),
+        embedder=embedder or StubEmbedder(dim=1024),
+    )
+
+
+async def _make_marker_stale(store: Store, session_id: UUID, *, idx: int) -> None:
+    """Corrupt one record's marker: a sweep that reads the record re-embeds it."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE session_index_state SET text_md5 = 'stale' "
+            "WHERE session_id = $1 AND idx = $2",
+            session_id,
+            idx,
+        )
+
+
+async def _marker_md5s(store: Store, session_id: UUID) -> dict[int, str]:
+    """Return ``idx -> text_md5`` of the session's markers."""
+    return {
+        idx: md5
+        for _part, idx, _mapper, _model, md5 in await _marker_rows(store, session_id)
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_second_sweep_reads_only_records_changed_since_the_first(
+    store: Store,
+) -> None:
+    """After one full pass, a sweep reads the changes, never the whole table.
+
+    A stale marker on an UNCHANGED record is the probe: a rescan of every record
+    would find it and re-embed it; a sweep that reads only changes never looks.
+    """
+    session_id = await _session(store)
+    await _record(store, session_id, idx=0, kind="UserMessage", text="old line")
+    first = await _sweep(store)
+    await _make_marker_stale(store, session_id, idx=0)
+    await _record(store, session_id, idx=1, kind="UserMessage", text="new line")
+
+    second = await _sweep(store)
+
+    assert (first.full_scan, first.records_embedded) == (True, 1)
+    assert (second.full_scan, second.records_embedded) == (False, 1)
+    assert (await _marker_md5s(store, session_id))[0] == "stale"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rewriting_a_record_with_the_same_text_is_not_a_change(
+    store: Store,
+) -> None:
+    """A compaction replay re-feeds identical text: no re-read, no re-embed."""
+    session_id = await _session(store)
+    await _record(store, session_id, idx=0, kind="UserMessage", text="same words")
+    await _sweep(store)
+    await _make_marker_stale(store, session_id, idx=0)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE session_records SET text = text, payload = '{\"v\": 2}'::json "
+            "WHERE session_id = $1",
+            session_id,
+        )
+
+    stats = await _sweep(store)
+
+    assert stats.records_embedded == 0
+    assert (await _marker_md5s(store, session_id))[0] == "stale"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(("in_progress", "read"), [(True, 1), (False, 0)])
+async def test_a_record_in_flight_at_the_cursor_is_read_once_it_commits(
+    store: Store,
+    *,
+    in_progress: bool,
+    read: int,
+) -> None:
+    """The cursor is a snapshot, so a late-committing writer is never skipped.
+
+    The cursor is written by hand: once listing the record's transaction as in
+    progress -- what a sweep records when it reads while a long ingest is still
+    open -- and once as committed. Only the first leaves the record to read.
+    """
+    session_id = await _session(store)
+    await _record(store, session_id, idx=0, kind="UserMessage", text="late commit")
+    await _sweep(store)
+    await _make_marker_stale(store, session_id, idx=0)
+    async with store.engine.acquire() as conn:
+        xid = int(
+            str(
+                await conn.fetchval(
+                    "SELECT changed_xid::text FROM session_records WHERE session_id = $1",
+                    session_id,
+                ),
+            ),
+        )
+    await save_cursor(
+        store.engine,
+        mapper=FootprintMapper().name,
+        model=StubEmbedder(dim=1024).name,
+        # Both put the xid inside the snapshot's [xmin, xmax) window, so only the
+        # visibility check, not the xid range, tells them apart.
+        snapshot=f"{xid}:{xid + 1}:{xid}" if in_progress else f"{xid}:{xid + 1}:",
+    )
+
+    stats = await _sweep(store)
+
+    assert (stats.full_scan, stats.records_embedded) == (False, read)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_each_model_keeps_its_own_cursor(store: Store) -> None:
+    """A model swept for the first time catches up, whatever another model did."""
+    session_id = await _session(store)
+    await _record(store, session_id, idx=0, kind="UserMessage", text="shared line")
+    await _sweep(store)
+
+    challenger = await _sweep(store, _BatchStub())
+
+    assert (challenger.full_scan, challenger.records_embedded) == (True, 1)
+    async with store.engine.acquire() as conn:
+        cursors = await conn.fetch(
+            "SELECT mapper, model FROM session_index_cursor ORDER BY model",
+        )
+    assert [(row["mapper"], row["model"]) for row in cursors] == [
+        ("footprint-v1", "stub-1024"),
+        ("footprint-v1", "stub-batch"),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_pair_has_one_writer_until_it_lets_go(store: Store) -> None:
+    """A second connection is refused the pair, not another model, until release."""
+    async with store.engine.acquire() as first, store.engine.acquire() as second:
+        async with sole_writer(first, mapper="m", model="a") as held:
+            async with sole_writer(second, mapper="m", model="a") as refused:
+                pass
+            async with sole_writer(second, mapper="m", model="b") as other:
+                pass
+        async with sole_writer(second, mapper="m", model="a") as after:
+            pass
+
+    assert (held, refused, other, after) == (True, False, True, True)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_sweep_writes_nothing_while_another_process_writes_the_pair(
+    store: Store,
+) -> None:
+    """A sweep that finds the pair held leaves records, markers and cursor alone."""
+    session_id = await _session(store)
+    await _record(store, session_id, idx=0, kind="UserMessage", text="held line")
+    async with (
+        store.engine.acquire() as other,
+        sole_writer(
+            other,
+            mapper=FootprintMapper().name,
+            model=StubEmbedder(dim=1024).name,
+        ),
+    ):
+        refused = await _sweep(store)
+        markers = await _marker_rows(store, session_id)
+        async with store.engine.acquire() as conn:
+            cursors = await conn.fetchval("SELECT count(*) FROM session_index_cursor")
+
+    after = await _sweep(store)
+
+    assert refused == SweepStats(busy=True)
+    assert (markers, cursors) == ([], 0)
+    assert (after.busy, after.records_embedded) == (False, 1)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_one_page_embeds_every_records_units_in_one_batch(store: Store) -> None:
+    """Units pool across records, so a page is one batch call, not one per record.
+
+    The stored vectors must still land on their own records: each one equals what
+    the one-at-a-time stub path stores for the same record.
+    """
+    session_id = await _session(store)
+    texts = ["a much longer user message", "short", "mid length"]
+    for idx, text in enumerate(texts):
+        await _record(store, session_id, idx=idx, kind="UserMessage", text=text)
+    batch = _BatchStub()
+
+    await _sweep(store, batch)
+    await _sweep(store)
+
+    assert batch.received == [sorted(texts, key=len)]
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT model, idx, embedding::text AS e FROM session_embeddings "
+            "WHERE session_id = $1 ORDER BY idx",
+            session_id,
+        )
+    by_model: dict[str, list[str]] = {}
+    for row in rows:
+        by_model.setdefault(str(row["model"]), []).append(str(row["e"]))
+    assert by_model["stub-batch"] == by_model["stub-1024"]
+    assert len(by_model["stub-batch"]) == len(texts)
+
+
 class _CountingBatch(StubEmbedder):
     """A batch embedder that counts its calls and answers one length vector a text."""
 
@@ -558,7 +786,7 @@ class _CountingBatch(StubEmbedder):
 async def test_no_units_never_reach_a_batch_embedder() -> None:
     embedder = _CountingBatch(dim=1)
 
-    assert await _embed_units(embedder, []) == []
+    assert await embed_texts(embedder, []) == []
     assert embedder.calls == 0
 
 
@@ -566,18 +794,211 @@ async def test_no_units_never_reach_a_batch_embedder() -> None:
 async def test_a_batch_embedder_gets_all_the_units_in_one_call() -> None:
     embedder = _CountingBatch(dim=1)
 
-    assert await _embed_units(embedder, ["a", "bb"]) == [[1.0], [2.0]]
+    assert await embed_texts(embedder, ["a", "bb"]) == [[1.0], [2.0]]
     assert embedder.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_a_batch_embedder_sees_texts_shortest_first_in_input_order_back() -> None:
+    """Sorting by length keeps a short text off a long one's padding; order returns."""
+    embedder = _BatchStub()
+    texts = ["three", "x", "fourteen chars", "ab"]
+
+    vectors = await embed_texts(embedder, texts)
+
+    assert embedder.received == [["x", "ab", "three", "fourteen chars"]]
+    assert vectors == [await StubEmbedder(dim=1024).embed(text) for text in texts]
 
 
 @pytest.mark.asyncio
 async def test_a_scalar_embedder_is_called_once_per_unit_in_order() -> None:
     embedder = StubEmbedder(dim=4)
 
-    vectors = await _embed_units(embedder, ["a", "b"])
+    vectors = await embed_texts(embedder, ["a", "b"])
 
     assert vectors == [await embedder.embed("a"), await embedder.embed("b")]
     assert vectors[0] != vectors[1]
+
+
+def test_pending_page_sql_returns_exact_first_and_keyset_queries() -> None:
+    join, predicate = manifest_bound("r")
+    columns = "r.created, r.session_id, r.part, r.idx"
+    first = pending_page_sql(join, predicate, first=True, columns=columns)
+    later = pending_page_sql(join, predicate, first=False, columns=columns)
+
+    expected_prefix = (
+        "SELECT r.created, r.session_id, r.part, r.idx FROM session_records r "
+        "JOIN session_manifests m ON m.session_id = r.session_id AND m.part = r.part "
+        "WHERE "
+    )
+    expected_suffix = (
+        "r.idx < m.records AND r.kind = ANY($3::text[]) AND r.text <> '' "
+        "AND NOT EXISTS (SELECT 1 FROM session_index_state s "
+        "WHERE s.session_id = r.session_id AND s.part = r.part "
+        "AND s.idx = r.idx AND s.mapper = $1 AND s.model = $2 "
+        "AND s.text_md5 = md5(r.text)) "
+        "ORDER BY r.created, r.session_id, r.part, r.idx LIMIT "
+    )
+    assert first == expected_prefix + expected_suffix + "$4"
+    assert later == (
+        expected_prefix
+        + "(r.created, r.session_id, r.part, r.idx) > ($4, $5, $6, $7) AND "
+        + expected_suffix
+        + "$8"
+    )
+
+
+class _ExecuteConnection:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def execute(self, query: str, *args: object) -> None:
+        self.calls.append((query, args))
+
+
+class _Transaction:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+        del exc_type, exc, tb
+
+
+class _NamedEmbedder(StubEmbedder):
+    @property
+    @override
+    def name(self) -> str:
+        return "length-fake"
+
+
+@pytest.mark.asyncio
+async def test_write_pool_executes_delete_vectors_and_freshness_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _ExecuteConnection()
+    transaction_connections: list[object] = []
+
+    def fake_tx(connection: object) -> _Transaction:
+        transaction_connections.append(connection)
+        return _Transaction()
+
+    monkeypatch.setattr(session_embed, "tx", fake_tx)
+    session_id = uuid4()
+    row = cast("Record", {"session_id": session_id, "part": 2, "idx": 3})
+    pool: Pool = [(row, (IndexUnit(text="hello", field="content", chunk=1),), "digest")]
+    embedder = _NamedEmbedder(dim=2)
+
+    result = await write_pool(
+        cast("Conn", conn),
+        pool,
+        [[1.25, -2.5]],
+        embedder=embedder,
+        mapper_name="mapper",
+    )
+
+    assert result == 1
+    assert transaction_connections == [conn]
+    assert len(conn.calls) == 3
+    assert conn.calls[0][1] == ([session_id], [2], [3], "mapper", "length-fake")
+    assert conn.calls[1][1] == (
+        [session_id],
+        [2],
+        [3],
+        ["content"],
+        [1],
+        ["[1.25,-2.5]"],
+        ["digest"],
+        "mapper",
+        "length-fake",
+    )
+    assert conn.calls[2][1] == (
+        [session_id],
+        [2],
+        [3],
+        "mapper",
+        "length-fake",
+        ["digest"],
+    )
+    assert conn.calls[0][0] == (
+        "DELETE FROM session_embeddings e USING unnest($1::uuid[], "
+        "$2::int[], $3::int[]) AS t(session_id, part, idx) "
+        "WHERE e.session_id = t.session_id AND e.part = t.part "
+        "AND e.idx = t.idx AND e.mapper = $4 AND e.model = $5"
+    )
+    assert conn.calls[1][0] == (
+        "INSERT INTO session_embeddings "
+        "(session_id, part, idx, field, chunk, mapper, model, embedding, "
+        "text_md5) "
+        "SELECT session_id, part, idx, field, chunk, $8, $9, "
+        "embedding::halfvec, text_md5 FROM unnest($1::uuid[], $2::int[], "
+        "$3::int[], $4::text[], $5::int[], $6::text[], $7::text[]) "
+        "AS t(session_id, part, idx, field, chunk, embedding, text_md5)"
+    )
+    assert conn.calls[2][0] == (
+        "INSERT INTO session_index_state "
+        "(session_id, part, idx, mapper, model, text_md5) "
+        "SELECT DISTINCT session_id, part, idx, $4, $5, text_md5 "
+        "FROM unnest($1::uuid[], $2::int[], $3::int[], $6::text[]) "
+        "AS t(session_id, part, idx, text_md5) "
+        "ON CONFLICT (session_id, part, idx, mapper, model) "
+        "DO UPDATE SET text_md5 = EXCLUDED.text_md5, created = now()"
+    )
+
+
+@pytest.mark.asyncio
+async def test_write_pool_consumes_vectors_across_multiple_units(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _ExecuteConnection()
+
+    def fake_tx(conn: object) -> _Transaction:
+        del conn
+        return _Transaction()
+
+    monkeypatch.setattr(session_embed, "tx", fake_tx)
+    row = cast("Record", {"session_id": uuid4(), "part": 0, "idx": 0})
+    second_row = cast("Record", {"session_id": uuid4(), "part": 0, "idx": 1})
+    third_row = cast("Record", {"session_id": uuid4(), "part": 0, "idx": 2})
+    fts_only = cast("Record", {"session_id": uuid4(), "part": 0, "idx": 3})
+    pool: Pool = [
+        (
+            row,
+            (
+                IndexUnit(text="a", field="content", chunk=0),
+                IndexUnit(text="b", field="content", chunk=1),
+            ),
+            "digest",
+        ),
+        (second_row, (IndexUnit(text="c", field="content", chunk=0),), "digest-2"),
+        (fts_only, (), "digest-fts"),
+        (third_row, (IndexUnit(text="d", field="content", chunk=0),), "digest-3"),
+    ]
+
+    await write_pool(
+        cast("Conn", conn),
+        pool,
+        [[1.0], [2.0], [3.0], [4.0]],
+        embedder=_NamedEmbedder(dim=1),
+        mapper_name="mapper",
+    )
+
+    assert conn.calls[1][1][3:7] == (
+        ["content", "content", "content", "content"],
+        [0, 1, 0, 0],
+        ["[1.0]", "[2.0]", "[3.0]", "[4.0]"],
+        ["digest", "digest", "digest-2", "digest-3"],
+    )
+    # The fts-only record gets no vector but is still deleted from and marked.
+    assert conn.calls[0][1][2] == [0, 1, 3, 2]
+    assert conn.calls[2][1][5] == ["digest", "digest-2", "digest-fts", "digest-3"]
+    with pytest.raises(ValueError, match="zip\\(\\) argument"):
+        await write_pool(
+            cast("Conn", conn),
+            pool,
+            [[1.0]],
+            embedder=_NamedEmbedder(dim=1),
+            mapper_name="mapper",
+        )
 
 
 if __name__ == "__main__":

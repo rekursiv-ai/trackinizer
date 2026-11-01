@@ -1,10 +1,11 @@
-"""Follow-mode: round 1 embeds the corpus, round 2 no-ops (the sweep predicate).
+"""The backfill tool: the GPU pipeline, and the follow service around the sweep.
 
 Drives ``_run_follow`` for exactly two rounds against pglite with a counting
 wrapper over the 1024-dim stub, proving the steady-state contract: the first
-round embeds a freshly inserted record, the second re-scans and embeds NOTHING
-(``md5(text)`` already matches). Also checks the follow path ensures each model's
-partial index at startup.
+round embeds a freshly inserted record, the second reads only what changed and
+embeds NOTHING. Also checks the follow path ensures each model's partial index
+at startup, takes its models from the server's setting, caps its CPU threads,
+and hands a backlog to idle GPUs first.
 """
 
 from __future__ import annotations
@@ -12,7 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from queue import Full
+from queue import Full, SimpleQueue
+from subprocess import CompletedProcess
 from typing import TYPE_CHECKING, Protocol, Self, cast, override
 from uuid import UUID, uuid4
 
@@ -23,6 +25,7 @@ import ctypes
 import hashlib
 import multiprocessing
 import os
+import subprocess
 import sys
 import time
 
@@ -34,11 +37,15 @@ from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.semantic_mapper import IndexUnit
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.session_embed import (
+    Pool,
     SweepStats,
+    pending_page_sql,
     sweep_session_embeddings,
+    write_pool,
 )
 from trackinizer.server.store.session_index import index_name
 from trackinizer.server.tools import backfill_embedding, model_buckets
+from trackinizer.server.tools.bucket_embed import Ticket
 from trackinizer.server.values import manifest_bound
 
 
@@ -48,6 +55,7 @@ if TYPE_CHECKING:
         Callable,
         Coroutine,
         Mapping,
+        MutableMapping,
         Sequence,
     )
     from multiprocessing import Queue
@@ -56,6 +64,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.store.core import Store
+    from trackinizer.types.embedder import Embedder
 
 
 class _StopFollowError(Exception):
@@ -129,7 +138,7 @@ async def test_follow_embeds_round_one_then_no_ops_round_two(
     pg_dsn: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Round 1 embeds the record; round 2 re-scans and embeds nothing."""
+    """Round 1 embeds the record; round 2 reads only changes and embeds nothing."""
     await _one_record(store)
     counting = _CountingStub()
 
@@ -145,8 +154,8 @@ async def test_follow_embeds_round_one_then_no_ops_round_two(
     with pytest.raises(_StopFollowError):
         await backfill_embedding._run_follow(pg_dsn, ["stub-1024"], interval_sec=0)
 
-    # The record embedded exactly once: round 1 wrote it, round 2's md5 matched
-    # and skipped it. Two sleeps means two full rounds ran.
+    # The record embedded exactly once: round 1 wrote it, round 2 found no change
+    # since its cursor. Two sleeps means two full rounds ran.
     assert counting.embedded == [
         "a session line to embed exactly once across two rounds",
     ]
@@ -248,7 +257,7 @@ async def _read_idxs(
     tasks: Sequence[backfill_embedding.PageTask],
 ) -> list[int]:
     """Feed ``tasks`` through ``_read_stage``; return the pooled records' idxs."""
-    pools: asyncio.Queue[backfill_embedding.Pool | None] = asyncio.Queue()
+    pools: asyncio.Queue[Pool | None] = asyncio.Queue()
     async with store.engine.acquire() as conn:
         await backfill_embedding._read_stage(
             conn,
@@ -385,12 +394,7 @@ async def test_scanner_skips_unembeddable_kinds_and_empty_text(
     bounds = await _drain_scan(pg_dsn, page=10)
     # The store fixture is truncated per test, so the global count is this session's.
     del session_id
-    pending = await backfill_embedding._pending_count(
-        pg_dsn,
-        mapper_name=_MAPPER,
-        model=_MODEL,
-        indexed_kinds=sorted(FootprintMapper().embedded_kinds),
-    )
+    pending = await backfill_embedding._pending_count(pg_dsn, model=_MODEL)
 
     queued_idxs = {idx for lo, hi in bounds for idx in (lo, hi)}
     assert queued_idxs == {0}  # Only the indexed, non-empty row.
@@ -454,6 +458,159 @@ async def test_scanner_pages_pending_rows_without_gap_or_overlap(
     assert [hi for _lo, hi in bounds] == [1, 3, 4]
 
 
+class _CrashError(Exception):
+    """Stands in for a worker killed partway through a run."""
+
+
+class _CrashingStub(StubEmbedder):
+    """Embeds two pools, waits until the writer commits both, then dies."""
+
+    def __init__(self, committed: asyncio.Event) -> None:
+        super().__init__(dim=1024)
+        self._committed = committed
+        self._calls = 0
+
+    @override
+    async def embed(self, text: str) -> list[float]:
+        self._calls += 1
+        if self._calls <= 4:
+            return await super().embed(text)
+        await self._committed.wait()
+        raise _CrashError
+
+
+class _CommitWatch:
+    """Wraps ``write_pool``; sets ``committed`` once ``count`` pools are written."""
+
+    def __init__(self, count: int) -> None:
+        self.committed = asyncio.Event()
+        self._left = count
+
+    async def __call__(
+        self,
+        conn: Conn,
+        pool: Pool,
+        vectors: Sequence[Sequence[float]],
+        *,
+        embedder: Embedder,
+        mapper_name: str,
+    ) -> int:
+        written = await write_pool(
+            conn,
+            pool,
+            vectors,
+            embedder=embedder,
+            mapper_name=mapper_name,
+        )
+        self._left -= 1
+        if not self._left:
+            self.committed.set()
+        return written
+
+
+async def _pipeline_run(
+    pg_dsn: str,
+    embedder: StubEmbedder,
+    progress: backfill_embedding._Progress,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Scan, then run one in-process worker over every pending record."""
+
+    def build(name: str, **kwargs: object) -> StubEmbedder:
+        del name, kwargs
+        return embedder
+
+    def keep_no_cache(path: Path) -> None:
+        del path
+
+    monkeypatch.setattr(registry, "build_backfill_embedder", build)
+    monkeypatch.setattr(backfill_embedding, "_save_compile_cache", keep_no_cache)
+    feed: SimpleQueue[backfill_embedding.PageTask | None] = SimpleQueue()
+    config = backfill_embedding._WorkerConfig(
+        dsn=pg_dsn,
+        gpu="",
+        flush_units=2,
+        hold_units=0,
+        batch_size=1,
+        model=_MODEL,
+        dim=None,
+        gpu_vram_gb=32.0,
+        compile_cache=tmp_path / "absent.bin",
+    )
+    pages = cast("Queue[backfill_embedding.PageTask | None]", feed)
+    worker = asyncio.ensure_future(
+        backfill_embedding._worker(config, "cpu", pages, progress),
+    )
+    await backfill_embedding._scan(
+        pg_dsn,
+        pages,
+        100,
+        1,
+        mapper_name=_MAPPER,
+        model=_MODEL,
+        indexed_kinds=sorted(FootprintMapper().embedded_kinds),
+        alive=lambda: not worker.done(),
+    )
+    await worker
+
+
+async def _marked_idxs(store: Store, session_id: UUID) -> list[object]:
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT idx FROM session_index_state WHERE session_id = $1 "
+            "AND mapper = $2 AND model = $3 ORDER BY idx",
+            session_id,
+            _MAPPER,
+            _MODEL,
+        )
+    return [row["idx"] for row in rows]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_run_killed_midway_resumes_from_its_last_commit(
+    store: Store,
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A crash keeps each committed pool; the next run embeds the rest, once each.
+
+    Pools hold two one-unit records. The first run dies on its third pool after
+    the writer committed the first two, so four records are done and none is torn.
+    """
+    session_id = await _session_with_records(store, 10)
+    watch = _CommitWatch(2)
+    monkeypatch.setattr(backfill_embedding, "write_pool", watch)
+    crashing = _CrashingStub(watch.committed)
+
+    with pytest.raises(ExceptionGroup) as crash:
+        await _pipeline_run(
+            pg_dsn,
+            crashing,
+            _progress(pending=10),
+            monkeypatch,
+            tmp_path,
+        )
+    marked = await _marked_idxs(store, session_id)
+    resumed = _CountingStub()
+    await _pipeline_run(pg_dsn, resumed, _progress(pending=6), monkeypatch, tmp_path)
+
+    assert crash.group_contains(_CrashError)
+    assert marked == [0, 1, 2, 3]
+    assert resumed.embedded == [
+        f"scan record {idx} about deploys and locks" for idx in range(4, 10)
+    ]
+    assert await _marked_idxs(store, session_id) == list(range(10))
+    async with store.engine.acquire() as conn:
+        vectors = await conn.fetchval(
+            "SELECT count(*) FROM session_embeddings WHERE session_id = $1",
+            session_id,
+        )
+    assert vectors == 10
+
+
 @pytest.mark.parametrize(("cpu_count", "expected_threads"), [(8, "1"), (16, "2")])
 def test_worker_entry_sets_process_environment_and_runs_worker(
     monkeypatch: pytest.MonkeyPatch,
@@ -465,6 +622,7 @@ def test_worker_entry_sets_process_environment_and_runs_worker(
         dsn="postgresql://test",
         gpu="",
         flush_units=2,
+        hold_units=3,
         batch_size=3,
         model="stub-1024",
         dim=1024,
@@ -512,6 +670,7 @@ def test_worker_entry_defaults_to_one_thread_when_cpu_count_is_unknown(
         dsn="postgresql://test",
         gpu="",
         flush_units=1,
+        hold_units=3,
         batch_size=1,
         model="stub-1024",
         dim=None,
@@ -559,6 +718,7 @@ def test_worker_entry_uses_pinned_gpu_without_cpu_thread_cap(
         dsn="postgresql://test",
         gpu="3",
         flush_units=2,
+        hold_units=3,
         batch_size=3,
         model="stub-1024",
         dim=None,
@@ -796,6 +956,8 @@ def test_add_arguments_registers_defaults_and_overrides() -> None:
     assert default("page") == 2_000
     assert actions["flush_units"].type is int
     assert default("flush_units") == 1_024
+    assert actions["hold_units"].type is int
+    assert default("hold_units") == 65_536
     assert actions["batch_size"].type is int
     assert default("batch_size") == 48
     assert default("model") == ""
@@ -811,6 +973,12 @@ def test_add_arguments_registers_defaults_and_overrides() -> None:
     assert actions["follow"].nargs == 0
     assert actions["interval_sec"].type is int
     assert default("interval_sec") == 60
+    assert actions["cpu_threads"].type is int
+    assert default("cpu_threads") == max(1, (os.cpu_count() or 4) // 4)
+    assert actions["gpu_backfill"].nargs == 0
+    assert default("gpu_backfill") is False
+    assert actions["gpu_backfill_min_records"].type is int
+    assert default("gpu_backfill_min_records") == 1_000
 
     defaults = cast(
         "backfill_embedding.Flags",
@@ -821,6 +989,7 @@ def test_add_arguments_registers_defaults_and_overrides() -> None:
     assert defaults.cpu_workers == 0
     assert defaults.page == 2_000
     assert defaults.flush_units == 1_024
+    assert defaults.hold_units == 65_536
     assert defaults.batch_size == 48
     assert defaults.model == ""
     assert defaults.gpu_vram_gb is None
@@ -847,6 +1016,8 @@ def test_add_arguments_registers_defaults_and_overrides() -> None:
                 "7",
                 "--flush-units",
                 "9",
+                "--hold-units",
+                "10",
                 "--batch-size",
                 "5",
                 "--model",
@@ -858,6 +1029,11 @@ def test_add_arguments_registers_defaults_and_overrides() -> None:
                 "--follow",
                 "--interval-sec",
                 "12",
+                "--cpu-threads",
+                "3",
+                "--gpu-backfill",
+                "--gpu-backfill-min-records",
+                "8",
             ],
         ),
     )
@@ -866,12 +1042,16 @@ def test_add_arguments_registers_defaults_and_overrides() -> None:
     assert explicit.cpu_workers == 1
     assert explicit.page == 7
     assert explicit.flush_units == 9
+    assert explicit.hold_units == 10
     assert explicit.batch_size == 5
     assert explicit.model == "stub-1024"
     assert explicit.dim == 16
     assert explicit.gpu_vram_gb == 4.5
     assert explicit.follow is True
     assert explicit.interval_sec == 12
+    assert explicit.cpu_threads == 3
+    assert explicit.gpu_backfill is True
+    assert explicit.gpu_backfill_min_records == 8
 
 
 def test_key_and_queued_preserve_order_and_stringify_uuid() -> None:
@@ -885,33 +1065,6 @@ def test_key_and_queued_preserve_order_and_stringify_uuid() -> None:
     )
     assert key == (created, session_id, 3, 4)
     assert backfill_embedding._queued(key) == (created, str(session_id), 3, 4)
-
-
-def test_pending_page_sql_returns_exact_first_and_keyset_queries() -> None:
-    join, predicate = manifest_bound("r")
-    first = backfill_embedding._pending_page_sql(join, predicate, first=True)
-    later = backfill_embedding._pending_page_sql(join, predicate, first=False)
-
-    expected_prefix = (
-        "SELECT r.created, r.session_id, r.part, r.idx FROM session_records r "
-        "JOIN session_manifests m ON m.session_id = r.session_id AND m.part = r.part "
-        "WHERE "
-    )
-    expected_suffix = (
-        "r.idx < m.records AND r.kind = ANY($3::text[]) AND r.text <> '' "
-        "AND NOT EXISTS (SELECT 1 FROM session_index_state s "
-        "WHERE s.session_id = r.session_id AND s.part = r.part "
-        "AND s.idx = r.idx AND s.mapper = $1 AND s.model = $2 "
-        "AND s.text_md5 = md5(r.text)) "
-        "ORDER BY r.created, r.session_id, r.part, r.idx LIMIT "
-    )
-    assert first == expected_prefix + expected_suffix + "$4"
-    assert later == (
-        expected_prefix
-        + "(r.created, r.session_id, r.part, r.idx) > ($4, $5, $6, $7) AND "
-        + expected_suffix
-        + "$8"
-    )
 
 
 def test_compiler_returns_torch_compiler(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -997,16 +1150,26 @@ def test_follow_embedder_delegates_to_registry(monkeypatch: pytest.MonkeyPatch) 
     assert calls == ["stub-4"]
 
 
-def test_follow_embedder_rejects_disabled_models(
+def test_follow_embedder_rejects_disabled_models() -> None:
+    with pytest.raises(SystemExit, match="--model '' is empty/disabled"):
+        backfill_embedding._follow_embedder("")
+
+
+def test_follow_embedder_builds_a_real_model_for_cpu_throughput(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def disabled(name: str) -> None:
-        del name
+    """Compiled and frozen in batches of 8, not the server's eager query embedder."""
+    embedder = StubEmbedder(dim=4)
+    calls: list[tuple[str, str, int]] = []
 
-    monkeypatch.setattr(registry, "build_session_embedder", disabled)
+    def build(name: str, *, device: str, batch_size: int) -> StubEmbedder:
+        calls.append((name, device, batch_size))
+        return embedder
 
-    with pytest.raises(SystemExit, match="--model 'disabled' is empty/disabled"):
-        backfill_embedding._follow_embedder("disabled")
+    monkeypatch.setattr(registry, "build_backfill_embedder", build)
+
+    assert backfill_embedding._follow_embedder("qwen3-embedding-0.6b@1024") is embedder
+    assert calls == [("qwen3-embedding-0.6b@1024", "cpu", 8)]
 
 
 @pytest.mark.asyncio
@@ -1026,9 +1189,7 @@ async def test_pending_count_returns_integer_and_binds_all_inputs(
     monkeypatch.setattr(backfill_embedding, "PostgresEngine", engines)
     result = await backfill_embedding._pending_count(
         "postgresql://count",
-        mapper_name="mapper",
         model="model",
-        indexed_kinds=["UserMessage", "AssistantMessage"],
     )
 
     assert result == 7
@@ -1045,187 +1206,8 @@ async def test_pending_count_returns_integer_and_binds_all_inputs(
         "AND s.idx = r.idx AND s.mapper = $1 AND s.model = $2 "
         "AND s.text_md5 = md5(r.text))"
     )
-    assert args == ["mapper", "model", ["UserMessage", "AssistantMessage"]]
-
-
-class _ExecuteConnection:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, tuple[object, ...]]] = []
-
-    async def execute(self, query: str, *args: object) -> None:
-        self.calls.append((query, args))
-
-
-class _Transaction:
-    async def __aenter__(self) -> None:
-        return None
-
-    async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
-        del exc_type, exc, tb
-
-
-@pytest.mark.asyncio
-async def test_write_pool_executes_delete_vectors_and_freshness_marker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    conn = _ExecuteConnection()
-    transaction_connections: list[object] = []
-
-    def fake_tx(connection: object) -> _Transaction:
-        transaction_connections.append(connection)
-        return _Transaction()
-
-    monkeypatch.setattr(backfill_embedding, "tx", fake_tx)
-    session_id = uuid4()
-    row = cast(
-        "Record",
-        {"session_id": session_id, "part": 2, "idx": 3},
-    )
-    pool: backfill_embedding.Pool = [
-        (row, (IndexUnit(text="hello", field="content", chunk=1),), "digest"),
-    ]
-    embedder = _LengthFake()
-
-    result = await backfill_embedding._write_pool(
-        cast("Conn", conn),
-        pool,
-        [[1.25, -2.5]],
-        embedder,
-        "mapper",
-    )
-
-    assert result == 1
-    assert transaction_connections == [conn]
-    assert len(conn.calls) == 3
-    assert conn.calls[0][1] == ([session_id], [2], [3], "mapper", embedder.name)
-    assert conn.calls[1][1] == (
-        [session_id],
-        [2],
-        [3],
-        ["content"],
-        [1],
-        ["[1.25,-2.5]"],
-        ["digest"],
-        "mapper",
-        embedder.name,
-    )
-    assert conn.calls[2][1] == (
-        [session_id],
-        [2],
-        [3],
-        "mapper",
-        embedder.name,
-        ["digest"],
-    )
-    assert conn.calls[0][0] == (
-        "DELETE FROM session_embeddings e USING unnest($1::uuid[], "
-        "$2::int[], $3::int[]) AS t(session_id, part, idx) "
-        "WHERE e.session_id = t.session_id AND e.part = t.part "
-        "AND e.idx = t.idx AND e.mapper = $4 AND e.model = $5"
-    )
-    assert conn.calls[1][0] == (
-        "INSERT INTO session_embeddings "
-        "(session_id, part, idx, field, chunk, mapper, model, embedding, "
-        "text_md5) "
-        "SELECT session_id, part, idx, field, chunk, $8, $9, "
-        "embedding::halfvec, text_md5 FROM unnest($1::uuid[], $2::int[], "
-        "$3::int[], $4::text[], $5::int[], $6::text[], $7::text[]) "
-        "AS t(session_id, part, idx, field, chunk, embedding, text_md5)"
-    )
-    assert conn.calls[2][0] == (
-        "INSERT INTO session_index_state "
-        "(session_id, part, idx, mapper, model, text_md5) "
-        "SELECT DISTINCT session_id, part, idx, $4, $5, text_md5 "
-        "FROM unnest($1::uuid[], $2::int[], $3::int[], $6::text[]) "
-        "AS t(session_id, part, idx, text_md5) "
-        "ON CONFLICT (session_id, part, idx, mapper, model) "
-        "DO UPDATE SET text_md5 = EXCLUDED.text_md5, created = now()"
-    )
-
-
-@pytest.mark.asyncio
-async def test_write_pool_consumes_vectors_across_multiple_units(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    conn = _ExecuteConnection()
-
-    def fake_tx(conn: object) -> _Transaction:
-        del conn
-        return _Transaction()
-
-    monkeypatch.setattr(backfill_embedding, "tx", fake_tx)
-    row = cast("Record", {"session_id": uuid4(), "part": 0, "idx": 0})
-    second_row = cast("Record", {"session_id": uuid4(), "part": 0, "idx": 1})
-    third_row = cast("Record", {"session_id": uuid4(), "part": 0, "idx": 2})
-    pool: backfill_embedding.Pool = [
-        (
-            row,
-            (
-                IndexUnit(text="a", field="content", chunk=0),
-                IndexUnit(text="b", field="content", chunk=1),
-            ),
-            "digest",
-        ),
-        (second_row, (IndexUnit(text="c", field="content", chunk=0),), "digest-2"),
-        (third_row, (IndexUnit(text="d", field="content", chunk=0),), "digest-3"),
-    ]
-
-    await backfill_embedding._write_pool(
-        cast("Conn", conn),
-        pool,
-        [[1.0], [2.0], [3.0], [4.0]],
-        _LengthFake(),
-        "mapper",
-    )
-
-    assert conn.calls[1][1][3:7] == (
-        ["content", "content", "content", "content"],
-        [0, 1, 0, 0],
-        ["[1.0]", "[2.0]", "[3.0]", "[4.0]"],
-        ["digest", "digest", "digest-2", "digest-3"],
-    )
-    with pytest.raises(ValueError, match="zip\\(\\) argument"):
-        await backfill_embedding._write_pool(
-            cast("Conn", conn),
-            pool,
-            [[1.0]],
-            _LengthFake(),
-            "mapper",
-        )
-
-
-@pytest.mark.asyncio
-async def test_embed_batch_falls_back_to_one_text_at_a_time() -> None:
-    embedder = StubEmbedder(dim=4)
-    vectors = await backfill_embedding._embed_batch(embedder, ["a", "bb"])
-    assert len(vectors) == 2
-    assert all(len(vector) == 4 for vector in vectors)
-
-
-class _BatchFake:
-    dim = 2
-    name = "batch-fake"
-
-    def __init__(self) -> None:
-        self.calls: list[list[str]] = []
-
-    async def embed(self, text: str) -> list[float]:
-        return [float(len(text))]
-
-    async def embed_batch(self, texts: list[str]) -> list[list[float]]:
-        self.calls.append(texts)
-        return [[float(len(text))] for text in texts]
-
-
-@pytest.mark.asyncio
-async def test_embed_batch_forwards_the_batch_size_boundary() -> None:
-    embedder = _BatchFake()
-    texts = [f"text-{index:02d}" for index in range(48)]
-
-    vectors = await backfill_embedding._embed_batch(embedder, texts)
-
-    assert embedder.calls == [texts]
-    assert vectors == [[float(len(text))] for text in texts]
+    mapper = FootprintMapper()
+    assert args == [mapper.name, "model", sorted(mapper.embedded_kinds)]
 
 
 class _LengthFake:
@@ -1240,44 +1222,93 @@ class _LengthFake:
         return [float(len(text))]
 
 
-@pytest.mark.asyncio
-async def test_embed_stage_embeds_pools_and_forwards_sentinel() -> None:
-    pools: asyncio.Queue[backfill_embedding.Pool | None] = asyncio.Queue()
-    writes: asyncio.Queue[tuple[backfill_embedding.Pool, list[list[float]]] | None] = (
-        asyncio.Queue()
-    )
-    row = cast("Record", {"id": 1})
-    pool: backfill_embedding.Pool = [
-        (row, (IndexUnit(text="hello"),), "digest"),
+def _unit_pool(*texts: str) -> Pool:
+    """One record per text, each with one unit carrying it."""
+    return [
+        (cast("Record", {"id": at}), (IndexUnit(text=text),), "digest")
+        for at, text in enumerate(texts)
     ]
-    await pools.put(pool)
-    await pools.put(None)
 
-    embedder = _BucketFake()
+
+async def _run_embed_stage(
+    embedder: object,
+    pool_list: list[Pool],
+    *,
+    hold: int,
+) -> list[tuple[Pool, list[list[float]]] | None]:
+    """Feed ``pool_list`` through ``_embed_stage``; return what it wrote, in order."""
+    pools: asyncio.Queue[Pool | None] = asyncio.Queue()
+    writes: asyncio.Queue[tuple[Pool, list[list[float]]] | None] = asyncio.Queue()
+    for pool in [*pool_list, None]:
+        await pools.put(pool)
     await backfill_embedding._embed_stage(
         pools,
         writes,
-        embedder,
-        edges=(8,),
-        rows={8: 2},
+        cast("Embedder", embedder),
+        (8,),
+        {8: 2},
+        hold=hold,
+    )
+    return [writes.get_nowait() for _ in range(writes.qsize())]
+
+
+@pytest.mark.asyncio
+async def test_embed_stage_writes_pools_in_arrival_order_as_their_texts_finish() -> (
+    None
+):
+    """A pool is written once all its texts ran; one queue spans every pool.
+
+    The queue runs a bucket only once it is full, so a pool can finish after a later
+    one; writes still go out oldest first, and the end drains what waits.
+    """
+    embedder = _BucketFake()
+    first, second, third = (
+        _unit_pool("aa", "b"),
+        _unit_pool("ccc"),
+        _unit_pool("d", "e"),
     )
 
-    assert await writes.get() == (pool, [[5.0]])
-    assert await writes.get() is None
-    assert embedder.calls == [(["hello"], (8,), {8: 2})]
+    written = await _run_embed_stage(embedder, [first, second, third], hold=2)
+
+    assert written == [
+        (first, [[2.0], [1.0]]),
+        (second, [[3.0]]),
+        (third, [[1.0], [1.0]]),
+        None,
+    ]
+    assert embedder.calls == [
+        ("queue", (8,), {8: 2}),
+        ("add", ["aa", "b"]),
+        ("run", 2),
+        ("add", ["ccc"]),
+        ("run", 2),
+        ("add", ["d", "e"]),
+        ("run", 2),
+        ("run", 0),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_embed_stage_embeds_other_embedders_pool_by_pool_shortest_first() -> None:
+    """An embedder with no bucket queue gets each pool's texts sorted by length."""
+    embedder = _LengthFake()
+    pool = _unit_pool("four", "x", "three")
+
+    written = await _run_embed_stage(embedder, [pool], hold=2)
+
+    assert written == [(pool, [[4.0], [1.0], [5.0]]), None]
+    assert embedder.calls == [["x"], ["four"], ["three"]]
 
 
 @pytest.mark.asyncio
 async def test_write_stage_writes_reports_and_stops_on_sentinel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    writes: asyncio.Queue[tuple[backfill_embedding.Pool, list[list[float]]] | None] = (
-        asyncio.Queue()
-    )
-    pool: backfill_embedding.Pool = [
+    writes: asyncio.Queue[tuple[Pool, list[list[float]]] | None] = asyncio.Queue()
+    pool: Pool = [
         (cast("Record", {"id": 1}), (), "digest"),
     ]
-    second_pool: backfill_embedding.Pool = [
+    second_pool: Pool = [
         (cast("Record", {"id": 2}), (), "digest-2"),
     ]
     await writes.put((pool, []))
@@ -1287,15 +1318,16 @@ async def test_write_stage_writes_reports_and_stops_on_sentinel(
 
     async def fake_write_pool(
         conn: object,
-        received_pool: backfill_embedding.Pool,
+        received_pool: Pool,
         vectors: list[list[float]],
+        *,
         embedder: object,
         mapper_name: str,
     ) -> int:
         calls.append((conn, received_pool, vectors, embedder, mapper_name))
         return 1
 
-    monkeypatch.setattr(backfill_embedding, "_write_pool", fake_write_pool)
+    monkeypatch.setattr(backfill_embedding, "write_pool", fake_write_pool)
     monotonic_values = iter([1.0, 101.0])
     monkeypatch.setattr(time, "monotonic", lambda: next(monotonic_values, 101.0))
     update_calls: list[tuple[float, int, float]] = []
@@ -1355,21 +1387,19 @@ async def test_write_stages_report_run_wide_progress_against_one_denominator(
     times too high: worker-2 below would have printed ``pending=9``.
     """
 
-    async def fake_write_pool(*args: object) -> int:
-        del args
+    async def fake_write_pool(*args: object, **kwargs: object) -> int:
+        del args, kwargs
         return 0
 
-    monkeypatch.setattr(backfill_embedding, "_write_pool", fake_write_pool)
+    monkeypatch.setattr(backfill_embedding, "write_pool", fake_write_pool)
     monkeypatch.setattr(time, "monotonic", lambda: 1.0)
     printed = _PrintRecorder()
     monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
     progress = _progress(pending=10)
-    pool: backfill_embedding.Pool = [(cast("Record", {"id": 1}), (), "digest")]
+    pool: Pool = [(cast("Record", {"id": 1}), (), "digest")]
 
     for name in ("worker-1", "worker-2"):
-        writes: asyncio.Queue[
-            tuple[backfill_embedding.Pool, list[list[float]]] | None
-        ] = asyncio.Queue()
+        writes: asyncio.Queue[tuple[Pool, list[list[float]]] | None] = asyncio.Queue()
         await writes.put((pool, []))
         await writes.put(None)
         await backfill_embedding._write_stage(
@@ -1389,55 +1419,44 @@ async def test_write_stages_report_run_wide_progress_against_one_denominator(
     ]
 
 
-@pytest.mark.asyncio
-async def test_embed_pool_sorts_non_bucket_texts_then_restores_order() -> None:
-    embedder = _LengthFake()
-    texts = ["four", "x", "three"]
-
-    vectors = await backfill_embedding._embed_pool(
-        embedder,
-        texts,
-        edges=(),
-        rows={},
-    )
-
-    assert embedder.calls == [["x"], ["four"], ["three"]]
-    assert vectors == [[4.0], [1.0], [5.0]]
-
-
 class _BucketFake:
+    """An embedder whose bucket queue finishes whole calls, oldest first.
+
+    It stands in for the length buckets: ``run(hold=n)`` completes the oldest added
+    calls until at most ``n`` texts wait, and each vector is ``[len(text)]``.
+    """
+
     dim = 2
     name = "bucket-fake"
 
     def __init__(self) -> None:
-        self.calls: list[tuple[list[str], tuple[int, ...], dict[int, int]]] = []
+        self.calls: list[tuple[object, ...]] = []
+        self._waiting: list[tuple[list[str], Ticket]] = []
 
     async def embed(self, text: str) -> list[float]:
         return [float(len(text))]
 
-    async def embed_bucketed_batch(
+    async def bucket_queue(
         self,
-        texts: list[str],
         *,
-        edges: tuple[int, ...],
-        rows: dict[int, int],
-    ) -> list[list[float]]:
-        self.calls.append((texts, edges, rows))
-        return [[float(len(text))] for text in texts]
+        edges: Sequence[int],
+        rows: MutableMapping[int, int],
+    ) -> _BucketFake:
+        self.calls.append(("queue", tuple(edges), dict(rows)))
+        return self
 
+    def add(self, texts: Sequence[str]) -> Ticket:
+        self.calls.append(("add", list(texts)))
+        ticket = Ticket(vectors=[[] for _ in texts], left=len(texts))
+        self._waiting.append((list(texts), ticket))
+        return ticket
 
-@pytest.mark.asyncio
-async def test_embed_pool_passes_bucket_plan_without_resorting_texts() -> None:
-    embedder = _BucketFake()
-    texts = ["four", "x", "three"]
-    result = await backfill_embedding._embed_pool(
-        embedder,
-        texts,
-        edges=(8, 16),
-        rows={8: 4, 16: 2},
-    )
-    assert result == [[4.0], [1.0], [5.0]]
-    assert embedder.calls == [(texts, (8, 16), {8: 4, 16: 2})]
+    async def run(self, *, hold: int) -> None:
+        self.calls.append(("run", hold))
+        while sum(ticket.left for _texts, ticket in self._waiting) > hold:
+            texts, ticket = self._waiting.pop(0)
+            ticket.vectors[:] = [[float(len(text))] for text in texts]
+            ticket.left = 0
 
 
 class _FakeEngine:
@@ -1529,7 +1548,10 @@ def test_put_aborts_when_every_consumer_has_exited() -> None:
     queue = _FullQueue()
     liveness = iter([True, True, False])
 
-    with pytest.raises(backfill_embedding._NoLiveWorkersError):
+    with pytest.raises(
+        backfill_embedding._NoLiveWorkersError,
+        match=r"^every embed worker exited; aborting the scan$",
+    ):
         backfill_embedding._put(
             cast("Queue[backfill_embedding.PageTask | None]", queue),
             None,
@@ -1593,6 +1615,7 @@ class _UnitsByKind:
     """``One``/``Two`` yield that many embed units; anything else is fts-only."""
 
     name = "mapper-v1"
+    indexed_kinds = frozenset({"One", "Two"})
 
     def units(self, *, kind: str, text: str) -> tuple[IndexUnit, ...]:
         count = {"One": 1, "Two": 2}.get(kind, 0)
@@ -1646,7 +1669,7 @@ async def test_read_stage_skips_unembedded_rows_and_flushes_at_the_unit_budget(
     queue = _FakeQueue((_queued(0), _queued(4)), (_queued(5), _queued(6)), None)
     hashes = _RecordingHashlib()
     monkeypatch.setattr(backfill_embedding, "hashlib", hashes)
-    pools: asyncio.Queue[backfill_embedding.Pool | None] = asyncio.Queue()
+    pools: asyncio.Queue[Pool | None] = asyncio.Queue()
 
     await backfill_embedding._read_stage(
         cast("Conn", conn),
@@ -1658,7 +1681,7 @@ async def test_read_stage_skips_unembedded_rows_and_flushes_at_the_unit_budget(
         flush_units=2,
     )
 
-    emitted: list[backfill_embedding.Pool | None] = []
+    emitted: list[Pool | None] = []
     while not pools.empty():
         emitted.append(pools.get_nowait())
     assert emitted == [
@@ -1717,8 +1740,9 @@ async def test_scan_feeds_keyset_pages_then_one_sentinel_per_worker(
     )
 
     join, predicate = manifest_bound("r")
-    first = backfill_embedding._pending_page_sql(join, predicate, first=True)
-    later = backfill_embedding._pending_page_sql(join, predicate, first=False)
+    columns = "r.created, r.session_id, r.part, r.idx"
+    first = pending_page_sql(join, predicate, first=True, columns=columns)
+    later = pending_page_sql(join, predicate, first=False, columns=columns)
     head = ("mapper-v1", "model@4", ["One", "Two"])
     assert engines.opened == [("postgresql://scan", NOTIFY_CHANNEL)]
     assert conn.fetches == [
@@ -1740,6 +1764,122 @@ async def test_scan_feeds_keyset_pages_then_one_sentinel_per_worker(
     ]
 
 
+class _LockRecorder:
+    """Stands in for ``sole_writer``: grants or refuses, recording entry and exit."""
+
+    def __init__(self, events: list[str], *, held: bool) -> None:
+        self.conns: list[object] = []
+        self._events = events
+        self._held = held
+
+    @contextlib.asynccontextmanager
+    async def __call__(
+        self,
+        conn: object,
+        *,
+        mapper: str,
+        model: str,
+    ) -> AsyncGenerator[bool]:
+        self.conns.append(conn)
+        self._events.append(f"lock {mapper} {model}")
+        try:
+            yield self._held
+        finally:
+            self._events.append("unlock")
+
+
+def _fake_workers(events: list[str], count: int) -> Sequence[multiprocessing.Process]:
+    return cast(
+        "Sequence[multiprocessing.Process]",
+        [
+            _FakeProcess(target=None, args=(), name=f"w{i}", exitcode=0, events=events)
+            for i in range(count)
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_holds_its_pair_from_the_first_page_until_its_workers_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No sweep can take the pair while a worker still writes the last pages."""
+    events: list[str] = []
+    conn = object()
+    queue = _FakeQueue()
+    workers = _fake_workers(events, 2)
+    lock = _LockRecorder(events, held=True)
+
+    async def scan(
+        dsn: str,
+        source: object,
+        page: int,
+        n_workers: int,
+        *,
+        mapper_name: str,
+        model: str,
+        indexed_kinds: Sequence[str],
+        alive: Callable[[], bool],
+    ) -> None:
+        events.append("scan")
+        assert (dsn, source, page, n_workers) == ("postgresql://pipe", queue, 5, 2)
+        assert (mapper_name, model, indexed_kinds) == ("mapper-v1", "model@4", ["One"])
+        assert alive() is False  # Every fake process reports dead.
+
+    monkeypatch.setattr(backfill_embedding, "PostgresEngine", _EngineFactory(conn))
+    monkeypatch.setattr(backfill_embedding, "sole_writer", lock)
+    monkeypatch.setattr(backfill_embedding, "_scan", scan)
+
+    await backfill_embedding._scan_as_sole_writer(
+        "postgresql://pipe",
+        cast("Queue[backfill_embedding.PageTask | None]", queue),
+        5,
+        workers,
+        mapper_name="mapper-v1",
+        model="model@4",
+        indexed_kinds=["One"],
+    )
+
+    assert events == ["lock mapper-v1 model@4", "scan", "join w0", "join w1", "unlock"]
+    assert lock.conns == [conn]
+
+
+@pytest.mark.asyncio
+async def test_a_pipeline_refused_its_pair_releases_its_workers_and_says_why(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each worker gets its sentinel, so it exits instead of waiting for pages."""
+    events: list[str] = []
+    queue = _FakeQueue()
+
+    async def scan(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"scanned a refused pair: {args} {kwargs}")
+
+    monkeypatch.setattr(backfill_embedding, "PostgresEngine", _EngineFactory(object()))
+    monkeypatch.setattr(
+        backfill_embedding,
+        "sole_writer",
+        _LockRecorder(events, held=False),
+    )
+    monkeypatch.setattr(backfill_embedding, "_scan", scan)
+
+    with pytest.raises(
+        backfill_embedding._WriterBusyError,
+        match=r"^another process is embedding model@4; this run wrote nothing$",
+    ):
+        await backfill_embedding._scan_as_sole_writer(
+            "postgresql://pipe",
+            cast("Queue[backfill_embedding.PageTask | None]", queue),
+            5,
+            _fake_workers(events, 2),
+            mapper_name="mapper-v1",
+            model="model@4",
+            indexed_kinds=["One"],
+        )
+
+    assert events == ["lock mapper-v1 model@4", "unlock"]
+    assert queue.put_items == [None, None]
+
+
 @pytest.mark.asyncio
 async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
     monkeypatch: pytest.MonkeyPatch,
@@ -1751,6 +1891,7 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
         dsn="postgresql://worker",
         gpu="1",
         flush_units=5,
+        hold_units=11,
         batch_size=7,
         model="qwen",
         dim=4,
@@ -1817,8 +1958,10 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
         embedder: object,
         edges: object,
         rows: object,
+        *,
+        hold: int,
     ) -> None:
-        stages["embed"] = (pools, writes, embedder, edges, rows)
+        stages["embed"] = (pools, writes, embedder, edges, rows, hold)
 
     async def write_stage(
         conn: object,
@@ -1872,7 +2015,7 @@ async def test_worker_wires_the_three_stages_and_persists_the_compile_cache(
     assert embed_pools is pools
     assert isinstance(writes, asyncio.Queue)
     assert writes.maxsize == 2
-    assert embed_rest == [embedder, (8, 16), {8: 4, 16: 2}]
+    assert embed_rest == [embedder, (8, 16), {8: 4, 16: 2}, 11]
     assert stages["write"] == (
         write_conn,
         writes,
@@ -1906,13 +2049,9 @@ async def test_run_follow_ensures_indexes_then_sweeps_every_model_per_round(
     fake_asyncio = _FakeAsyncio(rounds=1)
     printed = _PrintRecorder()
     stats = {
-        "a": SweepStats(
-            records_scanned=4,
-            records_embedded=3,
-            units_written=5,
-            records_skipped=1,
-        ),
-        "b": SweepStats(records_scanned=2),
+        "a": SweepStats(records_embedded=3, units_written=5, full_scan=True),
+        "b": SweepStats(),
+        "c": SweepStats(busy=True),
     }
 
     async def ensure(conn: object, model: str, dim: int) -> None:
@@ -1928,7 +2067,7 @@ async def test_run_follow_ensures_indexes_then_sweeps_every_model_per_round(
         return stats[embedder.name]
 
     def follow_embedder(name: str) -> _NamedEmbedder:
-        return _NamedEmbedder(name, {"a": 3, "b": 5}[name])
+        return _NamedEmbedder(name, {"a": 3, "b": 5, "c": 2}[name])
 
     monkeypatch.setattr(backfill_embedding, "_follow_embedder", follow_embedder)
     monkeypatch.setattr(backfill_embedding, "PostgresEngine", engines)
@@ -1938,21 +2077,23 @@ async def test_run_follow_ensures_indexes_then_sweeps_every_model_per_round(
     monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
 
     with pytest.raises(_StopFollowError):
-        await backfill_embedding._run_follow("postgresql://follow", ["a", "b"], 11)
+        await backfill_embedding._run_follow("postgresql://follow", ["a", "b", "c"], 11)
 
     assert engines.opened == [("postgresql://follow", NOTIFY_CHANNEL)]
-    assert ensured == [(conn, "a", 3), (conn, "b", 5)]
+    assert ensured == [(conn, "a", 3), (conn, "b", 5), (conn, "c", 2)]
     (engine,) = engines.engines
     mapper = swept[0][1]
     assert isinstance(mapper, FootprintMapper)
-    assert swept == [(engine, mapper, "a"), (engine, mapper, "b")]
+    assert swept == [
+        (engine, mapper, "a"),
+        (engine, mapper, "b"),
+        (engine, mapper, "c"),
+    ]
     assert printed.calls == [
+        (("follow: model=a embedded=3 units=5 (full scan)",), {"flush": True}),
+        (("follow: model=b embedded=0 units=0",), {"flush": True}),
         (
-            ("follow: model=a scanned=4 embedded=3 units=5 skipped=1",),
-            {"flush": True},
-        ),
-        (
-            ("follow: model=b scanned=2 embedded=0 units=0 skipped=0",),
+            ("follow: model=c skipped: another process is embedding it",),
             {"flush": True},
         ),
     ]
@@ -1990,23 +2131,60 @@ def test_main_help_has_no_description_without_a_docstring(
     assert capsys.readouterr().out.split("\n\n")[1].startswith("positional arguments:")
 
 
-@pytest.mark.parametrize(
-    ("model_flag", "models"),
-    [("a,, b ", ["a", "b"]), (" , ", ["qwen3-embedding-4b@1024"])],
-)
-def test_main_follow_maintains_every_named_model(
-    monkeypatch: pytest.MonkeyPatch,
-    model_flag: str,
-    models: list[str],
-) -> None:
-    """``--follow`` hands every non-blank ``--model`` (or the default) to follow."""
-    calls: list[tuple[str, list[str], int]] = []
+class _FollowRecorder:
+    """Stands in for ``_run_follow``: records its call and the env it ran under."""
 
-    async def run_follow(dsn: str, models: list[str], interval_sec: int) -> int:
-        calls.append((dsn, models, interval_sec))
+    def __init__(self, events: list[str] | None = None) -> None:
+        self.calls: list[tuple[str, list[str], int]] = []
+        self.threads: str | None = None
+        self.gpus: str | None = None
+        self.events = events if events is not None else []
+
+    async def __call__(self, dsn: str, models: list[str], interval_sec: int) -> int:
+        self.calls.append((dsn, models, interval_sec))
+        self.threads = os.environ.get("OMP_NUM_THREADS")
+        self.gpus = os.environ.get("CUDA_VISIBLE_DEVICES")
+        self.events.append("follow")
         return 7
 
-    monkeypatch.setattr(backfill_embedding, "_run_follow", run_follow)
+
+def _clear_embedder_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Leave no server embedder setting, and restore what ``main`` sets after the test."""
+    monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER", raising=False)
+    monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDERS", raising=False)
+    # Recorded so teardown removes the cap and the hidden GPUs ``main`` sets for the
+    # follow loop.
+    monkeypatch.setenv("OMP_NUM_THREADS", "unset-by-test")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "unset-by-test")
+
+
+@pytest.mark.parametrize(
+    ("model_flag", "env", "models"),
+    [
+        ("a,, b ", {}, ["a", "b"]),
+        (" , ", {"TRACKINIZER_SESSION_EMBEDDER": "served@8"}, ["served@8"]),
+        (
+            "",
+            {
+                "TRACKINIZER_SESSION_EMBEDDER": "served@8",
+                "TRACKINIZER_SESSION_EMBEDDERS": "served@8,challenger@8",
+            },
+            ["served@8", "challenger@8"],
+        ),
+    ],
+)
+def test_main_follow_maintains_the_named_models_else_the_servers(
+    monkeypatch: pytest.MonkeyPatch,
+    model_flag: str,
+    env: dict[str, str],
+    models: list[str],
+) -> None:
+    """``--model`` wins; without it follow maintains what the server is set to."""
+    _clear_embedder_env(monkeypatch)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    follow = _FollowRecorder()
+    monkeypatch.setattr(backfill_embedding, "_run_follow", follow)
     monkeypatch.setattr(
         sys,
         "argv",
@@ -2014,7 +2192,121 @@ def test_main_follow_maintains_every_named_model(
     )
 
     assert backfill_embedding.main() == 7
-    assert calls == [("dsn", models, 3)]
+    assert follow.calls == [("dsn", models, 3)]
+
+
+def test_main_follow_with_no_model_configured_exits_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A blank setting means semantic search is off: exit 0, so systemd stays quiet.
+
+    The unit restarts only on failure, so a clean exit is how a redeploy that
+    restarts the follow service on a server with search off leaves it stopped.
+    """
+    _clear_embedder_env(monkeypatch)
+    follow = _FollowRecorder()
+    monkeypatch.setattr(backfill_embedding, "_run_follow", follow)
+    monkeypatch.setattr(sys, "argv", ["backfill", "dsn", "--follow"])
+
+    assert backfill_embedding.main() == 0
+    assert follow.calls == []
+    assert "semantic search is off" in capsys.readouterr().out
+
+
+def test_main_follow_caps_the_cpu_threads_after_the_gpu_backfill(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GPU workers start uncapped; the follow loop then runs capped, on CPU alone.
+
+    Hidden GPUs keep the loop's compile from opening a CUDA context that would make
+    GPU 0 look busy to every idle check.
+    """
+    _clear_embedder_env(monkeypatch)
+    events: list[str] = []
+    gpu_env: list[tuple[str | None, str | None]] = []
+
+    def backfill_on_idle_gpus(
+        flags: object,
+        *,
+        models: list[str],
+        gpus: list[str],
+    ) -> None:
+        del flags
+        events.append(f"gpus {gpus} {models}")
+        gpu_env.append(
+            (os.environ.get("OMP_NUM_THREADS"), os.environ.get("CUDA_VISIBLE_DEVICES")),
+        )
+
+    follow = _FollowRecorder(events)
+    monkeypatch.setattr(
+        backfill_embedding,
+        "_backfill_on_idle_gpus",
+        backfill_on_idle_gpus,
+    )
+    monkeypatch.setattr(backfill_embedding, "_run_follow", follow)
+    argv = ["backfill", "dsn", "--follow", "--model", "m@4", "--cpu-threads", "5"]
+    monkeypatch.setattr(sys, "argv", [*argv, "--gpu-backfill", "--gpus", "0, 1"])
+
+    assert backfill_embedding.main() == 7
+    assert events == ["gpus ['0', '1'] ['m@4']", "follow"]
+    assert gpu_env == [("unset-by-test", "unset-by-test")]
+    assert (follow.threads, follow.gpus) == ("5", "")
+
+
+def test_main_follow_skips_the_gpus_unless_asked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_embedder_env(monkeypatch)
+    follow = _FollowRecorder()
+
+    def backfill_on_idle_gpus(*args: object, **kwargs: object) -> None:
+        raise AssertionError(f"GPU backfill ran unasked: {args} {kwargs}")
+
+    monkeypatch.setattr(
+        backfill_embedding,
+        "_backfill_on_idle_gpus",
+        backfill_on_idle_gpus,
+    )
+    monkeypatch.setattr(backfill_embedding, "_run_follow", follow)
+    monkeypatch.setattr(sys, "argv", ["backfill", "dsn", "--follow", "--model", "m@4"])
+
+    assert backfill_embedding.main() == 7
+
+
+def test_main_backfill_needs_a_model(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The one-shot path has no fallback: no model named or configured is a usage error."""
+    _clear_embedder_env(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["backfill", "dsn"])
+
+    with pytest.raises(SystemExit, match=r"^2$"):
+        backfill_embedding.main()
+
+    assert "no --model and no TRACKINIZER_SESSION_EMBEDDER" in capsys.readouterr().err
+
+
+def test_main_backfill_with_nothing_pending_starts_no_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A drained corpus loads no model on any GPU."""
+    _clear_embedder_env(monkeypatch)
+
+    async def pending_count(dsn: str, *, model: str) -> int:
+        del dsn, model
+        return 0
+
+    def no_process(**kwargs: object) -> None:
+        raise AssertionError(f"a worker started: {kwargs}")
+
+    monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
+    monkeypatch.setattr(multiprocessing, "Process", no_process)
+    monkeypatch.setattr(registry, "resolved_name", _name_at_dim)
+    monkeypatch.setattr(sys, "argv", ["backfill", "dsn", "--model", "m"])
+
+    assert backfill_embedding.main() == 0
 
 
 @dataclass(kw_only=True, slots=True)
@@ -2062,7 +2354,11 @@ def test_main_rejects_zero_worker_slots_before_scanning(
 
     monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
     monkeypatch.setattr(backfill_embedding, "_scan", scan)
-    monkeypatch.setattr(sys, "argv", ["backfill", "postgresql://main", "--gpus", ""])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["backfill", "postgresql://main", "--model", "m", "--gpus", ""],
+    )
 
     with pytest.raises(SystemExit, match=r"^2$"):
         backfill_embedding.main()
@@ -2097,14 +2393,20 @@ def test_main_aborts_with_failure_when_every_worker_dies_mid_scan(
             events=events,
         )
 
-    async def scan(*args: object, alive: Callable[[], bool], **kwargs: object) -> None:
-        del args, kwargs
-        liveness.append(alive())
+    async def scan(
+        dsn: str,
+        source: object,
+        page: int,
+        workers: Sequence[_FakeProcess],
+        **kwargs: object,
+    ) -> None:
+        del dsn, source, page, kwargs
+        liveness.append(any(worker.is_alive() for worker in workers))
         raise backfill_embedding._NoLiveWorkersError("every embed worker exited")
 
     async def pending_count(dsn: str, **kwargs: object) -> int:
         del dsn, kwargs
-        return 0
+        return 1
 
     def make_queue(maxsize: int) -> _MainQueue:
         del maxsize
@@ -2113,10 +2415,11 @@ def test_main_aborts_with_failure_when_every_worker_dies_mid_scan(
     printed = _PrintRecorder()
     monkeypatch.setattr(multiprocessing, "Process", make_process)
     monkeypatch.setattr(multiprocessing, "Queue", make_queue)
+    monkeypatch.setattr(registry, "resolved_name", _name_at_dim)
     monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
-    monkeypatch.setattr(backfill_embedding, "_scan", scan)
+    monkeypatch.setattr(backfill_embedding, "_scan_as_sole_writer", scan)
     monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
-    monkeypatch.setattr(sys, "argv", ["backfill", "postgresql://main"])
+    monkeypatch.setattr(sys, "argv", ["backfill", "postgresql://main", "--model", "m"])
 
     assert backfill_embedding.main() == 1
     assert liveness == [False]
@@ -2124,18 +2427,82 @@ def test_main_aborts_with_failure_when_every_worker_dies_mid_scan(
     assert [args[0] for args, _kwargs in printed.calls][-1] != "ALL DONE"
 
 
+def test_main_reports_a_model_another_process_is_embedding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run refused the pair exits 1 with why, without counting or running again."""
+    events: list[str] = []
+
+    def make_process(
+        *,
+        target: object,
+        args: tuple[object, ...],
+        name: str,
+    ) -> _FakeProcess:
+        del target
+        return _FakeProcess(
+            target=None,
+            args=args,
+            name=name,
+            exitcode=0,
+            events=events,
+        )
+
+    async def scan(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        events.append("scan")
+        raise backfill_embedding._WriterBusyError("another process is embedding m@None")
+
+    async def pending_count(dsn: str, **kwargs: object) -> int:
+        del dsn, kwargs
+        events.append("count")
+        return 1
+
+    printed = _PrintRecorder()
+    monkeypatch.setattr(multiprocessing, "Process", make_process)
+    monkeypatch.setattr(registry, "resolved_name", _name_at_dim)
+    monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
+    monkeypatch.setattr(backfill_embedding, "_scan_as_sole_writer", scan)
+    monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
+    monkeypatch.setattr(sys, "argv", ["backfill", "postgresql://main", "--model", "m"])
+
+    assert backfill_embedding.main() == 1
+    assert events == [
+        "count",
+        "start embed-worker-0-gpu0",
+        "scan",
+        "join embed-worker-0-gpu0",
+    ]
+    assert [str(args[0]) for args, _kwargs in printed.calls] == [
+        "another process is embedding m@None",
+    ]
+
+
 @pytest.mark.parametrize(
-    ("exit_codes", "message", "status"),
-    [((0, 1, 0), "1 workers FAILED", 1), ((0, 0, 0), "ALL DONE", 0)],
+    ("exit_codes", "messages", "status"),
+    [
+        (
+            (0, 1, 0),
+            [
+                "1 workers FAILED",
+                "m1@resolved: a run embedded nothing; 11 still pending",
+            ],
+            1,
+        ),
+        ((0, 0, 0), ["ALL DONE"], 0),
+    ],
 )
 def test_main_runs_one_worker_per_slot_scans_then_reports(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     exit_codes: tuple[int, ...],
-    message: str,
+    messages: list[str],
     status: int,
 ) -> None:
-    """Workers start, the scanner feeds them, joins tally failures."""
+    """Workers start, the scanner feeds them, joins tally failures.
+
+    A failed run counts again; with nothing embedded it stops rather than loop.
+    """
     cache = tmp_path / "cc.bin"
     events: list[str] = []
     processes: list[_FakeProcess] = []
@@ -2170,38 +2537,31 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
         resolved.append((name, dim))
         return f"{name}@resolved"
 
-    async def pending_count(
-        dsn: str,
-        *,
-        mapper_name: str,
-        model: str,
-        indexed_kinds: list[str],
-    ) -> int:
+    async def pending_count(dsn: str, *, model: str) -> int:
         events.append("count")
-        counts.append((dsn, mapper_name, model, indexed_kinds))
+        counts.append((dsn, model))
         return 11
 
     async def scan(
         dsn: str,
         source: object,
         page: int,
-        n_workers: int,
+        workers: Sequence[_FakeProcess],
         *,
         mapper_name: str,
         model: str,
         indexed_kinds: list[str],
-        alive: Callable[[], bool],
     ) -> None:
         events.append("scan")
-        assert alive() is False  # Every fake process reports dead.
-        scans.append((dsn, source, page, n_workers, mapper_name, model, indexed_kinds))
+        assert list(workers) == processes
+        scans.append((dsn, source, page, mapper_name, model, indexed_kinds))
 
     printed = _PrintRecorder()
     monkeypatch.setattr(multiprocessing, "Process", make_process)
     monkeypatch.setattr(multiprocessing, "Queue", make_queue)
     monkeypatch.setattr(registry, "resolved_name", resolved_name)
     monkeypatch.setattr(backfill_embedding, "_pending_count", pending_count)
-    monkeypatch.setattr(backfill_embedding, "_scan", scan)
+    monkeypatch.setattr(backfill_embedding, "_scan_as_sole_writer", scan)
     monkeypatch.setattr(backfill_embedding, "print", printed, raising=False)
     monkeypatch.setattr(
         sys,
@@ -2217,6 +2577,8 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
             "5",
             "--flush-units",
             "6",
+            "--hold-units",
+            "8",
             "--batch-size",
             "7",
             "--model",
@@ -2237,6 +2599,7 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
             dsn="postgresql://main",
             gpu=gpu,
             flush_units=6,
+            hold_units=8,
             batch_size=7,
             model="m1",
             dim=4,
@@ -2253,34 +2616,278 @@ def test_main_runs_one_worker_per_slot_scans_then_reports(
         (backfill_embedding._worker_entry, (config(gpu), queue, progress), name)
         for gpu, name in zip(("0", "1", ""), names, strict=True)
     ]
+    recount = ["count"] if status else []
     assert events == [
         "count",
         *(f"start {name}" for name in names),
         "scan",
         *(f"join {name}" for name in names),
+        *recount,
     ]
     mapper = FootprintMapper()
-    assert resolved == [("m1", 4)]
-    assert counts == [
-        (
-            "postgresql://main",
-            mapper.name,
-            "m1@resolved",
-            sorted(mapper.embedded_kinds),
-        ),
-    ]
+    assert resolved == [("m1", 4), ("m1", 4)]
+    assert counts == [("postgresql://main", "m1@resolved")] * (1 + len(recount))
     assert scans == [
         (
             "postgresql://main",
             queue,
             5,
-            3,
             mapper.name,
             "m1@resolved",
             sorted(mapper.embedded_kinds),
         ),
     ]
-    assert printed.calls == [((message,), {})]
+    assert printed.calls == [((message,), {"flush": True}) for message in messages]
+
+
+def _name_at_dim(name: str, dim: int | None) -> str:
+    """Stand in for ``registry.resolved_name`` without a real model."""
+    return f"{name}@{dim}"
+
+
+def _smi(cards: str, apps: str) -> Callable[..., CompletedProcess[str]]:
+    """Return a ``subprocess.run`` answering nvidia-smi's two queries."""
+
+    def run(argv: list[str], **kwargs: object) -> CompletedProcess[str]:
+        del kwargs
+        out = cards if argv[1].startswith("--query-gpu") else apps
+        return CompletedProcess(argv, 0, stdout=out, stderr="")
+
+    return run
+
+
+@pytest.mark.parametrize(
+    ("cards", "apps", "idle"),
+    [
+        ("0, GPU-a, 5\n1, GPU-b, 4\n", "", ["0", "1"]),
+        ("0, GPU-a, 5\n1, GPU-b, 4\n", "GPU-b\n", ["0"]),  # A process holds 1.
+        ("0, GPU-a, 513\n1, GPU-b, 512\n", "", ["1"]),  # An unlisted holder.
+        ("0, GPU-a, [N/A]\n", "", []),  # Shares the CPU's memory.
+        ("0, GPU-a, 5\n2, GPU-c, 5\n", "", ["0"]),  # 1 is no candidate's card.
+    ],
+)
+def test_idle_gpus_are_the_candidates_no_process_holds(
+    monkeypatch: pytest.MonkeyPatch,
+    cards: str,
+    apps: str,
+    idle: list[str],
+) -> None:
+    monkeypatch.setattr(subprocess, "run", _smi(cards, apps))
+
+    assert backfill_embedding._idle_gpus(["1", "0"]) == [
+        gpu for gpu in ["1", "0"] if gpu in idle
+    ]
+
+
+@pytest.mark.parametrize(
+    "error",
+    [FileNotFoundError("nvidia-smi"), subprocess.CalledProcessError(9, "nvidia-smi")],
+)
+def test_no_gpu_is_idle_without_a_working_nvidia_smi(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+) -> None:
+    def run(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise error
+
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert backfill_embedding._idle_gpus(["0"]) == []
+
+
+class _GpuBackfillRig:
+    """Fakes the GPU catch-up's collaborators and records what each was asked."""
+
+    def __init__(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        idle: list[str],
+        counts: list[int],
+        runs: list[int | Exception],
+    ) -> None:
+        """Answer each pending count and each run, in turn, from ``counts``/``runs``."""
+        self.events: list[object] = []
+        self.printed = _PrintRecorder()
+        self._idle = idle
+        self._counts = counts
+        self._runs = runs
+        monkeypatch.setattr(backfill_embedding, "_idle_gpus", self.idle_gpus)
+        monkeypatch.setattr(backfill_embedding, "_current_snapshot", self.snapshot)
+        monkeypatch.setattr(backfill_embedding, "_pending_count", self.count)
+        monkeypatch.setattr(backfill_embedding, "_backfill", self.backfill)
+        monkeypatch.setattr(backfill_embedding, "_save_cursor", self.save)
+        monkeypatch.setattr(registry, "resolved_name", _name_at_dim)
+        monkeypatch.setattr(backfill_embedding, "print", self.printed, raising=False)
+
+    def idle_gpus(self, gpus: Sequence[str]) -> list[str]:
+        return [gpu for gpu in self._idle if gpu in gpus]
+
+    async def snapshot(self, dsn: str) -> str:
+        self.events.append(("snapshot", dsn))
+        return "10:12:11"
+
+    async def count(self, dsn: str, *, model: str) -> int:
+        self.events.append(("count", dsn, model))
+        return self._counts.pop(0)
+
+    def backfill(
+        self,
+        flags: object,
+        *,
+        model: str,
+        slots: list[str],
+        pending: int,
+    ) -> int:
+        del flags
+        self.events.append(("backfill", model, slots, pending))
+        run = self._runs.pop(0)
+        if isinstance(run, Exception):
+            raise run
+        return run
+
+    async def save(self, dsn: str, *, mapper: str, model: str, snapshot: str) -> None:
+        self.events.append(("save", dsn, mapper, model, snapshot))
+
+
+def _gpu_flags(*extra: str) -> backfill_embedding.Flags:
+    parser = argparse.ArgumentParser()
+    backfill_embedding._add_arguments(parser)
+    argv = ["dsn", "--follow", "--gpu-backfill", "--workers-per-gpu", "2", "--dim", "8"]
+    return cast("backfill_embedding.Flags", parser.parse_args([*argv, *extra]))
+
+
+def test_gpu_backfill_saves_the_snapshot_taken_before_it_counted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A record changed while the GPUs work is newer than the cursor they save."""
+    rig = _GpuBackfillRig(monkeypatch, idle=["1"], counts=[5_000], runs=[0])
+
+    backfill_embedding._backfill_on_idle_gpus(
+        _gpu_flags(),
+        models=["m"],
+        gpus=["0", "1"],
+    )
+
+    assert rig.events == [
+        ("snapshot", "dsn"),
+        ("count", "dsn", "m@8"),
+        ("backfill", "m", ["1", "1"], 5_000),
+        ("save", "dsn", FootprintMapper().name, "m@8", "10:12:11"),
+    ]
+
+
+def test_a_failed_gpu_run_that_cut_the_backlog_runs_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed run keeps what it committed, so the next starts where it stopped."""
+    rig = _GpuBackfillRig(monkeypatch, idle=["0"], counts=[5_000, 3_000], runs=[1, 0])
+
+    backfill_embedding._backfill_on_idle_gpus(_gpu_flags(), models=["m"], gpus=["0"])
+
+    assert rig.events == [
+        ("snapshot", "dsn"),
+        ("count", "dsn", "m@8"),
+        ("backfill", "m", ["0", "0"], 5_000),
+        ("count", "dsn", "m@8"),
+        ("backfill", "m", ["0", "0"], 3_000),
+        ("save", "dsn", FootprintMapper().name, "m@8", "10:12:11"),
+    ]
+    assert rig.printed.calls[-1] == (
+        ("m@8: a run failed with 3000 still pending; running again",),
+        {"flush": True},
+    )
+
+
+def test_a_failed_gpu_run_that_embedded_nothing_saves_no_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that cuts nothing (a record that always fails) hands on, not loops."""
+    rig = _GpuBackfillRig(monkeypatch, idle=["0"], counts=[5_000, 5_000], runs=[1])
+
+    backfill_embedding._backfill_on_idle_gpus(_gpu_flags(), models=["m"], gpus=["0"])
+
+    assert [event[0] for event in rig.events if isinstance(event, tuple)] == [
+        "snapshot",
+        "count",
+        "backfill",
+        "count",
+    ]
+    assert rig.printed.calls[-1] == (
+        ("m@8: a run embedded nothing; 5000 still pending",),
+        {"flush": True},
+    )
+
+
+def test_a_failed_gpu_run_that_left_nothing_pending_is_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _GpuBackfillRig(monkeypatch, idle=["0"], counts=[5_000, 0], runs=[1])
+
+    backfill_embedding._backfill_on_idle_gpus(_gpu_flags(), models=["m"], gpus=["0"])
+
+    assert [event[0] for event in rig.events if isinstance(event, tuple)] == [
+        "snapshot",
+        "count",
+        "backfill",
+        "count",
+        "save",
+    ]
+
+
+def test_a_gpu_run_refused_the_pair_leaves_the_next_model_its_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another writer of one model costs that model its GPU run, nothing more."""
+    busy = backfill_embedding._WriterBusyError("another process is embedding a@8")
+    rig = _GpuBackfillRig(
+        monkeypatch,
+        idle=["0"],
+        counts=[5_000, 4_000],
+        runs=[busy, 0],
+    )
+
+    backfill_embedding._backfill_on_idle_gpus(
+        _gpu_flags(),
+        models=["a", "b"],
+        gpus=["0"],
+    )
+
+    assert [event[0] for event in rig.events if isinstance(event, tuple)] == [
+        "snapshot",
+        "count",
+        "backfill",
+        "snapshot",
+        "count",
+        "backfill",
+        "save",
+    ]
+    assert (
+        ("follow: another process is embedding a@8",),
+        {"flush": True},
+    ) in rig.printed.calls
+
+
+def test_a_small_backlog_is_left_to_the_cpu_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rig = _GpuBackfillRig(monkeypatch, idle=["0"], counts=[999], runs=[])
+
+    backfill_embedding._backfill_on_idle_gpus(_gpu_flags(), models=["m"], gpus=["0"])
+
+    assert [event[0] for event in rig.events if isinstance(event, tuple)] == [
+        "snapshot",
+        "count",
+    ]
+
+
+def test_with_no_idle_gpu_nothing_is_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    rig = _GpuBackfillRig(monkeypatch, idle=[], counts=[], runs=[])
+
+    backfill_embedding._backfill_on_idle_gpus(_gpu_flags(), models=["m"], gpus=["0"])
+
+    assert rig.events == []
 
 
 if __name__ == "__main__":
