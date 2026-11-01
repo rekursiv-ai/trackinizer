@@ -13,14 +13,12 @@ from typing import TYPE_CHECKING, override
 from uuid import UUID, uuid4
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import (
     CHUNK_CHARS,
     FootprintMapper,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import (
     _embed_units,
     sweep_session_embeddings,
@@ -28,28 +26,19 @@ from trackinizer.server.store.session_embed import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.core import Store
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store with the session tables emptied.
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped.
 
     The sweep is GLOBAL (it scans every session), so a prior test's records
-    would otherwise land in this test's batch counts and stats. Emptying the
-    record + embedding + inquiry tables per test isolates each sweep to the
-    rows the test itself inserts.
+    would otherwise land in this test's batch counts and stats; ``integ_store``
+    empties every table per test, so each sweep sees only the rows the test
+    itself inserts.
     """
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with built.engine.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE session_embeddings, session_index_state, session_records, "
-            "session_manifests, inquiries CASCADE",
-        )
-    yield built
+    return integ_store
 
 
 async def _session(store: Store) -> UUID:

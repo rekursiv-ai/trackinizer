@@ -15,9 +15,7 @@ import asyncio
 import logging
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import session_reaper
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import Inbound, InboundQueue
@@ -34,8 +32,6 @@ from trackinizer.wire.bodies import SubmitAgentSession
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     from trackinizer.lib.postgres import PGliteEngine
 
 
@@ -44,15 +40,6 @@ _SEEN = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
 
 _SILENT = _SEEN + STALE_AFTER
 """The first time a session last heard from at ``_SEEN`` counts as gone."""
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a store on an empty, freshly bootstrapped database."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
 
 
 class TestReaperUnit:
@@ -174,13 +161,13 @@ class TestReap:
 
     async def test_a_session_heard_from_mid_pass_is_left_open(
         self,
-        pglite_engine: PGliteEngine,
+        pglite_db: PGliteEngine,
         store: Store,
     ) -> None:
         """Each close rechecks under lock, so the list a pass reads can go stale."""
         returning = await _polled(store, at=_SEEN)
         dead = await _polled(store, at=_SEEN + timedelta(seconds=1))
-        racing = _PollsMidPass(pglite_engine, embed=StubEmbedder(), polls=returning)
+        racing = _PollsMidPass(pglite_db, embed=StubEmbedder(), polls=returning)
 
         later = _SILENT + timedelta(seconds=1)
         assert (
@@ -275,17 +262,17 @@ class TestRevive:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_restarted_server_still_closes_and_reopens(
-    pglite_engine: PGliteEngine,
+    pglite_db: PGliteEngine,
     store: Store,
 ) -> None:
     """Nothing the reaper needs is held in the process that saw the session."""
     session = await _polled(store, at=_SEEN)
 
-    restarted = await _restart(pglite_engine)
+    restarted = await _restart(pglite_db)
     assert (
         await reap_silent_sessions(restarted, inbound=InboundQueue(), now=_SILENT) == 1
     )
-    again = await _restart(pglite_engine)
+    again = await _restart(pglite_db)
     assert await revive_if_reaped(again, session_id=session)
     assert (await _row(again, session)).status == "active"
 

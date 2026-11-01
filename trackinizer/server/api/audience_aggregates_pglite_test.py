@@ -25,13 +25,11 @@ import httpx2
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
 from trackinizer.server.api import export_routes, query
 from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Assistant, ChatOrgs, Config
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.audience_aggregates_pglite_test import (
     ASSISTANT_EMAIL,
@@ -51,8 +49,6 @@ from trackinizer.wire.wire_sessions import campaign_asker_label
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable
-
-    from trackinizer.lib.postgres import PGliteEngine
 
 
 pytestmark = [pytest.mark.db_pglite, pytest.mark.asyncio(loop_scope="session")]
@@ -109,11 +105,8 @@ class _Served:
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def served(pglite_engine: PGliteEngine) -> AsyncIterator[_Served]:
+async def served(store: Store) -> AsyncIterator[_Served]:
     """Serve the feed, search, record-filter and export routes over three sessions."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
     # The histogram counts a week back at most, so the sessions write within it. The
     # chat writes first, so a grid that counted it would start at its record.
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)

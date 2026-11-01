@@ -8,12 +8,8 @@ import asyncio
 import uuid
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.change_id_slot import set_client_change_id
-from trackinizer.server.store.core import Store
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError
 from trackinizer.wire.bodies import (
@@ -25,20 +21,10 @@ from trackinizer.wire.bodies import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import Conn, PGliteEngine
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.server.store.core import Store
     from trackinizer.types.change_log import Change
     from trackinizer.types.inquiries import Inquiry
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    yield store
 
 
 class _ReplayFieldChange(Protocol):

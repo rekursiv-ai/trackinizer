@@ -16,7 +16,6 @@ import asyncio
 from treekle import immutable, json_loads
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.sagent.session.types import (
     SessionRecord,
@@ -25,29 +24,25 @@ from trackinizer.sagent.session.types import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store import session_ir
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.core import Store
 
 
 _CIPHERTEXT = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store on the shared integration database."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session(store: Store) -> UUID:

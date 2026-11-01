@@ -3,13 +3,14 @@
 from collections.abc import Callable, Generator
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
-from typing import cast
+from typing import Final, cast
 from unittest.mock import MagicMock
 
 import inspect
 import os
 import random
 
+import asyncpg
 import pytest
 
 
@@ -25,7 +26,19 @@ from pytest_postgresql.factories import process
 from pytest_postgresql.plugin import postgresql_proc
 
 from trackinizer import conftest
+from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
+from trackinizer.server.sql import schema_migrations
+from trackinizer.server.store.core import Store
+from trackinizer.server.values import vetted_sql
+from trackinizer.types.inquiries import Issue
+from trackinizer.wire.bodies import SubmitIssue
+
+
+_PROBE_COLUMN: Final = (
+    "SELECT count(*) FROM information_schema.columns "
+    "WHERE table_name = 'users' AND column_name = 'probe'"
+)
 
 
 @pytest.mark.parametrize("inherited", [None, "", "operator@example.com"])
@@ -121,6 +134,120 @@ def test_pg_dsn_reserves_ports_for_seeded_workers(
         assert len(list(tmp_path.glob("*.port"))) == workers
         assert get_config(request).port_search_count == max(retries, workers - 1)
     assert not list(tmp_path.glob("*.port"))
+
+
+# Each of the pair writes what the other then must not find, so whichever runs second
+# fails unless the restore between them cleared it: run them in either order.
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("writer", ["first", "second"])
+async def test_a_pglite_test_meets_none_of_anothers_writes(
+    store: Store,
+    writer: str,
+) -> None:
+    assert await _filled(store) == {
+        "applied_migrations": len(list(schema_migrations())),
+    }
+    async with store.engine.acquire() as conn:
+        assert await conn.fetchval("SELECT to_regclass('pg_temp.probe')") is None
+        await conn.execute("CREATE TEMP TABLE probe (writer TEXT)")
+    await _write(store, writer)
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("writer", ["first", "second"])
+async def test_a_postgres_test_meets_none_of_anothers_writes(
+    integ_store: Store,
+    writer: str,
+) -> None:
+    assert await _filled(integ_store) == {
+        "applied_migrations": len(list(schema_migrations())),
+    }
+    await _write(integ_store, writer)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_changed_catalog_is_built_again(pglite_db: PGliteEngine) -> None:
+    """A column the build lacks makes the next test build; dropping it again does not."""
+    async with pglite_db.acquire() as conn:
+        await conn.execute("ALTER TABLE users ADD COLUMN probe TEXT")
+    with pytest.raises(_BuildError):
+        await conftest.restore(pglite_db, empty=_refuse)
+    async with pglite_db.acquire() as conn:
+        await conn.execute("ALTER TABLE users DROP COLUMN probe")
+    await conftest.restore(pglite_db, empty=_refuse)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_rolled_back_migration_leaves_the_build(
+    pglite_db: PGliteEngine,
+) -> None:
+    """Schema surgery in ``rolled_back`` is gone after it, so no test builds again."""
+    async with pglite_db.acquire() as conn, conftest.rolled_back(conn):
+        await conn.execute("ALTER TABLE users ADD COLUMN probe TEXT")
+        assert await conn.fetchval(_PROBE_COLUMN) == 1
+    async with pglite_db.acquire() as conn:
+        assert await conn.fetchval(_PROBE_COLUMN) == 0
+    await conftest.restore(pglite_db, empty=_refuse)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_refused_statement_in_a_savepoint_leaves_the_transaction_live(
+    pglite_db: PGliteEngine,
+) -> None:
+    async with pglite_db.acquire() as conn, conftest.rolled_back(conn):
+        await conn.execute("ALTER TABLE users ADD COLUMN probe TEXT")
+        with pytest.raises(asyncpg.CheckViolationError):
+            async with conftest.savepoint(conn):
+                await conn.execute(
+                    "INSERT INTO users (id, email, name, role, status) "
+                    "VALUES (gen_random_uuid(), 'u@x.y', 'u', 'nobody', 'active')",
+                )
+        assert await conn.fetchval(_PROBE_COLUMN) == 1
+
+
+async def _filled(store: Store) -> dict[str, int]:
+    """Return how many rows each table of schema ``public`` holds, if any."""
+    async with store.engine.acquire() as conn:
+        counts = await conn.fetch(
+            " UNION ALL ".join(
+                vetted_sql(
+                    "SELECT '",
+                    str(row["tablename"]),
+                    "' AS name, count(*) AS n FROM public.\"",
+                    str(row["tablename"]),
+                    '"',
+                )
+                for row in await conn.fetch(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'",
+                )
+            ),
+        )
+    return {str(row["name"]): cast(int, row["n"]) for row in counts if row["n"]}
+
+
+async def _write(store: Store, writer: str) -> None:
+    """Write an issue, its change and a user: rows and sequence positions to undo."""
+    issue = await store.submit_issue(SubmitIssue(account="t@example.com", title=writer))
+    assert cast(Issue, await store.get_inquiry(issue)).seq == 1
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES (gen_random_uuid(), $1, 'u', 'writer', 'active')",
+            f"{writer}@example.com",
+        )
+
+
+async def _refuse() -> None:
+    raise _BuildError
+
+
+class _BuildError(Exception):
+    """Raised by a build the test forbids, to show the restore chose to build."""
 
 
 if __name__ == "__main__":

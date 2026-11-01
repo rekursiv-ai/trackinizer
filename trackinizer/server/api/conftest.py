@@ -27,8 +27,7 @@ import httpx2
 import pytest
 import pytest_asyncio
 
-from trackinizer.conftest import FakeEngine, make_store
-from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.conftest import FakeEngine, make_store, restore_pglite
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, Role, current_user
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -169,11 +168,11 @@ async def pglite_route_client(
     ``Idempotency-Key`` middleware and the domain-error handlers as it does in
     production. Async because the engine lives on the session loop, which
     ``TestClient``'s own loop cannot drive. Tests using it declare
-    ``@pytest.mark.asyncio(loop_scope="session")``.
+    ``@pytest.mark.asyncio(loop_scope="session")``. Asks only for the root plugin's
+    ``pglite_engine``, so another package's conftest can import it alone.
     """
-    await reset_schema(pglite_engine)
+    await restore_pglite(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
     # Not raising app exceptions, so a crash reads as the 500 a client gets.
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)
     # Keyless: ``change_log.api_key_id`` references ``api_keys``, empty here, so the

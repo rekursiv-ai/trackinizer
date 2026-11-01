@@ -19,6 +19,7 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.embedders.stub import StubEmbedder, _xorshift_floats
+from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitIssue
@@ -222,6 +223,45 @@ class TestStoreBootstrap:
         # the one that actually creates their tables.
         numbered = [name for name, _body in schema_migrations()][1:]
         assert inserts == numbered
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_records_no_migration_whose_body_fails(self) -> None:
+        """A migration that raises leaves the ledger without its name, rolled back.
+
+        Its body and its ledger row commit together, so a refused migration (the canvas
+        cutover meeting a collision) is no part of the database and runs again at the
+        next boot.
+        """
+        migrations = dict(schema_migrations())
+        pending = list(migrations)[-1]
+        refused = substitute_schema_placeholders(migrations[pending])
+        conn = make_conn()
+
+        async def fetch(sql: str, *_args: object) -> list[dict[str, str]]:
+            if "applied_migrations" not in sql:
+                return []
+            return [{"name": name} for name in migrations if name != pending]
+
+        async def execute(sql: str, *_args: object) -> str:
+            if sql == refused:
+                raise asyncpg.RaiseError("Canvas cutover refused")
+            return "UPDATE 1"
+
+        conn.fetch.side_effect = fetch
+        conn.execute.side_effect = execute
+        store, engine = make_store(conn)
+
+        with pytest.raises(asyncpg.RaiseError, match="Canvas cutover"):
+            await store.bootstrap()
+        recorded = [
+            c.args[1]
+            for c in engine.conn.execute.call_args_list
+            if "INSERT INTO applied_migrations" in _sql(c.args)
+        ]
+        sqls = executed_sql(engine.conn)
+        assert refused in sqls
+        assert pending not in recorded
+        assert sqls[sqls.index(refused) + 1] == "ROLLBACK"
 
     @pytest.mark.asyncio
     async def test_bootstrap_runs_addon_migrations_after_the_core_ones(self) -> None:

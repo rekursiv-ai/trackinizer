@@ -21,9 +21,6 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.graph_focus import read_neighbourhood
 
 
@@ -50,11 +47,9 @@ _EDGES: Final = (
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def graph(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
+async def graph(pglite_db: PGliteEngine) -> AsyncIterator[PGliteEngine]:
     """Return a PGlite engine holding the graph the module docstring draws."""
-    await reset_schema(pglite_engine)
-    await Store(pglite_engine, embed=StubEmbedder()).bootstrap()
-    async with pglite_engine.acquire() as conn:
+    async with pglite_db.acquire() as conn:
         for seq, (node, minute) in enumerate(_MINUTE.items(), start=1):
             await conn.execute(
                 "INSERT INTO inquiries (id, kind, seq, account, title, created)"
@@ -72,7 +67,7 @@ async def graph(pglite_engine: PGliteEngine) -> AsyncIterator[PGliteEngine]:
                 to_id,
                 edge_kind,
             )
-    yield pglite_engine
+    yield pglite_db
 
 
 @pytest.mark.db_pglite

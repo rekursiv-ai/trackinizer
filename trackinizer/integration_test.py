@@ -151,7 +151,7 @@ class TestIntegrationEndToEnd:
     """End-to-end cascade behaviour against a session-scoped Postgres.
 
     The shared ``integ_engine`` fixture amortises pool/codec setup; each
-    test pays only a ``TRUNCATE`` reset.
+    test pays only ``integ_store``'s restore of the session's build.
     """
 
     async def test_per_kind_seq_is_monotonic(self, integ_store: Store) -> None:

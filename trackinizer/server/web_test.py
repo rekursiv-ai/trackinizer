@@ -23,11 +23,9 @@ from fastapi.testclient import TestClient
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
     import asyncpg
 
-    from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.server.store.core import Store
 else:
     from wrapt import lazy_import
 
@@ -36,24 +34,20 @@ else:
 from treekle import from_plain, json_loads
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
 from trackinizer.lib.postgres import Conn
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
 from trackinizer.server.api import auth_routes
 from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     CanvasAgents,
@@ -2339,18 +2333,9 @@ class TestOldPathsWithTheApp:
 # ---- Read routes on a real engine ----------------------------------------
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def pglite_store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    yield store
-
-
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -> None:
+async def test_self_is_the_inquiry_route_on_a_real_engine(store: Store) -> None:
     """Every kind, bare and filled, reads the same through both routes (R17).
 
     asyncpg decodes each column type its own way, so the agreement is checked
@@ -2358,7 +2343,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
     """
     account = "alice@example.com"
     started = datetime(2026, 5, 18, 9, tzinfo=UTC)
-    ids = await pglite_store.submit_batch(
+    ids = await store.submit_batch(
         [
             SubmitIssue(account=account, title="bare"),
             SubmitArtifact(account=account, title="bare"),
@@ -2402,7 +2387,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
         ],
         session_audience="open",
     )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     for target_id in ids:
         canonical = await get_inquiry_route(
             target_id,
@@ -2422,7 +2407,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """Each peer carries its own ``created`` and priority beside the edge's.
 
@@ -2431,17 +2416,17 @@ async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
     reached the peer refs, so each cost a request per neighbour.
     """
     account = "alice@example.com"
-    parent = await pglite_store.submit_issue(
+    parent = await store.submit_issue(
         SubmitIssue(account=account, title="parent", priority=10),
     )
-    child = await pglite_store.submit_issue(SubmitIssue(account=account, title="child"))
-    await pglite_store.add_edge(
+    child = await store.submit_issue(SubmitIssue(account=account, title="child"))
+    await store.add_edge(
         from_id=child,
         to_id=parent,
         edge_kind="narrows",
         actor="alice",
     )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     parent_view = await web.web_get(parent, request, identity=_TEST_IDENTITY)
     child_view = await web.web_get(child, request, identity=_TEST_IDENTITY)
     (child_ref,) = from_plain(
@@ -2473,21 +2458,21 @@ async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_get_breaks_change_time_ties_by_id_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """Changes stamped with one ``created`` come back in id order (R21)."""
-    target_id = await pglite_store.submit_issue(
+    target_id = await store.submit_issue(
         SubmitIssue(account="alice@example.com", title="t0"),
     )
     for step in range(1, 5):
-        await pglite_store.set_title(target_id, f"t{step}", actor="alice")
-    async with pglite_store.engine.acquire() as conn:
+        await store.set_title(target_id, f"t{step}", actor="alice")
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "UPDATE change_log SET created = $1 WHERE subject_id = $2",
             datetime(2026, 5, 18, tzinfo=UTC),
             target_id,
         )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
     change_ids = [
         from_plain(from_plain(change, dict[str, object])["id"], str)
@@ -2520,15 +2505,15 @@ def test_graph_node_keeps_an_empty_title_empty_and_a_belief_verdict() -> None:
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_get_reports_whether_the_row_is_locked(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """The detail view carries ``locked`` beside ``self``, true only once set."""
-    target_id = await pglite_store.submit_issue(
+    target_id = await store.submit_issue(
         SubmitIssue(account="alice@example.com", title="rules"),
     )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     before = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
-    async with pglite_store.engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "UPDATE inquiries SET locked = TRUE WHERE id = $1",
             target_id,
@@ -2541,14 +2526,14 @@ async def test_web_get_reports_whether_the_row_is_locked(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     r"""``\d`` reaches Postgres as a digit class, and ``'`` is a letter (R30)."""
     for title in ("build 42 passes", "don't panic", "plain words"):
-        await pglite_store.submit_issue(
+        await store.submit_issue(
             SubmitIssue(account="alice@example.com", title=title),
         )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     for q, titles in (
         (r"title:\d+", ["build 42 passes"]),
         (r'title:"\d+"', ["build 42 passes"]),
@@ -2562,7 +2547,7 @@ async def test_search_keeps_backslashes_and_apostrophes_on_a_real_engine(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """``limit`` bounds the nodes, neighbours included, and edges join them (R3-02).
 
@@ -2573,27 +2558,27 @@ async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
     account = "alice@example.com"
     titles = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
     ids = [
-        await pglite_store.submit_issue(SubmitIssue(account=account, title=title))
+        await store.submit_issue(SubmitIssue(account=account, title=title))
         for title in titles
     ]
     c0, c1, c2, _, newest = ids
     # Links in both directions: ``c0`` points at ``newest``.
     for from_id, to_id in ((c0, newest), (newest, c1), (newest, c2)):
-        await pglite_store.add_edge(
+        await store.add_edge(
             from_id=from_id,
             to_id=to_id,
             edge_kind="requires",
             actor="alice",
         )
     # One ``created`` per node, in ``titles`` order, so no order below is a tie.
-    async with pglite_store.engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         for minute, node in enumerate(ids):
             await conn.execute(
                 "UPDATE inquiries SET created = $1 WHERE id = $2",
                 datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
                 node,
             )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     # Each first link also stamps an inferred ``produced_by`` edge, so the
     # expected edges come from the whole graph.
     whole = _edge_ids(
@@ -2621,7 +2606,7 @@ async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
     """``focus`` keeps its nearest nodes, each with its ``hops``, and their edges.
 
@@ -2632,7 +2617,7 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
     account = "alice@example.com"
     titles = ("far", "near", "focus", "near 2", "far 2")
     ids = [
-        await pglite_store.submit_issue(SubmitIssue(account=account, title=title))
+        await store.submit_issue(SubmitIssue(account=account, title=title))
         for title in titles
     ]
     far, near, focus, near_2, far_2 = ids
@@ -2643,20 +2628,20 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
         (far_2, near_2),
         (far, far_2),
     ):
-        await pglite_store.add_edge(
+        await store.add_edge(
             from_id=from_id,
             to_id=to_id,
             edge_kind="requires",
             actor="alice",
         )
-    async with pglite_store.engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         for minute, node in enumerate(ids):
             await conn.execute(
                 "UPDATE inquiries SET created = $1 WHERE id = $2",
                 datetime(2026, 5, 18, 0, minute, tzinfo=UTC),
                 node,
             )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     whole = _edge_ids(await web.web_graph(request, identity=_TEST_IDENTITY))
     assert (str(far), str(far_2)) in whole
     for limit, hops, kept in (
@@ -2701,12 +2686,12 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
-    pglite_store: Store,
+    store: Store,
 ) -> None:
-    hub = await pglite_store.submit_issue(
+    hub = await store.submit_issue(
         SubmitIssue(account="alice@example.com", title="hub"),
     )
-    async with pglite_store.engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO inquiries (id, kind, seq, account, title)"
             " SELECT gen_random_uuid(), 'Issue', 1000 + n, 'alice@example.com', 'leaf'"
@@ -2718,7 +2703,7 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
             " WHERE title = 'leaf'",
             hub,
         )
-    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    request = cast(Request, _request(store, store.engine))
     around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=hub)
     assert len(from_plain(around["nodes"], list[object])) == 60
     whole = from_plain(

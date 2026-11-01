@@ -16,13 +16,9 @@ import json
 from treekle import from_plain, json_loads
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.export import _SCOPE_COLUMNS
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.session_records import SessionRecordRow
@@ -39,9 +35,7 @@ from trackinizer.wire.wire_metrics import MetricPoint
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.server.store.core import Store
     from trackinizer.server.store.export import GraphExport
 
 
@@ -98,15 +92,6 @@ where campaigns may run, which belongs to the deployment, not the graph.
 host joins with, which is access control, as ``api_keys`` is. So is ``device_logins``,
 the short-lived codes a program polls with to be given a key.
 """
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
 
 
 async def _seed(store: Store) -> dict[str, UUID]:

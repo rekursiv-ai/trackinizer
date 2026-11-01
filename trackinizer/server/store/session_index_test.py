@@ -15,11 +15,9 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import sweep_session_embeddings
 from trackinizer.server.store.session_index import (
     ensure_model_index,
@@ -28,9 +26,7 @@ from trackinizer.server.store.session_index import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.core import Store
 
 
 _MODEL = StubEmbedder(dim=1024).name  # "stub-1024"
@@ -56,17 +52,10 @@ def test_index_name_rejects_an_unsafe_slug() -> None:
         index_name("bad'; DROP TABLE session_embeddings; --")
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Bootstrapped store with the session tables emptied."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with built.engine.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE session_embeddings, session_records, session_manifests, "
-            "inquiries CASCADE",
-        )
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _seed_rows(store: Store, count: int) -> None:

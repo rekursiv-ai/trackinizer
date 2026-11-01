@@ -9,31 +9,16 @@ import asyncio
 from treekle import from_plain
 
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.authority_sweep import (
     authority_sweep_loop,
     edge_change_count,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitBelief, SubmitPaper
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PGliteEngine
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+    from trackinizer.server.store.core import Store
 
 
 @pytest.mark.db_pglite

@@ -21,7 +21,6 @@ from fastapi import FastAPI, HTTPException, Request
 from treekle import from_plain
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.server import web
 from trackinizer.server.audience import SessionReader
@@ -36,9 +35,6 @@ from trackinizer.server.store.session_feed import FeedScope
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PostgresEngine
     from trackinizer.server.store.session_search import SessionSearchHit
     from trackinizer.wire.wire_sessions import FeedWhose
 
@@ -81,17 +77,10 @@ def _request(store: Store, *, session_embedder: str) -> Request:
     )
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Bootstrapped store with the session tables emptied (search is global)."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with built.engine.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE session_embeddings, session_records, session_manifests, "
-            "inquiries CASCADE",
-        )
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session(store: Store, *, title: str = "route search") -> UUID:

@@ -9,6 +9,7 @@ session moves for no one, and every move is audited.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
@@ -69,17 +70,22 @@ class _Served:
         """Insert a session of ``account``, opened by ``opener``'s key when named."""
         session_id = uuid4()
         async with self.store.engine.acquire() as conn:
+            # Stamped here, not by PGlite's clock: it ticks once a millisecond, so two
+            # sessions opened within one tick tie on ``created``, and the read of a
+            # chat's starter orders a tie by random id.
             await conn.execute(
                 "INSERT INTO inquiries (id, kind, seq, status, account, title, owner, "
                 "agentsession_audience, agentsession_cli_session_id, "
-                "agentsession_opened_by_api_key_id) VALUES ($1, 'AgentSession', "
-                "nextval('seq_agentsession'), 'active', $2, 'a run', $3, $4, $5, $6)",
+                "agentsession_opened_by_api_key_id, created) VALUES ($1, "
+                "'AgentSession', nextval('seq_agentsession'), 'active', $2, 'a run', "
+                "$3, $4, $5, $6, $7)",
                 session_id,
                 account,
                 f"run-{session_id.hex[:8]}",
                 audience,
                 cli_session_id,
                 None if opener is None else self.keys[opener],
+                datetime.now(UTC),
             )
         return session_id
 

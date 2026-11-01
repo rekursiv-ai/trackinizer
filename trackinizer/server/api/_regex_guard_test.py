@@ -20,21 +20,15 @@ from fastapi import HTTPException
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.api._regex_guard import regex_failures_as_400
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ValidationError
 from trackinizer.wire.bodies import SubmitIssue
 from trackinizer.wire.filters import Filter
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.server.store.core import Store
 
 
 def _postgres_error(cls: type[asyncpg.PostgresError], message: str) -> Exception:
@@ -88,15 +82,6 @@ class TestRegexFailuresAs400:
     def test_unrelated_exception_propagates(self) -> None:
         with pytest.raises(ValueError, match="unrelated"), regex_failures_as_400():
             raise ValueError("unrelated")
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped Store over the session's shared PGlite engine."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    yield store
 
 
 @pytest.mark.db_pglite

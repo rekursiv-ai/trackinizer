@@ -1485,6 +1485,7 @@ class _SeedAfterUsersProbe:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.usefixtures("integ_store")
 class TestBootstrapAdminRace:
     """Concurrent ``bootstrap_admin`` on empty ``users`` must not crash a server.
 

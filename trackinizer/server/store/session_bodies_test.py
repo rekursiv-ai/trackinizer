@@ -10,12 +10,9 @@ import json
 from treekle import immutable, mutable
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.lib import zstd_compat
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import HEAD_CHARS
-from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_bodies import (
     HEAD_TEXT_CHARS,
     HEAVY_KINDS,
@@ -28,22 +25,13 @@ from trackinizer.types.session_records import SessionRecordRow
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.core import Store
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store; session tables truncated per test."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with built.engine.acquire() as conn:
-        await conn.execute(
-            "TRUNCATE session_records, session_ciphertext, session_bodies, "
-            "session_manifests, session_slash_commands",
-        )
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session(store: Store) -> UUID:

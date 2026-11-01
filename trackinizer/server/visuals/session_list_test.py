@@ -12,7 +12,6 @@ from treekle import immutable
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -22,10 +21,8 @@ from trackinizer.sagent.session.types import (
     UserMessage,
 )
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
-from trackinizer.server.store.core import Store
 from trackinizer.server.visuals.session_list import (
     LINE_CHARS,
     LastLine,
@@ -37,10 +34,10 @@ from trackinizer.wire.wire_science_chat import chat_session_id
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from trackinizer.lib.postgres import PGliteEngine
     from trackinizer.sagent.session.types import SessionRecord
+    from trackinizer.server.store.core import Store
 
 
 _USER: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -51,12 +48,9 @@ _NOW: Final = datetime.now(UTC)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
+async def store(store: Store) -> Store:
     """Return a fresh store with the caller's user row."""
-    await reset_schema(pglite_engine)
-    built = Store(pglite_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    async with pglite_engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, $2, 'Ada', 'writer', 'active')",
@@ -70,7 +64,7 @@ async def store(pglite_engine: PGliteEngine) -> AsyncIterator[Store]:
             _KEY,
             _USER,
         )
-    yield built
+    return store
 
 
 async def _session(

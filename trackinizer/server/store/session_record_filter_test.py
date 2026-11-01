@@ -18,7 +18,6 @@ from uuid import UUID, uuid4
 from treekle import immutable
 
 import pytest
-import pytest_asyncio
 
 from trackinizer.sagent.session.types import (
     ContextCompaction,
@@ -29,8 +28,6 @@ from trackinizer.sagent.session.types import (
     UserMessage,
 )
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import AUDIENCES
@@ -38,21 +35,19 @@ from trackinizer.wire.filters import Filter
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import Sequence
 
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.core import Store
 
 
 # Reads every session's transcript: a filter here is of what it matches, not who reads.
 _ANYONE = SessionReader(audiences=AUDIENCES, every_session=True, oversight=True)
 
 
-@pytest_asyncio.fixture(loop_scope="session")
-async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
-    """Return a bootstrapped store on the shared integration database."""
-    built = Store(integ_engine, embed=StubEmbedder())
-    await built.bootstrap()
-    yield built
+@pytest.fixture
+def store(integ_store: Store) -> Store:
+    """Return the store on the shared Postgres database, freshly bootstrapped."""
+    return integ_store
 
 
 async def _session_with(

@@ -4,16 +4,23 @@ Tests across ``trackinizer_test.py`` and friends share:
 
 * mock-based unit testing helpers (``make_conn`` / ``FakeEngine`` /
   ``make_store`` / ``executed_sql`` / ``new_uuid``), imported explicitly;
-* session-scoped Postgres DSN and engine plus a per-test ``integ_store``
-  fixture (``@pytest.mark.cli_python_subprocess``). Tests using ``integ_store``
-  must declare ``@pytest.mark.asyncio(loop_scope="session")``: the
-  engine and its asyncpg pool live on the session loop, so per-test
-  loops can't drive it.
+* ``pglite_db``, the session's shared PGlite engine, and ``store``, a
+  :class:`Store` over it; ``integ_store``, one over the session's PostgreSQL
+  database. :func:`restore` bootstraps each engine's schema once a session and
+  puts it back before every test, so every test starts from a fresh, empty
+  database; :func:`restore_pglite` does it for any fixture holding the shared
+  PGlite engine, whichever package imports it. Tests using them must declare
+  ``@pytest.mark.asyncio(loop_scope="session")``: the engines live on the
+  session loop, so per-test loops can't drive them;
+* ``pglite_rollback_conn`` and ``integ_rollback_conn``, a connection to either
+  build inside a transaction rolled back after the test, for a migration step's
+  schema surgery, and ``savepoint`` for a statement such a test expects refused.
 """
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
+from functools import partial
 from typing import TYPE_CHECKING, Final, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -29,6 +36,7 @@ import pytest_asyncio
 
 from trackinizer.lib import postgres
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.lib.testing.resources import (
     isolate_user_dirs,
     pytest_collection_modifyitems,
@@ -36,12 +44,22 @@ from trackinizer.lib.testing.resources import (
 )
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.server.notify import NOTIFY_CHANNEL, tx
 from trackinizer.server.store.core import Store
+from trackinizer.server.values import vetted_sql
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Iterator
+    from collections.abc import (
+        AsyncGenerator,
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Generator,
+        Iterator,
+    )
+
+    from trackinizer.lib.postgres import Conn, PGliteEngine
 
 
 # Re-exported, not merely imported: an autouse fixture reaches only the
@@ -59,10 +77,7 @@ __all__ = [
 @pytest.fixture(scope="session", autouse=True)
 def isolate_bootstrap_environment() -> Iterator[None]:
     """Keep operator bootstrap settings out of test databases, including session setup."""
-    # Empty values also prevent subprocess conftests from reloading operator secrets.
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setenv(BOOTSTRAP_ADMIN_ENV, "")
-        patch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, "")
+    with _without_operator_bootstrap():
         yield
 
 
@@ -212,44 +227,86 @@ def new_uuid() -> uuid.UUID:
     return uuid.uuid4()
 
 
-_INTEG_TABLES: Final = (
-    "change_log",
-    "edges",
-    "inquiry_embeddings",
-    # The IR record store. ``session_records`` and its siblings all cascade
-    # from ``inquiries``, but truncating explicitly keeps the order stated
-    # rather than relying on the FK sweep.
-    "session_ciphertext",
-    "session_slash_commands",
-    "session_manifests",
-    "session_records",
-    "inquiries",
-    # Auth v2 (Phase 1) state. Order before ``users`` so the CASCADE
-    # from ``api_keys.user_id`` / ``allowlist.added_by`` doesn't surprise.
-    "api_keys",
-    "allowlist",
-    "users",
-)
-"""Truncated by :func:`truncate_all` between integration tests.
+_COPIES: Final = "trackinizer_baseline"
+"""The schema holding the build's copy of each table it filled."""
 
-``change_log.subject_id`` is deliberately FK-free (so ``purged`` rows
-survive); only ``edges`` and ``inquiry_embeddings`` actually cascade
-from ``inquiries``. The order puts dependent tables first so the
-TRUNCATE works under any combination of CASCADE/RESTRICT modes."""
+_BUILD: Final = "trackinizer_build"
+"""The schema holding the build's record, apart from copies named as tables are."""
 
-_INTEG_SEQUENCES: Final = (
-    "seq_issue",
-    "seq_artifact",
-    "seq_experiment",
-    "seq_paper",
-    "seq_belief",
-    "seq_codechange",
-    "seq_webresult",
-    "seq_websearch",
-    "seq_agentsession",
+# Every relation, column and its default, index, view, function body, trigger and
+# constraint of schema ``public``. A migration, a dropped column or a reset changes it,
+# and the copied rows then no longer fit the tables; a changed default would reach
+# every later test's rows. Types go by name: a reset drops pgvector with ``public``,
+# and the bootstrap after it makes ``vector`` again under a new oid. An index goes by
+# its definition, not its own columns, which keep the names they had when it was
+# made: a renamed table column leaves them behind.
+_CATALOG: Final = (
+    "SELECT md5(coalesce(string_agg(item, ',' ORDER BY item), '')) FROM ("
+    " SELECT c.relname || ':' || c.relkind::text || ':' || coalesce(a.attname || ':'"
+    " || format_type(a.atttypid, a.atttypmod) || ':' || a.attnotnull::text || ':'"
+    " || coalesce(pg_get_expr(d.adbin, d.adrelid), ''), '')"
+    " AS item FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+    " LEFT JOIN pg_attribute a ON a.attrelid = c.oid AND c.relkind <> 'i'"
+    " AND a.attnum > 0 AND NOT a.attisdropped"
+    " LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum"
+    " WHERE n.nspname = 'public'"
+    " UNION ALL SELECT c.relname || ':' || md5(pg_get_indexdef(c.oid))"
+    " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+    " WHERE n.nspname = 'public' AND c.relkind = 'i'"
+    " UNION ALL SELECT c.relname || ':' || md5(pg_get_viewdef(c.oid))"
+    " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+    " WHERE n.nspname = 'public' AND c.relkind IN ('v', 'm')"
+    " UNION ALL SELECT p.proname || ':' || md5(p.prosrc)"
+    " FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace"
+    " WHERE n.nspname = 'public'"
+    " UNION ALL SELECT c.relname || '.' || t.tgname || ':' || t.tgfoid::regproc::text"
+    " FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid"
+    " JOIN pg_namespace n ON n.oid = c.relnamespace"
+    " WHERE n.nspname = 'public' AND NOT t.tgisinternal"
+    " UNION ALL SELECT co.conname || ':' || md5(pg_get_constraintdef(co.oid))"
+    " FROM pg_constraint co JOIN pg_namespace n ON n.oid = co.connamespace"
+    " WHERE n.nspname = 'public'"
+    ") items"
 )
-"""Per-kind short-ref sequences reset between integration tests so
-``Issue#1`` numbering is independent of test ordering."""
+
+
+async def restore(
+    engine: DatabaseEngine,
+    *,
+    empty: Callable[[], Awaitable[None]],
+) -> None:
+    """Put ``engine``'s database back as trackinizer's bootstrap leaves it.
+
+    The first restore builds it: the schema emptied, then bootstrapped without the
+    operator's bootstrap settings, ~0.25 s on PGlite, and its rows copied aside. The
+    build's record lives in the database beside the copies, so every fixture holding the
+    engine restores the same build, whichever package's conftest imports it. Every
+    later restore puts it back in one transaction: every table of schema ``public`` is
+    cleared, the build's rows and sequence positions are copied back, and the session's
+    temporary tables are discarded, so no test sees another's writes. A test that
+    changes the catalog (a migration, a dropped column, a reset) leaves a database the
+    copied rows no longer fit, so the next restore builds again. Session settings,
+    advisory locks and listeners are not covered.
+
+    Args:
+      engine: The engine whose database to put back.
+      empty: Drops every table of ``engine``, so the bootstrap after it meets a fresh
+        database.
+
+    """
+    async with engine.acquire() as conn:
+        if await _restored(conn):
+            return
+    await empty()
+    with _without_operator_bootstrap():
+        await Store(engine, embed=StubEmbedder()).bootstrap()
+    async with engine.acquire() as conn, tx(conn):
+        await _copy(conn)
+
+
+async def restore_pglite(engine: PGliteEngine) -> None:
+    """Put the shared PGlite ``engine``'s database back as the build left it."""
+    await restore(engine, empty=partial(reset_schema, engine))
 
 
 @pytest.fixture(scope="session")
@@ -309,14 +366,6 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
             )
 
 
-async def truncate_all(engine: postgres.PostgresEngine) -> None:
-    """``TRUNCATE`` every domain table and reset per-kind sequences."""
-    async with engine.acquire() as conn:
-        await conn.execute(f"TRUNCATE {', '.join(_INTEG_TABLES)} CASCADE")
-        for seq in _INTEG_SEQUENCES:
-            await conn.execute(f"ALTER SEQUENCE {seq} RESTART")
-
-
 @pytest_asyncio.fixture(loop_scope="session", scope="session")
 async def integ_engine(
     pg_dsn: str,
@@ -324,24 +373,21 @@ async def integ_engine(
     """Session-scoped Postgres engine: one asyncpg pool for every integration test.
 
     Per-test pool/codec setup runs ~0.3s; amortizing across the suite
-    drops integration tests from seconds to milliseconds.
+    drops integration tests from seconds to milliseconds. Its schema is
+    ``integ_store``'s to build.
     """
     async with postgres.PostgresEngine(
         dsn=pg_dsn,
         listen_channel=NOTIFY_CHANNEL,
     ) as engine:
-        store = Store(engine, embed=StubEmbedder())
-        await store.bootstrap()
         yield engine
 
 
 @pytest_asyncio.fixture(loop_scope="session")
-async def integ_store(
-    integ_engine: postgres.PostgresEngine,
-) -> AsyncGenerator[Store]:
-    """Per-test ``Store`` on the shared engine; tables truncated each call."""
-    await truncate_all(integ_engine)
-    yield Store(integ_engine, embed=StubEmbedder())
+async def integ_store(integ_engine: postgres.PostgresEngine) -> Store:
+    """Return a ``Store`` on the shared Postgres database, freshly bootstrapped."""
+    await restore(integ_engine, empty=partial(_emptied, integ_engine))
+    return Store(integ_engine, embed=StubEmbedder())
 
 
 @pytest.fixture(scope="session")
@@ -352,3 +398,237 @@ def pglite_extensions() -> tuple[str, ...]:
     ``Store.bootstrap`` fails with ``extension "vector" is not available``.
     """
     return ("pgvector",)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def pglite_db(pglite_engine: PGliteEngine) -> PGliteEngine:
+    """Return the shared PGlite engine, its schema freshly bootstrapped and empty."""
+    await restore_pglite(pglite_engine)
+    return pglite_engine
+
+
+@pytest.fixture
+def store(pglite_db: PGliteEngine) -> Store:
+    """Return a ``Store`` on ``pglite_db``."""
+    return Store(pglite_db, embed=StubEmbedder())
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def pglite_rollback_conn(pglite_db: PGliteEngine) -> AsyncIterator[Conn]:
+    """Yield ``pglite_db``'s connection inside a transaction rolled back after the test.
+
+    A migration step's schema surgery ends with the test, so the next test meets the
+    build instead of building it again. The test holds the engine's one connection, so
+    it reaches the database through this connection alone.
+    """
+    async with pglite_db.acquire() as conn, rolled_back(conn):
+        yield conn
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def integ_rollback_conn(
+    integ_engine: postgres.PostgresEngine,
+    integ_store: Store,
+) -> AsyncIterator[Conn]:
+    """Yield a connection to ``integ_store``'s database in a transaction rolled back after.
+
+    A migration step's schema surgery ends with the test, so the next test meets the
+    build instead of building it again. Asks for ``integ_store`` only for the freshly
+    bootstrapped database it leaves.
+    """
+    del integ_store
+    async with integ_engine.acquire() as conn, rolled_back(conn):
+        yield conn
+
+
+@asynccontextmanager
+async def rolled_back(conn: Conn) -> AsyncGenerator[None]:
+    """Hold ``conn`` in a transaction for the block, then roll it back."""
+    await conn.execute("BEGIN")
+    try:
+        yield
+    finally:
+        # Over the extended protocol, as ``tx``'s is: the block may end on a failed
+        # statement, after which PGlite misframes a simple-query reply.
+        await conn.fetch("ROLLBACK")
+
+
+@asynccontextmanager
+async def savepoint(conn: Conn) -> AsyncGenerator[None]:
+    """Run the block in a savepoint, so a statement it fails leaves the transaction live.
+
+    For a test in a rolled-back transaction that goes on after a refused statement.
+    """
+    await conn.execute("SAVEPOINT refusable")
+    try:
+        yield
+    except BaseException:
+        await conn.fetch("ROLLBACK TO SAVEPOINT refusable")
+        raise
+    else:
+        await conn.execute("RELEASE SAVEPOINT refusable")
+
+
+@contextmanager
+def _without_operator_bootstrap() -> Generator[None]:
+    """Blank the operator's bootstrap settings for the block, so no admin is seeded."""
+    # Empty values also prevent subprocess conftests from reloading operator secrets.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv(BOOTSTRAP_ADMIN_ENV, "")
+        patch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, "")
+        yield
+
+
+async def _emptied(engine: postgres.PostgresEngine) -> None:
+    """Drop every table of the Postgres database, as ``reset_schema`` does PGlite's."""
+    async with engine.acquire() as conn:
+        await conn.execute("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+
+
+async def _restored(conn: Conn) -> bool:
+    """Put the build's rows back if the catalog is still the build's; say whether."""
+    record = await conn.fetchval(
+        vetted_sql("SELECT to_regclass('", _BUILD, ".record')"),
+    )
+    if record is None:
+        return False
+    found = await conn.fetchrow(
+        vetted_sql(
+            "SELECT b.reset, b.catalog = (",
+            _CATALOG,
+            ") AND b.copied = (",
+            _copied("b.copies"),
+            ") AS fits FROM ",
+            _BUILD,
+            ".record b",
+        ),
+    )
+    if found is None:
+        raise ValueError("Expected found is not None.")
+    if not from_plain(found["fits"], bool):
+        return False
+    async with tx(conn):
+        await conn.execute(from_plain(found["reset"], str))
+    return True
+
+
+# Dropping pgvector drops the columns of its type in the copies too, and their rows can
+# no longer come back.
+def _copied(copies: str) -> str:
+    """Return a query digesting each column of the copies the array ``copies`` names."""
+    return vetted_sql(
+        "SELECT md5(coalesce(string_agg(c.relname || ':' || a.attname || ':' ||",
+        " format_type(a.atttypid, a.atttypmod), ',' ORDER BY c.relname, a.attnum), ''))",
+        " FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace",
+        " JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0",
+        " AND NOT a.attisdropped WHERE n.nspname = '",
+        _COPIES,
+        "' AND c.relname = ANY(",
+        copies,
+        ")",
+    )
+
+
+async def _copy(conn: Conn) -> None:
+    """Copy every filled table and every sequence position, and record how to restore them."""
+    await conn.execute(
+        vetted_sql(
+            "DROP SCHEMA IF EXISTS ",
+            _COPIES,
+            " CASCADE; CREATE SCHEMA ",
+            _COPIES,
+            "; DROP SCHEMA IF EXISTS ",
+            _BUILD,
+            " CASCADE; CREATE SCHEMA ",
+            _BUILD,
+            "; CREATE TABLE ",
+            _BUILD,
+            ".record (catalog TEXT, copies TEXT[], copied TEXT, reset TEXT)",
+        ),
+    )
+    tables = [
+        str(row["tablename"])
+        for row in await conn.fetch(
+            "SELECT tablename FROM pg_tables WHERE schemaname = 'public' "
+            "ORDER BY tablename",
+        )
+    ]
+    # Replica role skips foreign keys and triggers: the tables empty in any order,
+    # and the copied rows come back exactly as the build left them. A test's
+    # temporary table is no part of the build either.
+    script = ["SET LOCAL session_replication_role = replica", "DISCARD TEMP"]
+    script.extend(vetted_sql("DELETE FROM public.", _quoted(table)) for table in tables)
+    copies: list[str] = []
+    for table in tables:
+        source = vetted_sql("public.", _quoted(table))
+        if not await conn.fetchval(
+            vetted_sql("SELECT EXISTS (SELECT 1 FROM ", source, ")"),
+        ):
+            continue
+        target = vetted_sql(_COPIES, ".", _quoted(table))
+        await conn.execute(
+            vetted_sql("CREATE TABLE ", target, " AS SELECT * FROM ", source),
+        )
+        # A generated column takes no value: it is computed again from the rest.
+        columns = ", ".join(
+            _quoted(str(row["attname"]))
+            for row in await conn.fetch(
+                "SELECT a.attname FROM pg_attribute a "
+                "JOIN pg_class c ON c.oid = a.attrelid "
+                "JOIN pg_namespace n ON n.oid = c.relnamespace "
+                "WHERE n.nspname = 'public' AND c.relname = $1 AND a.attnum > 0 "
+                "AND NOT a.attisdropped AND a.attgenerated = '' ORDER BY a.attnum",
+                table,
+            )
+        )
+        script.append(
+            vetted_sql(
+                "INSERT INTO ",
+                source,
+                " (",
+                columns,
+                ") OVERRIDING SYSTEM VALUE SELECT ",
+                columns,
+                " FROM ",
+                target,
+            ),
+        )
+        copies.append(table)
+    for row in await conn.fetch(
+        "SELECT sequencename FROM pg_sequences WHERE schemaname = 'public'",
+    ):
+        sequence = vetted_sql("public.", _quoted(str(row["sequencename"])))
+        position = await conn.fetchrow(
+            vetted_sql("SELECT last_value, is_called FROM ", sequence),
+        )
+        if position is None:
+            raise ValueError("Expected position is not None.")
+        script.append(
+            vetted_sql(
+                "SELECT setval('",
+                sequence.replace("'", "''"),
+                "', ",
+                str(from_plain(position["last_value"], int)),
+                ", ",
+                "true" if position["is_called"] else "false",
+                ")",
+            ),
+        )
+    await conn.execute(
+        vetted_sql(
+            "INSERT INTO ",
+            _BUILD,
+            ".record SELECT (",
+            _CATALOG,
+            "), $1::text[], (",
+            _copied("$1::text[]"),
+            "), $2",
+        ),
+        copies,
+        ";\n".join(script),
+    )
+
+
+def _quoted(name: str) -> str:
+    """Return ``name`` as a quoted SQL identifier."""
+    return '"' + name.replace('"', '""') + '"'

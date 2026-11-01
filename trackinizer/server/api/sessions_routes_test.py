@@ -25,7 +25,6 @@ import httpx2
 import pytest
 
 from trackinizer.conftest import set_field_row
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app
@@ -67,13 +66,11 @@ from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.auth import current_user
 from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Config
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
 from trackinizer.server.session_reaper import (
     STALE_AFTER,
     reap_silent_sessions,
 )
-from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import (
@@ -93,8 +90,8 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
-    from trackinizer.lib.postgres import PGliteEngine
     from trackinizer.server.auth import AuthIdentity, Role
+    from trackinizer.server.store.core import Store
     from trackinizer.wire.wire_science_chat import ChatProvider
 
 
@@ -2147,13 +2144,10 @@ async def test_a_new_chats_first_session_opens_as_its_canvas_chose(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_session_starts_on_an_app_built_by_hand_with_no_hub_or_config(
-    pglite_engine: PGliteEngine,
+    store: Store,
 ) -> None:
     """A harness that wires only engine, store and inbound, as the integration test does."""
-    await reset_schema(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
-    await store.bootstrap()
-    async with pglite_engine.acquire() as conn:
+    async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, $2, 'T', 'writer', 'active')",
@@ -2168,7 +2162,7 @@ async def test_a_session_starts_on_an_app_built_by_hand_with_no_hub_or_config(
         )
     bespoke = FastAPI()
     bespoke.include_router(sessions_routes.router)
-    bespoke.state.engine = pglite_engine
+    bespoke.state.engine = store.engine
     bespoke.state.store = store
     bespoke.state.inbound = InboundQueue()
 
