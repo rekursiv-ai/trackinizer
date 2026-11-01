@@ -7,6 +7,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import inspect
+import os
 import random
 
 import pytest
@@ -24,6 +25,38 @@ from pytest_postgresql.factories import process
 from pytest_postgresql.plugin import postgresql_proc
 
 from trackinizer import conftest
+from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
+
+
+@pytest.mark.parametrize("inherited", [None, "", "operator@example.com"])
+def test_bootstrap_environment_is_isolated_and_restored(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    inherited: str | None,
+) -> None:
+    for name in (BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV):
+        if inherited is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, inherited)
+    before = dict(os.environ)
+    isolate = contextmanager(
+        cast(
+            Callable[[], Generator[None]],
+            inspect.unwrap(conftest.isolate_bootstrap_environment),
+        ),
+    )
+    with isolate():
+        assert os.environ[BOOTSTRAP_ADMIN_ENV] == ""
+        assert os.environ[BOOTSTRAP_TOKEN_FILE_ENV] == ""
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setenv(BOOTSTRAP_ADMIN_ENV, "test@example.com")
+            patch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bootstrap-token"))
+            assert os.environ[BOOTSTRAP_ADMIN_ENV] == "test@example.com"
+            assert os.environ[BOOTSTRAP_TOKEN_FILE_ENV] == str(
+                tmp_path / "bootstrap-token",
+            )
+    assert dict(os.environ) == before
 
 
 @pytest.mark.parametrize(("workers", "retries"), [(7, 5), (1, 9)])
