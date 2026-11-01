@@ -19,7 +19,10 @@ The core:
    forward, not the memory model.
 3. A ragged tail batch row-pads to the bucket's FULL row count with masked
    pad rows and slices the real rows back out -- so every forward is one of the
-   declared ``(rows, edge)`` shapes.
+   declared ``(rows, edge)`` shapes. The plan's rows are a ceiling: a forward that
+   runs the card out of memory halves its bucket's rows, in the caller's mapping,
+   for the rest of the run (the arithmetic memory model under-counted short
+   buckets ~1.4x on a 5090, measured 2026-10-31).
 4. :func:`configure_recompile_limits` pins the per-code-object
    ``recompile_limit`` to ``len(edges)`` (the true invariant: a shape beyond the
    set must fail loudly) while leaving the GLOBAL
@@ -27,22 +30,30 @@ The core:
    to ``len(edges)`` kills legitimate warmup across a 36-layer model's hundreds
    of compiled frames (a dead run, live 2026-09-20).
 
+5. :class:`BucketQueue` keeps each bucket's texts across calls, so a forward runs
+   full rather than padded out to the card's rows for one pool's few texts.
+
 The runner (``backfill_embedding.py``) owns the read/write stages and the 3-stage
-overlap; this owns the embed transform, whole-pool. The live CPU ingest path
-stays in ``server/embedders/qwen_family.py`` and does NOT use this bucketing.
+overlap, and holds one queue across its pools; this owns the embed transform. The
+live CPU ingest path stays in ``server/embedders/qwen_family.py`` and does NOT use
+this bucketing.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, cast
+from collections import deque
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 import asyncio
+import itertools
+import logging
 
 from treekle import from_plain
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import MutableMapping, Sequence
 
     from torch.nn import functional
 
@@ -57,12 +68,17 @@ else:
 
 
 __all__ = [
+    "BucketQueue",
     "ForwardModel",
+    "Ticket",
     "TokenBatcher",
     "configure_recompile_limits",
     "embed_bucketed",
     "route",
 ]
+
+
+_LOGGER: Final = logging.getLogger(__name__)
 
 
 def route(token_count: int, edges: Sequence[int]) -> int:
@@ -123,60 +139,174 @@ async def embed_bucketed(
     texts: Sequence[str],
     *,
     edges: Sequence[int],
-    rows: Mapping[int, int],
+    rows: MutableMapping[int, int],
     dim: int,
 ) -> list[list[float]]:
     """Embed ``texts`` via fixed-shape length buckets; return input-order vectors.
 
-    Routes each text by true token count, runs one forward per non-empty bucket
-    at that bucket's declared ``(rows[edge], edge)`` shape (tail rows padded and
-    sliced back), pools the last token, truncates to ``dim``, and L2-normalizes.
-    Order is preserved across the routing permutation.
-
-    The per-edge row counts come from the caller (the runner derives them from the
-    model spec, the measured card, and the chosen dim via
-    ``model_buckets.resolve_plan``); this core owns only the routing and the
-    fixed-shape forward, not the memory model.
+    One call's worth of a :class:`BucketQueue`: every bucket runs, full or not.
 
     Args:
       model: The forward callable (a compiled model in production).
       tokenizer: Token counter + row-pad mask builder.
       texts: Document texts to embed.
       edges: Ascending bucket edges (the static shape set).
-      rows: ``edge -> rows per forward`` for every edge in ``edges``.
+      rows: ``edge -> rows per forward`` for every edge in ``edges``; lowered in
+        place when a bucket runs the device out of memory.
       dim: Output (truncated) dimension.
 
     Returns:
       vectors: One unit vector per text, in input order.
 
-    """
-    if not texts:
-        return []
-    # Route once by TRUE token count, remembering each text's input slot.
-    buckets: dict[int, list[int]] = {}
-    for slot, text in enumerate(texts):
-        edge = route(tokenizer.count(text), edges)
-        buckets.setdefault(edge, []).append(slot)
+    Raises:
+      torch.OutOfMemoryError: A bucket runs out of memory at one row.
 
-    vectors: list[list[float]] = [[] for _ in texts]
-    for edge, slots in buckets.items():
-        edge_rows = rows[edge]
-        # A bucket may hold more than one full batch; walk it in row-sized
-        # chunks so every forward is exactly ``(edge_rows, edge)``.
-        for start in range(0, len(slots), edge_rows):
-            chunk = slots[start : start + edge_rows]
-            chunk_vectors = await asyncio.to_thread(
-                _embed_one_bucket,
-                model,
-                tokenizer,
-                [texts[slot] for slot in chunk],
-                rows=edge_rows,
-                seq=edge,
-                dim=dim,
+    """
+    queue = BucketQueue(model, tokenizer, edges=edges, rows=rows, dim=dim)
+    ticket = queue.add(texts)
+    await queue.run(hold=0)
+    return ticket.vectors
+
+
+@dataclass(slots=True, kw_only=True)
+class Ticket:
+    """The vectors of one :meth:`BucketQueue.add`, filled as their buckets run.
+
+    Attributes:
+      vectors: One vector per added text, in input order; empty until its bucket
+        runs.
+      left: Texts still waiting for a forward.
+
+    """
+
+    vectors: list[list[float]]
+    left: int
+
+    @property
+    def done(self) -> bool:
+        """Whether every text of the call has its vector."""
+        return self.left == 0
+
+
+# A forward at the plan's rows costs the same whether its rows are texts or padding,
+# and the plan sizes rows to the card: thousands for a short bucket. A runner that
+# embedded each 1024-unit pool on its own computed 4.2% real tokens for the 0.6B and
+# 14.2% for the 4B (2026-10-31, a 5090). The queue keeps each bucket's texts across
+# calls instead, so a forward runs full, and runs part-full only to bound what it
+# holds: 71-74% real, 354.5 against 24.7 vec/s for the 0.6B and 75.1 against 14.9
+# for the 4B.
+class BucketQueue:
+    """Texts routed to length buckets, waiting across calls for a full forward.
+
+    Routes each text by true token count; :meth:`run` forwards a bucket at its
+    declared ``(rows[edge], edge)`` shape (tail rows padded and sliced back), pools
+    the last token, truncates to ``dim``, and L2-normalizes. A forward that runs
+    out of device memory halves ``rows[edge]`` in the caller's mapping and retries.
+
+    Args:
+      model: The forward callable (a compiled model in production).
+      tokenizer: Token counter + row-pad mask builder.
+      edges: Ascending bucket edges (the static shape set).
+      rows: ``edge -> rows per forward`` for every edge in ``edges``; the runner
+        derives them from the model spec, the measured card, and the chosen dim
+        via ``model_buckets.resolve_plan``.
+      dim: Output (truncated) dimension.
+
+    """
+
+    def __init__(
+        self,
+        model: ForwardModel,
+        tokenizer: TokenBatcher,
+        *,
+        edges: Sequence[int],
+        rows: MutableMapping[int, int],
+        dim: int,
+    ) -> None:
+        self._model = model
+        self._tokenizer = tokenizer
+        self._edges = edges
+        self._rows = rows
+        self._dim = dim
+        # Per edge, oldest first: (arrival, ticket, slot, text).
+        self._waiting: dict[int, deque[tuple[int, Ticket, int, str]]] = {
+            edge: deque() for edge in edges
+        }
+        self._arrivals = itertools.count()
+        self._held = 0
+
+    def add(self, texts: Sequence[str]) -> Ticket:
+        """Route ``texts`` to their buckets; return the ticket their vectors fill.
+
+        Args:
+          texts: Document texts to embed.
+
+        Returns:
+          ticket: Done once every text has run; no forward runs here.
+
+        """
+        ticket = Ticket(vectors=[[] for _ in texts], left=len(texts))
+        for slot, text in enumerate(texts):
+            edge = route(self._tokenizer.count(text), self._edges)
+            self._waiting[edge].append((next(self._arrivals), ticket, slot, text))
+        self._held += len(texts)
+        return ticket
+
+    async def run(self, *, hold: int) -> None:
+        """Forward every full bucket, then oldest-first until ``hold`` texts wait.
+
+        Args:
+          hold: The most texts left waiting; ``0`` runs every bucket.
+
+        Raises:
+          torch.OutOfMemoryError: A bucket runs out of memory at one row.
+
+        """
+        for edge, waiting in self._waiting.items():
+            while len(waiting) >= self._rows[edge]:
+                await self._forward(edge)
+        while self._held > hold:
+            _arrival, oldest = min(
+                (waiting[0][0], edge)
+                for edge, waiting in self._waiting.items()
+                if waiting
             )
-            for slot, vector in zip(chunk, chunk_vectors, strict=True):
-                vectors[slot] = vector
-    return vectors
+            await self._forward(oldest)
+
+    async def _forward(self, edge: int) -> None:
+        """Forward up to ``rows[edge]`` of the bucket's oldest texts."""
+        waiting = self._waiting[edge]
+        while True:
+            edge_rows = self._rows[edge]
+            chunk = [waiting[at] for at in range(min(edge_rows, len(waiting)))]
+            try:
+                vectors = await asyncio.to_thread(
+                    _embed_one_bucket,
+                    self._model,
+                    self._tokenizer,
+                    [text for _arrival, _ticket, _slot, text in chunk],
+                    rows=edge_rows,
+                    seq=edge,
+                    dim=self._dim,
+                )
+            except torch.OutOfMemoryError:
+                if edge_rows == 1:
+                    raise
+                self._rows[edge] = edge_rows // 2
+                _LOGGER.warning(
+                    "bucket %d ran out of memory at %d rows; %d from now on",
+                    edge,
+                    edge_rows,
+                    self._rows[edge],
+                )
+                torch.cuda.empty_cache()
+                continue
+            break
+        for (_arrival, ticket, slot, _text), vector in zip(chunk, vectors, strict=True):
+            ticket.vectors[slot] = vector
+            ticket.left -= 1
+            waiting.popleft()
+        self._held -= len(chunk)
 
 
 def configure_recompile_limits(edges: Sequence[int]) -> None:

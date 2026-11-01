@@ -81,10 +81,11 @@ class ModelEntry:
         Matryoshka model (its ``min_dim..max_dim`` is the valid ``--dim`` range),
         or ``None`` for a fixed-dim model (only :attr:`default_dim` is valid).
       build: ``dim -> `` fresh CPU embedder at that dim (imports torch inside).
-      backfill: ``(device, batch_size, dim) -> `` embedder for the GPU pipeline,
-        applying the model's compile policy (Qwen-family compiles the forward on
-        cuda -- measured 2.79x on a 5090; Jina does not, its custom ``encode``
-        may not route through the forward we compile).
+      backfill: ``(device, batch_size, dim) -> `` embedder for throughput (the GPU
+        pipeline, and the follow service on CPU), applying the model's compile
+        policy (Qwen-family compiles the forward -- measured 2.79x on a 5090, and
+        frozen on CPU 12.0 vs 3.6-6.7 vec/s on 32 Zen 5 threads; Jina does not,
+        its custom ``encode`` may not route through the forward we compile).
       weights_present: No-network cache check for this model's weights.
 
     """
@@ -194,10 +195,11 @@ def build_backfill_embedder(
     batch_size: int,
     dim: int | None = None,
 ) -> QueryEmbedder:
-    """Build ``name`` for the GPU backfill pipeline on ``device``.
+    """Build ``name`` for throughput on ``device``: the GPU pipeline, the CPU follow.
 
-    Unlike :func:`build_session_embedder` (CPU), this passes the GPU device and
-    batch size and applies each model's compile policy (see :class:`ModelEntry`).
+    Unlike :func:`build_session_embedder` (the server's query embedder), this
+    passes the device and batch size and applies each model's compile policy
+    (see :class:`ModelEntry`).
     Backfill requires a real model, so a disabled/stub name is a caller error.
     ``name``/``dim`` resolve exactly as in :func:`build_session_embedder`.
 
@@ -231,12 +233,12 @@ def _qwen_backfill(
     batch_size: int,
     dim: int,
 ) -> QueryEmbedder:
-    """Construct a Qwen-family embedder at ``dim``, compiling the forward on cuda."""
+    """Construct a Qwen-family embedder at ``dim`` with its forward compiled."""
     return cls(
         device=device,
         batch_size=batch_size,
         dim=dim,
-        compile_forward=device.startswith("cuda"),
+        compile_forward=True,
     )
 
 

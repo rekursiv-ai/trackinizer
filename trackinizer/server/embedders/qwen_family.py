@@ -26,7 +26,7 @@ which takes its 1024-dim embedder as an argument.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar, Final, cast
+from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast
 
 import asyncio
 
@@ -34,7 +34,7 @@ from trackinizer.server.tools import bucket_embed
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, MutableMapping, Sequence
 
     from torch.nn import functional
     from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizerBase
@@ -117,7 +117,7 @@ class QwenFamilyEmbedder:
         self._batch_size = batch_size
         self._compile_forward = compile_forward
         # ``configure_recompile_limits`` must run ONCE per process, not per
-        # ``embed_bucketed_batch`` call: re-pinning the GLOBAL accumulated limit
+        # ``bucket_queue`` call: re-pinning the GLOBAL accumulated limit
         # mid-run could clip legitimate warmup (dead run, live 2026-09-20).
         self._recompile_configured = False
         # ``torch.compile`` returns a callable wrapper, not always a Module: the
@@ -192,44 +192,40 @@ class QwenFamilyEmbedder:
         vectors = await asyncio.to_thread(self._embed_sync, [prompt])
         return vectors[0]
 
-    async def embed_bucketed_batch(
+    async def bucket_queue(
         self,
-        texts: list[str],
         *,
         edges: Sequence[int],
-        rows: Mapping[int, int],
-    ) -> list[list[float]]:
-        """Embed ``texts`` (documents) via the length-bucketed static-shape core.
+        rows: MutableMapping[int, int],
+    ) -> bucket_embed.BucketQueue:
+        """Return a queue that embeds documents in fixed-shape length buckets.
 
-        The GPU-backfill DOCUMENT path: applies :attr:`doc_prefix`, then routes
-        through :func:`trackinizer.server.tools.bucket_embed.embed_bucketed` so
-        every forward is one of ``len(edges)`` fixed shapes -- required for a
-        static ``torch.compile``. Pins the dynamo recompile limits once per
-        process. Returns unit vectors in input order.
+        The GPU-backfill DOCUMENT path: every text added carries
+        :attr:`doc_prefix`, and every forward is one of ``len(edges)`` fixed
+        shapes -- required for a static ``torch.compile``. Pins the dynamo
+        recompile limits once per process.
 
         Args:
-          texts: Document texts.
           edges: Ascending static bucket edges (the compiled shape set).
           rows: ``edge -> rows per forward`` (the runner's derived plan).
 
         Returns:
-          vectors: One unit vector per text, in input order.
+          queue: Embeds what is added to it as its buckets fill.
 
         """
-        if not texts:
-            return []
         await self._ensure_loaded()
         if self._model is None or self._tokenizer is None:
             raise ValueError("Expected the model to be loaded before embedding.")
         if not self._recompile_configured:
             bucket_embed.configure_recompile_limits(edges)
             self._recompile_configured = True
-        batcher = _HfTokenBatcher(self._tokenizer, device=self._device)
-        prefixed = [self.doc_prefix + text for text in texts]
-        return await bucket_embed.embed_bucketed(
+        return bucket_embed.BucketQueue(
             cast("bucket_embed.ForwardModel", self._model),
-            batcher,
-            prefixed,
+            _HfTokenBatcher(
+                self._tokenizer,
+                device=self._device,
+                prefix=self.doc_prefix,
+            ),
             edges=edges,
             rows=rows,
             dim=self.dim,
@@ -266,6 +262,14 @@ class QwenFamilyEmbedder:
                 # moved to ``server/tools/bucket_embed.py``; the live single-text gain
                 # here is unmeasured. Bulk backfill now uses the static core, not
                 # this dynamic path.
+                if self._device == "cpu":
+                    # Freezing folds the bf16 weights into the graph as constants,
+                    # so Inductor prepacks them for oneDNN's AVX-512 BF16 matmul
+                    # once instead of per call: 0.6B on 32 threads measured 12.0
+                    # vec/s frozen vs 3.6-6.7 eager (2026-10-31, Zen 5), after ~95 s
+                    # of compile. Process-wide, which only a compiling CPU process
+                    # sets.
+                    _inductor_config().freezing = True
                 model = torch.compile(model, dynamic=True)
             self._tokenizer = tokenizer
             self._model = model
@@ -276,8 +280,14 @@ class QwenFamilyEmbedder:
         """Tokenize, forward, last-token pool, truncate, then L2-normalize."""
         if self._tokenizer is None or self._model is None:
             raise ValueError("Expected the model to be loaded before embedding.")
+        # A compiled forward never sees one row: once its graph is dynamic, torch
+        # 2.11's Inductor emits CPU C++ that does not compile for a batch of one
+        # ("'tmp2' was not declared", every compile mode; 2026-10-31), which killed
+        # the follow service on the first one-record change. The copy's vector is
+        # computed and dropped by the ``len(texts)`` slice below.
+        rows = texts * 2 if self._compile_forward and len(texts) == 1 else texts
         batch = self._tokenizer(
-            texts,
+            rows,
             padding=True,
             truncation=True,
             max_length=_MAX_TOKENS,
@@ -298,7 +308,7 @@ class QwenFamilyEmbedder:
         # prefix, and the truncated vector must be renormalized to unit length
         # (normalizing the full native vector then slicing leaves the slice off
         # the unit sphere).
-        truncated = pooled[:, : self.dim]
+        truncated = pooled[: len(texts), : self.dim]
         normalized = functional.normalize(truncated, p=2, dim=1)
         # ``Tensor.tolist`` is typed ``list[object]`` in the stub; the 2-D float
         # tensor yields exactly ``list[list[float]]``. Route through ``object``
@@ -334,6 +344,11 @@ def hf_load(
     # quantization, which is itself fp16. GPU uses fp16 (its native half).
     dtype = torch.bfloat16 if device == "cpu" else torch.float16
     model = AutoModel.from_pretrained(model_id, dtype=dtype)
+    # An embedder reads one forward's last hidden state; the KV cache a decoder
+    # forward builds by default is never read. Measured on a 5090 (2026-10-31, 0.6B,
+    # fp16): it held ~114 KB a token, 5-6x the rest of the forward, so every GPU
+    # backfill's bucket plan ran out of memory on its first batch.
+    cast("_ModelConfig", model.config).use_cache = False
     _ = model.to(device)
     _ = model.eval()
     return tokenizer, model
@@ -381,12 +396,36 @@ def _last_token_pool(
     ]
 
 
+def _inductor_config() -> _InductorConfig:
+    """Return ``torch._inductor.config`` (indirected so a test can inject a fake)."""
+    from torch._inductor import (  # noqa: PLC0415 -- deferred so importing this module pulls no torch.
+        config,
+    )
+
+    # Torch's own Inductor settings; there is no public alias, so the private
+    # module is the only path.
+    return cast("_InductorConfig", config)
+
+
+class _InductorConfig(Protocol):
+    """The one Inductor setting a CPU compile turns on."""
+
+    freezing: bool
+
+
+class _ModelConfig(Protocol):
+    """The one ``PretrainedConfig`` field :func:`hf_load` sets."""
+
+    use_cache: bool
+
+
 class _HfTokenBatcher:
     """A :class:`bucket_embed.TokenBatcher` over a real HF tokenizer.
 
     ``count`` tokenizes one text unpadded (the routing key -- TRUE tokens, never
     a char estimate); ``pad_batch`` builds one bucket's forward inputs padded to
-    the FULL ``rows`` with masked pad rows, left-padded per the Qwen recipe.
+    the FULL ``rows`` with masked pad rows, left-padded per the Qwen recipe. Both
+    read each text with ``prefix`` in front, the model's document prefix.
     """
 
     def __init__(
@@ -394,9 +433,11 @@ class _HfTokenBatcher:
         tokenizer: PreTrainedTokenizerBase,
         *,
         device: str,
+        prefix: str,
     ) -> None:
         self._tokenizer = tokenizer
         self._device = device
+        self._prefix = prefix
 
     def count(self, text: str) -> int:
         """Return ``text``'s true token count, capped at the model window.
@@ -410,7 +451,11 @@ class _HfTokenBatcher:
         """
         ids = cast(
             object,
-            self._tokenizer(text, truncation=True, max_length=_MAX_TOKENS)["input_ids"],
+            self._tokenizer(
+                self._prefix + text,
+                truncation=True,
+                max_length=_MAX_TOKENS,
+            )["input_ids"],
         )
         return len(cast("list[int]", ids))
 
@@ -434,7 +479,7 @@ class _HfTokenBatcher:
 
         """
         encoded = self._tokenizer(
-            texts,
+            [self._prefix + text for text in texts],
             padding="max_length",
             truncation=True,
             max_length=seq,

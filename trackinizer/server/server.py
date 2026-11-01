@@ -224,7 +224,7 @@ def _parse_args(
         choices=_session_embedder_choices(),
         help=(
             "Session-search embedder that serves QUERIES, named by its full "
-            "stored identity (e.g. qwen3-embedding-4b@1024); empty = "
+            "stored identity (e.g. qwen3-embedding-0.6b@1024); empty = "
             "full-text-only search (default)."
         ),
     )

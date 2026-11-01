@@ -42,6 +42,7 @@ import asyncpg
 import pytest
 
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.notify import tx
 from trackinizer.server.primitives import insert_inquiry, upsert_embedding
 from trackinizer.server.sql import load_sql, schema_migrations
 from trackinizer.types.change_log import Change
@@ -95,10 +96,10 @@ async def test_migration_019_matches_the_baseline_shape(
     """The migrated session-IR tables equal the ones a fresh install gets.
 
     Bootstrap builds the baseline shape. This drops the four tables (as a
-    pre-019 database has them), replays ``schema.019.sql`` and the column 051 adds
-    after it, and compares every column against what the baseline produced -- the
-    check neither file can make about itself, since each is read by a different
-    population.
+    pre-019 database has them), replays ``schema.019.sql`` and the columns 051 and
+    063 add after it, and compares every column against what the baseline
+    produced -- the check neither file can make about itself, since each is read by
+    a different population.
     """
     conn = integ_rollback_conn
     columns = (
@@ -113,6 +114,7 @@ async def test_migration_019_matches_the_baseline_shape(
         await conn.execute(f"DROP TABLE {table}")
     await conn.execute(load_sql("schema.019"))
     await conn.execute(load_sql("schema.051"))
+    await conn.execute(load_sql("schema.063"))
     migrated = [dict(r) for r in await conn.fetch(columns, _SESSION_IR_TABLES)]
 
     assert migrated == baseline
@@ -144,9 +146,113 @@ async def test_session_ir_migrations_match_the_baseline_indexes(
         await conn.execute(f"DROP TABLE {table}")
     await conn.execute(load_sql("schema.019"))
     await conn.execute(load_sql("schema.029"))
+    await conn.execute(load_sql("schema.063"))
     migrated = [dict(r) for r in await conn.fetch(indexes, _SESSION_IR_TABLES)]
 
     assert migrated == baseline
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_063_matches_the_baseline_shape(
+    integ_rollback_conn: Conn,
+) -> None:
+    """063's change stamp and cursor table equal the fresh install's.
+
+    Bootstrap builds the baseline. This strips what 063 adds -- the cursor table,
+    the trigger, its function, the index and the column, as a pre-063 database
+    lacks them -- replays ``schema.063``, and compares columns, indexes and the
+    trigger, which neither file can check about the other.
+    """
+    conn = integ_rollback_conn
+    baseline = await _change_stamp_shape(conn)
+    assert baseline[2], "the baseline created no change-stamp trigger"
+    await conn.execute(
+        "DROP TABLE session_index_cursor; "
+        "DROP TRIGGER session_records_stamp_change ON session_records; "
+        "DROP FUNCTION session_records_stamp_change(); "
+        "ALTER TABLE session_records DROP COLUMN changed_xid",
+    )
+    await conn.execute(load_sql("schema.063"))
+    migrated = await _change_stamp_shape(conn)
+
+    assert migrated == baseline
+
+
+async def _change_stamp_shape(
+    conn: Conn,
+) -> tuple[list[dict[str, object]], set[str], set[str]]:
+    """Return the columns, indexes and triggers schema.063 shapes."""
+    tables = ["session_records", "session_index_cursor"]
+    columns = await conn.fetch(
+        "SELECT table_name, column_name, data_type, is_nullable, column_default "
+        "FROM information_schema.columns WHERE table_schema = 'public' "
+        "AND table_name = ANY($1::text[]) ORDER BY table_name, ordinal_position",
+        tables,
+    )
+    indexes = await conn.fetch(
+        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
+        "AND tablename = ANY($1::text[])",
+        tables,
+    )
+    triggers = await conn.fetch(
+        "SELECT pg_get_triggerdef(oid) AS def FROM pg_trigger "
+        "WHERE tgrelid = 'session_records'::regclass AND NOT tgisinternal",
+    )
+    return (
+        [dict(row) for row in columns],
+        {str(row["indexdef"]) for row in indexes},
+        {str(row["def"]) for row in triggers},
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_records_are_stamped_on_insert_and_on_a_text_change_alone(
+    integ_store: Store,
+) -> None:
+    """Every writer's insert is stamped; only a changed ``text`` restamps.
+
+    The trigger stands in for four writers, so it is checked against raw SQL: an
+    insert (as a fork's ``INSERT ... SELECT`` makes), a same-text upsert (a
+    compaction replay) and a payload-only update keep the stamp, and a rewrite
+    of the text (the body offload, a restart) takes the writer's transaction.
+    Each statement commits on its own, so it writes to the build, not to a
+    rolled-back transaction whose one id every stamp would share.
+    """
+    session_id = uuid.uuid4()
+    stamp = "SELECT changed_xid::text FROM session_records WHERE session_id = $1"
+    async with integ_store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) VALUES ($1, 'AgentSession', "
+            "nextval('seq_agentsession'), 'active', 'tester@example.com', 'stamp', "
+            "'open')",
+            session_id,
+        )
+        await conn.execute(
+            "INSERT INTO session_records (session_id, part, idx, kind, payload, text) "
+            "SELECT $1, 0, 0, 'UserMessage', '{}'::json, 'first words'",
+            session_id,
+        )
+        inserted = await conn.fetchval(stamp, session_id)
+        await conn.execute(
+            "UPDATE session_records SET text = text, payload = '{\"v\": 1}'::json "
+            "WHERE session_id = $1",
+            session_id,
+        )
+        kept = await conn.fetchval(stamp, session_id)
+        async with tx(conn):
+            await conn.execute(
+                "UPDATE session_records SET text = 'second words' WHERE session_id = $1",
+                session_id,
+            )
+            writer = await conn.fetchval("SELECT pg_current_xact_id()::text")
+            restamped = await conn.fetchval(stamp, session_id)
+
+    assert inserted is not None
+    assert kept == inserted
+    assert restamped == writer != inserted
 
 
 @pytest.mark.db_pglite

@@ -271,6 +271,20 @@ CREATE TABLE IF NOT EXISTS session_index_state (
     PRIMARY KEY (session_id, part, idx, mapper, model)
 );
 
+-- How far each (mapper, model) has been reconciled: the snapshot its last sweep
+-- read through. The next sweep reads only the records whose ``changed_xid`` this
+-- snapshot could not see (``store/session_embed.py``); a pair with no row catches
+-- up with one full pending scan first. A snapshot rather than a timestamp, so a
+-- record stamped by a transaction still open at the read is caught once it
+-- commits (schema.063.sql has the long form).
+CREATE TABLE IF NOT EXISTS session_index_cursor (
+    mapper      TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    snapshot    pg_snapshot NOT NULL,
+    updated     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (mapper, model)
+);
+
 
 -- Replay-only bodies for heavy record kinds: the cold half of the hot/cold
 -- split.
@@ -849,9 +863,34 @@ CREATE TABLE IF NOT EXISTS session_records (
     -- expression so the config must be a literal either way, and stemming
     -- mangles the identifiers and paths that fill a transcript.
     search      tsvector GENERATED ALWAYS AS (to_tsvector('simple', text)) STORED,
+    -- The transaction that inserted the row or last changed its ``text``, set by
+    -- ``session_records_stamp_change`` below; the embedding sweep reads only rows
+    -- changed since its cursor's snapshot. NULL on rows older than schema.063.
+    changed_xid xid8,
     PRIMARY KEY (session_id, part, idx),
     CHECK (context_id IS NULL OR context_id <= idx)
 );
+
+-- A trigger, not the writers: an append's upsert, a fork's copy, the body offload
+-- and the legacy retype all write ``text``, and one that skipped the stamp would
+-- leave its rows unembedded with nothing failing. Re-feeding the same text (a
+-- compaction replay) keeps the old stamp.
+CREATE OR REPLACE FUNCTION session_records_stamp_change() RETURNS trigger
+LANGUAGE plpgsql AS $stamp$
+BEGIN
+    IF TG_OP = 'INSERT' OR NEW.text IS DISTINCT FROM OLD.text THEN
+        NEW.changed_xid := pg_current_xact_id();
+    END IF;
+    RETURN NEW;
+END
+$stamp$;
+
+CREATE OR REPLACE TRIGGER session_records_stamp_change
+    BEFORE INSERT OR UPDATE OF text ON session_records
+    FOR EACH ROW EXECUTE FUNCTION session_records_stamp_change();
+
+CREATE INDEX IF NOT EXISTS idx_session_records_changed_xid
+    ON session_records (changed_xid) WHERE changed_xid IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_session_records_search
     ON session_records USING GIN (search);
