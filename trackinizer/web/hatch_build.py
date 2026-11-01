@@ -7,8 +7,9 @@ artifact only if it exists, and builds without one silently, so every caller of
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import override
+from typing import TYPE_CHECKING, override
 
 import fcntl
 import os
@@ -16,6 +17,10 @@ import subprocess
 
 from hatchling.builders.config import BuilderConfig
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 class WebAppHook(BuildHookInterface[BuilderConfig]):
@@ -41,16 +46,31 @@ def build_web_app(*, root: Path, version: str) -> None:
     if version == "editable":
         return
     web = root / "trackinizer" / "web"
-    # Concurrent builds share ``web/``: unserialized, one's ``npm ci`` and vite
-    # rewrote ``node_modules`` and ``dist`` while the other's hatch packed them.
-    # The lock is on the directory itself, so no lock file lands in the sdist.
-    descriptor = os.open(web, os.O_RDONLY)
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+    with web_lock(web):
         if (web / "dist" / "index.html").is_file():
             return
         _npm(web, "ci", "--no-audit", "--no-fund")
         _npm(web, "run", "build")
+
+
+# Builds and the app's own tests share ``web/``: unserialized, one's ``npm ci`` and
+# vite rewrote ``node_modules`` and ``dist`` while another used them. The lock is on
+# the directory itself, so no lock file lands in the sdist.
+@contextmanager
+def web_lock(web: Path) -> Generator[None]:
+    """Hold ``web``'s exclusive lock for the body; one holder at a time.
+
+    Args:
+      web: The web app's directory.
+
+    Yields:
+      held: Nothing; the body runs while the lock is held.
+
+    """
+    descriptor = os.open(web, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
     finally:
         os.close(descriptor)
 
