@@ -82,6 +82,8 @@ from trackinizer.wire.wire_metrics_query import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from trackinizer.trax.commands import Command
+
 
 _CWD: Final = Path(__file__).resolve().parent
 
@@ -316,10 +318,22 @@ def _literal_terminal(name: str, spellings: Sequence[str], comment: str = "") ->
 # in ``parse_and_run`` rather than registered as dispatchers.
 # `next`, `recent`, `profile`, ....
 def _verb_spellings() -> list[str]:
-    """Return the non-kind top-level verb spellings."""
+    """Return the non-kind top-level verb spellings, an app's own left out."""
     kinds = {k.lower() for k in VALID_KINDS}
-    names = {name for dispatcher in DISPATCHERS for name in dispatcher.names}
+    names = {
+        name
+        for dispatcher in DISPATCHERS
+        if not _is_app_verb(dispatcher)
+        for name in dispatcher.names
+    }
     return sorted((names - kinds) | MOVED_VERBS)
+
+
+# An app adds a verb from a ``private`` package, which the public package does not
+# ship: its spelling and usage stand in a block the export strips from the grammar.
+def _is_app_verb(dispatcher: type[Command]) -> bool:
+    """Say whether ``dispatcher`` is a verb an app adds to trax."""
+    return ".private." in dispatcher.__module__
 
 
 def _terminal_block() -> str:
@@ -336,6 +350,7 @@ def _terminal_block() -> str:
     plain_list_fields = [f for f in LIST_FIELDS if f not in ref_list_fields]
     valued_ops = [op for op in FILTER_OPS if op not in VALUELESS_FILTER_OPS]
     valueless_ops = [op for op in FILTER_OPS if op in VALUELESS_FILTER_OPS]
+    verbs = [_literal_terminal("VERB", _verb_spellings())]
     # FILTER_FIELD is every public CLI field spelling with filtering semantics.
     # Per-kind validity remains a semantic check in FILTER_FIELDS_CLI.
     filter_fields = sorted(
@@ -356,7 +371,7 @@ def _terminal_block() -> str:
     lines = [
         "// ---- terminals (keyword sets; spellings overlap across classes, e.g.",
         "// codechange is KIND+REF_LIST_FIELD, resolved by position) ----",
-        _literal_terminal("VERB", _verb_spellings()),
+        *verbs,
         _literal_terminal("KIND", kinds),
         _literal_terminal("EDGE_KEYWORD", edge_keywords),
         _literal_terminal("FIELD", list(EDITABLE_FIELDS)),
@@ -494,7 +509,11 @@ def _verb_lines() -> list[str]:
     lines: list[str] = []
     for dispatcher in DISPATCHERS:
         verb = next((n for n in dispatcher.names if n not in kinds), None)
-        if verb is None or dispatcher in {Profiles, Variables}:
+        if (
+            verb is None
+            or dispatcher in {Profiles, Variables}
+            or _is_app_verb(dispatcher)
+        ):
             continue  # `kind` dispatcher, or a hand-parsed verb (handled below)
         lines.append(_verb_usage(verb, dispatcher.make_parser()))
     # A moved verb's forms are no longer trax's to state.

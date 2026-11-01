@@ -20,7 +20,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._deps import get_hub, get_inbound, get_store
+from trackinizer.server.api._deps import get_inbound, get_store, nudge_streams
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.machine_host_routes import revoke_machine
 from trackinizer.server.api.machines_routes import MachineName, refuse_reserved
@@ -130,7 +130,7 @@ async def stop_machine_run_route(
         raise NotFoundError(f"no live run of session {session_id} on {name}")
     inbound.stop_run(session_id)
     # The run's chat lost its partner.
-    get_hub(request).nudge()
+    nudge_streams(request)
     return Response(status_code=204)
 
 
@@ -165,7 +165,7 @@ async def disconnect_machine_route(
     for each in runs:
         inbound.stop_run(each.session_id)
     if runs:
-        get_hub(request).nudge()
+        nudge_streams(request)
     return MachineRuns(runs=runs)
 
 

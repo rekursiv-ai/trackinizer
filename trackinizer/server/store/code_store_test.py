@@ -700,7 +700,6 @@ def _reader(email: str, *, oversight: bool = False) -> SessionReader:
         audiences=AUDIENCES,
         email=email,
         every_session=True,
-        every_chat=True,
         oversight=oversight,
     )
 

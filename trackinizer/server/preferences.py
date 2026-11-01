@@ -95,6 +95,32 @@ GNOME_PALETTE: Final = (
 )
 """GNOME Terminal 3.58's "GNOME" palette, ANSI colours 0 to 15 (``docs/retro_ui.md``)."""
 
+type TabColor = Literal[
+    "grey",
+    "blue",
+    "red",
+    "yellow",
+    "green",
+    "pink",
+    "purple",
+    "cyan",
+    "orange",
+]
+"""A tab group's or a tab icon's colour: Chrome's nine tab group colours."""
+
+TAB_COLORS: Final[tuple[TabColor, ...]] = (
+    "grey",
+    "blue",
+    "red",
+    "yellow",
+    "green",
+    "pink",
+    "purple",
+    "cyan",
+    "orange",
+)
+"""The colours in the order Chrome's group menu shows them, which a new group takes."""
+
 
 def _instant(text: str) -> datetime:
     """Read ``text`` as an ISO time with an offset."""
@@ -207,11 +233,24 @@ class ReadState(_Strict):
 
 
 class WorkspacesPreference(_Strict):
-    """The user's workspace bar state."""
+    """The user's tab bar: each workspace a group of tabs, each canvas a tab."""
 
     order: Annotated[list[_Id], Field(max_length=500)] = []
-    pinned: Annotated[list[_Id], Field(max_length=500)] = []
     hidden: Annotated[list[_Id], Field(max_length=500)] = []
+    # A group with no colour stored takes one by its number (``workspaces.py``).
+    colors: Annotated[dict[_Id, TabColor], Field(max_length=500)] = Field(
+        default=dict[_Id, TabColor](),
+        description="Each group's colour, by workspace id.",
+    )
+    expanded: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description="The groups you expanded, by workspace id.",
+    )
+    # A tab not listed follows those that are, oldest first (``tabBar.ts``).
+    tabs: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description="Your tab order, by canvas id.",
+    )
     last_canvas: Annotated[dict[_Id, _Id], Field(max_length=500)] = Field(
         default=dict[_Id, _Id](),
         description=(
@@ -482,10 +521,7 @@ class Preferences(_Strict):
     )
     workspaces: WorkspacesPreference = Field(
         default_factory=WorkspacesPreference,
-        description=(
-            "Your workspace bar order, pins, and hidden items, and the canvas you "
-            "opened last in each workspace."
-        ),
+        description="Your tab bar: its groups, their tabs' order, and the last opened.",
     )
     settings_artifact_id: _Id | None = Field(
         default=None,

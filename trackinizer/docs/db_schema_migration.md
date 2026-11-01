@@ -82,9 +82,6 @@ Steps:
    never runs them; only CI's global and integration suites do.
    - `trackinizer/server/schema_gen_test.py`: the reviewed manifest names the
      new file.
-   - `trackinizer/server/canvas_rename_test.py`: `_upgrade` runs the new
-     file after the cutover, and `_undo_after_canvas_rename` drops what it
-     adds.
    - `trackinizer/server/store/export_pglite_test.py`: a new table is in
      `EXPORT_TABLES` or in the test's deliberate omissions.
    - `trackinizer/server/audience_audit_test.py`: a function with SQL on a
@@ -92,7 +89,7 @@ Steps:
 4. **Validate locally:**
    ```bash
    uv --quiet run --frozen pytest trackinizer/server/schema_gen_test.py trackinizer/server/audience_audit_test.py trackinizer/server/store/core_test.py -q
-   uv --quiet run --frozen pytest -m db_pglite trackinizer/server/canvas_rename_test.py trackinizer/server/store/export_pglite_test.py trackinizer/server/schema_migration_test.py -q
+   uv --quiet run --frozen pytest -m db_pglite trackinizer/server/store/export_pglite_test.py trackinizer/server/schema_migration_test.py -q
    ```
 4.5. **Prove the catalog diff empty locally, BEFORE pushing.** This is the
    gate that prevents the deploy/smoke-fail/patch loop. Write (or extend) a

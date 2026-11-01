@@ -17,10 +17,10 @@ is the session's account or reads it. It reads a session for an asker into the c
 it answers them in, the ``chat`` it names, when the asker reads both. What it reads
 lands in the chat, so it reads no chat and no ``private`` session for anyone; a
 ``staff`` session only once the chat is ``staff`` too
-(:func:`~trackinizer.server.visuals.chat_audience.raise_chat_audience`), which
+(:func:`~trackinizer.server.private.chat_audience.raise_chat_audience`), which
 only the chat's starter makes it; and any other session only when everyone who
 reads the chat reads it too
-(:func:`~trackinizer.server.visuals.science_chats.chat_readers`). The
+(:func:`~trackinizer.server.private.science_chats.chat_readers`). The
 assistant reads a chat one of its own keys opened by its id and audience alone, as
 it must to answer and fork chats an earlier key of its own opened; any other chat
 only as the transcript test lets it.
@@ -72,20 +72,8 @@ from trackinizer.server.audience import (
 from trackinizer.server.auth import ROLE_ORDER, Role
 from trackinizer.server.config import Config
 from trackinizer.server.notify import tx
-from trackinizer.server.visuals.chat_audience import raise_chat_audience
-from trackinizer.server.visuals.partners import opener_email
-from trackinizer.server.visuals.science_chats import (
-    chat_readers,
-    read_first_session,
-    read_starter,
-)
-from trackinizer.types.errors import ConflictError
 from trackinizer.types.inquiries import AgentSession
-from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE, STAFF
-from trackinizer.wire.wire_science_chat import (
-    CHAT_SESSION_PREFIX,
-    chat_conversation_id,
-)
+from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
@@ -106,11 +94,9 @@ __all__ = [
     "check_row_write",
     "granted_audience",
     "hidden_session",
-    "is_a_science_chat",
+    "is_the_assistant",
     "request_principal",
     "require_attributable",
-    "require_chat_writer",
-    "require_part_writer",
     "require_row_account",
     "require_row_purge",
     "require_row_write",
@@ -141,6 +127,7 @@ class Asker:
       role: Their role as a person, which no key narrows.
       read_audiences: The audiences they hold as a person, which no key narrows.
       hosted_domain: Google's ``hd`` claim from their last login, if any.
+      chat: The conversation the assistant reads into for them, if it names one.
 
     """
 
@@ -148,6 +135,7 @@ class Asker:
     role: Role
     read_audiences: frozenset[str]
     hosted_domain: str | None = None
+    chat: uuid.UUID | None = None
 
 
 async def resolve_asker(
@@ -155,6 +143,7 @@ async def resolve_asker(
     identity: AuthIdentity,
     *,
     email: str | None,
+    chat: uuid.UUID | None = None,
 ) -> Asker | None:
     """Find the user the assistant says it acts for, if the caller is the assistant.
 
@@ -166,13 +155,14 @@ async def resolve_asker(
       request: The request, which carries the store and the configuration.
       identity: Authenticated caller.
       email: The account the request names, or ``None``.
+      chat: The conversation the assistant reads into for them, if it names one.
 
     Returns:
       asker: The named user, holding nothing when the account is unknown, disabled or
         blank; ``None`` when no one is named or the caller is not the assistant.
 
     """
-    if email is None or not _is_the_assistant(identity, get_assistant(request)):
+    if email is None or not is_the_assistant(identity, get_assistant(request)):
         return None
     async with get_store(request).engine.acquire() as conn:
         row = await conn.fetchrow(
@@ -183,7 +173,12 @@ async def resolve_asker(
     # Not ``None``: a read for an asker is the asker's alone, so one the server does
     # not hold must not fall back to what the assistant reads as itself.
     if row is None:
-        return Asker(email=email.lower(), role="viewer", read_audiences=frozenset())
+        return Asker(
+            email=email.lower(),
+            role="viewer",
+            read_audiences=frozenset(),
+            chat=chat,
+        )
     account = from_plain(row["email"], str)
     hosted_domain = from_plain(row["hosted_domain"], str, default=None)
     return Asker(
@@ -195,6 +190,7 @@ async def resolve_asker(
             staff=get_staff(request),
         ),
         hosted_domain=hosted_domain,
+        chat=chat,
     )
 
 
@@ -241,114 +237,6 @@ def require_session_write_access(identity: AuthIdentity, session: AgentSession) 
         or session.opened_by_api_key_id != identity.api_key_id
     ):
         raise HTTPException(status_code=403, detail="Own session key required")
-
-
-def is_a_science_chat(session: AgentSession) -> bool:
-    """Say whether ``session`` is a science chat: one under a ``chat:`` id.
-
-    Args:
-      session: The session.
-
-    Returns:
-      chat: Whether its ``cli_session_id`` starts with ``chat:``.
-
-    """
-    return (session.cli_session_id or "").startswith(CHAT_SESSION_PREFIX)
-
-
-async def require_chat_writer(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    session: AgentSession,
-    closing: bool = False,
-) -> None:
-    """Refuse a run on a science chat from a key that may not add a part to it.
-
-    A chat takes a new part, a run attaching to it and that run's close from the key
-    that opened it, any key of the configured assistant's account, or any key of the
-    account that started it (:func:`~trackinizer.server.visuals.science_chats.read_starter`).
-    A browser has no key to own a part by, so it adds none; it may only close the
-    chat (``closing``), and only as the chat's starter. Any other session passes.
-
-    Args:
-      request: The request, which carries the store and the configuration.
-      identity: Authenticated caller and its API key.
-      session: Target session.
-      closing: The caller closes the chat, which its starter may do without a key.
-
-    Raises:
-      HTTPException: 403: ``session`` is a science chat the caller may not add to.
-
-    """
-    if not is_a_science_chat(session) or identity.api_key_id == (
-        session.opened_by_api_key_id
-    ):
-        return
-    assistant = get_assistant(request)
-    conversation_id = chat_conversation_id(session.cli_session_id)
-    if conversation_id is not None and (identity.api_key_id is not None or closing):
-        if identity.api_key_id is not None and _is_the_assistant(identity, assistant):
-            return
-        async with get_store(request).engine.acquire() as conn:
-            starter = await read_starter(
-                conn,
-                assistant=assistant,
-                conversation_id=conversation_id,
-            )
-        if (starter or "").lower() == identity.email.lower():
-            return
-    raise HTTPException(
-        status_code=403,
-        detail="A science chat takes a run from its opener, the assistant or its "
-        "starter",
-    )
-
-
-async def require_part_writer(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    session: AgentSession,
-    name: str,
-) -> None:
-    """Refuse a write into a science chat's part by any key but the one that opened it.
-
-    A file the chat holds no part for yet opens one, which :func:`require_chat_writer`
-    decides, as it does a write that names no file. A part opened before parts named
-    their key keeps the chat's old rule: its opening key alone writes it. Any other
-    session passes.
-
-    Args:
-      request: The request, which carries the store.
-      identity: Authenticated caller and its API key.
-      session: Target session.
-      name: The file the write names; empty for one that carries only slash commands.
-
-    Raises:
-      HTTPException: 403: the caller may not write that part, or open a new one.
-
-    """
-    if not is_a_science_chat(session):
-        return
-    manifest = (
-        await get_store(request).read_session_manifest(session.id, name=name)
-        if name
-        else None
-    )
-    if manifest is None:
-        await require_chat_writer(request, identity, session=session)
-    elif manifest.opened_by_api_key_id is None:
-        _refuse_a_stranger(
-            identity,
-            cli_session_id=session.cli_session_id,
-            opener=session.opened_by_api_key_id,
-        )
-    elif identity.api_key_id != manifest.opened_by_api_key_id:
-        raise HTTPException(
-            status_code=403,
-            detail="A part of a science chat is written by the key that opened it",
-        )
 
 
 async def require_session(store: Store, session_id: uuid.UUID) -> AgentSession:
@@ -426,19 +314,15 @@ async def require_session_access(
     session: AgentSession,
     mode: SessionAccess,
     asker: Asker | None = None,
-    chat: uuid.UUID | None = None,
 ) -> None:
     """Refuse a caller who may not do ``mode`` to this session.
 
     A session with no audience reads as hidden from everyone but its opening key,
     so a row that lost its audience fails closed rather than open. Any other caller
-    is asked of the database, by :func:`session_reader`; only the configured
-    assistant reads a chat by its audience alone, and only one it opened.
+    is asked of the database, by :func:`session_reader`.
 
-    The configured assistant acts for an ``asker`` on the asker's rights alone. It
-    reads for one into the ``chat`` it answers them in, under the rules this module
-    names, raising a chat to ``staff`` before it reads a ``staff`` session there. It
-    relays a line to a session it cannot read for an asker who is a writer, and is
+    The configured assistant acts for an ``asker`` on the asker's rights alone: it
+    reads a session for one only if they read it, and relays a line to a session it cannot read for an asker who is a writer, and is
     the session's account or reads it.
 
     Args:
@@ -449,40 +333,25 @@ async def require_session_access(
       asker: The user the assistant reads or sends this input for, as the server
         finds them (:func:`resolve_asker`); ``None`` when none was named. It lends
         nothing to a caller that is not the assistant.
-      chat: The conversation the assistant reads for ``asker`` into.
 
     Raises:
       HTTPException: 403 ``session_audience``: the caller neither opened the session
         nor reads it, and is not the assistant acting for an asker who may do
-        ``mode`` there either. For a read for an asker: 422 ``chat_required``
-        without a chat; 403 ``chat_not_member`` when the asker does not read the
-        chat; 403 ``chat_not_starter`` for a ``staff`` session read into a chat that
-        is not ``staff`` yet for anyone but its starter; 409 ``chat_private`` for one
-        read into a private chat; 409 ``chat_readers`` for any other session that
-        someone who reads the chat does not read.
+        ``mode`` there either.
 
     """
     assistant = get_assistant(request)
-    lender = asker if _is_the_assistant(identity, assistant) else None
+    lender = asker if is_the_assistant(identity, assistant) else None
     if mode == "read" and lender is not None:
-        await _require_read(
+        await _require_asker_reads(
             request,
-            identity,
             asker=lender,
             session=session,
-            chat=chat,
         )
         return
     if _opened_by(identity, session.opened_by_api_key_id):
         return
     async with get_store(request).engine.acquire() as conn:
-        if mode == "read" and await _assistants_own_chat(
-            conn,
-            identity,
-            assistant=assistant,
-            session=session,
-        ):
-            return
         if await reads_session(
             conn,
             reader=session_reader(request, identity),
@@ -534,10 +403,8 @@ def session_reader(
             audiences=AUDIENCES,
             email=identity.email.lower(),
             every_session=True,
-            every_chat=True,
             oversight=True,
             hidden=hidden,
-            assistant="" if assistant is None else assistant.email,
         )
     return caller_reader(
         identity.email,
@@ -706,7 +573,6 @@ async def require_session_row_write(
     if row is None or row.kind != "AgentSession":
         return
     _require_audience(identity, row=row)
-    _refuse_a_stranger(identity, cli_session_id=row.cli_session_id, opener=row.opener)
 
 
 async def require_row_purge(
@@ -738,13 +604,7 @@ async def require_row_purge(
         _require_audience(identity, row=row)
     if identity.role == "admin":
         return
-    if row.cli_session_id.startswith(CHAT_SESSION_PREFIX):
-        _refuse_a_stranger(
-            identity,
-            cli_session_id=row.cli_session_id,
-            opener=row.opener,
-        )
-    elif not _holds(identity, row=row):
+    if not _holds(identity, row=row):
         raise HTTPException(
             status_code=403,
             detail="A row is purged by its account or an admin",
@@ -792,8 +652,6 @@ async def require_session_id_change(
     request: Request,
     identity: AuthIdentity,
     target_id: uuid.UUID,
-    *,
-    value: str | None,
 ) -> None:
     """Refuse a change of a session's ``cli_session_id`` that could move a chat.
 
@@ -815,14 +673,6 @@ async def require_session_id_change(
     row = await _read_row(request, target_id=target_id)
     if row is None or row.kind != "AgentSession":
         return
-    if any(
-        (named or "").startswith(CHAT_SESSION_PREFIX)
-        for named in (value, row.cli_session_id)
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="A science chat's id is named only when its session starts",
-        )
     if identity.role != "admin" and (
         identity.api_key_id is None or identity.api_key_id != row.opener
     ):
@@ -841,6 +691,35 @@ class _Row:
     cli_session_id: str
     opener: uuid.UUID | None
     audience: str | None
+
+
+def is_the_assistant(identity: AuthIdentity, assistant: Assistant | None) -> bool:
+    """Say whether ``identity`` is the configured assistant's account."""
+    return assistant is not None and identity.email == assistant.email
+
+
+def _not_held(audience: str) -> HTTPException:
+    """Build the refusal of a session opened into an audience the caller may not."""
+    return HTTPException(
+        status_code=403,
+        detail={"code": "audience_not_held", "audience": audience},
+    )
+
+
+async def _require_asker_reads(
+    request: Request,
+    *,
+    asker: Asker,
+    session: AgentSession,
+) -> None:
+    """Refuse the assistant's read for ``asker`` of a session the asker does not read."""
+    async with get_store(request).engine.acquire() as conn:
+        if not await reads_session(
+            conn,
+            reader=asker_reader(request, asker, delegated=True),
+            session_id=session.id,
+        ):
+            raise hidden_session(session.audience)
 
 
 async def _read_row(request: Request, target_id: uuid.UUID) -> _Row | None:
@@ -879,145 +758,3 @@ def _holds(identity: AuthIdentity, *, row: _Row) -> bool:
 def _opened_by(identity: AuthIdentity, opener: uuid.UUID | None) -> bool:
     """Say whether ``identity``'s key is the one that opened a session."""
     return identity.api_key_id is not None and identity.api_key_id == opener
-
-
-def _is_the_assistant(identity: AuthIdentity, assistant: Assistant | None) -> bool:
-    """Say whether ``identity`` is the configured assistant's account."""
-    return assistant is not None and identity.email == assistant.email
-
-
-# By its opener, not its audience: everyone holds ``private``, so the audience alone
-# would let the assistant read, for anyone it answers, a hidden chat a person's own
-# key opened. A key the assistant rotated away still names the assistant's account.
-async def _assistants_own_chat(
-    conn: Conn,
-    identity: AuthIdentity,
-    *,
-    assistant: Assistant | None,
-    session: AgentSession,
-) -> bool:
-    """Say whether ``identity`` is the assistant and ``session`` a chat it opened."""
-    if (
-        is_a_science_chat(session)
-        and _is_the_assistant(identity, assistant)
-        and session.audience in identity.read_audiences
-    ):
-        opener = await opener_email(conn, api_key_id=session.opened_by_api_key_id)
-        return (opener or "").lower() == identity.email.lower()
-    return False
-
-
-def _refuse_a_stranger(
-    identity: AuthIdentity,
-    *,
-    cli_session_id: str | None,
-    opener: uuid.UUID | None,
-) -> None:
-    """Refuse the write to a science chat that ``identity`` did not open."""
-    if identity.api_key_id != opener and (cli_session_id or "").startswith(
-        CHAT_SESSION_PREFIX,
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="A science chat is written by the key that opened it",
-        )
-
-
-def _not_held(audience: str) -> HTTPException:
-    """Build the refusal of a session opened into an audience the caller may not."""
-    return HTTPException(
-        status_code=403,
-        detail={"code": "audience_not_held", "audience": audience},
-    )
-
-
-# Each refusal comes before anything is read, and the chat becomes ``staff`` before the
-# read it guards: the route reads the transcript only once this returns.
-async def _require_read(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    asker: Asker,
-    session: AgentSession,
-    chat: uuid.UUID | None,
-) -> None:
-    """Refuse the assistant's read for ``asker`` into ``chat``; raise a chat to staff."""
-    if not asker.read_audiences or is_a_science_chat(session):
-        raise hidden_session(session.audience)
-    if session.audience == PRIVATE:
-        raise hidden_session(session.audience)
-    if chat is None:
-        raise HTTPException(status_code=422, detail={"code": "chat_required"})
-    store = get_store(request)
-    async with store.engine.acquire() as conn:
-        if not await reads_session(
-            conn,
-            reader=asker_reader(request, asker, delegated=True),
-            session_id=session.id,
-        ):
-            raise hidden_session(session.audience)
-        first = await read_first_session(
-            conn,
-            assistant=get_assistant(request),
-            conversation_id=chat,
-        )
-        if first is None or not await reads_session(
-            conn,
-            reader=asker_reader(request, asker, delegated=False),
-            session_id=first,
-        ):
-            raise HTTPException(status_code=403, detail={"code": "chat_not_member"})
-        await _require_chat_takes(
-            conn,
-            request,
-            asker=asker,
-            session=session,
-            chat=chat,
-            first=first,
-        )
-    if session.audience != STAFF:
-        return
-    try:
-        _ = await raise_chat_audience(
-            store,
-            conversation_id=chat,
-            api_key_id=identity.api_key_id,
-            actor=identity.email,
-            reason=f"read {session.id} for {asker.email}",
-        )
-    except ConflictError as error:
-        raise HTTPException(status_code=409, detail={"code": "chat_private"}) from error
-
-
-# A ``staff`` session's read makes the chat ``staff``, which its members who hold no
-# ``staff`` then lose, so only its starter makes it so: anyone else would take the
-# chat from its starter. Any other session lands in a chat whose every reader keeps
-# it, so it must be one each of them reads.
-async def _require_chat_takes(
-    conn: Conn,
-    request: Request,
-    *,
-    asker: Asker,
-    session: AgentSession,
-    chat: uuid.UUID,
-    first: uuid.UUID,
-) -> None:
-    """Refuse a read into ``chat`` that would reach someone the session does not."""
-    assistant = get_assistant(request)
-    if session.audience == STAFF:
-        held = await conn.fetchval(
-            "SELECT agentsession_audience FROM inquiries WHERE id = $1",
-            first,
-        )
-        starter = await read_starter(conn, assistant=assistant, conversation_id=chat)
-        if held == STAFF or (starter or "").lower() == asker.email.lower():
-            return
-        raise HTTPException(status_code=403, detail={"code": "chat_not_starter"})
-    for reader in await chat_readers(
-        conn,
-        assistant=assistant,
-        conversation_id=chat,
-        orgs=get_chat_orgs(request),
-    ):
-        if not await reads_session(conn, reader=reader, session_id=session.id):
-            raise HTTPException(status_code=409, detail={"code": "chat_readers"})

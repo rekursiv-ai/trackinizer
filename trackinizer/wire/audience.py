@@ -59,24 +59,6 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         # A run's word on what it is doing, kept on its lease in memory: it reads and
         # writes no record, and is held to the rules of the session's drain.
         ("POST", "/api/sessions/{session_id}/run-state"),
-        # What a command clicked Run on has printed so far, held in memory: a post is
-        # held to the rules of the session's drain and taken only from the run holding
-        # its lease; a read takes the records' read test, and again after it was held.
-        ("POST", "/api/sessions/{session_id}/runs/{run_id}/output"),
-        ("GET", "/api/sessions/{session_id}/runs/{run_id}/output"),
-        # Reopening a chat's run reads and writes no record: it starts a run, which
-        # attaches to the session by the key its own machine holds, as any run does.
-        ("POST", "/api/sessions/{session_id}/reattach"),
-        # Placement reads and writes a session's envelope alone (its labels and one
-        # edge), never its transcript, and only for the session's own account.
-        ("POST", "/api/sessions/{session_id}/place"),
-        ("PUT", "/api/sessions/{session_id}/workspace"),
-        # A science chat's answer in writing, held in memory: a read takes the
-        # records' read test, and again after it was held; a put or a delete is
-        # taken only from the assistant's key that opened the chat.
-        ("PUT", "/api/sessions/{session_id}/partial"),
-        ("GET", "/api/sessions/{session_id}/partial"),
-        ("DELETE", "/api/sessions/{session_id}/partial/{turn}"),
         ("GET", "/api/sessions/{session_id}/parts"),
         ("GET", "/api/sessions/{session_id}/records"),
         ("POST", "/api/sessions/{session_id}/records"),

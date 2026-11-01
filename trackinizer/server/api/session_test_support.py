@@ -1,4 +1,4 @@
-"""Seeding helpers shared by the canvas and science chat route tests.
+"""Seeding helpers shared by the session route tests.
 
 Three principals share one PGlite database: the browser user, a second user, and
 the account the assistant runs under. Each acts through a browser
@@ -25,20 +25,14 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.audience import CONSUMER_DOMAINS
-from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.values import canonical_strs
-from trackinizer.wire.wire_science_chat import (
-    SCIENCE_CHAT_LABEL,
-    chat_session_id,
-    poster_label,
-)
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
 
     import httpx2
 
@@ -229,9 +223,6 @@ async def seed_session(
                 "agentsession_opened_by_api_key_id": agent.key_id,
             },
         )
-    hub = getattr(app.state, "hub", None)
-    if isinstance(hub, ChatHub):
-        hub.nudge()
     if polled:
         inbound = getattr(app.state, "inbound", None)
         assert isinstance(inbound, InboundQueue)
@@ -242,271 +233,6 @@ async def seed_session(
             polled=True,
         )
     return session_id
-
-
-async def seed_science_chat(
-    store: Store,
-    *,
-    conversation_id: uuid.UUID,
-    account: str = TEST_USER_EMAIL,
-    posters: tuple[str, ...] = (),
-) -> uuid.UUID:
-    """Open a conversation's session as the assistant does, then act as the browser.
-
-    What ``open_science_chat`` does through the routes, for a test whose subject is
-    not the session start.
-
-    Args:
-      store: The test database.
-      conversation_id: The conversation.
-      account: The person who started it.
-      posters: Everyone who has posted in it besides the starter.
-
-    Returns:
-      session_id: The conversation's live session.
-
-    """
-    session_id = await seed_session(
-        store,
-        ASSISTANT,
-        actor=f"chat-{conversation_id.hex[:12]}",
-        cli_session_id=chat_session_id(conversation_id),
-        account=account,
-        labels=chat_labels(posters),
-    )
-    browser()
-    return session_id
-
-
-def chat_labels(posters: Sequence[str] = ()) -> list[str]:
-    """Name the labels of a science chat that ``posters`` have posted in.
-
-    Args:
-      posters: Everyone who has posted in it besides the starter.
-
-    Returns:
-      labels: The science chat label, then one label per poster.
-
-    """
-    return [SCIENCE_CHAT_LABEL, *(poster_label(email) for email in posters)]
-
-
-async def label_science_chat(
-    store: Store,
-    session_id: uuid.UUID,
-    *,
-    posters: tuple[str, ...] = (),
-) -> None:
-    """Mark ``session_id`` as a science chat that ``posters`` have posted in.
-
-    Args:
-      store: The test database.
-      session_id: The session.
-      posters: Everyone who has posted in it besides the starter.
-
-    """
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE inquiries SET labels = $2 WHERE id = $1",
-            session_id,
-            chat_labels(posters),
-        )
-
-
-async def open_science_chat(
-    client: httpx2.AsyncClient,
-    store: Store,
-    *,
-    conversation_id: uuid.UUID,
-    account: str = TEST_USER_EMAIL,
-    posters: tuple[str, ...] = (),
-) -> uuid.UUID:
-    """Open a conversation's session as the assistant does, then act as the browser.
-
-    Args:
-      client: The test client.
-      store: The test database.
-      conversation_id: The conversation.
-      account: The person who started it.
-      posters: Everyone who has posted in it besides the starter.
-
-    Returns:
-      session_id: The conversation's live session.
-
-    """
-    act_as_assistant("writer")
-    session_id = await start_session(
-        client,
-        actor=f"chat-{conversation_id.hex[:12]}",
-        cli_session_id=chat_session_id(conversation_id),
-        account=account,
-    )
-    await label_science_chat(store, session_id, posters=posters)
-    browser()
-    return session_id
-
-
-async def open_canvas(
-    client: httpx2.AsyncClient,
-    *,
-    user_id: uuid.UUID = TEST_USER_ID,
-    email: str = TEST_USER_EMAIL,
-    new: bool = False,
-) -> uuid.UUID:
-    """Open the user's canvas as a browser.
-
-    Args:
-      client: The test client.
-      user_id: The signed-in user.
-      email: Their email.
-      new: Make another canvas instead of opening the one used last.
-
-    Returns:
-      canvas_id: The canvas.
-
-    """
-    browser(user_id, email=email)
-    created = await client.post("/api/canvases/new" if new else "/api/canvases")
-    if created.status_code != 200:
-        raise ValueError(f"canvas create answered {created.status_code}")
-    return uuid.UUID(
-        from_plain(
-            json_loads(created.content, dict[str, object])["id"],
-            str,
-        ),
-    )
-
-
-async def send_chat(
-    client: httpx2.AsyncClient,
-    *,
-    canvas_id: uuid.UUID,
-    text: str,
-    conversation_id: uuid.UUID | None = None,
-    key: uuid.UUID | None = None,
-    screen: Mapping[str, object] | None = None,
-    fork: Mapping[str, object] | None = None,
-) -> httpx2.Response:
-    """Post one browser line to a science chat.
-
-    Args:
-      client: The test client.
-      canvas_id: The canvas.
-      text: The line.
-      conversation_id: The conversation to post into; none starts one.
-      key: The idempotency key; a fresh one by default.
-      screen: The sender's ``page`` and ``trail``, when the line carries them.
-      fork: The line to start a new conversation from, as the body names it.
-
-    Returns:
-      response: The raw response.
-
-    """
-    idempotency = str(key or uuid.uuid4())
-    # pragma: no mutate start -- a header name's case is an equivalent mutant.
-    headers = {"Idempotency-Key": idempotency}
-    # pragma: no mutate end
-    return await client.post(
-        "/api/chats",
-        json={
-            "canvas_id": str(canvas_id),
-            "text": text,
-            "conversation_id": None
-            if conversation_id is None
-            else str(conversation_id),
-            **(screen or {}),
-            **({} if fork is None else {"fork": dict(fork)}),
-        },
-        headers=headers,
-    )
-
-
-def receipt_conversation(response: httpx2.Response) -> uuid.UUID:
-    """Name the conversation a posted line's receipt carries.
-
-    Args:
-      response: A successful post response.
-
-    Returns:
-      conversation_id: The conversation.
-
-    """
-    if response.status_code != 200:
-        raise ValueError(f"send answered {response.status_code}")
-    receipt = json_loads(response.content, dict[str, object])
-    return uuid.UUID(from_plain(receipt["conversation_id"], str))
-
-
-async def converse(
-    client: httpx2.AsyncClient,
-    store: Store,
-    *,
-    canvas_id: uuid.UUID,
-    text: str = "hello",
-) -> uuid.UUID:
-    """Post a line as the browser, and have the assistant open the conversation.
-
-    Args:
-      client: The test client.
-      store: The test database.
-      canvas_id: The canvas.
-      text: The line.
-
-    Returns:
-      session_id: The conversation's live session.
-
-    """
-    browser()
-    conversation_id = receipt_conversation(
-        await send_chat(client, canvas_id=canvas_id, text=text),
-    )
-    return await open_science_chat(client, store, conversation_id=conversation_id)
-
-
-async def seed_converse(
-    client: httpx2.AsyncClient,
-    store: Store,
-    *,
-    canvas_id: uuid.UUID,
-    text: str = "hello",
-) -> uuid.UUID:
-    """Post a line as the browser, and have the assistant open the conversation.
-
-    What ``converse`` does, with the conversation's session opened in the store.
-
-    Args:
-      client: The test client.
-      store: The test database.
-      canvas_id: The canvas.
-      text: The line.
-
-    Returns:
-      session_id: The conversation's live session.
-
-    """
-    browser()
-    conversation_id = receipt_conversation(
-        await send_chat(client, canvas_id=canvas_id, text=text),
-    )
-    return await seed_science_chat(store, conversation_id=conversation_id)
-
-
-async def canvas_revision(client: httpx2.AsyncClient, *, canvas_id: uuid.UUID) -> int:
-    """Read a canvas's revision as the installed browser.
-
-    Args:
-      client: The test client.
-      canvas_id: The canvas.
-
-    Returns:
-      revision: Its current revision.
-
-    """
-    state = json_loads(
-        (await client.get(f"/api/canvases/{canvas_id}")).content,
-        dict[str, object],
-    )
-    return from_plain(state["revision"], int)
 
 
 async def drain(

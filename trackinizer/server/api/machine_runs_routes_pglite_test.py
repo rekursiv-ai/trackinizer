@@ -12,17 +12,17 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import (
-    act_as_user_agent,
-    drain,
-    start_session,
-)
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+)
+from trackinizer.server.api.session_test_support import (
+    act_as_user_agent,
+    drain,
+    start_session,
 )
 from trackinizer.wire.wire_machine_host import (
     ENROLL_PATH,

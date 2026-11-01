@@ -435,12 +435,17 @@ _OPEN_READER: Final = SessionReader(audiences=_OPEN)
 _EVERYTHING: Final = SessionReader(
     audiences=AUDIENCES,
     every_session=True,
-    every_chat=True,
     oversight=True,
 )
-_READER_VALUES: Final = ("", None, False, False, False, True, "")
+_READER_VALUES: Final = (
+    "",
+    None,
+    False,
+    False,
+    True,
+)
 """The values the open reader binds after its audiences: email, org, every session,
-every chat, oversight, hidden, assistant."""
+oversight and hidden, then those the app's own rule binds."""
 _SET_WIDTH: Final = "SELECT set_config('hnsw.ef_search', $1, true)"
 _ITERATE: Final = "SET LOCAL hnsw.iterative_scan = strict_order"
 _VERSION: Final = "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
@@ -508,8 +513,6 @@ async def test_every_audience_reader_runs_the_one_statement_it_always_did() -> N
         True,
         True,
         True,
-        True,
-        "",
     )
     assert [hit.idx for hit in hits] == [0, 1]
 
@@ -602,7 +605,6 @@ async def test_a_reader_of_every_session_is_scanned_plain_without_asking_the_dat
     reader = SessionReader(
         audiences=AUDIENCES | extra,
         every_session=True,
-        every_chat=True,
         oversight=True,
     )
 
@@ -622,13 +624,18 @@ async def test_a_reader_of_every_session_is_scanned_plain_without_asking_the_dat
     [
         FeedScope(reader=replace(_EVERYTHING, audiences=_OPEN)),
         FeedScope(reader=replace(_EVERYTHING, every_session=False)),
-        FeedScope(reader=replace(_EVERYTHING, every_chat=False)),
         FeedScope(reader=replace(_EVERYTHING, oversight=False)),
         FeedScope(reader=replace(_EVERYTHING, hidden=False)),
         # It reads every session, but keeps only the caller's own.
         FeedScope(reader=_EVERYTHING, account="ann@lab.example"),
     ],
-    ids=["open", "org", "no chats", "no oversight", "listing", "mine"],
+    ids=[
+        "open",
+        "org",
+        "no oversight",
+        "listing",
+        "mine",
+    ],
 )
 @pytest.mark.parametrize(
     ("version", "scan"),

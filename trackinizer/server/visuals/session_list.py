@@ -23,12 +23,12 @@ from treekle import from_plain
 
 from trackinizer.server.audience import visible_sql
 from trackinizer.server.values import vetted_sql
-from trackinizer.server.visuals.partners import live_run_states
 from trackinizer.server.visuals.session_lines import (
     LastLine,
     SessionLines,
     session_lines,
 )
+from trackinizer.server.visuals.session_runs import live_run_states
 from trackinizer.wire.wire_science_chat import chat_conversation_id
 from trackinizer.wire.wire_sessions import CANVAS_LABEL_PREFIX, RunState
 
@@ -121,7 +121,6 @@ async def list_own_sessions(
     engine: DatabaseEngine,
     *,
     email: str,
-    user_id: uuid.UUID,
     reader: SessionReader,
     inbound: InboundQueue,
     days: int,
@@ -155,7 +154,7 @@ async def list_own_sessions(
         rows = found[:limit]
         ids = [from_plain(row["id"], uuid.UUID) for row in rows]
         lines = await session_lines(conn, session_ids=ids, account=email)
-        places = await _places(conn, user_id=user_id)
+        places = _Places()
         produced = await _produced_by(conn, session_ids=ids)
         issues = await _issues(
             conn,
@@ -181,7 +180,10 @@ async def list_own_sessions(
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Places:
-    """The caller's canvases: the canvas of each chat, and the workspace of each."""
+    """The caller's canvases: the canvas of each chat, and the workspace of each.
+
+    None on a server whose app keeps no canvases, so every session is on none.
+    """
 
     by_chat: dict[uuid.UUID, uuid.UUID] = field(
         default_factory=dict[uuid.UUID, uuid.UUID],
@@ -225,25 +227,6 @@ async def _recent(
         vetted_sql(_RECENT, visible, " ORDER BY active DESC, s.id DESC LIMIT $3"),
         *params,
     )
-
-
-async def _places(conn: Conn, *, user_id: uuid.UUID) -> _Places:
-    """Read where the caller's canvases stand: the chat each holds, and its workspace."""
-    rows = await conn.fetch(
-        "SELECT id, metadata->>'conversation_id' AS chat, "
-        "metadata->>'workspace_id' AS workspace FROM visual_canvases "
-        "WHERE user_id = $1",
-        user_id,
-    )
-    places = _Places()
-    for row in rows:
-        canvas = from_plain(row["id"], uuid.UUID)
-        workspace = from_plain(row["workspace"], str, default=None)
-        places.workspace[canvas] = None if workspace is None else uuid.UUID(workspace)
-        chat = from_plain(row["chat"], str, default=None)
-        if chat is not None:
-            places.by_chat[uuid.UUID(chat)] = canvas
-    return places
 
 
 async def _produced_by(

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Literal, override
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -29,10 +29,13 @@ from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.terminals import Opening, Terminal, TerminalHub
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
+from trackinizer.wire.wire_terminals import TerminalWait
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    from trackinizer.wire.wire_terminals import TerminalKind
 
 
 pytestmark = pytest.mark.asyncio
@@ -210,6 +213,59 @@ async def test_concurrent_opens_reserve_one_run_for_a_chat(
     [refused] = [answer for answer in answers if isinstance(answer, HTTPException)]
     assert refused.status_code == 409
     assert from_plain(refused.detail, dict[str, str])["code"] == "chat_run_live"
+
+
+@pytest.mark.parametrize(("kind", "offered"), [("files", "files"), ("shell", None)])
+async def test_the_next_open_is_offered_to_the_host_with_all_it_was_opened_with(
+    kind: TerminalKind,
+    offered: Literal["files"] | None,
+) -> None:
+    hub = TerminalHub(alive=_alive, ice_servers=("stun:stun.example:3478",))
+    canvas, workspace, session = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    term = hub.open(
+        Opening(
+            user="ada@x.y",
+            machine_id=_MACHINE,
+            machine="gx10",
+            rows=40,
+            cols=120,
+            canvas=canvas,
+            workspace=workspace,
+            requested_by="helper-1",
+            command="codex",
+            attach=session,
+            run_name="campaign-1",
+            cwd="~/work",
+            kind=kind,
+        ),
+    )
+
+    wait = await terminal_routes._next_terminal(hub, machine_id=_MACHINE, wait_sec=0)
+
+    assert wait == TerminalWait(
+        terminal_id=term.id,
+        opener="ada@x.y",
+        rows=40,
+        cols=120,
+        canvas=canvas,
+        workspace=workspace,
+        requested_by="helper-1",
+        command="codex",
+        attach=session,
+        run_name="campaign-1",
+        cwd="~/work",
+        kind=offered,
+        ice_servers=["stun:stun.example:3478"],
+    )
+
+
+async def test_a_host_that_waits_out_its_hold_is_offered_nothing() -> None:
+    hub = TerminalHub(alive=_alive)
+
+    assert (
+        await terminal_routes._next_terminal(hub, machine_id=_MACHINE, wait_sec=0)
+        is None
+    )
 
 
 if __name__ == "__main__":

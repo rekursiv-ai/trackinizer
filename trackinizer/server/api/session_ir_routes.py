@@ -27,11 +27,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request
 from treekle import from_plain, immutable
 
-from trackinizer.server.api._deps import get_assistant, get_inbound, get_store
-from trackinizer.server.api._routes_shared import request_engine
+from trackinizer.server.api._deps import (
+    get_store,
+)
 from trackinizer.server.api.session_access import (
-    is_a_science_chat,
-    require_part_writer,
     require_session,
     require_session_access,
     require_session_write_access,
@@ -40,9 +39,7 @@ from trackinizer.server.api.session_access import (
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
-from trackinizer.server.visuals.science_chats import counts_in_chat
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
-from trackinizer.wire.wire_science_chat import chat_conversation_id
 from trackinizer.wire.wire_session_ir import (
     CLIENT_OUTDATED,
     AppendRecordsRequest,
@@ -101,7 +98,6 @@ async def append_session_records_route(
     session = await require_session(store, session_id)
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
-    await require_part_writer(request, identity, session=session, name=body.name)
     _refuse_outdated_records(body.records)
     # A run closed for silence that uploads again was alive all along; reopen
     # its session first, or the append is refused as a write to an ended one.
@@ -119,7 +115,6 @@ async def append_session_records_route(
             format=manifest.format,
             records=manifest.records,
             api_key_id=identity.api_key_id,
-            exclusive=is_a_science_chat(session),
         )
     )
     written, skipped, slash = await store.append_session_records(
@@ -140,20 +135,6 @@ async def append_session_records_route(
         at=datetime.now(UTC),
         polled=False,
     )
-    # A chat's line its assistant took from the queue is counted as posted until here,
-    # where only a session whose lines the chat counts records it.
-    conversation = chat_conversation_id(session.cli_session_id)
-    senders = _posters(body.records)
-    if conversation is not None and senders:
-        async with request_engine(request).acquire() as conn:
-            counted = await counts_in_chat(
-                conn,
-                assistant=get_assistant(request),
-                session_id=session_id,
-                conversation_id=conversation,
-            )
-        if counted:
-            get_inbound(request).recorded(conversation, senders=senders)
     return AppendRecordsResponse(
         part=part,
         written=written,
@@ -190,8 +171,7 @@ async def read_session_parts_route(
         identity,
         session=await require_session(store, session_id),
         mode="read",
-        asker=await resolve_asker(request, identity, email=asker),
-        chat=chat,
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
     )
     manifests = await store.read_session_manifests(session_id)
     return ReadPartsResponse(
@@ -264,8 +244,7 @@ async def read_session_records_route(
         identity,
         session=await require_session(store, session_id),
         mode="read",
-        asker=await resolve_asker(request, identity, email=asker),
-        chat=chat,
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
     )
     rows = await store.read_session_records(
         session_id,
@@ -309,8 +288,7 @@ async def read_recent_session_turns_route(
         identity,
         session=await require_session(store, session_id),
         mode="read",
-        asker=await resolve_asker(request, identity, email=asker),
-        chat=chat,
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
     )
     turns = await store.read_recent_session_turns(session_id, limit=limit)
     return ReadRecentTurnsResponse(
@@ -324,34 +302,6 @@ async def read_recent_session_turns_route(
             for turn in turns
         ],
     )
-
-
-def _posters(records: Sequence[RecordBody]) -> list[str]:
-    """Name the poster of each person's line among ``records``, in order."""
-    return [sender for record in records if (sender := _poster(record)) is not None]
-
-
-# The loader's rule for a person's line: the assistant records one as an
-# ``AgentToAgentMessage`` with its sender, and a CLI run as a ``UserMessage`` that
-# the agent runner stamped ``$inbound`` with the attested sender on delivery, or that carries
-# an ``author``. Reading the first shape alone missed every line a CLI part records,
-# which then kept counting as on its way into the chat until its hand-out expired.
-def _poster(record: RecordBody) -> str | None:
-    """Name who posted ``record`` if it is a person's line, from its stored payload."""
-    payload = record.payload
-    if not isinstance(payload, dict):
-        return None
-    if record.kind == "AgentToAgentMessage":
-        sender = payload.get("sender")
-    elif record.kind == "UserMessage" and isinstance(
-        extra := payload.get("extra"),
-        dict,
-    ):
-        stamp = extra.get("$inbound")
-        sender = stamp.get("source") if isinstance(stamp, dict) else extra.get("author")
-    else:
-        return None
-    return sender if isinstance(sender, str) else None
 
 
 # A client older than short class tags names each class by its import path, which no

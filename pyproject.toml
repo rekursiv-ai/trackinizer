@@ -192,7 +192,7 @@ exclude = [
     "trackinizer/lib/agent/sessions/testdata/**",
     "trackinizer/lib/posix/testing.py",
     "trackinizer/lib/postgres/testing.py",
-    "trackinizer/server/api/canvas_test_support.py",
+    "trackinizer/server/api/session_test_support.py",
     "trackinizer/server/asks_test_support.py",
     "trackinizer/server/embedders/qwen_fakes.py",
 ]

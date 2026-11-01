@@ -77,10 +77,12 @@
         "theme": "dark",
         "views": [],
         "workspaces": {
+          "colors": {},
+          "expanded": [],
           "hidden": [],
           "last_canvas": {},
           "order": [],
-          "pinned": []
+          "tabs": []
         }
       },
       "read_audiences": [

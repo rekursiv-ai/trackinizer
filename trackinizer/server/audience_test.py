@@ -25,7 +25,6 @@ from trackinizer.server.audience import (
     hidden_exists_sql,
     key_audiences,
     may_hide,
-    members_reader,
     person_audiences,
     visible_sql,
 )
@@ -206,10 +205,8 @@ _ANN: Final = SessionReader(
     email="ann@lab.example",
     org="lab.example",
     every_session=False,
-    every_chat=True,
     oversight=True,
     hidden=False,
-    assistant="scout@service.invalid",
 )
 _ANN_VALUES: Final = (
     ["open", "private", "staff"],
@@ -217,9 +214,7 @@ _ANN_VALUES: Final = (
     "lab.example",
     False,
     True,
-    True,
     False,
-    "scout@service.invalid",
 )
 
 
@@ -230,11 +225,11 @@ class TestSqlFragments:
         clause = visible_sql("i", params=params, reader=_ANN)
 
         assert params == ["before", *_ANN_VALUES]
-        assert {f"${n}::" for n in range(2, 10)} <= {
+        assert {f"${n}::" for n in range(2, 2 + len(_ANN_VALUES))} <= {
             clause[at : at + 4] for at in range(len(clause) - 3)
         }
         assert "$1" not in clause
-        assert "$10" not in clause
+        assert f"${2 + len(_ANN_VALUES)}" not in clause
         assert clause.startswith("COALESCE(i.agentsession_audience = ANY($2::text[])")
 
     def test_hidden_binds_the_reader_after_the_values_already_bound(self) -> None:
@@ -249,23 +244,6 @@ class TestSqlFragments:
             ")",
         )
         assert params == ["a", "b", *_ANN_VALUES]
-
-    def test_one_row_looks_up_its_own_chats_starter_alone(self) -> None:
-        many = visible_sql("t", params=[], reader=_ANN)
-        one = visible_sql("t", params=[], reader=_ANN, single=True)
-
-        assert "LIKE 'chat:%' ORDER BY" in many
-        assert (
-            "began.agentsession_cli_session_id = t.agentsession_cli_session_id"
-        ) in one
-
-    @pytest.mark.parametrize(
-        "alias",
-        ["began", "began_key", "began_by", "shared", "began_chat"],
-    )
-    def test_the_row_takes_no_alias_the_chat_test_uses_inside(self, alias: str) -> None:
-        with pytest.raises(ValueError, match="alias the science chat test uses"):
-            _ = visible_sql(alias, params=[], reader=NOBODY)
 
 
 _SCOUT: Final = "scout@service.invalid"
@@ -409,16 +387,15 @@ class TestReaderFor:
             delegated=delegated,
         )
 
-        assert (
-            reader.org,
-            reader.every_session,
-            reader.every_chat,
-            reader.oversight,
-        ) == reach
-        assert (reader.email, reader.audiences, reader.assistant, reader.hidden) == (
+        org, every_session, _, oversight = reach
+        assert (reader.org, reader.every_session, reader.oversight) == (
+            org,
+            every_session,
+            oversight,
+        )
+        assert (reader.email, reader.audiences, reader.hidden) == (
             email.lower(),
             audiences,
-            _SCOUT,
             True,
         )
 
@@ -473,39 +450,6 @@ class TestOrgOf:
     ) -> None:
         """Google verifies a consumer account's company address but names no ``hd``."""
         assert email_org(email, hosted_domain=hosted_domain) is None
-
-
-class TestMembersReader:
-    def test_an_open_chat_is_open_to_the_organisation_its_mode_names(self) -> None:
-        """Every person on one organisation; the starter's email domain under domain."""
-        single = members_reader("Ann@Lab.example", orgs="single", assistant=_SCOUT)
-        domain = members_reader("Ann@Lab.example", orgs="domain", assistant=_SCOUT)
-
-        assert single is not None
-        assert domain is not None
-        assert (single.org, single.every_session, single.every_chat) == (
-            None,
-            True,
-            True,
-        )
-        assert (domain.org, domain.every_session, domain.every_chat) == (
-            "lab.example",
-            False,
-            False,
-        )
-        assert (domain.email, domain.oversight, domain.audiences) == ("", False, _OPEN)
-
-    @pytest.mark.parametrize(
-        ("starter", "orgs"),
-        [("ann@lab.example", "individual"), ("sam@gmail.com", "domain")],
-        ids=["each person alone", "a consumer domain"],
-    )
-    def test_no_one_else_reads_where_no_organisation_is(
-        self,
-        starter: str,
-        orgs: ChatOrgs,
-    ) -> None:
-        assert members_reader(starter, orgs=orgs, assistant=_SCOUT) is None
 
 
 class TestTranscriptPings:

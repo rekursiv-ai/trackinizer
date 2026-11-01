@@ -22,8 +22,8 @@ from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode
 from trackinizer.server.api import terminal_routes
 from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import Agent, seed_session
 from trackinizer.server.api.conftest import clear_identity_override
+from trackinizer.server.api.session_test_support import Agent, seed_session
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
@@ -380,20 +380,16 @@ async def test_an_owner_opens_a_terminal_and_bytes_flow_both_ways_until_exit(
     cookie = world.cookie(ada)
     await world.join(cookie)
     await world.wait()
-    canvas, workspace = await world.canvas(ada)
+    placed = await world.canvas(ada)
 
     terminal_id, ticket = _opened(
-        await world.open(cookie, canvas=canvas, requested_by="helper-1"),
+        await world.open(cookie, canvas=placed[0], requested_by="helper-1"),
     )
     offered = from_plain((await world.wait()).json(), dict[str, object])
     assert offered["requested_by"] == "helper-1"
     assert offered["terminal_id"] == str(terminal_id)
     assert (offered["opener"], offered["rows"], offered["cols"]) == ("ada@x.y", 24, 80)
-    assert (offered["canvas"], offered["workspace"]) == (
-        str(canvas),
-        str(workspace),
-    )
-
+    assert offered["canvas"] == str(placed[0])
     browser = _browser_peer(world, cookie, terminal_id)
     host = _host_peer(world, terminal_id)
     tasks = [
@@ -1019,8 +1015,6 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
         body={"machine": "gx10", "rows": 24, "cols": 80},
     )
     assert keyed.status_code == 403
-    stranger_canvas, _ = await world.canvas(bob)
-    assert (await world.open(cookie, canvas=stranger_canvas)).status_code == 404
     for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
         _opened(await world.open(cookie))
     over = await world.open(cookie)

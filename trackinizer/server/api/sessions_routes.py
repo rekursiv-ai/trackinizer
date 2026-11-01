@@ -15,31 +15,25 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from functools import partial
 from typing import Annotated, cast
-from uuid import UUID, uuid5
+from uuid import UUID
 
 import logging
-import math
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from treekle import from_plain
 
 from trackinizer.server.api._deps import (
-    get_assistant,
-    get_hub,
     get_inbound,
     get_replays,
-    get_run_outputs,
     get_store,
+    nudge_streams,
 )
 from trackinizer.server.api.session_access import (
     granted_audience,
-    is_a_science_chat,
     request_principal,
     require_attributable,
-    require_chat_writer,
     require_session,
     require_session_access,
-    require_session_id_change,
     require_session_write_access,
     resolve_asker,
 )
@@ -52,39 +46,12 @@ from trackinizer.server.auth import (
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session import RunPlace
-from trackinizer.server.visuals.canvas_store import (
-    read_chat_provider,
-    read_opens_as,
-)
-from trackinizer.server.visuals.partners import (
-    is_assistant_session,
-    is_chat_session,
-    opener_email,
-    shared_partner,
-)
-from trackinizer.server.visuals.science_chats import read_first_session
 from trackinizer.types.inquiries import AgentSession
-from trackinizer.wire.audience import OPEN
 from trackinizer.wire.bodies import SubmitAgentSession
 from trackinizer.wire.wire_machines import NAME_PATTERN
-from trackinizer.wire.wire_science_chat import (
-    CHAT_PARTIAL_WAIT_SEC,
-    CHAT_SESSION_PREFIX,
-    CHAT_TITLE,
-    ChatPartial,
-    ChatPartialState,
-    ChatProvider,
-    chat_conversation_id,
-)
 from trackinizer.wire.wire_sessions import (
-    CHAT_RUN_LIVE,
-    CLI_REQUIRED,
-    PROVIDER_IS_ASSISTANT,
-    PROVIDER_IS_CLI,
-    PROVIDER_IS_OTHER_CLI,
     RUN_NAME_PATTERN,
     RUN_STOPPED,
-    SESSION_ENDED,
     DrainInboundResponse,
     InboundDrainItem,
     InboundEnqueueRequest,
@@ -93,7 +60,6 @@ from trackinizer.wire.wire_sessions import (
     SendMessageResponse,
     SessionEnd,
     SessionEndResponse,
-    SessionRunOutput,
     SessionRunState,
     SessionStart,
     SessionStartResponse,
@@ -159,20 +125,14 @@ async def session_start_route(
             detail="Own session key and account required",
         )
     # Refused before anything changes: an attach re-opens an ended session.
-    attached = (
+    (
         None
         if body.attach is None
         else await _require_attach(request, identity, session_id=body.attach)
     )
-    audience = await _chat_audience(
-        request,
-        cli_session_id=body.cli_session_id
-        if attached is None
-        else attached.cli_session_id,
-    ) or granted_audience(
-        identity,
-        private=body.private,
-    )
+    audience: str | None = None
+    title = body.title or f"{body.cli} session"
+    audience = audience or granted_audience(identity, private=body.private)
     # An AgentSession is an inquiry like any other, so it carries the same
     # account attribution: default to the authenticated creator, validate it is
     # an active user before minting the row (the gate the submit / edit routes
@@ -188,10 +148,7 @@ async def session_start_route(
     # reads it back off the persisted row (``row.owner``) below.
     session_id, _granted_actor, next_seq = await store.start_session(
         SubmitAgentSession(
-            # A partner titles a chat by its first line, and every key reads the row.
-            title=CHAT_TITLE
-            if (body.cli_session_id or "").startswith(CHAT_SESSION_PREFIX)
-            else body.title or f"{body.cli} session",
+            title=title,
             cli=body.cli,
             cli_session_id=body.cli_session_id,
             started=body.started,
@@ -207,7 +164,7 @@ async def session_start_route(
     )
     row = await require_session(store, session_id)
     require_session_write_access(identity, row)
-    get_hub(request).nudge()
+    nudge_streams(request)
     return SessionStartResponse(
         id=session_id,
         # The event log's continuation seq: 0 for a fresh session, ``max(seq)+1``
@@ -263,8 +220,6 @@ async def session_inbound_enqueue_route(
             status_code=409,
             detail=f"session {session_id} has ended; cannot enqueue",
         )
-    if is_a_science_chat(session):
-        raise _no_direct_line()
     inbound = get_inbound(request)
     # A detached campaign's first line is queued before its machine opens the run.
     # Only the configured assistant's opening key may seed that asker's labelled
@@ -393,20 +348,8 @@ async def send_message_route(
             )
         if session is None or cast(AgentSession, session).ended is not None:
             continue
-        # A browser reaches a chat through its canvas, whether or not anything is
-        # draining the chat now; an agent key's send to an idle chat is dropped, as
-        # it is to any session no one drains.
-        if identity.api_key_id is None and is_a_science_chat(
-            cast(AgentSession, session),
-        ):
-            raise HTTPException(
-                status_code=409,
-                detail="Open its canvas to talk to this chat",
-            )
         if not inbound.has_poller(session_id):
             continue
-        if is_a_science_chat(cast(AgentSession, session)):
-            raise _no_direct_line()
         scoped_room = body.room or (rooms[0] if rooms else None)
         targets.append(
             (
@@ -528,7 +471,6 @@ async def session_inbound_drain_route(
             request,
             identity,
             session_id=session_id,
-            cli=cli,
             instance=instance,
         )
     except HTTPException as refused:
@@ -543,7 +485,7 @@ async def session_inbound_drain_route(
         # No await since the admission's lease test: two runs that start together
         # cannot both pass it.
         if not inbound.has_poller(session_id):
-            get_hub(request).nudge()
+            nudge_streams(request)
         inbound.mark_poller(
             session_id,
             run=run,
@@ -623,112 +565,17 @@ async def session_run_state_route(
       identity: Authenticated run.
 
     """
-    _ = await _authorize_drain(
+    _ = await authorize_drain(
         request,
         identity,
         session_id=session_id,
-        cli=None,
-        names_cli=False,
     )
     inbound = get_inbound(request)
     # A run says its state again while it holds, which changes nothing a stream shows.
     before = inbound.poller_run(session_id)
     kept = inbound.report_state(session_id, instance=body.instance, state=body.state)
     if kept and (before is None or before.state != body.state):
-        get_hub(request).nudge()
-
-
-@router.post("/api/sessions/{session_id}/runs/{run_id}/output", status_code=204)
-async def session_run_output_route(
-    session_id: UUID,
-    run_id: Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")],
-    body: SessionRunOutput,
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-) -> None:
-    """Hold what a command clicked Run on has printed so far, for Chat to show.
-
-    While the command runs its run posts the end of its output here when it grows, and
-    each tab that shows the block holds a read open until it does. It lives in memory
-    alone, as a chat's answer in writing does, for ten minutes after its last post: the
-    record of the command's end replaces it. It is the run's own word, shown and
-    never trusted, held to the rules of a run's state report: the session's drain
-    admits the caller, and a post from a run other than the one holding the lease, or
-    while none does, changes nothing and is answered the same.
-
-    Args:
-      session_id: The session the run drains.
-      run_id: The run Chat minted for the click.
-      body: The output so far, and the run's own id.
-      request: Starlette request object.
-      identity: Authenticated run.
-
-    """
-    _ = await _authorize_drain(
-        request,
-        identity,
-        session_id=session_id,
-        cli=None,
-        names_cli=False,
-    )
-    held = get_inbound(request).poller_run(session_id)
-    if held is not None and held.instance == body.instance:
-        _ = get_run_outputs(request).put(
-            uuid5(session_id, run_id),
-            ChatPartial(turn=run_id, text=body.text),
-        )
-
-
-@router.get(
-    "/api/sessions/{session_id}/runs/{run_id}/output",
-    response_model=ChatPartialState,
-)
-async def read_session_run_output_route(
-    session_id: UUID,
-    run_id: Annotated[str, Path(pattern=r"^[0-9a-f]{32}$")],
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
-    *,
-    after: int = 0,
-    wait_sec: float = 0.0,
-) -> ChatPartialState:
-    """Read what a command clicked Run on has printed, once it is not what was seen.
-
-    Answers at once when the held output's ``seq`` is not ``after``; else when it
-    changes or expires; else after ``wait_sec`` with it unchanged, as a read of a
-    chat's answer in writing does. 404 for no session, and 403 ``session_audience`` to
-    a caller who does not read the session's records, asked again before a changed
-    output is answered.
-
-    Args:
-      session_id: The chat's session.
-      run_id: The run Chat minted for the click.
-      request: Request carrying the store and the outputs.
-      identity: A reader of the chat.
-      after: The ``seq`` the caller last saw; 0 for none.
-      wait_sec: Seconds to hold the request for a change, clamped to [0, 25].
-
-    Returns:
-      state: The output held, its ``turn`` the run id, and its ``seq``; ``seq`` 0
-        and none when none is.
-
-    """
-    store = get_store(request)
-    session = await require_session(store, session_id)
-    await require_session_access(request, identity, session=session, mode="read")
-    state = await get_run_outputs(request).wait(
-        uuid5(session_id, run_id),
-        after=after,
-        # The query parses "nan", which every bound below would let through.
-        wait_sec=0.0
-        if math.isnan(wait_sec)
-        else min(max(wait_sec, 0.0), CHAT_PARTIAL_WAIT_SEC),
-    )
-    if state.seq != after:
-        # The hold outlasts the test: the chat may have been unshared from the reader.
-        session = await require_session(store, session_id)
-        await require_session_access(request, identity, session=session, mode="read")
-    return state
+        nudge_streams(request)
 
 
 @router.post("/api/sessions/{session_id}/end")
@@ -777,12 +624,6 @@ async def session_end_route(
     session = await require_session(store, session_id)
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
-    await require_chat_writer(request, identity, session=session, closing=True)
-    # A switch stops the old run, which may exit after the new provider's run attached:
-    # ending the chat's session then would take that run's lease and queued lines.
-    provider = await _chat_provider(request, session=session)
-    if provider is not None and body.cli is not None and body.cli != provider:
-        return SessionEndResponse(id=session_id, ended=session.ended)
     # A reattach replaces a run that may quit before its drain is turned away: its end
     # would close the chat the new run holds, take that run's lease and release its asks.
     if (
@@ -795,22 +636,6 @@ async def session_end_route(
         )
     ):
         return SessionEndResponse(id=session_id, ended=session.ended)
-    # Ordinary vendor-ID finalization keeps shared writer access; only a chat
-    # membership change uses the stricter ID-edit guard.
-    if (
-        body.cli_session_id is not None
-        and body.cli_session_id != session.cli_session_id
-        and (
-            is_a_science_chat(session)
-            or body.cli_session_id.startswith(CHAT_SESSION_PREFIX)
-        )
-    ):
-        await require_session_id_change(
-            request,
-            identity,
-            session_id,
-            value=body.cli_session_id,
-        )
     actor = _actor(identity, body.actor)
     # Before the close, which takes records no more: an ask the run left open can be
     # answered by no one once it is gone.
@@ -834,65 +659,43 @@ async def session_end_route(
     # a clean close, so a failed end doesn't discard undelivered messages.
     inbound = get_inbound(request)
     inbound.forget_poller(session_id)
-    # A chat's run that ended before it asked for its lines was seen nowhere: Chat,
-    # waiting for the run it started, says why it did not start, as for a refused drain.
-    if body.failed is not None and provider is not None:
-        inbound.refuse(session_id, reason=body.failed)
-    service = await _is_a_chat_service(request, session=session)
-    # A service session that names itself is resumed by its next start, which
-    # drains what was posted meanwhile; releasing it here would lose lines that
-    # were answered 200 and that no chat session holds yet.
-    if not (service and session.cli_session_id is not None):
-        await _release_unread(
-            request,
-            session_id=session_id,
-            session=session,
-            service=service,
-        )
-    get_hub(request).nudge()
+    released = False
+    if not released:
+        _ = inbound.drain(session_id)
+    nudge_streams(request)
     return SessionEndResponse(id=session_id, ended=committed_ended)
 
 
-# The run is the starter's own, under whichever of their keys its machine has. Its
-# queue holds every user's Chat, and a science chat's queue holds its posters' lines,
-# so no one but the opening key reads either: a drain by another writer would take the
-# owner's lines.
-# Return it and its chat's provider.
+# The run is its owner's own, under whichever of their keys its machine has.
 #
 # A run's report of its own state is held to the same rule, since it speaks for the same
 # run; it names no CLI (``names_cli``), the lease it reports to already does.
-async def _authorize_drain(
+async def authorize_drain(
     request: Request,
     identity: AuthIdentity,
     *,
     session_id: UUID,
-    cli: str | None,
-    names_cli: bool,
-) -> tuple[AgentSession, ChatProvider | None]:
-    """Refuse a caller who may not drain a session."""
+) -> AgentSession:
+    """Refuse a caller who may not drain a session; return the session.
+
+    Args:
+      request: The drain or report, which carries the store.
+      identity: The caller.
+      session_id: The session.
+      cli: The CLI the drain names, if any.
+      names_cli: Whether the caller is a drain, which names its CLI.
+
+    Returns:
+      session: The session, once the caller may drain it.
+
+    Raises:
+      HTTPException: 403 when the caller may not drain it, or is a viewer whose key
+        did not open it.
+
+    """
     store = get_store(request)
     session = await require_session(store, session_id)
     await require_session_access(request, identity, session=session, mode="drain")
-    provider = await _chat_provider(request, session=session)
-    if provider is not None and provider != "assistant":
-        _refuse_the_other_provider(request, identity, provider=provider)
-        await require_chat_writer(request, identity, session=session)
-        # After the access checks: a stranger is not told who answers the chat.
-        if names_cli:
-            _require_the_providers_cli(provider, cli=cli)
-    elif (
-        identity.api_key_id != session.opened_by_api_key_id
-        and await _takes_chat_lines(
-            request,
-            session=session,
-        )
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail="A chat session is drained by its opening key",
-        )
-    else:
-        _refuse_the_other_provider(request, identity, provider=provider)
     if identity.role == "viewer":
         async with store.engine.acquire() as conn:
             owned = await conn.fetchval(
@@ -907,7 +710,7 @@ async def _authorize_drain(
             )
         if not owned:
             raise HTTPException(status_code=403, detail="Own session key required")
-    return session, provider
+    return session
 
 
 async def _admit_drain(
@@ -915,7 +718,6 @@ async def _admit_drain(
     identity: AuthIdentity,
     *,
     session_id: UUID,
-    cli: str | None,
     instance: str | None,
 ) -> bool:
     """Refuse a drain the session may not take; return whether it renews the lease."""
@@ -930,12 +732,10 @@ async def _admit_drain(
             detail={"code": RUN_STOPPED, "message": "This run was stopped"},
         )
     store = get_store(request)
-    session, provider = await _authorize_drain(
+    session = await authorize_drain(
         request,
         identity,
         session_id=session_id,
-        cli=cli,
-        names_cli=True,
     )
     # A run closed for silence that polls again was alive all along -- cut off,
     # not dead -- so it gets its session back before this poll is served.
@@ -944,40 +744,7 @@ async def _admit_drain(
         session_id=session_id,
     ):
         session = await require_session(store, session_id)
-    # A CLI chat's session that stays ended -- the person closed the chat -- is no
-    # session to wait on: the run polling it stops, where an empty answer would leave
-    # it polling a chat no line can reach.
-    if session.ended is not None and provider not in {None, "assistant"}:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": SESSION_ENDED,
-                "message": "This chat was closed; its run stops",
-            },
-        )
-    polling = session.status == "active" and session.ended is None
-    # No await from this test to the lease the route takes on return: two runs that
-    # start together cannot both pass it.
-    if (
-        polling
-        and provider is not None
-        and provider != "assistant"
-        and cli is not None
-        and instance is not None
-        and get_inbound(request).held_by_another(
-            session_id,
-            cli=cli,
-            instance=instance,
-        )
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": CHAT_RUN_LIVE,
-                "message": "Another run is draining this chat; stop it first",
-            },
-        )
-    return polling
+    return session.status == "active" and session.ended is None
 
 
 # Only a run of the chat's own account: a stranger's refused drain would otherwise tell
@@ -1005,164 +772,9 @@ async def _remember_refusal(
     get_inbound(request).refuse(session_id, reason=str(message))
 
 
-def _no_direct_line() -> HTTPException:
-    """Refuse a line sent straight to a science chat's session."""
-    return HTTPException(
-        status_code=409,
-        detail=(
-            "A science chat takes lines through POST /api/chats, which names the "
-            "poster and the conversation; a line sent to its session directly has "
-            "neither"
-        ),
-    )
-
-
 def _actor(identity: AuthIdentity, supplied: str | None) -> str:
     """Return the audit actor: the client-supplied value, else the principal email."""
     return supplied or identity.email
-
-
-async def _chat_provider(
-    request: Request,
-    *,
-    session: AgentSession,
-) -> ChatProvider | None:
-    """Return who answers the science chat ``session`` holds; None for another session."""
-    conversation_id = chat_conversation_id(session.cli_session_id)
-    if conversation_id is None:
-        return None
-    async with get_store(request).engine.acquire() as conn:
-        return await read_chat_provider(
-            conn,
-            assistant=get_assistant(request),
-            conversation_id=conversation_id,
-        )
-
-
-# A switch takes hold at once: the provider's queue may already hold lines for the new
-# drainer, and a drain by the old one would take them. An assistant turn already running
-# is not stopped; its answer is recorded under its key, which this does not touch.
-def _refuse_the_other_provider(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    provider: ChatProvider | None,
-) -> None:
-    """Refuse a chat's drain by a key its canvas's provider is not."""
-    assistant = get_assistant(request)
-    if provider is None or assistant is None:
-        return
-    by_assistant = identity.email.lower() == assistant.email.lower()
-    if provider != "assistant" and by_assistant:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": PROVIDER_IS_CLI,
-                "message": f"This chat's canvas answers it with {provider}",
-            },
-        )
-    if provider == "assistant" and not by_assistant:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": PROVIDER_IS_ASSISTANT,
-                "message": "This chat's canvas answers it with the assistant",
-            },
-        )
-
-
-# The drain names its CLI so that liveness and routing never rest on what a run
-# happened to write: the runner's own part has no format, and the newest part after a
-# ``/compact`` is that one. A drain that names none is refused rather than guessed at.
-def _require_the_providers_cli(provider: ChatProvider, *, cli: str | None) -> None:
-    """Refuse a chat's drain by a run that is not the CLI its canvas chose."""
-    if cli is None:
-        raise HTTPException(
-            status_code=426,
-            detail={
-                "code": CLI_REQUIRED,
-                "message": "Update trax: its inbound drain must name the CLI it runs",
-            },
-        )
-    if cli != provider:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": PROVIDER_IS_OTHER_CLI,
-                "message": f"This chat's canvas answers it with {provider}, not {cli}",
-            },
-        )
-
-
-async def _takes_chat_lines(request: Request, *, session: AgentSession) -> bool:
-    """Say whether ``session`` queues chat lines: a chat or a chat's service session."""
-    return is_a_science_chat(session) or await _is_a_chat_service(
-        request,
-        session=session,
-    )
-
-
-async def _is_a_chat_service(request: Request, *, session: AgentSession) -> bool:
-    """Say whether ``session`` is the assistant's service session."""
-    assistant = get_assistant(request)
-    if assistant is None:
-        return False
-    async with get_store(request).engine.acquire() as conn:
-        opener = await opener_email(conn, api_key_id=session.opened_by_api_key_id)
-    return is_assistant_session(
-        assistant,
-        actor=session.owner or "",
-        email=opener or "",
-    )
-
-
-async def _is_the_assistants_chat(
-    request: Request,
-    *,
-    session: AgentSession,
-) -> bool:
-    """Say whether ``session`` is a science chat the configured assistant opened."""
-    assistant = get_assistant(request)
-    if assistant is None:
-        return False
-    async with get_store(request).engine.acquire() as conn:
-        opener = await opener_email(conn, api_key_id=session.opened_by_api_key_id)
-    return is_chat_session(
-        assistant,
-        cli_session_id=session.cli_session_id,
-        email=opener or "",
-    )
-
-
-# The chat's audience is taken without the hold check ``granted_audience`` makes: a
-# ``private`` or ``staff`` chat was made so by its starter or by a staff read, and the
-# key that opens its next session only joins it. A chat with no session yet is opened
-# by the assistant when it hears the first line, so the access its starter chose on
-# the canvas is read here, before the session is written, never applied after it.
-async def _chat_audience(request: Request, *, cli_session_id: str | None) -> str | None:
-    """Return the audience of the chat a session opens under, when it is not open."""
-    conversation_id = chat_conversation_id(cli_session_id)
-    if conversation_id is None:
-        return None
-    async with get_store(request).engine.acquire() as conn:
-        first = await read_first_session(
-            conn,
-            assistant=get_assistant(request),
-            conversation_id=conversation_id,
-        )
-        audience = (
-            await read_opens_as(conn, conversation_id=conversation_id)
-            if first is None
-            else from_plain(
-                await conn.fetchval(
-                    "SELECT agentsession_audience FROM inquiries WHERE id = $1",
-                    first,
-                ),
-                str,
-                default=None,
-            )
-        )
-    return None if audience == OPEN else audience
 
 
 async def _require_attach(
@@ -1175,57 +787,7 @@ async def _require_attach(
     session = await require_session(get_store(request), session_id)
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
-    await require_chat_writer(request, identity, session=session)
     return session
-
-
-async def _release_unread(
-    request: Request,
-    *,
-    session_id: UUID,
-    session: AgentSession,
-    service: bool,
-) -> None:
-    """Take a closed session's unread lines off its queue, and say where they went."""
-    unread = get_inbound(request).drain(session_id)
-    if unread and await _is_the_assistants_chat(request, session=session):
-        await _hand_to_assistant(request, unread)
-    elif unread and service:
-        _logger.warning(
-            "dropped %d chat line(s) from %s: their service session ended and "
-            "cannot be resumed",
-            len(unread),
-            _sources(unread),
-        )
-
-
-# The lines posted into a chat while its assistant was closing it were taken from the
-# chat's queue by the close. The assistant's service session hears them instead, as it
-# hears any line for a chat it does not have open, and reopens the chat; a post is not
-# answered 200 and then lost.
-async def _hand_to_assistant(request: Request, unread: list[Inbound]) -> None:
-    """Queue ``unread`` for the assistant's live service session, if it has one."""
-    inbound = get_inbound(request)
-    async with get_store(request).engine.acquire() as conn:
-        partner = await shared_partner(
-            conn,
-            inbound=inbound,
-            assistant=get_assistant(request),
-        )
-    if partner is None or partner.session_id is None:
-        _logger.warning(
-            "dropped %d chat line(s) from %s: the assistant has no live session",
-            len(unread),
-            _sources(unread),
-        )
-        return
-    for message in unread:
-        _ = inbound.enqueue(partner.session_id, message)
-
-
-def _sources(messages: list[Inbound]) -> str:
-    """Name the senders of ``messages``, once each."""
-    return ", ".join(sorted({message.source or "unknown" for message in messages}))
 
 
 # ``ChangeIdMiddleware`` parses the header once (rejecting a malformed key with 400) and

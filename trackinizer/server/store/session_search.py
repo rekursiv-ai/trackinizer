@@ -412,7 +412,6 @@ def _reads_all(reader: SessionReader) -> bool:
     return (
         reader.audiences >= AUDIENCES
         and reader.every_session
-        and reader.every_chat
         and reader.oversight
         and reader.hidden
     )

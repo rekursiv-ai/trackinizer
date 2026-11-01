@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 
 import dataclasses
 import datetime as dt
@@ -11,12 +11,9 @@ import uuid
 
 from trackinizer.server.api.replays import Replays
 from trackinizer.server.capture_relay import CaptureRelay
-from trackinizer.server.chat_hub import ChatHub
-from trackinizer.server.chat_partials import ChatPartials
 from trackinizer.server.config import Config
 from trackinizer.server.execs import ExecHub
 from trackinizer.server.terminals import Terminal, TerminalHub
-from trackinizer.server.upload_relay import UploadRelay
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
@@ -65,6 +62,18 @@ def get_inbound(request: Request) -> InboundQueue:
     return app.state.inbound
 
 
+def nudge_streams(request: Request) -> None:
+    """Wake the event streams the app holds, if any, to read what changed.
+
+    Args:
+      request: The request that changed a session, a run or a machine.
+
+    """
+    streams: object = getattr(cast("FastAPI", request.app).state, "hub", None)
+    if isinstance(streams, _Streams):
+        streams.nudge()
+
+
 def get_replays(request: Request) -> Replays:
     """Return the app's consuming-request receipts, made on first use.
 
@@ -80,26 +89,6 @@ def get_replays(request: Request) -> Replays:
     if not isinstance(replays, Replays):
         replays = app.state.replays = Replays()
     return replays
-
-
-def get_hub(request: Request) -> ChatHub:
-    """Return the Chat event hub held on the app state, made on first use.
-
-    An app built by hand, as a test harness does, has no lifespan to make one, so
-    the first request that needs the hub makes it.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The ChatHub.
-
-    """
-    app = cast("FastAPI", request.app)
-    hub: object = getattr(app.state, "hub", None)
-    if not isinstance(hub, ChatHub):
-        hub = app.state.hub = ChatHub()
-    return hub
 
 
 def terminal_hub(app: FastAPI) -> TerminalHub:
@@ -169,76 +158,6 @@ def get_relay(request: Request) -> CaptureRelay:
     if not isinstance(relay, CaptureRelay):
         relay = app.state.relay = CaptureRelay()
     return relay
-
-
-def get_uploads(request: Request) -> UploadRelay:
-    """Return the chat-upload relay held on the app state, made on first use.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The UploadRelay.
-
-    """
-    app = cast("FastAPI", request.app)
-    relay: object = getattr(app.state, "uploads", None)
-    if not isinstance(relay, UploadRelay):
-        relay = app.state.uploads = UploadRelay()
-    return relay
-
-
-def get_partials(request: Request) -> ChatPartials:
-    """Return the chats' answers in writing, held on the app state, made on first use.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The ChatPartials.
-
-    """
-    app = cast("FastAPI", request.app)
-    partials: object = getattr(app.state, "partials", None)
-    if not isinstance(partials, ChatPartials):
-        partials = app.state.partials = ChatPartials()
-    return partials
-
-
-# A command can print nothing for minutes while it runs, so its output so far is held
-# past the minute an answer is, or a quiet one would show nothing until it ends.
-def get_run_outputs(request: Request) -> ChatPartials:
-    """Return what the commands clicked Run on have printed so far, made on first use.
-
-    Each is held as a partial under its session and run (``uuid5(session, run_id)``),
-    its ``turn`` the run id.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The ChatPartials of the commands' output.
-
-    """
-    app = cast("FastAPI", request.app)
-    outputs: object = getattr(app.state, "run_outputs", None)
-    if not isinstance(outputs, ChatPartials):
-        outputs = app.state.run_outputs = ChatPartials(ttl_sec=600.0)
-    return outputs
-
-
-def get_chat_streaming(request: Request) -> bool:
-    """Return whether chats' answers are held as they are written; on without a Config.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The configured ``chat_streaming``.
-
-    """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.chat_streaming if isinstance(config, Config) else True
 
 
 def get_assistant(request: Request) -> Assistant | None:
@@ -436,3 +355,12 @@ async def _alive(term: Terminal, *, store: Store) -> bool:
                 term.machine_id,
             ),
         )
+
+
+@runtime_checkable
+class _Streams(Protocol):
+    """Event streams that read what they show again when nudged."""
+
+    def nudge(self) -> None:
+        """Have every open stream read its state again."""
+        ...

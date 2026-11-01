@@ -18,7 +18,7 @@ import asyncio
 import re
 import uuid
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI
 from treekle import from_plain, json_loads
 
 import httpx2
@@ -28,27 +28,6 @@ from trackinizer.conftest import set_field_row
 from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import (
-    ASSISTANT,
-    ASSISTANT_CONFIG,
-    KB_ACTOR,
-    KB_EMAIL,
-    OTHER_EMAIL,
-    OTHER_USER_ID,
-    USER_AGENT,
-    act_as_assistant,
-    act_as_other_agent,
-    act_as_user_agent,
-    browser,
-    drain,
-    open_canvas,
-    receipt_conversation,
-    seed_accounts,
-    seed_science_chat,
-    seed_session,
-    send_chat,
-    start_session,
-)
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -57,14 +36,22 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
     patch_state,
 )
-from trackinizer.server.api.science_chat_routes_test import (
-    seed_helper_chat,
-    start_unpolled,
+from trackinizer.server.api.session_test_support import (
+    ASSISTANT_CONFIG,
+    KB_ACTOR,
+    USER_AGENT,
+    act_as_assistant,
+    act_as_other_agent,
+    act_as_user_agent,
+    browser,
+    drain,
+    seed_accounts,
+    seed_session,
+    start_session,
 )
 from trackinizer.server.asks import open_ask_ids
 from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.auth import current_user
-from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.config import Config
 from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
 from trackinizer.server.session_reaper import (
@@ -73,14 +60,8 @@ from trackinizer.server.session_reaper import (
 )
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
-from trackinizer.wire.wire_science_chat import (
-    ChatPartial,
-    ChatPartialState,
-    chat_session_id,
-)
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import (
-    RUN_ENDING_REFUSALS,
     RUN_NAME_PATTERN,
     CanvasMessageContext,
 )
@@ -92,7 +73,6 @@ if TYPE_CHECKING:
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.auth import AuthIdentity, Role
     from trackinizer.server.store.core import Store
-    from trackinizer.wire.wire_science_chat import ChatProvider
 
 
 # A real instance, not a renamed stand-in: ``_require_session`` gates with
@@ -100,7 +80,7 @@ if TYPE_CHECKING:
 # credential to ``TEST_API_KEY_ID`` -- the key the default test identity presents -- so
 # a route's owner-scope check passes for a same-credential caller; foreign-credential
 # tests pass an explicit other id.
-def _live_session(
+def live_session(
     opened_by_api_key_id: uuid.UUID | None = TEST_API_KEY_ID,
 ) -> AgentSession:
     """Return a minimal live ``AgentSession`` (``ended`` is ``None``)."""
@@ -144,7 +124,7 @@ class TestSendMessageIdempotency:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         app.state.inbound.mark_poller(session_id)
         r2 = client.post(
@@ -176,7 +156,7 @@ class TestSendMessageIdempotency:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         app.state.inbound.mark_poller(session_id)
 
@@ -201,95 +181,6 @@ class TestSendMessageIdempotency:
         assert app.state.inbound.pending(session_id) == 1
 
 
-class TestSendToAScienceChat:
-    """A chat is reached through its canvas: a browser's Console send is refused."""
-
-    @classmethod
-    def _chat_at(
-        cls,
-        store: Store,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        engine: FakeEngine,
-        polled: bool,
-    ) -> tuple[uuid.UUID, InboundQueue]:
-        """Make ``scientist`` resolve to a live science chat the sender is a member of."""
-        inbound = InboundQueue()
-        app.state.inbound = inbound
-        # The database answers the chat's membership test: the sender may read it.
-        engine.conn.fetchval.return_value = True
-        session_id = uuid.uuid4()
-        monkeypatch.setattr(
-            store,
-            "resolve_live_sessions",
-            AsyncMock(return_value=[(session_id, ())]),
-        )
-        monkeypatch.setattr(
-            store,
-            "get_inquiry",
-            AsyncMock(
-                return_value=AgentSession(
-                    owner="scientist",
-                    cli="assistant",
-                    cli_session_id=chat_session_id(uuid.uuid4()),
-                    opened_by_api_key_id=TEST_API_KEY_ID,
-                    audience="open",
-                ),
-            ),
-        )
-        if polled:
-            inbound.mark_poller(session_id)
-        return session_id, inbound
-
-    def test_a_browser_is_told_to_open_the_chats_canvas_polled_or_not(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        client, store, engine = route_client
-        browser()
-        for polled in (True, False):
-            session_id, inbound = self._chat_at(
-                store,
-                monkeypatch,
-                engine=engine,
-                polled=polled,
-            )
-
-            refused = client.post(
-                "/api/messages",
-                json={"actor": "scientist", "text": "stop"},
-            )
-
-            assert refused.status_code == 409, refused.text
-            assert from_plain(refused.json(), dict[str, object]) == {
-                "detail": "Open its canvas to talk to this chat",
-            }
-            assert inbound.pending(session_id) == 0
-
-    def test_an_agent_key_keeps_todays_rules(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        client, store, engine = route_client
-        act_as_other_agent("writer")
-        _ = self._chat_at(store, monkeypatch, engine=engine, polled=False)
-        skipped = client.post("/api/messages", json={"actor": "scientist", "text": "x"})
-        session_id, inbound = self._chat_at(
-            store,
-            monkeypatch,
-            engine=engine,
-            polled=True,
-        )
-        refused = client.post("/api/messages", json={"actor": "scientist", "text": "x"})
-
-        assert (skipped.status_code, skipped.json()) == (200, {"delivered": []})
-        assert refused.status_code == 409
-        assert "POST /api/chats" in from_plain(refused.json(), dict[str, str])["detail"]
-        assert inbound.pending(session_id) == 0
-
-
 class TestSessionEndAtomicity:
     def test_failed_end_does_not_drain_inbound(
         self,
@@ -308,7 +199,7 @@ class TestSessionEndAtomicity:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         monkeypatch.setattr(
             store,
@@ -339,7 +230,7 @@ class TestSessionEndAtomicity:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         # ``end_session`` now returns the committed ``ended`` the route echoes.
         monkeypatch.setattr(
@@ -367,7 +258,7 @@ class TestSessionEndAtomicity:
         client, store, engine = route_client
         engine.conn.fetchval.return_value = True
         session = replace(
-            _live_session(TEST_API_KEY_ID if owns_session else uuid.uuid4()),
+            live_session(TEST_API_KEY_ID if owns_session else uuid.uuid4()),
             cli_session_id=original_id,
             audience="open",
         )
@@ -399,120 +290,6 @@ class TestSessionEndAtomicity:
             actor=TEST_USER_EMAIL,
         )
 
-    @pytest.mark.parametrize("final_id", ["omitted", "null", "same"])
-    def test_chat_close_preserves_its_existing_id(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-        monkeypatch: pytest.MonkeyPatch,
-        final_id: str,
-    ) -> None:
-        client, store, engine = route_client
-        named = chat_session_id(uuid.uuid4())
-        session = replace(_live_session(), cli_session_id=named)
-        set_field_row(
-            engine.conn,
-            {
-                "kind": "AgentSession",
-                "cli_session_id": named,
-                "opener": session.opened_by_api_key_id,
-            },
-        )
-        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
-        end = AsyncMock(return_value=datetime(2026, 1, 1, tzinfo=UTC))
-        monkeypatch.setattr(store, "end_session", end)
-        body: dict[str, object] = {}
-        if final_id != "omitted":
-            body["cli_session_id"] = named if final_id == "same" else None
-
-        response = client.post(f"/api/sessions/{session.id}/end", json=body)
-
-        assert response.status_code == 200, response.text
-        call = end.await_args
-        assert call is not None
-        assert call.kwargs["cli_session_id"] == (named if final_id == "same" else None)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_historical_session_cannot_join_a_chat_when_it_ends(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Late vendor-id finalization cannot backdate a chat's starter or drain a queue."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation = uuid.uuid4()
-    _ = await seed_helper_chat(store, conversation_id=conversation)
-    act_as_user_agent("writer")
-    created = await client.post(
-        "/api/inquiries/agentsession",
-        json={
-            "title": "historical import",
-            "created": "2020-01-01T00:00:00Z",
-            "cli_session_id": "vendor-history",
-        },
-    )
-    assert created.status_code == 201, created.text
-    session_id = uuid.UUID(
-        from_plain(json_loads(created.content, dict[str, object])["id"], str),
-    )
-    inbound = InboundQueue()
-    app.state.inbound = inbound
-    message = Inbound(text="undelivered steering")
-    inbound.mark_poller(session_id)
-    _ = inbound.enqueue(session_id, message)
-    async with store.engine.acquire() as conn:
-        before_rows = await conn.fetch("SELECT * FROM inquiries ORDER BY id")
-        before_changes = await conn.fetch("SELECT * FROM change_log ORDER BY id")
-
-    refused = await client.post(
-        f"/api/sessions/{session_id}/end",
-        json={"cli_session_id": chat_session_id(conversation)},
-    )
-
-    assert refused.status_code == 403, refused.text
-    async with store.engine.acquire() as conn:
-        assert await conn.fetch("SELECT * FROM inquiries ORDER BY id") == before_rows
-        assert (
-            await conn.fetch("SELECT * FROM change_log ORDER BY id") == before_changes
-        )
-    assert inbound.has_poller(session_id)
-    assert inbound.drain(session_id) == [message]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.parametrize("include_id", [False, True])
-async def test_a_chat_close_with_an_unchanged_id_replays_its_original_receipt(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    include_id: bool,
-) -> None:
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation = uuid.uuid4()
-    session_id = await seed_helper_chat(store, conversation_id=conversation)
-    act_as_user_agent()
-    body = {"cli_session_id": chat_session_id(conversation)} if include_id else {}
-    headers = {"Idempotency-Key": str(uuid.uuid4())}
-
-    first = await client.post(
-        f"/api/sessions/{session_id}/end",
-        json=body,
-        headers=headers,
-    )
-    assert first.status_code == 200, first.text
-    async with store.engine.acquire() as conn:
-        after_first = await conn.fetch("SELECT * FROM change_log ORDER BY id")
-    retry = await client.post(
-        f"/api/sessions/{session_id}/end",
-        json=body,
-        headers=headers,
-    )
-
-    assert retry.status_code == 200, retry.text
-    assert retry.json() == first.json()
-    async with store.engine.acquire() as conn:
-        assert await conn.fetch("SELECT * FROM change_log ORDER BY id") == after_first
-
 
 class TestInboundHoldEndsWithTheSession:
     def test_an_end_during_the_poll_leaves_nothing_parked(
@@ -534,7 +311,7 @@ class TestInboundHoldEndsWithTheSession:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         monkeypatch.setattr(
             store,
@@ -571,7 +348,7 @@ class TestTheKeyThatDrainsAChatLineHoldsItsTurn:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         monkeypatch.setattr(store, "record_session_seen", AsyncMock())
 
@@ -596,7 +373,7 @@ class TestTheDrainSaysWhereItsRunIs:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         monkeypatch.setattr(store, "record_session_seen", AsyncMock())
         return client, inbound
@@ -708,7 +485,7 @@ class TestInboundEnqueueRejectsSource:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         r = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -731,7 +508,7 @@ class TestInboundEnqueueRejectsSource:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         r = client.post(
             f"/api/sessions/{session_id}/inbound",
@@ -751,7 +528,7 @@ class TestInboundEnqueueRejectsSource:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         inbound.mark_poller(session_id)
         r = client.post(
@@ -777,7 +554,7 @@ class TestInboundEnqueueRejectsSource:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         inbound.mark_poller(session_id)
         install_identity(make_test_identity(role=role))
@@ -810,7 +587,7 @@ class TestInboundEnqueueRejectsSource:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         inbound.mark_poller(session_id)
         install_identity(make_test_identity(role=role))
@@ -837,7 +614,7 @@ class TestInboundEnqueueRejectsSource:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         inbound.mark_poller(session_id)
         key = str(uuid.uuid4())
@@ -906,7 +683,7 @@ class TestSessionStartAccountValidation:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         r = client.post(
             "/api/sessions/start",
@@ -953,7 +730,7 @@ class TestViewerOwnedSessionLifecycle:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
 
         response = client.post("/api/sessions/start", json={"cli": "codex"})
@@ -997,7 +774,7 @@ class TestViewerOwnedSessionLifecycle:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session(uuid.uuid4())),
+            AsyncMock(return_value=live_session(uuid.uuid4())),
         )
 
         response = client.post("/api/sessions/start", json={"cli": "codex"})
@@ -1017,7 +794,7 @@ class TestViewerOwnedSessionLifecycle:
             store,
             "get_inquiry",
             AsyncMock(
-                return_value=_live_session(
+                return_value=live_session(
                     TEST_API_KEY_ID if owns_session else uuid.uuid4(),
                 ),
             ),
@@ -1054,27 +831,27 @@ async def test_a_dead_run_is_closed_and_a_returning_one_reopened(
     polled = await client.get(f"/api/sessions/{session_id}/inbound")
     assert polled.status_code == 200, polled.text
     last_seen = await _last_seen(store, session_id=session_id)
-    assert await _reap(store, inbound=inbound, after=_WINDOW) == 1
-    closed = await _session(store, session_id=session_id)
+    assert await reap(store, inbound=inbound, after=REAP_WINDOW) == 1
+    closed = await session_row(store, session_id=session_id)
     assert (closed.status, closed.ended) == ("complete", last_seen)
 
     # The run was only cut off: its next poll gets the session back.
     polled = await client.get(f"/api/sessions/{session_id}/inbound")
     assert polled.status_code == 200, polled.text
-    reopened = await _session(store, session_id=session_id)
+    reopened = await session_row(store, session_id=session_id)
     assert (reopened.status, reopened.ended) == ("active", None)
     assert inbound.has_poller(session_id)
 
     # Closed again, it comes back through an upload too -- and the upload, which
     # an ended session would refuse, lands.
-    assert await _reap(store, inbound=inbound, after=_WINDOW) == 1
+    assert await reap(store, inbound=inbound, after=REAP_WINDOW) == 1
     uploaded = await client.post(
         f"/api/sessions/{session_id}/records",
         json=_SLASH_ONLY,
     )
     assert uploaded.status_code == 200, uploaded.text
     assert json_loads(uploaded.content, dict[str, object])["slash_commands"] == 1
-    assert (await _session(store, session_id=session_id)).status == "active"
+    assert (await session_row(store, session_id=session_id)).status == "active"
 
 
 @pytest.mark.db_pglite
@@ -1098,8 +875,8 @@ async def test_an_upload_keeps_a_polling_session_open(
     assert uploaded.status_code == 200, uploaded.text
     # Silent for the whole window as of the poll, but not as of the upload.
     after = STALE_AFTER - timedelta(minutes=5)
-    assert await _reap(store, inbound=inbound, after=after) == 0
-    assert (await _session(store, session_id=session_id)).status == "active"
+    assert await reap(store, inbound=inbound, after=after) == 0
+    assert (await session_row(store, session_id=session_id)).status == "active"
 
 
 @pytest.mark.db_pglite
@@ -1119,8 +896,8 @@ async def test_a_session_that_never_polls_is_never_closed(
         json=_SLASH_ONLY,
     )
     assert uploaded.status_code == 200, uploaded.text
-    assert await _reap(store, inbound=inbound, after=timedelta(days=1)) == 0
-    assert (await _session(store, session_id=session_id)).status == "active"
+    assert await reap(store, inbound=inbound, after=timedelta(days=1)) == 0
+    assert (await session_row(store, session_id=session_id)).status == "active"
 
 
 @pytest.mark.db_pglite
@@ -1141,16 +918,16 @@ async def test_a_cleanly_ended_session_stays_ended(
         json={"actor": "scientist"},
     )
     assert ended.status_code == 200, ended.text
-    assert await _reap(store, inbound=inbound, after=timedelta(days=1)) == 0
+    assert await reap(store, inbound=inbound, after=timedelta(days=1)) == 0
     _ = await client.get(f"/api/sessions/{session_id}/inbound")
-    assert (await _session(store, session_id=session_id)).status == "complete"
+    assert (await session_row(store, session_id=session_id)).status == "complete"
 
 
-_WINDOW = STALE_AFTER + timedelta(minutes=1)
+REAP_WINDOW = STALE_AFTER + timedelta(minutes=1)
 """Long enough from now that anything seen so far counts as silent."""
 
 
-async def _reap(store: Store, *, inbound: InboundQueue, after: timedelta) -> int:
+async def reap(store: Store, *, inbound: InboundQueue, after: timedelta) -> int:
     """Run one reaper pass as of ``after`` from now."""
     now = datetime.now(UTC) + after
     return await reap_silent_sessions(store, inbound=inbound, now=now)
@@ -1210,7 +987,7 @@ async def _start(client: httpx2.AsyncClient) -> uuid.UUID:
     )
 
 
-async def _session(store: Store, *, session_id: uuid.UUID) -> AgentSession:
+async def session_row(store: Store, *, session_id: uuid.UUID) -> AgentSession:
     """Return the session's row."""
     row = await store.get_inquiry(session_id)
     assert isinstance(row, AgentSession)
@@ -1218,13 +995,10 @@ async def _session(store: Store, *, session_id: uuid.UUID) -> AgentSession:
 
 
 @pytest.fixture
-def assistant_served(monkeypatch: pytest.MonkeyPatch) -> ChatHub:
-    """Serve with scout configured, and a fresh poller table and event hub."""
-    hub = ChatHub()
+def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Serve with scout configured, and a fresh poller table."""
     patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     patch_state(monkeypatch, "inbound", InboundQueue())
-    patch_state(monkeypatch, "hub", hub)
-    return hub
 
 
 @pytest.mark.db_pglite
@@ -1272,51 +1046,7 @@ async def test_without_an_assistant_a_writer_still_drains_any_session(
     assert (await drain(client, session_id=kb)).status_code == 200
 
 
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_only_the_opening_key_drains_a_science_chats_queue(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Its queue holds its posters' lines, so a writer who did not open it is refused.
-
-    The id alone decides: a session that only carries a `chat:` id under another
-    account's key is refused to every other key too, and its own key, which is not
-    the assistant's, is told the chat is the assistant's.
-    """
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation = uuid.uuid4()
-    act_as_assistant()
-    chat = await start_session(
-        client,
-        actor="chat-1",
-        cli_session_id=chat_session_id(conversation),
-    )
-    act_as_user_agent()
-    squatter = await start_unpolled(
-        client,
-        actor="chat-2",
-        cli_session_id=chat_session_id(uuid.uuid4()),
-    )
-
-    for act in (act_as_user_agent, act_as_other_agent):
-        for role in ("viewer", "writer", "admin"):
-            act(role)
-            assert (await drain(client, session_id=chat)).status_code == 403
-    browser()
-    assert (await drain(client, session_id=chat)).status_code == 403
-    act_as_assistant()
-    assert (await drain(client, session_id=chat)).status_code == 200
-
-    act_as_other_agent("writer")
-    assert (await drain(client, session_id=squatter)).status_code == 403
-    act_as_user_agent()
-    refused = await drain(client, session_id=squatter)
-    assert (refused.status_code, _code(refused)) == (409, "provider_is_assistant")
-
-
-def _code(response: httpx2.Response) -> str:
+def refusal_code(response: httpx2.Response) -> str:
     """Return the ``code`` of a refusal's detail."""
     detail = from_plain(
         json_loads(response.content, dict[str, object])["detail"],
@@ -1325,339 +1055,13 @@ def _code(response: httpx2.Response) -> str:
     return from_plain(detail["code"], str)
 
 
-def _message(response: httpx2.Response) -> str:
+def refusal_message(response: httpx2.Response) -> str:
     """Return the ``message`` of a refusal's detail."""
     detail = from_plain(
         json_loads(response.content, dict[str, object])["detail"],
         dict[str, object],
     )
     return from_plain(detail["message"], str)
-
-
-async def _canvas_on(
-    store: Store,
-    *,
-    provider: str,
-    conversation_id: uuid.UUID,
-) -> None:
-    """Give the test user a canvas that holds ``conversation_id`` on ``provider``."""
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO visual_canvases (id, user_id, metadata, state) "
-            "VALUES (gen_random_uuid(), $1, $2, $3)",
-            TEST_USER_ID,
-            {"name": f"on-{provider}", "conversation_id": str(conversation_id)},
-            {"visuals": [], "provider": provider},
-        )
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_chat_on_a_cli_is_drained_by_its_starters_run_and_never_the_assistant(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The canvas's choice holds at the drain: two drainers never share one queue."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation = uuid.uuid4()
-    chat = await seed_session(
-        store,
-        ASSISTANT,
-        actor="chat-1",
-        cli_session_id=chat_session_id(conversation),
-        account=TEST_USER_EMAIL,
-    )
-    await _canvas_on(store, provider="claude", conversation_id=conversation)
-
-    act_as_assistant()
-    refused = await drain(client, session_id=chat)
-    assert (refused.status_code, _code(refused)) == (409, "provider_is_cli")
-    act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    act_as_other_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 403
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_refused_drain_of_the_chats_own_run_is_kept_for_its_canvas(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A stranger's refused drain is kept for no one; a drain let in forgets it."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation = uuid.uuid4()
-    chat = await seed_session(
-        store,
-        ASSISTANT,
-        actor="chat-1",
-        cli_session_id=chat_session_id(conversation),
-        account=TEST_USER_EMAIL,
-    )
-    await _canvas_on(store, provider="claude", conversation_id=conversation)
-    inbound = cast("InboundQueue", app.state.inbound)
-
-    act_as_other_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 403
-    assert inbound.refusal(chat) is None
-    act_as_user_agent("writer")
-    refused = await drain(client, session_id=chat, cli="codex")
-    assert (refused.status_code, _code(refused)) == (409, "provider_is_other_cli")
-    kept = inbound.refusal(chat)
-    assert kept is not None
-    assert kept.reason == _message(refused)
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    assert inbound.refusal(chat) is None
-
-
-async def _canvas_with_chat(
-    store: Store,
-    *,
-    provider: str,
-) -> tuple[uuid.UUID, uuid.UUID]:
-    """Seed the test user's canvas on ``provider`` and its chat's unpolled session."""
-    conversation = uuid.uuid4()
-    chat = await seed_session(
-        store,
-        USER_AGENT,
-        actor="chat-1",
-        cli=provider,
-        cli_session_id=chat_session_id(conversation),
-        polled=False,
-    )
-    await _canvas_on(store, provider=provider, conversation_id=conversation)
-    return conversation, chat
-
-
-async def _switch_canvas_to(
-    store: Store,
-    *,
-    conversation_id: uuid.UUID,
-    provider: str,
-) -> None:
-    """Store ``provider`` as the choice of the canvas that holds the chat."""
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "UPDATE visual_canvases SET state = state || "
-            "jsonb_build_object('provider', $2::text) "
-            "WHERE metadata ->> 'conversation_id' = $1",
-            str(conversation_id),
-            provider,
-        )
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_after_a_switch_to_codex_only_codex_drains_the_chat(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A claude run left polling is told so, and a line queued for codex stays queued."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    await _switch_canvas_to(store, conversation_id=conversation, provider="codex")
-    inbound = cast("InboundQueue", app.state.inbound)
-    _ = inbound.enqueue(chat, Inbound(text="pineapple"))
-
-    stale = await drain(client, session_id=chat, cli="claude")
-    assert (stale.status_code, _code(stale)) == (409, "provider_is_other_cli")
-    assert inbound.pending(chat) == 1
-    fresh = await drain(client, session_id=chat, cli="codex")
-    assert fresh.status_code == 200
-    assert [
-        from_plain(each, dict[str, object])["text"]
-        for each in from_plain(
-            json_loads(fresh.content, dict[str, object])["messages"],
-            list[object],
-        )
-    ] == ["pineapple"]
-    assert inbound.poller_run(chat) == PollerRun(cli="codex")
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_chat_drain_that_names_no_cli_is_told_to_update_trax(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A `trax` from before the drain named its CLI cannot be told apart, so it waits."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-
-    refused = await drain(client, session_id=chat)
-
-    assert (refused.status_code, _code(refused)) == (426, "cli_required")
-    assert "Update trax" in _message(refused)
-    assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_second_run_on_a_chat_with_a_live_run_is_refused(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """One run drains a chat at a time; the next may take it once the first is gone."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    first, second = "a" * 32, "b" * 32
-
-    async def drains(instance: str) -> tuple[int, str | None]:
-        answered = await drain(client, session_id=chat, cli="claude", instance=instance)
-        return answered.status_code, (
-            None if answered.status_code == 200 else _code(answered)
-        )
-
-    assert await drains(first) == (200, None)
-    assert await drains(second) == (409, "chat_run_live")
-    assert await drains(first) == (200, None)
-    cast("InboundQueue", app.state.inbound).forget_poller(chat)
-    assert await drains(second) == (200, None)
-    assert await drains(first) == (409, "chat_run_live")
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_refused_second_run_leaves_the_first_runs_lease_and_lines(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The refusal takes no lease; only the refused run's own end could cost the first."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    inbound = cast("InboundQueue", app.state.inbound)
-    first, second = "a" * 32, "b" * 32
-    assert (
-        await drain(client, session_id=chat, cli="claude", instance=first)
-    ).status_code == 200
-    _ = inbound.enqueue(chat, Inbound(text="pineapple"))
-
-    refused = await drain(client, session_id=chat, cli="claude", instance=second)
-
-    assert (refused.status_code, _code(refused)) == (409, "chat_run_live")
-    held = inbound.poller_run(chat)
-    assert held is not None
-    assert (held.cli, held.instance) == ("claude", first)
-    assert inbound.pending(chat) == 1
-    kept = await drain(client, session_id=chat, cli="claude", instance=first)
-    assert kept.status_code == 200
-    assert [
-        from_plain(each, dict[str, object])["text"]
-        for each in from_plain(
-            json_loads(kept.content, dict[str, object])["messages"],
-            list[object],
-        )
-    ] == ["pineapple"]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.parametrize("chosen", ["codex", "assistant"])
-async def test_the_exit_of_a_run_a_switch_left_does_not_end_the_chat(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    chosen: str,
-) -> None:
-    """A switch stops the old run, whose exit must not end the session the chat uses."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    await _switch_canvas_to(store, conversation_id=conversation, provider=chosen)
-    inbound = cast("InboundQueue", app.state.inbound)
-    _ = inbound.enqueue(chat, Inbound(text="pineapple"))
-
-    left = await client.post(f"/api/sessions/{chat}/end", json={"cli": "claude"})
-
-    assert left.status_code == 200, left.text
-    assert (await _session(store, session_id=chat)).ended is None
-    assert inbound.pending(chat) == 1
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_exit_of_the_chats_own_run_ends_it(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Only a run of a CLI the chat left keeps it open; the chosen one's exit ends it."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="codex")
-    act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat, cli="codex")).status_code == 200
-
-    ended = await client.post(f"/api/sessions/{chat}/end", json={"cli": "codex"})
-
-    assert ended.status_code == 200, ended.text
-    assert (await _session(store, session_id=chat)).ended is not None
-    assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-@pytest.mark.parametrize(
-    ("cli", "said"),
-    [("codex", "exited with status 1: ImportError: boom"), ("claude", None)],
-)
-async def test_a_run_that_ended_before_it_was_seen_says_why_in_its_chat(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    cli: str,
-    said: str | None,
-) -> None:
-    """A run that ends before it asks for its lines was seen nowhere: its end says why.
-
-    Chat waits for the run it started to go live, and says why it did not from the
-    canvas's ``refused``. The end of a run a switch left says nothing: it was stopped.
-    """
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="codex")
-    act_as_user_agent("writer")
-
-    ended = await client.post(
-        f"/api/sessions/{chat}/end",
-        json={"cli": cli, "failed": "exited with status 1: ImportError: boom"},
-    )
-
-    assert ended.status_code == 200, ended.text
-    refusal = cast("InboundQueue", app.state.inbound).refusal(chat)
-    assert (None if refusal is None else refusal.reason) == said
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_browser_closes_only_its_own_chat(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The starter closes the chat from a browser, which has no key; a stranger cannot."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-
-    browser(OTHER_USER_ID, email=OTHER_EMAIL)
-    from_a_stranger = await client.post(f"/api/sessions/{chat}/end", json={})
-    assert (await _session(store, session_id=chat)).ended is None
-    browser()
-    from_the_starter = await client.post(f"/api/sessions/{chat}/end", json={})
-
-    assert from_a_stranger.status_code == 403
-    assert from_the_starter.status_code == 200, from_the_starter.text
-    assert (await _session(store, session_id=chat)).ended is not None
 
 
 @pytest.mark.db_pglite
@@ -1675,7 +1079,7 @@ async def test_a_run_that_names_its_cli_ends_a_session_that_is_no_chat(
     ended = await client.post(f"/api/sessions/{session_id}/end", json={"cli": "claude"})
 
     assert ended.status_code == 200, ended.text
-    assert (await _session(store, session_id=session_id)).ended is not None
+    assert (await session_row(store, session_id=session_id)).ended is not None
 
 
 @pytest.mark.parametrize("instance", ["", "A" * 32, "a" * 31, "g" * 32, "a" * 33])
@@ -1687,7 +1091,7 @@ def test_a_run_instance_is_32_lowercase_hex_digits(
     """The id a run names itself by is bounded, as it is kept in memory per lease."""
     client, store, _engine = route_client
     app.state.inbound = InboundQueue()
-    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=_live_session()))
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=live_session()))
     monkeypatch.setattr(store, "record_session_seen", AsyncMock())
 
     r = client.get(
@@ -1698,251 +1102,12 @@ def test_a_run_instance_is_32_lowercase_hex_digits(
     assert r.status_code == 422, r.text
 
 
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_chat_back_on_the_assistant_refuses_its_starters_run(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A run left attached after a switch back takes none of the assistant's lines."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation = uuid.uuid4()
-    run = await seed_session(
-        store,
-        USER_AGENT,
-        actor="chat-1",
-        cli="claude",
-        cli_session_id=chat_session_id(conversation),
-    )
-    await _canvas_on(store, provider="assistant", conversation_id=conversation)
-
-    act_as_user_agent("writer")
-    refused = await drain(client, session_id=run)
-    assert (refused.status_code, _code(refused)) == (409, "provider_is_assistant")
-
-
-def _served(config: Config) -> Request:
-    """Return a request to an app configured with ``config``."""
-    served = FastAPI()
-    served.state.config = config
-    return Request({"type": "http", "app": served})
-
-
-@pytest.mark.parametrize(
-    ("provider", "email", "refusal"),
-    [
-        (None, KB_EMAIL, None),
-        (None, TEST_USER_EMAIL, None),
-        ("claude", TEST_USER_EMAIL, None),
-        ("assistant", KB_EMAIL, None),
-        ("assistant", KB_EMAIL.upper(), None),
-        (
-            "claude",
-            KB_EMAIL,
-            {
-                "code": "provider_is_cli",
-                "message": "This chat's canvas answers it with claude",
-            },
-        ),
-        (
-            "codex",
-            KB_EMAIL.upper(),
-            {
-                "code": "provider_is_cli",
-                "message": "This chat's canvas answers it with codex",
-            },
-        ),
-        (
-            "assistant",
-            TEST_USER_EMAIL,
-            {
-                "code": "provider_is_assistant",
-                "message": "This chat's canvas answers it with the assistant",
-            },
-        ),
-    ],
-)
-def test_a_chats_drain_is_refused_to_a_key_its_provider_is_not(
-    provider: ChatProvider | None,
-    email: str,
-    refusal: dict[str, str] | None,
-) -> None:
-    """The assistant's account is one drainer, everyone else's run the other."""
-    identity = make_test_identity(email=email)
-    if refusal is None:
-        sessions_routes._refuse_the_other_provider(
-            _served(ASSISTANT_CONFIG),
-            identity,
-            provider=provider,
-        )
-        return
-    with pytest.raises(HTTPException) as refused:
-        sessions_routes._refuse_the_other_provider(
-            _served(ASSISTANT_CONFIG),
-            identity,
-            provider=provider,
-        )
-    assert (refused.value.status_code, refused.value.detail) == (409, refusal)
-
-
-@pytest.mark.parametrize("provider", ["assistant", "claude"])
-def test_without_an_assistant_no_key_is_refused_for_a_provider(
-    provider: ChatProvider,
-) -> None:
-    """With no assistant configured there is no second drainer to keep out."""
-    sessions_routes._refuse_the_other_provider(
-        _served(Config()),
-        make_test_identity(email=KB_EMAIL),
-        provider=provider,
-    )
-
-
-async def _post_to_the_assistant(
-    client: httpx2.AsyncClient,
-    *,
-    store: Store,
-    cli_session_id: str | None,
-) -> tuple[uuid.UUID, uuid.UUID]:
-    """Start the assistant, post a line it has not drained, and end its session."""
-    await seed_accounts(store)
-    act_as_assistant()
-    kb = await start_session(client, actor=KB_ACTOR, cli_session_id=cli_session_id)
-    canvas_id = await open_canvas(client)
-    sent = await send_chat(
-        client,
-        canvas_id=canvas_id,
-        text="posted while it deployed",
-    )
-    assert sent.status_code == 200
-    act_as_assistant()
-    ended = await client.post(f"/api/sessions/{kb}/end", json={"status": "completed"})
-    assert ended.status_code == 200
-    return kb, canvas_id
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_line_posted_before_the_assistant_restarted_is_heard_when_it_resumes(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A post answered 200 survives the end of the service session it was queued for.
-
-    The assistant resumes the same session by its ``cli_session_id``, and nothing
-    else would answer the line: no chat session holds it yet.
-    """
-    client, store = pglite_route_client
-    kb, _ = await _post_to_the_assistant(
-        client,
-        store=store,
-        cli_session_id="scout-service",
-    )
-
-    resumed = await start_unpolled(
-        client,
-        actor=KB_ACTOR,
-        cli_session_id="scout-service",
-    )
-
-    assert resumed == kb
-    act_as_assistant()
-    drained = json_loads(
-        (await drain(client, session_id=resumed)).content,
-        dict[str, object],
-    )
-    [heard] = from_plain(drained["messages"], list[dict[str, object]])
-    assert heard["text"] == "posted while it deployed"
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_line_dropped_with_a_service_session_that_cannot_resume_is_logged(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A session with no ``cli_session_id`` cannot be resumed, so the drop is said."""
-    client, store = pglite_route_client
-    with caplog.at_level("WARNING", logger=sessions_routes.__name__):
-        _ = await _post_to_the_assistant(client, store=store, cli_session_id=None)
-
-    assert TEST_USER_EMAIL in caplog.text
-    assert "dropped 1 chat line(s)" in caplog.text
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_session_starting_ending_or_taking_a_lease_nudges_the_streams(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    assistant_served: ChatHub,
-) -> None:
-    """Open canvases recheck their partner when it may have changed."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    canvas_id = uuid.uuid4()
-    act_as_assistant()
-    with assistant_served.subscribe(canvas_id) as stream:
-        started = await client.post("/api/sessions/start", json={"cli": "codex"})
-        assert started.status_code == 201
-        assert stream.nudged.is_set()
-        stream.nudged.clear()
-        session_id = json_loads(started.content, dict[str, object])["id"]
-        assert (
-            await client.get(f"/api/sessions/{session_id}/inbound")
-        ).status_code == 200
-        assert stream.nudged.is_set()
-        stream.nudged.clear()
-        assert (
-            await client.get(f"/api/sessions/{session_id}/inbound")
-        ).status_code == 200
-        assert not stream.nudged.is_set()
-        ended = await client.post(
-            f"/api/sessions/{session_id}/end",
-            json={"status": "completed"},
-        )
-        assert ended.status_code == 200
-        assert stream.nudged.is_set()
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_drained_chat_message_carries_its_senders_role(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The partner reads the role of whoever sent each line, as the server saw it."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    act_as_assistant()
-    kb = await start_session(client, actor=KB_ACTOR)
-    canvas_id = await open_canvas(client)
-    for role in ("writer", "admin"):
-        install_identity(make_test_identity(api_key_id=None, role=role))
-        sent = await send_chat(
-            client,
-            canvas_id=canvas_id,
-            text=f"as {role}",
-        )
-        assert sent.status_code == 200
-    act_as_assistant()
-    drained = json_loads(
-        (await drain(client, session_id=kb)).content,
-        dict[str, object],
-    )
-    assert [
-        (from_plain(m["text"], str), from_plain(m["source_role"], str))
-        for m in from_plain(drained["messages"], list[dict[str, object]])
-    ] == [("as writer", "writer"), ("as admin", "admin")]
-
-
-_AWAIT_MESSAGES = InboundQueue.await_messages
+AWAIT_MESSAGES = InboundQueue.await_messages
 """The wait itself, as it is before a test wraps it."""
 
 
 @dataclass(slots=True, kw_only=True)
-class _Holds:
+class Holds:
     """The requests that parked on the inbound queue to wait for a message."""
 
     parked: asyncio.Event = field(default_factory=asyncio.Event)
@@ -1952,9 +1117,9 @@ class _Holds:
     """How long each request asked to wait."""
 
 
-async def _parked(
+async def parked_wait(
     queue: InboundQueue,
-    holds: _Holds,
+    holds: Holds,
     session_id: uuid.UUID,
     *,
     timeout_sec: float,
@@ -1962,54 +1127,52 @@ async def _parked(
     """Wait on ``queue`` as it does, noting that the wait began."""
     holds.asked_sec.append(timeout_sec)
     holds.parked.set()
-    return await _AWAIT_MESSAGES(queue, session_id, timeout_sec=timeout_sec)
+    return await AWAIT_MESSAGES(queue, session_id, timeout_sec=timeout_sec)
 
 
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_assistant_long_polls_and_a_chat_message_reaches_it_at_once(
+async def test_a_held_drain_returns_as_soon_as_a_line_arrives(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The way scout drains: a held request that returns when a message arrives."""
+    """A run long-polls its session, and a line sent to it ends the wait at once."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    kb = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    canvas_id = await open_canvas(client)
-    holds = _Holds()
+    session_id = await seed_session(store, USER_AGENT, actor="run-1")
+    holds = Holds()
     monkeypatch.setattr(
         InboundQueue,
         "await_messages",
-        partialmethod(_parked, holds),
+        partialmethod(parked_wait, holds),
     )
 
     async def held() -> httpx2.Response:
-        act_as_assistant()
-        return await client.get(f"/api/sessions/{kb}/inbound", params={"wait_sec": 10})
+        act_as_user_agent()
+        return await client.get(
+            f"/api/sessions/{session_id}/inbound",
+            params={"wait_sec": 10},
+        )
 
     waiting = asyncio.ensure_future(held())
     await holds.parked.wait()
     assert not waiting.done()
     assert holds.asked_sec == [10.0]
     browser()
-    sent = await send_chat(
-        client,
-        canvas_id=canvas_id,
-        text="wake up",
+    sent = await client.post(
+        f"/api/sessions/{session_id}/inbound",
+        json={"text": "wake up"},
     )
     response = await asyncio.wait_for(waiting, 5)
+
+    assert sent.status_code == 200, sent.text
     assert response.status_code == 200
     messages = from_plain(
         json_loads(response.content, dict[str, object])["messages"],
-        list[object],
+        list[dict[str, object]],
     )
-    assert [from_plain(m, dict[str, object])["text"] for m in messages] == ["wake up"]
-    context = from_plain(
-        from_plain(messages[0], dict[str, object])["context"],
-        dict[str, object],
-    )
-    assert context["conversation_id"] == str(receipt_conversation(sent))
+    assert [m["text"] for m in messages] == ["wake up"]
 
 
 @pytest.mark.db_pglite
@@ -2032,7 +1195,7 @@ async def test_a_private_start_opens_a_hidden_session_and_says_so(
     bodies = [json_loads(each.content, dict[str, object]) for each in answers]
     assert [each.status_code for each in answers] == [201, 201]
     assert [body["audience"] for body in bodies] == ["private", "open"]
-    hidden = await _session(store, session_id=uuid.UUID(str(bodies[0]["id"])))
+    hidden = await session_row(store, session_id=uuid.UUID(str(bodies[0]["id"])))
     assert hidden.audience == "private"
 
 
@@ -2076,8 +1239,8 @@ async def test_a_private_resume_hides_an_open_run_and_leaves_a_staff_one_ended(
         for audience in runs
     }
 
-    hidden = await _session(store, session_id=runs["open"])
-    staff = await _session(store, session_id=runs["staff"])
+    hidden = await session_row(store, session_id=runs["open"])
+    staff = await session_row(store, session_id=runs["staff"])
     assert answers["open"].status_code == 201, answers["open"].text
     assert (
         json_loads(answers["open"].content, dict[str, object])["audience"] == "private"
@@ -2086,91 +1249,6 @@ async def test_a_private_resume_hides_an_open_run_and_leaves_a_staff_one_ended(
     assert answers["staff"].status_code == 409
     assert staff.audience == "staff"
     assert staff.ended is not None
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_session_under_a_staff_chat_id_opens_staff(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A chat stays staff, or private, whichever key opens its next session."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    opened: dict[str, str] = {}
-    for audience in ("staff", "private", "open"):
-        chat = chat_session_id(uuid.uuid4())
-        # The prior session under the chat id is scaffolding, not the subject: seed it
-        # straight in the store (as the assistant opened it) rather than through two
-        # requests, and stamp its audience.
-        first = await seed_session(
-            store,
-            agent=ASSISTANT,
-            actor=f"first-{audience}",
-            cli_session_id=chat,
-            account=TEST_USER_EMAIL,
-            polled=False,
-        )
-        async with store.engine.acquire() as conn:
-            await conn.execute(
-                "UPDATE inquiries SET agentsession_audience = $2 WHERE id = $1",
-                first,
-                audience,
-            )
-        act_as_other_agent("writer")
-        # The next key opening a session under the chat id is the subject, so this goes
-        # through the real start route; the audience it is given is read back from the
-        # row, with no poll the inheritance does not depend on.
-        started = await client.post(
-            "/api/sessions/start",
-            json={"cli": "codex", "cli_session_id": chat},
-        )
-        assert started.status_code == 201, started.text
-        later = uuid.UUID(
-            from_plain(json_loads(started.content, dict[str, object])["id"], str),
-        )
-        opened[audience] = str((await _session(store, session_id=later)).audience)
-
-    assert opened == {"staff": "staff", "private": "private", "open": "open"}
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_new_chats_first_session_opens_as_its_canvas_chose(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The assistant opens a new chat as the canvas of its first line chose."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    # The assistant's service session, live, so a first line is heard.
-    _ = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    opened: dict[str | None, object] = {}
-    for choice in (None, "private"):
-        canvas_id = await open_canvas(client, new=True)
-        if choice is not None:
-            chosen = await client.patch(
-                f"/api/canvases/{canvas_id}",
-                json={"opens_as": choice},
-            )
-            assert chosen.status_code == 200, chosen.text
-        conversation_id = receipt_conversation(
-            await send_chat(client, canvas_id=canvas_id, text="hello"),
-        )
-        act_as_assistant("writer")
-        started = await client.post(
-            "/api/sessions/start",
-            json={
-                "cli": "codex",
-                "actor": f"chat-{conversation_id.hex[:12]}",
-                "cli_session_id": chat_session_id(conversation_id),
-                "account": TEST_USER_EMAIL,
-            },
-        )
-        assert started.status_code == 201, started.text
-        opened[choice] = json_loads(started.content, dict[str, object])["audience"]
-
-    assert opened == {None: "open", "private": "private"}
 
 
 @pytest.mark.db_pglite
@@ -2232,7 +1310,7 @@ class TestInboundKinds:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         monkeypatch.setattr(store, "record_session_seen", AsyncMock())
         inbound.mark_poller(session_id)
@@ -2272,7 +1350,7 @@ class TestInboundKinds:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=_live_session()),
+            AsyncMock(return_value=live_session()),
         )
         inbound.mark_poller(session_id)
 
@@ -2304,7 +1382,7 @@ def test_a_session_the_old_chat_helper_opened_takes_messages_like_any_other(
         "get_inquiry",
         AsyncMock(
             return_value=replace(
-                _live_session(uuid.uuid4()),
+                live_session(uuid.uuid4()),
                 cli="trax-helper",
                 audience="open",
             ),
@@ -2330,7 +1408,7 @@ def test_a_session_the_old_chat_helper_opened_takes_messages_like_any_other(
     assert [m["text"] for m in messages] == ["a", "b"]
 
 
-def _opens_a_part(name: str) -> dict[str, object]:
+def opens_a_part(name: str) -> dict[str, object]:
     """Return the body that opens the part ``name`` with one line."""
     record = RecordBody.of(
         SessionRecordRow.of(
@@ -2348,27 +1426,7 @@ def _opens_a_part(name: str) -> dict[str, object]:
     }
 
 
-async def _ended_chat(
-    client: httpx2.AsyncClient,
-    store: Store,
-    *,
-    conversation_id: uuid.UUID,
-) -> uuid.UUID:
-    """Open a chat as the assistant, write its first part, and end it."""
-    await seed_accounts(store)
-    chat = await seed_science_chat(store, conversation_id=conversation_id)
-    act_as_assistant("writer")
-    written = await client.post(
-        f"/api/sessions/{chat}/records",
-        json=_opens_a_part("assistant.jsonl"),
-    )
-    assert written.status_code == 200, written.text
-    ended = await client.post(f"/api/sessions/{chat}/end", json={})
-    assert ended.status_code == 200, ended.text
-    return chat
-
-
-async def _attach(
+async def attach_run(
     client: httpx2.AsyncClient,
     *,
     session_id: uuid.UUID,
@@ -2383,53 +1441,55 @@ async def _attach(
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_starters_run_attaches_to_its_chat_and_adds_the_next_part(
+async def test_a_run_attaches_to_an_ended_session_and_adds_the_next_part(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """The chat keeps ``chat:<id>``, is live again, and the run's file is part 1."""
+    """The session keeps its id and is live again; an unknown id is 404."""
     client, store = pglite_route_client
-    conversation = uuid.uuid4()
-    chat = await _ended_chat(client, store, conversation_id=conversation)
-
-    act_as_user_agent("writer")
-    attached = await _attach(client, session_id=chat)
-    appended = await client.post(
-        f"/api/sessions/{chat}/records",
-        json=_opens_a_part("claude.jsonl"),
+    await seed_accounts(store)
+    session_id = await seed_session(
+        store,
+        USER_AGENT,
+        actor="run-1",
+        cli_session_id="vendor-1",
     )
+    act_as_user_agent("writer")
+    written = await client.post(
+        f"/api/sessions/{session_id}/records",
+        json=opens_a_part("codex.jsonl"),
+    )
+    ended = await client.post(f"/api/sessions/{session_id}/end", json={})
 
+    attached = await attach_run(client, session_id=session_id)
+    appended = await client.post(
+        f"/api/sessions/{session_id}/records",
+        json=opens_a_part("claude.jsonl"),
+    )
+    unknown = await attach_run(client, session_id=uuid.uuid4())
+
+    assert (written.status_code, ended.status_code) == (200, 200)
     assert attached.status_code == 201, attached.text
     body = json_loads(attached.content, dict[str, object])
-    assert (body["id"], body["cli_session_id"]) == (
-        str(chat),
-        chat_session_id(conversation),
-    )
-    row = await _session(store, session_id=chat)
-    assert (row.ended, row.cli_session_id) == (None, chat_session_id(conversation))
+    assert (body["id"], body["cli_session_id"]) == (str(session_id), "vendor-1")
+    row = await session_row(store, session_id=session_id)
+    assert (row.ended, row.cli_session_id) == (None, "vendor-1")
     assert appended.status_code == 200, appended.text
     assert json_loads(appended.content, dict[str, object])["part"] == 1
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_stranger_attaches_to_no_chat_and_an_unknown_id_is_404(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A refused attach leaves the chat as it was: ended."""
-    client, store = pglite_route_client
-    chat = await _ended_chat(client, store, conversation_id=uuid.uuid4())
-
-    act_as_other_agent("writer")
-    refused = await _attach(client, session_id=chat)
-    unknown = await _attach(client, session_id=uuid.uuid4())
-
-    assert refused.status_code == 403, refused.text
-    assert (await _session(store, session_id=chat)).ended is not None
     assert unknown.status_code == 404, unknown.text
 
 
-async def _report(
+async def _unpolled_run(store: Store) -> uuid.UUID:
+    """Seed the test user's live session that no run has drained yet."""
+    return await seed_session(
+        store,
+        USER_AGENT,
+        actor="run-1",
+        cli="claude",
+        polled=False,
+    )
+
+
+async def report_state(
     client: httpx2.AsyncClient,
     *,
     session_id: uuid.UUID,
@@ -2444,31 +1504,6 @@ async def _report(
 
 
 @pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_only_a_state_that_changed_nudges_the_streams(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-    assistant_served: ChatHub,
-) -> None:
-    """A run says its state again while it holds; open canvases recheck only a change."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    run = "a" * 32
-    assert (
-        await drain(client, session_id=chat, cli="claude", instance=run)
-    ).status_code == 200
-    with assistant_served.subscribe(uuid.uuid4()) as stream:
-        _ = await _report(client, session_id=chat, state="taken_over", instance=run)
-        changed = stream.nudged.is_set()
-        stream.nudged.clear()
-        _ = await _report(client, session_id=chat, state="taken_over", instance=run)
-        repeated = stream.nudged.is_set()
-
-    assert (changed, repeated) == (True, False)
-
-
-@pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_run_reports_its_state_and_its_next_drains_keep_it(
@@ -2477,26 +1512,26 @@ async def test_a_run_reports_its_state_and_its_next_drains_keep_it(
     """The state is the run's word; a drain renews the lease and leaves it be."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
+    session_id = await _unpolled_run(store)
     act_as_user_agent("writer")
     run = "a" * 32
     inbound = cast("InboundQueue", app.state.inbound)
     assert (
-        await drain(client, session_id=chat, cli="claude", instance=run)
+        await drain(client, session_id=session_id, cli="claude", instance=run)
     ).status_code == 200
 
-    reported = await _report(
+    reported = await report_state(
         client,
-        session_id=chat,
+        session_id=session_id,
         state="requires_action",
         instance=run,
     )
     assert (
-        await drain(client, session_id=chat, cli="claude", instance=run)
+        await drain(client, session_id=session_id, cli="claude", instance=run)
     ).status_code == 200
 
     assert reported.status_code == 204, reported.text
-    held = inbound.poller_run(chat)
+    held = inbound.poller_run(session_id)
     assert held is not None
     assert held.state == "requires_action"
 
@@ -2510,140 +1545,31 @@ async def test_a_report_from_another_run_or_one_with_no_lease_changes_nothing(
     """Both are answered 204: the run is told nothing it could act on."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
+    session_id = await _unpolled_run(store)
     act_as_user_agent("writer")
     inbound = cast("InboundQueue", app.state.inbound)
     first, second = "a" * 32, "b" * 32
 
-    unleased = await _report(client, session_id=chat, state="running", instance=first)
+    unleased = await report_state(
+        client,
+        session_id=session_id,
+        state="running",
+        instance=first,
+    )
     assert (
-        await drain(client, session_id=chat, cli="claude", instance=first)
+        await drain(client, session_id=session_id, cli="claude", instance=first)
     ).status_code == 200
-    other = await _report(client, session_id=chat, state="taken_over", instance=second)
+    other = await report_state(
+        client,
+        session_id=session_id,
+        state="taken_over",
+        instance=second,
+    )
 
     assert (unleased.status_code, other.status_code) == (204, 204)
-    held = inbound.poller_run(chat)
+    held = inbound.poller_run(session_id)
     assert held is not None
     assert held.state == "idle"
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_only_the_chats_own_run_reports_its_state(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The report is held to the drain's rules: its starter's key, never the assistant's."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    run = "a" * 32
-
-    browser()
-    from_a_browser = await _report(
-        client,
-        session_id=chat,
-        state="running",
-        instance=run,
-    )
-    act_as_other_agent("writer")
-    from_a_stranger = await _report(
-        client,
-        session_id=chat,
-        state="running",
-        instance=run,
-    )
-    act_as_assistant("writer")
-    from_the_assistant = await _report(
-        client,
-        session_id=chat,
-        state="running",
-        instance=run,
-    )
-    act_as_user_agent("writer")
-    unknown = await _report(
-        client,
-        session_id=uuid.uuid4(),
-        state="running",
-        instance=run,
-    )
-
-    assert from_a_browser.status_code == 403
-    assert from_a_stranger.status_code == 403
-    assert (from_the_assistant.status_code, _code(from_the_assistant)) == (
-        409,
-        "provider_is_cli",
-    )
-    assert unknown.status_code == 404
-
-
-async def _put_output(
-    client: httpx2.AsyncClient,
-    *,
-    session_id: uuid.UUID,
-    instance: str,
-    text: str,
-) -> httpx2.Response:
-    """Post a clicked command's output so far as the installed identity."""
-    return await client.post(
-        f"/api/sessions/{session_id}/runs/{'c' * 32}/output",
-        json={"instance": instance, "text": text},
-    )
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_running_commands_output_is_held_from_the_chats_run_for_its_readers(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Only the run holding the lease writes it; a post from another changes nothing."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    run = "a" * 32
-    assert (
-        await drain(client, session_id=chat, cli="claude", instance=run)
-    ).status_code == 200
-
-    held = await _put_output(client, session_id=chat, instance=run, text="tick 1")
-    other = await _put_output(client, session_id=chat, instance="b" * 32, text="gone")
-    browser()
-    read = await client.get(f"/api/sessions/{chat}/runs/{'c' * 32}/output")
-    none = await client.get(f"/api/sessions/{chat}/runs/{'d' * 32}/output")
-
-    assert (held.status_code, other.status_code) == (204, 204)
-    assert read.status_code == 200, read.text
-    state = ChatPartialState.model_validate(read.json())
-    assert state.partial == ChatPartial(turn="c" * 32, text="tick 1")
-    assert state.seq > 0
-    assert ChatPartialState.model_validate(none.json()) == ChatPartialState(
-        seq=0,
-        partial=None,
-    )
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_only_the_chats_own_run_puts_its_commands_output(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The post is held to the drain's rules, as a run's state report is."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    run = "a" * 32
-
-    browser()
-    from_a_browser = await _put_output(client, session_id=chat, instance=run, text="x")
-    act_as_other_agent("writer")
-    from_a_stranger = await _put_output(client, session_id=chat, instance=run, text="x")
-    unknown = await client.get(f"/api/sessions/{uuid.uuid4()}/runs/{'c' * 32}/output")
-
-    assert (from_a_browser.status_code, from_a_stranger.status_code) == (403, 403)
-    assert unknown.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -2669,106 +1595,35 @@ def test_a_run_state_report_must_be_well_formed(
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_replaced_run_is_turned_away_and_its_successor_is_not(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """The run the server replaced cannot take the lease back from the run replacing it."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    old, new = "a" * 32, "b" * 32
-    inbound = cast("InboundQueue", app.state.inbound)
-    assert (
-        await drain(client, session_id=chat, cli="claude", instance=old)
-    ).status_code == 200
-
-    inbound.retire_run(chat)
-    turned_away = await drain(client, session_id=chat, cli="claude", instance=old)
-    taken = await drain(client, session_id=chat, cli="claude", instance=new)
-
-    assert (turned_away.status_code, _code(turned_away)) == (409, "chat_run_live")
-    assert taken.status_code == 200
-    held = inbound.poller_run(chat)
-    assert held is not None
-    assert held.instance == new
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
 async def test_a_stopped_run_is_refused_with_a_403_and_a_new_run_is_not(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     """A 403 ends every run ever shipped, where a 409 code it does not know is retried."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
+    session_id = await _unpolled_run(store)
     act_as_user_agent("writer")
     old, new = "a" * 32, "b" * 32
     inbound = cast("InboundQueue", app.state.inbound)
     first = await drain(
         client,
-        session_id=chat,
+        session_id=session_id,
         cli="claude",
         instance=old,
         machine="box",
     )
     assert first.status_code == 200
-    assert list(inbound.runs_on("box", account=TEST_USER_EMAIL)) == [chat]
+    assert list(inbound.runs_on("box", account=TEST_USER_EMAIL)) == [session_id]
 
-    inbound.stop_run(chat)
-    turned_away = await drain(client, session_id=chat, cli="claude", instance=old)
-    taken = await drain(client, session_id=chat, cli="claude", instance=new)
+    inbound.stop_run(session_id)
+    turned_away = await drain(client, session_id=session_id, cli="claude", instance=old)
+    taken = await drain(client, session_id=session_id, cli="claude", instance=new)
 
-    assert (turned_away.status_code, _code(turned_away)) == (403, "run_stopped")
+    assert (turned_away.status_code, refusal_code(turned_away)) == (403, "run_stopped")
     assert taken.status_code == 200
 
 
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_run_draining_a_chat_that_was_closed_is_told_the_session_ended(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Closing a chat ends its session; the run still polling it is turned away for good."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-
-    ended = await client.post(f"/api/sessions/{chat}/end", json={"actor": "scientist"})
-    assert ended.status_code == 200, ended.text
-    turned_away = await drain(client, session_id=chat, cli="claude")
-
-    assert (turned_away.status_code, _code(turned_away)) == (409, "session_ended")
-    assert "session_ended" in RUN_ENDING_REFUSALS
-    assert not cast("InboundQueue", app.state.inbound).has_poller(chat)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_chat_run_closed_for_silence_is_revived_by_its_drain_not_turned_away(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Only a session its own end or a close ended is refused; the reaper's close is undone."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    inbound = cast("InboundQueue", app.state.inbound)
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    assert await _reap(store, inbound=inbound, after=_WINDOW) == 1
-
-    back = await drain(client, session_id=chat, cli="claude")
-
-    assert back.status_code == 200, back.text
-    assert (await _session(store, session_id=chat)).ended is None
-
-
-async def _open_asks(store: Store, session_id: uuid.UUID) -> list[str]:
+async def open_asks(store: Store, session_id: uuid.UUID) -> list[str]:
     """Return the asks open in a session."""
     async with store.engine.acquire() as conn:
         return await open_ask_ids(conn, session_id=session_id)
@@ -2783,37 +1638,16 @@ async def test_the_end_of_a_run_releases_the_asks_it_left_open(
     """A card with no run behind it is ended before the session closes to records."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
+    session_id = await _unpolled_run(store)
     act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    await open_ask(store, chat, ask_id="a1")
+    assert (await drain(client, session_id=session_id, cli="claude")).status_code == 200
+    await open_ask(store, session_id, ask_id="a1")
 
-    ended = await client.post(f"/api/sessions/{chat}/end", json={"cli": "claude"})
+    ended = await client.post(f"/api/sessions/{session_id}/end", json={"cli": "claude"})
 
     assert ended.status_code == 200, ended.text
-    assert (await _session(store, session_id=chat)).ended is not None
-    assert await _open_asks(store, chat) == []
-
-
-@pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_exit_of_a_run_a_switch_left_keeps_the_asks_for_the_loop(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """That exit changes nothing, so it releases nothing: the chat goes on."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    conversation, chat = await _canvas_with_chat(store, provider="claude")
-    act_as_user_agent("writer")
-    assert (await drain(client, session_id=chat, cli="claude")).status_code == 200
-    await _switch_canvas_to(store, conversation_id=conversation, provider="codex")
-    await open_ask(store, chat, ask_id="a1")
-
-    left = await client.post(f"/api/sessions/{chat}/end", json={"cli": "claude"})
-
-    assert left.status_code == 200, left.text
-    assert await _open_asks(store, chat) == ["a1"]
+    assert (await session_row(store, session_id=session_id)).ended is not None
+    assert await open_asks(store, session_id) == []
 
 
 @pytest.mark.db_pglite
@@ -2822,60 +1656,60 @@ async def test_the_exit_of_a_run_a_switch_left_keeps_the_asks_for_the_loop(
 async def test_the_exit_of_a_run_a_reattach_replaced_leaves_the_new_run_alone(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """The replaced run may quit before it learns so; its end must not end the chat."""
+    """The replaced run may quit before it learns so; its end must not end the session."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
+    session_id = await _unpolled_run(store)
     act_as_user_agent("writer")
     old, new = "a" * 32, "b" * 32
     inbound = cast("InboundQueue", app.state.inbound)
     assert (
-        await drain(client, session_id=chat, cli="claude", instance=old)
+        await drain(client, session_id=session_id, cli="claude", instance=old)
     ).status_code == 200
-    inbound.retire_run(chat)
+    inbound.retire_run(session_id)
     assert (
-        await drain(client, session_id=chat, cli="claude", instance=new)
+        await drain(client, session_id=session_id, cli="claude", instance=new)
     ).status_code == 200
-    await open_ask(store, chat, ask_id="a1")
+    await open_ask(store, session_id, ask_id="a1")
 
     left = await client.post(
-        f"/api/sessions/{chat}/end",
+        f"/api/sessions/{session_id}/end",
         json={"cli": "claude", "instance": old},
     )
 
     assert left.status_code == 200, left.text
-    assert (await _session(store, session_id=chat)).ended is None
-    held = inbound.poller_run(chat)
+    assert (await session_row(store, session_id=session_id)).ended is None
+    held = inbound.poller_run(session_id)
     assert held is not None
     assert held.instance == new
-    assert await _open_asks(store, chat) == ["a1"]
+    assert await open_asks(store, session_id) == ["a1"]
 
 
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_exit_of_the_run_that_holds_the_chat_ends_it(
+async def test_the_exit_of_the_run_that_holds_the_lease_ends_its_session(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
-    """A run that names its own instance still ends its chat."""
+    """A run that names its own instance still ends its session."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    _, chat = await _canvas_with_chat(store, provider="claude")
+    session_id = await _unpolled_run(store)
     act_as_user_agent("writer")
     own = "a" * 32
     assert (
-        await drain(client, session_id=chat, cli="claude", instance=own)
+        await drain(client, session_id=session_id, cli="claude", instance=own)
     ).status_code == 200
-    await open_ask(store, chat, ask_id="a1")
+    await open_ask(store, session_id, ask_id="a1")
 
     ended = await client.post(
-        f"/api/sessions/{chat}/end",
+        f"/api/sessions/{session_id}/end",
         json={"cli": "claude", "instance": own},
     )
 
     assert ended.status_code == 200, ended.text
-    assert (await _session(store, session_id=chat)).ended is not None
-    assert await _open_asks(store, chat) == []
+    assert (await session_row(store, session_id=session_id)).ended is not None
+    assert await open_asks(store, session_id) == []
 
 
 if __name__ == "__main__":

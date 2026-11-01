@@ -26,7 +26,6 @@ from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.visuals.session_lines import LINE_CHARS, LastLine
 from trackinizer.server.visuals.session_list import SessionList, list_own_sessions
 from trackinizer.types.session_records import SessionRecordRow
-from trackinizer.wire.wire_science_chat import chat_session_id
 
 
 if TYPE_CHECKING:
@@ -157,31 +156,6 @@ async def _edge(
         )
 
 
-async def _canvas(
-    store: Store,
-    *,
-    user_id: uuid.UUID = _USER,
-    conversation_id: uuid.UUID | None = None,
-    workspace_id: uuid.UUID | None = None,
-) -> uuid.UUID:
-    """Store a canvas of ``user_id`` holding a chat, in a workspace or in none."""
-    canvas_id = uuid.uuid4()
-    metadata = {
-        "name": f"canvas {canvas_id}",
-        "conversation_id": None if conversation_id is None else str(conversation_id),
-        "workspace_id": None if workspace_id is None else str(workspace_id),
-    }
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO visual_canvases (id, user_id, state, metadata) "
-            "VALUES ($1, $2, '{}'::jsonb, $3)",
-            canvas_id,
-            user_id,
-            {key: value for key, value in metadata.items() if value is not None},
-        )
-    return canvas_id
-
-
 async def _list(
     store: Store,
     *,
@@ -194,7 +168,6 @@ async def _list(
     return await list_own_sessions(
         store.engine,
         email=_EMAIL,
-        user_id=_USER,
         reader=reader,
         inbound=inbound or InboundQueue(),
         days=days,
@@ -366,43 +339,6 @@ async def test_the_last_line_is_the_last_said_on_one_line_by_whom_and_no_tool_ou
     assert sessions[shared] == LastLine(author="grace@example.com", text="Ship it")
     assert sessions[asked] == LastLine(author=_EMAIL, text="x" * LINE_CHARS)
     assert sessions[quiet] is None
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_chat_sits_on_its_canvas_and_a_placed_session_on_its_labelled_one(
-    store: Store,
-) -> None:
-    workspace = await _issue(store, title="Console", labels=["workspace"])
-    conversation = uuid.uuid4()
-    chat_canvas = await _canvas(
-        store,
-        conversation_id=conversation,
-        workspace_id=workspace,
-    )
-    scratch_canvas = await _canvas(store)
-    chat = await _session(store, cli_session_id=chat_session_id(conversation))
-    placed = await _session(store, labels=["git:o@main", f"canvas:{scratch_canvas}"])
-    foreign = await _session(
-        store,
-        labels=[f"canvas:{uuid.uuid4()}", "canvas:not-a-uuid"],
-    )
-
-    sessions = {each.id: each for each in (await _list(store)).sessions}
-
-    assert (sessions[chat].conversation_id, sessions[chat].canvas_id) == (
-        conversation,
-        chat_canvas,
-    )
-    assert sessions[chat].workspace_id == workspace
-    assert (sessions[placed].canvas_id, sessions[placed].workspace_id) == (
-        scratch_canvas,
-        None,
-    )
-    assert (sessions[foreign].canvas_id, sessions[foreign].conversation_id) == (
-        None,
-        None,
-    )
 
 
 @pytest.mark.db_pglite
