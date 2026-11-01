@@ -49,7 +49,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   lens: null,
   drafts: {},
   create_draft: null,
-  workspaces: { order: [], pinned: [], hidden: [] },
+  workspaces: { order: [], hidden: [], colors: {}, expanded: [], tabs: [], last_canvas: {} },
   settings_artifact_id: null,
 };
 

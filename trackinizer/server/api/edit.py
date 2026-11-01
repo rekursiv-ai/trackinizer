@@ -105,7 +105,6 @@ def _make_put(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSON]]
                 request,
                 identity,
                 target_id,
-                value=from_plain(body.value, str, default=None),
             )
         await require_row_write(request, identity, target_id)
         store = get_store(request)
@@ -168,7 +167,11 @@ def _make_delete(route: InquiryFieldRoute) -> Callable[..., Awaitable[MutableJSO
         await require_unlocked(request, identity, [target_id])
         await require_session_row_write(request, identity, target_id)
         if route.column == "cli_session_id":
-            await require_session_id_change(request, identity, target_id, value=None)
+            await require_session_id_change(
+                request,
+                identity,
+                target_id,
+            )
         await require_row_write(request, identity, target_id)
         store = get_store(request)
         change_id = await _clear_value(route, target_id, body, store, identity)

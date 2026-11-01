@@ -32,19 +32,12 @@ from trackinizer.server.api import (
     addons_routes,
     admin_routes,
     auth_routes,
-    canvas_routes,
-    capture_routes,
-    chat_partial_routes,
-    chat_upload_routes,
     code_routes,
-    compute_routes,
-    console_relay_routes,
     device_routes,
     edge,
     edit,
     exec_routes,
     export_routes,
-    lineage_routes,
     locks,
     logout_routes,
     machine_host_routes,
@@ -54,19 +47,14 @@ from trackinizer.server.api import (
     metrics_routes,
     query,
     reports_routes,
-    science_chat_routes,
     service_account_routes,
     session_audience_routes,
     session_ir_routes,
     session_list_routes,
-    session_placement_routes,
     sessions_routes,
     submit,
     terminal_routes,
-    timeline_routes,
     variables_routes,
-    visuals_routes,
-    workspace_routes,
 )
 from trackinizer.server.api._deps import terminal_hub
 from trackinizer.server.api.addons_routes import app_deployment
@@ -348,27 +336,20 @@ def _start_addon_services(
     ]
 
 
-# Every route module's router, in inclusion order. ``_build_app`` includes them, and
-# the web app's schema dump builds its own app from the same tuple rather than
-# copying the module-level ``app``, which tests reconfigure.
+# Every public route module's router, in inclusion order. ``_build_app`` includes
+# them, and the web app's schema dump builds its own app from the same tuple rather
+# than copying the module-level ``app``, which tests reconfigure.
 ROUTERS: Final = (
     addons_routes.router,
     admin_routes.router,
     auth_routes.router,
-    capture_routes.router,
-    chat_partial_routes.router,
-    chat_upload_routes.router,
     code_routes.router,
-    compute_routes.router,
-    console_relay_routes.router,
     device_routes.router,
-    session_placement_routes.router,
     session_list_routes.router,
     edge.router,
     edit.router,
     exec_routes.router,
     export_routes.router,
-    lineage_routes.router,
     locks.router,
     logout_routes.router,
     machine_host_routes.router,
@@ -378,18 +359,13 @@ ROUTERS: Final = (
     metrics_routes.router,
     query.router,
     reports_routes.router,
-    science_chat_routes.router,
     service_account_routes.router,
     session_audience_routes.router,
     session_ir_routes.router,
     sessions_routes.router,
     submit.router,
     terminal_routes.router,
-    timeline_routes.router,
     variables_routes.router,
-    visuals_routes.router,
-    workspace_routes.router,
-    canvas_routes.router,
 )
 
 

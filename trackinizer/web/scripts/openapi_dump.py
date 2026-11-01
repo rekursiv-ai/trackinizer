@@ -12,7 +12,7 @@ trackinizer.server` serves it (`--web` is the default), so the dump equals
 the live /openapi.json at the same commit, less its addons. A deployment's addons
 add routes under /api/addons/<name>/, which the web app types against each
 addon's own schema, so the dump leaves them out, with the component schemas only
-they use. Output is normalised (sorted keys, two-space indent) and the sha256 of
+they use. Output is normalised (sorted keys, one-space indent) and the sha256 of
 the written text is printed; version.json carries the same hash, so `--url`
 compares a live server with a build whatever addons the server runs.
 
@@ -153,8 +153,8 @@ def core_schema(schema: Mapping[str, MutablePlainTree]) -> dict[str, MutablePlai
 
 
 def render(schema: Mapping[str, object]) -> str:
-    """Normalise a schema to the committed text: sorted keys, two-space indent."""
-    return json.dumps(schema, indent=2, sort_keys=True) + "\n"
+    """Normalise a schema to the committed text: sorted keys, one-space indent."""
+    return json.dumps(schema, indent=1, sort_keys=True) + "\n"
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> None:

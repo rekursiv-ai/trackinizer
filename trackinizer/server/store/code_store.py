@@ -444,7 +444,11 @@ async def _readable(
             "FROM code_snapshots AS s JOIN inquiries AS i ON i.id = s.record_id "
             "WHERE s.record_id = $1 AND (NOT s.private OR s.owner = $2) "
             "AND (i.kind <> 'AgentSession' OR ",
-            visible_sql("i", params=params, reader=reader, single=True),
+            visible_sql(
+                "i",
+                params=params,
+                reader=reader,
+            ),
             ")",
         ),
         *params,

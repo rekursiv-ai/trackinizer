@@ -8,7 +8,7 @@ resource.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast
 
@@ -28,16 +28,6 @@ from trackinizer.server.access_policy import (
     Resource,
 )
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import (
-    ASSISTANT,
-    ASSISTANT_CONFIG,
-    KB_ACTOR,
-    OTHER_EMAIL,
-    OTHER_USER_ID,
-    seed_accounts,
-    seed_science_chat,
-    seed_session,
-)
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -48,6 +38,11 @@ from trackinizer.server.api.conftest import (
     patch_state,
 )
 from trackinizer.server.api.session_access import request_principal
+from trackinizer.server.api.session_test_support import (
+    OTHER_EMAIL,
+    OTHER_USER_ID,
+    seed_accounts,
+)
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
@@ -90,8 +85,6 @@ VIEWER_ID: Final = uuid.UUID("88888888-8888-8888-8888-888888888888")
 VIEWER_KEY: Final = uuid.UUID("99999999-9999-9999-9999-999999999999")
 ROOT: Final = "root@example.com"
 ROOT_ID: Final = uuid.UUID("77777777-7777-7777-7777-777777777777")
-JAN: Final = "jan@other.org"
-JAN_ID: Final = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 GROUPS: Final = frozenset({"g1"})
 
 
@@ -237,36 +230,6 @@ async def test_a_writer_reassigns_a_rows_account_to_a_viewer(served: _Client) ->
 
     assert moved.status_code == 200, moved.text
     assert json_loads(read.content, dict[str, object])["account"] == VIEWER
-
-
-async def test_a_share_recipient_outside_the_org_edits_a_field(
-    served: _Client,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Jan, at another domain, holds a share of Ada's chat and labels her session."""
-    patch_state(monkeypatch, "config", replace(ASSISTANT_CONFIG, chat_orgs="domain"))
-    client, store = served
-    _ = await seed_session(store, ASSISTANT, actor=KB_ACTOR)
-    conversation = uuid.uuid4()
-    _ = await seed_science_chat(store, conversation_id=conversation, account=ADA)
-    _as(ADA)
-    shared = await client.put(f"/api/chats/{conversation}/shares/{JAN}")
-    _as(ADA, api_key_id=TEST_API_KEY_ID)
-    started = await client.post(
-        "/api/sessions/start",
-        json={"cli": "codex", "actor": "ada-run"},
-    )
-    session = _created_id(started)
-
-    _as(JAN, user_id=JAN_ID)
-    labelled = await client.patch(
-        f"/api/inquiries/{session}/labels",
-        json={"op": "add", "value": "reviewed"},
-    )
-
-    assert json_loads(shared.content, list[str]) == [JAN]
-    assert started.status_code == 201, started.text
-    assert labelled.status_code == 200, labelled.text
 
 
 # -- Seam calls: each guarded point asks the policy once, about the right row. ---

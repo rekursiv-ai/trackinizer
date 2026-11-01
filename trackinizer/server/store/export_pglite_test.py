@@ -43,7 +43,6 @@ if TYPE_CHECKING:
 _ANYONE: Final = SessionReader(
     audiences=AUDIENCES,
     every_session=True,
-    every_chat=True,
     oversight=True,
 )
 _LEFT_OUT: Final = frozenset(

@@ -8,7 +8,7 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.canvas_test_support import seed_accounts
+from trackinizer.server.api.session_test_support import seed_accounts
 
 
 if TYPE_CHECKING:

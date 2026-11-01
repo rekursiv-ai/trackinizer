@@ -15,9 +15,9 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.server.api import auth_routes
 from trackinizer.server.api.admin_routes import _refuse_last_admin_loss
 from trackinizer.server.api.app import app
+from trackinizer.server.api.auth_routes_test import user_row
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_ID,
@@ -1215,19 +1215,12 @@ class TestProfileRoute:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        # The profile reads the user, then the rules Issue, of which there is none.
-        engine.conn.fetchrow = AsyncMock(
-            side_effect=[
-                {
-                    "name": "Alice",
-                    "last_login": datetime(2026, 1, 1, tzinfo=UTC),
-                    "visual_canvas_enabled": False,
-                    "acknowledged_at": datetime(2026, 2, 1, tzinfo=UTC),
-                    "acknowledged_rules_version": "v1",
-                    "preferences": None,
-                },
-                None,
-            ],
+        engine.conn.fetchrow = user_row(
+            {
+                "name": "Alice",
+                "last_login": datetime(2026, 1, 1, tzinfo=UTC),
+                "preferences": None,
+            },
         )
         r = client.get("/api/me/profile")
         assert r.status_code == 200, r.text
@@ -1235,10 +1228,6 @@ class TestProfileRoute:
         assert body["email"]
         assert body["role"] == "admin"
         assert body["name"] == "Alice"
-        assert body["visual_canvas_enabled"] is False
-        assert body["acknowledged_rules_version"] == "v1"
-        assert body["rules_version"] is None
-        assert body["rules_issue_id"] is None
         last_login = body["last_login"]
         assert isinstance(last_login, str)
         assert last_login.startswith("2026")
@@ -1251,18 +1240,8 @@ class TestProfileRoute:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(api_key_id=key))
-        engine.conn.fetchrow = AsyncMock(
-            side_effect=[
-                {
-                    "name": "Alice",
-                    "last_login": None,
-                    "visual_canvas_enabled": False,
-                    "acknowledged_at": None,
-                    "acknowledged_rules_version": None,
-                    "preferences": None,
-                },
-                None,
-            ],
+        engine.conn.fetchrow = user_row(
+            {"name": "Alice", "last_login": None, "preferences": None},
         )
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
         assert body["api_key_id"] == (None if key is None else str(key))
@@ -1295,55 +1274,13 @@ class TestProfileRoute:
                 pinned_audience=pinned,
             ),
         )
-        engine.conn.fetchrow = AsyncMock(
-            side_effect=[
-                {
-                    "name": "Alice",
-                    "last_login": None,
-                    "visual_canvas_enabled": False,
-                    "acknowledged_at": None,
-                    "acknowledged_rules_version": None,
-                    "preferences": None,
-                },
-                None,
-            ],
+        engine.conn.fetchrow = user_row(
+            {"name": "Alice", "last_login": None, "preferences": None},
         )
         body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
         assert body["read_audiences"] == sorted(read)
         assert body["open_audiences"] == sorted(opening)
         assert body["pinned_audience"] == pinned
-        assert body["summary_accounts"] == []
-
-    def test_lists_only_the_staff_settings_service_accounts(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        client, _store, engine = route_client
-        engine.conn.fetchrow = AsyncMock(
-            side_effect=[
-                {
-                    "name": "Alice",
-                    "last_login": None,
-                    "visual_canvas_enabled": False,
-                    "acknowledged_at": None,
-                    "preferences": None,
-                    "acknowledged_rules_version": None,
-                },
-                None,
-            ],
-        )
-        staff = ("lee@staff.example", "campaign@service.invalid", "*@staff.example")
-
-        def request_staff(request: object) -> tuple[str, ...]:
-            del request
-            return staff
-
-        monkeypatch.setattr(auth_routes, "get_staff", request_staff)
-
-        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
-
-        assert body["summary_accounts"] == ["campaign@service.invalid"]
 
     def test_401_without_auth(
         self,

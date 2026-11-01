@@ -523,9 +523,7 @@ class TestRecordTexts:
             None,
             False,
             False,
-            False,
             True,
-            "",
         ]
         assert sql == vetted_sql(
             "SELECT r.session_id, r.kind, array_agg(r.text) AS texts "

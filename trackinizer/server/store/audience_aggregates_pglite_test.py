@@ -77,14 +77,12 @@ _STARTER: Final = SessionReader(
     audiences=_HELD,
     email=STARTER_EMAIL,
     every_session=True,
-    assistant=ASSISTANT_EMAIL,
 )
 # A colleague of the sessions' account who holds staff, and no member of the chat.
 _STRANGER: Final = SessionReader(
     audiences=AUDIENCES,
     email="sid@example.com",
     org="example.com",
-    assistant=ASSISTANT_EMAIL,
 )
 _OWNER: Final = SessionReader(audiences=_HELD, email=OWNER_EMAIL, org="example.com")
 _OVERSEER: Final = SessionReader(

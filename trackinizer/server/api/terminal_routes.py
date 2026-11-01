@@ -23,7 +23,7 @@ from uuid import UUID
 
 import asyncio
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, WebSocket
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket
 from starlette.websockets import WebSocketDisconnect
 from treekle import ReadError, from_plain
 
@@ -31,11 +31,8 @@ from trackinizer.lib.posix.host import Frame, decode_frame
 from trackinizer.server import auth
 from trackinizer.server.api._deps import (
     auth_is_disabled,
-    get_assistant,
-    get_hub,
     get_inbound,
     get_replays,
-    get_store,
     get_terminal_hub,
 )
 from trackinizer.server.api._origin import is_strictly_same_origin
@@ -43,8 +40,6 @@ from trackinizer.server.api._routes_shared import idempotency_key, request_engin
 from trackinizer.server.api.machine_runs_routes import live_runs
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
 from trackinizer.server.api.session_access import (
-    require_session,
-    require_session_access,
     resolve_asker,
 )
 from trackinizer.server.auth import AuthIdentity, require_role
@@ -57,8 +52,6 @@ from trackinizer.server.terminals import (
     TerminalLimitError,
     decode_attach,
 )
-from trackinizer.server.visuals.canvas_store import read_chat_provider
-from trackinizer.server.visuals.science_chats import read_starter
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_machine_host import (
@@ -66,12 +59,9 @@ from trackinizer.wire.wire_machine_host import (
     OFFLINE_AFTER_SEC,
     older_than,
 )
-from trackinizer.wire.wire_science_chat import chat_conversation_id
 from trackinizer.wire.wire_service_accounts import is_service_address
 from trackinizer.wire.wire_sessions import (
     CHAT_RUN_LIVE,
-    PROVIDER_IS_ASSISTANT,
-    SESSION_REATTACH_PATH,
 )
 from trackinizer.wire.wire_terminals import (
     MACHINE_TERMINAL_WAIT_PATH,
@@ -103,7 +93,6 @@ __all__ = [
     "confirm_terminal_machine_route",
     "list_terminal_machines_route",
     "open_terminal_route",
-    "reattach_session_route",
     "router",
     "terminal_host_socket",
     "terminal_wait_route",
@@ -139,7 +128,7 @@ async def open_terminal_route(
 
     Raises:
       HTTPException: 403 for an untrusted key, a service account or a foreign origin;
-        404 for no such machine of the asker, or canvas; 409 ``terminal_unconfirmed`` until the
+        404 for no such machine of the asker, or another user's canvas; 409 ``terminal_unconfirmed`` until the
         owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's
         facts do not list the CLI asked for, ``files_not_enabled`` for a ``files``
         terminal when they do not say ``files``, ``terminal_not_enabled`` when the host
@@ -167,11 +156,7 @@ async def open_terminal_route(
             code="files_not_enabled",
             message=f"the host on {body.machine} is too old to serve files; update it",
         )
-    workspace = await _canvas_workspace(
-        request,
-        owner=owner,
-        canvas=body.canvas,
-    )
+    workspace: UUID | None = None
     hub = get_terminal_hub(request)
     if not hub.ready(machine_id):
         raise _refused(
@@ -219,152 +204,6 @@ async def open_terminal_route(
         ticket=hub.mint_ticket(term),
         ice_servers=list(hub.ice_servers),
     )
-
-
-@router.post(SESSION_REATTACH_PATH, status_code=204)
-async def reattach_session_route(
-    session_id: UUID,
-    request: Request,
-    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
-    key: Annotated[UUID, Header(alias="Idempotency-Key")],
-) -> None:
-    """Reopen a chat's run headless, where it ran, after a terminal took it over.
-
-    The chat's run keeps its CLI session: the new run attaches to the chat's session,
-    which resumes the CLI's own stored session, on the machine and in the folder the
-    last run named. When a person opened the CLI in a terminal, that run is replaced:
-    its lease is revoked and it is turned away when it drains again, which ends its
-    terminal, and the terminals this server opened for it are stopped. The run starts
-    as a detached host of the old run's name (``chat-<session>`` for a run that named
-    none): a launch of that name ends the old host and resumes the CLI session its
-    terminal continued.
-
-    Only the chat's starter reattaches it, from their own browser. A chat whose run is
-    live and not taken over is 409 ``chat_run_live``, and one whose machine or folder
-    the server does not know (it restarted since the run last polled) is 409
-    ``reattach_place_unknown``. The machine and CLI are held to the rules of an open:
-    404 for a machine that is not online, 409 ``cli_not_installed``,
-    ``terminal_unconfirmed`` and ``terminal_not_enabled``. A retry under the same
-    ``Idempotency-Key`` opens one run.
-
-    Args:
-      session_id: The chat's session, as the Chat or the Console row names it.
-      request: Request carrying the store, the terminal hub and the inbound queue.
-      identity: The signed-in starter.
-      key: Required retry-safe idempotency key.
-
-    Raises:
-      HTTPException: 403 ``terminal_forbidden`` for a key, a service account or a
-        foreign origin, 403 ``reattach_not_owner`` for anyone but the chat's starter;
-        404 for no such session; 409 ``not_a_chat``, ``provider_is_assistant``,
-        ``chat_run_live``, ``reattach_place_unknown``; 429 ``terminal_limit`` past 10
-        opens a minute.
-
-    """
-    _require_human(request, identity)
-    _require_origin(request)
-    session = await require_session(get_store(request), session_id)
-    await require_session_access(request, identity, session=session, mode="read")
-    conversation = chat_conversation_id(session.cli_session_id)
-    if conversation is None:
-        raise _refused(
-            409,
-            code="not_a_chat",
-            message="only a chat's run can be reattached",
-        )
-    async with request_engine(request).acquire() as conn:
-        starter = await read_starter(
-            conn,
-            assistant=get_assistant(request),
-            conversation_id=conversation,
-        )
-        provider = await read_chat_provider(
-            conn,
-            assistant=get_assistant(request),
-            conversation_id=conversation,
-        )
-        canvas = await conn.fetchrow(
-            "SELECT id, metadata ->> 'workspace_id' AS workspace "
-            "FROM visual_canvases WHERE user_id = $1 "
-            "AND metadata ->> 'conversation_id' = $2",
-            identity.user_id,
-            str(conversation),
-        )
-    if (starter or "").lower() != identity.email.lower():
-        raise _refused(
-            403,
-            code="reattach_not_owner",
-            message="only the person who started this chat reattaches it",
-        )
-    if provider == "assistant":
-        raise _refused(
-            409,
-            code=PROVIDER_IS_ASSISTANT,
-            message="this chat's canvas answers it with the assistant",
-        )
-    inbound = get_inbound(request)
-    places = [
-        each
-        for each in (inbound.poller_run(session_id), inbound.last_run(session_id))
-        if each is not None
-    ]
-    machine = next((each.machine for each in places if each.machine is not None), None)
-    cwd = next((each.cwd for each in places if each.cwd is not None), None)
-    # The taken-over run's own name: a launch of that name ends its host and resumes
-    # the CLI session its terminal continued, so no turn is lost.
-    host = next((each.run for each in places if each.run is not None), None)
-    if machine is None or cwd is None:
-        raise _refused(
-            409,
-            code="reattach_place_unknown",
-            message="the server does not know where this chat's run was; start one "
-            "from Chat",
-        )
-    machine_id, facts = await _owned_machine(request, identity, name=machine)
-    if provider not in _machine_clis(facts):
-        raise _refused(
-            409,
-            code="cli_not_installed",
-            message=f"the host reports no {provider} on its PATH",
-        )
-    hub = get_terminal_hub(request)
-    if not hub.ready(machine_id):
-        raise _refused(
-            409,
-            code="terminal_not_enabled",
-            message="start this machine's host first",
-        )
-    named = None if canvas is None else from_plain(canvas["workspace"], str | None)
-    try:
-        _ = await get_replays(request).terminal_opens.run(
-            (identity.user_id, identity.api_key_id, key),
-            fingerprint=f"{identity.email}:reattach:{session_id}",
-            operation=partial(
-                _reopen_run,
-                request,
-                opening=Opening(
-                    user=identity.email,
-                    machine_id=machine_id,
-                    machine=machine,
-                    rows=24,
-                    cols=80,
-                    canvas=None if canvas is None else from_plain(canvas["id"], UUID),
-                    workspace=UUID(named) if isinstance(named, str) else None,
-                    command=provider,
-                    attach=session_id,
-                    run_name=host or f"chat-{session_id.hex[:8]}",
-                    cwd=cwd,
-                ),
-            ),
-        )
-    except TerminalLimitError as error:
-        raise _refused(
-            429,
-            code="terminal_limit",
-            message="too many terminals opened just now; wait a minute",
-        ) from error
-    # The chat's partner changed: its taken-over run is gone, and a new one is coming.
-    get_hub(request).nudge()
 
 
 @router.get(TERMINAL_MACHINES_PATH, response_model_exclude_none=True)
@@ -880,29 +719,6 @@ def _serves_files(facts: object) -> bool:
         return False
 
 
-async def _canvas_workspace(
-    request: Request,
-    *,
-    owner: str,
-    canvas: UUID | None,
-) -> UUID | None:
-    """Return the workspace of the owner's canvas; refuse another user's."""
-    if canvas is None:
-        return None
-    async with request_engine(request).acquire() as conn:
-        row = await conn.fetchrow(
-            "SELECT w.metadata->>'workspace_id' AS workspace "
-            "FROM visual_canvases w JOIN users u ON u.id = w.user_id "
-            "WHERE w.id = $1 AND u.email = $2 AND u.status = 'active'",
-            canvas,
-            owner,
-        )
-    if row is None:
-        raise NotFoundError("no such canvas")
-    workspace = from_plain(row["workspace"], str, default="")
-    return UUID(workspace) if workspace else None
-
-
 # A session has one live run at a time. A run the server opened is in the hub from the
 # open; one started by hand is known by the lease its drain takes, and a lease that
 # names no CLI is the assistant's, which is not a run.
@@ -944,33 +760,6 @@ async def _require_instance(
 # The check and the replacement run here, behind the receipt, for the reason
 # ``_open_terminal``'s check does: a retry of the same reattach finds the run its first
 # try queued, and must get that back, not retire it.
-async def _reopen_run(request: Request, *, opening: Opening) -> UUID:
-    """Replace the chat's taken-over or gone run with a headless one; return its id."""
-    session_id = opening.attach
-    if session_id is None:
-        raise ValueError("Expected session_id is not None.")
-    inbound = get_inbound(request)
-    held = inbound.poller_run(session_id)
-    if held is not None and held.state != "taken_over":
-        raise _refused(
-            409,
-            code=CHAT_RUN_LIVE,
-            message="this chat's run is live; reattach is for one taken over in a "
-            "terminal",
-        )
-    hub = get_terminal_hub(request)
-    # Before the old run is ended: a reattach past the open rate starts no run, so it
-    # must leave the terminal that took the chat over working.
-    hub.check(user=opening.user)
-    # Revoking the lease alone would let the old run, which keeps draining until it is
-    # turned away, take it back before the new run starts.
-    inbound.retire_run(session_id)
-    for term in hub.attached_to(session_id):
-        if term.user == opening.user:
-            await hub.stop(term)
-    return await _open_terminal(request, opening=opening)
-
-
 # The live-run check runs here, behind the receipt, and not in the route: the run a
 # first open queued is attached to the session, so a retry of that open checked in
 # the route would be refused as a second run instead of getting its terminal back.

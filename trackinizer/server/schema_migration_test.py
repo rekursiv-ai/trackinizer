@@ -43,6 +43,7 @@ import pytest
 
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import tx
+from trackinizer.server.preferences import stored_preferences
 from trackinizer.server.primitives import insert_inquiry, upsert_embedding
 from trackinizer.server.sql import load_sql, schema_migrations
 from trackinizer.types.change_log import Change
@@ -2144,6 +2145,81 @@ async def test_the_default_workspace_rollback_puts_scratch_back(
     assert "default_workspace_down.sql" not in {name for name, _ in schema_migrations()}
 
 
+_TAB_USER = uuid.UUID(int=0x6501)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_065_leaves_a_tab_bar_the_new_build_reads(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """Runs close, a hidden default folds into its canvases, pins fold into the order.
+
+    A ``unnamed-workstream#N`` canvas is numbered on past its owner's highest
+    ``unnamed-canvas#N``, oldest first; a run's canvas that holds a chat stays open.
+    A replay changes nothing.
+    """
+    conn = pglite_rollback_conn
+    ids = await _seed_tab_bar(conn)
+
+    await conn.execute(load_sql("schema.065"))
+    canvases = await _canvas_tabs(conn)
+    bar = await _bar(conn)
+    await conn.execute(load_sql("schema.065"))
+    replayed = (await _canvas_tabs(conn), await _bar(conn))
+
+    assert canvases == {
+        ids["run"]: ("Agent claude", True),
+        ids["run_chat"]: ("chat run", False),
+        ids["loose"]: ("loose", True),
+        ids["in_default"]: ("in default", True),
+        ids["named"]: ("unnamed-canvas#2", False),
+        ids["legacy_old"]: ("unnamed-canvas#3", False),
+        ids["legacy_new"]: ("unnamed-canvas#4", False),
+    }
+    assert bar == {
+        "order": [str(ids[name]) for name in ("beta", "gamma", "alpha")],
+        "hidden": [str(ids["closed"])],
+        "last_canvas": {},
+    }
+    assert stored_preferences({"workspaces": bar}).workspaces.order == bar["order"]
+    assert replayed == (canvases, bar)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_tab_groups_rollback_leaves_a_bar_the_old_build_reads(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """Colours, expanded groups and tab order go; pins come back empty; 065 reruns."""
+    conn = pglite_rollback_conn
+    _ = await _seed_tab_bar(conn)
+    await conn.execute(load_sql("schema.065"))
+    await conn.execute(
+        "UPDATE users SET preferences = jsonb_set(preferences, '{workspaces}', "
+        "preferences->'workspaces' || jsonb_build_object('colors', "
+        "jsonb_build_object('g', 'red'), 'expanded', jsonb_build_array('g'), "
+        "'tabs', jsonb_build_array('t'))) WHERE id = $1",
+        _TAB_USER,
+    )
+    migrated = await _bar(conn)
+    # Within the test's own transaction, as the operator runs it within one.
+    await conn.execute(load_sql("tab_groups_down"))
+    rolled = await _bar(conn)
+    ledger = await conn.fetchval(
+        "SELECT count(*) FROM applied_migrations WHERE name = 'schema.065.sql'",
+    )
+
+    assert rolled == {
+        "order": migrated["order"],
+        "hidden": migrated["hidden"],
+        "last_canvas": {},
+        "pinned": [],
+    }
+    assert ledger == 0
+    assert "tab_groups_down.sql" not in {name for name, _ in schema_migrations()}
+
+
 # The decoys are a workspace titled Scratch without the mark and one titled "Untitled
 # workspace", whose embedding a re-titled Scratch must come to share.
 async def _seed_scratches(conn: Conn) -> dict[str, uuid.UUID]:
@@ -2248,6 +2324,104 @@ async def _canvas_workspaces(conn: Conn) -> dict[uuid.UUID, str | None]:
         )
         for row in rows
     }
+
+
+# A 064 bar: the default and one group hidden, one pin in the saved order and one
+# not, and canvases of every kind 065 touches or leaves.
+async def _seed_tab_bar(conn: Conn) -> dict[str, uuid.UUID]:
+    """Make one person's workspaces, bar and canvases as a 064 server left them."""
+    email = "tabs@x.y"
+    ids = {
+        name: await _workspace(conn, email=email, title=name, labels=labels)
+        for name, labels in (
+            ("default", ["workspace", "scratch"]),
+            ("alpha", ["workspace"]),
+            ("beta", ["workspace"]),
+            ("gamma", ["workspace"]),
+            ("closed", ["workspace"]),
+        )
+    }
+    bar: dict[str, list[str] | dict[str, str]] = {
+        "order": [str(ids["alpha"]), str(ids["beta"])],
+        "pinned": [str(ids["gamma"]), str(ids["beta"])],
+        "hidden": [str(ids["default"]), str(ids["closed"])],
+        "last_canvas": {},
+    }
+    alpha = str(ids["alpha"])
+    await conn.execute(
+        "INSERT INTO users (id, email, name, role, status, preferences) "
+        "VALUES ($1, $2, 'Person', 'writer', 'active', $3)",
+        _TAB_USER,
+        email,
+        {"workspaces": bar},
+    )
+    for day, (name, metadata) in enumerate(
+        (
+            (
+                "run",
+                {
+                    "name": "Agent claude",
+                    "session_id": str(uuid.uuid4()),
+                    "workspace_id": alpha,
+                },
+            ),
+            (
+                "run_chat",
+                {
+                    "name": "chat run",
+                    "session_id": str(uuid.uuid4()),
+                    "conversation_id": str(uuid.uuid4()),
+                    "workspace_id": alpha,
+                },
+            ),
+            ("loose", {"name": "loose"}),
+            (
+                "in_default",
+                {"name": "in default", "workspace_id": str(ids["default"])},
+            ),
+            ("named", {"name": "unnamed-canvas#2", "workspace_id": alpha}),
+            ("legacy_old", {"name": "unnamed-workstream#9", "workspace_id": alpha}),
+            ("legacy_new", {"name": "unnamed-workstream#1", "workspace_id": alpha}),
+        ),
+        start=1,
+    ):
+        ids[name] = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO visual_canvases (id, user_id, metadata, state, created_at) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            ids[name],
+            _TAB_USER,
+            metadata,
+            {"visuals": []},
+            datetime(2026, 10, day, tzinfo=UTC),
+        )
+    return ids
+
+
+async def _canvas_tabs(conn: Conn) -> dict[uuid.UUID, tuple[str, bool]]:
+    """Read every canvas's name and whether it is closed."""
+    rows = await conn.fetch(
+        "SELECT id, metadata->>'name' AS name, "
+        "coalesce((metadata->>'hidden')::boolean, FALSE) AS hidden FROM visual_canvases",
+    )
+    return {
+        from_plain(row["id"], uuid.UUID): (
+            from_plain(row["name"], str),
+            from_plain(row["hidden"], bool),
+        )
+        for row in rows
+    }
+
+
+async def _bar(conn: Conn) -> dict[str, list[str] | dict[str, str]]:
+    """Read the seeded person's stored workspaces preference."""
+    return from_plain(
+        await conn.fetchval(
+            "SELECT preferences->'workspaces' FROM users WHERE id = $1",
+            _TAB_USER,
+        ),
+        dict[str, list[str] | dict[str, str]],
+    )
 
 
 async def _same_embedding(conn: Conn, first: uuid.UUID, second: uuid.UUID) -> bool:

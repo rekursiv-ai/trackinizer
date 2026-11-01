@@ -117,14 +117,6 @@ _ENFORCED_AGGREGATES: Final = frozenset(
         # ``inquiries.id``, which would let a viewer probe a hidden transcript were
         # ``list_kind`` not to keep hidden sessions out of the rows it meets.
         ("wire/column_shapes.py", "_RECORDS_WHERE"),
-        # Not an aggregate but a probe of one transcript: whether a fork point is a
-        # line. Its yes or no was the answer to a question about a hidden session,
-        # and a yes let the assistant copy that session's lines into a fork.
-        ("server/visuals/science_chats.py", "science_chat_exists_at"),
-        # Whether anyone but a chat's starter posted in it, which lets the starter
-        # delete it: read only off the sessions the caller reads, a hidden one
-        # counting as someone else's.
-        ("server/visuals/science_chats.py", "_HEAD"),
         # A writer whose commit pings every live stream. The ping names the
         # session's audience, so a stream holds it back from a viewer who does not
         # read it; ``untagged_notifiers`` fails a writer that pings without one.

@@ -50,13 +50,13 @@ def test_a_schema_without_components_gains_none() -> None:
     assert core_schema(bare) == {"paths": {"/api/inquiries": {}}}
 
 
-def test_a_schema_renders_with_sorted_keys_two_space_indent_and_a_final_newline() -> (
+def test_a_schema_renders_with_sorted_keys_one_space_indent_and_a_final_newline() -> (
     None
 ):
     # The build's hash and the live server's are of this text, so both sides must
     # write it byte for byte alike.
     assert render({"b": 1, "a": {"c": [2]}}) == (
-        '{\n  "a": {\n    "c": [\n      2\n    ]\n  },\n  "b": 1\n}\n'
+        '{\n "a": {\n  "c": [\n   2\n  ]\n },\n "b": 1\n}\n'
     )
 
 

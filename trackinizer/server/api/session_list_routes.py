@@ -50,7 +50,6 @@ async def list_sessions_route(
     return await list_own_sessions(
         request_engine(request),
         email=identity.email,
-        user_id=identity.user_id,
         reader=session_reader(request, identity),
         inbound=get_inbound(request),
         days=days,

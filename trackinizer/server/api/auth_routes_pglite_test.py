@@ -12,16 +12,16 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api.canvas_test_support import (
-    OTHER_EMAIL,
-    OTHER_KEY_ID,
-    OTHER_USER_ID,
-    seed_accounts,
-)
 from trackinizer.server.api.conftest import (
     TEST_USER_ID,
     install_identity,
     make_test_identity,
+)
+from trackinizer.server.api.session_test_support import (
+    OTHER_EMAIL,
+    OTHER_KEY_ID,
+    OTHER_USER_ID,
+    seed_accounts,
 )
 
 
@@ -310,7 +310,14 @@ _DEFAULTS: dict[str, object] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
-    "workspaces": {"order": [], "pinned": [], "hidden": [], "last_canvas": {}},
+    "workspaces": {
+        "order": [],
+        "hidden": [],
+        "colors": {},
+        "expanded": [],
+        "tabs": [],
+        "last_canvas": {},
+    },
     "settings_artifact_id": None,
 }
 

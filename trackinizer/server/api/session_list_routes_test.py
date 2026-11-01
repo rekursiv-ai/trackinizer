@@ -9,7 +9,8 @@ from treekle import json_loads
 import pytest
 
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import (
+from trackinizer.server.api.conftest import patch_state
+from trackinizer.server.api.session_test_support import (
     ASSISTANT_CONFIG,
     OTHER_AGENT,
     USER_AGENT,
@@ -17,8 +18,6 @@ from trackinizer.server.api.canvas_test_support import (
     seed_accounts,
     seed_session,
 )
-from trackinizer.server.api.conftest import patch_state
-from trackinizer.server.chat_hub import ChatHub
 from trackinizer.server.inbound import InboundQueue
 
 
@@ -33,10 +32,9 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def served(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Serve with a fresh poller table and event hub."""
+    """Serve with a fresh poller table."""
     patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
     patch_state(monkeypatch, "inbound", InboundQueue())
-    patch_state(monkeypatch, "hub", ChatHub())
 
 
 @pytest.mark.parametrize(

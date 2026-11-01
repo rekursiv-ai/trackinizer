@@ -22,13 +22,13 @@ import pytest_asyncio
 
 from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api.app import app
-from trackinizer.server.api.canvas_test_support import ASSISTANT_CONFIG
 from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
     patch_state,
 )
+from trackinizer.server.api.session_test_support import ASSISTANT_CONFIG
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Config
 from trackinizer.server.route_iter import iter_routes

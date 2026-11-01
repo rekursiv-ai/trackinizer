@@ -28,7 +28,6 @@ from trackinizer.server.audience import (
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
-from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 from trackinizer.wire.wire_sessions import (
     CAMPAIGN_ASKER_INFIX,
     FeedActorFacet,
@@ -59,23 +58,12 @@ __all__ = [
 ]
 
 
-_CANVAS_DEPTH: Final = 4
-"""How many ``produced_by`` edges below its chat's session a canvas's agents reach:
-the lead, then what it launched, and so on."""
-
-_CANVAS_AGENTS: Final = 500
-"""The most sessions a canvas's agents are read from."""
-
-
 @dataclass(frozen=True, slots=True, kw_only=True)
 class CanvasAgents:
-    """The agents of one canvas: the sessions its chat's session produced.
+    """The agents of one canvas of ``user_id``: the sessions its app says it launched.
 
-    A campaign launched from a chat makes its lead's session ``produced_by`` the
-    chat's, and the lead's workers ``produced_by`` the lead's. The chat is found
-    by ``chat:<conversation id>`` of the canvas's conversation, read in the same
-    query, and only for the canvas's ``user_id``: another user's canvas, and one
-    with no chat, keep nothing.
+    Another user's canvas keeps nothing, and so does any canvas on a server whose
+    app keeps none.
     """
 
     canvas_id: UUID
@@ -88,8 +76,8 @@ class FeedScope:
 
     An empty field does not filter. ``actors`` names sessions by routing name
     (``owner``), ``rooms`` by a room they joined, ``clis`` by the CLI they wrap;
-    ``kinds`` names record kinds; ``canvas`` keeps the agents of one canvas,
-    never its chat's own session. ``account`` keeps the sessions held under one
+    ``kinds`` names record kinds; ``canvas`` keeps the agents of one canvas.
+    ``account`` keeps the sessions held under one
     account, and ``asker`` those of the campaigns one person launched: a session
     labelled with, or in a room named for, a slug that a brief Issue labels
     ``<slug>:asker:<email>``. Neither grants a read; each narrows what ``reader``
@@ -123,7 +111,7 @@ class FeedScope:
 
         Args:
           params: The query's bound values so far; each named field appends one,
-            and a canvas five.
+            and a canvas its own.
           kind: The record-kind column. ``i`` must name the session's
             ``inquiries`` row, and nothing else in the query may be named ``brief``.
 
@@ -142,17 +130,8 @@ class FeedScope:
                 params.append(list(values))
                 out.append(f"{test}(${len(params)}::text[])")
         if self.canvas is not None:
-            first = len(params)
-            params.extend(
-                (
-                    self.canvas.canvas_id,
-                    self.canvas.user_id,
-                    CHAT_SESSION_PREFIX,
-                    _CANVAS_DEPTH,
-                    _CANVAS_AGENTS,
-                ),
-            )
-            out.append(_canvas_clause(first))
+            agents = "FALSE"
+            out.append(agents)
         if self.account:
             params.append(self.account.lower())
             out.append(f"lower(i.account) = ${len(params)}")
@@ -566,11 +545,11 @@ def _actor_facet(
     assert isinstance(last, datetime)
     account = from_plain(session.get("account"), str, default="")
     audience = from_plain(session.get("agentsession_audience"), str, default=None)
-    chat = from_plain(
-        session.get("agentsession_cli_session_id"),
-        str,
-        default="",
-    ).startswith(CHAT_SESSION_PREFIX)
+    hideable = may_hide(
+        caller,
+        owners=(account, from_plain(session.get("opener"), str, default="")),
+        audience=audience,
+    )
     return FeedActorFacet(
         actor=from_plain(session.get("owner"), str, default=""),
         session_id=session_id,
@@ -586,12 +565,7 @@ def _actor_facet(
         ),
         account=account,
         audience=audience,
-        hideable=not chat
-        and may_hide(
-            caller,
-            owners=(account, from_plain(session.get("opener"), str, default="")),
-            audience=audience,
-        ),
+        hideable=hideable,
     )
 
 
@@ -629,33 +603,5 @@ def _asker_clause(slot: int) -> str:
         slugs,
         " OR i.agentsession_rooms && ",
         slugs,
-        ")",
-    )
-
-
-def _canvas_clause(first: int) -> str:
-    """Return the test that ``i`` is an agent of a canvas, its values at ``first``+1..."""
-    canvas, owner, prefix, depth, limit = (f"${first + n}" for n in range(1, 6))
-    # The chat's session is found by the conversation the owner's canvas holds, so
-    # one that is not theirs, or holds no chat, gives a NULL id and no root. UNION
-    # drops a repeated (session, depth) so a cycle ends at the depth bound, and a
-    # session met at two depths counts once, at its shallowest. The chat is depth 0
-    # and never one of its own agents.
-    return vetted_sql(
-        "i.id IN (WITH RECURSIVE walk(id, depth) AS (SELECT c.id, 0 FROM inquiries c "
-        "WHERE c.kind = 'AgentSession' AND c.agentsession_cli_session_id = ",
-        prefix,
-        "::text || (SELECT w.metadata->>'conversation_id' FROM visual_canvases w "
-        "WHERE w.id = ",
-        canvas,
-        " AND w.user_id = ",
-        owner,
-        ") UNION SELECT e.from_id, walk.depth + 1 FROM walk JOIN edges e "
-        "ON e.to_id = walk.id AND e.edge_kind = 'produced_by' "
-        "AND e.from_kind = 'AgentSession' WHERE walk.depth < ",
-        depth,
-        ") SELECT id FROM walk GROUP BY id HAVING min(depth) > 0 "
-        "ORDER BY min(depth), id LIMIT ",
-        limit,
         ")",
     )

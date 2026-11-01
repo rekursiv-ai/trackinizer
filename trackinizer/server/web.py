@@ -97,7 +97,7 @@ from trackinizer.server.store.session_search import (
     search_session_records,
 )
 from trackinizer.server.values import vetted_sql
-from trackinizer.server.visuals.partners import live_run_states
+from trackinizer.server.visuals.session_runs import live_run_states
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.json_types import UtcDatetime

@@ -78,7 +78,14 @@ _DEFAULTS: dict[str, JsonValue] = {
     "lens": None,
     "drafts": {},
     "create_draft": None,
-    "workspaces": {"order": [], "pinned": [], "hidden": [], "last_canvas": {}},
+    "workspaces": {
+        "order": [],
+        "hidden": [],
+        "colors": {},
+        "expanded": [],
+        "tabs": [],
+        "last_canvas": {},
+    },
     "settings_artifact_id": None,
 }
 
@@ -221,21 +228,38 @@ def test_the_assistant_runs_on_its_lead_prompt_until_the_user_picks_sagents() ->
         Preferences.model_validate({"assistant_prompt": "claude"})
 
 
-def test_workspace_preferences_keep_order_pin_visibility_and_last_canvas() -> None:
+def test_workspace_preferences_keep_the_tab_bars_groups_tabs_and_last_canvas() -> None:
+    group, tab = (
+        "22222222-2222-2222-2222-222222222222",
+        "44444444-4444-4444-4444-444444444444",
+    )
     saved = {
-        "order": ["22222222-2222-2222-2222-222222222222"],
-        "pinned": ["22222222-2222-2222-2222-222222222222"],
+        "order": [group],
         "hidden": ["33333333-3333-3333-3333-333333333333"],
-        "last_canvas": {
-            "22222222-2222-2222-2222-222222222222": (
-                "44444444-4444-4444-4444-444444444444"
-            ),
-        },
+        "colors": {group: "purple"},
+        "expanded": [group],
+        "tabs": [tab],
+        "last_canvas": {group: tab},
     }
     assert (
         Preferences.model_validate({"workspaces": saved}).workspaces.model_dump()
         == saved
     )
+
+
+@pytest.mark.parametrize(
+    "workspaces",
+    [
+        {"colors": {"g": "teal"}},
+        {"pinned": []},
+        {"tabs": ["t"] * 501},
+    ],
+)
+def test_a_group_colour_is_one_of_chromes_and_workspace_pins_are_gone(
+    workspaces: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"workspaces": workspaces})
 
 
 def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> None:
