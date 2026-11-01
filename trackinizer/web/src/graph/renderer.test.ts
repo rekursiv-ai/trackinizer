@@ -8,7 +8,7 @@ import { node, PALETTE } from "./testing";
 const { FakeForceGraph } = vi.hoisted(() => {
   /** A d3 force's settings, each of which chains. */
   const FORCE = { strength: () => FORCE, distance: () => FORCE, distanceMax: () => FORCE };
-  /** Settings the renderer makes once and these tests never read; each chains. */
+  /** Chainable settings, retained so tests can exercise the drawing callbacks. */
   const CHAINED = [
     "nodeVisibility",
     "nodeVal",
@@ -37,12 +37,16 @@ const { FakeForceGraph } = vi.hoisted(() => {
     /** Where the camera was last centred, in graph coordinates. */
     centre: readonly [number, number] | null = null;
     scale = 1;
+    settings = new Map<string, unknown>();
     /** How long force-graph may run its engine, by the clock, in ms; its default is 15 s. */
     cooling = 15_000;
     #engineStop = () => {};
 
     constructor() {
-      for (const name of CHAINED) Reflect.set(this, name, () => this);
+      for (const name of CHAINED) Reflect.set(this, name, (...args: unknown[]) => {
+        if (args.length) this.settings.set(name, args[0]);
+        return this;
+      });
       FakeForceGraph.last = this;
     }
 
@@ -153,4 +157,47 @@ test("grouping keeps what the view asked to frame: a focus's nodes, not every no
   graph().centerAt(0, 0);
   graph().settle();
   expect(graph().centre).toEqual([5, 0]);
+});
+
+test("zoomed discs, halos and arrow endpoints use the same capped radius", () => {
+  const draw = graph().settings.get("nodeCanvasObject") as (node: DrawNode, ctx: CanvasRenderingContext2D, scale: number) => void;
+  const value = graph().settings.get("nodeVal") as (node: DrawNode) => number;
+  const arrow = graph().settings.get("linkDirectionalArrowLength") as () => number;
+  const arc = vi.fn();
+  const ctx = { arc, beginPath: vi.fn(), stroke: vi.fn(), fill: vi.fn() } as unknown as CanvasRenderingContext2D;
+  for (const root of [true, false]) {
+    const node = { ...placed([[0, 0]])[0]!, root };
+    node.look = { ...node.look, halo: "selected", dot: "proven" };
+    for (const scale of [0.25, 1, 4, 10]) {
+      graph().zoom(scale);
+      arc.mockClear();
+      draw(node, ctx, scale);
+      const radius = arc.mock.calls[1]![2] as number;
+      expect(radius * scale).toBeLessThanOrEqual(root ? 11 : 7);
+      expect(Math.sqrt(value(node)) * 4).toBeCloseTo(radius);
+      expect((arc.mock.calls[0]![2] - radius) * scale).toBeCloseTo(3.5);
+      expect(arc.mock.calls[2]![2]).toBeCloseTo(radius * 0.4);
+      expect(arrow() * scale).toBeLessThanOrEqual(10);
+      if (scale === 0.25) expect(radius).toBe(node.look.radius);
+    }
+  }
+});
+
+test("zoomed click targets cover the visible node without retaining a giant hidden target", () => {
+  const hit = graph().settings.get("nodePointerAreaPaint") as (node: DrawNode, color: string, ctx: CanvasRenderingContext2D, scale: number) => void;
+  const value = graph().settings.get("nodeVal") as (node: DrawNode) => number;
+  const arc = vi.fn();
+  const ctx = { arc, beginPath: vi.fn(), fill: vi.fn() } as unknown as CanvasRenderingContext2D;
+  for (const root of [true, false]) {
+    const node = { ...placed([[0, 0]])[0]!, root };
+    for (const scale of [0.25, 1, 4, 10]) {
+      graph().zoom(scale);
+      arc.mockClear();
+      hit(node, "hit", ctx, scale);
+      const radius = arc.mock.calls[0]![2] as number;
+      expect(radius).toBeGreaterThanOrEqual(Math.sqrt(value(node)) * 4);
+      expect(radius * scale).toBeLessThanOrEqual(root ? 11 : 8);
+      if (scale === 0.25) expect(radius).toBe(node.look.radius);
+    }
+  }
 });
