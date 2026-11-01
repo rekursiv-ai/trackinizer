@@ -557,7 +557,15 @@ async def _copy(conn: Conn) -> None:
     # and the copied rows come back exactly as the build left them. A test's
     # temporary table is no part of the build either.
     script = ["SET LOCAL session_replication_role = replica", "DISCARD TEMP"]
-    script.extend(vetted_sql("DELETE FROM public.", _quoted(table)) for table in tables)
+    approximate = await _approximately_indexed(conn)
+    script.extend(
+        vetted_sql("DELETE FROM public.", _quoted(table))
+        for table in tables
+        if table not in approximate
+    )
+    script.extend(
+        vetted_sql("TRUNCATE public.", _quoted(table)) for table in sorted(approximate)
+    )
     copies: list[str] = []
     for table in tables:
         source = vetted_sql("public.", _quoted(table))
@@ -627,6 +635,27 @@ async def _copy(conn: Conn) -> None:
         copies,
         ";\n".join(script),
     )
+
+
+# A deleted row stays in its table's indexes until a vacuum, and nothing vacuums these
+# databases. An exact index (btree, GIN, GiST) rechecks each entry and answers the same;
+# an approximate one spends its scan on the dead entries. The HNSW index offered every
+# earlier test's embeddings to a nearest-neighbour search, which from about the 330th
+# test stopped reaching a live row. TRUNCATE drops a table's index entries with its
+# rows, at ~2 ms a table on PGlite: every table would take its suite from 55 s to 210 s.
+async def _approximately_indexed(conn: Conn) -> set[str]:
+    """Return the tables of schema ``public`` under a pgvector approximate index."""
+    return {
+        str(row["relname"])
+        for row in await conn.fetch(
+            "SELECT t.relname FROM pg_index x "
+            "JOIN pg_class i ON i.oid = x.indexrelid "
+            "JOIN pg_am am ON am.oid = i.relam "
+            "JOIN pg_class t ON t.oid = x.indrelid "
+            "JOIN pg_namespace n ON n.oid = t.relnamespace "
+            "WHERE n.nspname = 'public' AND am.amname IN ('hnsw', 'ivfflat')",
+        )
+    }
 
 
 def _quoted(name: str) -> str:
