@@ -23,6 +23,7 @@ import pytest_asyncio
 
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.notify import tx
 from trackinizer.server.store import read
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
@@ -451,13 +452,15 @@ async def test_text_array_membership_can_use_the_gin_index(store: Store) -> None
     clause = read._lower_filter(Filter(field="labels", op="is", value="needle"), params)
     assert clause is not None
 
-    async with store.engine.acquire() as conn:
-        await conn.execute("CREATE TEMP TABLE filter_probe (labels TEXT[])")
+    async with store.engine.acquire() as conn, tx(conn):
+        await conn.execute(
+            "CREATE TEMP TABLE filter_probe (labels TEXT[]) ON COMMIT DROP",
+        )
         await conn.execute(
             "CREATE INDEX filter_probe_labels_gin ON filter_probe USING gin(labels)",
         )
         await conn.execute("INSERT INTO filter_probe VALUES (ARRAY['needle']::text[])")
-        await conn.execute("SET enable_seqscan = off")
+        await conn.execute("SET LOCAL enable_seqscan = off")
         rows = await conn.fetch(
             vetted_sql(
                 "EXPLAIN (COSTS OFF) SELECT * FROM filter_probe WHERE ",
@@ -466,6 +469,8 @@ async def test_text_array_membership_can_use_the_gin_index(store: Store) -> None
             *params,
         )
 
+    async with store.engine.acquire() as conn:
+        assert await conn.fetchval("SELECT to_regclass('pg_temp.filter_probe')") is None
     plan_parts: list[str] = []
     for row in rows:
         value = cast(str, row[0])
@@ -486,9 +491,10 @@ async def test_uuid_array_membership_preserves_parameter_typing(store: Store) ->
     )
     assert clause is not None
 
-    async with store.engine.acquire() as conn:
+    async with store.engine.acquire() as conn, tx(conn):
         await conn.execute(
-            "CREATE TEMP TABLE filter_probe (experiment_codechanges UUID[])",
+            "CREATE TEMP TABLE filter_probe (experiment_codechanges UUID[]) "
+            "ON COMMIT DROP",
         )
         await conn.execute(
             "INSERT INTO filter_probe VALUES (ARRAY[$1]::uuid[])",
@@ -502,6 +508,8 @@ async def test_uuid_array_membership_preserves_parameter_typing(store: Store) ->
             ),
         )
 
+    async with store.engine.acquire() as conn:
+        assert await conn.fetchval("SELECT to_regclass('pg_temp.filter_probe')") is None
     assert count == 1
 
 

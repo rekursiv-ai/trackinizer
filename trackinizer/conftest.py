@@ -34,6 +34,7 @@ from trackinizer.lib.testing.resources import (
     pytest_collection_modifyitems,
     pytest_configure,
 )
+from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
@@ -48,10 +49,21 @@ if TYPE_CHECKING:
 # every trackinizer test's XDG lookups at a tmp dir instead of the developer's
 # own -- notably trax profiles, which live under ``config_dir``.
 __all__ = [
+    "isolate_bootstrap_environment",
     "isolate_user_dirs",
     "pytest_collection_modifyitems",
     "pytest_configure",
 ]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def isolate_bootstrap_environment() -> Iterator[None]:
+    """Keep operator bootstrap settings out of test databases, including session setup."""
+    # Empty values also prevent subprocess conftests from reloading operator secrets.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setenv(BOOTSTRAP_ADMIN_ENV, "")
+        patch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, "")
+        yield
 
 
 def make_conn() -> AsyncMock:
