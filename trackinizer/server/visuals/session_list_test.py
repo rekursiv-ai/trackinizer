@@ -23,12 +23,8 @@ from trackinizer.sagent.session.types import (
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
-from trackinizer.server.visuals.session_list import (
-    LINE_CHARS,
-    LastLine,
-    SessionList,
-    list_own_sessions,
-)
+from trackinizer.server.visuals.session_lines import LINE_CHARS, LastLine
+from trackinizer.server.visuals.session_list import SessionList, list_own_sessions
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_science_chat import chat_session_id
 

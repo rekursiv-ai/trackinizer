@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import partial
 from typing import TYPE_CHECKING, Final, cast
 
 import asyncio
@@ -17,7 +18,6 @@ from trackinizer.server.config import Assistant
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.visuals.science_chats import (
     _HEAD,
-    chat_openers,
     conversation_of_session,
     may_post,
     read_fork_prefixes,
@@ -63,14 +63,6 @@ _STARTER_SQL: Final = "SELECT began.account " + _FIRST_SESSION
 _TOMBSTONE_SQL: Final = (
     "SELECT EXISTS (SELECT 1 FROM science_chat_tombstones WHERE conversation_id = $1)"
 )
-
-
-def test_a_person_finds_the_assistants_chats_and_their_own() -> None:
-    assert chat_openers(None, email="a@example.com") == ["a@example.com"]
-    assert chat_openers(_ASSISTANT, email="a@example.com") == [
-        "kb@example.com",
-        "a@example.com",
-    ]
 
 
 def test_the_starter_is_the_first_session_opened_by_the_assistant_or_its_own_key() -> (
@@ -128,7 +120,6 @@ def test_a_user_turn_that_names_its_sender_is_a_persons_line() -> None:
         science_chat_exists_at(
             cast("Conn", conn),
             assistant=_ASSISTANT,
-            email="a@example.com",
             fork=ChatForkAt(session_id=_SESSION, part=2, idx=5),
             reader=reader,
         ),
@@ -203,7 +194,6 @@ def test_a_line_is_looked_for_in_the_session_part_and_position_the_fork_names() 
         science_chat_exists_at(
             cast("Conn", conn),
             assistant=_ASSISTANT,
-            email="a@example.com",
             fork=fork,
             reader=reader,
         ),
@@ -214,7 +204,7 @@ def test_a_line_is_looked_for_in_the_session_part_and_position_the_fork_names() 
     sql, *params = conn.fetchval.await_args.args
     assert isinstance(sql, str)
     assert params == [
-        ["kb@example.com", "a@example.com"],
+        "kb@example.com",
         SCIENCE_CHAT_LABEL,
         _SESSION,
         2,
@@ -235,7 +225,6 @@ def test_a_line_is_looked_for_in_the_session_part_and_position_the_fork_names() 
         science_chat_exists_at(
             cast("Conn", conn),
             assistant=None,
-            email="a@example.com",
             fork=fork,
             reader=NOBODY,
         ),
@@ -310,6 +299,8 @@ def test_a_fork_point_the_session_does_not_hold_copies_nothing() -> None:
 
 # The head session's own account is someone else's, as a session a rotated assistant key
 # opened for the first poster it heard would be; the starter wins.
+# The shares read answers ``shares``; any other ``fetch``, what the head session's
+# records say of it, answers that its goal is ``CI is green`` and its first line ``Hi``.
 def _head(
     engine: FakeEngine,
     *,
@@ -328,6 +319,7 @@ def _head(
         "session_id": _SESSION,
         "cli_session_id": chat_session_id(_CONVERSATION),
         "title": "tails",
+        "cli": "sagent",
         "account": "first-heard@example.com",
         "modified": datetime(2026, 1, 1, tzinfo=UTC),
         "live": True,
@@ -337,7 +329,29 @@ def _head(
         "others_posted": others_posted,
     }
     engine.conn.fetchval.side_effect = [starter, forks, origin, reads]
-    engine.conn.fetch.return_value = [{"email": email} for email in shares]
+    engine.conn.fetch.side_effect = partial(_fetched, shares=shares)
+
+
+def _fetched(sql: str, *_: object, shares: tuple[str, ...]) -> list[dict[str, object]]:
+    """Answer a head's ``fetch``: the chat's shares, else what its session says."""
+    if "FROM science_chat_shares" in sql:
+        return [{"email": email} for email in shares]
+    return [_SAID]
+
+
+_SAID: Final[dict[str, object]] = {
+    "id": _SESSION,
+    "content": "Hi",
+    "room": None,
+    "source": None,
+    "goal": "CI is green",
+    "last_kind": None,
+    "last_content": None,
+    "last_sender": None,
+    "last_room": None,
+    "last_source": None,
+}
+"""What the head session's records say of it: a goal and a first line, no last line."""
 
 
 def _read(
@@ -379,6 +393,9 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
         "conversation_id": _CONVERSATION,
         "session_id": _SESSION,
         "title": "tails",
+        "cli": "sagent",
+        "goal": "CI is green",
+        "first_line": "Hi",
         "account": "ada@example.com",
         "live": True,
         "forks": 3,
@@ -391,11 +408,10 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
         "may_share": False,
         "may_delete": False,
     }
-    openers = ["kb@example.com", "bob@example.com"]
     row_call = engine.conn.fetchrow.await_args
     assert row_call is not None
     assert row_call.args[1:] == (
-        openers,
+        "kb@example.com",
         SCIENCE_CHAT_LABEL,
         chat_session_id(_CONVERSATION),
         _KEY,
@@ -413,24 +429,24 @@ def test_a_head_names_its_session_forks_and_origin() -> None:
         "kb@example.com",
     )
     assert count_call.args[1:] == (
-        openers,
+        "kb@example.com",
         SCIENCE_CHAT_LABEL,
         FORK_EDGE_LABEL,
         chat_session_id(_CONVERSATION),
     )
     assert origin_call.args[1:] == (
-        openers,
+        "kb@example.com",
         SCIENCE_CHAT_LABEL,
         FORK_EDGE_LABEL,
         _SESSION,
     )
-    shares_call = engine.conn.fetch.await_args
-    assert shares_call is not None
+    shares_call, said_call = engine.conn.fetch.await_args_list
     assert shares_call.args[1:] == (_CONVERSATION,)
+    assert said_call.args[1:] == ([_SESSION],)
 
 
 def test_a_head_with_no_forks_or_origin_and_a_stranger_forking_on_typing() -> None:
-    """A caller who does not read the chat is told so: their typing is no post."""
+    """A caller who does not read the chat is told so, and none of its words."""
     engine = FakeEngine()
     _head(engine, forks=None, origin=None, starter="ada@gmail.com", reads=False)
 
@@ -442,6 +458,9 @@ def test_a_head_with_no_forks_or_origin_and_a_stranger_forking_on_typing() -> No
         None,
         True,
     )
+    assert (head.cli, head.goal, head.first_line) == ("sagent", None, None)
+    [shares_call] = engine.conn.fetch.await_args_list
+    assert "FROM science_chat_shares" in str(shares_call.args[0])
 
 
 def test_the_starter_grants_shares_and_an_admin_sees_them_only_to_stop_them() -> None:
@@ -568,7 +587,7 @@ def test_a_post_is_its_starters_or_a_shares_who_reads_the_chat(
     conn: AsyncMock = make_conn()
     set_field_row(
         conn,
-        None if starter is None else {"id": _SESSION, "account": starter},
+        None if starter is None else {"id": str(_SESSION), "account": starter},
     )
     conn.fetch.return_value = [{"email": email} for email in shares]
     conn.fetchval.side_effect = reads
@@ -600,6 +619,30 @@ def test_a_post_is_its_starters_or_a_shares_who_reads_the_chat(
     )
     read = conn.fetchval.await_args_list
     assert [call.args[1] for call in read] == [_SESSION] * len(reads)
+    assert [call.args[1:] for call in conn.fetch.await_args_list] == (
+        [] if starter is None else [(_CONVERSATION,)]
+    )
+
+
+def test_with_no_assistant_a_post_is_to_the_chat_its_starters_key_began() -> None:
+    conn: AsyncMock = make_conn()
+    set_field_row(conn, {"id": _SESSION, "account": "bob@example.com"})
+    conn.fetchval.return_value = True
+
+    may = asyncio.run(
+        may_post(
+            cast("Conn", conn),
+            poster="bob@example.com",
+            reader=SessionReader(email="bob@example.com"),
+            conversation_id=_CONVERSATION,
+            assistant=None,
+            inbound=InboundQueue(),
+        ),
+    )
+
+    assert may is True
+    assert conn.fetchrow.await_args is not None
+    assert conn.fetchrow.await_args.args[1:] == (chat_session_id(_CONVERSATION), None)
 
 
 def test_shares_are_read_oldest_first_for_one_conversation() -> None:
