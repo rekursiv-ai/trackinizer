@@ -286,9 +286,9 @@ def _exercise(rec: _Recorder, *, url: str) -> None:
         ("meta/getEnums", "/api/meta/enums"),
         ("meta/getFieldOwners", "/api/meta/fields"),
         ("meta/getEdgeTopology", "/api/meta/edges"),
-        ("me/getProfile", "/api/me/profile"),
     ):
         _ = rec.call(name, "GET", path)
+    _ = rec.call("me/getProfile", "GET", "/api/me/profile")
     graph = _build_graph(rec)
     graph |= _add_evidence(rec, graph, url=url)
     _write_fields(rec, graph)

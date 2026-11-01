@@ -15,6 +15,7 @@ import functools
 import sys
 
 from trackinizer.client.errors import ClientError
+from trackinizer.trax.canvas import Canvas
 from trackinizer.trax.client_cache import close_clients
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.connection import connect, connect_flags
@@ -118,6 +119,7 @@ DISPATCHERS: tuple[type[Command], ...] = (
     Send,
     Version,
     Export,
+    Canvas,
     Doctor,
     Help,
     Profiles,

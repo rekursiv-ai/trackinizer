@@ -1925,6 +1925,166 @@ class Client:
             wire_sessions.SEND_MESSAGE_PATH,
         ).delivered
 
+    def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Read a canvas: its revision, visuals and focus.
+
+        Args:
+          canvas_id: The canvas.
+
+        Returns:
+          state: The canvas state as the server returns it.
+
+        """
+        where = f"/api/canvases/{canvas_id}"
+        return dict(_require_mapping(self.get(where), where))
+
+    def apply_canvas_operation(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        operation: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Apply one canvas operation to the live revision, once more if it moved.
+
+        Args:
+          canvas_id: The canvas.
+          operation: A ``show``, ``hide``, ``focus`` or ``place`` operation.
+
+        Returns:
+          state: The updated canvas state.
+
+        """
+        where = f"/api/canvases/{canvas_id}/operations"
+        try:
+            applied = self.post(
+                where,
+                body={
+                    "revision": self._live_revision(canvas_id),
+                    "operation": operation,
+                },
+            )
+        except ClientError as error:
+            if error.status_code != 409:
+                raise
+            # The 409 body names the live state, but the error text cuts it short.
+            applied = self.post(
+                where,
+                body={
+                    "revision": self._live_revision(canvas_id),
+                    "operation": operation,
+                },
+            )
+        return dict(_require_mapping(applied, where))
+
+    def navigate(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        route: str,
+    ) -> dict[str, PlainTree]:
+        """Move a canvas's page to ``route``; it is an event, so no revision is read.
+
+        Args:
+          canvas_id: The canvas.
+          route: A ``#/...`` hash.
+
+        Returns:
+          state: The canvas state, which a navigation does not change.
+
+        """
+        where = f"/api/canvases/{canvas_id}/operations"
+        moved = self.post(
+            where,
+            body={"revision": 0, "operation": {"kind": "navigate", "route": route}},
+        )
+        return dict(_require_mapping(moved, where))
+
+    def highlight(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        ids: Sequence[uuid.UUID],
+    ) -> dict[str, PlainTree]:
+        """Mark inquiries on a canvas's page; an event, so no revision is read.
+
+        Args:
+          canvas_id: The canvas.
+          ids: The inquiries to mark, at most 50; empty clears the marks.
+
+        Returns:
+          state: The canvas state, which a highlight does not change.
+
+        """
+        where = f"/api/canvases/{canvas_id}/operations"
+        marked = self.post(
+            where,
+            body={
+                "revision": 0,
+                "operation": {"kind": "highlight", "ids": [str(i) for i in ids]},
+            },
+        )
+        return dict(_require_mapping(marked, where))
+
+    def set_preferences(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        change: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Change the canvas owner's preferences, as its agent; an event, so no revision is read.
+
+        Args:
+          canvas_id: The canvas, whose owner's preferences change.
+          change: The keys to change; ``None`` puts a key back to its default.
+
+        Returns:
+          state: The canvas's state, carrying the owner's preferences after the change.
+
+        """
+        where = f"/api/canvases/{canvas_id}/operations"
+        changed = self.post(
+            where,
+            body={
+                "revision": 0,
+                "operation": {"kind": "preferences", "change": dict(change)},
+            },
+        )
+        return dict(_require_mapping(changed, where))
+
+    def chat_window(
+        self,
+        canvas_id: uuid.UUID,
+        *,
+        hidden: bool,
+    ) -> dict[str, PlainTree]:
+        """Hide or show the browser tab's Chat window; an event, so no revision is read.
+
+        Args:
+          canvas_id: The canvas.
+          hidden: True to hide Chat, False to show it again.
+
+        Returns:
+          state: The canvas state, which the window does not change.
+
+        """
+        where = f"/api/canvases/{canvas_id}/operations"
+        windowed = self.post(
+            where,
+            body={
+                "revision": 0,
+                "operation": {"kind": "chat", "hidden": hidden},
+            },
+        )
+        return dict(_require_mapping(windowed, where))
+
+    def _live_revision(self, canvas_id: uuid.UUID) -> int:
+        """Return the canvas's live revision."""
+        where = f"/api/canvases/{canvas_id}"
+        revision = _require_field(self.read_canvas(canvas_id), "revision", where)
+        if not isinstance(revision, int):
+            raise ClientError(f"{where} returned a malformed revision {revision!r}")
+        return revision
+
     def list_variables(self) -> list[Variable]:
         """Return the org's variables, sorted by name; a secret's value is ``None``."""
         where = wire_variables.VARIABLES_PATH

@@ -6,7 +6,7 @@ import { ActivityView } from "../activity";
 import type { LoggedChange } from "../api/changes";
 import type { InquiryRow } from "../api/inquiries";
 import type { Profile } from "../api/me";
-import { AGREED, type Sent, stubFetch } from "../api/testing";
+import { type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
@@ -26,7 +26,7 @@ const META: Meta = {
   edges: {},
   kinds: KINDS,
 };
-const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_canvas_enabled: false, ...AGREED };
+const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null };
 
 let server: InquiryRow[];
 let sent: Sent[];

@@ -1603,6 +1603,179 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
             client.get("/x")
 
 
+def test_a_stale_canvas_operation_is_retried_once_on_the_live_revision() -> None:
+    """A 409 re-reads the revision and resends with a fresh ``Idempotency-Key``."""
+    canvas = uuid.uuid4()
+    revisions = iter([3, 5])
+    sent: list[tuple[int, str]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "GET":
+            return httpx2.Response(
+                200,
+                json={"id": str(canvas), "revision": next(revisions)},
+            )
+        revision = from_plain(
+            json_loads(request.content, dict[str, object])["revision"],
+            int,
+        )
+        sent.append((revision, request.headers["Idempotency-Key"]))
+        if revision == 3:
+            return httpx2.Response(409, json={"detail": "stale canvas revision"})
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 6})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
+
+    assert state["revision"] == 6
+    assert [revision for revision, _ in sent] == [3, 5]
+    assert sent[0][1] != sent[1][1]
+
+
+def test_a_canvas_operation_refused_for_another_reason_is_not_retried() -> None:
+    canvas = uuid.uuid4()
+    posts: list[int] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.method == "GET":
+            return httpx2.Response(200, json={"id": str(canvas), "revision": 3})
+        posts.append(1)
+        return httpx2.Response(422, json={"detail": "Visual instance not found."})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match="422"):
+            _ = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
+
+    assert posts == [1]
+
+
+def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
+    canvas = uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                json_loads(request.content, dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.navigate(canvas, route="#/lookup/abc")
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/canvases/{canvas}/operations",
+            {"revision": 0, "operation": {"kind": "navigate", "route": "#/lookup/abc"}},
+        ),
+    ]
+
+
+def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
+    canvas = uuid.uuid4()
+    ids = [uuid.uuid4(), uuid.uuid4()]
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                json_loads(request.content, dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.highlight(canvas, ids=ids)
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/canvases/{canvas}/operations",
+            {
+                "revision": 0,
+                "operation": {"kind": "highlight", "ids": [str(i) for i in ids]},
+            },
+        ),
+    ]
+
+
+def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
+    canvas = uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                json_loads(request.content, dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.chat_window(canvas, hidden=True)
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/canvases/{canvas}/operations",
+            {"revision": 0, "operation": {"kind": "chat", "hidden": True}},
+        ),
+    ]
+
+
+def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
+    canvas = uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (
+                request.method,
+                request.url.path,
+                json_loads(request.content, dict[str, object]),
+            ),
+        )
+        return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        state = client.set_preferences(
+            canvas,
+            change={"theme": "light", "chat_side": None},
+        )
+
+    assert state["revision"] == 4
+    assert seen == [
+        (
+            "POST",
+            f"/api/canvases/{canvas}/operations",
+            {
+                "revision": 0,
+                "operation": {
+                    "kind": "preferences",
+                    "change": {"theme": "light", "chat_side": None},
+                },
+            },
+        ),
+    ]
+
+
 def _answering(payload: PlainTree) -> Client:
     """Return a client whose server answers every request with ``payload``."""
 

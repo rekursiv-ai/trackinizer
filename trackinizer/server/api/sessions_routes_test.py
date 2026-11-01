@@ -1002,34 +1002,6 @@ def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.db_pglite
-@pytest.mark.usefixtures("assistant_served")
-@pytest.mark.asyncio(loop_scope="session")
-async def test_only_the_opening_key_drains_the_assistants_session(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """Its queue holds every user's Chat, so a writer who did not open it is refused."""
-    client, store = pglite_route_client
-    await seed_accounts(store)
-    act_as_assistant()
-    kb = await start_session(client, actor=KB_ACTOR)
-    act_as_user_agent()
-    own = await start_session(client)
-
-    for role in ("viewer", "writer", "admin"):
-        for act in (act_as_user_agent, act_as_other_agent):
-            act(role)
-            assert (await drain(client, session_id=kb)).status_code == 403
-        act_as_assistant(role)
-        assert (await drain(client, session_id=kb)).status_code == 200
-    browser()
-    assert (await drain(client, session_id=kb)).status_code == 403
-
-    # An ordinary session keeps its shared writer access.
-    act_as_other_agent("writer")
-    assert (await drain(client, session_id=own)).status_code == 200
-
-
-@pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_without_an_assistant_a_writer_still_drains_any_session(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],

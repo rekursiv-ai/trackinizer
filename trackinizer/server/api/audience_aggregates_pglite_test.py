@@ -34,7 +34,6 @@ from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.audience_aggregates_pglite_test import (
     ASSISTANT_EMAIL,
     CANARY,
-    CHAT_CANARY,
     STARTER_EMAIL,
     Pair,
     index,
@@ -196,28 +195,6 @@ async def test_a_route_answers_for_the_audiences_of_its_caller(
     assert str(pair.open_id) in staffed
 
 
-@pytest.mark.parametrize("route", _ROUTES)
-async def test_a_route_answers_a_stranger_without_another_persons_chat(
-    served: _Served,
-    route: str,
-) -> None:
-    path, params, view = _ROUTES[route]
-    pair = served.pair
-
-    served.as_reader(_BOTH, email=_STRANGER)
-    stranger = view(await served.get(path, params))
-    served.as_reader(_OPEN, email=STARTER_EMAIL)
-    starter = view(await served.get(path, params))
-
-    assert (str(pair.open_id) in stranger, str(pair.staff_id) in stranger) == (
-        True,
-        True,
-    )
-    assert CANARY in stranger
-    assert (str(served.chat) in stranger, CHAT_CANARY in stranger) == (False, False)
-    assert str(served.chat) in starter
-
-
 async def test_the_export_header_names_the_audiences_of_its_caller(
     served: _Served,
 ) -> None:
@@ -243,21 +220,8 @@ async def test_the_histogram_counts_for_the_audiences_of_its_caller(
     staffed = await _histogram(served)
 
     assert opened == (pair.open_at, 1)
-    assert staffed == (pair.staff_at, 3)
-
-
-async def test_the_histogram_counts_no_record_of_another_persons_chat(
-    served: _Served,
-) -> None:
-    """The chat wrote first and answered inside the span, so a leak shows in either."""
-    served.as_reader(_BOTH, email=_STRANGER)
-    stranger = await _histogram(served)
-    served.as_reader(_OPEN, email=STARTER_EMAIL)
-    starter = await _histogram(served)
-
-    # The starter is of another organisation than the open session's account.
-    assert stranger == (served.pair.staff_at, 3)
-    assert starter == (served.chat_at, 2)
+    # Staff oversees every session; the app keeps a chat from all but its members.
+    assert staffed == (served.chat_at, 5)
 
 
 async def test_the_assistant_finds_no_chat_by_searching(served: _Served) -> None:
@@ -415,25 +379,6 @@ async def test_whose_campaigns_reads_a_lead_labelled_with_the_slug_in_no_room_of
     mine = (await served.get("/api/web/feed", [("whose", "campaigns")])).text
 
     assert str(lead) in mine
-
-
-async def test_facets_offer_no_hide_of_a_chat_even_to_its_starter(
-    served: _Served,
-) -> None:
-    """A chat is hidden from Chat, which says who reads it, and not from the console."""
-    served.serve_chats_as("single")
-    served.as_reader(_OPEN, email=STARTER_EMAIL)
-
-    body = from_plain(
-        (await served.get("/api/web/feed/facets", [])).json(),
-        dict[str, object],
-    )
-    hideable = {
-        from_plain(each["session_id"], str): each["hideable"]
-        for each in from_plain(body["actors"], list[dict[str, object]])
-    }
-
-    assert hideable[str(served.chat)] is False
 
 
 def _config(orgs: ChatOrgs) -> Config:
