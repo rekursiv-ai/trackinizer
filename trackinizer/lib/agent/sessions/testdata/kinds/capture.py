@@ -12,7 +12,7 @@ from typing import Final
 import json
 import sys
 
-from treekle import from_plain, json_dumps, json_loads
+from treekle import MutablePlainTree, from_plain, json_dumps, json_loads
 
 from trackinizer.lib.agent.sessions.testdata.capture import (
     _codex_flags,
@@ -240,7 +240,7 @@ def _first_of_each_kind(path: Path) -> Path:
     kept: list[str] = []
     text = path.read_text(encoding="utf-8")
     for line in text.splitlines():
-        record = json_loads(line, dict[str, object])
+        record = json_loads(line, dict[str, MutablePlainTree])
         payload = from_plain(record.get("payload"), dict[str, object], default={})
         # An ``item_completed`` event names its item's own type one level down.
         item = from_plain(payload.get("item"), dict[str, object], default={})
@@ -257,7 +257,7 @@ def _first_of_each_kind(path: Path) -> Path:
 
 # Instructions, compaction histories and tool outputs run to tens of KB a string and
 # no key order hangs on their text; uncut, the fixture outgrows the testdata ceiling.
-def _trimmed(value: object) -> object:
+def _trimmed(value: MutablePlainTree) -> MutablePlainTree:
     """Return ``value`` with every string in it cut to its first 256 characters."""
     if isinstance(value, str):
         return value[:256]
