@@ -322,9 +322,33 @@ class Client:
         """Send a GET request; ``timeout`` replaces the read timeout for it."""
         return self._request("GET", path, params=params, timeout=timeout)
 
-    def post(self, path: str, *, body: object = None) -> PlainTree:
-        """Send a POST request."""
-        return self._request("POST", path, body=body)
+    def post(
+        self,
+        path: str,
+        *,
+        body: object = None,
+        timeout: float | None = None,
+        retry_attempts: int = 3,
+    ) -> PlainTree:
+        """Send a POST request with optional per-request timeout and retry count.
+
+        Args:
+          path: The endpoint path.
+          body: The JSON body to send.
+          timeout: The timeout for each network phase, or ``None`` for the client default.
+          retry_attempts: Total attempts, including the first request.
+
+        Returns:
+          answer: The decoded JSON response.
+
+        """
+        return self._request(
+            "POST",
+            path,
+            body=body,
+            timeout=timeout,
+            retry_attempts=retry_attempts,
+        )
 
     def put(self, path: str, *, body: object = None) -> PlainTree:
         """Send a PUT request."""

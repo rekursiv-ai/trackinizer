@@ -151,7 +151,10 @@ class _ClientSpy(Client):
         path: str,
         *,
         body: object = None,
+        timeout: float | None = None,
+        retry_attempts: int = 3,
     ) -> PlainTree:
+        del timeout, retry_attempts
         self.post_calls.append((path, body))
         self.request_calls.append(("POST", path, body))
         return self.post_result
@@ -553,6 +556,26 @@ class TestRequests:
         assert from_plain(fields.get("error_type"), str, default="") == "ConnectTimeout"
         assert from_plain(fields.get("client_age_sec"), float, default=-1.0) >= 0
         assert len(from_plain(fields.get("client_id"), str, default="")) == 12
+
+    def test_post_timeout_and_single_attempt_are_forwarded(self) -> None:
+        attempts: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            attempts.append(request)
+            return httpx2.Response(503, content=b"down")
+
+        with Client("http://server") as client:
+            _install_mock_transport(client, handler)
+            with pytest.raises(ClientError, match="POST /x -> 503"):
+                client.post("/x", timeout=1.0, retry_attempts=1)
+
+        assert len(attempts) == 1
+        assert attempts[0].extensions["timeout"] == {
+            "connect": 1.0,
+            "read": 1.0,
+            "write": 1.0,
+            "pool": 1.0,
+        }
 
     def test_retries_5xx_with_same_change_id(
         self,
