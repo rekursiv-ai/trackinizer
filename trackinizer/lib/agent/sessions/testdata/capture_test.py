@@ -33,7 +33,6 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _drive,
     _emit,
     _filler,
-    _first_of_each_kind,
     _Flags,
     _isolate_environment,
     _log_size,
@@ -892,160 +891,23 @@ def _fake_captures(
     return calls
 
 
-def test_main_codex_kinds_runs_only_the_codex_kinds_session_into_kinds(
+@pytest.mark.parametrize("cli", ["claude-kinds", "codex-kinds"])
+def test_main_kinds_runs_only_its_kinds_session_into_kinds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    cli: str,
 ) -> None:
     monkeypatch.chdir(tmp_path)
     calls = _fake_captures(monkeypatch)
     out = tmp_path / "o"
 
-    assert main(["--cli", "codex-kinds", "--out", str(out)]) == 0
+    assert main(["--cli", cli, "--out", str(out)]) == 0
 
-    assert calls == [("codex-kinds", out / "scratch" / "codex-kinds", 180.0, 300)]
+    assert calls == [(cli, out / "scratch" / cli, 180.0, 300)]
     assert Path.cwd() == tmp_path
     assert capsys.readouterr().out.splitlines() == [
-        f"{out / 'kinds' / 'codex-kinds.jsonl'} (3 bytes)",
-    ]
-
-
-def test_capture_codex_kinds_drives_the_session_then_forks_it(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _vendor_home(tmp_path, monkeypatch, ".codex")
-    calls: list[
-        tuple[list[str], Sequence[_Step], Path, dict[str, str], float, int]
-    ] = []
-
-    def fake_drive(
-        argv: list[str],
-        script: Sequence[_Step],
-        *,
-        cwd: Path,
-        env: dict[str, str],
-        turn_sec: float,
-        timeout_sec: int,
-    ) -> None:
-        calls.append((argv, script, cwd, env, turn_sec, timeout_sec))
-        home = env["CODEX_HOME"]
-        sessions = Path(home) / "sessions" / "2026"
-        sessions.mkdir(parents=True, exist_ok=True)
-        forked = argv[1] == "fork"
-        meta = '{"forked_from_id":"p"}' if forked else "{}"
-        name = "rollout-2.jsonl" if forked else "rollout-1.jsonl"
-        (sessions / name).write_text(
-            f'{{"type":"session_meta","payload":{meta}}}\n'
-            f'{{"type":"event_msg","payload":{{"type":"a","cwd":"{cwd}"}}}}\n'
-            '{"type":"event_msg","payload":{"type":"a"}}\n'
-            '{"type":"event_msg","payload":{"type":"b"}}\n'
-            '{"type":"compacted","payload":{"message":""}}\n'
-            '{"type":"compacted","payload":{"message":"again"}}\n'
-            '{"type":"bare"}\n'
-            '{"type":"event_msg","payload":{"type":"b","item":{"type":"x"}}}\n'
-            '{"type":"event_msg","payload":{"type":"b","item":{"type":"x","n":2}}}\n'
-            # A later line may name the key; only the first line says a fork.
-            '{"type":"event_msg","payload":'
-            f'{{"type":"c","text":"forked_from_id é {home}"}}}}\n'
-            '{"type":"event_msg","payload":{"type":"d"}}\n',
-            encoding="utf-8",
-        )
-
-    monkeypatch.setattr(capture, "_drive", fake_drive)
-    out = tmp_path / "out" / "kinds"
-    root = tmp_path / "root"
-
-    with ascii_locale():
-        written = capture._capture_codex_kinds(root, out, turn_sec=1.5, timeout_sec=9)
-        # Into a directory that already exists, as every capture after the first.
-        again = capture._capture_codex_kinds(
-            tmp_path / "again",
-            out,
-            turn_sec=1.5,
-            timeout_sec=9,
-        )
-
-    assert written == again == [out / "codex_main.jsonl", out / "codex_fork.jsonl"]
-    # The first line of each kind alone, redacted.
-    assert (out / "codex_fork.jsonl").read_text(encoding="utf-8") == (
-        '{"type":"session_meta","payload":{"forked_from_id":"p"}}\n'
-        '{"type":"event_msg","payload":{"type":"a","cwd":"/workspace"}}\n'
-        '{"type":"event_msg","payload":{"type":"b"}}\n'
-        '{"type":"compacted","payload":{"message":""}}\n'
-        '{"type":"bare"}\n'
-        '{"type":"event_msg","payload":{"type":"b","item":{"type":"x"}}}\n'
-        '{"type":"event_msg","payload":'
-        '{"type":"c","text":"forked_from_id é /config"}}\n'
-        '{"type":"event_msg","payload":{"type":"d"}}\n'
-    )
-    assert sorted(path.name for path in (root / "home").iterdir()) == [
-        ".credentials.json",
-        "auth.json",
-        "config.toml",
-        "sessions",
-        "settings.json",
-    ]
-    flags = [
-        "-c",
-        f'projects."{root / "work"}".trust_level="trusted"',
-        "-c",
-        "model_reasoning_summary=detailed",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "-c",
-        'web_search="live"',
-    ]
-    env = {"CODEX_HOME": str(root / "home")}
-    # The script is the capture's spec: each line drives a different live session.
-    session = (
-        _Step(
-            line=(
-                "Use your update_plan tool to record a two-step plan, then mark both "
-                "steps completed."
-            ),
-        ),
-        _Step(
-            line=(
-                "Search the web for the current stable Python version and state it "
-                "in one line."
-            ),
-        ),
-        _Step(
-            line=(
-                'Use apply_patch to create note.txt containing "beta", then '
-                "apply_patch again to change beta to gamma."
-            ),
-        ),
-        _Step(line="/compact"),
-    )
-    assert calls[:2] == [
-        (["codex", *flags], session, root / "work", env, 1.5, 9),
-        (
-            ["codex", "fork", "--last", *flags],
-            (_Step(line="Say exactly: forked"),),
-            root / "work",
-            env,
-            1.5,
-            9,
-        ),
-    ]
-
-
-def test_main_claude_kinds_runs_only_the_kinds_session_into_kinds(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    calls = _fake_captures(monkeypatch)
-    out = tmp_path / "o"
-
-    assert main(["--cli", "claude-kinds", "--out", str(out)]) == 0
-
-    assert calls == [("claude-kinds", out / "scratch" / "claude-kinds", 180.0, 300)]
-    assert Path.cwd() == tmp_path
-    assert capsys.readouterr().out.splitlines() == [
-        f"{out / 'kinds' / 'claude-kinds.jsonl'} (3 bytes)",
+        f"{out / 'kinds' / f'{cli}.jsonl'} (3 bytes)",
     ]
 
 
@@ -1166,16 +1028,6 @@ def test_the_session_script_is_the_capture_spec() -> None:
         _Step(line="/compact"),
         _Step(line="Say exactly: after-compact"),
     )
-
-
-def test_first_of_each_kind_refuses_a_line_that_is_not_an_object(
-    tmp_path: Path,
-) -> None:
-    path = tmp_path / "rollout.jsonl"
-    path.write_text('{"type":"a"}\n[]\n', encoding="utf-8")
-
-    with pytest.raises(ReadError):
-        _first_of_each_kind(path)
 
 
 def test_main_makes_the_output_directory_and_its_parents(

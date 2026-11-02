@@ -1,6 +1,7 @@
-"""The claude-kinds capture session, beside the fixture it writes.
+"""The claude-kinds and codex-kinds capture sessions, beside the fixtures they write.
 
-``capture.py --cli claude-kinds`` runs it; see that script's docstring.
+``capture.py --cli claude-kinds`` and ``--cli codex-kinds`` run them; see that
+script's docstring.
 """
 
 from __future__ import annotations
@@ -11,9 +12,10 @@ from typing import Final
 import json
 import sys
 
-from treekle import from_plain, json_loads
+from treekle import from_plain, json_dumps, json_loads
 
 from trackinizer.lib.agent.sessions.testdata.capture import (
+    _codex_flags,
     _drive,
     _emit,
     _prepare,
@@ -142,6 +144,128 @@ def capture_claude_kinds(
         for path in sorted((home / "projects").rglob("*.jsonl"))
         if path.parent.name != "subagents"
     ]
+
+
+# One line per payload type ``_session_script`` left uncaptured, then a fork of the
+# session, which ``codex fork --last`` starts as a rollout of its own naming the thread
+# it forked from:
+#   1. a function call, ``update_plan``, and its output
+#   2. a web search, which only ``web_search="live"`` lets the model make
+#   3. ``apply_patch``, which records a patch event and a file-change item
+#   4. ``/compact``, which records the compaction.
+def capture_codex_kinds(
+    root: Path,
+    out: Path,
+    *,
+    turn_sec: float,
+    timeout_sec: int,
+) -> list[Path]:
+    """Drive the codex-kinds session and its fork and return the fixture paths written.
+
+    Args:
+      root: The scratch directory the session's home and workspace go in.
+      out: The directory the fixtures are written to.
+      turn_sec: How long each scripted turn waits for its answer.
+      timeout_sec: The bound on each session.
+
+    Returns:
+      written: The fixture paths, one per rollout: the session's and its fork's.
+
+    """
+    home, work = _prepare(root, real_home=Path.home() / ".codex")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
+    flags = [*_codex_flags(work), "-c", 'web_search="live"']
+    env = {"CODEX_HOME": str(home)}
+    _drive(
+        ["codex", *flags],
+        (
+            _Step(
+                line=(
+                    "Use your update_plan tool to record a two-step plan, then mark "
+                    "both steps completed."
+                ),
+            ),
+            _Step(
+                line=(
+                    "Search the web for the current stable Python version and state "
+                    "it in one line."
+                ),
+            ),
+            _Step(
+                line=(
+                    'Use apply_patch to create note.txt containing "beta", then '
+                    "apply_patch again to change beta to gamma."
+                ),
+            ),
+            _Step(line="/compact"),
+        ),
+        cwd=work,
+        env=env,
+        turn_sec=turn_sec,
+        timeout_sec=timeout_sec,
+    )
+    _drive(
+        ["codex", "fork", "--last", *flags],
+        (_Step(line="Say exactly: forked"),),
+        cwd=work,
+        env=env,
+        turn_sec=turn_sec,
+        timeout_sec=timeout_sec,
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    return [
+        _first_of_each_kind(
+            _emit(
+                path,
+                out
+                / (
+                    "codex_fork.jsonl"
+                    if "forked_from_id"
+                    in path.read_text(encoding="utf-8").partition("\n")[0]
+                    else "codex_main.jsonl"
+                ),
+                home=home,
+                work=work,
+            ),
+        )
+        for path in sorted((home / "sessions").rglob("rollout-*.jsonl"))
+    ]
+
+
+# A kinds rollout is captured for each payload type's key order, which one line of a
+# type shows as well as twenty: the rest repeat it, and the fork replays its parent.
+# Codex writes compact JSON, so rewriting a line changes only its cut strings.
+def _first_of_each_kind(path: Path) -> Path:
+    """Keep the first line of each line, payload and item type, strings cut short."""
+    seen: set[tuple[object, object, object]] = set()
+    kept: list[str] = []
+    text = path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        record = json_loads(line, dict[str, object])
+        payload = from_plain(record.get("payload"), dict[str, object], default={})
+        # An ``item_completed`` event names its item's own type one level down.
+        item = from_plain(payload.get("item"), dict[str, object], default={})
+        kind = (record.get("type"), payload.get("type"), item.get("type"))
+        if kind not in seen:
+            seen.add(kind)
+            kept.append(
+                json_dumps(_trimmed(record), ensure_ascii=False, separators=(",", ":"))
+                + "\n",
+            )
+    path.write_text("".join(kept), encoding="utf-8")
+    return path
+
+
+# Instructions, compaction histories and tool outputs run to tens of KB a string and
+# no key order hangs on their text; uncut, the fixture outgrows the testdata ceiling.
+def _trimmed(value: object) -> object:
+    """Return ``value`` with every string in it cut to its first 256 characters."""
+    if isinstance(value, str):
+        return value[:256]
+    if isinstance(value, dict):
+        return {key: _trimmed(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_trimmed(item) for item in value]
+    return value
 
 
 # The kinds session is captured for its record lines' key orders, so its fixture keeps

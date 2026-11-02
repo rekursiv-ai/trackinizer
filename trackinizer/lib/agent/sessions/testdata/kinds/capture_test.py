@@ -13,17 +13,19 @@ from treekle import ReadError
 import pytest
 
 from trackinizer.lib.agent.sessions.testdata import capture as session_capture
+from trackinizer.lib.agent.sessions.testdata.capture import _Step
 from trackinizer.lib.agent.sessions.testdata.kinds import capture
 from trackinizer.lib.agent.sessions.testdata.kinds.capture import (
+    _first_of_each_kind,
     _record_lines,
     capture_claude_kinds,
+    capture_codex_kinds,
 )
+from trackinizer.lib.testing.resources import ascii_locale
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    from trackinizer.lib.agent.sessions.testdata.capture import _Step
 
 
 def test_record_lines_keeps_only_order_and_payload_witnesses(tmp_path: Path) -> None:
@@ -236,6 +238,159 @@ def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
         )
         == written
     )
+
+
+def test_capture_codex_kinds_drives_the_session_then_forks_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = tmp_path / "user"
+    (user / ".codex").mkdir(parents=True)
+    (user / ".codex" / "auth.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(user))
+    calls: list[
+        tuple[list[str], Sequence[_Step], Path, dict[str, str], float, int]
+    ] = []
+
+    def fake_drive(
+        argv: list[str],
+        script: Sequence[_Step],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        turn_sec: float,
+        timeout_sec: int,
+    ) -> None:
+        calls.append((argv, script, cwd, env, turn_sec, timeout_sec))
+        home = env["CODEX_HOME"]
+        sessions = Path(home) / "sessions" / "2026"
+        sessions.mkdir(parents=True, exist_ok=True)
+        forked = argv[1] == "fork"
+        meta = '{"forked_from_id":"p"}' if forked else "{}"
+        name = "rollout-2.jsonl" if forked else "rollout-1.jsonl"
+        (sessions / name).write_text(
+            f'{{"type":"session_meta","payload":{meta}}}\n'
+            f'{{"type":"event_msg","payload":{{"type":"a","cwd":"{cwd}"}}}}\n'
+            '{"type":"event_msg","payload":{"type":"a"}}\n'
+            '{"type":"event_msg","payload":{"type":"b"}}\n'
+            '{"type":"compacted","payload":{"message":""}}\n'
+            '{"type":"compacted","payload":{"message":"again"}}\n'
+            '{"type":"bare"}\n'
+            '{"type":"event_msg","payload":{"type":"b","item":{"type":"x"}}}\n'
+            '{"type":"event_msg","payload":{"type":"b","item":{"type":"x","n":2}}}\n'
+            # A later line may name the key; only the first line says a fork.
+            '{"type":"event_msg","payload":'
+            f'{{"type":"c","text":"forked_from_id é {home}"}}}}\n'
+            '{"type":"event_msg","payload":{"type":"d"}}\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(capture, "_drive", fake_drive)
+    out = tmp_path / "out" / "kinds"
+    root = tmp_path / "root"
+
+    with ascii_locale():
+        written = capture_codex_kinds(root, out, turn_sec=1.5, timeout_sec=9)
+        # Into a directory that already exists, as every capture after the first.
+        again = capture_codex_kinds(
+            tmp_path / "again",
+            out,
+            turn_sec=1.5,
+            timeout_sec=9,
+        )
+
+    assert written == again == [out / "codex_main.jsonl", out / "codex_fork.jsonl"]
+    # The first line of each kind alone, redacted.
+    assert (out / "codex_fork.jsonl").read_text(encoding="utf-8") == (
+        '{"type":"session_meta","payload":{"forked_from_id":"p"}}\n'
+        '{"type":"event_msg","payload":{"type":"a","cwd":"/workspace"}}\n'
+        '{"type":"event_msg","payload":{"type":"b"}}\n'
+        '{"type":"compacted","payload":{"message":""}}\n'
+        '{"type":"bare"}\n'
+        '{"type":"event_msg","payload":{"type":"b","item":{"type":"x"}}}\n'
+        '{"type":"event_msg","payload":'
+        '{"type":"c","text":"forked_from_id é /config"}}\n'
+        '{"type":"event_msg","payload":{"type":"d"}}\n'
+    )
+    assert sorted(path.name for path in (root / "home").iterdir()) == [
+        "auth.json",
+        "sessions",
+    ]
+    flags = [
+        "-c",
+        f'projects."{root / "work"}".trust_level="trusted"',
+        "-c",
+        "model_reasoning_summary=detailed",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        'web_search="live"',
+    ]
+    env = {"CODEX_HOME": str(root / "home")}
+    # The script is the capture's spec: each line drives a different live session.
+    session = (
+        _Step(
+            line=(
+                "Use your update_plan tool to record a two-step plan, then mark both "
+                "steps completed."
+            ),
+        ),
+        _Step(
+            line=(
+                "Search the web for the current stable Python version and state it "
+                "in one line."
+            ),
+        ),
+        _Step(
+            line=(
+                'Use apply_patch to create note.txt containing "beta", then '
+                "apply_patch again to change beta to gamma."
+            ),
+        ),
+        _Step(line="/compact"),
+    )
+    assert calls[:2] == [
+        (["codex", *flags], session, root / "work", env, 1.5, 9),
+        (
+            ["codex", "fork", "--last", *flags],
+            (_Step(line="Say exactly: forked"),),
+            root / "work",
+            env,
+            1.5,
+            9,
+        ),
+    ]
+
+
+def test_first_of_each_kind_cuts_every_string_and_keeps_key_order(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rollout.jsonl"
+    long = "é" * 300
+    path.write_text(
+        json.dumps(
+            {"type": "m", "payload": {"z": long, "a": [long, 7, None], "b": True}},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+
+    _first_of_each_kind(path)
+
+    cut = "é" * 256
+    assert path.read_text(encoding="utf-8") == (
+        f'{{"type":"m","payload":{{"z":"{cut}","a":["{cut}",7,null],"b":true}}}}\n'
+    )
+
+
+def test_first_of_each_kind_refuses_a_line_that_is_not_an_object(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text('{"type":"a"}\n[]\n', encoding="utf-8")
+
+    with pytest.raises(ReadError):
+        _first_of_each_kind(path)
 
 
 if __name__ == "__main__":
