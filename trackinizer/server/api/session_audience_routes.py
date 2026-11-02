@@ -14,10 +14,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api._deps import (
     get_store,
 )
-from trackinizer.server.api.session_access import require_session
+from trackinizer.server.api.session_access import (
+    request_principal,
+    require_session,
+)
 from trackinizer.server.audience import may_hide
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.session_runs import opener_email
@@ -78,7 +82,15 @@ async def set_session_audience_route(
             api_key_id=identity.api_key_id,
             actor=identity.email,
             reason="hidden by its owner" if body.audience == PRIVATE else "shown again",
+            principal=await request_principal(request, identity),
+            caller=identity.email,
+            assistant=get_assistant(request),
         )
+    except AccessDeniedError as error:
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "session_not_owner"},
+        ) from error
     except ConflictError as error:
         raise _staff() from error
     return SessionAudienceResponse(

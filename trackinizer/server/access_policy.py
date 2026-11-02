@@ -96,8 +96,9 @@ class AccessPolicy(Protocol):
 
     Where each method runs, and so what it may rely on:
 
-    - ``on_create`` and ``validate`` run inside the store's write transaction, so
-      what they write commits or rolls back with the change they follow.
+    - ``on_create``, ``validate`` and ``on_audience`` run inside the store's write
+      transaction, so what they write commits or rolls back with the change they
+      follow.
     - ``check`` runs in a transaction of its own just before the guarded write
       (the lock route alone shares the write's), so it must only read: anything it
       writes or locks outlives a write that then fails. It moves inside the
@@ -175,6 +176,30 @@ class AccessPolicy(Protocol):
 
     async def on_user(self, conn: Conn, *, email: str, role: Role) -> None:
         """Note an account's role, at every ``users`` insert and role change."""
+        ...
+
+    async def prepare_audience_change(self, conn: Conn) -> None:
+        """Acquire policy locks before core locks the sessions whose audience it moves."""
+        ...
+
+    async def on_audience(
+        self,
+        conn: Conn,
+        *,
+        principal: Principal | None,
+        resource: Resource,
+    ) -> None:
+        """Note who now reads a session's transcript.
+
+        Core calls it after a session's audience changes, in the same transaction:
+        a hide or a show by its owner, a private resume, a chat made ``staff``.
+
+        Args:
+          conn: The caller's connection, inside its transaction.
+          principal: Who changed it; ``None`` for the system.
+          resource: The transcript: kind ``session``, the session's id, its account.
+
+        """
         ...
 
 
@@ -269,3 +294,17 @@ class DefaultPolicy:
     async def on_user(self, conn: Conn, *, email: str, role: Role) -> None:
         """Note nothing: the default policy keeps no memberships."""
         del conn, email, role
+
+    async def prepare_audience_change(self, conn: Conn) -> None:
+        """Acquire no locks: the default policy keeps no mutable grants."""
+        del conn
+
+    async def on_audience(
+        self,
+        conn: Conn,
+        *,
+        principal: Principal | None,
+        resource: Resource,
+    ) -> None:
+        """Note nothing: audiences, not grants, decide reads by default."""
+        del conn, principal, resource

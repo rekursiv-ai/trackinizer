@@ -151,6 +151,20 @@ class _RecordingPolicy:
         del conn
         self.calls.append(("on_user", (email, role)))
 
+    async def prepare_audience_change(self, conn: Conn) -> None:
+        del conn
+        self.calls.append(("prepare_audience_change", None))
+
+    async def on_audience(
+        self,
+        conn: Conn,
+        *,
+        principal: Principal | None,
+        resource: Resource,
+    ) -> None:
+        del conn
+        self.calls.append(("on_audience", (principal, resource)))
+
     def of(self, name: str) -> list[object]:
         """Return the recorded arguments of every call to ``name``, in order."""
         return [args for called, args in self.calls if called == name]
@@ -389,6 +403,53 @@ async def test_every_new_row_is_created_with_the_policy(
         (ada, Resource(kind="inquiry", id=ids[1], account=ADA)),
         (viewer, Resource(kind="inquiry", id=session, account=VIEWER)),
         (None, Resource(kind="inquiry", id=str(system), account=ADA)),
+    ]
+
+
+async def test_every_audience_move_tells_the_policy_who_made_it(
+    recorded: tuple[httpx2.AsyncClient, Store, _RecordingPolicy],
+) -> None:
+    """A hide, a show and a private resume each tell it once; asking again moves none.
+
+    Each lets the policy lock first, before core locks the session.
+    """
+    client, _, policy = recorded
+    _as(VIEWER, user_id=VIEWER_ID, api_key_id=VIEWER_KEY, role="viewer")
+    run = {"cli": "codex", "cli_session_id": "run-1"}
+    started = await client.post("/api/sessions/start", json=run)
+    session = _created_id(started)
+    path = f"/api/sessions/{session}/audience"
+
+    answers = [
+        await client.post(path, json={"audience": "private"}),
+        await client.post(path, json={"audience": "private"}),
+        await client.post(path, json={"audience": "open"}),
+        await client.post("/api/sessions/start", json={**run, "private": True}),
+    ]
+
+    viewer = Principal(
+        email=VIEWER,
+        role="viewer",
+        groups=GROUPS,
+        api_key_id=VIEWER_KEY,
+    )
+    assert started.status_code == 201, started.text
+    assert [answer.status_code for answer in answers] == [200, 200, 200, 201], [
+        answer.text for answer in answers
+    ]
+    assert (
+        policy.of("on_audience")
+        == [
+            (viewer, Resource(kind="session", id=session, account=VIEWER)),
+        ]
+        * 3
+    )
+    prepare, hear = "prepare_audience_change", "on_audience"
+    assert [name for name, _ in policy.calls if name in {prepare, hear}] == [
+        *(prepare, hear),
+        prepare,
+        *(prepare, hear),
+        *(prepare, hear),
     ]
 
 

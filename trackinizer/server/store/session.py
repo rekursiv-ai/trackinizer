@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.access_policy import Principal
+    from trackinizer.server.config import Assistant
     from trackinizer.wire.bodies import SubmitAgentSession
 else:
     from wrapt import lazy_import
@@ -30,7 +31,8 @@ else:
 
 from treekle import from_plain
 
-from trackinizer.server.audience import visible_sql
+from trackinizer.server.access_policy import AccessDeniedError, Resource
+from trackinizer.server.audience import may_hide, visible_sql
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -45,6 +47,7 @@ from trackinizer.server.store.session_feed import (
 from trackinizer.server.store.session_ir import _decoded_payload
 from trackinizer.server.store.submit import _SubmitMixin
 from trackinizer.server.values import vetted_sql
+from trackinizer.server.visuals.session_runs import opener_email
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
@@ -89,7 +92,7 @@ _LOCK_SESSION_SQL: Final = (
 """Lock a session's row for a lifecycle move, reading what each move checks."""
 
 _RESUMED_SQL: Final = (
-    "SELECT id, owner, status, agentsession_ended, agentsession_rooms, "
+    "SELECT id, owner, account, status, agentsession_ended, agentsession_rooms, "
     "agentsession_audience FROM inquiries WHERE kind = 'AgentSession' "
 )
 """Read what a resume or an attach re-opens; the caller names the row and locks it."""
@@ -221,7 +224,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           attach: The session to re-open by its id, or ``None`` to open or resume.
           max_reserve_attempts: Max retries on live-owner unique constraint.
           principal: The caller the access policy records as a new session's
-            creator; None for one the system opens.
+            creator, or hears hide one it resumes; None for the system.
 
         Returns:
           session_id: Server-minted UUID (or re-attached on resume or attach).
@@ -243,6 +246,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 actor=requested_actor,
                 hide=audience == PRIVATE,
                 attach=attach,
+                principal=principal,
             )
             if attached is None:
                 raise NotFoundError(f"session {attach} not found")
@@ -256,6 +260,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 api_key_id=api_key_id,
                 actor=requested_actor,
                 hide=audience == PRIVATE,
+                principal=principal,
             )
             if resumed is not None:
                 return resumed
@@ -384,6 +389,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         actor: Inquiry.Actor,
         hide: bool,
         attach: UUID | None = None,
+        principal: Principal | None = None,
     ) -> tuple[UUID, str, int] | None:
         """Re-attach (and re-open if ended) the session by CLI session id or by id."""
         async with (
@@ -391,6 +397,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            if hide:
+                await self.access_policy.prepare_audience_change(conn)
             if attach is None:
                 row = await conn.fetchrow(
                     vetted_sql(
@@ -418,9 +426,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 await self._hide_resumed(
                     conn,
                     session_id=session_id,
+                    account=from_plain(row["account"], str),
                     held=from_plain(row.get("agentsession_audience"), str, default=""),
                     api_key_id=api_key_id,
                     actor=actor,
+                    principal=principal,
                 )
             if row["agentsession_ended"] is not None:
                 # Attribute the audit to the resuming caller, not the original
@@ -455,9 +465,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         conn: Conn,
         *,
         session_id: UUID,
+        account: str,
         held: str,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
+        principal: Principal | None,
     ) -> None:
         """Make the ``open`` session a private resume re-attaches ``private``."""
         if held == PRIVATE:
@@ -477,6 +489,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             api_key_id=api_key_id,
             actor=actor,
             reason="hidden by its owner on resume",
+        )
+        await self.access_policy.on_audience(
+            conn,
+            principal=principal,
+            resource=Resource(kind="session", id=str(session_id), account=account),
         )
 
     # An agent run polls continuously, so its row is rewritten at most once a minute:
@@ -863,12 +880,16 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
         reason: str = "",
+        principal: Principal | None = None,
+        caller: str | None = None,
+        assistant: Assistant | None = None,
     ) -> list[UUID]:
         """Move sessions into ``audience``, all or none, each move audited.
 
         One transaction locks every session first, so no move lands while another
         reads them: a session in a ``refusing`` audience refuses the whole call, and
-        only those in a ``replacing`` one move.
+        only those in a ``replacing`` one move. The access policy takes its locks
+        before the sessions', and hears each move in the same transaction.
 
         Args:
           session_ids: The sessions; an id that is no session is skipped.
@@ -878,6 +899,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           api_key_id: The key behind the move, for the audit.
           actor: System-wide author label for the audit.
           reason: Why, for the audit.
+          principal: Who moves them, as the access policy hears it; None for the
+            system.
+          caller: Requester whose owner authority is rechecked under lock; None for
+            trusted system mutations.
+          assistant: Configured assistant, used to resolve science-chat starters.
 
         Returns:
           moved: The sessions that moved, in id order.
@@ -892,8 +918,11 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
+            await self.access_policy.prepare_audience_change(conn)
             rows = await conn.fetch(
-                "SELECT id, agentsession_audience AS audience FROM inquiries "
+                "SELECT id, account, agentsession_audience AS audience, "
+                "agentsession_opened_by_api_key_id AS opener, "
+                "agentsession_cli_session_id AS cli_session_id FROM inquiries "
                 "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[]) "
                 "ORDER BY id FOR UPDATE",
                 list(session_ids),
@@ -905,6 +934,34 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 )
             for row in rows:
                 held = from_plain(row["audience"], str)
+                if caller is not None:
+                    conversation = wire_science_chat.chat_conversation_id(
+                        from_plain(row.get("cli_session_id"), str, default=None),
+                    )
+                    if conversation is None:
+                        owners = (
+                            from_plain(row["account"], str),
+                            await opener_email(
+                                conn,
+                                api_key_id=from_plain(
+                                    row.get("opener"),
+                                    UUID,
+                                    default=None,
+                                ),
+                            )
+                            or "",
+                        )
+                    else:
+                        owners = (
+                            await science_chats.read_starter(
+                                conn,
+                                assistant=assistant,
+                                conversation_id=conversation,
+                            )
+                            or "",
+                        )
+                    if not may_hide(caller, owners=owners, audience=held):
+                        raise AccessDeniedError("session_not_owner")
                 if held not in replacing:
                     continue
                 session_id = _uuid(row["id"])
@@ -924,6 +981,15 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                     api_key_id=api_key_id,
                     actor=actor,
                     reason=reason,
+                )
+                await self.access_policy.on_audience(
+                    conn,
+                    principal=principal,
+                    resource=Resource(
+                        kind="session",
+                        id=str(session_id),
+                        account=from_plain(row["account"], str),
+                    ),
                 )
                 moved.append(session_id)
         return moved
