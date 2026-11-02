@@ -1149,8 +1149,11 @@ def _write_tool_payload(
             payload.pop("structuredPatch", None)
     if not payload and not structured:
         return None
-    # Order is the tool's own and fixed, so a field restored above goes back
-    # where the tool wrote it rather than after the residual.
+    # A payload the reader stored is already in the line's own order, keys no table
+    # lists included; re-sorting it by the table moved a newer CLI's keys to the end.
+    if structured:
+        return payload
+    # Built from the act's values alone, the payload takes the tool's fixed order.
     #
     # A record from ANOTHER provider states no tool name -- ``$result`` is what
     # the claude reader stores, and a codex-sourced act never went through it --

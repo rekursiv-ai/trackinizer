@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Final
 
 import json
 
-from treekle import from_plain, json_loads
+from treekle import ReadError, from_plain, json_loads
 
 import pytest
 
@@ -129,6 +129,34 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
         from_plain(entry.get("py/object"), str, default="").rpartition(".")[2]
         for entry in document
     ] == ["TurnContext", "UserMessage"]
+
+
+def test_session_json_is_compact_and_keeps_its_text_as_written() -> None:
+    """No space after a separator, and no escape for a character JSON need not."""
+    stream = StringIO()
+
+    normalized.denormalize([UserMessage(content="é")], stream)
+
+    assert (
+        stream.getvalue() == '[{"py/object":"UserMessage","content":"é","extra":{}}]\n'
+    )
+
+
+def test_a_document_that_is_no_array_is_refused() -> None:
+    with pytest.raises(ReadError):
+        _ = list(normalized.normalize(StringIO("{}")))
+
+
+def test_only_a_class_tag_is_renamed_from_its_import_path() -> None:
+    """A string that merely spells an import path is the provider's, kept as it is."""
+    module = UserMessage.__module__
+    record = UserMessage(content="u", extra={"note": f"{module}.UserMessage"})
+    old = json.dumps([stored_plain(record)]).replace(
+        '"py/object": "',
+        f'"py/object": "{module}.',
+    )
+
+    assert list(normalized.normalize(StringIO(old))) == [record]
 
 
 def test_each_entry_is_a_record_as_every_store_writes_it() -> None:

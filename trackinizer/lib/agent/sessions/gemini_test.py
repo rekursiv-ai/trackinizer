@@ -401,6 +401,130 @@ def test_empty_text_and_empty_object_are_incomplete_documents() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("text", "after"),
+    [("", []), ("{not json}", [IncompleteRecord(text="{not json}")])],
+    ids=["empty", "malformed"],
+)
+def test_a_document_with_no_session_opens_a_window_and_keeps_its_bytes(
+    text: str,
+    after: list[SessionRecord],
+) -> None:
+    assert _read(text) == [
+        TurnContext(encoding={"newline_terminated": True}),
+        ContextClear(extra={"$opens": True}),
+        *after,
+    ]
+
+
+def test_a_document_with_no_message_list_holds_no_messages() -> None:
+    """A session yet to take a turn is a session, not unread bytes."""
+    assert _read('{"sessionId":"s1"}') == [
+        TurnContext(
+            encoding={"newline_terminated": True},
+            extra={"sessionId": "s1", "$compact": True},
+        ),
+        ContextClear(extra={"$opens": True}),
+    ]
+
+
+def test_every_field_of_a_document_reads_where_its_record_keeps_it() -> None:
+    """Each modeled key is a field; every other key rides the record's residual."""
+    text = json.dumps(
+        {
+            "sessionId": "s1",
+            "projectHash": "p",
+            "messages": [
+                {"type": "user", "content": "hi", "$timestamp": "t0", "id": "u1"},
+                {"type": "user"},
+                {
+                    "type": "gemini",
+                    "content": "run",
+                    "$timestamp": "t1",
+                    "model": "m",
+                    "toolCalls": [
+                        {"id": "c1", "name": "f", "args": {"a": 1}, "status": "ok"},
+                        None,
+                    ],
+                },
+                {"type": "gemini"},
+                {"type": "gemini", "content": "", "toolCalls": []},
+                {"content": "untyped"},
+                7,
+            ],
+        },
+    )
+
+    assert _read(text) == [
+        TurnContext(
+            encoding={"newline_terminated": True},
+            extra={"sessionId": "s1", "projectHash": "p", "$compact": False},
+        ),
+        ContextClear(extra={"$opens": True}),
+        UserMessage(timestamp="t0", content="hi", extra={"id": "u1"}),
+        UserMessage(content=""),
+        AssistantMessage(timestamp="t1", content="run", extra={"model": "m"}),
+        ToolCall(
+            timestamp="t1",
+            call_id="c1",
+            name="f",
+            arguments={"a": 1},
+            extra={"status": "ok"},
+        ),
+        ToolCall(timestamp="t1", call_id="", name=""),
+        AssistantMessage(content=""),
+        AssistantMessage(content="", extra={"$tool_calls_present": True}),
+        UncategorizedRecord(kind="", payload={"content": "untyped"}),
+        UncategorizedRecord(kind="", payload={"$message": 7}),
+    ]
+
+
+def test_a_compact_document_with_any_characters_round_trips_byte_exact() -> None:
+    """Gemini writes some documents without spaces, and never escapes ``é``."""
+    text = json.dumps(
+        {
+            "sessionId": "s1",
+            "messages": [
+                {"type": "user", "content": "é"},
+                {"type": "gemini", "content": "x"},
+            ],
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+    out = StringIO()
+    gemini.denormalize(gemini.normalize(StringIO(text)), out)
+
+    assert out.getvalue() == text
+
+
+def test_a_foreign_stream_writes_one_fixed_document() -> None:
+    """Spaced, its id derived from what it holds, a call after a kept message its own turn.
+
+    The id is pinned: a conversion re-run in a later release names the same session.
+    """
+    out = StringIO()
+
+    gemini.denormalize(
+        [
+            UserMessage(),
+            UncategorizedRecord(kind="future", payload={"type": "future"}),
+            ToolCall(call_id="c", name="f"),
+            UserMessage(content="é"),
+        ],
+        out,
+    )
+
+    assert out.getvalue() == (
+        '{"sessionId": "cfcf8d74-bf02-54ce-88ab-21be042d028d", "messages":'
+        ' [{"type": "user", "content": ""}, {"type": "future"},'
+        ' {"type": "gemini", "content": "", "toolCalls":'
+        ' [{"id": "c", "name": "f", "args": {}}]},'
+        ' {"type": "user", "content": "é"}]}'
+    )
+
+
 def _nested() -> str:
     """Return a document whose turns nest objects, as the CLI's own do."""
     return json.dumps(
