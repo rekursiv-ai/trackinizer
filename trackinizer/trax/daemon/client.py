@@ -14,6 +14,7 @@ import socket
 import sys
 import time
 
+from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax.daemon.protocol import (
     FORWARDED_ENV,
     KEY_ENV,
@@ -21,7 +22,6 @@ from trackinizer.trax.daemon.protocol import (
     Request,
     Response,
     read_frame,
-    socket_address,
     socket_path,
     write_frame,
 )

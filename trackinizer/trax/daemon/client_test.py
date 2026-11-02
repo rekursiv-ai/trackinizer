@@ -19,6 +19,7 @@ import threading
 
 import pytest
 
+from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax.daemon.client import (
     DaemonRequestLostError,
     _request,
@@ -30,7 +31,6 @@ from trackinizer.trax.daemon.protocol import (
     Request,
     Response,
     read_frame,
-    socket_address,
     write_frame,
 )
 

@@ -13,14 +13,12 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 
 import pytest
 
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.daemon.protocol import (
-    _UNIX_SOCKET_PATH_MAX_BYTES,
     PROTOCOL_VERSION,
     ProtocolVersionError,
     Request,
@@ -28,7 +26,6 @@ from trackinizer.trax.daemon.protocol import (
     daemon_source_version,
     package_root,
     read_frame,
-    socket_address,
     socket_path,
     source_version,
     write_frame,
@@ -237,61 +234,6 @@ class TestSocketPath:
             path.unlink(missing_ok=True)
 
         assert path.resolve().parent == logical_parent.resolve()
-
-    def test_a_long_relative_override_targets_the_callers_directory(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """A relative override must not become relative to the alias directory."""
-        monkeypatch.chdir(tmp_path)
-        logical_path = Path("long-relative-segment-" * 8) / "traxd.sock"
-        logical_path.parent.mkdir()
-        path = socket_address(logical_path)
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-
-        try:
-            listener.bind(str(path))
-        finally:
-            listener.close()
-            path.unlink(missing_ok=True)
-
-        assert path.resolve().parent == logical_path.parent.resolve()
-
-    def test_an_address_of_exactly_the_limit_is_used_as_it_is(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """Only an address past the kernel's limit needs a short alias."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(tempfile, "tempdir", "runtime")
-        logical_path = Path("s" * _UNIX_SOCKET_PATH_MAX_BYTES)
-        path = socket_address(logical_path)
-        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-
-        try:
-            listener.bind(str(path))
-        finally:
-            listener.close()
-            path.unlink(missing_ok=True)
-
-        assert path == logical_path
-
-    def test_rejects_a_runtime_root_with_group_access(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """A shared alias root would let another local user replace the socket."""
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr(tempfile, "tempdir", "runtime")
-        alias_root = Path(tempfile.gettempdir()) / f"t-{os.getuid():x}"
-        alias_root.mkdir(parents=True)
-        alias_root.chmod(0o750)
-
-        with pytest.raises(PermissionError, match="unsafe traxd socket alias root"):
-            socket_address(Path("long-logical-segment-" * 8) / "traxd.sock")
 
 
 class TestSourceVersionCoverage:

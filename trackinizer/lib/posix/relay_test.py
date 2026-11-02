@@ -757,6 +757,60 @@ class TestRelayBranchEdges:
         assert child.written == [b"keys"]
         assert observed == []
 
+    def test_the_suspend_key_stops_this_job_and_resumes_it_raw_and_repainted(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Keys around the suspend reach the child; the key itself never does."""
+        child = _FakeChild()
+        steps: list[str] = []
+        relay = Relay(
+            child,
+            suspend_key=b"\x1a",
+            on_resume=lambda: steps.append("redraw"),
+        )
+        reads = iter([b"a\x1ab", b""])
+
+        def read(fd: int, size: int) -> bytes:
+            del fd, size
+            return next(reads)
+
+        def killpg(pgrp: int, sig: int) -> None:
+            assert pgrp == os.getpgrp()
+            steps.append(signal.Signals(sig).name)
+
+        monkeypatch.setattr("trackinizer.lib.posix.relay._readable", _true_async)
+        monkeypatch.setattr(os, "read", read)
+        monkeypatch.setattr(os, "killpg", killpg)
+        asyncio.run(relay._forward_input(3))
+        assert child.written == [b"a", b"b"]
+        assert steps == ["SIGTSTP", "redraw"]
+        assert child.calls == ["set_winsize"]
+
+    def test_a_child_gone_before_the_suspend_key_ends_the_input_unsuspended(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        child = _RefusingChild()
+        stopped: list[int] = []
+        relay = Relay(child, suspend_key=b"\x1a")
+        reads = iter([b"a\x1ab"])
+
+        def read(fd: int, size: int) -> bytes:
+            del fd, size
+            return next(reads)
+
+        def killpg(pgrp: int, sig: int) -> None:
+            del pgrp
+            stopped.append(sig)
+
+        monkeypatch.setattr("trackinizer.lib.posix.relay._readable", _true_async)
+        monkeypatch.setattr(os, "read", read)
+        monkeypatch.setattr(os, "killpg", killpg)
+        asyncio.run(relay._forward_input(3))
+        assert child.written == [b"a"]
+        assert stopped == []
+
     def test_threaded_submit_logs_master_death(
         self,
         caplog: pytest.LogCaptureFixture,

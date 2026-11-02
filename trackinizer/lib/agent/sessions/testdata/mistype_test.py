@@ -6,7 +6,7 @@ from typing import cast
 
 import copy
 
-from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
+from trackinizer.lib.agent.sessions.testdata.mistype import field_paths, mistyped
 
 
 def test_every_field_gets_every_other_json_type() -> None:
@@ -34,6 +34,23 @@ def test_list_members_are_reached_by_index() -> None:
     paths = {path for path, _ in mistyped({"b": ["x", {"c": True}]})}
 
     assert paths == {"b", "b.0", "b.1", "b.1.c"}
+
+
+def test_field_paths_name_every_field_mistyped_swaps() -> None:
+    record = {"a": "s", "b": ["x", {"c": True}]}
+
+    assert field_paths(record) == ["a", "b", "b.0", "b.1", "b.1.c"]
+    assert field_paths(record) == list(dict.fromkeys(p for p, _ in mistyped(record)))
+
+
+def test_a_path_limits_the_copies_to_that_field() -> None:
+    record = {"a": "s", "b": {"c": 1}}
+
+    found = {
+        (path, type(_at(copy, path)).__name__) for path, copy in mistyped(record, "b.c")
+    }
+
+    assert found == {("b.c", t) for t in ("str", "float", "bool", "list", "dict")}
 
 
 def test_a_null_field_is_swapped_like_any_other() -> None:

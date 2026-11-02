@@ -18,14 +18,21 @@ The socket carries :class:`Frame` records -- a five-byte header and a payload:
 - Any client may ``SUBMIT`` a message, answered with ``ACK``, or ``STOP`` the
   child. Every client still connected when the child exits receives ``EXIT``
   with its status.
+- An empty ``VIEWERS`` asks how many viewers are attached; the host answers
+  with a ``VIEWERS`` holding the count.
+- ``REDRAW`` asks the child to repaint, as a viewer back from a suspend does.
+
+:func:`launch` starts a command under a host in a session of its own, running
+this module as ``python -m`` (:func:`serve_command`), and returns once it
+listens.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 import asyncio
 import contextlib
@@ -33,12 +40,11 @@ import enum
 import logging
 import os
 import signal
+import sys
+import traceback
 
-from trackinizer.lib.posix.terminal import write_all
-
-
-if TYPE_CHECKING:
-    from trackinizer.lib.posix.terminal import Terminal
+from trackinizer.lib.posix.detached import Readiness, await_ready, spawn_detached
+from trackinizer.lib.posix.terminal import Terminal, write_all
 
 
 __all__ = [
@@ -50,7 +56,9 @@ __all__ = [
     "decode_winsize",
     "encode_frame",
     "encode_winsize",
+    "launch",
     "read_frame",
+    "serve_command",
 ]
 
 _logger = logging.getLogger(__name__)
@@ -88,6 +96,8 @@ class Frame(enum.IntEnum):
     SIGNAL = 9
     ROUTE = 10
     KEEPALIVE = 11
+    VIEWERS = 12
+    REDRAW = 13
 
 
 # The header is one byte of kind and a four-byte payload length. Every integer on the
@@ -398,7 +408,7 @@ class Host:
         payload: bytes,
     ) -> None:
         """Act on one client frame."""
-        if kind in {Frame.ATTACH, Frame.STOP} and payload:
+        if kind in {Frame.ATTACH, Frame.STOP, Frame.VIEWERS, Frame.REDRAW} and payload:
             raise ValueError(f"{kind.name} carries no payload")
         match kind:
             case Frame.ATTACH:
@@ -416,6 +426,11 @@ class Host:
                 writer.write(encode_frame(Frame.ACK, bytes([submitted])))
             case Frame.STOP:
                 self._stop()
+            case Frame.VIEWERS:
+                count = len(self._viewers).to_bytes(4)
+                self._send(writer, encode_frame(Frame.VIEWERS, count))
+            case Frame.REDRAW:
+                self._terminal.redraw()
             case (
                 Frame.OUTPUT
                 | Frame.ACK
@@ -461,3 +476,90 @@ class Host:
             )
             with contextlib.suppress(TimeoutError):
                 _ = await asyncio.wait_for(closing, _FAREWELL_SEC)
+
+
+def launch(
+    address: Path,
+    command: Sequence[str],
+    *,
+    log: Path,
+    winsize: tuple[int, int],
+    timeout_sec: float,
+) -> bool | None:
+    """Start ``command`` under a host no terminal owns; return once it listens.
+
+    The host is this module run as ``python -m`` in a session of its own, so
+    closing the launching terminal, or dropping its ssh, leaves it serving.
+
+    Args:
+      address: Where the host listens; see :attr:`HostSpec.address`.
+      command: The child to host.
+      log: Receives the host's own output, and what it says when it fails.
+      winsize: The child's starting rows and columns.
+      timeout_sec: How long the host may take to listen.
+
+    Returns:
+      ready: True once it listens; False when it failed first (its log says
+        why); None when it said nothing in time.
+
+    """
+    rows, cols = winsize
+    read_fd, write_fd = os.pipe()
+    try:
+        _ = spawn_detached(
+            [
+                sys.executable,
+                "-P",
+                "-m",
+                __name__,
+                str(address),
+                str(write_fd),
+                str(rows),
+                str(cols),
+                "--",
+                *command,
+            ],
+            log=log,
+            pass_fds=(write_fd,),
+        )
+    finally:
+        os.close(write_fd)
+    return await_ready(read_fd, timeout_sec=timeout_sec)
+
+
+def serve_command(argv: Sequence[str]) -> int:
+    """Host a command, as :func:`launch` starts this module: ``ADDRESS FD ROWS COLS -- CMD...``.
+
+    Args:
+      argv: The arguments :func:`launch` passed.
+
+    Returns:
+      status: The hosted command's exit status; 1 when it could not be hosted.
+
+    """
+    address, ready, rows, cols, _, *command = argv
+    readiness = Readiness(int(ready))
+    try:
+        return asyncio.run(
+            Host(
+                Terminal(command, winsize=(int(rows), int(cols))),
+                spec=HostSpec(
+                    address=Path(address),
+                    # Whoever hosts a plain command keeps its own record; a
+                    # second copy of every repaint would only grow.
+                    scrollback=Path(os.devnull),
+                    on_listening=readiness.accept,
+                ),
+            ).serve(),
+        )
+    # Said before the pipe closes: the launcher points at the log as soon as it does.
+    # A command that cannot start fails with OSError; anything else is a bug here.
+    except OSError:
+        traceback.print_exc()
+        return 1
+    finally:
+        readiness.close()
+
+
+if __name__ == "__main__":
+    raise SystemExit(serve_command(sys.argv[1:]))

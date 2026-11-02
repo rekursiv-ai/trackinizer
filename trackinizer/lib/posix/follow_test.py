@@ -1043,6 +1043,13 @@ class TestFollowTree:
         assert cursor.drain() == ["rewritten"]
         assert cursor.restarted, "the restart was lost before any line carried it"
 
+    def test_a_new_cursor_reports_no_restart(self, tmp_path: Path) -> None:
+        """Nothing was replaced before the first drain, wherever it starts."""
+        target = tmp_path / "s.jsonl"
+        _ = target.write_text("first\n")
+        assert follow._Cursor(target, offset=0).restarted is False
+        assert follow._Cursor(target, offset=6).restarted is False
+
     def test_a_restart_clears_once_its_lines_are_delivered(
         self,
         tmp_path: Path,
@@ -1395,6 +1402,12 @@ class TestFsEventsAdapter:
         )
         assert emitted == [{Path("/watched/tmp"), Path("/watched/session.jsonl")}]
 
+    def test_reports_the_destination_of_an_event_without_a_source(self) -> None:
+        emitted = _run_fsevents(
+            lambda o: o.fire(None, dest=Path("/watched/session.jsonl")),
+        )
+        assert emitted == [{Path("/watched/session.jsonl")}]
+
     def test_ignores_a_directory_event(self) -> None:
         """A directory is not a file to follow; only its contents are."""
         emitted = _run_fsevents(
@@ -1488,14 +1501,14 @@ class _StubObserver:
 
     def fire(
         self,
-        path: Path,
+        path: Path | None,
         *,
         dest: Path | None = None,
         is_directory: bool = False,
     ) -> None:
-        """Deliver one event, as watchdog would."""
+        """Deliver one event, as watchdog would; ``None`` is an empty path."""
         event = _StubEvent(
-            src_path=str(path),
+            src_path=str(path) if path is not None else "",
             dest_path=str(dest) if dest is not None else "",
             is_directory=is_directory,
         )

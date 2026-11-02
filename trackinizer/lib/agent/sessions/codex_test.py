@@ -15,7 +15,12 @@ import pytest
 
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.codex import _grouped
-from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
+from trackinizer.lib.agent.sessions.testdata.mistype import (
+    field_paths,
+    mistyped,
+    unread,
+    without,
+)
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
@@ -1809,29 +1814,39 @@ def test_codex_line_state_preserves_noncanonical_records() -> None:
     ) == IncompleteRecord(text="x")
 
 
-@pytest.mark.parametrize("index", range(len(FIXTURE)))
-def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(index: int) -> None:
+# One field per case: a line has up to 121 fields, each re-reading the rollout
+# five ways, and one case per line took up to 2.5s.
+@pytest.mark.parametrize(
+    ("index", "path"),
+    [
+        (index, path)
+        for index, line in enumerate(FIXTURE)
+        for path in field_paths(json_loads(line, dict[str, object]))
+    ],
+)
+def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
+    index: int,
+    path: str,
+) -> None:
     """A log field of the wrong type reads as absent, as a missing one does.
 
     The rest of the rollout stays as written, so a line read in context -- a
     result after its call, an item after its turn -- meets its wrong field there.
     """
     record = json_loads(FIXTURE[index], dict[str, object])
+    baseline = (
+        None
+        if path in _KEPT_AS_TEXT
+        else unread(codex.normalize(StringIO(_swapped(index, without(record, path)))))
+    )
     failed: list[str] = []
-    # Each path is mistyped several ways; its without-the-field read is one.
-    baselines: dict[object, int] = {}
-    for path, changed in mistyped(record):
+    for _, changed in mistyped(record, path):
         records = list(codex.normalize(StringIO(_swapped(index, changed))))
         try:
             codex.denormalize(records, StringIO())
         except TypeError as error:
             failed.append(f"{path}: {error}")
-        if path in _KEPT_AS_TEXT:
-            continue
-        if path not in baselines:
-            missing = _swapped(index, without(record, path))
-            baselines[path] = unread(codex.normalize(StringIO(missing)))
-        if unread(records) > baselines[path]:
+        if baseline is not None and unread(records) > baseline:
             failed.append(f"{path}: the line reads worse than without the field")
 
     assert failed == [], "\n".join(failed)
