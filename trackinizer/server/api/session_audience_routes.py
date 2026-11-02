@@ -84,7 +84,6 @@ async def set_session_audience_route(
             reason="hidden by its owner" if body.audience == PRIVATE else "shown again",
             principal=await request_principal(request, identity),
             caller=identity.email,
-            assistant=get_assistant(request),
         )
     except AccessDeniedError as error:
         raise HTTPException(
