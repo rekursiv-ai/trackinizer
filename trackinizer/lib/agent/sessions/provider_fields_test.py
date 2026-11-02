@@ -21,6 +21,11 @@ def test_a_mistyped_value_reads_as_none_when_the_default_is_none() -> None:
     assert read_or_default(7, str, default=None) is None
 
 
+def test_a_missing_value_is_the_default_even_where_none_would_fit() -> None:
+    """``object`` takes ``None`` as it is, yet a null field still reads as absent."""
+    assert read_or_default(None, object, default="absent") == "absent"
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

@@ -31,8 +31,15 @@ Costs real API tokens. Run it when a CLI version changes, not per test run;
 the emitted JSONL is what the test suite reads. It lives beside the fixtures
 it writes, so the command that regenerates them is found by looking at them.
 
+``--cli claude-kinds`` is a second, separate claude session for the kinds the
+first cannot reach under ``bypassPermissions``: a rejected tool needs a
+permission prompt to reject, and an MCP call needs a server. It writes only
+its main file, to ``kinds/claude_main.jsonl``; its subagents' transcripts are
+the shapes ``claude_sidechain.jsonl`` already holds.
+
 Examples:
   sh trackinizer/lib/agent/sessions/testdata/capture.py --cli claude
+  sh trackinizer/lib/agent/sessions/testdata/capture.py --cli claude-kinds
   sh trackinizer/lib/agent/sessions/testdata/capture.py --out /tmp/fixtures
 
 '''
@@ -40,6 +47,7 @@ Examples:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast
 
@@ -67,47 +75,16 @@ if TYPE_CHECKING:
 _CWD: Final = Path(__file__).resolve().parent
 
 
-# One scripted session per CLI, submitted line by line into the running TUI.
-#
-# A single session rather than one run per feature, because the goal is a
-# fixture that stresses everything a real log contains -- and a real log is
-# one session that did many things, not several that each did one. Driving
-# the TUI is what makes that possible: a slash command is handled inside the
-# CLI and reaches the log only when a human submits it on a terminal, so
-# ``-p`` / ``codex exec`` cannot reach ``/model`` or ``/compact`` at all.
-#
-# The turns, and the record kinds each is here to produce:
-#   1. a succeeding tool call, a failing one (``is_error``), a file write and
-#      an edit, and an image read (an attachment)
-#   2. a web search and a fetch -- distinct kinds, and absent from any
-#      offline capture
-#   3. a subagent spawn, whose transcript claude writes to its own sidechain
-#      file
-#   4. ``/model``, which records the model change. Submitted bare, so the CLI
-#      offers its own picker and the follow-up Enter accepts whatever it
-#      lists: naming a model here would date the fixture to an alias that
-#      moves, and the record under test is the change, not the destination.
-#   5. ``/compact``, which records the compaction.
-_SESSION_SCRIPT: Final = (
-    (
-        'Do these in order, briefly: (1) run the shell command "echo alpha". '
-        '(2) run the shell command "exit 7", which fails. (3) create note.txt '
-        'containing "beta", then change beta to gamma. (4) read tiny.png and '
-        "describe it in three words."
-    ),
-    (
-        "Now search the web for the current stable Python version, then fetch "
-        "https://example.com and quote its heading."
-    ),
-    (
-        "Spawn one general-purpose subagent whose entire job is to reply with "
-        'the word "sub". Report what it said.'
-    ),
-    "/model",
-    "Say exactly: after-model",
-    "/compact",
-    "Say exactly: after-compact",
-)
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Step:
+    """One scripted line, and whether to press Escape once its tool call is logged.
+
+    Escape is how a human answers "no" to a permission prompt and how they stop
+    a running tool; both reach the log only through the TUI.
+    """
+
+    line: str
+    escape: bool = False
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -148,6 +125,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             timeout_sec=flags.timeout_sec,
         )
         os.chdir(origin)
+    if flags.cli == "claude-kinds":
+        written += _capture_claude_kinds(
+            root / "claude-kinds",
+            flags.out / "kinds",
+            turn_sec=flags.turn_sec,
+            timeout_sec=flags.timeout_sec,
+        )
+        os.chdir(origin)
     if flags.cli in ("codex", "both"):
         written += _capture_codex(
             root / "codex",
@@ -167,9 +152,12 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     """Register flags on ``parser``."""
     parser.add_argument(
         "--cli",
-        choices=("claude", "codex", "both"),
+        choices=("claude", "codex", "both", "claude-kinds"),
         default="both",
-        help="Which CLI to drive (default: both).",
+        help=(
+            "Which CLI to drive (default: both). claude-kinds runs the separate "
+            "claude session for the kinds bypassPermissions cannot reach."
+        ),
     )
     parser.add_argument(
         "--out",
@@ -219,6 +207,7 @@ def _capture_claude(
     home, work = _prepare(root, real_home=Path.home() / ".claude")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     _drive(
         ["claude", "--permission-mode", "bypassPermissions"],
+        _session_script(),
         cwd=work,
         env={"CLAUDE_CONFIG_DIR": str(home)},
         turn_sec=turn_sec,
@@ -238,6 +227,130 @@ def _capture_claude(
         )
         for path in sorted((home / "projects").rglob("*.jsonl"))
     ]
+
+
+# ``--strict-mcp-config`` so the one server is ``echo_mcp.py``: a server from the
+# operator's settings would add tools, and their calls, the script never asked for.
+# ``sys.executable`` is this script's interpreter, the one that has ``mcp``.
+#
+# ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS``: without it this CLI runs every subagent,
+# and a long shell command, in the background whatever the prompt asks -- so no
+# finished subagent report reaches a tool result, and no tool is running when the
+# interrupt's Escape arrives (both measured, 2.1.309).
+def _capture_claude_kinds(
+    root: Path,
+    out: Path,
+    *,
+    turn_sec: float,
+    timeout_sec: int,
+) -> list[Path]:
+    """Drive the claude-kinds session and return the fixture path written."""
+    # One line per record kind ``_session_script`` does not produce, run under the
+    # default permission mode so a prompt exists to reject. ``allowed``
+    # pre-approves every tool but the rejected one, so no other line stops on a
+    # prompt the script never answers.
+    #   1. the Write, Edit and Read payloads by name (the session script asks
+    #      loosely, and the model answers with the shell), and a grep that finds
+    #      nothing, which claude annotates with a return-code interpretation
+    #   2. an MCP tool call, served by ``echo_mcp.py``
+    #   3. a subagent run in the foreground, which answers with its finished report
+    #   4. a skill invocation, from the workspace skill written below
+    #   5. a rejected tool: ``touch`` is not pre-approved, so it prompts, and
+    #      Escape answers no
+    #   6. an interrupted turn: Escape while ``sleep`` runs.
+    #
+    # No background subagent: its finish reaches the log as a
+    # ``<task-notification>`` user line, not as a tool result, and
+    # ``claude_main.jsonl`` already holds both that and the launch.
+    script = (
+        _Step(
+            line=(
+                "Do these in order: (1) use the Write tool to create note.txt "
+                'containing "beta". (2) use the Edit tool to change beta to gamma. '
+                "(3) use the Read tool to read note.txt. (4) run the shell command "
+                '"grep zzz note.txt".'
+            ),
+        ),
+        _Step(line='Use the probe MCP server\'s echo tool to echo "hi".'),
+        _Step(
+            line=(
+                "Spawn one general-purpose subagent in the foreground, not in the "
+                'background, whose entire job is to reply with the word "sync". '
+                "Report what it said."
+            ),
+        ),
+        _Step(line="Use the probe skill."),
+        _Step(line='Run the shell command "touch rejected.txt".', escape=True),
+        _Step(line='Run the shell command "sleep 60".', escape=True),
+    )
+    allowed = (
+        "Write",
+        "Edit",
+        "Read",
+        "Bash(grep:*)",
+        "Bash(sleep:*)",
+        "mcp__probe__echo",
+        "Agent",
+        "Skill",
+    )
+    home, work = _prepare(root, real_home=Path.home() / ".claude")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
+    skill = work / ".claude" / "skills" / "probe" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: probe\ndescription: Replies with a fixed word.\n---\n\n"
+        "Reply with exactly: skill-ran\n",
+        encoding="utf-8",
+    )
+    servers = {
+        "mcpServers": {
+            "probe": {
+                "command": sys.executable,
+                "args": ["-P", str(_CWD / "echo_mcp.py")],
+            },
+        },
+    }
+    _drive(
+        [
+            "claude",
+            "--permission-mode",
+            "default",
+            "--allowedTools",
+            *allowed,
+            "--mcp-config",
+            json.dumps(servers),
+            "--strict-mcp-config",
+        ],
+        script,
+        cwd=work,
+        env={
+            "CLAUDE_CONFIG_DIR": str(home),
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        },
+        turn_sec=turn_sec,
+        timeout_sec=timeout_sec,
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    return [
+        _record_lines(_emit(path, out / "claude_main.jsonl", home=home, work=work))
+        for path in sorted((home / "projects").rglob("*.jsonl"))
+        if path.parent.name != "subagents"
+    ]
+
+
+# The kinds session is captured for its record lines' key orders, so its fixture keeps
+# those alone, and only the small ones: the CLI's request mirrors and its large context
+# attachments are most of the file's bytes and none of its purpose.
+def _record_lines(path: Path) -> Path:
+    """Keep only ``path``'s user, assistant, attachment and system lines of <=4 KiB."""
+    kinds = {"user", "assistant", "attachment", "system"}
+    kept = [
+        line
+        for line in path.read_text(encoding="utf-8").splitlines(keepends=True)
+        if len(line.encode()) <= 4096
+        and json_loads(line, dict[str, object]).get("type") in kinds
+    ]
+    path.write_text("".join(kept), encoding="utf-8")
+    return path
 
 
 # ``model_reasoning_summary=detailed`` is what populates a ``reasoning`` item's
@@ -260,6 +373,7 @@ def _capture_codex(
             "model_reasoning_summary=detailed",
             "--dangerously-bypass-approvals-and-sandbox",
         ],
+        _session_script(),
         cwd=work,
         env={"CODEX_HOME": str(home)},
         turn_sec=turn_sec,
@@ -287,19 +401,24 @@ def _capture_codex(
 # submitted before the TUI had drawn its prompt, and a line typed into a terminal that
 # is not ready is discarded with no error anywhere. Waiting for the log to appear
 # removes that whole class of failure -- the file cannot exist until the session does.
+#
+# An Escape step waits for its tool call to reach the log, then 2s more: the log line
+# precedes the permission prompt it raises and the process it starts, and a key that
+# arrives before either is read as a plain cancel of the turn instead.
 def _drive(
     argv: list[str],
+    script: Sequence[_Step],
     *,
     cwd: Path,
     env: dict[str, str],
     turn_sec: float,
     timeout_sec: int,
 ) -> None:
-    """Run ``argv`` on a PTY and submit the scripted session into its TUI."""
+    """Run ``argv`` on a PTY and submit ``script`` into its TUI."""
     if shutil.which(argv[0]) is None:
         print(f"{argv[0]}: not found in PATH; skipping", file=sys.stderr)
         return
-    print(f"$ {argv[0]} ... (cwd={cwd}, {len(_SESSION_SCRIPT)} turns)", file=sys.stderr)
+    print(f"$ {argv[0]} ... (cwd={cwd}, {len(script)} turns)", file=sys.stderr)
     _isolate_environment()
     # ``cwd`` is a real chdir in the forked child, not a ``PWD`` in ``env``:
     # claude names its session directory after the directory it asks the
@@ -310,9 +429,16 @@ def _drive(
     logs = Path(next(iter(env.values())))
     _await_logs(logs, deadline_sec=turn_sec)
     done = _completed_turns(logs)
-    for index, line in enumerate(_SESSION_SCRIPT, start=1):
-        relay.submit(line)
-        print(f"  turn {index}/{len(_SESSION_SCRIPT)}: {line[:48]}", file=sys.stderr)
+    # A tool call's own content block, never written into a user line's text.
+    tool_call = '"type":"tool_use"'
+    for index, step in enumerate(script, start=1):
+        calls = _marks(logs, tool_call)
+        relay.submit(step.line)
+        print(f"  turn {index}/{len(script)}: {step.line[:48]}", file=sys.stderr)
+        if step.escape:
+            _await_marks(logs, tool_call, above=calls, deadline_sec=turn_sec)
+            time.sleep(2.0)
+            relay.write(b"\x1b")
         done = _await_turn(logs, done=done, quiet_sec=20.0, deadline_sec=turn_sec)
     relay.submit("/exit")
     thread.join(timeout=timeout_sec)
@@ -397,19 +523,32 @@ def _log_size(root: Path) -> int:
     return sum(path.stat().st_size for path in root.rglob("*.jsonl") if path.is_file())
 
 
-# Read as raw text rather than parsed: this runs twice a second while the CLI appends,
-# so a partially-written final line is expected, and counting a marker substring cannot
-# fail on one.
 def _completed_turns(root: Path) -> int:
     """Return how many ``turn_duration`` records the session logs carry."""
-    total = 0
-    for path in root.rglob("*.jsonl"):
-        if path.parent.name == "subagents":
-            continue  # A subagent's turns are not the session's turns.
-        total += path.read_text(encoding="utf-8", errors="replace").count(
-            '"subtype":"turn_duration"',
-        )
-    return total
+    return _marks(root, '"subtype":"turn_duration"')
+
+
+# Read as raw bytes rather than parsed: this runs twice a second while the CLI appends,
+# so a partially-written final line is expected, and counting a marker substring cannot
+# fail on one.
+def _marks(root: Path, marker: str) -> int:
+    """Return how often ``marker`` occurs in the session's own logs under ``root``."""
+    # A subagent's turns are not the session's turns.
+    return sum(
+        path.read_bytes().count(marker.encode())
+        for path in root.rglob("*.jsonl")
+        if path.parent.name != "subagents"
+    )
+
+
+def _await_marks(root: Path, marker: str, *, above: int, deadline_sec: float) -> None:
+    """Block until ``marker`` occurs more than ``above`` times, or the deadline."""
+    deadline = time.monotonic() + deadline_sec
+    while time.monotonic() < deadline:
+        if _marks(root, marker) > above:
+            return
+        time.sleep(0.5)
+    print(f"  no {marker} under {root} yet; proceeding", file=sys.stderr)
 
 
 # Credentials are copied rather than shared: the CLI rewrites files in its config root
@@ -519,7 +658,7 @@ _FILLER: Final = "deadbeef"
 # model ran can print an absolute path from anywhere on the machine into its output (a
 # Python traceback naming a site-packages file is how this was found).
 #
-# Account and organization identifiers are replaced too: a PTY capture writes a
+# Account and organization identifiers, and every email address, are replaced too: a PTY capture writes a
 # ``bridge-session`` record carrying ``ownerAccountUuid`` and ``ownerOrganizationUuid``,
 # which name the operator's real account. Each is swapped for a fixed UUID, so the
 # fixture keeps the field's shape -- the thing a parser is tested against -- without its
@@ -550,6 +689,8 @@ def _emit(source: Path, target: Path, *, home: Path, work: Path) -> Path:
             r"\g<1>00000000-0000-0000-0000-000000000000\g<2>",
             text,
         )
+    # Claude tells the model the account's address in a ``session_context`` record.
+    text = re.sub(r"[\w.%+-]+@[\w-]+(?:\.[\w-]+)+", "user@example.com", text)
     text = _scrub_secrets(text)
     _reject_secrets(text, source=source)
     target.write_text(text, encoding="utf-8")
@@ -596,6 +737,56 @@ class _Flags(Protocol):
     out: Path
     timeout_sec: int
     turn_sec: float
+
+
+# One scripted session per CLI, submitted line by line into the running TUI.
+#
+# A single session rather than one run per feature, because the goal is a
+# fixture that stresses everything a real log contains -- and a real log is
+# one session that did many things, not several that each did one. Driving
+# the TUI is what makes that possible: a slash command is handled inside the
+# CLI and reaches the log only when a human submits it on a terminal, so
+# ``-p`` / ``codex exec`` cannot reach ``/model`` or ``/compact`` at all.
+#
+# The turns, and the record kinds each is here to produce:
+#   1. a succeeding tool call, a failing one (``is_error``), a file write and
+#      an edit, and an image read (an attachment)
+#   2. a web search and a fetch -- distinct kinds, and absent from any
+#      offline capture
+#   3. a subagent spawn, whose transcript claude writes to its own sidechain
+#      file
+#   4. ``/model``, which records the model change. Submitted bare, so the CLI
+#      offers its own picker and the follow-up Enter accepts whatever it
+#      lists: naming a model here would date the fixture to an alias that
+#      moves, and the record under test is the change, not the destination.
+#   5. ``/compact``, which records the compaction.
+def _session_script() -> tuple[_Step, ...]:
+    """Return the scripted session every CLI is driven through."""
+    # pragma: no mutate start -- prompts a live CLI reads; only a capture checks them.
+    return tuple(
+        _Step(line=line)
+        for line in (
+            (
+                'Do these in order, briefly: (1) run the shell command "echo alpha". '
+                '(2) run the shell command "exit 7", which fails. (3) create note.txt '
+                'containing "beta", then change beta to gamma. (4) read tiny.png and '
+                "describe it in three words."
+            ),
+            (
+                "Now search the web for the current stable Python version, then fetch "
+                "https://example.com and quote its heading."
+            ),
+            (
+                "Spawn one general-purpose subagent whose entire job is to reply with "
+                'the word "sub". Report what it said.'
+            ),
+            "/model",
+            "Say exactly: after-model",
+            "/compact",
+            "Say exactly: after-compact",
+        )
+    )
+    # pragma: no mutate end
 
 
 if __name__ == "__main__":

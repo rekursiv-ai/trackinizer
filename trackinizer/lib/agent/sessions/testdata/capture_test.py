@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 
 import argparse
 import json
@@ -14,6 +14,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import threading
 import zlib
 
 from treekle import json_loads
@@ -22,11 +23,12 @@ import pytest
 
 from trackinizer.lib.agent.sessions.testdata import capture
 from trackinizer.lib.agent.sessions.testdata.capture import (
-    _SESSION_SCRIPT,
     _add_arguments,
     _await_logs,
+    _await_marks,
     _await_turn,
     _capture_claude,
+    _capture_claude_kinds,
     _capture_codex,
     _completed_turns,
     _drive,
@@ -39,13 +41,15 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _reject_secrets,
     _scrub_secrets,
     _seed_onboarding,
+    _session_script,
+    _Step,
     _tiny_png,
     main,
 )
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
 
 _MARKER = '{"subtype":"turn_duration"}\n'
@@ -81,24 +85,39 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
 
 
 class _FakeRelay:
+    # What each submitted line appends to the log, after its tool call.
+    turn_marker: ClassVar[str] = _MARKER
+    # How long ``run`` outlives ``/exit`` unless terminated, as a wedged CLI does.
+    hang_sec: ClassVar[float] = 0.0
+
     def __init__(self, argv: list[str], *, cwd: Path, env: dict[str, str]) -> None:
         self.argv = argv
         self.cwd = cwd
         self.env = env
         self.submitted: list[str] = []
-        self.terminated = False
+        self.keys: list[tuple[int, bytes]] = []
+        self.terminated = threading.Event()
+        self.ran = threading.Event()
+        self.daemon: bool | None = None
+        self.stopped_by_terminate: bool | None = None
         self.logs = Path(next(iter(env.values())))
 
     def run(self) -> int:
+        self.daemon = threading.current_thread().daemon
+        self.stopped_by_terminate = self.terminated.wait(self.hang_sec)
+        self.ran.set()
         return 0
 
     def submit(self, line: str) -> None:
         self.submitted.append(line)
         with (self.logs / "s.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(_MARKER)
+            handle.write('{"type":"tool_use"}\n' + self.turn_marker)
+
+    def write(self, data: bytes) -> None:
+        self.keys.append((len(self.submitted), data))
 
     def terminate(self) -> None:
-        self.terminated = True
+        self.terminated.set()
 
 
 @pytest.fixture
@@ -260,6 +279,7 @@ def test_drive_skips_a_cli_that_is_not_installed(
 
     _drive(
         ["nosuchcli"],
+        _session_script(),
         cwd=tmp_path,
         env={"CLAUDE_CONFIG_DIR": str(tmp_path)},
         turn_sec=1.0,
@@ -288,6 +308,7 @@ def test_drive_submits_every_scripted_turn_then_exits_and_terminates(
 
     _drive(
         ["claude", "--flag"],
+        _session_script(),
         cwd=tmp_path,
         env={"CLAUDE_CONFIG_DIR": str(logs)},
         turn_sec=60.0,
@@ -297,12 +318,113 @@ def test_drive_submits_every_scripted_turn_then_exits_and_terminates(
     (relay,) = relays
     assert relay.argv == ["claude", "--flag"]
     assert relay.cwd == tmp_path
-    assert relay.submitted == [*_SESSION_SCRIPT, "/exit"]
-    assert relay.terminated
+    assert relay.submitted == [*(step.line for step in _session_script()), "/exit"]
+    assert relay.keys == []
+    assert relay.terminated.is_set()
+    # The CLI runs on a daemon thread, so a wedged one cannot keep this alive.
+    assert relay.ran.wait(5.0)
+    assert relay.daemon is True
     assert dict(os.environ) == {"HOME": "/h"}
     err = capsys.readouterr().err
-    assert f"turn {len(_SESSION_SCRIPT)}/{len(_SESSION_SCRIPT)}" in err
+    assert "turn 7/7" in err
     assert clock.slept[0] == 3.0
+
+
+def test_drive_terminates_a_cli_still_running_past_the_timeout(
+    tmp_path: Path,
+    clock: _Clock,
+    relays: list[_FakeRelay],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def found(name: str) -> str | None:
+        return f"/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", found)
+    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.setattr(_FakeRelay, "hang_sec", 5.0)
+    (tmp_path / "s.jsonl").write_text("boot\n", encoding="utf-8")
+
+    _drive(
+        ["claude"],
+        (),
+        cwd=tmp_path,
+        env={"CLAUDE_CONFIG_DIR": str(tmp_path)},
+        turn_sec=60.0,
+        timeout_sec=0,
+    )
+
+    (relay,) = relays
+    assert relay.ran.wait(5.0)
+    assert relay.stopped_by_terminate is True
+    assert clock.slept == [3.0]
+
+
+def test_drive_presses_escape_once_an_escape_steps_tool_call_is_logged(
+    tmp_path: Path,
+    clock: _Clock,
+    relays: list[_FakeRelay],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def found(name: str) -> str | None:
+        return f"/bin/{name}"
+
+    monkeypatch.setattr(shutil, "which", found)
+    monkeypatch.setattr(os, "environ", {})
+    # No turn marker: an interrupted turn writes none, so each turn ends on quiet.
+    monkeypatch.setattr(_FakeRelay, "turn_marker", "")
+    (tmp_path / "s.jsonl").write_text("boot\n", encoding="utf-8")
+    long = "Run the shell command that takes a whole minute, then stop."
+
+    _drive(
+        ["claude"],
+        (_Step(line="plain"), _Step(line=long, escape=True)),
+        cwd=tmp_path,
+        env={"CLAUDE_CONFIG_DIR": str(tmp_path)},
+        turn_sec=60.0,
+        timeout_sec=5,
+    )
+
+    (relay,) = relays
+    assert relay.submitted == ["plain", long, "/exit"]
+    assert relay.keys == [(2, b"\x1b")]
+    # Boot wait; 20s of quiet ends each turn; the 2s that lets the prompt draw.
+    assert clock.slept == [3.0, *[0.5] * 40, 2.0, *[0.5] * 40]
+    assert capsys.readouterr().err.splitlines() == [
+        f"$ claude ... (cwd={tmp_path}, 2 turns)",
+        "  turn 1/2: plain",
+        "  turn 2/2: Run the shell command that takes a whole minute,",
+    ]
+
+
+def test_await_marks_returns_once_the_marker_count_passes_above(
+    tmp_path: Path,
+    clock: _Clock,
+) -> None:
+    log = tmp_path / "s.jsonl"
+    log.write_text("mm", encoding="utf-8")
+    (tmp_path / "subagents").mkdir()
+    (tmp_path / "subagents" / "a.jsonl").write_text("mmmm", encoding="utf-8")
+
+    def add() -> None:
+        log.write_text("mmm", encoding="utf-8")
+
+    clock.on_sleep = add
+
+    _await_marks(tmp_path, "m", above=2, deadline_sec=10.0)
+
+    assert clock.slept == [0.5]
+
+
+def test_await_marks_gives_up_at_the_deadline_and_says_so(
+    tmp_path: Path,
+    clock: _Clock,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _await_marks(tmp_path, "m", above=0, deadline_sec=1.0)
+
+    assert clock.slept == [0.5, 0.5]
+    assert f"no m under {tmp_path} yet; proceeding" in capsys.readouterr().err
 
 
 def test_prepare_copies_only_existing_credentials_and_writes_the_image(
@@ -416,6 +538,7 @@ def test_emit_redacts_paths_account_ids_and_secrets(
     source.write_text(
         f'{{"w":"{work}/a","h":"{home}/b","u":"{user}/c","t":"{scratch}",'
         '"ownerAccountUuid": "real-account","ownerOrganizationUuid":"real-org",'
+        '"e":"The user\'s email address is Jo.Q+x@Corp.example.co.uk. Use it",'
         f'"k":"sk-{"A" * 30}"}}\n',
         encoding="utf-8",
     )
@@ -431,6 +554,7 @@ def test_emit_redacts_paths_account_ids_and_secrets(
         "t": "/workspace/.claude",
         "ownerAccountUuid": zero,
         "ownerOrganizationUuid": zero,
+        "e": "The user's email address is user@example.com. Use it",
         "k": "sk-" + ("deadbeef" * 4)[:30],
     }
 
@@ -464,6 +588,21 @@ def test_reject_secrets_raises_on_a_surviving_credential(tmp_path: Path) -> None
         _reject_secrets("key sk-" + "A" * 30, source=source)
 
 
+def test_reject_secrets_names_a_credential_that_follows_scrubbed_filler(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "rollout.jsonl"
+    text = _scrub_secrets("key sk-" + "A" * 30) + " sk-" + "B" * 30
+
+    with pytest.raises(ValueError, match="credential-shaped") as raised:
+        _reject_secrets(text, source=source)
+
+    assert str(raised.value) == (
+        f"{source}: credential-shaped text survived redaction "
+        "(sk-BBBBBBBBB...); fixture not written"
+    )
+
+
 def test_reject_secrets_accepts_scrubbed_filler(tmp_path: Path) -> None:
     text = _scrub_secrets("key sk-" + "A" * 30)
 
@@ -477,17 +616,20 @@ def test_capture_claude_splits_main_and_sidechain_fixtures(
     user = tmp_path / "user"
     user.mkdir()
     monkeypatch.setenv("HOME", str(user))
-    calls: list[tuple[list[str], Path, dict[str, str], float, int]] = []
+    calls: list[
+        tuple[list[str], Sequence[_Step], Path, dict[str, str], float, int]
+    ] = []
 
     def fake_drive(
         argv: list[str],
+        script: Sequence[_Step],
         *,
         cwd: Path,
         env: dict[str, str],
         turn_sec: float,
         timeout_sec: int,
     ) -> None:
-        calls.append((argv, cwd, env, turn_sec, timeout_sec))
+        calls.append((argv, script, cwd, env, turn_sec, timeout_sec))
         project = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / "p"
         (project / "sid" / "subagents").mkdir(parents=True)
         (project / "main.jsonl").write_text(f"main {cwd}\n", encoding="utf-8")
@@ -511,12 +653,104 @@ def test_capture_claude_splits_main_and_sidechain_fixtures(
     assert calls == [
         (
             ["claude", "--permission-mode", "bypassPermissions"],
+            _session_script(),
             root / "work",
             {"CLAUDE_CONFIG_DIR": str(root / "home")},
             1.5,
             9,
         ),
     ]
+
+
+def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = tmp_path / "user"
+    user.mkdir()
+    monkeypatch.setenv("HOME", str(user))
+    calls: list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]] = []
+    skills: list[str] = []
+
+    def fake_drive(
+        argv: list[str],
+        script: Sequence[_Step],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        turn_sec: float,
+        timeout_sec: int,
+    ) -> None:
+        assert (turn_sec, timeout_sec) == (1.5, 9)
+        calls.append((argv, script, cwd, env))
+        skill = cwd / ".claude" / "skills" / "probe" / "SKILL.md"
+        skills.append(skill.read_text(encoding="utf-8"))
+        project = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / "p"
+        (project / "sid" / "subagents").mkdir(parents=True)
+        (project / "main.jsonl").write_text(
+            '{"type":"mode"}\n'
+            f'{{"type":"user","cwd":"{cwd}"}}\n'
+            # 4097 bytes with its newline, then 4096.
+            f'{{"type":"assistant","text":"{"x" * 4066}"}}\n'
+            f'{{"type":"system","text":"{"y" * 4068}"}}\n',
+            encoding="utf-8",
+        )
+        (project / "sid" / "subagents" / "a.jsonl").write_text("x", encoding="utf-8")
+
+    monkeypatch.setattr(capture, "_drive", fake_drive)
+    out = tmp_path / "out" / "kinds"
+    root = tmp_path / "root"
+
+    written = _capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
+
+    assert written == [out / "claude_main.jsonl"]
+    # Record lines alone, and only the small ones, redacted.
+    assert (out / "claude_main.jsonl").read_text(encoding="utf-8") == (
+        f'{{"type":"user","cwd":"/workspace"}}\n{{"type":"system","text":"{"y" * 4068}"}}\n'
+    )
+    assert skills == [
+        (
+            "---\nname: probe\ndescription: Replies with a fixed word.\n---\n\n"
+            "Reply with exactly: skill-ran\n"
+        ),
+    ]
+    servers = {
+        "mcpServers": {
+            "probe": {
+                "command": sys.executable,
+                "args": ["-P", str(Path(capture.__file__).parent / "echo_mcp.py")],
+            },
+        },
+    }
+    ((argv, script, cwd, env),) = calls
+    # ``touch`` alone is left unapproved: its prompt is the one Escape rejects.
+    assert argv == [
+        "claude",
+        "--permission-mode",
+        "default",
+        "--allowedTools",
+        "Write",
+        "Edit",
+        "Read",
+        "Bash(grep:*)",
+        "Bash(sleep:*)",
+        "mcp__probe__echo",
+        "Agent",
+        "Skill",
+        "--mcp-config",
+        json.dumps(servers),
+        "--strict-mcp-config",
+    ]
+    assert [step.line for step in script if step.escape] == [
+        'Run the shell command "touch rejected.txt".',
+        'Run the shell command "sleep 60".',
+    ]
+    assert len(script) == 6
+    assert cwd == root / "work"
+    assert env == {
+        "CLAUDE_CONFIG_DIR": str(root / "home"),
+        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+    }
 
 
 def test_capture_codex_emits_only_rollout_files(
@@ -527,10 +761,11 @@ def test_capture_codex_emits_only_rollout_files(
     user.mkdir()
     monkeypatch.setenv("HOME", str(user))
     argvs: list[list[str]] = []
-    knobs: list[tuple[Path, float, int]] = []
+    knobs: list[tuple[Sequence[_Step], Path, float, int]] = []
 
     def fake_drive(
         argv: list[str],
+        script: Sequence[_Step],
         *,
         cwd: Path,
         env: dict[str, str],
@@ -538,7 +773,7 @@ def test_capture_codex_emits_only_rollout_files(
         timeout_sec: int,
     ) -> None:
         argvs.append(argv)
-        knobs.append((cwd, turn_sec, timeout_sec))
+        knobs.append((script, cwd, turn_sec, timeout_sec))
         sessions = Path(env["CODEX_HOME"]) / "sessions" / "2026"
         sessions.mkdir(parents=True)
         (sessions / "rollout-1.jsonl").write_text("roll\n", encoding="utf-8")
@@ -552,7 +787,7 @@ def test_capture_codex_emits_only_rollout_files(
 
     assert written == [out / "codex_main.jsonl"]
     assert (out / "codex_main.jsonl").read_text(encoding="utf-8") == "roll\n"
-    assert knobs == [(tmp_path / "root" / "work", 1.0, 2)]
+    assert knobs == [(_session_script(), tmp_path / "root" / "work", 1.0, 2)]
     assert argvs[0][0] == "codex"
     assert "model_reasoning_summary=detailed" in argvs[0]
 
@@ -588,6 +823,7 @@ def _fake_captures(
             os.chdir("/")
             if empty:
                 return []
+            out.mkdir(parents=True, exist_ok=True)
             path = out / f"{name}.jsonl"
             path.write_text("abc", encoding="utf-8")
             return [path]
@@ -595,8 +831,27 @@ def _fake_captures(
         return fake
 
     monkeypatch.setattr(capture, "_capture_claude", make("claude"))
+    monkeypatch.setattr(capture, "_capture_claude_kinds", make("claude-kinds"))
     monkeypatch.setattr(capture, "_capture_codex", make("codex"))
     return calls
+
+
+def test_main_claude_kinds_runs_only_the_kinds_session_into_kinds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    calls = _fake_captures(monkeypatch)
+    out = tmp_path / "o"
+
+    assert main(["--cli", "claude-kinds", "--out", str(out)]) == 0
+
+    assert calls == [("claude-kinds", out / "scratch" / "claude-kinds", 180.0, 300)]
+    assert Path.cwd() == tmp_path
+    assert capsys.readouterr().out.splitlines() == [
+        f"{out / 'kinds' / 'claude-kinds.jsonl'} (3 bytes)",
+    ]
 
 
 def test_main_both_runs_each_cli_clears_scratch_and_restores_cwd(

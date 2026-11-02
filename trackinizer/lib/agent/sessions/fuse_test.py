@@ -277,10 +277,109 @@ def test_a_codex_fork_s_seam_states_what_crossed_it() -> None:
     assert [seam.summary for seam in seams] == ["from b"]
 
 
-@pytest.mark.parametrize("name", ["../x.jsonl", "/abs.jsonl", "a/b.jsonl", ".."])
+@pytest.mark.parametrize(
+    ("second", "timestamp"),
+    [
+        (
+            [
+                TurnContext(timestamp="t1", extra={"payload": {"id": "b"}}),
+                TurnContext(timestamp="t2"),
+                UserMessage(content="fresh"),
+            ],
+            "t1",
+        ),
+        ([TurnContext(extra={"payload": {"id": "b"}}), UserMessage()], None),
+    ],
+    ids=["stamped", "unstamped"],
+)
+def test_a_fresh_seam_carries_no_summary_and_opens_when_its_part_did(
+    second: list[SessionRecord],
+    timestamp: str | None,
+) -> None:
+    boundary = list(fuse.fuse([_part("a"), second]))[1]
+
+    assert boundary == ContextClear(timestamp=timestamp, extra={"$seam": ""})
+
+
+def test_a_part_whose_payload_is_no_object_declares_nothing() -> None:
+    part: list[SessionRecord] = [TurnContext(extra={"payload": None})]
+
+    assert fuse.chain([part]) == [part]
+
+
+def test_only_the_roots_opening_settings_carry_its_name() -> None:
+    root = _part(
+        "a",
+        TurnContext(extra={"later": True}),
+        UserMessage(content="Hi."),
+        AssistantMessage(content="Hello."),
+    )
+    second = _part("b", UserMessage(content="Again."))
+
+    joined = list(fuse.fuse([root, second], ["a.jsonl", "b.jsonl"]))
+
+    assert [r for r in joined[:4] if "$seam" in getattr(r, "extra", {})] == [
+        joined[0],
+    ]
+    assert _unfused(joined) == [root, second]
+
+
+def test_a_later_parts_own_seam_key_is_its_data_not_a_name() -> None:
+    """Only the root's name is taken back off; a later part's key is the provider's."""
+    parts = [
+        _part("a", UserMessage(content="Hi.")),
+        [TurnContext(extra={"$seam": "kept"}), UserMessage(content="Again.")],
+    ]
+
+    joined = list(fuse.fuse(parts, ["a.jsonl", "b.jsonl"]))
+
+    assert _unfused(joined) == parts
+    assert fuse.part_names(joined) == ["a.jsonl", "b.jsonl"]
+
+
+def test_a_part_with_no_name_given_is_named_by_nothing() -> None:
+    parts = [_part(name) for name in ("a", "b", "c")]
+
+    assert fuse.part_names(fuse.fuse(parts, ["a.jsonl", "b.jsonl"])) == [
+        "a.jsonl",
+        "b.jsonl",
+        "",
+    ]
+
+
+@pytest.mark.parametrize("name", ["../x.jsonl", "/abs.jsonl", "a/b.jsonl", "..", "."])
 def test_a_seam_naming_a_path_is_refused(name: str) -> None:
     with pytest.raises(ValueError, match="seam names a path"):
         fuse.part_names([ContextClear(extra={"$seam": name})])
+
+
+def test_a_repeated_part_skips_only_itself_not_the_forks_after_it() -> None:
+    root = _part("a", UserMessage(content="Hi."))
+    child = [TurnContext(extra={"payload": {"id": "c", "forked_from_id": "a"}})]
+    sibling = [TurnContext(extra={"payload": {"id": "d", "forked_from_id": "a"}})]
+    other = _part("e", UserMessage(content="Elsewhere."))
+
+    assert fuse.chain([root, child, child, sibling, other]) == [
+        root,
+        child,
+        sibling,
+        other,
+    ]
+
+
+def test_an_empty_thread_id_is_an_id_a_fork_may_name() -> None:
+    """Only a missing id is no id: ``""`` is what the part declared."""
+    fork = [TurnContext(extra={"payload": {"id": "f", "forked_from_id": ""}})]
+    root = [TurnContext(extra={"payload": {"id": ""}})]
+
+    assert fuse.chain([fork, root]) == [root, fork]
+
+
+def test_a_fork_from_a_thread_outside_the_tree_is_a_root_in_its_place() -> None:
+    orphan = [TurnContext(extra={"payload": {"id": "o", "forked_from_id": "zzz"}})]
+    root = _part("b", UserMessage(content="Hi."))
+
+    assert fuse.chain([orphan, root]) == [orphan, root]
 
 
 def test_chain_treats_a_part_without_context_as_a_root() -> None:

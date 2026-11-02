@@ -128,9 +128,8 @@ def unfuse(
     # trying to read past it: the record belongs to the next part's decision,
     # not to this one's output.
     pending: list[SessionRecord] = []
-    ended = False
     root = True
-    while not ended:
+    while True:
         part = _until_seam(stream, pending, seam=seam, root=root)
         yield part
         # Drained here rather than trusted to the caller: the next part starts
@@ -138,9 +137,10 @@ def unfuse(
         # on would otherwise splice this file's tail onto the next.
         for _ in part:
             pass
-        ended = not pending
+        if not pending:
+            return
         pending.clear()
-        root = False
+        root = False  # pragma: no mutate -- None reads as False in `if root`.
 
 
 def part_names(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[str]:
@@ -195,8 +195,8 @@ def chain(
     found = list(parts)
     by_id: dict[str, Sequence[SessionRecord]] = {}
     for part in found:
-        own = _declared(part).get("id", "")
-        if own:
+        own = _declared(part).get("id")
+        if own is not None:
             by_id[own] = part
     # A LIST per parent: a thread may be resumed more than once, and keeping
     # one successor apiece dropped every earlier fork -- 16 of 392 rollouts on
@@ -204,7 +204,7 @@ def chain(
     successors: dict[str, list[Sequence[SessionRecord]]] = {}
     roots: list[Sequence[SessionRecord]] = []
     for part in found:
-        parent = _declared(part).get(forked_from, "")
+        parent = _declared(part).get(forked_from)
         if parent in by_id:
             successors.setdefault(parent, []).append(part)
         else:
@@ -223,8 +223,9 @@ def chain(
                 continue
             seen.add(id(part))
             ordered.append(part)
-            own = _declared(part).get("id", "")
-            stack.extend(reversed(successors.get(own, [])))
+            own = _declared(part).get("id")
+            if own is not None:
+                stack.extend(reversed(successors.get(own, [])))
     # A component whose links form a CYCLE has no root, so the walk above never
     # started on it -- the ``seen`` guard only stops a re-visit, it cannot reach
     # an unreachable node. Those parts were dropped silently, and a file that
@@ -238,7 +239,8 @@ def chain(
 def _bare(value: object) -> str:
     """Return a seam's file name, refusing one that names another directory."""
     name = from_plain(value, str)
-    if name != PurePath(name).name or name in {".", ".."}:
+    # ``.`` is no name of its own (``PurePath(".").name`` is ``""``); ``..`` is.
+    if name != PurePath(name).name or name == "..":
         raise ValueError(f"seam names a path, not a file: {name!r}")
     return name
 
@@ -323,16 +325,14 @@ def _boundary(
     prefix: list[SessionRecord] = []
     opened: str | None = None
     carried: str | None = None
-    forked = False
     for record in part:
         prefix.append(record)
         if isinstance(record, TurnContext) and opened is None:
             opened = record.timestamp or ""
-        # Codex names the thread it continued on its LAUNCH settings, never on
-        # a turn, so a fork's first user turn is what crossed its seam.
-        forked = forked or forked_from in _declared([record])
         if isinstance(record, UserMessage):
-            if forked or summary in record.extra:
+            # Codex names the thread it continued on its LAUNCH settings, never
+            # on a turn, so a fork's first user turn is what crossed its seam.
+            if forked_from in _declared(prefix) or summary in record.extra:
                 carried = record.content
             break
     return prefix, ContextClear(
