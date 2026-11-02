@@ -1163,9 +1163,6 @@ def _write_tool_payload(
     tool = from_plain(shape.get("tool_name"), str, default="") or _claude_tool(item)
     if tool == "Agent" and "isAsync" not in payload:
         tool = "Agent.done"
-    for key, value in payload.items():
-        if isinstance(value, dict):
-            payload[key] = _ordered(cast(dict[str, object], value), f"{tool}.{key}")
     return _ordered(payload, tool)
 
 

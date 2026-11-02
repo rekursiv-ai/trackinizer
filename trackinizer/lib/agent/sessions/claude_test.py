@@ -1728,6 +1728,21 @@ def test_claude_shape_writers_preserve_absent_blocks() -> None:
     ) == [{"type": "text", "text": "new"}, {"type": "other"}]
 
 
+def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
+    """With no ``isAsync`` it is a finished report, which states its prompt second."""
+    report = AgentStatusResult(
+        call_id="c",
+        content="done",
+        agent_id="a1",
+        state="completed",
+        prompt="p",
+        tokens=3,
+    )
+    payload = claude._write_tool_payload(report, {}, {})
+    assert isinstance(payload, dict)
+    assert list(payload) == ["status", "prompt", "agentId", "content", "totalTokens"]
+
+
 def test_claude_writer_special_result_shapes() -> None:
     assert (
         claude._write_result_block(
