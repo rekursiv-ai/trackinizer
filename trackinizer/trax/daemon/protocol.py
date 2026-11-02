@@ -170,7 +170,7 @@ class Request:
           ProtocolVersionError: The peer speaks a different frame shape. A
             distinct type so the daemon can answer it rather than dropping
             the connection, which would look like "no daemon" to the client.
-          ValueError: The frame is not a well-formed request.
+          MalformedFrameError: The frame is not a well-formed request.
 
         """
         payload = _decode_object(raw, "request")
@@ -263,6 +263,10 @@ class Response:
 
 class ProtocolVersionError(ValueError):
     """A peer framed its request under a different protocol version."""
+
+
+class MalformedFrameError(ValueError):
+    """A peer sent a frame that is not the protocol: garbage, not a caller's bug."""
 
 
 def write_frame(conn: socket.socket, payload: bytes) -> None:
@@ -422,53 +426,46 @@ def _read(path: Path) -> bytes:
 
 
 # The shared typed-JSON extractor is the house tool for this, but it pulls in the import
-# graph this module exists to avoid, so the narrowing is spelled out here instead. A
-# non-object frame raises ``ValueError`` rather than ``TypeError``: every malformed-
-# frame failure is one thing to the caller -- a peer that sent garbage.
+# graph this module exists to avoid, so the narrowing is spelled out here instead.
 def _decode_object(raw: bytes, where: str) -> dict[str, object]:
-    """Decode one frame into a JSON object, or raise ``ValueError``."""
+    """Decode one frame into a JSON object, or raise :class:`MalformedFrameError`."""
     try:
         payload = cast(object, json.loads(raw))
     except ValueError as err:
-        raise ValueError(f"malformed {where} frame: {err}") from err
+        raise MalformedFrameError(f"malformed {where} frame: {err}") from err
     if not isinstance(payload, dict):
-        raise ValueError(f"malformed {where} frame: {payload!r}")  # noqa: TRY004 -- a non-object frame is malformed input, not a caller type error.
+        raise MalformedFrameError(f"malformed {where} frame: {payload!r}")
     return cast(dict[str, object], payload)
 
 
 def _require(payload: dict[str, object], key: str, where: str) -> object:
     """Return ``payload[key]``, or raise if the peer omitted it."""
     if key not in payload:
-        raise ValueError(f"malformed {where} frame: missing {key!r}")
+        raise MalformedFrameError(f"malformed {where} frame: missing {key!r}")
     return payload[key]
 
 
-# Every helper below narrows one JSON value decoded from a REMOTE peer, so a
-# wrong type is malformed input rather than a caller passing the wrong
-# argument. ``ValueError`` keeps every bad-frame failure one type the socket
-# layer can catch; a ``TypeError`` here would escape that handler and kill
-# the connection with a traceback instead of a diagnostic.
 def _str(value: object) -> str:
     if not isinstance(value, str):
-        raise ValueError(f"expected a string, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected a string, got {value!r}")
     return value
 
 
 def _int(value: object) -> int:
     if not isinstance(value, int) or isinstance(value, bool):
-        raise ValueError(f"expected an integer, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected an integer, got {value!r}")
     return value
 
 
 def _str_list(value: object) -> list[str]:
     if not isinstance(value, list):
-        raise ValueError(f"expected a list, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected a list, got {value!r}")
     return [_str(item) for item in cast(list[object], value)]
 
 
 def _str_map(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
-        raise ValueError(f"expected an object, got {value!r}")  # noqa: TRY004 -- malformed wire input, not a caller type error.
+        raise MalformedFrameError(f"expected an object, got {value!r}")
     return {
         _str(key): _str(item) for key, item in cast(dict[object, object], value).items()
     }
