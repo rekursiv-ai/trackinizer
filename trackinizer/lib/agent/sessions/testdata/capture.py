@@ -37,9 +37,14 @@ permission prompt to reject, and an MCP call needs a server. It writes only
 its main file, to ``kinds/claude_main.jsonl``; its subagents' transcripts are
 the shapes ``claude_sidechain.jsonl`` already holds.
 
+``--cli codex-kinds`` is its codex counterpart: a function call, a web search, a
+patch and a compaction, then a fork of that session, written to
+``kinds/codex_main.jsonl`` and ``kinds/codex_fork.jsonl``.
+
 Examples:
   sh trackinizer/lib/agent/sessions/testdata/capture.py --cli claude
   sh trackinizer/lib/agent/sessions/testdata/capture.py --cli claude-kinds
+  sh trackinizer/lib/agent/sessions/testdata/capture.py --cli codex-kinds
   sh trackinizer/lib/agent/sessions/testdata/capture.py --out /tmp/fixtures
 
 '''
@@ -63,7 +68,7 @@ import threading
 import time
 import zlib
 
-from treekle import json_loads
+from treekle import from_plain, json_loads
 from wrapt import lazy_import
 
 from trackinizer.lib.posix.relay import ThreadedRelay
@@ -72,7 +77,7 @@ from trackinizer.lib.posix.relay import ThreadedRelay
 # The kinds capture imports this module's session helpers.
 _capture_claude_kinds = lazy_import(
     "trackinizer.lib.agent.sessions.testdata.kinds.capture",
-    "_capture_claude_kinds",
+    "capture_claude_kinds",
 )
 
 
@@ -125,26 +130,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     # is restored between CLIs; otherwise the second capture inherits the
     # first's directory.
     origin = Path.cwd()
-    if flags.cli in ("claude", "both"):
-        written += _capture_claude(
-            root / "claude",
-            flags.out,
-            turn_sec=flags.turn_sec,
-            timeout_sec=flags.timeout_sec,
-        )
-        os.chdir(origin)
-    if flags.cli == "claude-kinds":
-        written += _capture_claude_kinds(
-            root / "claude-kinds",
-            flags.out / "kinds",
-            turn_sec=flags.turn_sec,
-            timeout_sec=flags.timeout_sec,
-        )
-        os.chdir(origin)
-    if flags.cli in ("codex", "both"):
-        written += _capture_codex(
-            root / "codex",
-            flags.out,
+    # Each capture, and the directory its fixtures go to.
+    captures = {
+        "claude": (_capture_claude, flags.out),
+        "claude-kinds": (_capture_claude_kinds, flags.out / "kinds"),
+        "codex": (_capture_codex, flags.out),
+        "codex-kinds": (_capture_codex_kinds, flags.out / "kinds"),
+    }
+    for name in ("claude", "codex") if flags.cli == "both" else (flags.cli,):
+        capture, out = captures[name]
+        written += capture(
+            root / name,
+            out,
             turn_sec=flags.turn_sec,
             timeout_sec=flags.timeout_sec,
         )
@@ -160,11 +157,11 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     """Register flags on ``parser``."""
     parser.add_argument(
         "--cli",
-        choices=("claude", "codex", "both", "claude-kinds"),
+        choices=("claude", "codex", "both", "claude-kinds", "codex-kinds"),
         default="both",
         help=(
-            "Which CLI to drive (default: both). claude-kinds runs the separate "
-            "claude session for the kinds bypassPermissions cannot reach."
+            "Which CLI to drive (default: both). claude-kinds and codex-kinds run "
+            "separate sessions for the record kinds the main script leaves out."
         ),
     )
     parser.add_argument(
@@ -237,9 +234,6 @@ def _capture_claude(
     ]
 
 
-# ``model_reasoning_summary=detailed`` is what populates a ``reasoning`` item's
-# ``summary[].text``; without it the thinking record is encrypted-only and the fixture
-# cannot exercise readable thinking.
 def _capture_codex(
     root: Path,
     out: Path,
@@ -250,13 +244,7 @@ def _capture_codex(
     """Drive one codex session and return the fixture paths written."""
     home, work = _prepare(root, real_home=Path.home() / ".codex")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     _drive(
-        [
-            "codex",
-            "--skip-git-repo-check",
-            "-c",
-            "model_reasoning_summary=detailed",
-            "--dangerously-bypass-approvals-and-sandbox",
-        ],
+        ["codex", *_codex_flags(work)],
         _session_script(),
         cwd=work,
         env={"CODEX_HOME": str(home)},
@@ -267,6 +255,118 @@ def _capture_codex(
         _emit(path, out / "codex_main.jsonl", home=home, work=work)
         for path in sorted((home / "sessions").rglob("rollout-*.jsonl"))
     ]
+
+
+# A workspace the TUI has not seen opens a trust prompt, which would take the first
+# scripted line as its answer, and codex 0.153 refuses ``--skip-git-repo-check`` in its
+# TUI, so the workspace is trusted by configuration.
+#
+# ``model_reasoning_summary=detailed`` is what populates a ``reasoning`` item's
+# ``summary[].text``; without it the thinking record is encrypted-only and the fixture
+# cannot exercise readable thinking.
+def _codex_flags(work: Path) -> list[str]:
+    """Return the flags every codex capture starts the TUI with, in ``work``."""
+    return [
+        "-c",
+        f'projects."{work}".trust_level="trusted"',
+        "-c",
+        "model_reasoning_summary=detailed",
+        "--dangerously-bypass-approvals-and-sandbox",
+    ]
+
+
+# One line per payload type ``_session_script`` left uncaptured, then a fork of the
+# session, which ``codex fork --last`` starts as a rollout of its own naming the thread
+# it forked from:
+#   1. a function call, ``update_plan``, and its output
+#   2. a web search, which only ``web_search="live"`` lets the model make
+#   3. ``apply_patch``, which records a patch event and a file-change item
+#   4. ``/compact``, which records the compaction.
+def _capture_codex_kinds(
+    root: Path,
+    out: Path,
+    *,
+    turn_sec: float,
+    timeout_sec: int,
+) -> list[Path]:
+    """Drive the codex-kinds session and its fork; return the fixture paths."""
+    home, work = _prepare(root, real_home=Path.home() / ".codex")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
+    flags = [*_codex_flags(work), "-c", 'web_search="live"']
+    env = {"CODEX_HOME": str(home)}
+    _drive(
+        ["codex", *flags],
+        (
+            _Step(
+                line=(
+                    "Use your update_plan tool to record a two-step plan, then mark "
+                    "both steps completed."
+                ),
+            ),
+            _Step(
+                line=(
+                    "Search the web for the current stable Python version and state "
+                    "it in one line."
+                ),
+            ),
+            _Step(
+                line=(
+                    'Use apply_patch to create note.txt containing "beta", then '
+                    "apply_patch again to change beta to gamma."
+                ),
+            ),
+            _Step(line="/compact"),
+        ),
+        cwd=work,
+        env=env,
+        turn_sec=turn_sec,
+        timeout_sec=timeout_sec,
+    )
+    _drive(
+        ["codex", "fork", "--last", *flags],
+        (_Step(line="Say exactly: forked"),),
+        cwd=work,
+        env=env,
+        turn_sec=turn_sec,
+        timeout_sec=timeout_sec,
+    )
+    out.mkdir(parents=True, exist_ok=True)
+    return [
+        _first_of_each_kind(
+            _emit(
+                path,
+                out
+                / (
+                    "codex_fork.jsonl"
+                    if "forked_from_id"
+                    in path.read_text(encoding="utf-8").partition("\n")[0]
+                    else "codex_main.jsonl"
+                ),
+                home=home,
+                work=work,
+            ),
+        )
+        for path in sorted((home / "sessions").rglob("rollout-*.jsonl"))
+    ]
+
+
+# A kinds rollout is captured for each payload type's key order, which one line of a
+# type shows as well as twenty: the rest repeat it, and the fork replays its parent.
+def _first_of_each_kind(path: Path) -> Path:
+    """Keep only the first line of each line, payload and item type in ``path``."""
+    seen: set[tuple[object, object, object]] = set()
+    kept: list[str] = []
+    text = path.read_text(encoding="utf-8")
+    for line in text.splitlines(keepends=True):
+        record = json_loads(line, dict[str, object])
+        payload = from_plain(record.get("payload"), dict[str, object], default={})
+        # An ``item_completed`` event names its item's own type one level down.
+        item = from_plain(payload.get("item"), dict[str, object], default={})
+        kind = (record.get("type"), payload.get("type"), item.get("type"))
+        if kind not in seen:
+            seen.add(kind)
+            kept.append(line)
+    path.write_text("".join(kept), encoding="utf-8")
+    return path
 
 
 # The TUI is the only interface that reaches every record kind: a slash command is
@@ -443,7 +543,7 @@ def _prepare(root: Path, *, real_home: Path) -> tuple[Path, Path]:
     home = root / "home"
     work = root / "work"
     home.mkdir(parents=True)
-    work.mkdir(parents=True)
+    work.mkdir()
     for name in ("auth.json", "config.toml", ".credentials.json", "settings.json"):
         source = real_home / name
         if source.is_file():
@@ -474,26 +574,30 @@ def _seed_onboarding(home: Path, work: Path, *, real_home: Path) -> None:
     if real_home.name != ".claude" or not source.is_file():
         return
     real = json_loads(source.read_text(encoding="utf-8"), dict[str, object])
-    seeded: dict[str, object] = {
-        key: value for key, value in real.items() if key != "projects"
-    }
-    seeded["projects"] = {
-        str(work): {
-            "hasTrustDialogAccepted": True,
-            "hasCompletedProjectOnboarding": True,
-            "projectOnboardingSeenCount": 1,
+    seeded = {
+        **real,
+        "projects": {
+            str(work): {
+                "hasTrustDialogAccepted": True,
+                "hasCompletedProjectOnboarding": True,
+                "projectOnboardingSeenCount": 1,
+            },
         },
     }
+    # pragma: no mutate start -- json.dumps escapes non-ASCII, so the text is ASCII.
     (home / ".claude.json").write_text(json.dumps(seeded), encoding="utf-8")
+    # pragma: no mutate end
 
 
 def _tiny_png() -> bytes:
     """Return a 2x2 PNG: the smallest input that exercises an image read."""
+    # pragma: no mutate start -- each value fits signed, so i and b pack as I and B.
     header = struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
+    # pragma: no mutate end
     pixels = zlib.compress(b"\x00\xff\x00\x00\x00\x00\xff\x00\xff\x00\x00\xff")
     return b"\x89PNG\r\n\x1a\n" + b"".join(
         (
-            struct.pack(">I", len(body))
+            struct.pack(">I", len(body))  # pragma: no mutate -- small, so i packs as I.
             + tag
             + body
             + struct.pack(">I", zlib.crc32(tag + body))
@@ -597,8 +701,7 @@ def _filler(found: re.Match[str]) -> str:
     secret = found.group()
     marker = re.match(r"[A-Za-z-]*[-_]", secret)
     prefix = marker.group() if marker else ""
-    repeats = -(-(len(secret) - len(prefix)) // len(_FILLER))
-    return prefix + (_FILLER * repeats)[: len(secret) - len(prefix)]
+    return prefix + (_FILLER * len(secret))[: len(secret) - len(prefix)]
 
 
 # Filler is exempt, and cannot be confused for a real secret: it is ``deadbeef``
@@ -646,7 +749,6 @@ class _Flags(Protocol):
 #   5. ``/compact``, which records the compaction.
 def _session_script() -> tuple[_Step, ...]:
     """Return the scripted session every CLI is driven through."""
-    # pragma: no mutate start -- prompts a live CLI reads; only a capture checks them.
     return tuple(
         _Step(line=line)
         for line in (
@@ -670,7 +772,6 @@ def _session_script() -> tuple[_Step, ...]:
             "Say exactly: after-compact",
         )
     )
-    # pragma: no mutate end
 
 
 if __name__ == "__main__":

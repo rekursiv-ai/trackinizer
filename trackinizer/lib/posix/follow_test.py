@@ -16,6 +16,7 @@ import contextlib
 import ctypes
 import errno
 import importlib
+import logging
 import os
 import platform
 import select
@@ -2375,8 +2376,12 @@ def test_fsevents_backend_validates_directories_and_imports_observer(
 
     module_for_reload: ModuleType = follow
     monkeypatch.setattr(follow, "_fsevents", Missing())
-    with pytest.raises(NotImplementedError, match="unavailable"):
+    with pytest.raises(NotImplementedError) as unavailable:
         follow._fsevents_observer()
+    assert str(unavailable.value) == (
+        "watchdog's FSEvents backend is unavailable; "
+        "it ships only on macOS, where watchdog provides the extension"
+    )
 
     original_platform = sys.platform
     monkeypatch.setattr(sys, "platform", "darwin")
@@ -2452,9 +2457,395 @@ def test_until_passes_wakes_then_finishes_with_final_listing(tmp_path: Path) -> 
 
 
 def test_overflow_rescan_tolerates_vanished_directory(tmp_path: Path) -> None:
+    """A vanished directory is skipped, and every other one is still listed."""
     target = tmp_path / "log"
     target.write_text("line\n")
-    assert follow._rescan({1: tmp_path, 2: tmp_path / "absent"}) == {target}
+    (tmp_path / "sub").mkdir()
+    inner = tmp_path / "sub" / "inner"
+    inner.write_text("line\n")
+    watches = {1: tmp_path / "absent", 2: tmp_path, 3: tmp_path / "sub"}
+    assert follow._rescan(watches) == {target, inner}
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="inotify errors")
+@pytest.mark.parametrize(
+    ("code", "kind", "message"),
+    [
+        (errno.ENOENT, FileNotFoundError, "no such directory"),
+        (errno.ENOSPC, OSError, "inotify_add_watch failed"),
+    ],
+)
+def test_a_refused_watch_names_its_errno_and_directory(
+    tmp_path: Path,
+    code: int,
+    kind: type[OSError],
+    message: str,
+) -> None:
+    libc = follow._libc()
+    ctypes.set_errno(code)
+    with (
+        patch.object(libc, "inotify_add_watch", return_value=-1),
+        pytest.raises(kind) as raised,
+    ):
+        follow._add_watch(libc, -1, tmp_path, {})
+    assert type(raised.value) is kind
+    assert str(raised.value) == f"[Errno {code}] {message}: '{tmp_path}'"
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="inotify errors")
+def test_inotify_init_failure_names_its_errno() -> None:
+    libc = follow._libc()
+    ctypes.set_errno(errno.EMFILE)
+    with (
+        patch.object(libc, "inotify_init1", return_value=-1),
+        patch.object(follow, "_libc", return_value=libc),
+        pytest.raises(OSError, match="inotify_init1 failed") as raised,
+    ):
+        follow._inotify_fd()
+    assert (raised.value.errno, raised.value.strerror) == (
+        errno.EMFILE,
+        "inotify_init1 failed",
+    )
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="inotify descriptors")
+def test_an_inotify_descriptor_of_zero_is_a_descriptor() -> None:
+    """Only a negative return is a failure; fd 0 is free once stdin closes."""
+    libc = follow._libc()
+    with (
+        patch.object(libc, "inotify_init1", return_value=0),
+        patch.object(follow, "_libc", return_value=libc),
+    ):
+        assert follow._inotify_fd() == (0, {})
+
+
+def test_a_libc_without_inotify_is_unsupported() -> None:
+    with (
+        patch.object(ctypes, "CDLL", return_value=SimpleNamespace()),
+        pytest.raises(NotImplementedError) as raised,
+    ):
+        follow._libc()
+    assert str(raised.value) == "libc has no inotify"
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="inotify signatures")
+def test_libc_declares_the_inotify_signatures() -> None:
+    """Declared, so a wrongly typed argument is refused rather than passed raw."""
+    libc = follow._libc()
+    assert tuple(libc.inotify_init1.argtypes) == (ctypes.c_int,)
+    assert tuple(libc.inotify_add_watch.argtypes) == (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint32,
+    )
+
+
+def test_the_fsevents_observer_comes_from_watchdog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    built = object()
+
+    def observer() -> object:
+        return built
+
+    monkeypatch.setattr(follow, "_fsevents", SimpleNamespace(FSEventsObserver=observer))
+    assert follow._fsevents_observer() is built
+
+
+def test_a_refused_descendant_watch_is_logged_with_its_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    (tmp_path / "child").mkdir()
+    refused = OSError(errno.ENOSPC, "watch limit")
+
+    def add(
+        libc: ctypes.CDLL,
+        fd: int,
+        directory: Path,
+        watches: dict[int, Path],
+    ) -> None:
+        del libc, fd
+        if directory != tmp_path:
+            raise refused
+        watches[1] = directory
+
+    with (
+        patch.object(follow, "_add_watch", side_effect=add),
+        caplog.at_level(logging.WARNING, logger=follow.__name__),
+    ):
+        follow._watch_tree(ctypes.CDLL(None), -1, tmp_path, {})
+    (record,) = caplog.records
+    assert record.getMessage() == f"inotify refused a watch on {tmp_path / 'child'}"
+    assert isinstance(record.exc_info, tuple)
+    assert record.exc_info[1] is refused
+
+
+def test_a_refused_adoption_is_logged_with_its_error(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    refused = OSError(errno.ENOSPC, "watch limit")
+    with (
+        patch.object(follow, "_watch_tree", side_effect=refused),
+        caplog.at_level(logging.WARNING, logger=follow.__name__),
+    ):
+        assert follow._adopt(ctypes.CDLL(None), -1, tmp_path, {}) == set()
+    (record,) = caplog.records
+    assert record.getMessage() == f"inotify refused a watch on {tmp_path}"
+    assert isinstance(record.exc_info, tuple)
+    assert record.exc_info[1] is refused
+
+
+def test_a_tree_walk_goes_on_past_a_file_and_a_vanished_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file, gone, kept = (tmp_path / name for name in ("file", "gone", "kept"))
+    file.write_text("")
+    gone.mkdir()
+    kept.mkdir()
+    added: list[Path] = []
+
+    def listed(self: Path, pattern: str) -> Iterator[Path]:
+        del self, pattern
+        return iter([file, gone, kept])
+
+    def add(
+        libc: ctypes.CDLL,
+        fd: int,
+        directory: Path,
+        watches: dict[int, Path],
+    ) -> None:
+        del libc, fd, watches
+        if directory == gone:
+            raise FileNotFoundError(errno.ENOENT, "gone", str(directory))
+        added.append(directory)
+
+    monkeypatch.setattr(Path, "rglob", listed)
+    monkeypatch.setattr(follow, "_add_watch", add)
+    follow._watch_tree(ctypes.CDLL(None), -1, tmp_path, {})
+    assert added == [tmp_path, kept]
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="inotify event decoding")
+def test_each_kind_of_event_leaves_the_rest_of_the_read_decoded(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """No event, whatever its kind, ends the read or drops one before it."""
+    (tmp_path / "on-disk").write_text("")
+    (tmp_path / "sub").mkdir()
+
+    def event(descriptor: int, mask: int, name: bytes = b"") -> bytes:
+        padded = name.ljust(16, b"\0") if name else b""
+        return follow._EVENT_HEADER.pack(descriptor, mask, 0, len(padded)) + padded
+
+    raw = b"".join(
+        [
+            event(1, follow._IN_MODIFY, b"first"),
+            event(1, follow._IN_CREATE | follow._IN_ISDIR, b"sub"),
+            event(9, follow._IN_IGNORED),
+            event(1, follow._IN_MODIFY),
+            event(-1, follow._IN_Q_OVERFLOW),
+            event(1, follow._IN_MODIFY, b"last"),
+        ],
+    )
+    with caplog.at_level(logging.WARNING, logger=follow.__name__):
+        changed = follow._read_events(raw, follow._libc(), -1, {1: tmp_path})
+    assert changed == {tmp_path / "first", tmp_path / "on-disk", tmp_path / "last"}
+    assert "inotify queue overflowed; rescanning watched trees" in caplog.messages
+
+
+@pytest.mark.skipif(platform.system() != "Linux", reason="inotify event decoding")
+def test_one_inotify_read_takes_at_most_64_kib_of_events(tmp_path: Path) -> None:
+    """The rest wait for the next wake, which the reader's loop takes."""
+    events = b"".join(
+        follow._EVENT_HEADER.pack(1, follow._IN_MODIFY, 0, 16)
+        + f"f{index:04}".encode().ljust(16, b"\0")
+        for index in range(2_100)
+    )
+    queued = tmp_path / "queued"
+    queued.write_bytes(events)
+    fd = os.open(queued, os.O_RDONLY)
+    try:
+        changed = follow._read_inotify(follow._libc(), fd, {1: tmp_path})
+    finally:
+        os.close(fd)
+    assert changed == {tmp_path / f"f{index:04}" for index in range(2_048)}
+
+
+def test_closing_an_until_follow_early_leaves_no_task_waiting() -> None:
+    async def drive() -> int:
+        until = asyncio.Event()
+
+        async def changes() -> AsyncIterator[set[Path]]:
+            yield {Path("x")}
+            await asyncio.Event().wait()
+
+        iterator = follow._until(changes(), until=until, directories=())
+        assert await anext(iterator) == {Path("x")}
+        await iterator.aclose()
+        for _ in range(2):
+            await asyncio.sleep(0)
+        return len(asyncio.all_tasks() - {asyncio.current_task()})
+
+    assert asyncio.run(drive()) == 0
+
+
+def test_an_append_past_the_replacement_window_is_no_restart(tmp_path: Path) -> None:
+    """The window compared is the one just before the offset, not the file's start."""
+    target = tmp_path / "log"
+    target.write_text("a" * 5_000 + "\n" + "b" * 5_000 + "\n")
+    cursor = follow._Cursor(target, offset=target.stat().st_size)
+    with target.open("a") as writer:
+        writer.write("c\n")
+    assert cursor.drain() == ["c"]
+    assert not cursor.restarted
+
+
+def test_a_line_keeps_its_spaces_and_replaces_bytes_not_utf8(tmp_path: Path) -> None:
+    target = tmp_path / "log"
+    target.write_bytes(b"a b\xff\n")
+    assert follow._Cursor(target, offset=0).drain() == ["a b\ufffd"]
+
+
+def test_follow_file_by_default_skips_history(
+    tmp_path: Path,
+    file_watch_ready: asyncio.Event,
+) -> None:
+    target = tmp_path / "log"
+    target.write_text("old\n")
+
+    async def run() -> str:
+        lines = follow_file(target)
+        assert _is_async_generator(lines)
+        async with contextlib.aclosing(lines):
+            first = asyncio.create_task(anext(lines))
+            await asyncio.wait_for(file_watch_ready.wait(), 5.0)
+            with target.open("a") as writer:
+                writer.write("new\n")
+            return await asyncio.wait_for(first, 5.0)
+
+    assert asyncio.run(run()) == "new"
+
+
+def test_follow_file_watches_its_directory_for_itself_alone(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "log"
+    seen: dict[str, object] = {}
+
+    @asynccontextmanager
+    async def recording(
+        *directories: Path,
+        match: Callable[[Path], bool],
+        existing: set[Path],
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        seen.update(
+            directories=directories,
+            existing=existing,
+            matches=(match(target), match(tmp_path / "other")),
+        )
+        yield _no_events()
+
+    monkeypatch.setattr(follow, "_watch_lines", recording)
+
+    async def run() -> list[str]:
+        return [line async for line in follow_file(target)]
+
+    assert asyncio.run(run()) == []
+    assert seen == {
+        "directories": (tmp_path,),
+        "existing": {target},
+        "matches": (True, False),
+    }
+
+
+def test_follow_tree_hands_the_watch_its_match_and_every_known_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old, resumed = tmp_path / "a.jsonl", tmp_path / "r.jsonl"
+    old.write_text("x\n")
+    resumed.write_text("y\n")
+    seen: dict[str, object] = {}
+
+    def match(path: Path) -> bool:
+        return path.suffix == ".jsonl"
+
+    @asynccontextmanager
+    async def recording(
+        *directories: Path,
+        match: Callable[[Path], bool],
+        existing: set[Path],
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        del directories
+        seen.update(match=match, existing=existing)
+        yield _no_events()
+
+    monkeypatch.setattr(follow, "_watch_lines", recording)
+
+    async def run() -> list[str]:
+        lines = follow.follow_tree(tmp_path, match=match, resume=frozenset({resumed}))
+        return [line.text async for line in lines]
+
+    assert asyncio.run(run()) == ["y"]
+    assert seen == {"match": match, "existing": {old, resumed}}
+
+
+def test_a_file_replaced_while_arming_restarts_on_its_first_line(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "log"
+    target.write_text("old\n")
+
+    @asynccontextmanager
+    async def replacing(
+        *directories: Path,
+        match: Callable[[Path], bool],
+        existing: set[Path],
+    ) -> AsyncGenerator[AsyncIterator[set[Path]]]:
+        del match, existing
+        staged = directories[0] / "staged"
+        staged.write_text("a\nb\n")
+        staged.replace(target)
+        yield _no_events()
+
+    monkeypatch.setattr(follow, "_watch_lines", replacing)
+
+    async def run() -> list[follow.Line]:
+        return [
+            line
+            async for line in follow.follow_tree(tmp_path, match=lambda p: p == target)
+        ]
+
+    assert asyncio.run(run()) == [
+        follow.Line(path=target, text="a", restart=True),
+        follow.Line(path=target, text="b"),
+    ]
+
+
+def test_rejected_files_are_never_read_even_named_for_resume(tmp_path: Path) -> None:
+    keep, skip, resumed = (tmp_path / name for name in ("keep", "skip", "resumed"))
+    for path in (keep, skip, resumed):
+        path.write_text(f"{path.name}\n")
+
+    async def run() -> list[str]:
+        until = asyncio.Event()
+        until.set()
+        lines = follow.follow_tree(
+            tmp_path,
+            match=lambda path: path == keep,
+            replay=True,
+            resume=frozenset({resumed}),
+            until=until,
+        )
+        return [line.text async for line in lines]
+
+    assert asyncio.run(run()) == ["keep"]
 
 
 def _observed_drain(

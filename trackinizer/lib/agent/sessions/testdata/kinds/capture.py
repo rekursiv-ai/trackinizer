@@ -11,7 +11,7 @@ from typing import Final
 import json
 import sys
 
-from treekle import json_loads
+from treekle import from_plain, json_loads
 
 from trackinizer.lib.agent.sessions.testdata.capture import (
     _drive,
@@ -32,14 +32,25 @@ _CWD: Final = Path(__file__).resolve().parent
 # and a long shell command, in the background whatever the prompt asks -- so no
 # finished subagent report reaches a tool result, and no tool is running when the
 # interrupt's Escape arrives (both measured, 2.1.309).
-def _capture_claude_kinds(
+def capture_claude_kinds(
     root: Path,
     out: Path,
     *,
     turn_sec: float,
     timeout_sec: int,
 ) -> list[Path]:
-    """Drive the claude-kinds session and return the fixture path written."""
+    """Drive the claude-kinds session and return the fixture path written.
+
+    Args:
+      root: The scratch directory the session's home and workspace go in.
+      out: The directory the fixture is written to.
+      turn_sec: How long each scripted turn waits for its answer.
+      timeout_sec: The bound on the whole session.
+
+    Returns:
+      written: The fixture path for the session's main transcript.
+
+    """
     # One line per record kind ``_session_script`` does not produce, run under the
     # default permission mode so a prompt exists to reject. ``allowed``
     # pre-approves every tool but the rejected one, so no other line stops on a
@@ -165,13 +176,18 @@ def _record_lines(path: Path) -> Path:
         kind = record.get("type")
         if not isinstance(kind, str):
             continue
-        message = record.get("message")
-        content = message.get("content") if isinstance(message, dict) else None
-        tool_call = isinstance(content, list) and any(
-            isinstance(block, dict)
+        message = from_plain(record.get("message"), dict[str, object], default={})
+        # A message's content is its text, or a list of blocks.
+        blocks = (
+            from_plain(message["content"], list[dict[str, object] | None])
+            if isinstance(message.get("content"), list)
+            else []
+        )
+        tool_call = any(
+            block is not None
             and block.get("type") == "tool_use"
             and block.get("name") in tools
-            for block in content
+            for block in blocks
         )
         uuid = record.get("uuid")
         if tool_call and isinstance(uuid, str):

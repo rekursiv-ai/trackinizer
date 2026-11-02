@@ -123,12 +123,23 @@ def test_an_end_signal_with_no_reader_is_refused() -> None:
 
 def test_a_stray_signal_is_never_returned_as_a_record() -> None:
     reader = tail.Tail(_records)
-    reader._produced.put(tail._NO_MORE_LINES)
+    reader._produced.put(tail._Signal())
     with pytest.raises(
         TypeError,
         match=r"^Expected not isinstance\(item, _Signal\)\.$",
     ):
         _ = reader._collect()
+
+
+def test_the_reader_runs_on_a_daemon_thread() -> None:
+    """An abandoned tail's blocked reader must not hold the process open at exit."""
+    reader = tail.Tail(_records)
+    try:
+        assert reader.feed("first") == [UserMessage(content="first")]
+        assert reader._reader is not None
+        assert reader._reader.daemon is True
+    finally:
+        _finish_reader(reader)
 
 
 def test_the_encoding_follows_the_last_stated_context() -> None:
@@ -238,7 +249,7 @@ def _returned(
 def _finish_reader(reader: tail.Tail[SessionRecord]) -> None:
     worker = reader._reader
     if worker is not None:
-        reader._lines.put(tail._NO_MORE_LINES)
+        reader._lines.put("")
         worker.join(timeout=2.0)
         assert not worker.is_alive()
 

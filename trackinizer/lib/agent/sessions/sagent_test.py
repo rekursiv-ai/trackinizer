@@ -28,6 +28,7 @@ from trackinizer.sagent.session.types import (
     IncompleteRecord,
     SessionRecord,
     ShellCommandResult,
+    Splice,
     SystemMessage,
     Thinking,
     TokenUsage,
@@ -523,6 +524,16 @@ def test_a_stamp_is_utc() -> None:
 
 def test_a_zero_stamp_is_absent() -> None:
     assert sagent._stamp(0) is None
+    assert sagent._stamp(None) is None
+
+
+def test_a_descriptor_result_of_plain_text_keeps_that_text() -> None:
+    [result] = _read(
+        {"kind": "message", "descriptor": "multipart/x-tool-result", "content": "raw"},
+    )
+
+    assert isinstance(result, UncategorizedToolResult)
+    assert result.content == "raw"
 
 
 def test_a_stamp_past_1e11_is_nanoseconds() -> None:
@@ -693,6 +704,357 @@ def test_sagent_is_recognized_by_its_record_kinds() -> None:
     assert not sagent.is_sagent(json.dumps({"kind": ["meta"]}) + "\n")
     assert not sagent.is_sagent(json.dumps(["kind", "meta"]) + "\n")
     assert not sagent.is_sagent("")
+
+
+def _golden_lines() -> list[dict[str, object] | str]:
+    """Return a session stating each family with every field read, or none of it."""
+    stamp = 1_790_000_000.5
+    ns = 1_790_000_000_000_000_000
+
+    def history(kind: str, **fields: object) -> dict[str, object]:
+        return {"kind": "history", "type": kind, "timestamp": stamp} | fields
+
+    calls: list[dict[str, object]] = [
+        {"id": "b", "name": "Bash", "args": {"command": "ls"}},
+        {"id": "r", "name": "Read", "args": {"file_path": "a.py"}},
+        {"id": "w", "name": "Write", "args": {"path": "b.py", "content": "z"}},
+        {
+            "id": "e",
+            "name": "Edit",
+            "args": {"file_path": "a.py", "old_string": "x", "new_string": "y"},
+        },
+        {"id": "f", "name": "WebFetch", "args": {"url": "https://x.org"}},
+        {
+            "id": "s1",
+            "name": "AgentSpawn",
+            "args": {"label": "kid", "prompt": "go", "model_id": "m"},
+        },
+        {"id": "s2", "name": "AgentSpawn", "args": {"prompt": "count"}},
+        {"id": "g", "name": "Grep"},
+    ]
+    return [
+        {
+            "kind": "meta",
+            "model_id": "m1",
+            "provider": "p",
+            "session_id": "s",
+            "bash_cwd": "/w",
+            "name": "n",
+            "other": "x",
+            "tokens": {"input_tokens": 3, "output_tokens": 4, "cache_read_tokens": 1},
+            "spend": {"a": 0.25, "b": 0.5, "c": None},
+            "turn_count": 5,
+        },
+        {
+            "kind": "meta",
+            "model_id": "m1",
+            "total_cost_usd": 2.0,
+            "num_tool_call_rounds": 7,
+        },
+        {"kind": "persistent_agent", "label": "kid", "session_dir": "/x/kid"},
+        # A child spawned with no label is never the one a nameless spawn means.
+        {"kind": "persistent_agent", "label": "", "session_dir": "/x/nameless"},
+        history("system_message", text="cwd"),
+        history("user"),
+        history(
+            "assistant",
+            text="ok",
+            thinking_blocks=[{"thinking": "t"}],
+            tool_calls=calls,
+        ),
+        *(history("tool_result", call_id=call["id"], content="out") for call in calls),
+        history("tool_result", call_id="nope", content="?", is_error=True),
+        history("agent_send", text="hi", source="kid"),
+        history("compact_complete", tokens=12),
+        history("compact_started"),
+        {
+            "kind": "message",
+            "descriptor": "multipart/x-user-message",
+            "_timestamp": ns,
+            "content": [{"descriptor": "text/markdown", "content": "md"}],
+        },
+        {
+            "kind": "message",
+            "descriptor": "multipart/x-user-turn",
+            "_timestamp": ns,
+            "content": "turn",
+        },
+        {
+            "kind": "message",
+            "descriptor": "multipart/x-model-message",
+            "_timestamp": ns,
+            "content": [
+                {
+                    "descriptor": "application/x-thinking",
+                    "content": {"thinking": "t", "signature": "sig"},
+                },
+                {"descriptor": "application/x-thinking"},
+                {"descriptor": "text/markdown", "content": "a"},
+                {"descriptor": "text/plain", "content": "b"},
+                {
+                    "descriptor": "multipart/x-tool-call",
+                    "content": [
+                        {"descriptor": "text/x-queue-id", "content": "q"},
+                        {"descriptor": "application/x-tool-grep"},
+                    ],
+                },
+            ],
+        },
+        {
+            "kind": "message",
+            "descriptor": "multipart/x-tool-result",
+            "_timestamp": ns,
+            "content": [
+                {"descriptor": "text/x-queue-id", "content": "q"},
+                {"descriptor": "text/plain", "content": "found"},
+            ],
+        },
+        {
+            "kind": "message",
+            "descriptor": "multipart/x-tool-result",
+            "_timestamp": ns,
+            "content": [{"descriptor": "text/plain", "content": "orphan"}],
+        },
+        {"kind": "message", "descriptor": "text/x-banner", "content": "hi"},
+        {
+            "kind": "message",
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "r9", "name": "Bash"}],
+        },
+        {"kind": "tool_state", "role": "user"},
+        {"other": 1},
+        "[1]",
+    ]
+
+
+def test_every_family_reads_to_exactly_its_records() -> None:
+    """Each field read lands where the IR keeps it; each one absent reads as absent."""
+    at = "2026-09-21T14:13:20.500000+00:00"
+    ns = "2026-09-21T14:13:20+00:00"
+    ok = {"is_error": False}
+    calls = [
+        ToolCall(timestamp=at, call_id="b", name="Bash", arguments={"command": "ls"}),
+        ToolCall(
+            timestamp=at,
+            call_id="r",
+            name="Read",
+            arguments={"file_path": "a.py"},
+        ),
+        ToolCall(
+            timestamp=at,
+            call_id="w",
+            name="Write",
+            arguments={"path": "b.py", "content": "z"},
+        ),
+        ToolCall(
+            timestamp=at,
+            call_id="e",
+            name="Edit",
+            arguments={"file_path": "a.py", "old_string": "x", "new_string": "y"},
+        ),
+        ToolCall(
+            timestamp=at,
+            call_id="f",
+            name="WebFetch",
+            arguments={"url": "https://x.org"},
+        ),
+        ToolCall(
+            timestamp=at,
+            call_id="s1",
+            name="AgentSpawn",
+            arguments={"label": "kid", "prompt": "go", "model_id": "m"},
+        ),
+        ToolCall(
+            timestamp=at,
+            call_id="s2",
+            name="AgentSpawn",
+            arguments={"prompt": "count"},
+        ),
+        ToolCall(timestamp=at, call_id="g", name="Grep", arguments={}),
+    ]
+
+    assert _read(*_golden_lines()) == [
+        TurnContext(
+            model="m1",
+            extra={"provider": "p", "session_id": "s", "bash_cwd": "/w", "name": "n"},
+        ),
+        TokenUsage(
+            info={
+                "cost_usd": 0.75,
+                "input_tokens": 3,
+                "output_tokens": 4,
+                "cache_read_tokens": 1,
+                "rounds": 5,
+            },
+        ),
+        TokenUsage(
+            info={
+                "cost_usd": 2.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "rounds": 7,
+            },
+        ),
+        UncategorizedRecord(
+            kind="persistent_agent",
+            payload={
+                "kind": "persistent_agent",
+                "label": "kid",
+                "session_dir": "/x/kid",
+            },
+        ),
+        UncategorizedRecord(
+            kind="persistent_agent",
+            payload={
+                "kind": "persistent_agent",
+                "label": "",
+                "session_dir": "/x/nameless",
+            },
+        ),
+        SystemMessage(timestamp=at, content="cwd", subtype="reminder"),
+        UserMessage(timestamp=at, content=""),
+        Thinking(timestamp=at, content="t"),
+        AssistantMessage(timestamp=at, content="ok"),
+        *calls,
+        ShellCommandResult(
+            timestamp=at,
+            call_id="b",
+            command=("ls",),
+            stdout="out",
+            extra=ok,
+        ),
+        FileReadResult(timestamp=at, call_id="r", path="a.py", content="out", extra=ok),
+        FileWriteResult(timestamp=at, call_id="w", path="b.py", content="z", extra=ok),
+        FileEditResult(
+            timestamp=at,
+            call_id="e",
+            path="a.py",
+            edits=(Splice(before="x", after="y"),),
+            extra=ok,
+        ),
+        WebFetchResult(
+            timestamp=at,
+            call_id="f",
+            url="https://x.org",
+            content="out",
+            extra=ok,
+        ),
+        AgentStatusResult(
+            timestamp=at,
+            call_id="s1",
+            agent_id="kid",
+            agent_kind="kid",
+            prompt="go",
+            model="m",
+            content="out",
+            extra=ok,
+        ),
+        AgentStatusResult(
+            timestamp=at,
+            call_id="s2",
+            prompt="count",
+            content="out",
+            extra=ok,
+        ),
+        UncategorizedToolResult(timestamp=at, call_id="g", content="out", extra=ok),
+        UncategorizedToolResult(
+            timestamp=at,
+            call_id="nope",
+            content="?",
+            extra={"is_error": True},
+        ),
+        AgentToAgentMessage(timestamp=at, content="hi", sender="kid"),
+        ContextCompaction(
+            timestamp=at,
+            extra={
+                "type": "compact_complete",
+                "timestamp": 1_790_000_000.5,
+                "tokens": 12,
+            },
+        ),
+        UncategorizedRecord(
+            kind="history/compact_started",
+            payload={
+                "kind": "history",
+                "type": "compact_started",
+                "timestamp": 1_790_000_000.5,
+            },
+        ),
+        UserMessage(timestamp=ns, content="md"),
+        UserMessage(timestamp=ns, content="turn"),
+        Thinking(timestamp=ns, content="t", encrypted="sig"),
+        Thinking(timestamp=ns),
+        AssistantMessage(timestamp=ns, content="ab"),
+        ToolCall(timestamp=ns, call_id="q", name="Grep", arguments={}),
+        UncategorizedToolResult(timestamp=ns, call_id="q", content="found", extra=ok),
+        UncategorizedToolResult(timestamp=ns, call_id="", content="orphan", extra=ok),
+        UncategorizedRecord(
+            kind="message/text/x-banner",
+            payload={"kind": "message", "descriptor": "text/x-banner", "content": "hi"},
+        ),
+        ToolCall(call_id="r9", name="Bash", arguments={}),
+        UncategorizedRecord(
+            kind="tool_state",
+            payload={"kind": "tool_state", "role": "user"},
+        ),
+        UncategorizedRecord(kind="unknown", payload={"other": 1}),
+        IncompleteRecord(text="[1]\n"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "meta",
+        "history",
+        "tool_state",
+        "context_override",
+        "context_splice",
+        "persistent_agent",
+        "runtime_event",
+        "event",
+        "update",
+        "clear",
+    ],
+)
+def test_each_record_kind_only_sagent_writes_names_it(kind: str) -> None:
+    assert sagent.is_sagent(json.dumps({"kind": kind}) + "\n")
+
+
+def test_a_message_names_sagent_only_with_a_descriptor_or_a_role() -> None:
+    assert sagent.is_sagent(json.dumps({"kind": "message", "descriptor": "x"}) + "\n")
+    assert not sagent.is_sagent(json.dumps({"kind": "message"}) + "\n")
+    assert not sagent.is_sagent(json.dumps({"kind": "other", "role": "user"}) + "\n")
+
+
+def test_a_summary_led_by_a_peer_message_also_opens_a_window() -> None:
+    records = _read(
+        _splice("summary", _entry("agent_send", source="ada", text="Summary: x.")),
+    )
+
+    assert [type(record).__name__ for record in records] == [
+        "ContextCompaction",
+        "ContextClear",
+    ]
+
+
+def test_a_shell_result_whose_call_named_no_command_states_none() -> None:
+    records = _read(
+        _history("assistant", text="", tool_calls=[{"id": "b", "name": "Bash"}]),
+        _history("tool_result", call_id="b", content="out"),
+    )
+
+    [shell] = _only(records, ShellCommandResult)
+    assert shell.command is None
+
+
+def test_a_malformed_record_is_kept_as_an_unknown_kind() -> None:
+    [kept] = _read({"kind": "history", "type": "user", "text": 3})
+
+    assert isinstance(kept, UncategorizedRecord)
+    assert kept.kind == "unknown"
 
 
 # A result is then typed by the call it answers when its wrong field is read.

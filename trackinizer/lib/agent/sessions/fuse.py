@@ -193,11 +193,8 @@ def chain(
 
     """
     found = list(parts)
-    by_id: dict[str, Sequence[SessionRecord]] = {}
-    for part in found:
-        own = _declared(part).get("id")
-        if own is not None:
-            by_id[own] = part
+    # Every thread id a part declares, which a fork names to continue it.
+    ids = {own for part in found if (own := _declared(part).get("id")) is not None}
     # A LIST per parent: a thread may be resumed more than once, and keeping
     # one successor apiece dropped every earlier fork -- 16 of 392 rollouts on
     # one captured day, which rebuilt 84 MB short and reported no error.
@@ -205,7 +202,7 @@ def chain(
     roots: list[Sequence[SessionRecord]] = []
     for part in found:
         parent = _declared(part).get(forked_from)
-        if parent in by_id:
+        if parent in ids:
             successors.setdefault(parent, []).append(part)
         else:
             roots.append(part)
@@ -285,7 +282,7 @@ def _until_seam(
         if isinstance(record, ContextClear) and seam in record.extra:
             # Kept, so the loop above can tell "a seam followed" from "the
             # stream ended" -- one more part exists in the first case only.
-            pending.append(record)
+            pending.append(record)  # pragma: no mutate -- only its presence is read.
             return
         yield _unnamed(record, seam=seam) if root else record
 

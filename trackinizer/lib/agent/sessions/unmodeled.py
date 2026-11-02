@@ -79,8 +79,7 @@ def same_json_value(value: object, member: object) -> bool:
         left_items = cast(Sequence[object], value)
         right_items = member
         return len(left_items) == len(right_items) and all(
-            same_json_value(left, right)
-            for left, right in zip(left_items, right_items, strict=True)
+            map(same_json_value, left_items, right_items),
         )
     return value == member
 

@@ -1738,8 +1738,7 @@ def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
         prompt="p",
         tokens=3,
     )
-    payload = claude._write_tool_payload(report, {}, {})
-    assert isinstance(payload, dict)
+    payload = from_plain(claude._write_tool_payload(report, {}, {}), dict[str, object])
     assert list(payload) == ["status", "prompt", "agentId", "content", "totalTokens"]
 
 

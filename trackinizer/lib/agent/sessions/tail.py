@@ -52,9 +52,6 @@ _WANTS_A_LINE: Final = _Signal()
 _ENDED: Final = _Signal()
 """The reader's generator returned: the stream is over and nothing follows."""
 
-_NO_MORE_LINES: Final = _Signal()
-"""There will be no further lines, so the reader may finish."""
-
 
 class Tail[R]:
     """One file's reader, fed a line at a time.
@@ -69,7 +66,8 @@ class Tail[R]:
         self._normalize = normalize
         self._whole_file = whole_file
         self._encoding: dict[str, object] = {}
-        self._lines: queue.SimpleQueue[str | _Signal] = queue.SimpleQueue()
+        # Each pushed line, then ``""`` -- end of stream, as ``readline`` says it.
+        self._lines: queue.SimpleQueue[str] = queue.SimpleQueue()
         self._produced: queue.SimpleQueue[R | _Signal] = queue.SimpleQueue()
         self._reader: threading.Thread | None = None
         self._ended = False
@@ -124,7 +122,7 @@ class Tail[R]:
         """
         if self._whole_file or self._reader is None or self._ended:
             return []
-        self._lines.put(_NO_MORE_LINES)
+        self._lines.put("")  # pragma: no mutate -- ``__next__`` ends on any false line.
         return self._collect()
 
     @property
@@ -167,7 +165,7 @@ class Tail[R]:
 
     def _read(
         self,
-        lines: queue.SimpleQueue[str | _Signal],
+        lines: queue.SimpleQueue[str],
         produced: queue.SimpleQueue[R | _Signal],
     ) -> None:
         """Run the adapter's generator using only this reader's queues."""
@@ -231,13 +229,13 @@ class _Pulled[R](StringIO):
 
     def __init__(
         self,
-        lines: queue.SimpleQueue[str | _Signal],
+        lines: queue.SimpleQueue[str],
         produced: queue.SimpleQueue[R | _Signal],
     ) -> None:
         super().__init__()
         self._lines = lines
         self._produced = produced
-        self._asked = False
+        self._asked = False  # pragma: no mutate -- read by truth; None is false.
 
     @override
     def __next__(self) -> str:
@@ -259,8 +257,7 @@ class _Pulled[R](StringIO):
             # end the caller's first collect before its own line was read.
             self._produced.put(_WANTS_A_LINE)
         self._asked = True
-        line = self._lines.get()
-        return "" if isinstance(line, _Signal) else line
+        return self._lines.get()
 
     @override
     def read(self, size: int | None = -1, /) -> str:

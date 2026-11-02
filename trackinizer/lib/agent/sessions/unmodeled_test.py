@@ -241,6 +241,72 @@ class TestSameJsonValue:
         assert not same_json_value([1, 2], [1, 3])
         assert not same_json_value("ab", ["a", "b"])
 
+    def test_a_mapping_never_equals_a_sequence(self) -> None:
+        assert not same_json_value({}, [])
+        assert not same_json_value([], {})
+
+
+class TestEnvelopeFormat:
+    def test_the_envelope_states_each_field_and_only_respellable_raw_numbers(
+        self,
+    ) -> None:
+        """The envelope is stored on disk, so its exact shape is a format."""
+        source = {"n": None, "f": 1.0, "i": 2, "b": True, "s": "x", "extra": 3}
+        fields = {
+            key: read_field_keeping_invalid(source, key, target)
+            for key, target in {
+                "n": float,
+                "f": float,
+                "i": int,
+                "b": bool,
+                "s": str,
+                "gone": str,
+            }.items()
+        }
+
+        assert extract_unmodeled_fields(source, fields=fields) == {
+            "$__custom_json_fields__": {
+                "version": 1,
+                "order": ["n", "f", "i", "b", "s", "extra"],
+                "states": {
+                    "n": "null",
+                    "f": "value",
+                    "i": "value",
+                    "b": "value",
+                    "s": "value",
+                },
+                "raw": {"f": 1.0, "i": 2},
+                "residual": {"extra": 3},
+            },
+        }
+
+    def test_restore_keeps_a_float_spelling_its_integer_value_would_lose(
+        self,
+    ) -> None:
+        source = {"f": 1.0}
+        state = read_field_keeping_invalid(source, "f", float)
+        stored = extract_unmodeled_fields(source, fields={"f": state})
+
+        restored = restore_unmodeled_fields(stored, {"f": 1})
+
+        assert restored == {"f": 1.0}
+        assert type(restored["f"]) is float
+
+    def test_restore_appends_a_residual_key_its_order_does_not_name(self) -> None:
+        stored: dict[str, object] = {
+            "$__custom_json_fields__": {
+                "version": 1,
+                "order": ["a"],
+                "states": dict[str, str](),
+                "residual": {"a": 1, "b": 2},
+            },
+        }
+
+        assert list(restore_unmodeled_fields(stored, {}).items()) == [
+            ("a", 1),
+            ("b", 2),
+        ]
+
 
 class TestUnmodeledEnvelopeVersion:
     @pytest.mark.parametrize("version", [1, 1.0, "1", " 1 "])

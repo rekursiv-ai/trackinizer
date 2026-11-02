@@ -120,17 +120,14 @@ def denormalize(
     else:
         # Derived from WHAT is written, so two conversions of one stream agree
         # and two streams that merely have the same length do not collide.
-        canonical = json.dumps(
-            messages,
-            ensure_ascii=False,  # pragma: no mutate -- json reads it by truth: None is False.
-            sort_keys=True,
+        document["sessionId"] = str(
+            uuid5(seed, json.dumps(messages, ensure_ascii=False, sort_keys=True)),
         )
-        document["sessionId"] = str(uuid5(seed, canonical))
     document["messages"] = messages
     json.dump(
         document,
         stream,
-        ensure_ascii=False,  # pragma: no mutate -- json reads it by truth: None is False.
+        ensure_ascii=False,
         separators=(",", ":") if compact else (", ", ": "),
     )
 
@@ -314,12 +311,9 @@ def _read(text: str) -> list[SessionRecord]:
     # Whether the file separates compactly, decided by re-encoding the parsed
     # document that way and seeing whether it reproduces the input. Both
     # spellings occur, and guessing one rewrites the other's bytes.
-    compact = json.dumps(
-        decoded,
-        ensure_ascii=False,  # pragma: no mutate -- json reads it by truth: None is False.
-        separators=(",", ":"),
+    extra["$compact"] = (
+        json.dumps(decoded, ensure_ascii=False, separators=(",", ":")) == text
     )
-    extra["$compact"] = compact == text
     out[0] = TurnContext(
         encoding=immutable({"newline_terminated": True}),
         extra=immutable(extra),
