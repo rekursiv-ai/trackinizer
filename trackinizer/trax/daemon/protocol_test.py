@@ -20,6 +20,7 @@ import pytest
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.daemon.protocol import (
     PROTOCOL_VERSION,
+    MalformedFrameError,
     ProtocolVersionError,
     Request,
     Response,
@@ -144,13 +145,37 @@ class TestRequestPayload:
             Request.from_json(raw.encode())
 
     def test_rejects_malformed_json(self) -> None:
-        with pytest.raises(ValueError, match="malformed request frame"):
+        with pytest.raises(MalformedFrameError, match="malformed request frame"):
             Request.from_json(b"{not json")
 
     def test_rejects_a_frame_missing_a_field(self) -> None:
         """A truncated frame must raise, not silently default."""
         raw = json.dumps({"protocol_version": PROTOCOL_VERSION, "argv": ["issue"]})
-        with pytest.raises(ValueError, match="missing"):
+        with pytest.raises(MalformedFrameError, match="missing"):
+            Request.from_json(raw.encode())
+
+    def test_rejects_a_frame_that_is_not_an_object(self) -> None:
+        with pytest.raises(
+            MalformedFrameError,
+            match=r"malformed request frame: \[1\]",
+        ):
+            Request.from_json(b"[1]")
+
+    def test_rejects_an_environment_that_is_not_an_object(self) -> None:
+        raw = json.dumps(
+            {
+                "protocol_version": PROTOCOL_VERSION,
+                "argv": [],
+                "cwd": "/",
+                "env": ["USER"],
+                "columns": 0,
+                "source_version": "",
+            },
+        )
+        with pytest.raises(
+            MalformedFrameError,
+            match=r"expected an object, got \['USER'\]",
+        ):
             Request.from_json(raw.encode())
 
 
@@ -161,11 +186,11 @@ class TestResponsePayload:
         That is the worst outcome this protocol can produce: a script
         branching on the status proceeds as though the command worked.
         """
-        with pytest.raises(ValueError, match="missing 'exit_code'"):
+        with pytest.raises(MalformedFrameError, match="missing 'exit_code'"):
             Response.from_json(b'{"stdout":"","stderr":"boom"}')
 
     def test_rejects_a_non_integer_exit_code(self) -> None:
-        with pytest.raises(ValueError, match="expected an integer"):
+        with pytest.raises(MalformedFrameError, match="expected an integer"):
             Response.from_json(b'{"stdout":"","stderr":"","exit_code":"0"}')
 
 
