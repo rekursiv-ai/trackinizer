@@ -1743,6 +1743,38 @@ def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
     assert list(payload) == ["status", "prompt", "agentId", "content", "totalTokens"]
 
 
+def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
+    report = AgentStatusResult(
+        call_id="c",
+        content="done",
+        agent_id="a1",
+        state="completed",
+        prompt="p",
+        tokens=3,
+    )
+    stream = StringIO()
+    claude.denormalize(
+        [
+            TurnContext(encoding={"newline_terminated": False}),
+            ToolCall(call_id="c", name="spawn_agent"),
+            report,
+        ],
+        stream,
+    )
+    lines = [
+        json_loads(line, dict[str, object]) for line in stream.getvalue().splitlines()
+    ]
+    assistant = next(line for line in lines if line.get("type") == "assistant")
+    message = from_plain(assistant.get("message"), dict[str, object])
+    blocks = from_plain(message.get("content"), list[object])
+    call = from_plain(blocks[0], dict[str, object])
+    result = next(line for line in lines if "toolUseResult" in line)
+    payload = from_plain(result.get("toolUseResult"), dict[str, object])
+
+    assert call["name"] == "Agent"
+    assert list(payload) == ["status", "prompt", "agentId", "content", "totalTokens"]
+
+
 def test_claude_writer_special_result_shapes() -> None:
     assert (
         claude._write_result_block(

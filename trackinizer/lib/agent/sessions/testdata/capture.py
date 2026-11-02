@@ -64,8 +64,16 @@ import time
 import zlib
 
 from treekle import json_loads
+from wrapt import lazy_import
 
 from trackinizer.lib.posix.relay import ThreadedRelay
+
+
+# The kinds capture imports this module's session helpers.
+_capture_claude_kinds = lazy_import(
+    "trackinizer.lib.agent.sessions.testdata.kinds.capture",
+    "_capture_claude_kinds",
+)
 
 
 if TYPE_CHECKING:
@@ -227,130 +235,6 @@ def _capture_claude(
         )
         for path in sorted((home / "projects").rglob("*.jsonl"))
     ]
-
-
-# ``--strict-mcp-config`` so the one server is ``echo_mcp.py``: a server from the
-# operator's settings would add tools, and their calls, the script never asked for.
-# ``sys.executable`` is this script's interpreter, the one that has ``mcp``.
-#
-# ``CLAUDE_CODE_DISABLE_BACKGROUND_TASKS``: without it this CLI runs every subagent,
-# and a long shell command, in the background whatever the prompt asks -- so no
-# finished subagent report reaches a tool result, and no tool is running when the
-# interrupt's Escape arrives (both measured, 2.1.309).
-def _capture_claude_kinds(
-    root: Path,
-    out: Path,
-    *,
-    turn_sec: float,
-    timeout_sec: int,
-) -> list[Path]:
-    """Drive the claude-kinds session and return the fixture path written."""
-    # One line per record kind ``_session_script`` does not produce, run under the
-    # default permission mode so a prompt exists to reject. ``allowed``
-    # pre-approves every tool but the rejected one, so no other line stops on a
-    # prompt the script never answers.
-    #   1. the Write, Edit and Read payloads by name (the session script asks
-    #      loosely, and the model answers with the shell), and a grep that finds
-    #      nothing, which claude annotates with a return-code interpretation
-    #   2. an MCP tool call, served by ``echo_mcp.py``
-    #   3. a subagent run in the foreground, which answers with its finished report
-    #   4. a skill invocation, from the workspace skill written below
-    #   5. a rejected tool: ``touch`` is not pre-approved, so it prompts, and
-    #      Escape answers no
-    #   6. an interrupted turn: Escape while ``sleep`` runs.
-    #
-    # No background subagent: its finish reaches the log as a
-    # ``<task-notification>`` user line, not as a tool result, and
-    # ``claude_main.jsonl`` already holds both that and the launch.
-    script = (
-        _Step(
-            line=(
-                "Do these in order: (1) use the Write tool to create note.txt "
-                'containing "beta". (2) use the Edit tool to change beta to gamma. '
-                "(3) use the Read tool to read note.txt. (4) run the shell command "
-                '"grep zzz note.txt".'
-            ),
-        ),
-        _Step(line='Use the probe MCP server\'s echo tool to echo "hi".'),
-        _Step(
-            line=(
-                "Spawn one general-purpose subagent in the foreground, not in the "
-                'background, whose entire job is to reply with the word "sync". '
-                "Report what it said."
-            ),
-        ),
-        _Step(line="Use the probe skill."),
-        _Step(line='Run the shell command "touch rejected.txt".', escape=True),
-        _Step(line='Run the shell command "sleep 60".', escape=True),
-    )
-    allowed = (
-        "Write",
-        "Edit",
-        "Read",
-        "Bash(grep:*)",
-        "Bash(sleep:*)",
-        "mcp__probe__echo",
-        "Agent",
-        "Skill",
-    )
-    home, work = _prepare(root, real_home=Path.home() / ".claude")  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
-    skill = work / ".claude" / "skills" / "probe" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text(
-        "---\nname: probe\ndescription: Replies with a fixed word.\n---\n\n"
-        "Reply with exactly: skill-ran\n",
-        encoding="utf-8",
-    )
-    servers = {
-        "mcpServers": {
-            "probe": {
-                "command": sys.executable,
-                "args": ["-P", str(_CWD / "echo_mcp.py")],
-            },
-        },
-    }
-    _drive(
-        [
-            "claude",
-            "--permission-mode",
-            "default",
-            "--allowedTools",
-            *allowed,
-            "--mcp-config",
-            json.dumps(servers),
-            "--strict-mcp-config",
-        ],
-        script,
-        cwd=work,
-        env={
-            "CLAUDE_CONFIG_DIR": str(home),
-            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-        },
-        turn_sec=turn_sec,
-        timeout_sec=timeout_sec,
-    )
-    out.mkdir(parents=True, exist_ok=True)
-    return [
-        _record_lines(_emit(path, out / "claude_main.jsonl", home=home, work=work))
-        for path in sorted((home / "projects").rglob("*.jsonl"))
-        if path.parent.name != "subagents"
-    ]
-
-
-# The kinds session is captured for its record lines' key orders, so its fixture keeps
-# those alone, and only the small ones: the CLI's request mirrors and its large context
-# attachments are most of the file's bytes and none of its purpose.
-def _record_lines(path: Path) -> Path:
-    """Keep only ``path``'s user, assistant, attachment and system lines of <=4 KiB."""
-    kinds = {"user", "assistant", "attachment", "system"}
-    kept = [
-        line
-        for line in path.read_text(encoding="utf-8").splitlines(keepends=True)
-        if len(line.encode()) <= 4096
-        and json_loads(line, dict[str, object]).get("type") in kinds
-    ]
-    path.write_text("".join(kept), encoding="utf-8")
-    return path
 
 
 # ``model_reasoning_summary=detailed`` is what populates a ``reasoning`` item's

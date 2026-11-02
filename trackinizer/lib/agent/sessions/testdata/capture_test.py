@@ -28,7 +28,6 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _await_marks,
     _await_turn,
     _capture_claude,
-    _capture_claude_kinds,
     _capture_codex,
     _completed_turns,
     _drive,
@@ -46,6 +45,7 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _tiny_png,
     main,
 )
+from trackinizer.lib.agent.sessions.testdata.kinds import capture as kinds_capture
 
 
 if TYPE_CHECKING:
@@ -662,97 +662,6 @@ def test_capture_claude_splits_main_and_sidechain_fixtures(
     ]
 
 
-def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    user = tmp_path / "user"
-    user.mkdir()
-    monkeypatch.setenv("HOME", str(user))
-    calls: list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]] = []
-    skills: list[str] = []
-
-    def fake_drive(
-        argv: list[str],
-        script: Sequence[_Step],
-        *,
-        cwd: Path,
-        env: dict[str, str],
-        turn_sec: float,
-        timeout_sec: int,
-    ) -> None:
-        assert (turn_sec, timeout_sec) == (1.5, 9)
-        calls.append((argv, script, cwd, env))
-        skill = cwd / ".claude" / "skills" / "probe" / "SKILL.md"
-        skills.append(skill.read_text(encoding="utf-8"))
-        project = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / "p"
-        (project / "sid" / "subagents").mkdir(parents=True)
-        (project / "main.jsonl").write_text(
-            '{"type":"mode"}\n'
-            f'{{"type":"user","cwd":"{cwd}"}}\n'
-            # 4097 bytes with its newline, then 4096.
-            f'{{"type":"assistant","text":"{"x" * 4066}"}}\n'
-            f'{{"type":"system","text":"{"y" * 4068}"}}\n',
-            encoding="utf-8",
-        )
-        (project / "sid" / "subagents" / "a.jsonl").write_text("x", encoding="utf-8")
-
-    monkeypatch.setattr(capture, "_drive", fake_drive)
-    out = tmp_path / "out" / "kinds"
-    root = tmp_path / "root"
-
-    written = _capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
-
-    assert written == [out / "claude_main.jsonl"]
-    # Record lines alone, and only the small ones, redacted.
-    assert (out / "claude_main.jsonl").read_text(encoding="utf-8") == (
-        f'{{"type":"user","cwd":"/workspace"}}\n{{"type":"system","text":"{"y" * 4068}"}}\n'
-    )
-    assert skills == [
-        (
-            "---\nname: probe\ndescription: Replies with a fixed word.\n---\n\n"
-            "Reply with exactly: skill-ran\n"
-        ),
-    ]
-    servers = {
-        "mcpServers": {
-            "probe": {
-                "command": sys.executable,
-                "args": ["-P", str(Path(capture.__file__).parent / "echo_mcp.py")],
-            },
-        },
-    }
-    ((argv, script, cwd, env),) = calls
-    # ``touch`` alone is left unapproved: its prompt is the one Escape rejects.
-    assert argv == [
-        "claude",
-        "--permission-mode",
-        "default",
-        "--allowedTools",
-        "Write",
-        "Edit",
-        "Read",
-        "Bash(grep:*)",
-        "Bash(sleep:*)",
-        "mcp__probe__echo",
-        "Agent",
-        "Skill",
-        "--mcp-config",
-        json.dumps(servers),
-        "--strict-mcp-config",
-    ]
-    assert [step.line for step in script if step.escape] == [
-        'Run the shell command "touch rejected.txt".',
-        'Run the shell command "sleep 60".',
-    ]
-    assert len(script) == 6
-    assert cwd == root / "work"
-    assert env == {
-        "CLAUDE_CONFIG_DIR": str(root / "home"),
-        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-    }
-
-
 def test_capture_codex_emits_only_rollout_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -831,7 +740,7 @@ def _fake_captures(
         return fake
 
     monkeypatch.setattr(capture, "_capture_claude", make("claude"))
-    monkeypatch.setattr(capture, "_capture_claude_kinds", make("claude-kinds"))
+    monkeypatch.setattr(kinds_capture, "_capture_claude_kinds", make("claude-kinds"))
     monkeypatch.setattr(capture, "_capture_codex", make("codex"))
     return calls
 
