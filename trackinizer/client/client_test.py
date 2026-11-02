@@ -3532,7 +3532,7 @@ _JOB_GRANT: dict[str, object] = {
         "name": "gpu-node-b",
         "host": "203.0.113.7",
         "port": 22,
-        "user": "gj7",
+        "user": "rai-ext-job-7",
         "host_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPtWmP3ce7m3hrwpxvm9x5s3WnCClGsA5R5nJ9J25ir1",
     },
     "certificate": _JOB_CERT,
@@ -3634,7 +3634,7 @@ class TestJobMethods:
         assert _read_timeout(seen[0]) == 35
         assert pending.grant is None
         assert ready.grant is not None
-        assert ready.grant.node.user == "gj7"
+        assert ready.grant.node.user == "rai-ext-job-7"
 
     def test_read_grant_posts_the_key_and_returns_the_serial(self) -> None:
         seen: list[httpx2.Request] = []

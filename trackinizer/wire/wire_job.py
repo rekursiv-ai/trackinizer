@@ -46,6 +46,7 @@ __all__ = [
     "JOB_SECRETS_PATH",
     "JOB_SECRET_PATH",
     "JOB_START_PATH",
+    "JOB_USER_PREFIX",
     "MAX_ARGV_CHARS",
     "NODE_PATTERN",
     "SECRET_NAMES",
@@ -66,6 +67,7 @@ __all__ = [
     "SubmitBody",
     "UploadReply",
     "ed25519_public_key",
+    "job_user",
     "key_sha256",
 ]
 
@@ -85,6 +87,9 @@ BOX_CREDENTIAL_PREFIX: Final = "trax_gpubox_"
 
 NODE_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,62}$"
 """A node name, as Slurm and the principal spell it."""
+
+JOB_USER_PREFIX: Final = "rai-ext-job-"
+"""Starts the node account a job runs as, ``rai-ext-job-<job id>``."""
 
 SECRET_NAMES: Final = frozenset({"HF_TOKEN", "WANDB_API_KEY"})
 """The per-person secrets a job's proxy may use."""
@@ -158,6 +163,11 @@ def key_sha256(public_key: str) -> str:
     """
     blob = ed25519_public_key(public_key).split()[1]
     return hashlib.sha256(base64.b64decode(blob)).hexdigest()
+
+
+def job_user(job_id: int) -> str:
+    """Return the node account job ``job_id`` runs as, ``rai-ext-job-<job_id>``."""
+    return f"{JOB_USER_PREFIX}{job_id}"
 
 
 type PublicKey = Annotated[str, AfterValidator(ed25519_public_key)]
@@ -235,7 +245,10 @@ class NodeAddress(BaseModel):
     name: NodeName
     host: str = Field(min_length=1, max_length=253)
     port: int = Field(ge=1, le=65_535)
-    user: Annotated[str, StringConstraints(pattern=r"^gj[0-9]{1,12}$")]
+    user: Annotated[
+        str,
+        StringConstraints(pattern=rf"^{JOB_USER_PREFIX}[0-9]{{1,12}}$"),
+    ]
     host_key: str = Field(pattern=r"^ssh-ed25519 [A-Za-z0-9+/=]+$")
     """The node's host key; the client pins it under the node's name."""
 

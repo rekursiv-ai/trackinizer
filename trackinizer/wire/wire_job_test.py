@@ -21,6 +21,7 @@ from trackinizer.wire.wire_job import (
     ReadGrantBody,
     SubmitBody,
     ed25519_public_key,
+    job_user,
     key_sha256,
 )
 
@@ -52,7 +53,7 @@ def _node(**fields: object) -> NodeAddress:
             "name": "gpu-node-b",
             "host": "203.0.113.7",
             "port": 22,
-            "user": "gj7",
+            "user": "rai-ext-job-7",
             "host_key": _HOST_KEY,
             **fields,
         },
@@ -184,8 +185,10 @@ def test_a_node_name_outside_the_pattern_is_refused(name: str) -> None:
     "fields",
     [
         {"user": "root"},
-        {"user": "gj"},
-        {"user": "gj1234567890123"},
+        {"user": "rai-ext-job-"},
+        {"user": "rai-ext-job-1234567890123"},
+        {"user": "gj7"},
+        {"user": "rai-ext-owner-7"},
         {"port": 0},
         {"port": 65_536},
         {"host": ""},
@@ -195,6 +198,12 @@ def test_a_node_name_outside_the_pattern_is_refused(name: str) -> None:
 def test_a_node_address_refuses_a_bad_field(fields: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):
         _node(**fields)
+
+
+@pytest.mark.parametrize("job_id", [1, 7, 999_999_999_999])
+def test_a_jobs_node_user_is_one_a_node_address_accepts(job_id: int) -> None:
+    assert job_user(job_id) == f"rai-ext-job-{job_id}"
+    assert _node(user=job_user(job_id)).user == job_user(job_id)
 
 
 def _grant(**fields: object) -> dict[str, object]:
@@ -216,7 +225,7 @@ def test_a_grant_status_carries_a_grant_only_when_ready() -> None:
     refused = GrantStatus.model_validate({"state": "refused", "reason": "no credit"})
 
     assert ready.grant is not None
-    assert ready.grant.node.user == "gj7"
+    assert ready.grant.node.user == "rai-ext-job-7"
     assert ready.grant.valid_before.year == 2026
     assert (pending.grant, pending.reason) == (None, "")
     assert refused.reason == "no credit"
