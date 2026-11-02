@@ -7,6 +7,10 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
+import re
+
+from treekle import from_plain
+
 import asyncpg
 import pytest
 
@@ -17,11 +21,17 @@ from trackinizer.conftest import (
     new_uuid,
     set_field_row,
 )
+from trackinizer.server.access_policy import (
+    AccessDeniedError,
+    Principal,
+    Resource,
+)
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
-from trackinizer.server.store.session import _LOCK_SESSION_SQL
+from trackinizer.server.store.session import _LOCK_SESSION_SQL, PastRun
+from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
@@ -141,6 +151,258 @@ async def test_session_audiences_keep_nulls_and_omit_unknown_sessions() -> None:
         "AND COALESCE(agentsession_cli_session_id, '') NOT LIKE 'chat:%'",
         [first, second, unknown],
     )
+
+
+@pytest.mark.asyncio
+async def test_past_runs_read_a_machines_runs_for_one_account() -> None:
+    """Each liveness row becomes a run, open or ended, in the order read.
+
+    The first row's times arrive as ISO text, so each is read into a datetime.
+    """
+    ended, open_ = new_uuid(), new_uuid()
+    seen = datetime(2026, 11, 2, 12, tzinfo=UTC)
+    conn = make_conn()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {
+                "session_id": ended,
+                "run": "r1",
+                "cli": "codex",
+                "cwd": "/work",
+                "last_seen": seen.isoformat(),
+                "ended": (seen + timedelta(minutes=1)).isoformat(),
+            },
+            {
+                "session_id": open_,
+                "run": None,
+                "cli": "claude",
+                "cwd": None,
+                "last_seen": seen - timedelta(hours=1),
+                "ended": None,
+            },
+        ],
+    )
+    store, _ = make_store(conn)
+
+    runs = await store.past_runs(machine="box", account="Ada@example.com", limit=2)
+
+    assert runs == [
+        PastRun(
+            session_id=ended,
+            cli="codex",
+            run="r1",
+            cwd="/work",
+            last_seen=seen,
+            ended=seen + timedelta(minutes=1),
+        ),
+        PastRun(
+            session_id=open_,
+            cli="claude",
+            run=None,
+            cwd=None,
+            last_seen=seen - timedelta(hours=1),
+            ended=None,
+        ),
+    ]
+    conn.fetch.assert_awaited_once_with(
+        "SELECT liveness.session_id, liveness.run, liveness.cli, liveness.cwd, "
+        "liveness.last_seen, inquiries.agentsession_ended AS ended "
+        "FROM session_liveness AS liveness "
+        "JOIN inquiries ON inquiries.id = liveness.session_id "
+        "WHERE liveness.machine = $1 AND liveness.cli IS NOT NULL "
+        "AND lower(inquiries.account) = lower($2) "
+        "ORDER BY liveness.last_seen DESC, liveness.session_id LIMIT $3",
+        "box",
+        "Ada@example.com",
+        2,
+    )
+
+
+class TestSetSessionAudience:
+    """``set_session_audience`` moves a session only for one of its owners."""
+
+    _LOCK = (
+        "SELECT id, account, agentsession_audience AS audience, "
+        "agentsession_opened_by_api_key_id AS opener, "
+        "agentsession_cli_session_id AS cli_session_id FROM inquiries "
+        "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[]) "
+        "ORDER BY id FOR UPDATE"
+    )
+
+    @classmethod
+    def _row(
+        cls,
+        *,
+        audience: str = "open",
+        opener: UUID | None = None,
+        cli_session_id: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "id": new_uuid(),
+            "account": "ada@example.com",
+            "audience": audience,
+            "opener": opener,
+            "cli_session_id": cli_session_id,
+        }
+
+    @classmethod
+    def _conn(cls, *rows: dict[str, object]) -> AsyncMock:
+        async def fetch(sql: str, *_args: object) -> list[dict[str, object]]:
+            return list(rows) if sql == cls._LOCK else []
+
+        conn = make_conn()
+        conn.fetch = AsyncMock(side_effect=fetch)
+        conn.fetchval = AsyncMock(return_value="bea@example.com")
+        return conn
+
+    @classmethod
+    async def _hide(
+        cls,
+        store: Store,
+        sessions: list[UUID],
+        *,
+        caller: str | None,
+    ) -> list[UUID]:
+        return await store.set_session_audience(
+            sessions,
+            audience="private",
+            replacing=frozenset({"open"}),
+            refusing=frozenset({"staff"}),
+            api_key_id=None,
+            actor="ada",
+            caller=caller,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_move_is_audited_and_heard_by_the_policy(self) -> None:
+        """Each move updates the field, logs old and new, and tells the policy."""
+        opener, key = new_uuid(), new_uuid()
+        row = {**self._row(), "opener": str(opener)}
+        session = from_plain(row["id"], UUID)
+        conn = self._conn(row)
+        store, _ = make_store(conn)
+        policy = AsyncMock()
+        principal = Principal(email="ada@example.com", role="viewer")
+        with (
+            patch.object(store, "access_policy", new=policy),
+            patch.object(store, "_update_field", new=AsyncMock()) as update,
+            patch.object(store, "_emit_field_change", new=AsyncMock()) as emit,
+        ):
+            moved = await store.set_session_audience(
+                [session],
+                audience="private",
+                replacing=frozenset({"open"}),
+                refusing=frozenset({"staff"}),
+                api_key_id=key,
+                actor="ada",
+                reason="hidden by its owner",
+                principal=principal,
+                caller="ada@example.com",
+            )
+
+        assert moved == [session]
+        conn.fetch.assert_awaited_once_with(self._LOCK, [session])
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1:] == (opener,)
+        policy.prepare_audience_change.assert_awaited_once_with(conn)
+        update.assert_awaited_once_with(
+            conn,
+            session,
+            "agentsession_audience",
+            "private",
+        )
+        emit.assert_awaited_once_with(
+            conn,
+            session,
+            "AgentSession",
+            "agentsession_audience",
+            Snapshot(agentsession_audience="open"),
+            new=Snapshot(agentsession_audience="private"),
+            api_key_id=key,
+            actor="ada",
+            reason="hidden by its owner",
+        )
+        policy.on_audience.assert_awaited_once_with(
+            conn,
+            principal=principal,
+            resource=Resource(
+                kind="session",
+                id=str(session),
+                account="ada@example.com",
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_keyless_session_is_hidden_by_its_account_with_no_reason(
+        self,
+    ) -> None:
+        """No opening key names no second owner; the audit reason defaults empty."""
+        row = self._row()
+        conn = self._conn(row)
+        store, _ = make_store(conn)
+        session = from_plain(row["id"], UUID)
+        with patch.object(store, "_emit_field_change", new=AsyncMock()) as emit:
+            assert await self._hide(store, [session], caller="ADA@example.com") == [
+                session,
+            ]
+
+        conn.fetchval.assert_not_awaited()
+        assert emit.await_args is not None
+        assert emit.await_args.kwargs["reason"] == ""
+
+    @pytest.mark.asyncio
+    async def test_the_user_of_its_opening_key_hides_a_session(self) -> None:
+        row = self._row(opener=new_uuid())
+        store, _ = make_store(self._conn(row))
+        session = from_plain(row["id"], UUID)
+
+        assert await self._hide(store, [session], caller="bea@example.com") == [
+            session,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_stranger_may_not_hide_a_session(self) -> None:
+        row = self._row(opener=new_uuid())
+        store, _ = make_store(self._conn(row))
+        with (
+            patch.object(store, "_update_field", new=AsyncMock()) as update,
+            pytest.raises(AccessDeniedError, match=r"^session_not_owner$"),
+        ):
+            await self._hide(
+                store,
+                [from_plain(row["id"], UUID)],
+                caller="cy@example.com",
+            )
+        update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_session_outside_replacing_stays_and_the_rest_move(self) -> None:
+        held, moving = self._row(audience="private"), self._row()
+        store, _ = make_store(self._conn(held, moving))
+        sessions = [from_plain(row["id"], UUID) for row in (held, moving)]
+
+        assert await self._hide(store, sessions, caller=None) == sessions[1:]
+
+    @pytest.mark.asyncio
+    async def test_a_refusing_audience_refuses_the_whole_call(self) -> None:
+        staff, moving = self._row(audience="staff"), self._row()
+        store, _ = make_store(self._conn(staff, moving))
+        refused = from_plain(staff["id"], UUID)
+        with (
+            patch.object(store, "_update_field", new=AsyncMock()) as update,
+            pytest.raises(
+                ConflictError,
+                match=re.escape(
+                    f"sessions [{refused!r}] are in an audience that refuses 'private'",
+                ),
+            ),
+        ):
+            await self._hide(
+                store,
+                [refused, from_plain(moving["id"], UUID)],
+                caller=None,
+            )
+        update.assert_not_awaited()
 
 
 class TestEndSession:

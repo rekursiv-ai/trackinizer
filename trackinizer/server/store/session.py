@@ -22,7 +22,6 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.access_policy import Principal
-    from trackinizer.server.config import Assistant
     from trackinizer.wire.bodies import SubmitAgentSession
 else:
     from wrapt import lazy_import
@@ -882,7 +881,6 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         reason: str = "",
         principal: Principal | None = None,
         caller: str | None = None,
-        assistant: Assistant | None = None,
     ) -> list[UUID]:
         """Move sessions into ``audience``, all or none, each move audited.
 
@@ -935,31 +933,22 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             for row in rows:
                 held = from_plain(row["audience"], str)
                 if caller is not None:
-                    conversation = wire_science_chat.chat_conversation_id(
-                        from_plain(row.get("cli_session_id"), str, default=None),
-                    )
-                    if conversation is None:
-                        owners = (
-                            from_plain(row["account"], str),
-                            await opener_email(
-                                conn,
-                                api_key_id=from_plain(
-                                    row.get("opener"),
-                                    UUID,
-                                    default=None,
+                    owners = tuple(
+                        filter(
+                            None,
+                            (
+                                from_plain(row["account"], str),
+                                await opener_email(
+                                    conn,
+                                    api_key_id=from_plain(
+                                        row.get("opener"),
+                                        UUID,
+                                        default=None,
+                                    ),
                                 ),
-                            )
-                            or "",
-                        )
-                    else:
-                        owners = (
-                            await science_chats.read_starter(
-                                conn,
-                                assistant=assistant,
-                                conversation_id=conversation,
-                            )
-                            or "",
-                        )
+                            ),
+                        ),
+                    )
                     if not may_hide(caller, owners=owners, audience=held):
                         raise AccessDeniedError("session_not_owner")
                 if held not in replacing:
