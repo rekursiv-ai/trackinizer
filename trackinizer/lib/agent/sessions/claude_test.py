@@ -17,7 +17,12 @@ import pytest
 
 from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.claude import _group
-from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
+from trackinizer.lib.agent.sessions.testdata.mistype import (
+    field_paths,
+    mistyped,
+    unread,
+    without,
+)
 from trackinizer.sagent.session.types import (
     AgentStatusResult,
     AgentToAgentMessage,
@@ -878,13 +883,21 @@ def test_an_explicit_tool_payload_round_trips(payload: str) -> None:
     assert output.getvalue() == native
 
 
+# One field per case: a line has up to 68 fields, each re-reading its window
+# five ways, and one case per line took up to 0.9s.
 @pytest.mark.parametrize(
-    ("name", "index"),
-    [(name, index) for name, lines in FIXTURES.items() for index in range(len(lines))],
+    ("name", "index", "path"),
+    [
+        (name, index, path)
+        for name, lines in FIXTURES.items()
+        for index, line in enumerate(lines)
+        for path in field_paths(json_loads(line, dict[str, object]))
+    ],
 )
 def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
     name: str,
     index: int,
+    path: str,
 ) -> None:
     """A log field of the wrong type reads as absent, as a missing one does.
 
@@ -899,18 +912,19 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
         if at == index or any(f'"{id_}"' in line for id_ in ids)
     ]
     record = json_loads(lines[index], dict[str, object])
+    missing = _swapped(lines, window, index, without(record, path))
+    baseline = (
+        None if path in _KEPT_AS_TEXT else unread(claude.normalize(StringIO(missing)))
+    )
     failed: list[str] = []
-    for path, changed in mistyped(record):
+    for _, changed in mistyped(record, path):
         session = _swapped(lines, window, index, changed)
         records = list(claude.normalize(StringIO(session)))
-        missing = _swapped(lines, window, index, without(record, path))
         try:
             claude.denormalize(records, StringIO())
         except TypeError as error:
             failed.append(f"{path}: {error}")
-        if path not in _KEPT_AS_TEXT and unread(records) > unread(
-            claude.normalize(StringIO(missing)),
-        ):
+        if baseline is not None and unread(records) > baseline:
             failed.append(f"{path}: the line reads worse than without the field")
 
     assert failed == [], "\n".join(failed)

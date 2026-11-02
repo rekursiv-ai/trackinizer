@@ -196,6 +196,12 @@ class Relay:
         block: it runs on the relay's own path, so an escape stops mirroring.
       on_started: Called with the child PID once it has started, before the
         relay begins pumping its output. Must not raise or block.
+      suspend_key: A keystroke that suspends THIS process, as Ctrl+Z does a
+        job run directly, instead of reaching the child: the terminal is
+        handed back cooked, and on ``fg`` taken raw again and resized. For a
+        child that outlives the relay; None forwards every key.
+      on_resume: Called once ``fg`` has given the terminal back, so the child
+        can be asked to repaint over whatever the shell wrote meanwhile.
 
     """
 
@@ -208,6 +214,8 @@ class Relay:
         on_input: Callable[[bytes], None] | None = None,
         on_output: Callable[[bytes], None] | None = None,
         on_started: Callable[[int], None] | None = None,
+        suspend_key: bytes | None = None,
+        on_resume: Callable[[], None] | None = None,
     ) -> None:
         self._terminal = terminal
         self._stdin = stdin
@@ -215,8 +223,12 @@ class Relay:
         self._on_input = on_input
         self._on_output = on_output
         self._on_started = on_started
+        self._suspend_key = suspend_key
+        self._on_resume = on_resume
         self._interrupted: int | None = None
         self._teardown: asyncio.Task[None] | None = None
+        self._old_attr: list[int | list[bytes | int]] | None = None
+        self._out_fd = -1
 
     async def serve(self) -> int:
         """Spawn the child, relay until it exits, and restore the terminal.
@@ -231,7 +243,9 @@ class Relay:
 
         """
         stdin_fd = real_fd(self._stdin if self._stdin is not None else sys.stdin)
-        out_fd = real_fd(self._stdout if self._stdout is not None else sys.stdout)
+        out_fd = self._out_fd = real_fd(
+            self._stdout if self._stdout is not None else sys.stdout,
+        )
         await self._terminal.start()
         # From here the child exists, so every later failure must still reap
         # it: an exception in terminal setup would otherwise leak a live
@@ -244,7 +258,7 @@ class Relay:
                 self._on_started(pid)
             if stdin_fd >= 0:
                 self._terminal.set_winsize(*terminal_size(stdin_fd))
-            old_attr = _enter_raw(stdin_fd)
+            old_attr = self._old_attr = _enter_raw(stdin_fd)
             handlers = self._install_handlers(stdin_fd)
             try:
                 await self._pump(stdin_fd, out_fd)
@@ -336,12 +350,37 @@ class Relay:
                 return
             if not data:
                 return
-            if not await self._terminal.write(data):
+            while self._suspend_key is not None and self._suspend_key in data:
+                typed, _, data = data.partition(self._suspend_key)
+                if typed and not await self._send(typed):
+                    return
+                self._suspend(stdin_fd)
+            if data and not await self._send(data):
                 return
-            # Tee AFTER the write, so an observer only ever sees input the
-            # child actually received.
-            if self._on_input is not None:
-                self._on_input(data)
+
+    async def _send(self, data: bytes) -> bool:
+        """Type ``data`` into the child; False once it takes no more."""
+        if not await self._terminal.write(data):
+            return False
+        # Tee AFTER the write, so an observer only ever sees input the child
+        # actually received.
+        if self._on_input is not None:
+            self._on_input(data)
+        return True
+
+    # A job stopped from its own terminal is stopped with its whole group, as the
+    # line discipline would stop it; signalling only this pid would leave a shell
+    # pipeline's other members running.
+    def _suspend(self, stdin_fd: int) -> None:
+        """Hand the terminal back and stop this job; take it back on ``fg``."""
+        _ = reset_terminal_modes(self._out_fd)
+        _restore(stdin_fd, self._old_attr)
+        os.killpg(os.getpgrp(), signal.SIGTSTP)
+        # Continued: ``fg`` gave the terminal back to this job.
+        self._old_attr = _enter_raw(stdin_fd)
+        self._resize(stdin_fd)
+        if self._on_resume is not None:
+            self._on_resume()
 
 
 class ThreadedRelay:

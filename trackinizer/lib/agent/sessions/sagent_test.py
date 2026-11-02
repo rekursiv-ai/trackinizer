@@ -695,12 +695,9 @@ def test_sagent_is_recognized_by_its_record_kinds() -> None:
     assert not sagent.is_sagent("")
 
 
-def test_a_mistyped_field_aborts_no_read() -> None:
-    """A log field of the wrong type reads as absent, as a missing one does.
-
-    One session states every record family, and each call is answered after it,
-    so a result is typed by the call it answers when its wrong field is read.
-    """
+# A result is then typed by the call it answers when its wrong field is read.
+def _every_family() -> list[dict[str, object]]:
+    """Return one session stating every record family, each call answered after it."""
     calls = [
         {"id": "c1", "name": "Bash", "args": {"command": "ls"}},
         {"id": "c2", "name": "Read", "args": {"file_path": "a.py"}},
@@ -717,7 +714,7 @@ def test_a_mistyped_field_aborts_no_read() -> None:
             "args": {"label": "kid", "prompt": "go", "model_id": "m"},
         },
     ]
-    session: list[dict[str, object]] = [
+    return [
         _meta(
             provider="p",
             tokens={"input_tokens": 3, "output_tokens": 4, "cache_read_tokens": 1},
@@ -792,17 +789,27 @@ def test_a_mistyped_field_aborts_no_read() -> None:
             _entry("agent_send", source="kid", text="kept"),
         ),
     ]
+
+
+_EVERY_FAMILY: Final = _every_family()
+
+
+# One record's variants per test: the whole sweep reads the session hundreds of
+# times, and split by record each part stays quick and runs on its own worker.
+@pytest.mark.parametrize("index", range(len(_EVERY_FAMILY)))
+def test_a_mistyped_field_aborts_no_read(index: int) -> None:
+    """A log field of the wrong type reads as absent, as a missing one does."""
+    lines = [json.dumps(record) for record in _EVERY_FAMILY]
     failed: list[str] = []
-    for index, record in enumerate(session):
-        for path, changed in mistyped(record):
-            try:
-                _read(
-                    *session[:index],
-                    cast(dict[str, object], changed),
-                    *session[index + 1 :],
-                )
-            except TypeError as error:
-                failed.append(f"{index}.{path}: {error}")
+    for path, changed in mistyped(_EVERY_FAMILY[index]):
+        try:
+            _read(
+                *lines[:index],
+                cast(dict[str, object], changed),
+                *lines[index + 1 :],
+            )
+        except TypeError as error:
+            failed.append(f"{path}: {error}")
 
     assert failed == []
 

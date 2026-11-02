@@ -137,6 +137,8 @@ test = [
     "nodejs-wheel-binaries>=24.19.0",
     "hypothesis>=6.170.14",
     "pytest-asyncio>=1.4.1",
+    # Bundles libpq, so pytest-postgresql's autoloaded plugin imports everywhere.
+    "psycopg[binary]>=3.3.6",
     "pytest-postgresql>=9.1.1",
     # The server's tests import its packages; CI syncs groups, never extras.
     "trackinizer[server]",
@@ -284,10 +286,10 @@ markers = [
     "network_together: reaches Together over the network",
     "network_wandb: reaches Weights & Biases over the network",
 ]
-# `-p no:pytest_postgresql`: the plugin imports psycopg, which needs libpq, and an
-# autoloaded plugin that fails to import aborts collection. conftest.py loads it
-# only when psycopg can.
-addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=20 --dist=worksteal -p no:pytest_postgresql -p no:py_pglite"
+# `-p no:py_pglite`: its auto-loaded plugin marks any test whose PATH contains
+# "benchmark"/"performance"/"integration", and the filter above then silently
+# deselected 82 unit tests. PGlite fixtures come from a conftest-registered plugin.
+addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=0 --durations-min=0.500 --dist=worksteal -p no:py_pglite"
 timeout = 60
 # "error" = treat all warnings as errors (same as -Werror).
 # Using filterwarnings instead of addopts so we can add exceptions.

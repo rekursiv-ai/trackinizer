@@ -13,6 +13,7 @@ import threading
 import time
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax import connection
 from trackinizer.trax.cli import parse_and_run
 from trackinizer.trax.client_cache import Target
@@ -24,7 +25,6 @@ from trackinizer.trax.daemon.protocol import (
     Request,
     Response,
     read_frame,
-    socket_address,
     write_frame,
 )
 from trackinizer.trax.daemon.server import _Handler, _is_live, _Server, handle

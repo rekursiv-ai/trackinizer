@@ -1,5 +1,6 @@
 """Copies of a JSON record with one field swapped to another JSON type.
 
+    field_paths # record -> the path of every field, as mistyped names them
     mistyped    # record -> (path, copy) for every field and every other type
     without     # (record, path) -> copy with that field missing
     unread      # records -> how many a reader kept as text or as uncategorized
@@ -25,28 +26,48 @@ if TYPE_CHECKING:
     from trackinizer.sagent.session.types import SessionRecord
 
 
-__all__ = ["mistyped", "unread", "without"]
+__all__ = ["field_paths", "mistyped", "unread", "without"]
 
 
 _SAMPLES: Final = ("x", 7, 1.5, True, ["x"], {"x": 1})
 """One value of each JSON type: string, integer, number, boolean, array, object."""
 
 
-def mistyped(record: object) -> Iterator[tuple[str, object]]:
+def field_paths(record: object) -> list[str]:
+    """Return the path of every field beneath ``record``, as :func:`mistyped` names it.
+
+    A test parametrized over these runs one field's copies per case, so a
+    record with hundreds of fields is not one multi-second test.
+
+    Args:
+      record: A parsed JSON value, usually one log line's object.
+
+    Returns:
+      paths: Dotted keys, depth first; a list member is its index.
+
+    """
+    return [".".join(map(str, path)) for path, _ in _fields(record, ())]
+
+
+def mistyped(record: object, path: str | None = None) -> Iterator[tuple[str, object]]:
     """Yield a copy of ``record`` for every field and every type it is not.
 
     Args:
       record: A parsed JSON value, usually one log line's object.
+      path: Only this field, as :func:`field_paths` names it; ``None`` for all.
 
     Yields:
       path: The swapped field, as dotted keys; a list member is its index.
       copy: ``record`` with that one field replaced; the input is not touched.
 
     """
-    for path, value in _fields(record, ()):
+    for keys, value in _fields(record, ()):
+        dotted = ".".join(map(str, keys))
+        if path is not None and dotted != path:
+            continue
         for sample in _SAMPLES:
             if type(sample) is not type(value):
-                yield ".".join(map(str, path)), _replaced(record, path, sample)
+                yield dotted, _replaced(record, keys, sample)
 
 
 def without(record: object, path: str) -> object:

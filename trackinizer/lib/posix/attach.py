@@ -35,11 +35,22 @@ if TYPE_CHECKING:
     from trackinizer.lib.posix.relay import HasFileno
 
 
-__all__ = ["DETACH_KEY", "RemoteTerminal", "attach", "stop", "submit"]
+__all__ = [
+    "DETACH_KEY",
+    "SUSPEND_KEY",
+    "RemoteTerminal",
+    "attach",
+    "stop",
+    "submit",
+    "viewers",
+]
 
 
 DETACH_KEY: Final = b"\x1c"
 """Ctrl-\\, the detach key of dtach and abduco; raw mode delivers it as a byte."""
+
+SUSPEND_KEY: Final = b"\x1a"
+"""Ctrl+Z: suspends the attach, as dtach and tmux do, leaving the child running."""
 
 
 class RemoteTerminal:
@@ -49,12 +60,21 @@ class RemoteTerminal:
       address: The host's socket.
       detach_key: The keystroke that ends the attach instead of reaching the
         child.
+      read_only: Watch only: no keystroke and no geometry reaches the child,
+        so another terminal driving it is undisturbed.
 
     """
 
-    def __init__(self, address: Path, *, detach_key: bytes = DETACH_KEY) -> None:
+    def __init__(
+        self,
+        address: Path,
+        *,
+        detach_key: bytes = DETACH_KEY,
+        read_only: bool = False,
+    ) -> None:
         self._address = address
         self._detach_key = detach_key
+        self._read_only = read_only
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._exit_status: int | None = None
@@ -80,8 +100,9 @@ class RemoteTerminal:
         self._send(Frame.ATTACH)
 
     def set_winsize(self, rows: int, cols: int) -> None:
-        """Give the hosted child this terminal's geometry."""
-        self._send(Frame.RESIZE, encode_winsize(rows, cols))
+        """Give the hosted child this terminal's geometry, unless only watching."""
+        if not self._read_only:
+            self._send(Frame.RESIZE, encode_winsize(rows, cols))
 
     async def output(self) -> AsyncIterator[bytes]:
         """Yield the child's output until it exits or the connection ends.
@@ -114,7 +135,7 @@ class RemoteTerminal:
 
         """
         typed, detach, _ = data.partition(self._detach_key)
-        if typed:
+        if typed and not self._read_only:
             self._send(Frame.INPUT, typed)
         if detach:
             await self.terminate()
@@ -137,6 +158,10 @@ class RemoteTerminal:
         with contextlib.suppress(OSError):
             await self._writer.wait_closed()
 
+    def redraw(self) -> None:
+        """Ask the hosted child to repaint this terminal's screen."""
+        self._send(Frame.REDRAW)
+
     def _open(self) -> bool:
         """Whether the connection can still carry frames."""
         return self._writer is not None and not self._writer.is_closing()
@@ -153,6 +178,7 @@ async def attach(
     stdin: HasFileno | None = None,
     stdout: HasFileno | None = None,
     detach_key: bytes = DETACH_KEY,
+    read_only: bool = False,
 ) -> int | None:
     """Drive a hosted child from this terminal until it exits or is detached.
 
@@ -162,18 +188,30 @@ async def attach(
       stdout: Where the child's output is mirrored; this process's own when
         None.
       detach_key: The keystroke that ends the attach.
+      read_only: Watch only; see :class:`RemoteTerminal`.
 
     Returns:
-      status: The child's exit status, or None when this terminal detached
-        and left it running.
+      status: The child's exit status; ``128 + signal`` when this process was
+        signalled away, as a job run directly reports; None when this terminal
+        detached and left it running.
 
     Raises:
       OSError: Nothing is listening at ``address``.
 
     """
-    remote = RemoteTerminal(address, detach_key=detach_key)
-    _ = await Relay(remote, stdin=stdin, stdout=stdout).serve()
-    return remote.exit_status
+    remote = RemoteTerminal(address, detach_key=detach_key, read_only=read_only)
+    relayed = await Relay(
+        remote,
+        stdin=stdin,
+        stdout=stdout,
+        suspend_key=SUSPEND_KEY,
+        on_resume=remote.redraw,
+    ).serve()
+    if remote.exit_status is not None:
+        return remote.exit_status
+    # A detach waits on nothing, so the relay reports 0; anything else is the
+    # signal that ended this process.
+    return relayed or None
 
 
 async def submit(address: Path, *, text: str) -> bool:
@@ -201,6 +239,37 @@ async def submit(address: Path, *, text: str) -> bool:
                 return False
     except (asyncio.IncompleteReadError, ConnectionError, ValueError):
         return False
+    finally:
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+
+
+async def viewers(address: Path) -> int | None:
+    """Return how many terminals are attached to a hosted child.
+
+    Args:
+      address: The host's socket.
+
+    Returns:
+      count: The terminals attached, this one-shot client not among them;
+        None when the host went away without answering.
+
+    Raises:
+      OSError: Nothing is listening at ``address``.
+
+    """
+    reader, writer = await asyncio.open_unix_connection(address)
+    try:
+        writer.write(encode_frame(Frame.VIEWERS))
+        while True:
+            kind, payload = await read_frame(reader)
+            if kind is Frame.VIEWERS:
+                return int.from_bytes(payload)
+            if kind is Frame.EXIT:
+                return None
+    except (asyncio.IncompleteReadError, ConnectionError, ValueError):
+        return None
     finally:
         writer.close()
         with contextlib.suppress(OSError):

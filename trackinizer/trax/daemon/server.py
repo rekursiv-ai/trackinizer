@@ -21,6 +21,7 @@ import time
 import traceback
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax.cli import parse_and_run
 from trackinizer.trax.context import (
     CWD,
@@ -37,7 +38,6 @@ from trackinizer.trax.daemon.protocol import (
     Request,
     Response,
     read_frame,
-    socket_address,
     socket_path,
     write_frame,
 )

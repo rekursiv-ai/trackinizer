@@ -6,7 +6,9 @@ pseudo-terminal has no async interface and no notion of "type this line into
 the TUI" (:mod:`trackinizer.lib.posix.terminal`); handing a real terminal to such a
 child, then getting it back intact, is :mod:`trackinizer.lib.posix.relay`; and a
 child's process group, which asyncio neither signals nor stops whole, nor
-keeps through a cancel, is :mod:`trackinizer.lib.posix.child`.
+keeps through a cancel, is :mod:`trackinizer.lib.posix.child`. Starting a process no
+terminal owns, and hearing that it is ready, is :mod:`trackinizer.lib.posix.detached`;
+a Unix socket address short enough to bind is :mod:`trackinizer.lib.posix.sockets`.
 
 Stdlib only, and nothing here imports anything else in this repository.
 """

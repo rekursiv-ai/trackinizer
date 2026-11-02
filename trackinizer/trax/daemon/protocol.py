@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING, Final, Self, cast, override
 import hashlib
 import json
 import os
-import stat
 
+from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.lib.userdirs import config_dir, state_dir
 
 
@@ -40,14 +40,6 @@ _MAX_FRAME_BYTES: Final = 64 * 1024 * 1024
 """Cap on one frame. A listing of every issue runs to a few MB; 64MB leaves
 room while keeping a corrupt or hostile length prefix from sizing a buffer
 that exhausts memory before the read fails."""
-
-_UNIX_SOCKET_PATH_MAX_BYTES: Final = 103
-"""Portable pathname payload for ``sockaddr_un.sun_path``.
-
-Darwin and the BSDs provide 104 bytes including the trailing NUL. Linux is
-slightly larger, but using its limit would leave the same path broken on a
-developer's Mac.
-"""
 
 # The environment a verb reads. Shipped from the caller and bound around the
 # request, so the daemon resolves the INVOKING user's identity and profile
@@ -326,30 +318,6 @@ def socket_path() -> Path:
     return socket_address(logical_path)
 
 
-def socket_address(logical_path: Path) -> Path:
-    """Return a bindable AF_UNIX address for a logical state path.
-
-    Long user state roots exceed ``sockaddr_un.sun_path`` on macOS even though
-    the filesystem accepts them. A stable alias in an owner-only runtime
-    directory points to the logical parent, shortening the kernel address while
-    keeping the socket inode in the state directory selected through
-    :mod:`userdirs`.
-
-    Args:
-      logical_path: Desired socket location in per-user state.
-
-    Returns:
-      path: Direct path when it fits, otherwise a stable short alias.
-
-    Raises:
-      OSError: The temporary root cannot safely hold a short alias.
-
-    """
-    if len(os.fsencode(logical_path)) <= _UNIX_SOCKET_PATH_MAX_BYTES:
-        return logical_path
-    return _aliased_socket_path(logical_path)
-
-
 def package_root() -> Path:
     """Root of the distribution whose behavior the daemon serves.
 
@@ -441,43 +409,6 @@ def source_version(root: Path, *, outside: Sequence[str] = ()) -> str:
         digest.update(repr(record).encode())
         digest.update(contents)
     return digest.hexdigest()
-
-
-def _aliased_socket_path(logical_path: Path) -> Path:
-    """Create a short, secure alias to a long socket parent directory."""
-    logical_parent = logical_path.parent.absolute()
-    logical_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-
-    # Imported only for the exceptional long-path case. Importing tempfile on
-    # every thin-client invocation would consume part of the latency the daemon
-    # exists to remove.
-    import tempfile  # noqa: PLC0415 -- Protocol-only dependencies are loaded on the daemon execution path.
-
-    alias_root = Path(tempfile.gettempdir()) / f"t-{os.getuid():x}"
-    alias_root.mkdir(mode=0o700, exist_ok=True)
-    root_info = alias_root.lstat()
-    if (
-        not stat.S_ISDIR(root_info.st_mode)
-        or root_info.st_uid != os.getuid()
-        or root_info.st_mode & 0o077
-    ):
-        raise PermissionError(f"unsafe traxd socket alias root: {alias_root}")
-
-    alias_name = hashlib.blake2b(os.fsencode(logical_parent), digest_size=8).hexdigest()
-    alias_parent = alias_root / alias_name
-    try:
-        alias_parent.symlink_to(logical_parent, target_is_directory=True)
-    except FileExistsError:
-        if (
-            not alias_parent.is_symlink()
-            or alias_parent.resolve() != logical_parent.resolve()
-        ):
-            raise OSError(f"unsafe traxd socket alias: {alias_parent}") from None
-
-    address = alias_parent / logical_path.name
-    if len(os.fsencode(address)) > _UNIX_SOCKET_PATH_MAX_BYTES:
-        raise OSError(f"temporary directory is too long for AF_UNIX: {address}")
-    return address
 
 
 # A module deleted or locked between its ``stat`` and this read falls back to that stat

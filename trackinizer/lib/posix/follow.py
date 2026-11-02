@@ -493,6 +493,25 @@ class _Observer(Protocol):
         ...
 
 
+class _Event(Protocol):
+    """The fields this module reads from a watchdog ``FileSystemEvent``."""
+
+    @property
+    def is_directory(self) -> bool:
+        """Whether the event is about a directory."""
+        ...
+
+    @property
+    def src_path(self) -> str | bytes:
+        """The path the event happened to."""
+        ...
+
+    @property
+    def dest_path(self) -> str | bytes:
+        """Where a moved path went; empty otherwise."""
+        ...
+
+
 def _fsevents_observer() -> _Observer:
     """Build watchdog's FSEvents observer."""
     try:
@@ -549,21 +568,20 @@ class _FsEventsHandler:
         self._root = root
         self._physical = root.resolve()
 
-    def dispatch(self, event: object) -> None:
+    def dispatch(self, event: _Event) -> None:
         """Watchdog's entry point; forwards to :meth:`on_any_event`."""
         self.on_any_event(event)
 
-    def on_any_event(self, event: object) -> None:
+    def on_any_event(self, event: _Event) -> None:
         """Hand in-root rename endpoints and file changes to the loop.
 
         Args:
-          event: watchdog event object (checked for src_path/dest_path).
+          event: A watchdog event; ``dest_path`` is empty unless it moved.
 
         """
-        if getattr(event, "is_directory", False):
+        if event.is_directory:
             return
-        for attribute in ("src_path", "dest_path"):
-            raw = getattr(event, attribute, "")
+        for raw in (event.src_path, event.dest_path):
             if not raw:
                 continue
             path = Path(os.fsdecode(raw))
@@ -593,7 +611,8 @@ async def _drain_queue(queue: asyncio.Queue[Path]) -> AsyncIterator[set[Path]]:
 def _inotify_fd(*directories: Path) -> tuple[int, dict[int, Path]]:
     """Open one inotify fd watching every directory's subtree."""
     libc = _libc()
-    fd = int(cast(Callable[[int], int], libc.inotify_init1)(os.O_NONBLOCK))  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
+    # `ctypes` returns a C ``int`` result as a Python ``int`` (the default restype).
+    fd = cast(Callable[[int], int], libc.inotify_init1)(os.O_NONBLOCK)
     if fd < 0:
         raise OSError(ctypes.get_errno(), "inotify_init1 failed")
     watches: dict[int, Path] = {}
@@ -646,12 +665,10 @@ def _add_watch(
     watches: dict[int, Path],
 ) -> None:
     """Register one directory; record which watch descriptor names it."""
-    descriptor = int(  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
-        cast(Callable[[int, bytes, int], int], libc.inotify_add_watch)(
-            fd,
-            str(directory).encode(),
-            _WATCH_MASK,
-        ),
+    descriptor = cast(Callable[[int, bytes, int], int], libc.inotify_add_watch)(
+        fd,
+        str(directory).encode(),
+        _WATCH_MASK,
     )
     if descriptor < 0:
         code = ctypes.get_errno()
@@ -889,7 +906,7 @@ class _Cursor:
         # re-reads to tell an append from a replacement. Seeded here because a
         # cursor may START mid-file (``offset=_size(path)``, the skip-history
         # case) without ever having read them itself.
-        self._seen = b""
+        self._seen = b""  # pragma: no mutate -- unread unless the open below fails.
         self._identity: tuple[int, int] | None = None
         try:
             with path.open("rb") as handle:

@@ -8,6 +8,8 @@ from unittest import mock
 
 import asyncio
 import contextlib
+import functools
+import os
 import shutil
 import signal
 import stat
@@ -18,7 +20,9 @@ import time
 
 import pytest
 
+from trackinizer.lib.posix import host as host_module
 from trackinizer.lib.posix.attach import stop, submit
+from trackinizer.lib.posix.detached import await_ready
 from trackinizer.lib.posix.host import (
     Frame,
     Host,
@@ -28,7 +32,9 @@ from trackinizer.lib.posix.host import (
     decode_winsize,
     encode_frame,
     encode_winsize,
+    launch,
     read_frame,
+    serve_command,
 )
 from trackinizer.lib.posix.relay import ThreadedRelay, terminal_size
 from trackinizer.lib.posix.terminal import Terminal
@@ -226,6 +232,54 @@ class TestHost:
                 seen, _ = await _collect(reader, until=b"WINCH")
                 writer.close()
                 return seen
+
+        assert b"WINCH" in asyncio.run(run())
+
+    def test_viewers_counts_attached_viewers_not_the_one_asking(
+        self,
+        short_dir: Path,
+    ) -> None:
+        async def count(address: Path) -> int:
+            reader, writer = await asyncio.open_unix_connection(address)
+            writer.write(encode_frame(Frame.VIEWERS))
+            kind, payload = await read_frame(reader)
+            writer.close()
+            assert kind is Frame.VIEWERS
+            return int.from_bytes(payload)
+
+        async def run() -> list[int]:
+            async with _hosted(_SLEEPER, short_dir) as (spec, _):
+                await _wait_for(lambda: b"ready" in _read(spec.scrollback), 5.0)
+                counts = [await count(spec.address)]
+                reader, writer = await asyncio.open_unix_connection(spec.address)
+                writer.write(encode_frame(Frame.ATTACH))
+                _ = await _collect(reader, until=b"ready")
+                counts.append(await count(spec.address))
+                writer.close()
+                return counts
+
+        assert asyncio.run(run()) == [0, 1]
+
+    def test_redraw_asks_the_child_to_repaint_again(self, short_dir: Path) -> None:
+        """A viewer back from a suspend asks for the screen it missed."""
+        child = (
+            "import signal,time\n"
+            "signal.signal(signal.SIGWINCH, lambda *_: print('WINCH', flush=True))\n"
+            "print('ready', flush=True)\n"
+            "while True:\n"
+            "    time.sleep(1)\n"
+        )
+
+        async def run() -> bytes:
+            async with _hosted(child, short_dir) as (spec, _):
+                await _wait_for(lambda: b"ready" in _read(spec.scrollback), 5.0)
+                reader, writer = await asyncio.open_unix_connection(spec.address)
+                writer.write(encode_frame(Frame.ATTACH))
+                _ = await _collect(reader, until=b"WINCH")
+                writer.write(encode_frame(Frame.REDRAW))
+                again, _ = await _collect(reader, until=b"WINCH")
+                writer.close()
+                return again
 
         assert b"WINCH" in asyncio.run(run())
 
@@ -714,6 +768,113 @@ def test_decode_frame_refuses_a_short_mismatched_or_unknown_record(
 ) -> None:
     with pytest.raises(ValueError, match=r"frame|99"):
         decode_frame(message)
+
+
+class TestALaunchedHost:
+    """A command hosted in a session of its own, outliving whoever launched it."""
+
+    def test_serves_its_command_at_its_size_and_exits_with_its_status(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        read_fd, write_fd = os.pipe()
+        script = (
+            "import os;raise SystemExit(4 if os.get_terminal_size() == (80, 24) else 5)"
+        )
+        argv = [str(tmp_path / "h.sock"), str(write_fd), "24", "80", "--"]
+
+        assert serve_command([*argv, sys.executable, "-c", script]) == 4
+        assert await_ready(read_fd, timeout_sec=1.0) is True
+
+    def test_a_command_it_cannot_run_is_logged_and_fails(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        read_fd, write_fd = os.pipe()
+        argv = [str(tmp_path / "h.sock"), str(write_fd), "24", "80", "--"]
+
+        assert serve_command([*argv, str(tmp_path / "missing")]) == 1
+        assert await_ready(read_fd, timeout_sec=1.0) is False
+        assert "Traceback" in capsys.readouterr().err
+
+    def test_launch_returns_once_it_listens_in_its_own_session(
+        self,
+        short_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # The host imports the code under test, not another checkout's install.
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(sys.path))
+        address = short_dir / "s"
+        command = [sys.executable, "-c", "input()"]
+
+        ready = launch(
+            address,
+            command,
+            log=short_dir / "log",
+            winsize=(24, 80),
+            timeout_sec=30.0,
+        )
+        assert ready is True
+        assert asyncio.run(stop(address)) == 128 + signal.SIGTERM
+
+    def test_launch_of_a_host_that_fails_first_is_false(
+        self,
+        short_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("PYTHONPATH", os.pathsep.join(sys.path))
+        log = short_dir / "log"
+
+        assert (
+            launch(
+                short_dir / "s",
+                ["no-such-command-anywhere"],
+                log=log,
+                winsize=(24, 80),
+                timeout_sec=30.0,
+            )
+            is False
+        )
+        assert "no-such-command-anywhere" in log.read_text()
+
+    def test_launch_of_a_host_silent_past_the_wait_is_none(
+        self,
+        short_dir: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        held: list[int] = []
+        monkeypatch.setattr(
+            host_module,
+            "spawn_detached",
+            functools.partial(_hold, held),
+        )
+        try:
+            ready = launch(
+                short_dir / "s",
+                ["unused"],
+                log=short_dir / "log",
+                winsize=(24, 80),
+                timeout_sec=0.01,
+            )
+        finally:
+            for fd in held:
+                os.close(fd)
+
+        assert ready is None
+
+
+def _hold(
+    held: list[int],
+    argv: Sequence[str],
+    *,
+    log: Path,
+    pass_fds: Sequence[int],
+) -> int:
+    """Stand in for a host that starts and never answers: hold its pipe open."""
+    del argv, log
+    held.extend(os.dup(fd) for fd in pass_fds)
+    return 0
 
 
 if __name__ == "__main__":
