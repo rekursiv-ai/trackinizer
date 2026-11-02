@@ -98,16 +98,16 @@ def parse_udiff(diff: str) -> tuple[Splice, ...]:
             # no terminator (``git diff -U1`` on a file ending ``ctx``), and
             # reading that as the added side moved it one line early on
             # rewrite.
-            prior = lines[index - 1] if index else ""
-            bare.add(
-                "after"
-                if prior.startswith("+")
-                else "before"
-                if prior.startswith("-")
-                else "trail"
-                if removed or added
-                else "lead",
-            )
+            # One that opens the diff describes no line: itself, marked as neither side.
+            prior = lines[index - 1] if index else line
+            if prior.startswith("+"):
+                bare.add("after")
+            elif prior.startswith("-"):
+                bare.add("before")
+            elif removed or added:
+                bare.add("trail")
+            # Context before any change ends no real hunk, so its annotation names
+            # nothing a splice keeps.
             continue
         if line.startswith(("-", "+")):
             if trail:
@@ -119,7 +119,7 @@ def parse_udiff(diff: str) -> tuple[Splice, ...]:
                     lead=lead,
                     removed=removed,
                     added=added,
-                    trail=[],
+                    trail=[],  # pragma: no mutate -- a None trail joins as [] does.
                     start=start,
                     bare=bare,
                 )
@@ -192,7 +192,7 @@ def render_udiff(edits: Sequence[Splice]) -> str:
 # mid-line rebuilds exactly as the provider wrote it. When more diff FOLLOWS that line,
 # the missing terminator is stated the way git does -- an annotation -- because the next
 # line has to start somewhere.
-def _marked(mark: str, text: str, *, terminate: bool = False) -> list[str]:
+def _marked(mark: str, text: str, *, terminate: bool) -> list[str]:
     """Return each line of ``text`` under ``mark``, keeping its termination."""
     lines = _lines(text)
     if not lines:
@@ -245,9 +245,10 @@ def _close(
             trail=trailing.removesuffix("\n")
             if trailing is not None and "trail" in bare
             else trailing,
-            start=start if removed or added else None,
+            # Set by the first changed line, so a run of context alone has none.
+            start=start,
             count=len(removed) if (removed or added) else None,
-            bare=frozenset(bare & {"before", "after", "trail"}),
+            bare=frozenset(bare),
         ),
     )
 

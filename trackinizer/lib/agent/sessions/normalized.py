@@ -63,7 +63,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     json.dump(
         [stored_plain(record) for record in records],
         stream,
-        ensure_ascii=False,  # pragma: no mutate -- json reads it by truth: None is False.
+        ensure_ascii=False,
         separators=(",", ":"),
     )
     stream.write("\n")

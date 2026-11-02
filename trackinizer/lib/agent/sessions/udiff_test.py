@@ -65,6 +65,12 @@ def diffs() -> tuple[tuple[str, str], ...]:
         ("pure-insert", "@@ -1,0 +1,2 @@\n+one\n+two\n"),
         ("pure-delete", "@@ -1,2 +1,0 @@\n-one\n-two\n"),
         ("no-header", "-one\n+two\n"),
+        ("no-header-delete", "-one\n"),
+        ("no-header-trailing-context", "-one\n+two\n ctx\n"),
+        (
+            "delete-then-unterminated-context",
+            "@@ -1,2 +1 @@\n-a\n ctx\n\\ No newline at end of file\n",
+        ),
         # A body whose last line carries no newline. Captured codex patches
         # write this, and a parser splitting on ``\n`` discarded that line --
         # the ``+A`` vanished and the edit replayed as a pure deletion.
@@ -126,6 +132,29 @@ def test_each_run_states_the_lines_it_replaced_not_its_hunk() -> None:
 
     assert [(edit.start, edit.count) for edit in edits] == [(11, 1), (13, 1)]
     assert render_udiff(edits) == diff
+
+
+def test_a_pure_insert_or_delete_counts_the_lines_it_replaced() -> None:
+    assert [edit.count for edit in parse_udiff("@@ -1,2 +1,0 @@\n-one\n-two\n")] == [2]
+    assert [edit.count for edit in parse_udiff("@@ -1,0 +1,2 @@\n+one\n+two\n")] == [0]
+
+
+def test_a_run_closed_by_the_next_hunk_keeps_its_start() -> None:
+    edits = parse_udiff("@@ -1 +1 @@\n-a\n+A\n@@ -5 +5 @@\n-b\n+B\n")
+
+    assert [edit.start for edit in edits] == [1, 5]
+
+
+def test_an_annotation_with_no_line_before_it_marks_no_side() -> None:
+    edits = parse_udiff("\\ No newline at end of file\n-a\n")
+
+    assert [(edit.before, edit.bare) for edit in edits] == [("a\n", frozenset())]
+
+
+def test_an_annotation_on_leading_context_marks_no_side() -> None:
+    edits = parse_udiff("@@ -1 +1 @@\n ctx\n\\ No newline at end of file\n")
+
+    assert [edit.bare for edit in edits] == [frozenset()]
 
 
 def test_a_no_newline_marker_is_metadata_not_context() -> None:

@@ -6,7 +6,17 @@ from typing import cast
 
 import copy
 
-from trackinizer.lib.agent.sessions.testdata.mistype import field_paths, mistyped
+from trackinizer.lib.agent.sessions.testdata.mistype import (
+    field_paths,
+    mistyped,
+    unread,
+    without,
+)
+from trackinizer.sagent.session.types import (
+    IncompleteRecord,
+    UncategorizedRecord,
+    UserMessage,
+)
 
 
 def test_every_field_gets_every_other_json_type() -> None:
@@ -53,10 +63,36 @@ def test_a_path_limits_the_copies_to_that_field() -> None:
     assert found == {("b.c", t) for t in ("str", "float", "bool", "list", "dict")}
 
 
+def test_a_list_member_takes_each_other_type_in_its_own_place() -> None:
+    found = [changed for _, changed in mistyped(["x", "y"], "1")]
+
+    assert found == [["x", 7], ["x", 1.5], ["x", True], ["x", ["x"]], ["x", {"x": 1}]]
+
+
 def test_a_null_field_is_swapped_like_any_other() -> None:
     kinds = {type(_at(changed, "a")).__name__ for _, changed in mistyped({"a": None})}
 
     assert kinds == {"str", "int", "float", "bool", "list", "dict"}
+
+
+def test_without_removes_one_field_and_leaves_the_record_alone() -> None:
+    record = {"a": "s", "b": ["x", {"c": True, "d": 1}]}
+
+    assert without(record, "a") == {"b": ["x", {"c": True, "d": 1}]}
+    assert without(record, "b.0") == {"a": "s", "b": [{"c": True, "d": 1}]}
+    assert without(record, "b.1.c") == {"a": "s", "b": ["x", {"d": 1}]}
+    assert without(["x", "y", "z"], "1") == ["x", "z"]
+    assert record == {"a": "s", "b": ["x", {"c": True, "d": 1}]}
+
+
+def test_unread_counts_the_text_and_the_uncategorized_alone() -> None:
+    records = [
+        IncompleteRecord(text="{"),
+        UncategorizedRecord(kind="k", payload={}),
+        UserMessage(content="hi"),
+    ]
+
+    assert unread(records) == 2
 
 
 def _at(value: object, path: str) -> object:

@@ -38,7 +38,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from contextlib import aclosing, asynccontextmanager, closing, suppress
-from ctypes import util
 from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Final, Protocol, cast
@@ -670,7 +669,7 @@ def _add_watch(
         str(directory).encode(),
         _WATCH_MASK,
     )
-    if descriptor < 0:
+    if descriptor == -1:
         code = ctypes.get_errno()
         if code == errno.ENOENT:
             raise FileNotFoundError(code, "no such directory", str(directory))
@@ -732,7 +731,7 @@ def _read_events(
             _EVENT_HEADER.unpack_from(raw, offset),
         )
         offset += _EVENT_HEADER.size
-        name = raw[offset : offset + length].split(b"\0", 1)[0]
+        name = raw[offset : offset + length].partition(b"\0")[0]
         offset += length
         if mask & _IN_Q_OVERFLOW:
             # Events were discarded and are named by nothing that follows. Fall
@@ -802,8 +801,8 @@ def _adopt(
 
 def _libc() -> ctypes.CDLL:
     """Return libc with inotify bound, raising when it is unavailable."""
-    name = util.find_library("c")
-    libc = ctypes.CDLL(name, use_errno=True)
+    # The process's own symbols, libc's among them.
+    libc = ctypes.CDLL(None, use_errno=True)
     if not hasattr(libc, "inotify_init1"):
         raise NotImplementedError("libc has no inotify")
     libc.inotify_init1.argtypes = [ctypes.c_int]
@@ -973,7 +972,7 @@ class _Cursor:
         # and is spent.
         self.restarted = self._pending_restart
         self._pending_restart = False
-        return complete.decode("utf-8", errors="replace").split("\n")
+        return complete.decode(errors="replace").split("\n")
 
     def _continues(self, handle: IO[bytes]) -> bool:
         """Whether the file still holds the bytes this cursor last read."""

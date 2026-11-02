@@ -288,13 +288,18 @@ def test_a_record_gemini_cannot_express_is_dropped_not_written() -> None:
     -- inventing a message for it would put a turn in the document the model
     never took.
     """
-    records = [UserMessage(content="hi"), Thinking(content="pondering")]
+    records = [
+        UserMessage(content="hi"),
+        Thinking(content="pondering"),
+        UserMessage(content="again"),
+    ]
 
     out = StringIO()
     gemini.denormalize(records, out)
 
     messages = json_loads(out.getvalue(), _Document)["messages"]
-    assert len(messages) == 1
+    # Skipped, not the end: the message after it is still written.
+    assert [message["content"] for message in messages] == ["hi", "again"]
 
 
 def test_only_incomplete_records_are_written_verbatim() -> None:

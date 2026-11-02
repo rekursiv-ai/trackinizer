@@ -15,8 +15,8 @@ import pytest
 from trackinizer.lib.agent.sessions.testdata import capture as session_capture
 from trackinizer.lib.agent.sessions.testdata.kinds import capture
 from trackinizer.lib.agent.sessions.testdata.kinds.capture import (
-    _capture_claude_kinds,
     _record_lines,
+    capture_claude_kinds,
 )
 
 
@@ -157,7 +157,7 @@ def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
     out = tmp_path / "out" / "kinds"
     root = tmp_path / "root"
 
-    written = _capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
+    written = capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
 
     assert written == [out / "claude_main.jsonl"]
     assert (out / "claude_main.jsonl").read_text(encoding="utf-8") == (
@@ -228,7 +228,7 @@ def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
     }
 
     assert (
-        _capture_claude_kinds(
+        capture_claude_kinds(
             tmp_path / "second-root",
             out,
             turn_sec=1.5,

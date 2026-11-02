@@ -151,7 +151,8 @@ class Operation(NamedTuple):
         off; without it a replay would resolve the destination twice.
       command: The file-touching command's offset in the source, heredoc body
         and terminator included.
-      redirect: The output operator a write used (``>``, ``>|``, ``>>``).
+      redirect: The output operator a write used (``>``, ``>|``); only a write's
+        replay re-emits one.
 
     """
 
@@ -239,7 +240,18 @@ def lift_shell_result(
             extra=extra_frozen,
         )
     if content is None:
-        raise ValueError("Expected content is not None.")
+        # A rewrite -- in place, or a tee -- is the one other row that states no
+        # content: the file's new bytes were never printed, so the record names
+        # the file and states no ``edits`` rather than claiming content nobody
+        # captured. The command that did it rides in ``$shell``, which is what a
+        # replay puts back.
+        return FileEditResult(
+            context_id=result.context_id,
+            timestamp=result.timestamp,
+            call_id=result.call_id,
+            path=path,
+            extra=extra_frozen,
+        )
     if kind == "append":
         # The one edit whose new bytes the transcript holds, so it renders as
         # the one-sided diff it is. The file BEFORE the append was never
@@ -276,18 +288,6 @@ def lift_shell_result(
             edits=parse_udiff(content),
             extra=extra_frozen,
         )
-    if kind == "rewrite":
-        # An in-place rewrite or a tee: the file's new bytes were never
-        # printed, so the record names the file and states no ``edits``
-        # rather than claiming content nobody captured. The command that did
-        # it rides in ``$shell``, which is what a replay puts back.
-        return FileEditResult(
-            context_id=result.context_id,
-            timestamp=result.timestamp,
-            call_id=result.call_id,
-            path=path,
-            extra=extra_frozen,
-        )
     return FileWriteResult(
         context_id=result.context_id,
         timestamp=result.timestamp,
@@ -320,12 +320,13 @@ def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
         else None
     )
     command = _stencil_command(command, result)
+    # A field the replay lacks, or one not text, reads as no output.
     stdout = (
         result.content or ""
         if isinstance(result, FileReadResult)
-        else replay.get("stdout", "")
+        else replay.get("stdout")
     )
-    stderr = replay.get("stderr", "")
+    stderr = replay.get("stderr")
     exit_code = replay.get("exit_code")
     return ShellCommandResult(
         context_id=result.context_id,
@@ -417,7 +418,8 @@ def _shell_source(command: tuple[str, ...] | None) -> tuple[str, int | None] | N
     if argv[0] not in shells:
         return (shlex.join(argv), None)
     for index, argument in enumerate(argv[1:], 1):
-        is_command_flag = argument == "-c" or (
+        # ``-c`` alone or bundled (``-lc``); a long option is never it.
+        is_command_flag = (
             argument.startswith("-")
             and not argument.startswith("--")
             and "c" in argument[1:]
@@ -462,7 +464,7 @@ def _operation(script: str) -> Operation | None:
             (
                 part.type
                 for part in tree.parts
-                if part.kind == "redirect" and part.type in {">", ">|", ">>"}
+                if part.kind == "redirect" and part.type in {">", ">|"}
             ),
             None,
         ),
@@ -592,7 +594,8 @@ def _quoted_heredoc(script: str) -> tuple[str, str, int] | None:
 def _heredoc_write(parts: Sequence[_BashNode], *, literal: bool) -> MatchedRow | None:
     """Return the write a ``cat > path << EOF`` performs, when it is static."""
     redirects = [part for part in parts if part.kind == "redirect"]
-    documents = [part for part in redirects if part.type in {"<<", "<<-"}]
+    # ``_quoted_heredoc`` bares a ``<<-`` to ``<<``, and an unquoted one is not literal.
+    documents = [part for part in redirects if part.type == "<<"]
     if len(documents) != 1 or not literal:
         return None
     words = [part for part in parts if part.kind == "word"]
@@ -631,24 +634,11 @@ def _heredoc_write(parts: Sequence[_BashNode], *, literal: bool) -> MatchedRow |
 # Only the leaf is read, so ``/usr/bin/sed`` and ``sed`` are one utility; a path ending
 # in the name but living elsewhere -- ``/opt/tools/cat`` -- is a different program and
 # stays excluded.
+# Each caller compares the name to the utilities its own row knows.
 def _standard_utility(executable: str) -> str | None:
-    """Return the utility an executable names, bare or by absolute path."""
+    """Return the program an executable names, bare or from a standard directory."""
     directory, _, name = executable.rpartition("/")
-    if directory not in {"", "/bin", "/usr/bin", "/usr/local/bin"}:
-        return None
-    utilities = (
-        "cat",
-        "echo",
-        "head",
-        "nl",
-        "patch",
-        "perl",
-        "printf",
-        "sed",
-        "tail",
-        "tee",
-    )
-    return name if name in utilities else None
+    return name if directory in {"", "/bin", "/usr/bin", "/usr/local/bin"} else None
 
 
 # A bare command, or the last stage of a ``cd``-prefixed chain: agents write ``cd repo
@@ -767,7 +757,7 @@ def _tee_operation(
         # Several files, or a flag that changes what tee does to them.
         return None
     path, at = operands[0]
-    return ("rewrite", path, nodes[at].pos, "", ())
+    return ("rewrite", path, nodes[at].pos, None, ())
 
 
 # ``-i`` may carry a backup suffix (``-i.bak``) and may be bundled with other letters
@@ -821,7 +811,7 @@ def _in_place_operation(
         # Several files share one script, so no single path names the edit.
         return None
     path, at = files[0]
-    return ("rewrite", path, nodes[at].pos, "", ())
+    return ("rewrite", path, nodes[at].pos, None, ())
 
 
 # TABLE ROW: ``patch ... F`` in its inline form. Unlike every other rewrite, the change
@@ -862,7 +852,7 @@ def _patch_operation(
     if len(operands) != 1:
         return None
     path, at = operands[0]
-    return ("rewrite", path, nodes[at].pos, "", ())
+    return ("rewrite", path, nodes[at].pos, None, ())
 
 
 # Only ``-ba``: it numbers every line, so the output's line count matches the file's.
@@ -923,7 +913,7 @@ def _line_reader_operation(
 # ``tail -n 5`` are the same count from the end.
 def _line_range(utility: str, count: str) -> tuple[int | None, int | None]:
     """Return the lines a signed ``head``/``tail`` count names."""
-    lines = int(count.lstrip("+-"))
+    lines = abs(int(count))
     if utility == "tail":
         return (max(lines, 1), None) if count.startswith("+") else (None, lines)
     return (1, None) if count.startswith("-") else (1, lines)

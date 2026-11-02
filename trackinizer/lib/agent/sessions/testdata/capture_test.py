@@ -17,7 +17,7 @@ import tempfile
 import threading
 import zlib
 
-from treekle import json_loads
+from treekle import ReadError, json_loads
 
 import pytest
 
@@ -33,6 +33,7 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _drive,
     _emit,
     _filler,
+    _first_of_each_kind,
     _Flags,
     _isolate_environment,
     _log_size,
@@ -45,7 +46,7 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
     _tiny_png,
     main,
 )
-from trackinizer.lib.agent.sessions.testdata.kinds import capture as kinds_capture
+from trackinizer.lib.testing.resources import ascii_locale
 
 
 if TYPE_CHECKING:
@@ -247,22 +248,26 @@ def test_await_turn_gives_up_at_the_deadline_while_the_log_keeps_growing(
 def test_isolate_environment_keeps_only_the_allowlist(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    kept = {
+        "HOME": "/h",
+        "LANG": "en_US.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "LOGNAME": "op",
+        "PATH": "/bin",
+        "SHELL": "/bin/sh",
+        "TERM": "xterm",
+        "TMPDIR": "/t",
+        "USER": "op",
+    }
     monkeypatch.setattr(
         os,
         "environ",
-        {
-            "HOME": "/h",
-            "PATH": "/bin",
-            "TERM": "xterm",
-            "OPENAI_API_KEY": "secret",
-            "PWD": "/x",
-            "GITHUB_TOKEN": "t",
-        },
+        {**kept, "OPENAI_API_KEY": "secret", "PWD": "/x", "GITHUB_TOKEN": "t"},
     )
 
     _isolate_environment()
 
-    assert dict(os.environ) == {"HOME": "/h", "PATH": "/bin", "TERM": "xterm"}
+    assert dict(os.environ) == kept
 
 
 def test_drive_skips_a_cli_that_is_not_installed(
@@ -444,6 +449,69 @@ def test_prepare_copies_only_existing_credentials_and_writes_the_image(
     assert (work / "tiny.png").read_bytes() == _tiny_png()
 
 
+def test_prepare_seeds_claudes_onboarding_for_its_own_workspace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    user = tmp_path / "user"
+    (user / ".claude").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(user))
+    (user / ".claude.json").write_text('{"theme":"dark"}', encoding="utf-8")
+
+    home, work = _prepare(tmp_path / "root", real_home=user / ".claude")
+
+    seeded = json_loads((home / ".claude.json").read_text(encoding="utf-8"))
+    assert seeded == {
+        "theme": "dark",
+        "projects": {
+            str(work): {
+                "hasTrustDialogAccepted": True,
+                "hasCompletedProjectOnboarding": True,
+                "projectOnboardingSeenCount": 1,
+            },
+        },
+    }
+
+
+def test_seed_onboarding_reads_the_state_file_as_utf8_whatever_the_locale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude.json").write_text('{"name":"Zoë"}', encoding="utf-8")
+    home = tmp_path / "cfg"
+    home.mkdir()
+
+    with ascii_locale():
+        _seed_onboarding(home, tmp_path / "w", real_home=tmp_path / ".claude")
+
+    seeded = json_loads((home / ".claude.json").read_text(encoding="utf-8"))
+    assert seeded == {
+        "name": "Zoë",
+        "projects": {
+            str(tmp_path / "w"): {
+                "hasTrustDialogAccepted": True,
+                "hasCompletedProjectOnboarding": True,
+                "projectOnboardingSeenCount": 1,
+            },
+        },
+    }
+
+
+def test_seed_onboarding_refuses_a_state_file_that_is_not_an_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (tmp_path / ".claude.json").write_text("[]", encoding="utf-8")
+
+    home = tmp_path / "cfg"
+    home.mkdir()
+
+    with pytest.raises(ReadError):
+        _seed_onboarding(home, tmp_path / "w", real_home=tmp_path / ".claude")
+
+
 def test_seed_onboarding_keeps_every_key_but_projects_and_trusts_the_workspace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -521,8 +589,10 @@ def test_tiny_png_is_a_valid_two_by_two_png() -> None:
         chunks[tag] = body
         pos += 12 + length
     assert list(chunks) == [b"IHDR", b"IDAT", b"IEND"]
-    assert struct.unpack(">II", chunks[b"IHDR"][:8]) == (2, 2)
+    # 2x2, 8-bit truecolor; deflate, no filter, not interlaced.
+    assert chunks[b"IHDR"] == struct.pack(">IIBBBBB", 2, 2, 8, 2, 0, 0, 0)
     assert len(zlib.decompress(chunks[b"IDAT"])) == 12
+    assert chunks[b"IEND"] == b""
 
 
 def test_emit_redacts_paths_account_ids_and_secrets(
@@ -565,6 +635,7 @@ def test_emit_redacts_paths_account_ids_and_secrets(
         ("AKIA" + "B" * 16, ("deadbeef" * 3)[:20]),
         ("ghp_" + "A" * 20, "ghp_" + "deadbeefdeadbeefdead"),
         ("-----BEGIN RSA PRIVATE KEY-----", "-----" + ("deadbeef" * 4)[:26]),
+        ('API_KEY="' + "x" * 20 + '"', "API_" + ("deadbeef" * 4)[:26]),
     ],
 )
 def test_scrub_secrets_keeps_length_and_issuer_prefix(
@@ -603,19 +674,57 @@ def test_reject_secrets_names_a_credential_that_follows_scrubbed_filler(
     )
 
 
+def _unscrubbed(text: str) -> str:
+    """Return ``text`` as a scrubber that missed every secret would."""
+    return text
+
+
+def test_emit_refuses_a_secret_the_scrubber_missed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A scrubber regression: the backstop must still keep the fixture unwritten.
+    monkeypatch.setattr(capture, "_scrub_secrets", _unscrubbed)
+    source = tmp_path / "rollout.jsonl"
+    source.write_text('{"k":"sk-' + "A" * 30 + '"}\n', encoding="utf-8")
+    target = tmp_path / "out.jsonl"
+
+    with pytest.raises(ValueError, match="credential-shaped") as raised:
+        _emit(source, target, home=tmp_path / "h", work=tmp_path / "w")
+
+    assert str(raised.value) == (
+        f"{source}: credential-shaped text survived redaction "
+        "(sk-AAAAAAAAA...); fixture not written"
+    )
+    assert not target.exists()
+
+
 def test_reject_secrets_accepts_scrubbed_filler(tmp_path: Path) -> None:
     text = _scrub_secrets("key sk-" + "A" * 30)
 
     assert _reject_secrets(text, source=tmp_path / "x.jsonl") is None
 
 
+def _vendor_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> Path:
+    """Make a user home whose ``name`` directory holds every credential file."""
+    user = tmp_path / "user"
+    (user / name).mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(user))
+    for credential in (
+        "auth.json",
+        "config.toml",
+        ".credentials.json",
+        "settings.json",
+    ):
+        (user / name / credential).write_text("{}", encoding="utf-8")
+    return user
+
+
 def test_capture_claude_splits_main_and_sidechain_fixtures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    user = tmp_path / "user"
-    user.mkdir()
-    monkeypatch.setenv("HOME", str(user))
+    user = _vendor_home(tmp_path, monkeypatch, ".claude")
     calls: list[
         tuple[list[str], Sequence[_Step], Path, dict[str, str], float, int]
     ] = []
@@ -630,9 +739,13 @@ def test_capture_claude_splits_main_and_sidechain_fixtures(
         timeout_sec: int,
     ) -> None:
         calls.append((argv, script, cwd, env, turn_sec, timeout_sec))
-        project = Path(env["CLAUDE_CONFIG_DIR"]) / "projects" / "p"
+        home = env["CLAUDE_CONFIG_DIR"]
+        project = Path(home) / "projects" / "p"
         (project / "sid" / "subagents").mkdir(parents=True)
-        (project / "main.jsonl").write_text(f"main {cwd}\n", encoding="utf-8")
+        (project / "main.jsonl").write_text(
+            f"main {cwd} {home} {user} é\n",
+            encoding="utf-8",
+        )
         (project / "sid" / "subagents" / "a.jsonl").write_text(
             "side\n",
             encoding="utf-8",
@@ -643,13 +756,21 @@ def test_capture_claude_splits_main_and_sidechain_fixtures(
     out.mkdir()
     root = tmp_path / "root"
 
-    written = _capture_claude(root, out, turn_sec=1.5, timeout_sec=9)
+    with ascii_locale():
+        written = _capture_claude(root, out, turn_sec=1.5, timeout_sec=9)
 
     assert written == [out / "claude_main.jsonl", out / "claude_sidechain.jsonl"]
     assert (out / "claude_main.jsonl").read_text(
         encoding="utf-8",
-    ) == "main /workspace\n"
+    ) == "main /workspace /config /home/user é\n"
     assert (out / "claude_sidechain.jsonl").read_text(encoding="utf-8") == "side\n"
+    assert sorted(path.name for path in (root / "home").iterdir()) == [
+        ".credentials.json",
+        "auth.json",
+        "config.toml",
+        "projects",
+        "settings.json",
+    ]
     assert calls == [
         (
             ["claude", "--permission-mode", "bypassPermissions"],
@@ -666,11 +787,9 @@ def test_capture_codex_emits_only_rollout_files(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    user = tmp_path / "user"
-    user.mkdir()
-    monkeypatch.setenv("HOME", str(user))
+    _vendor_home(tmp_path, monkeypatch, ".codex")
     argvs: list[list[str]] = []
-    knobs: list[tuple[Sequence[_Step], Path, float, int]] = []
+    knobs: list[tuple[Sequence[_Step], Path, dict[str, str], float, int]] = []
 
     def fake_drive(
         argv: list[str],
@@ -682,23 +801,48 @@ def test_capture_codex_emits_only_rollout_files(
         timeout_sec: int,
     ) -> None:
         argvs.append(argv)
-        knobs.append((script, cwd, turn_sec, timeout_sec))
-        sessions = Path(env["CODEX_HOME"]) / "sessions" / "2026"
+        knobs.append((script, cwd, env, turn_sec, timeout_sec))
+        home = env["CODEX_HOME"]
+        sessions = Path(home) / "sessions" / "2026"
         sessions.mkdir(parents=True)
-        (sessions / "rollout-1.jsonl").write_text("roll\n", encoding="utf-8")
+        (sessions / "rollout-1.jsonl").write_text(
+            f"roll {cwd} {home}\n",
+            encoding="utf-8",
+        )
         (sessions / "other.jsonl").write_text("nope\n", encoding="utf-8")
 
     monkeypatch.setattr(capture, "_drive", fake_drive)
     out = tmp_path / "out"
     out.mkdir()
+    root = tmp_path / "root"
 
-    written = _capture_codex(tmp_path / "root", out, turn_sec=1.0, timeout_sec=2)
+    written = _capture_codex(root, out, turn_sec=1.0, timeout_sec=2)
 
     assert written == [out / "codex_main.jsonl"]
-    assert (out / "codex_main.jsonl").read_text(encoding="utf-8") == "roll\n"
-    assert knobs == [(_session_script(), tmp_path / "root" / "work", 1.0, 2)]
-    assert argvs[0][0] == "codex"
-    assert "model_reasoning_summary=detailed" in argvs[0]
+    assert (out / "codex_main.jsonl").read_text(
+        encoding="utf-8",
+    ) == "roll /workspace /config\n"
+    assert knobs == [
+        (_session_script(), root / "work", {"CODEX_HOME": str(root / "home")}, 1.0, 2),
+    ]
+    assert sorted(path.name for path in (root / "home").iterdir()) == [
+        ".credentials.json",
+        "auth.json",
+        "config.toml",
+        "sessions",
+        "settings.json",
+    ]
+    # Codex 0.153 refuses ``--skip-git-repo-check`` in its TUI, so trust is configured.
+    assert argvs == [
+        [
+            "codex",
+            "-c",
+            f'projects."{tmp_path / "root" / "work"}".trust_level="trusted"',
+            "-c",
+            "model_reasoning_summary=detailed",
+            "--dangerously-bypass-approvals-and-sandbox",
+        ],
+    ]
 
 
 def test_add_arguments_defaults() -> None:
@@ -740,9 +884,151 @@ def _fake_captures(
         return fake
 
     monkeypatch.setattr(capture, "_capture_claude", make("claude"))
-    monkeypatch.setattr(kinds_capture, "_capture_claude_kinds", make("claude-kinds"))
+    # The name ``main`` dispatches through: its lazy proxy binds the target on first
+    # call and keeps it, so patching the kinds module reached only the first test.
+    monkeypatch.setattr(capture, "_capture_claude_kinds", make("claude-kinds"))
     monkeypatch.setattr(capture, "_capture_codex", make("codex"))
+    monkeypatch.setattr(capture, "_capture_codex_kinds", make("codex-kinds"))
     return calls
+
+
+def test_main_codex_kinds_runs_only_the_codex_kinds_session_into_kinds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    calls = _fake_captures(monkeypatch)
+    out = tmp_path / "o"
+
+    assert main(["--cli", "codex-kinds", "--out", str(out)]) == 0
+
+    assert calls == [("codex-kinds", out / "scratch" / "codex-kinds", 180.0, 300)]
+    assert Path.cwd() == tmp_path
+    assert capsys.readouterr().out.splitlines() == [
+        f"{out / 'kinds' / 'codex-kinds.jsonl'} (3 bytes)",
+    ]
+
+
+def test_capture_codex_kinds_drives_the_session_then_forks_it(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _vendor_home(tmp_path, monkeypatch, ".codex")
+    calls: list[
+        tuple[list[str], Sequence[_Step], Path, dict[str, str], float, int]
+    ] = []
+
+    def fake_drive(
+        argv: list[str],
+        script: Sequence[_Step],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        turn_sec: float,
+        timeout_sec: int,
+    ) -> None:
+        calls.append((argv, script, cwd, env, turn_sec, timeout_sec))
+        home = env["CODEX_HOME"]
+        sessions = Path(home) / "sessions" / "2026"
+        sessions.mkdir(parents=True, exist_ok=True)
+        forked = argv[1] == "fork"
+        meta = '{"forked_from_id":"p"}' if forked else "{}"
+        name = "rollout-2.jsonl" if forked else "rollout-1.jsonl"
+        (sessions / name).write_text(
+            f'{{"type":"session_meta","payload":{meta}}}\n'
+            f'{{"type":"event_msg","payload":{{"type":"a","cwd":"{cwd}"}}}}\n'
+            '{"type":"event_msg","payload":{"type":"a"}}\n'
+            '{"type":"event_msg","payload":{"type":"b"}}\n'
+            '{"type":"compacted","payload":{"message":""}}\n'
+            '{"type":"compacted","payload":{"message":"again"}}\n'
+            '{"type":"bare"}\n'
+            '{"type":"event_msg","payload":{"type":"b","item":{"type":"x"}}}\n'
+            '{"type":"event_msg","payload":{"type":"b","item":{"type":"x","n":2}}}\n'
+            # A later line may name the key; only the first line says a fork.
+            '{"type":"event_msg","payload":'
+            f'{{"type":"c","text":"forked_from_id é {home}"}}}}\n'
+            '{"type":"event_msg","payload":{"type":"d"}}\n',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(capture, "_drive", fake_drive)
+    out = tmp_path / "out" / "kinds"
+    root = tmp_path / "root"
+
+    with ascii_locale():
+        written = capture._capture_codex_kinds(root, out, turn_sec=1.5, timeout_sec=9)
+        # Into a directory that already exists, as every capture after the first.
+        again = capture._capture_codex_kinds(
+            tmp_path / "again",
+            out,
+            turn_sec=1.5,
+            timeout_sec=9,
+        )
+
+    assert written == again == [out / "codex_main.jsonl", out / "codex_fork.jsonl"]
+    # The first line of each kind alone, redacted.
+    assert (out / "codex_fork.jsonl").read_text(encoding="utf-8") == (
+        '{"type":"session_meta","payload":{"forked_from_id":"p"}}\n'
+        '{"type":"event_msg","payload":{"type":"a","cwd":"/workspace"}}\n'
+        '{"type":"event_msg","payload":{"type":"b"}}\n'
+        '{"type":"compacted","payload":{"message":""}}\n'
+        '{"type":"bare"}\n'
+        '{"type":"event_msg","payload":{"type":"b","item":{"type":"x"}}}\n'
+        '{"type":"event_msg","payload":'
+        '{"type":"c","text":"forked_from_id é /config"}}\n'
+        '{"type":"event_msg","payload":{"type":"d"}}\n'
+    )
+    assert sorted(path.name for path in (root / "home").iterdir()) == [
+        ".credentials.json",
+        "auth.json",
+        "config.toml",
+        "sessions",
+        "settings.json",
+    ]
+    flags = [
+        "-c",
+        f'projects."{root / "work"}".trust_level="trusted"',
+        "-c",
+        "model_reasoning_summary=detailed",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "-c",
+        'web_search="live"',
+    ]
+    env = {"CODEX_HOME": str(root / "home")}
+    # The script is the capture's spec: each line drives a different live session.
+    session = (
+        _Step(
+            line=(
+                "Use your update_plan tool to record a two-step plan, then mark both "
+                "steps completed."
+            ),
+        ),
+        _Step(
+            line=(
+                "Search the web for the current stable Python version and state it "
+                "in one line."
+            ),
+        ),
+        _Step(
+            line=(
+                'Use apply_patch to create note.txt containing "beta", then '
+                "apply_patch again to change beta to gamma."
+            ),
+        ),
+        _Step(line="/compact"),
+    )
+    assert calls[:2] == [
+        (["codex", *flags], session, root / "work", env, 1.5, 9),
+        (
+            ["codex", "fork", "--last", *flags],
+            (_Step(line="Say exactly: forked"),),
+            root / "work",
+            env,
+            1.5,
+            9,
+        ),
+    ]
 
 
 def test_main_claude_kinds_runs_only_the_kinds_session_into_kinds(
@@ -819,7 +1105,7 @@ def test_main_fails_when_nothing_was_captured(
     assert [name for name, *_ in calls] == ["codex"]
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert "no session files captured" in captured.err
+    assert captured.err == "no session files captured\n"
 
 
 def test_main_help_describes_the_capture(
@@ -829,7 +1115,86 @@ def test_main_help_describes_the_capture(
         main(["--help"])
 
     assert exit_info.value.code == 0
-    assert "Capture hermetic agent-CLI sessions" in capsys.readouterr().out
+    out = " ".join(capsys.readouterr().out.split())
+    # The docstring after its shell preamble, whole.
+    description = out.partition("Capture hermetic agent-CLI sessions")[2]
+    assert "Costs real API tokens" in description
+    assert "exec uv" not in out
+    assert "Which CLI to drive (default: both)" in out
+    assert "Cap on how long one scripted turn may run" in out
+
+
+def test_main_help_has_no_description_when_docstrings_are_stripped(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # As ``python -OO`` runs it.
+    monkeypatch.setattr(capture, "__doc__", None)
+
+    with pytest.raises(SystemExit):
+        main(["--help"])
+
+    # Usage, then straight to the arguments.
+    after_usage = capsys.readouterr().out.split("\n\n")[1]
+    assert after_usage.startswith("options:")
+
+
+def test_the_session_script_is_the_capture_spec() -> None:
+    assert _session_script() == (
+        _Step(
+            line=(
+                'Do these in order, briefly: (1) run the shell command "echo alpha". '
+                '(2) run the shell command "exit 7", which fails. (3) create note.txt '
+                'containing "beta", then change beta to gamma. (4) read tiny.png and '
+                "describe it in three words."
+            ),
+        ),
+        _Step(
+            line=(
+                "Now search the web for the current stable Python version, then fetch "
+                "https://example.com and quote its heading."
+            ),
+        ),
+        _Step(
+            line=(
+                "Spawn one general-purpose subagent whose entire job is to reply with "
+                'the word "sub". Report what it said.'
+            ),
+        ),
+        _Step(line="/model"),
+        _Step(line="Say exactly: after-model"),
+        _Step(line="/compact"),
+        _Step(line="Say exactly: after-compact"),
+    )
+
+
+def test_first_of_each_kind_refuses_a_line_that_is_not_an_object(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "rollout.jsonl"
+    path.write_text('{"type":"a"}\n[]\n', encoding="utf-8")
+
+    with pytest.raises(ReadError):
+        _first_of_each_kind(path)
+
+
+def test_main_makes_the_output_directory_and_its_parents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _ = _fake_captures(monkeypatch, empty=True)
+
+    assert main(["--cli", "both", "--out", str(tmp_path / "a" / "b")]) == 1
+
+    assert (tmp_path / "a" / "b").is_dir()
+
+
+def test_main_refuses_a_cli_it_does_not_drive(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--cli", "gemini", "--out", str(tmp_path)])
+
+    assert exit_info.value.code == 2
 
 
 if __name__ == "__main__":
