@@ -52,7 +52,7 @@ def poll_fsevents(monkeypatch: pytest.MonkeyPatch, *, writes: bool) -> None:
 class _Handler(Protocol):
     """The one method an observer calls on the follower's event handler."""
 
-    def dispatch(self, event: object) -> None:
+    def dispatch(self, event: _Change) -> None:
         """Handle one filesystem event."""
         ...
 
@@ -115,9 +115,11 @@ class _PolledFsEvents:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Change:
-    """The one attribute the follower's handler needs from an event."""
+    """A file's change, in the shape of the watchdog event FSEvents delivers."""
 
     src_path: str
+    dest_path: str = ""
+    is_directory: bool = False
 
 
 # The bytes as well, when writes are reported: a same-size rewrite within one timestamp
