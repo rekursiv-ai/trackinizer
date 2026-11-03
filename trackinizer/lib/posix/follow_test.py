@@ -2180,6 +2180,7 @@ class _MacKernel:
 class _MacWatchState:
     darwin: _DarwinFollow
     os: SimpleNamespace
+    select: SimpleNamespace
     kernel: _MacKernel
     loop: asyncio.AbstractEventLoop
     opened: list[tuple[Path, int]]
@@ -2204,23 +2205,29 @@ def mac_watch_state(
     opened: list[tuple[Path, int]] = []
     closed: list[int] = []
     inode: list[tuple[int, int]] = []
-    monkeypatch.setattr(select, "kqueue", lambda: kernel, raising=False)
 
     def kevent(fd: int, **kwargs: int) -> SimpleNamespace:
         return SimpleNamespace(ident=fd, kwargs=kwargs)
 
-    monkeypatch.setattr(select, "kevent", kevent, raising=False)
-    for name, value in {
-        "KQ_FILTER_VNODE": 1,
-        "KQ_EV_ADD": 2,
-        "KQ_EV_CLEAR": 4,
-        "KQ_NOTE_WRITE": 8,
-        "KQ_NOTE_EXTEND": 16,
-        "KQ_NOTE_DELETE": 32,
-        "KQ_NOTE_RENAME": 64,
-        "KQ_NOTE_REVOKE": 128,
-    }.items():
-        monkeypatch.setattr(select, name, value, raising=False)
+    # Fake `select` only as the module under test sees it, like `os` below: on a Mac
+    # asyncio's own selector is kqueue, and closing `loop` calls the real
+    # `select.kevent` with arguments this stand-in does not take.
+    fake_select = SimpleNamespace(
+        **{
+            **vars(select),
+            "kqueue": lambda: kernel,
+            "kevent": kevent,
+            "KQ_FILTER_VNODE": 1,
+            "KQ_EV_ADD": 2,
+            "KQ_EV_CLEAR": 4,
+            "KQ_NOTE_WRITE": 8,
+            "KQ_NOTE_EXTEND": 16,
+            "KQ_NOTE_DELETE": 32,
+            "KQ_NOTE_RENAME": 64,
+            "KQ_NOTE_REVOKE": 128,
+        },
+    )
+    monkeypatch.setattr(darwin, "select", fake_select)
 
     def open_file(path: str | os.PathLike[str], flags: int) -> int:
         opened.append((Path(path), flags))
@@ -2256,6 +2263,7 @@ def mac_watch_state(
     yield _MacWatchState(
         darwin=darwin,
         os=fake_os,
+        select=fake_select,
         kernel=kernel,
         loop=loop,
         opened=opened,
@@ -2317,7 +2325,7 @@ def test_mac_vnode_closes_fd_after_registration_failure(
     bad = mac_watch_state.target.parent / "bad"
     bad.write_text("x")
     with (
-        patch.object(select, "kevent", side_effect=OSError),
+        patch.object(mac_watch_state.select, "kevent", side_effect=OSError),
         pytest.raises(OSError, match=r"^$"),
     ):
         mac_watch_state.vnode.watch(bad)
@@ -2376,6 +2384,8 @@ def test_mac_watch_lines_arms_existing_files(
         mac_watch_state.loop.run_until_complete(run())
 
 
+# The real observer, not the poll hermetic_fsevents puts in its place on a Mac.
+@pytest.mark.usefixtures("real_fsevents")
 def test_fsevents_backend_validates_directories_and_imports_observer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2555,6 +2565,7 @@ def test_libc_declares_the_inotify_signatures() -> None:
     )
 
 
+@pytest.mark.usefixtures("real_fsevents")
 def test_the_fsevents_observer_comes_from_watchdog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
