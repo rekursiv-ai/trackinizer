@@ -1,4 +1,8 @@
-"""POSIX primitives the standard library exposes incompletely.
+"""Unix kernel facilities the standard library exposes incompletely.
+
+POSIX where it suffices, and Linux's or macOS's own where it has nothing:
+inotify and ``/proc`` are Linux's, kqueue and FSEvents macOS's, and the
+no-replace rename is an extension on both.
 
 Kernel facilities with no usable stdlib surface: a regular file cannot be
 waited on and inotify has no module at all (:mod:`trackinizer.lib.posix.follow`); a
@@ -8,7 +12,9 @@ child, then getting it back intact, is :mod:`trackinizer.lib.posix.relay`; and a
 child's process group, which asyncio neither signals nor stops whole, nor
 keeps through a cancel, is :mod:`trackinizer.lib.posix.child`. Starting a process no
 terminal owns, and hearing that it is ready, is :mod:`trackinizer.lib.posix.detached`;
-a Unix socket address short enough to bind is :mod:`trackinizer.lib.posix.sockets`.
+a Unix socket address short enough to bind is :mod:`trackinizer.lib.posix.sockets`;
+a rename that refuses, rather than replaces, an existing destination is
+:mod:`trackinizer.lib.posix.rename`.
 
 Stdlib only, and nothing here imports anything else in this repository.
 """
