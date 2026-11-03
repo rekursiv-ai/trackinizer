@@ -1288,7 +1288,8 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     reason             TEXT NOT NULL DEFAULT '',
     claimed_until      TIMESTAMPTZ,
     box_credential_id  UUID REFERENCES gpu_box_credentials(id),
-    requested_node     TEXT
+    requested_node     TEXT,
+    usd_per_gpu_minute DOUBLE PRECISION
 );
 
 CREATE INDEX IF NOT EXISTS gpu_jobs_email_created

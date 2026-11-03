@@ -225,9 +225,18 @@ class JobView(BaseModel):
     started_at: datetime | None
     ended_at: datetime | None
     gpu_minutes: int | None
+    """GPUs times minutes charged so far; every minute charged once the job ended."""
+
     usd: float | None
+    """What those minutes cost the person."""
+
+    usd_per_gpu_minute: float | None = None
+    """What one GPU minute costs, fixed when the job was submitted, before any
+    markup; ``None`` when the server does not say."""
+
     reason: str
-    """One plain sentence when the job failed or was refused; empty otherwise."""
+    """One plain sentence when the job failed, was refused or was stopped; empty
+    otherwise."""
 
     upload_serial: int | None
     """The serial of the upload certificate, once the job is placed."""
