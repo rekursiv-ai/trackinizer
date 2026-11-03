@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, Self, override, runtime_checkable
+from types import ModuleType
+from typing import TYPE_CHECKING, Protocol, Self, cast, override, runtime_checkable
 from unittest.mock import MagicMock
 
 import sys
@@ -225,7 +226,10 @@ def test_postgres_database_names_its_own_database_and_drops_it(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    janitor = pytest.importorskip("pytest_postgresql.janitor", exc_type=ImportError)
+    janitor = cast(
+        ModuleType,
+        pytest.importorskip("pytest_postgresql.janitor", exc_type=ImportError),
+    )
     made = list[tuple[str, bool]]()
     monkeypatch.setattr(janitor, "DatabaseJanitor", partial(_Janitor, made))
     server = MagicMock(user="u", password="", host="localhost", port=5433)
