@@ -31,6 +31,7 @@ from trackinizer.sagent.session.types import (
     ContextCompaction,
     ContextState,
     EditResult,
+    GrepResult,
     IncompleteRecord,
     ReadResult,
     SessionRecord,
@@ -1647,6 +1648,13 @@ def test_codex_patch_and_usage_helpers_report_exact_values() -> None:
 def test_codex_completed_result_preserves_missing_edit_path() -> None:
     result = EditResult(call_id="c", edits=(Splice(before="a", after="b"),))
     assert codex._write_completed(result, {}) is None
+
+
+def test_a_result_codex_has_no_event_for_is_written_as_what_the_model_read() -> None:
+    assert codex._write_result(GrepResult(call_id="c", content="a.py:1:x")) == (
+        "response_item",
+        {"type": "function_call_output", "call_id": "c", "output": "a.py:1:x"},
+    )
 
 
 def test_codex_writer_handles_empty_and_legacy_shapes() -> None:

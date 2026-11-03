@@ -34,6 +34,7 @@ from trackinizer.sagent.session.types import (
     ContextState,
     EditResult,
     IncompleteRecord,
+    McpResult,
     ReadResult,
     SessionRecord,
     SkillResult,
@@ -348,6 +349,7 @@ def test_a_queued_message_is_its_contexts_prose() -> None:
         ("Agent", '{"agentId":"a1","status":"done"}', AgentSpawnResult),
         ("Skill", '{"commandName":"tdd","success":true}', SkillResult),
         ("ToolSearch", '{"matches":[]}', UncategorizedToolResult),
+        ("mcp__docs__search", '{"hits":[]}', McpResult),
     ],
     ids=[
         "bash",
@@ -359,6 +361,7 @@ def test_a_queued_message_is_its_contexts_prose() -> None:
         "agent",
         "skill",
         "uncategorized",
+        "mcp",
     ],
 )
 def test_a_result_is_typed_by_what_its_tool_did(
@@ -1784,6 +1787,12 @@ def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
 
     assert call["name"] == "Agent"
     assert list(payload) == ["status", "prompt", "agentId", "content", "totalTokens"]
+
+
+def test_an_mcp_result_is_written_as_the_tool_claude_named_it() -> None:
+    assert claude._claude_tool(
+        McpResult(call_id="c", server="docs", tool="search"),
+    ) == ("mcp__docs__search")
 
 
 def test_claude_writer_special_result_shapes() -> None:
