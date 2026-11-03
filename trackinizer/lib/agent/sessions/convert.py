@@ -207,7 +207,11 @@ def convert_file(
     if not parts:
         return FileResult(path=path, error="no session files found")
     streams: list[Sequence[SessionRecord]] = []
-    detected: Format = ""  # pragma: no mutate -- the first part's format replaces it.
+    found_formats: list[Format] = []
+    # Names follow the RECORD STREAMS, not the file list: ``chain`` reorders
+    # codex rollouts by the thread each forked from, so pairing name ``i`` with
+    # the i-th read file labelled every part with another part's file.
+    filed: dict[int, str] = {}
     for part in parts:
         try:
             # The head, not ``_sniff``: ``_sniff`` answers ``""`` for a file it
@@ -223,7 +227,7 @@ def convert_file(
                     if found
                     else "unrecognized session format",
                 )
-            detected = detected or found
+            found_formats.append(found)
             # Streamed, never read whole: ONE non-ASCII character makes
             # CPython hold the entire file as 4 bytes per character, so a
             # 273 MB rollout cost 1.09 GB as a string before parsing began.
@@ -232,9 +236,12 @@ def convert_file(
             # ``newline=""``: translating ``\r\n`` made the reader see bytes
             # the file does not hold, and a CRLF file then verified as exact.
             with part.open(encoding="utf-8", newline="") as handle:
-                streams.append(list(_adapter(found).normalize(handle)))
+                stream = list(_adapter(found).normalize(handle))
         except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
             return FileResult(path=path, error=f"{type(exc).__name__}: {exc}")
+        streams.append(stream)
+        filed[id(stream)] = part.name
+    detected = found_formats[0]
     into = target or detected
     # By the provider's clock first: its records carry stamps to the
     # millisecond, while an mtime is the filesystem's, often coarse enough that
@@ -245,12 +252,6 @@ def convert_file(
     # Then by the thread each part forked from, which codex states -- natively or
     # through the normalized form -- and which leaves every other part dated.
     ordered = chain(sorted(streams, key=_opened))
-    # Names follow the RECORD STREAMS, not the file list: ``chain`` reorders
-    # codex rollouts by the thread each forked from, so pairing name ``i`` with
-    # the i-th read file labelled every part with another part's file.
-    # pragma: no mutate start -- one stream is read per part, so the lengths always agree.
-    filed = {id(stream): part.name for stream, part in zip(streams, parts, strict=True)}
-    # pragma: no mutate end
     records: Sequence[SessionRecord] = (
         list(fuse(ordered, [filed[id(part)] for part in ordered]))
         if len(ordered) > 1
@@ -634,9 +635,8 @@ def _write(
     if not converted:
         return
     if output is not None:
-        # pragma: no mutate start -- \n is the POSIX line separator, so translating it is a no-op here.
-        output.write_text(converted[0].text, encoding="utf-8", newline="")
-        # pragma: no mutate end
+        # Bytes, so no platform's newline translation can touch them.
+        output.write_bytes(converted[0].text.encode())
         return
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -653,9 +653,7 @@ def _write(
                 home = _destination(out_dir, result.path, "")
                 home.mkdir()
             for name, text in result.parts:
-                # pragma: no mutate start -- \n is the POSIX line separator, so translating it is a no-op here.
-                (home / name).write_text(text, encoding="utf-8", newline="")
-                # pragma: no mutate end
+                (home / name).write_bytes(text.encode())
         return
     # No destination and a single input: stdout is the conversion's output.
     if len(converted) == 1 and converted[0].target != converted[0].source:
@@ -832,11 +830,7 @@ def _compared(
         )
         if not same:
             byte_exact = False
-            for dropped in _dropped(part, text, into):
-                # pragma: no mutate start -- a kind is a class name, so it holds no ``:``.
-                kind, _, count = dropped.rpartition(":")
-                # pragma: no mutate end
-                lost[kind] += int(count)
+            lost.update(_dropped(part, text, into))
             if want_diff and not diff and source_path is not None:
                 diff = _diff(source_path.read_bytes().decode(), text)
         written.append((name or (source_path.name if source_path else ""), text))
@@ -1069,18 +1063,18 @@ def _dropped(
     records: Sequence[SessionRecord],
     text: str,
     target: Format,
-) -> tuple[str, ...]:
-    """Return the semantic records the target format could not carry."""
+) -> Counter[str]:
+    """Return how many records of each type the target format could not carry."""
+    lost_by_type: Counter[str] = Counter()
     try:
         rebuilt = list(_adapter(target).normalize(StringIO(text)))
     except (TypeError, ValueError):
-        return ()
+        return lost_by_type
     before = Counter(_semantic_record(record) for record in records)
     after = Counter(_semantic_record(record) for record in rebuilt)
-    lost_by_type: Counter[str] = Counter()
     for (name, _), count in (before - after).items():
         lost_by_type[name] += count
-    return tuple(f"{name}:{count}" for name, count in sorted(lost_by_type.items()))
+    return lost_by_type
 
 
 def _semantic_record(record: object) -> tuple[str, str]:

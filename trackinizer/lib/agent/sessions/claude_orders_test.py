@@ -7,6 +7,8 @@ from importlib.resources import files
 from io import StringIO
 from typing import TYPE_CHECKING
 
+import json
+
 from treekle import ReadError, from_plain, immutable, json_loads
 
 import pytest
@@ -78,6 +80,96 @@ def test_a_native_line_keeps_the_keys_no_table_lists() -> None:
     claude.denormalize(list(claude.normalize(StringIO(native))), out)
 
     assert out.getvalue() == native
+
+
+def _uncaptured_lines(native: str) -> str:
+    """Return ``native`` with lines holding every table key no capture holds."""
+    lines = native.splitlines(keepends=True)
+    user = next(i for i, raw in enumerate(lines) if '"type":"user"' in raw)
+    served = next(i for i, raw in enumerate(lines) if '"effort":"xhigh"' in raw)
+    said = json_loads(lines[user], dict[str, object])
+    answered = json_loads(lines[served], dict[str, object])
+    envelope = ("userType", "entrypoint", "cwd", "sessionId", "version", "gitBranch")
+    # Each key in claude's order, by hand: the values are filler, the order the spec.
+    rewritten_user = {
+        **{key: said[key] for key in ("parentUuid", "isSidechain", "promptId", "type")},
+        "message": said["message"],
+        "isVisibleInTranscriptOnly": False,
+        "isCompactSummary": False,
+        **{key: said[key] for key in ("uuid", "timestamp", "permissionMode")},
+        **{key: said[key] for key in ("origin", "promptSource")},
+        "toolEndsTurn": False,
+        "interruptedByShutdown": False,
+        "userFeedback": "v",
+        **{key: said[key] for key in envelope},
+    }
+    rewritten_served = {
+        **{
+            key: value
+            for key, value in answered.items()
+            if key not in {"effort", "session_id", *envelope}
+        },
+        "isAbortedMidStream": False,
+        "effort": answered["effort"],
+        "error": "v",
+        "errorDetails": "v",
+        "apiErrorStatus": 529,
+        "quotaLimits": "v",
+        "healsDistinctCarrier": False,
+        "session_id": answered["session_id"],
+        **{key: answered[key] for key in envelope},
+    }
+    failed = {
+        "parentUuid": answered["uuid"],
+        "isSidechain": False,
+        "type": "assistant",
+        "uuid": "failed-1",
+        "timestamp": answered["timestamp"],
+        "message": {
+            "id": "m",
+            "model": "<synthetic>",
+            "role": "assistant",
+            "stop_reason": "stop_sequence",
+            "stop_sequence": "",
+            "type": "message",
+            "content": [{"type": "text", "text": "API Error"}],
+        },
+        "requestId": "r",
+        "quotaLimits": "v",
+        "error": "unknown",
+        "errorDetails": "v",
+        "isApiErrorMessage": True,
+        "apiErrorStatus": 529,
+        "healsDistinctCarrier": False,
+        "session_id": answered["session_id"],
+        **{key: answered[key] for key in envelope},
+    }
+
+    def line(record: dict[str, object]) -> str:
+        return json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+    lines[user] = line(rewritten_user)
+    lines[served] = line(rewritten_served)
+    lines.insert(served + 1, line(failed))
+    return "".join(lines)
+
+
+def test_a_line_holding_every_uncaptured_key_is_written_from_the_tables_alone() -> None:
+    """Pins each table as the spec; it is no evidence of the order claude writes."""
+    fixture = files(__package__) / "testdata" / "claude_main.jsonl"
+    native = _uncaptured_lines(fixture.read_text(encoding="utf-8"))
+    records = [_orderless(r) for r in claude.normalize(StringIO(native))]
+
+    out = StringIO()
+    claude.denormalize(records, out)
+
+    pairs = zip(native.splitlines(), out.getvalue().splitlines(), strict=True)
+    assert [
+        (written, read)
+        for read, written in pairs
+        if json_loads(read, dict[str, object]).get("type") != "system"
+        and written != read
+    ] == []
 
 
 def _governed(

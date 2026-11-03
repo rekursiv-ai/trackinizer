@@ -128,7 +128,6 @@ def assistant_order() -> tuple[str, ...]:
         "errorDetails",
         "apiErrorStatus",
         "quotaLimits",
-        "isApiErrorMessage",
         "healsDistinctCarrier",
         "session_id",
     )

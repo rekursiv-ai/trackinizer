@@ -55,7 +55,7 @@ def test_gemini_carries_every_record() -> None:
     out = StringIO()
     gemini.denormalize(_session(), out)
 
-    assert _dropped(_session(), out.getvalue(), "gemini") == ()
+    assert _dropped(_session(), out.getvalue(), "gemini") == {}
 
 
 def test_a_gemini_document_is_sniffed() -> None:
@@ -180,7 +180,7 @@ def test_a_conversion_that_only_renumbers_contexts_is_not_lossy() -> None:
     out = StringIO()
     claude.denormalize(session, out)
 
-    assert _dropped(session, out.getvalue(), "claude") == ()
+    assert _dropped(session, out.getvalue(), "claude") == {}
 
 
 @pytest.mark.parametrize("body", [b"\xff\xfe\x00binary", b"{}"], ids=["binary", "text"])

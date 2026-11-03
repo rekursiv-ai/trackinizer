@@ -268,7 +268,7 @@ def test_a_stamped_session_converts_to_gemini_losslessly() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    assert _dropped(records, out.getvalue(), "gemini") == ()
+    assert _dropped(records, out.getvalue(), "gemini") == {}
 
 
 def test_a_gemini_document_without_stamps_gains_none() -> None:

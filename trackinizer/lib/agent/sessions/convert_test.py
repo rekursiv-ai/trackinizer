@@ -442,14 +442,14 @@ def test_dropped_detects_semantic_changes_but_ignores_provider_metadata() -> Non
     text = output.getvalue()
 
     changed_content = text.replace("Your entire job", "Someone else's job", 1)
-    assert _dropped(records, changed_content, "json") == ("UserMessage:1",)
+    assert _dropped(records, changed_content, "json") == {"UserMessage": 1}
 
     changed_metadata = text.replace(
         "8fd697d5-65a4-4c94-b75c-db9b3559612f",
         "00000000-0000-0000-0000-000000000000",
         1,
     )
-    assert _dropped(records, changed_metadata, "json") == ()
+    assert _dropped(records, changed_metadata, "json") == {}
 
 
 def test_status_and_diff_helpers(tmp_path: Path) -> None:
@@ -478,7 +478,7 @@ def test_status_and_diff_helpers(tmp_path: Path) -> None:
         )
         == "codex -> claude (drops A:1)"
     )
-    assert _dropped([], "{", "json") == ()
+    assert _dropped([], "{", "json") == {}
     assert _diff("a\n", "b\n").startswith("--- original")
 
 
@@ -1392,7 +1392,7 @@ def test_a_diff_is_the_changed_lines_alone_each_cut_at_200() -> None:
 def test_two_records_of_one_kind_lost_count_as_two() -> None:
     records = [UserMessage(content="one"), UserMessage(content="two")]
 
-    assert _dropped(records, "[]", "json") == ("UserMessage:2",)
+    assert _dropped(records, "[]", "json") == {"UserMessage": 2}
 
 
 def test_a_context_index_and_the_extra_are_not_what_a_record_means() -> None:

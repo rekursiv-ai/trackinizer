@@ -105,9 +105,7 @@ def denormalize(
         TurnContext(),
     )
     stored = mutable(declared.extra)
-    compact = bool(
-        stored.pop("$compact", False),  # pragma: no mutate -- bool(None) is False.
-    )
+    compact = bool(stored.pop("$compact", None))
     messages = _write_messages(body)
     document: dict[str, MutablePlainTree] = {}
     # Only keys a gemini document itself carries. Another adapter's metadata

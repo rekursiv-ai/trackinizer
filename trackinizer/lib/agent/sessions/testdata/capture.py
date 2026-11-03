@@ -494,9 +494,7 @@ def _seed_onboarding(home: Path, work: Path, *, real_home: Path) -> None:
             },
         },
     }
-    # pragma: no mutate start -- json.dumps escapes non-ASCII, so the text is ASCII.
-    (home / ".claude.json").write_text(json.dumps(seeded), encoding="utf-8")
-    # pragma: no mutate end
+    (home / ".claude.json").write_bytes(json.dumps(seeded).encode())
 
 
 def _tiny_png() -> bytes:

@@ -102,6 +102,23 @@ def test_unstarted_close_needs_no_reader() -> None:
     assert reader._reader is None
 
 
+def _readlines(stream: TextIO) -> Iterator[str]:
+    """Yield each line ``readline`` answers, the end of the stream included."""
+    while True:
+        line = stream.readline()
+        yield line
+        if not line:
+            return
+
+
+def test_a_closed_stream_reads_as_ended_to_readline_too() -> None:
+    """``readline`` states the end as ``""``, as every text stream does."""
+    reader = tail.Tail(_readlines)
+
+    assert reader.feed("a\n") == ["a\n"]
+    assert reader.close() == [""]
+
+
 def test_a_fresh_reader_has_read_nothing() -> None:
     reader = tail.Tail(_records)
     assert reader.encoding == {}

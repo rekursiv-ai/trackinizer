@@ -122,7 +122,7 @@ class Tail[R]:
         """
         if self._whole_file or self._reader is None or self._ended:
             return []
-        self._lines.put("")  # pragma: no mutate -- ``__next__`` ends on any false line.
+        self._lines.put("")
         return self._collect()
 
     @property
