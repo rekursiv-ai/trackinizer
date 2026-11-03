@@ -10,18 +10,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Literal, TypedDict, cast
+from typing import Final, Literal, TypedDict
 
-import ctypes
 import errno
 import hashlib
-import os
-import platform
 import shutil
 import stat
 import tempfile
 
 from treekle import json_dumps, json_loads
+
+from trackinizer.lib.posix.rename import rename_noreplace
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -589,8 +588,8 @@ def _publish(replacement: Path, *, destination: Path, previous: Path) -> None:
         _restore(previous, destination=destination, failure=error)
         raise error
     try:
-        _rename_noreplace(replacement, target=destination)
-    except (OSError, InstallError) as error:
+        rename_noreplace(replacement, destination)
+    except OSError as error:
         _restore(previous, destination=destination, failure=error)
         raise
 
@@ -609,48 +608,12 @@ def _restore(
             f"previous installation retained at {previous}",
         ) from failure
     try:
-        _rename_noreplace(previous, target=destination)
-    except (OSError, InstallError) as error:
+        rename_noreplace(previous, destination)
+    except OSError as error:
         raise InstallError(
             f"could not publish {destination}: {failure}; restore failed: {error}; "
             f"previous installation retained at {previous}",
         ) from error
-
-
-def _rename_noreplace(path: Path, target: Path) -> Path:
-    """Rename without replacing any entry created concurrently at the target."""
-    system = platform.system()
-    if system == "Windows":
-        return path.rename(target)
-    try:
-        library = ctypes.CDLL(None, use_errno=True)
-        rename = library.renameatx_np if system == "Darwin" else library.renameat2
-    except AttributeError as error:
-        raise InstallError("exclusive directory rename is unavailable") from error
-    rename.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    rename.restype = ctypes.c_int
-    # AT_FDCWD differs by OS; RENAME_EXCL and RENAME_NOREPLACE prevent replacement.
-    directory_fd, flags = (-2, 4) if system == "Darwin" else (-100, 1)
-    result = cast(
-        int,
-        rename(
-            directory_fd,
-            os.fsencode(path),
-            directory_fd,
-            os.fsencode(target),
-            flags,
-        ),
-    )
-    if result != 0:
-        error_number = ctypes.get_errno()
-        raise OSError(error_number, os.strerror(error_number), target)
-    return target
 
 
 def _quarantine(

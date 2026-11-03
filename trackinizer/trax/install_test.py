@@ -326,8 +326,8 @@ def test_publish_failure_rolls_back(
     (bundle / "SKILL.md").write_text("new version")
     monkeypatch.setattr(
         install_module,
-        "_rename_noreplace",
-        _failing_rename(install_module._rename_noreplace, rollback=False),
+        "rename_noreplace",
+        _failing_rename(install_module.rename_noreplace, rollback=False),
     )
     with pytest.raises(InstallError, match="publish failed"):
         install(TARGETS["claude"])
@@ -344,8 +344,8 @@ def test_failed_rollback_retains_recoverable_backup(
     (bundle / "SKILL.md").write_text("new version")
     monkeypatch.setattr(
         install_module,
-        "_rename_noreplace",
-        _failing_rename(install_module._rename_noreplace, rollback=True),
+        "rename_noreplace",
+        _failing_rename(install_module.rename_noreplace, rollback=True),
     )
     with pytest.raises(InstallError, match="previous") as error:
         install(TARGETS["claude"])
@@ -630,14 +630,14 @@ def test_edit_during_publication_retains_recoverable_backup(
 ) -> None:
     destination, _ = install(TARGETS["claude"])
     (bundle / "SKILL.md").write_text("new package version")
-    rename = install_module._rename_noreplace
+    rename = install_module.rename_noreplace
 
-    def edit_previous(path: Path, target: Path) -> Path:
+    def edit_previous(path: Path, target: Path) -> None:
         if path.name == "replacement":
             (path.parent / "previous/SKILL.md").write_text("late local edit")
-        return rename(path, target)
+        rename(path, target)
 
-    monkeypatch.setattr(install_module, "_rename_noreplace", edit_previous)
+    monkeypatch.setattr(install_module, "rename_noreplace", edit_previous)
     with pytest.raises(InstallError, match="retained") as error:
         install(TARGETS["claude"])
     assert (destination / "SKILL.md").read_text() == "new package version"
@@ -654,12 +654,12 @@ def test_restore_preserves_a_destination_that_appeared(
     destination, _ = install(TARGETS["claude"])
     previous = (destination / "SKILL.md").read_bytes()
     (bundle / "SKILL.md").write_text("new package version")
-    rename = install_module._rename_noreplace
+    rename = install_module.rename_noreplace
 
-    def create_conflict(path: Path, target: Path) -> Path:
-        return _create_conflict(path, target=target, rename=rename)
+    def create_conflict(path: Path, target: Path) -> None:
+        _create_conflict(path, target=target, rename=rename)
 
-    monkeypatch.setattr(install_module, "_rename_noreplace", create_conflict)
+    monkeypatch.setattr(install_module, "rename_noreplace", create_conflict)
     with pytest.raises(InstallError, match="retained") as error:
         install(TARGETS["claude"])
     assert destination.is_dir()
@@ -680,10 +680,10 @@ def test_publication_preserves_a_concurrent_empty_directory(
     appeared: list[int] = []
     monkeypatch.setattr(
         install_module,
-        "_rename_noreplace",
+        "rename_noreplace",
         partial(
             _appear_before_rename,
-            rename=install_module._rename_noreplace,
+            rename=install_module.rename_noreplace,
             appeared=appeared,
         ),
     )
@@ -774,15 +774,15 @@ def test_skill_name_must_be_one_path_segment(tmp_path: Path, name: str) -> None:
 
 def _appear_before_rename(
     path: Path,
-    *,
     target: Path,
-    rename: Callable[[Path, Path], Path],
+    *,
+    rename: Callable[[Path, Path], None],
     appeared: list[int],
-) -> Path:
+) -> None:
     if path.name == "replacement":
         target.mkdir()
         appeared.append(target.stat().st_ino)
-    return rename(path, target)
+    rename(path, target)
 
 
 def _copy_failed(*_args: object, **_kwargs: object) -> None:
@@ -793,23 +793,23 @@ def _create_conflict(
     path: Path,
     *,
     target: Path,
-    rename: Callable[[Path, Path], Path],
-) -> Path:
+    rename: Callable[[Path, Path], None],
+) -> None:
     if path.name == "replacement":
         target.mkdir()
         raise OSError("publish failed")
-    return rename(path, target)
+    rename(path, target)
 
 
 def _failing_rename(
-    original: Callable[[Path, Path], Path],
+    original: Callable[[Path, Path], None],
     *,
     rollback: bool,
-) -> Callable[[Path, Path], Path]:
-    def rename(path: Path, target: Path) -> Path:
+) -> Callable[[Path, Path], None]:
+    def rename(path: Path, target: Path) -> None:
         if path.name in ({"replacement", "previous"} if rollback else {"replacement"}):
             raise OSError("publish failed")
-        return original(path, target)
+        original(path, target)
 
     return rename
 
