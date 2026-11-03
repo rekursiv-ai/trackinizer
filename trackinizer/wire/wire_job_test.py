@@ -267,6 +267,7 @@ def test_a_read_grant_body_validates_the_key_like_a_submit() -> None:
 def test_the_read_verbs_are_a_subset_of_the_upload_verbs() -> None:
     assert set(GATE_RO_VERBS) < set(GATE_RW_VERBS)
     assert "upload" not in GATE_RO_VERBS
+    assert not {"shell", "port"} & set(GATE_RO_VERBS)
     assert "completed" in TERMINAL_STATES
     assert "running" not in TERMINAL_STATES
 
