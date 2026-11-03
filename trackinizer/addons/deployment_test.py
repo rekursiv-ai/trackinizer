@@ -114,6 +114,44 @@ class Site(Makes["Deployment"], Deployment.Config):
     """The second addon; ``None`` switches it off."""
 
 
+class MigratingAddon:
+    """A test addon that ships two migrations named for its config."""
+
+    class Config(Fig["MigratingAddon"]):
+        prefix: str = "m"
+        """What its migrations' names start with."""
+
+    def __init__(self, config: Config) -> None:
+        self.prefix = config.prefix
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Migrating",
+            description="Has tables.",
+            migrations=[
+                (f"{self.prefix}.1", "SELECT 1"),
+                (f"{self.prefix}.2", "SELECT 2"),
+            ],
+        )
+
+
+class Migrated(Makes["Deployment"], Deployment.Config):
+    """A deployment of two migrating addons, one optional, and one plain addon."""
+
+    first: MigratingAddon.Config = field(
+        default_factory=partial(MigratingAddon.Config, prefix="a"),
+    )
+    """Its migrations come first."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """Ships none."""
+
+    second: MigratingAddon.Config | None = field(
+        default_factory=partial(MigratingAddon.Config, prefix="b"),
+    )
+    """``None`` switches it off."""
+
+
 class Broken(Makes["Deployment"], Deployment.Config):
     """A deployment with a field that is neither an addon config nor None."""
 
@@ -178,6 +216,20 @@ def test_the_catalog_describes_each_addon_by_placement() -> None:
     assert first.routes == ["/api/addons/first/ping"]
 
 
+def test_migrations_are_every_switched_on_addons_in_field_order() -> None:
+    site = Migrated()
+    off = Migrated()
+    off.second = None
+
+    assert site.make().migrations() == [
+        ("a.1", "SELECT 1"),
+        ("a.2", "SELECT 2"),
+        ("b.1", "SELECT 1"),
+        ("b.2", "SELECT 2"),
+    ]
+    assert off.make().migrations() == [("a.1", "SELECT 1"), ("a.2", "SELECT 2")]
+
+
 def test_the_visual_catalog_is_part_of_the_deployment() -> None:
     cfg = Deployment.Config()
     cfg.visuals = Canvas.Config(
@@ -192,8 +244,13 @@ def test_the_visual_catalog_is_part_of_the_deployment() -> None:
 
 
 def test_a_field_that_is_not_an_addon_config_is_refused() -> None:
-    with pytest.raises(DeploymentError, match=r"Field 'stray' holds a int"):
+    with pytest.raises(DeploymentError) as refused:
         Broken().make()
+
+    assert str(refused.value) == (
+        "Field 'stray' holds a int, not an addon config; every field of a "
+        "deployment but 'visuals' is an addon config or None."
+    )
 
 
 def test_an_addon_config_that_builds_no_addon_is_refused() -> None:

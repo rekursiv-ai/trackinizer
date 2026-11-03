@@ -195,11 +195,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         # main() mounts the SPA separately.
         app.state.config = config
         await app.state.store.bootstrap(
-            addon_migrations=[
-                migration
-                for manifest in app_deployment(app).manifests.values()
-                for migration in manifest.migrations
-            ],
+            addon_migrations=app_deployment(app).migrations(),
         )
         if config.auth_disabled:
             # The synthetic no-auth principal must exist as an active user so
