@@ -17,17 +17,16 @@ from trackinizer.lib.agent.sessions.convert import detect_format, main
 from trackinizer.lib.agent.sessions.testdata.mistype import mistyped
 from trackinizer.sagent.session.jsonl import record_line
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextCompaction,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
     Splice,
     SystemMessage,
     Thinking,
@@ -38,6 +37,7 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WriteResult,
 )
 
 
@@ -149,13 +149,13 @@ def test_a_result_is_typed_by_the_call_it_answers() -> None:
     shell, read, edit, grep = [
         r for r in records if hasattr(r, "call_id") and not isinstance(r, ToolCall)
     ]
-    assert isinstance(shell, ShellCommandResult)
+    assert isinstance(shell, BashResult)
     assert shell.command == ("pytest -q",)
     assert shell.stdout == "1 failed"
     assert shell.extra["is_error"] is True
-    assert isinstance(read, FileReadResult)
+    assert isinstance(read, ReadResult)
     assert (read.path, read.content) == ("/a.py", "print(1)")
-    assert isinstance(edit, FileEditResult)
+    assert isinstance(edit, EditResult)
     assert edit.path == "/a.py"
     assert edit.edits[0].before == "x"
     assert edit.edits[0].after == "y"
@@ -178,7 +178,7 @@ def test_write_and_fetch_results_carry_what_their_calls_named() -> None:
         _history("tool_result", call_id="f", content="page", is_error=False),
     )
 
-    [write] = _only(records, FileWriteResult)
+    [write] = _only(records, WriteResult)
     assert (write.path, write.content) == ("/b.py", "z")
     [fetch] = _only(records, WebFetchResult)
     assert (fetch.url, fetch.content) == ("https://x.org", "page")
@@ -212,8 +212,8 @@ def test_a_refused_edit_or_write_keeps_its_error_not_a_change() -> None:
         _history("tool_result", call_id="w", content="not yet read", is_error=True),
     )
 
-    assert not _only(records, FileEditResult)
-    assert not _only(records, FileWriteResult)
+    assert not _only(records, EditResult)
+    assert not _only(records, WriteResult)
     edit, write = _only(records, UncategorizedToolResult)
     assert (edit.content, edit.extra["is_error"]) == ("modified since read", True)
     assert (write.content, write.extra["is_error"]) == ("not yet read", True)
@@ -353,7 +353,7 @@ def test_a_spawn_result_names_the_child_it_started() -> None:
         ),
     )
 
-    [status] = _only(records, AgentStatusResult)
+    [status] = _only(records, AgentSpawnResult)
     assert status.agent_id == "3640f519-c4c6"
     assert status.agent_kind == "rev"
     assert status.prompt == "review x"
@@ -372,7 +372,7 @@ def test_a_one_shot_spawn_result_carries_its_prompt_and_reply() -> None:
         _history("tool_result", call_id="sp", content="There are 3.", is_error=False),
     )
 
-    [status] = _only(records, AgentStatusResult)
+    [status] = _only(records, AgentSpawnResult)
     assert status.agent_id is None
     assert status.prompt == "count files"
     assert status.content == "There are 3."
@@ -474,7 +474,7 @@ def test_the_descriptor_family_reads_like_history() -> None:
     assert [a.content for a in _only(records, AssistantMessage)] == ["Looking."]
     [tool_call] = _only(records, ToolCall)
     assert (tool_call.call_id, tool_call.name) == ("t1", "Read")
-    [read] = _only(records, FileReadResult)
+    [read] = _only(records, ReadResult)
     assert (read.path, read.content) == ("/v", "set x")
 
 
@@ -602,7 +602,7 @@ def test_the_role_family_reads_like_history() -> None:
     assert [u.content for u in _only(records, UserMessage)] == ["hi"]
     [call] = _only(records, ToolCall)
     assert dict(call.arguments) == {"command": "ls"}
-    [shell] = _only(records, ShellCommandResult)
+    [shell] = _only(records, BashResult)
     assert shell.stdout == "[exit code: 2]"
 
 
@@ -918,16 +918,16 @@ def test_every_family_reads_to_exactly_its_records() -> None:
         Thinking(timestamp=at, content="t"),
         AssistantMessage(timestamp=at, content="ok"),
         *calls,
-        ShellCommandResult(
+        BashResult(
             timestamp=at,
             call_id="b",
             command=("ls",),
             stdout="out",
             extra=ok,
         ),
-        FileReadResult(timestamp=at, call_id="r", path="a.py", content="out", extra=ok),
-        FileWriteResult(timestamp=at, call_id="w", path="b.py", content="z", extra=ok),
-        FileEditResult(
+        ReadResult(timestamp=at, call_id="r", path="a.py", content="out", extra=ok),
+        WriteResult(timestamp=at, call_id="w", path="b.py", content="z", extra=ok),
+        EditResult(
             timestamp=at,
             call_id="e",
             path="a.py",
@@ -941,7 +941,7 @@ def test_every_family_reads_to_exactly_its_records() -> None:
             content="out",
             extra=ok,
         ),
-        AgentStatusResult(
+        AgentSpawnResult(
             timestamp=at,
             call_id="s1",
             agent_id="kid",
@@ -951,7 +951,7 @@ def test_every_family_reads_to_exactly_its_records() -> None:
             content="out",
             extra=ok,
         ),
-        AgentStatusResult(
+        AgentSpawnResult(
             timestamp=at,
             call_id="s2",
             prompt="count",
@@ -1046,7 +1046,7 @@ def test_a_shell_result_whose_call_named_no_command_states_none() -> None:
         _history("tool_result", call_id="b", content="out"),
     )
 
-    [shell] = _only(records, ShellCommandResult)
+    [shell] = _only(records, BashResult)
     assert shell.command is None
 
 

@@ -21,18 +21,18 @@ from trackinizer.lib.agent.sessions.shell_results import (
 )
 from trackinizer.lib.agent.sessions.udiff import render_udiff
 from trackinizer.sagent.session.types import (
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
-    ShellCommandResult,
+    BashResult,
+    EditResult,
+    ReadResult,
     Splice,
+    WriteResult,
 )
 
 
 def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> object:
     """Lift one script as a provider would have recorded it."""
     return lift_shell_result(
-        ShellCommandResult(
+        BashResult(
             call_id="c1",
             command=("/bin/bash", "-lc", script),
             stdout=stdout,
@@ -91,7 +91,7 @@ def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> object:
 def test_a_read_row_lifts(script: str, path: str) -> None:
     lifted = _lift(script, stdout="body\n")
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == path
     assert lifted.content == "body\n"
 
@@ -112,7 +112,7 @@ def test_a_read_row_lifts(script: str, path: str) -> None:
 def test_a_write_row_lifts(script: str, path: str, content: str) -> None:
     lifted = _lift(script)
 
-    assert isinstance(lifted, FileWriteResult)
+    assert isinstance(lifted, WriteResult)
     assert lifted.path == path
     assert lifted.content == content
 
@@ -161,7 +161,7 @@ def test_a_write_row_lifts(script: str, path: str, content: str) -> None:
 def test_an_edit_row_lifts(script: str, path: str, udiff: str | None) -> None:
     lifted = _lift(script)
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert lifted.path == path
     # The diff IS the splices, so it is rendered rather than stored; a row
     # that states no replacement renders nothing.
@@ -253,7 +253,7 @@ def test_an_append_states_a_splice_that_replaces_nothing(
     """
     lifted = _lift(script)
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert lifted.edits == (Splice(before=before, after=after),)
 
 
@@ -267,7 +267,7 @@ def test_an_empty_append_adds_no_line() -> None:
     """
     lifted = _lift("cat >> a.txt << 'EOF'\nEOF\n")
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert lifted.path == "a.txt"
     assert lifted.edits == ()
 
@@ -291,7 +291,7 @@ def test_a_rewrite_states_no_splice_it_cannot_know(script: str) -> None:
     """
     lifted = _lift(script)
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert lifted.edits == ()
     assert render_udiff(lifted.edits) == ""
 
@@ -319,7 +319,7 @@ def test_a_file_named_after_its_utility_rewrites_the_operand(
 ) -> None:
     """A path equal to another word must still be replaced where it SITS."""
     assert (
-        rewrite_shell_source(script, FileEditResult(call_id="c1", path="renamed.txt"))
+        rewrite_shell_source(script, EditResult(call_id="c1", path="renamed.txt"))
         == rewritten
     )
 
@@ -349,7 +349,7 @@ def test_a_reversed_sed_address_reads_one_line() -> None:
     """
     lifted = _lift("sed -n '40,20p' a.txt", stdout="line40\n")
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.ranges == ((40, 1),)
 
 
@@ -370,7 +370,7 @@ def test_a_write_lifts_from_a_heredoc_body_only() -> None:
 )
 def test_a_failed_command_lifts_nothing(exit_code: int, succeeded: bool | None) -> None:
     """A command that failed changed nothing, whatever it was going to do."""
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "cat a.txt"),
         stdout="",

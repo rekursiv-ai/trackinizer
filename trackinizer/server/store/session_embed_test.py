@@ -224,7 +224,7 @@ async def test_headed_record_marks_fresh_without_a_vector(store: Store) -> None:
         store,
         session_id,
         idx=0,
-        kind="ShellCommandResult",
+        kind="BashResult",
         text="Script completed",
     )
 
@@ -334,7 +334,7 @@ async def test_indexed_kinds_produce_embedding_rows(store: Store) -> None:
 async def test_non_indexed_kinds_produce_nothing(store: Store) -> None:
     """A SILENT kind (FileRead, telemetry) yields no rows -- mapper gate holds."""
     session_id = await _session(store)
-    await _record(store, session_id, idx=0, kind="FileReadResult", text="file body")
+    await _record(store, session_id, idx=0, kind="ReadResult", text="file body")
     await _record(store, session_id, idx=1, kind="TokenUsage", text="tokens")
 
     stats = await sweep_session_embeddings(

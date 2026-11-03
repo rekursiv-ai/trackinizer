@@ -26,15 +26,14 @@ from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     Attachment,
+    BashResult,
     ContextClear,
     ContextCompaction,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
     Splice,
     SystemMessage,
     Thinking,
@@ -47,8 +46,9 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WebSearchHit,
     WebSearchResult,
-    WebSearchResults,
+    WriteResult,
 )
 
 
@@ -408,14 +408,14 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
                 '{"type":"event_msg","payload":{"type":"item_completed","item":'
                 '{"type":"CommandExecution","id":"e1","command":["ls"]}}}'
             ),
-            ShellCommandResult,
+            BashResult,
         ),
         (
             (
                 '{"type":"event_msg","payload":{"type":"item_completed","item":'
                 '{"type":"FileChange","id":"e2","changes":{}}}}'
             ),
-            FileEditResult,
+            EditResult,
         ),
         (
             (
@@ -469,7 +469,7 @@ def test_a_completed_command_keeps_its_argument_list() -> None:
     records = list(codex.normalize(StringIO(native)))
 
     result = records[-1]
-    assert isinstance(result, ShellCommandResult)
+    assert isinstance(result, BashResult)
     assert result.command == ("/bin/sh", "-c", "ls")
     assert result.exit_code == 0
     assert result.stdout == "a\n"
@@ -478,11 +478,11 @@ def test_a_completed_command_keeps_its_argument_list() -> None:
 @pytest.mark.parametrize(
     ("command", "stdout", "expected"),
     [
-        ('["/bin/bash","-lc","/bin/cat a.txt"]', '"body\\n"', FileReadResult),
+        ('["/bin/bash","-lc","/bin/cat a.txt"]', '"body\\n"', ReadResult),
         (
             '["/bin/bash","-lc","/usr/bin/printf body > a.txt"]',
             '""',
-            FileWriteResult,
+            WriteResult,
         ),
     ],
     ids=["read", "write"],
@@ -505,11 +505,11 @@ def test_a_successful_command_file_operation_lifts_to_its_specific_type(
 
     result = records[-1]
     assert type(result) is expected
-    assert isinstance(result, FileReadResult | FileWriteResult | FileEditResult)
+    assert isinstance(result, ReadResult | WriteResult | EditResult)
     assert result.path == "a.txt"
-    if isinstance(result, FileReadResult):
+    if isinstance(result, ReadResult):
         assert result.content == "body\n"
-    if isinstance(result, FileWriteResult):
+    if isinstance(result, WriteResult):
         assert result.content == "body"
     output = StringIO()
     codex.denormalize(records, output)
@@ -532,7 +532,7 @@ def test_a_completed_in_place_edit_names_its_file_without_a_diff() -> None:
     records = list(codex.normalize(StringIO(native)))
     result = records[-1]
 
-    assert isinstance(result, FileEditResult)
+    assert isinstance(result, EditResult)
     assert result.path == "a.txt"
     assert result.edits == ()
     output = StringIO()
@@ -669,17 +669,17 @@ def test_a_record_without_a_session_writes_nothing() -> None:
     ("record", "expected"),
     [
         (
-            WebSearchResults(
+            WebSearchResult(
                 call_id="c",
-                content=(WebSearchResult(url="u"),),
+                content=(WebSearchHit(url="u"),),
                 extra={"$echoes": "web_search_end", "$rows": [], "$row_order": [7]},
             ),
             '"results":[{"url":"u"}]',
         ),
         (
-            WebSearchResults(
+            WebSearchResult(
                 call_id="c",
-                content=(WebSearchResult(url="u"),),
+                content=(WebSearchHit(url="u"),),
                 extra={
                     "$echoes": "web_search_end",
                     "$rows": ["kept"],
@@ -808,10 +808,10 @@ def test_new_search_rows_are_appended() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
     result = records[-1]
-    assert isinstance(result, WebSearchResults)
+    assert isinstance(result, WebSearchResult)
     edited = replace(
         result,
-        content=(*result.content, WebSearchResult(url="https://new")),
+        content=(*result.content, WebSearchHit(url="https://new")),
     )
     output = StringIO()
 
@@ -856,7 +856,7 @@ def test_a_read_crosses_as_the_command_codex_reads_with() -> None:
     """
     output = StringIO()
 
-    codex.denormalize([FileReadResult(call_id="c", path="/a", content="x")], output)
+    codex.denormalize([ReadResult(call_id="c", path="/a", content="x")], output)
 
     written = output.getvalue()
     assert '"type":"CommandExecution"' in written
@@ -869,7 +869,7 @@ def test_file_edit_diff_is_emitted_when_path_is_known() -> None:
 
     codex.denormalize(
         [
-            FileEditResult(
+            EditResult(
                 call_id="c",
                 path="a.py",
                 edits=parse_udiff("@@ -1 +1 @@\n-old\n+new\n"),
@@ -1027,7 +1027,7 @@ def test_a_line_timestamp_is_stored_once() -> None:
 
 
 def test_a_patch_diff_is_stored_once() -> None:
-    # :attr:`FileEditResult.edits` IS the diff, and the writer rebuilds the
+    # :attr:`EditResult.edits` IS the diff, and the writer rebuilds the
     # per-path entry by rendering them. Keeping the source copy too stored
     # every diff twice -- 129 KB on one captured rollout, 4.7% of its size.
     diff = "@@ -1,2 +1,2 @@\n-old\n+new\n"
@@ -1038,7 +1038,7 @@ def test_a_patch_diff_is_stored_once() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
     record = records[-1]
-    assert isinstance(record, FileEditResult)
+    assert isinstance(record, EditResult)
 
     assert render_udiff(record.edits) == diff
     assert diff not in json.dumps(mutable(record.extra)), (
@@ -1151,7 +1151,7 @@ def test_a_legacy_patch_diff_is_stored_once() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
     record = records[-1]
-    assert isinstance(record, FileEditResult)
+    assert isinstance(record, EditResult)
 
     assert render_udiff(record.edits) == diff
     # Compared VALUE to value. A substring search over serialized JSON cannot
@@ -1172,7 +1172,7 @@ def test_a_legacy_patch_diff_is_stored_once() -> None:
 def test_an_added_file_is_a_write_not_an_edit() -> None:
     """``*** Add File`` states a file's WHOLE bytes, which is a write.
 
-    :class:`FileWriteResult` is the record for exactly that, and codex's own
+    :class:`WriteResult` is the record for exactly that, and codex's own
     writer maps one back to this shape -- so typing it as an edit made the IR
     unable to round-trip a write, and put an edit-shaped act on claude's wire
     where a write belonged.
@@ -1185,7 +1185,7 @@ def test_an_added_file_is_a_write_not_an_edit() -> None:
     records = list(codex.normalize(StringIO(native)))
 
     record = records[-1]
-    assert isinstance(record, FileWriteResult)
+    assert isinstance(record, WriteResult)
     assert record.path == "/w/new.py"
     assert record.content == "fresh text"
 
@@ -1211,7 +1211,7 @@ def test_a_multi_path_patch_names_every_file_it_changed() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
 
-    edits = [r for r in records if isinstance(r, FileEditResult)]
+    edits = [r for r in records if isinstance(r, EditResult)]
     assert [(r.path, len(r.edits)) for r in edits] == [("/w/a.py", 1), ("/w/b.py", 1)]
 
     output = StringIO()
@@ -1254,16 +1254,16 @@ def test_a_mixed_patch_harvests_the_add_beside_the_update() -> None:
         '"/w/new.py":{"type":"add","content":"fresh\\n"}}}}}\n'
     )
     records = list(codex.normalize(StringIO(native)))
-    acts = [r for r in records if isinstance(r, FileEditResult | FileWriteResult)]
+    acts = [r for r in records if isinstance(r, EditResult | WriteResult)]
 
     # The update is an edit, the add is a write: one act each, named for its
     # own file and typed by what it did.
     assert [(type(r).__name__, r.path) for r in acts] == [
-        ("FileEditResult", "/w/a.py"),
-        ("FileWriteResult", "/w/new.py"),
+        ("EditResult", "/w/a.py"),
+        ("WriteResult", "/w/new.py"),
     ]
     added = acts[-1]
-    assert isinstance(added, FileWriteResult)
+    assert isinstance(added, WriteResult)
     assert added.content == "fresh\n"
 
     output = StringIO()
@@ -1281,7 +1281,7 @@ def test_an_edited_patch_diff_still_replays_its_entry() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
     record = records[-1]
-    assert isinstance(record, FileEditResult)
+    assert isinstance(record, EditResult)
     output = StringIO()
 
     codex.denormalize(
@@ -1544,9 +1544,9 @@ def test_grouping_still_joins_a_patch_that_touched_several_paths() -> None:
     writer rebuilds ONE event from them -- so the followers still have to
     arrive with the record that led their line.
     """
-    lead = FileEditResult(call_id="c1", path="/w/a.py", extra={"$echoes": "x"})
-    follower = FileEditResult(call_id="c1", path="/w/b.py")
-    other = FileEditResult(call_id="c2", path="/w/c.py", extra={"$echoes": "x"})
+    lead = EditResult(call_id="c1", path="/w/a.py", extra={"$echoes": "x"})
+    follower = EditResult(call_id="c1", path="/w/b.py")
+    other = EditResult(call_id="c2", path="/w/c.py", extra={"$echoes": "x"})
 
     groups = [list(group) for group in _grouped((lead, follower, other))]
 
@@ -1562,7 +1562,7 @@ def test_codex_small_helpers_preserve_edge_shapes() -> None:
         "stdout",
     ]
     assert codex._ordered("x", {"z": 1}) == {"z": 1}
-    assert codex._write_rows(WebSearchResults(call_id="c"), {}) is None
+    assert codex._write_rows(WebSearchResult(call_id="c"), {}) is None
     assert codex._write_content(
         "",
         (),
@@ -1594,7 +1594,7 @@ def test_codex_writer_handles_unmapped_and_special_records() -> None:
     assert codex._write_record(SystemMessage(content="ok"))[0][0] == "response_item"
     assert (
         codex._write_result(
-            WebSearchResults(call_id="c", query="q"),
+            WebSearchResult(call_id="c", query="q"),
         )
         is not None
     )
@@ -1645,7 +1645,7 @@ def test_codex_patch_and_usage_helpers_report_exact_values() -> None:
 
 
 def test_codex_completed_result_preserves_missing_edit_path() -> None:
-    result = FileEditResult(call_id="c", edits=(Splice(before="a", after="b"),))
+    result = EditResult(call_id="c", edits=(Splice(before="a", after="b"),))
     assert codex._write_completed(result, {}) is None
 
 
@@ -1678,7 +1678,7 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
         )["type"]
         == "x"
     )
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c",
         command=("echo", "ok"),
         stdout="out",
@@ -1697,14 +1697,14 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     )
     assert (
         codex._write_changes(
-            {"a": FileWriteResult(call_id="c", path="a", content="x")},
+            {"a": WriteResult(call_id="c", path="a", content="x")},
             {"a": {}},
         )
         is None
     )
     assert (
         codex._write_rows(
-            WebSearchResults(
+            WebSearchResult(
                 call_id="c",
                 content=(),
                 extra={"$rows": [{}], "$row_order": ["row"]},

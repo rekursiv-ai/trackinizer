@@ -83,7 +83,7 @@ function heavy(_name: string, idx: number) {
     case 2:
       return { idx, kind: "ToolCall", payload: { call_id: `c${idx}`, name: "Bash", arguments: { command: `trax issue ${idx} && rg -n x loop/ | head -50` } } };
     case 3:
-      return { idx, kind: "ShellCommandResult", payload: { call_id: `c${idx - 1}`, stdout: "loop/x.py:12: some matched line of output text\n".repeat(45), stderr: "", exit_code: 0 } };
+      return { idx, kind: "BashResult", payload: { call_id: `c${idx - 1}`, stdout: "loop/x.py:12: some matched line of output text\n".repeat(45), stderr: "", exit_code: 0 } };
     default: {
       const block =
         `## Progress\n\nMeasured **Issue#${idx}** and Belief#357: the [plan](https://example.com/plan) says why.\n\n` +

@@ -37,18 +37,17 @@ from treekle import ReadError, from_plain, immutable, json_loads
 
 from trackinizer.sagent.session.jsonl import read_record, record_line
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AnyToolResult,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextCompaction,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
     Splice,
     SystemMessage,
     Thinking,
@@ -59,6 +58,7 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WriteResult,
     record_classes,
 )
 
@@ -386,7 +386,7 @@ class _Reader:
         path = _str(args.get("file_path") or args.get("path")) or None
         if name == "bash":
             command = _str(args.get("command"))
-            return ShellCommandResult(
+            return BashResult(
                 timestamp=stamp,
                 call_id=call_id,
                 command=(command,) if command else None,
@@ -394,7 +394,7 @@ class _Reader:
                 extra=extra,
             )
         if name == "read":
-            return FileReadResult(
+            return ReadResult(
                 timestamp=stamp,
                 call_id=call_id,
                 path=path,
@@ -403,7 +403,7 @@ class _Reader:
             )
         # A refused file op changed nothing; it keeps its error text instead.
         if name == "write" and not failed:
-            return FileWriteResult(
+            return WriteResult(
                 timestamp=stamp,
                 call_id=call_id,
                 path=path,
@@ -411,7 +411,7 @@ class _Reader:
                 extra=extra,
             )
         if name == "edit" and not failed:
-            return FileEditResult(
+            return EditResult(
                 timestamp=stamp,
                 call_id=call_id,
                 path=path,
@@ -433,7 +433,7 @@ class _Reader:
             )
         if name == "agentspawn":
             label = _str(args.get("label"))
-            return AgentStatusResult(
+            return AgentSpawnResult(
                 timestamp=stamp,
                 call_id=call_id,
                 agent_id=self.children.get(label) if label else None,

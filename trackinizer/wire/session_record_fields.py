@@ -15,30 +15,21 @@ parallel edit here.
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import re
 
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
-    AgentToAgentMessage,
-    AssistantMessage,
-    ContextCompaction,
-    ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
-    IncompleteRecord,
-    ShellCommandResult,
-    SystemMessage,
-    Thinking,
-    ToolCall,
-    UncategorizedToolResult,
-    UserMessage,
-    WebFetchResult,
-    WebSearchResults,
+    ContextClear,
+    TokenUsage,
+    TurnContext,
+    UncategorizedRecord,
 )
-from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
+from trackinizer.types.session_records import _BY_KIND
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.streams import TraxRecord
 
 
 __all__ = [
@@ -48,34 +39,16 @@ __all__ = [
 ]
 
 
-# Every record class whose ``text`` projection can be non-empty. Listed here
-# rather than walked from the union because the union is a type alias, not a
-# runtime registry; ``session_record_fields_test`` asserts this agrees with
-# ``search_text`` over every member, so a class added upstream fails that test
-# rather than silently becoming unfilterable.
-_TEXT_BEARING: Final[tuple[type[TraxRecord], ...]] = (
-    UserMessage,
-    AssistantMessage,
-    SystemMessage,
-    AgentToAgentMessage,
-    Thinking,
-    ToolCall,
-    ShellCommandResult,
-    FileReadResult,
-    FileWriteResult,
-    FileEditResult,
-    WebSearchResults,
-    WebFetchResult,
-    AgentStatusResult,
-    UncategorizedToolResult,
-    ContextState,
-    ContextCompaction,
-    IncompleteRecord,
-    # A captured stream is all prose, so every one of the three is filterable
-    # -- ``agentsession std_err re 'Traceback'`` finds the runs that failed.
-    Stdin,
-    Stdout,
-    Stderr,
+# The record kinds with no prose: settings, a window's start, token counts, and an
+# untyped payload. ``session_record_fields_test`` checks the rest against
+# ``search_text``, so a kind added upstream is filterable unless it is listed here.
+_NO_TEXT: Final[frozenset[type[TraxRecord]]] = frozenset(
+    (TurnContext, ContextClear, TokenUsage, UncategorizedRecord),
+)
+
+# Every record class whose ``text`` projection can be non-empty.
+_TEXT_BEARING: Final[tuple[type[TraxRecord], ...]] = tuple(
+    cls for cls in _BY_KIND.values() if cls not in _NO_TEXT
 )
 
 
@@ -85,8 +58,8 @@ _CAMEL_BOUNDARY: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
 def snake_case(name: str) -> str:
     """``ToolCall`` -> ``tool_call``, the spelling a filter names.
 
-    Only the lower-to-upper boundary splits, so ``WebSearchResults`` becomes
-    ``web_search_results`` and an acronym run stays together.
+    Only the lower-to-upper boundary splits, so ``WebSearchResult`` becomes
+    ``web_search_result`` and an acronym run stays together.
 
     Args:
       name: CamelCase identifier to convert.

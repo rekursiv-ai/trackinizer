@@ -24,19 +24,19 @@ from trackinizer.lib.agent.sessions.testdata.mistype import (
     without,
 )
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AssistantMessage,
     Attachment,
+    BashResult,
     ContextClear,
     ContextCompaction,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
+    SkillResult,
     Splice,
     SystemMessage,
     Thinking,
@@ -49,8 +49,9 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WebSearchHit,
     WebSearchResult,
-    WebSearchResults,
+    WriteResult,
 )
 
 
@@ -338,16 +339,27 @@ def test_a_queued_message_is_its_contexts_prose() -> None:
 @pytest.mark.parametrize(
     ("tool", "result", "expected"),
     [
-        ("Bash", '{"stdout":"hi","stderr":"","interrupted":false}', ShellCommandResult),
-        ("Read", '{"file":{"filePath":"/a"},"type":"text"}', FileReadResult),
-        ("Write", '{"filePath":"/a","content":"body"}', FileWriteResult),
-        ("Edit", '{"filePath":"/a","replaceAll":false}', FileEditResult),
-        ("WebSearch", '{"query":"q","durationSeconds":1.5}', WebSearchResults),
+        ("Bash", '{"stdout":"hi","stderr":"","interrupted":false}', BashResult),
+        ("Read", '{"file":{"filePath":"/a"},"type":"text"}', ReadResult),
+        ("Write", '{"filePath":"/a","content":"body"}', WriteResult),
+        ("Edit", '{"filePath":"/a","replaceAll":false}', EditResult),
+        ("WebSearch", '{"query":"q","durationSeconds":1.5}', WebSearchResult),
         ("WebFetch", '{"url":"https://x","result":"body"}', WebFetchResult),
-        ("Agent", '{"agentId":"a1","status":"done"}', AgentStatusResult),
-        ("Skill", '{"commandName":"tdd","success":true}', UncategorizedToolResult),
+        ("Agent", '{"agentId":"a1","status":"done"}', AgentSpawnResult),
+        ("Skill", '{"commandName":"tdd","success":true}', SkillResult),
+        ("ToolSearch", '{"matches":[]}', UncategorizedToolResult),
     ],
-    ids=["bash", "read", "write", "edit", "search", "fetch", "agent", "uncategorized"],
+    ids=[
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "search",
+        "fetch",
+        "agent",
+        "skill",
+        "uncategorized",
+    ],
 )
 def test_a_result_is_typed_by_what_its_tool_did(
     tool: str,
@@ -385,13 +397,13 @@ def test_a_result_is_typed_by_what_its_tool_did(
             "/bin/cat a.txt",
             '"body\\n"',
             '{"stdout":"body\\n","stderr":"","interrupted":false}',
-            FileReadResult,
+            ReadResult,
         ),
         (
             "/usr/bin/printf body > a.txt",
             '""',
             '{"stdout":"","stderr":"","interrupted":false}',
-            FileWriteResult,
+            WriteResult,
         ),
     ],
     ids=["read", "write"],
@@ -423,11 +435,11 @@ def test_a_successful_bash_file_operation_lifts_to_its_specific_type(
 
     result = _last_act(records)
     assert type(result) is expected
-    assert isinstance(result, FileReadResult | FileWriteResult | FileEditResult)
+    assert isinstance(result, ReadResult | WriteResult | EditResult)
     assert result.path == "a.txt"
-    if isinstance(result, FileReadResult):
+    if isinstance(result, ReadResult):
         assert result.content == "body\n"
-    if isinstance(result, FileWriteResult):
+    if isinstance(result, WriteResult):
         assert result.content == "body"
     output = StringIO()
     claude.denormalize(records, output)
@@ -459,7 +471,7 @@ def test_a_bash_in_place_edit_names_its_file_without_claiming_a_diff() -> None:
     records = list(claude.normalize(StringIO(native)))
     result = _last_act(records)
 
-    assert isinstance(result, FileEditResult)
+    assert isinstance(result, EditResult)
     assert result.path == "a.txt"
     # A regex program names no text it replaced, so it states no splice
     # rather than inventing a before and after.
@@ -502,7 +514,7 @@ def test_a_native_edit_carries_the_text_it_replaced() -> None:
     records = list(claude.normalize(StringIO(native)))
     result = _last_act(records)
 
-    assert isinstance(result, FileEditResult)
+    assert isinstance(result, EditResult)
     assert result.path == "/w/a.py"
     assert result.edits == (
         Splice(before="price - pct", after="price * (1 - pct / 100)"),
@@ -531,7 +543,7 @@ def test_editing_a_splice_rewrites_the_replayed_edit() -> None:
     )
     records = list(claude.normalize(StringIO(native)))
     edit = _last_act(records)
-    assert isinstance(edit, FileEditResult)
+    assert isinstance(edit, EditResult)
 
     output = StringIO()
     claude.denormalize(
@@ -587,7 +599,7 @@ def test_a_rename_reaches_a_bash_call_that_did_not_lead_its_line(
     )
     records = list(claude.normalize(StringIO(native)))
     lifted = _last_act(records)
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
 
     output = StringIO()
     claude.denormalize(
@@ -628,7 +640,7 @@ def test_a_rename_reaches_the_second_of_two_bash_calls_on_one_line() -> None:
     )
     records = list(claude.normalize(StringIO(native)))
     lifted = _last_act(records)
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.call_id == "c2"
 
     output = StringIO()
@@ -704,7 +716,7 @@ def test_a_malformed_failure_marker_prevents_lifting() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    assert isinstance(_last_act(records), ShellCommandResult)
+    assert isinstance(_last_act(records), BashResult)
     output = StringIO()
     claude.denormalize(records, output)
     assert output.getvalue() == native
@@ -748,7 +760,7 @@ def test_a_structured_bash_result_without_success_flags_stays_shell() -> None:
 
     result = _last_act(list(claude.normalize(StringIO(native))))
 
-    assert isinstance(result, ShellCommandResult)
+    assert isinstance(result, BashResult)
 
 
 def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
@@ -775,7 +787,7 @@ def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
         for record in claude.normalize(
             StringIO(first_call + first_result + second_call + second_result),
         )
-        if isinstance(record, FileReadResult)
+        if isinstance(record, ReadResult)
     ]
 
     assert [(result.path, result.content) for result in results] == [
@@ -786,7 +798,7 @@ def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
 
 def test_a_foreign_lifted_read_uses_its_semantic_content() -> None:
     records = (
-        FileReadResult(
+        ReadResult(
             call_id="c1",
             path="a.txt",
             content="body\n",
@@ -822,7 +834,7 @@ def test_an_edited_lifted_path_updates_the_claude_bash_call() -> None:
     )
     records = list(claude.normalize(StringIO(native)))
     result = records[-1]
-    assert isinstance(result, FileReadResult)
+    assert isinstance(result, ReadResult)
     changed = [*records[:-1], replace(result, path="new.txt")]
     output = StringIO()
 
@@ -967,7 +979,7 @@ def test_tool_result_replay_uses_current_values_only_for_stated_fields(
     )
     records = list(claude.normalize(StringIO(native)))
     result = records[-1]
-    assert isinstance(result, FileWriteResult)
+    assert isinstance(result, WriteResult)
     changed = [*records[:-1], replace(result, content="new")]
     output = StringIO()
 
@@ -1053,7 +1065,7 @@ def test_a_boolean_is_not_a_numeric_duration(tool: str, result: str) -> None:
     records = list(claude.normalize(StringIO(native)))
 
     typed_result = _last_act(records)
-    assert isinstance(typed_result, WebSearchResults | WebFetchResult)
+    assert isinstance(typed_result, WebSearchResult | WebFetchResult)
     assert typed_result.duration_sec is None
     output = StringIO()
     claude.denormalize(records, output)
@@ -1114,7 +1126,7 @@ def test_a_synthesized_session_denormalizes_to_claude_records() -> None:
         "UserMessage",
         "Thinking",
         "ToolCall",
-        "FileReadResult",
+        "ReadResult",
     ]
 
 
@@ -1255,14 +1267,14 @@ def test_web_search_rows_preserve_shape_and_append_new_rows() -> None:
     )
     records = list(claude.normalize(StringIO(native)))
     result = records[-1]
-    assert isinstance(result, WebSearchResults)
+    assert isinstance(result, WebSearchResult)
     changed = [
         *records[:-1],
         replace(
             result,
             content=(
                 *result.content,
-                WebSearchResult(url="u3", title="t3", snippet="s3"),
+                WebSearchHit(url="u3", title="t3", snippet="s3"),
             ),
         ),
     ]
@@ -1295,7 +1307,7 @@ def test_agent_result_edits_preserve_block_boundaries() -> None:
     )
     records = list(claude.normalize(StringIO(native)))
     result = records[-1]
-    assert isinstance(result, AgentStatusResult)
+    assert isinstance(result, AgentSpawnResult)
     changed = [*records[:-1], replace(result, content="X\nY\nZ")]
     output = StringIO()
 
@@ -1372,7 +1384,7 @@ def test_changed_edit_diff_does_not_reemit_the_stale_structured_patch() -> None:
     )
     records = list(claude.normalize(StringIO(native)))
     result = records[-1]
-    assert isinstance(result, FileEditResult)
+    assert isinstance(result, EditResult)
     changed = [
         *records[:-1],
         replace(result, edits=(Splice(before="a", after="c"),)),
@@ -1534,7 +1546,7 @@ def test_an_untyped_foreign_result_after_a_typed_one_does_not_abort() -> None:
     # assistant line reached the synthetic-call path and raised ``KeyError``.
     records = [
         _FOREIGN,
-        ShellCommandResult(call_id="a", command=("ls",)),
+        BashResult(call_id="a", command=("ls",)),
         AssistantMessage(content="x"),
         UncategorizedToolResult(call_id="b", content="y"),
     ]
@@ -1547,7 +1559,7 @@ def test_a_foreign_call_after_its_result_is_written_once() -> None:
     # later would state the same id a second time.
     records = [
         _FOREIGN,
-        ShellCommandResult(call_id="a", command=("ls",)),
+        BashResult(call_id="a", command=("ls",)),
         ToolCall(call_id="a", name="shell"),
     ]
 
@@ -1716,7 +1728,7 @@ def test_claude_shape_writers_preserve_absent_blocks() -> None:
         "type": "thinking",
     }
     assert claude._write_agent_blocks(
-        AgentStatusResult(call_id="c", content="hi"),
+        AgentSpawnResult(call_id="c", content="hi"),
         {},
     ) == [
         {"type": "text", "text": "hi"},
@@ -1730,7 +1742,7 @@ def test_claude_shape_writers_preserve_absent_blocks() -> None:
 
 def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
     """With no ``isAsync`` it is a finished report, which states its prompt second."""
-    report = AgentStatusResult(
+    report = AgentSpawnResult(
         call_id="c",
         content="done",
         agent_id="a1",
@@ -1743,7 +1755,7 @@ def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
 
 
 def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
-    report = AgentStatusResult(
+    report = AgentSpawnResult(
         call_id="c",
         content="done",
         agent_id="a1",
@@ -2080,7 +2092,7 @@ def test_claude_writer_skips_non_string_shell_commands() -> None:
     call = ToolCall(call_id="c", name="Bash")
     writer.add(line, calls=(call,))
     writer._apply_shell_edit(
-        FileWriteResult(call_id="c", path="x", content="new", extra={"$shell": True}),
+        WriteResult(call_id="c", path="x", content="new", extra={"$shell": True}),
     )
     assert line == {
         "message": {
@@ -2147,7 +2159,7 @@ def test_a_foreign_call_restated_after_its_typed_result_is_written_once() -> Non
     """
     records = [
         _FOREIGN,
-        ShellCommandResult(call_id="a", command=("ls",)),
+        BashResult(call_id="a", command=("ls",)),
         ToolCall(call_id="a", name="shell"),
         ToolCall(call_id="a", name="shell"),
     ]
@@ -2161,7 +2173,7 @@ def test_a_foreign_call_before_its_result_takes_the_claude_tool_name() -> None:
         _FOREIGN,
         ToolCall(call_id="a", name="shell"),
         AssistantMessage(content="running"),
-        ShellCommandResult(call_id="a", command=("ls",)),
+        BashResult(call_id="a", command=("ls",)),
     ]
     output = StringIO()
 
@@ -2229,7 +2241,7 @@ def test_a_shell_edit_for_a_call_that_left_the_window_replays_unedited() -> None
     )
     records = list(claude.normalize(StringIO(call + filler + result)))
     read = _last_act(records)
-    assert isinstance(read, FileReadResult)
+    assert isinstance(read, ReadResult)
     changed = [
         replace(record, path="new.txt") if record is read else record
         for record in records
@@ -2297,7 +2309,7 @@ def test_search_groups_replay_prose_and_scalar_rows_around_groups() -> None:
 
 
 def test_a_search_shape_entry_without_a_template_replays_verbatim() -> None:
-    search = WebSearchResults(
+    search = WebSearchResult(
         call_id="c1",
         query="q",
         extra={"$result": {"tool_name": "WebSearch", "rows": [{"loose": 1}]}},

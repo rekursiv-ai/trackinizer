@@ -4,28 +4,31 @@ from __future__ import annotations
 
 from typing import Final
 
+from trackinizer.sagent.session import types
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextCompaction,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
-    ShellCommandResult,
+    ReadResult,
     SystemMessage,
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolErrorResult,
+    ToolResult,
     TurnContext,
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
-    WebSearchResults,
+    WebSearchResult,
+    WriteResult,
 )
 from trackinizer.types.session_records import _BY_KIND, search_text
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
@@ -76,7 +79,7 @@ class TestTheFieldSetIsDerived:
                 f"{kind}: listed={listed} but projects text={projects}"
             )
 
-    def test_twenty_of_twenty_four_qualify(self) -> None:
+    def test_all_but_the_four_qualify(self) -> None:
         """The count the design predicted, pinned so a drift is visible.
 
         Four never qualify, and they are the same four: the state records
@@ -84,8 +87,8 @@ class TestTheFieldSetIsDerived:
         (``TokenUsage``), and the one whose payload is untyped
         (``UncategorizedRecord``). Everything else carries prose.
         """
-        assert len(_BY_KIND) == 24
-        assert len(SESSION_RECORD_FIELDS) == 20
+        assert len(_BY_KIND) == 43
+        assert len(SESSION_RECORD_FIELDS) == 39
 
 
 # One populated instance per record class, spelled out rather than reflected:
@@ -94,19 +97,38 @@ class TestTheFieldSetIsDerived:
 # field was set. A class added upstream fails the membership assert above.
 _SAMPLES: Final[dict[str, TraxRecord]] = {
     "UserMessage": UserMessage(content="probe"),
+    "ToolErrorResult": ToolErrorResult(call_id="c", content="probe"),
+    "ToolResult": ToolResult(call_id="c", stub="pending", shown="probe"),
     "AssistantMessage": AssistantMessage(content="probe"),
     "SystemMessage": SystemMessage(content="probe"),
     "AgentToAgentMessage": AgentToAgentMessage(content="probe"),
     "Thinking": Thinking(content="probe"),
     "ToolCall": ToolCall(call_id="c", name="probe"),
-    "ShellCommandResult": ShellCommandResult(call_id="c", command=("probe",)),
-    "FileReadResult": FileReadResult(call_id="c", path="probe"),
-    "FileWriteResult": FileWriteResult(call_id="c", path="probe"),
-    "FileEditResult": FileEditResult(call_id="c", path="probe"),
-    "WebSearchResults": WebSearchResults(call_id="c", query="probe"),
+    "BashResult": BashResult(call_id="c", command=("probe",)),
+    "ReadResult": ReadResult(call_id="c", path="probe"),
+    "WriteResult": WriteResult(call_id="c", path="probe"),
+    "EditResult": EditResult(call_id="c", path="probe"),
+    "WebSearchResult": WebSearchResult(call_id="c", query="probe"),
     "WebFetchResult": WebFetchResult(call_id="c", url="probe"),
-    "AgentStatusResult": AgentStatusResult(call_id="c", prompt="probe"),
+    "AgentSpawnResult": AgentSpawnResult(call_id="c", prompt="probe"),
     "UncategorizedToolResult": UncategorizedToolResult(call_id="c", content="probe"),
+    "GrepResult": types.GrepResult(call_id="c", content="probe"),
+    "GlobResult": types.GlobResult(call_id="c", content="probe"),
+    "ListResult": types.ListResult(call_id="c", content="probe"),
+    "SkillResult": types.SkillResult(call_id="c", content="probe"),
+    "AgentSendResult": types.AgentSendResult(call_id="c", content="probe"),
+    "BackgroundTaskResult": types.BackgroundTaskResult(call_id="c", content="probe"),
+    "AgentSelfResult": types.AgentSelfResult(call_id="c", content="probe"),
+    "SessionResult": types.SessionResult(call_id="c", content="probe"),
+    "MemoryResult": types.MemoryResult(call_id="c", content="probe"),
+    "PlayAudioResult": types.PlayAudioResult(call_id="c", content="probe"),
+    "PaperSearchResult": types.PaperSearchResult(call_id="c", content="probe"),
+    "PaperDetailsResult": types.PaperDetailsResult(call_id="c", content="probe"),
+    "PaperAuthorResult": types.PaperAuthorResult(call_id="c", content="probe"),
+    "PaperFetchResult": types.PaperFetchResult(call_id="c", content="probe"),
+    "RemoteToolResult": types.RemoteToolResult(call_id="c", content="probe"),
+    "McpResult": types.McpResult(call_id="c", content="probe"),
+    "FunctionResult": types.FunctionResult(call_id="c", content="probe"),
     "ContextState": ContextState(content="probe"),
     "ContextCompaction": ContextCompaction(summary="probe"),
     "IncompleteRecord": IncompleteRecord(text="probe"),
@@ -126,12 +148,12 @@ class TestSnakeCase:
 
     def test_splits_on_the_lower_to_upper_boundary(self) -> None:
         assert snake_case("ToolCall") == "tool_call"
-        assert snake_case("WebSearchResults") == "web_search_results"
+        assert snake_case("WebSearchResult") == "web_search_result"
         assert snake_case("Thinking") == "thinking"
 
     def test_the_field_round_trips_to_its_kind(self) -> None:
         assert column_record_kind("tool_call") == ToolCall.__name__
-        assert column_record_kind("web_search_results") == WebSearchResults.__name__
+        assert column_record_kind("web_search_result") == WebSearchResult.__name__
         assert column_record_kind("incomplete_record") == IncompleteRecord.__name__
 
     def test_a_non_record_field_is_not_one(self) -> None:

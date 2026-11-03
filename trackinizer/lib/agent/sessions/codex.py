@@ -51,20 +51,20 @@ from trackinizer.sagent.model.capability import (
     literal_members,
 )
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AnyToolResult,
     AssistantMessage,
     Attachment,
+    BashResult,
     ContextClear,
     ContextCompaction,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
+    McpResult,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
     Splice,
     SystemMessage,
     Thinking,
@@ -76,8 +76,9 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WebSearchHit,
     WebSearchResult,
-    WebSearchResults,
+    WriteResult,
 )
 
 
@@ -337,9 +338,9 @@ def _grouped(records: Sequence[SessionRecord]) -> Iterator[Sequence[SessionRecor
             # both, so they are written from one group.
             open_group.append(record)
             continue
-        if isinstance(record, FileEditResult | FileWriteResult) and isinstance(
+        if isinstance(record, EditResult | WriteResult) and isinstance(
             leader,
-            FileEditResult | FileWriteResult,
+            EditResult | WriteResult,
         ):
             # ``$codex_line`` is this reader's own note about the line, added
             # after the split, so a follower carries it and nothing else.
@@ -761,13 +762,12 @@ def _write_result(
     followers: Sequence[SessionRecord] = (),
 ) -> tuple[str, dict[str, object]] | None:
     """Return the line a tool's answer came from."""
-    if isinstance(item, FileReadResult | FileWriteResult | FileEditResult):
+    if isinstance(item, ReadResult | WriteResult | EditResult):
         item = shell_result_for_replay(item) or item
     by_path = {
         path: record
         for record in (item, *followers)
-        if isinstance(record, FileEditResult | FileWriteResult)
-        and (path := record.path or "")
+        if isinstance(record, EditResult | WriteResult) and (path := record.path or "")
     }
     extra = mutable(item.extra)
     echoes = from_plain(extra.pop("$echoes", ""), str)
@@ -783,11 +783,7 @@ def _write_result(
         return ("response_item", _write_output(item, extra))
     if isinstance(
         item,
-        ShellCommandResult
-        | FileReadResult
-        | FileWriteResult
-        | FileEditResult
-        | WebSearchResults,
+        BashResult | ReadResult | WriteResult | EditResult | WebSearchResult,
     ):
         completed = _write_completed(item, extra, by_path)
         return ("event_msg", completed) if completed is not None else None
@@ -797,7 +793,7 @@ def _write_result(
     # None instead dropped the record, so an act the source recorded left no
     # trace at all; a generic output states what the tool returned, which is
     # the most the target's vocabulary can say.
-    if isinstance(item, WebFetchResult | AgentStatusResult):
+    if isinstance(item, WebFetchResult | AgentSpawnResult):
         payload: dict[str, object] = {
             "type": "function_call_output",
             "call_id": item.call_id,
@@ -809,7 +805,14 @@ def _write_result(
         if item.content is not None:
             payload["output"] = item.content
         return ("response_item", _ordered("function_call_output", payload | extra))
-    return None
+    # A bare result says nothing: no tool's fields, and no stand-in's note.
+    if type(item) is ToolResult and item.shown is None:
+        return None
+    # Any other sagent tool's act, and an error no tool answered: codex has no event
+    # for them, so each states what the model read, as a tool codex does not model.
+    payload = {"type": "function_call_output", "call_id": item.call_id}
+    payload["output"] = item.text()
+    return ("response_item", _ordered("function_call_output", payload | extra))
 
 
 def _write_output(
@@ -842,7 +845,7 @@ def _write_legacy_end(
     item: ToolResult,
     kind: str,
     extra: dict[str, MutablePlainTree],
-    by_path: Mapping[str, FileEditResult | FileWriteResult],
+    by_path: Mapping[str, EditResult | WriteResult],
 ) -> dict[str, object]:
     """Return the pre-0.149 ``*_end`` event an observation came from."""
     present_value = extra.pop("$present", None)
@@ -852,7 +855,7 @@ def _write_legacy_end(
         else None
     )
     payload: dict[str, object] = {"type": kind, "call_id": item.call_id}
-    if isinstance(item, ShellCommandResult):
+    if isinstance(item, BashResult):
         payload |= {
             "command": list(item.command or ()) or None,
             "stdout": item.stdout,
@@ -872,10 +875,10 @@ def _write_legacy_end(
                 for key, value in payload.items()
                 if key == "type" or key in present or not defaults.get(key, False)
             }
-    elif isinstance(item, WebSearchResults):
+    elif isinstance(item, WebSearchResult):
         payload["query"] = item.query
         payload["results"] = _write_rows(item, extra)
-    elif isinstance(item, FileEditResult | FileWriteResult):
+    elif isinstance(item, EditResult | WriteResult):
         # The residual holds the per-path structure, but the VALUE is the
         # record's own field -- an edit's splices, a write's content -- so an
         # edited one has to reach the entry it came from.
@@ -893,7 +896,7 @@ def _write_legacy_end(
 # carries its splices, an ADD the whole content it wrote -- so no boundary has to be
 # recovered: each record renders its own entry.
 def _write_changes(
-    by_path: Mapping[str, FileEditResult | FileWriteResult],
+    by_path: Mapping[str, EditResult | WriteResult],
     stored: Mapping[str, object],
 ) -> dict[str, MutablePlainTree] | None:
     """Return a patch's per-path entries carrying each record's current value."""
@@ -927,7 +930,7 @@ def _write_changes(
             # states a diff, which its splices render.
             found[filled[path]] = (
                 (owner.content or "")
-                if isinstance(owner, FileWriteResult)
+                if isinstance(owner, WriteResult)
                 else render_udiff(owner.edits)
             )
         # This reader's own note about the entry's shape, not a key codex
@@ -941,7 +944,7 @@ def _write_changes(
 def _write_completed(
     item: ToolResult,
     extra: dict[str, MutablePlainTree],
-    by_path: Mapping[str, FileEditResult | FileWriteResult] = MappingProxyType({}),
+    by_path: Mapping[str, EditResult | WriteResult] = MappingProxyType({}),
 ) -> dict[str, object] | None:
     """Return the ``item_completed`` event an observation came from."""
     nested = from_plain(extra.pop("item", {}), dict[str, object])
@@ -952,7 +955,7 @@ def _write_completed(
         else None
     )
     inner: dict[str, object] = {"type": "", "id": item.call_id}
-    if isinstance(item, ShellCommandResult):
+    if isinstance(item, BashResult):
         kind = "CommandExecution"
         inner |= {
             "type": kind,
@@ -961,7 +964,7 @@ def _write_completed(
             "stderr": item.stderr,
             "exit_code": item.exit_code,
         }
-    elif isinstance(item, FileReadResult):
+    elif isinstance(item, ReadResult):
         # Codex has no read TOOL -- across 400 captured rollouts it names only
         # exec_command, apply_patch, and write_stdin -- so it reads by running
         # one, and that is the act this record crosses as (axiom 9: the same
@@ -978,7 +981,7 @@ def _write_completed(
             "stderr": "",
             "exit_code": 0,
         }
-    elif isinstance(item, FileEditResult | FileWriteResult):
+    elif isinstance(item, EditResult | WriteResult):
         # One act per path, and codex states both under ``changes``: an update
         # writes a diff, an add the file's whole bytes.
         kind = "FileChange"
@@ -996,12 +999,12 @@ def _write_completed(
         elif item.path is not None:
             inner["changes"] = {
                 item.path: {"content": item.content or ""}
-                if isinstance(item, FileWriteResult)
+                if isinstance(item, WriteResult)
                 else {"unified_diff": render_udiff(item.edits)},
             }
-        elif isinstance(item, FileEditResult) and item.edits:
+        elif isinstance(item, EditResult) and item.edits:
             return None
-    elif isinstance(item, WebSearchResults):
+    elif isinstance(item, WebSearchResult):
         kind = "WebSearch"
         inner |= {"type": kind, "query": item.query}
     else:
@@ -1009,12 +1012,11 @@ def _write_completed(
     if present is not None:
         defaults = {
             "id": item.call_id == "",
-            "command": isinstance(item, ShellCommandResult) and item.command is None,
-            "stdout": isinstance(item, ShellCommandResult) and item.stdout == "",
-            "stderr": isinstance(item, ShellCommandResult) and item.stderr == "",
-            "exit_code": isinstance(item, ShellCommandResult)
-            and item.exit_code is None,
-            "query": isinstance(item, WebSearchResults) and item.query is None,
+            "command": isinstance(item, BashResult) and item.command is None,
+            "stdout": isinstance(item, BashResult) and item.stdout == "",
+            "stderr": isinstance(item, BashResult) and item.stderr == "",
+            "exit_code": isinstance(item, BashResult) and item.exit_code is None,
+            "query": isinstance(item, WebSearchResult) and item.query is None,
         }
         inner = {
             key: value
@@ -1029,7 +1031,7 @@ def _write_completed(
 
 
 def _write_rows(
-    item: WebSearchResults,
+    item: WebSearchResult,
     extra: dict[str, MutablePlainTree],
 ) -> list[object] | None:
     """Return search results with opaque members in their original positions."""
@@ -2242,18 +2244,25 @@ def _read_event(
             extra=_echoing(payload, kind, ()),
         )
     if kind == "mcp_tool_call_end":
-        # Nothing here maps to :attr:`content`; the whole payload is the
-        # connector's own shape, so it rides in the residual.
-        return UncategorizedToolResult(
+        # The connector's own result rides whole in the residual; the server and
+        # tool it ran are named as sagent names an MCP call.
+        invocation = read_or_default(
+            payload.get("invocation"),
+            dict[str, object],
+            default={},
+        )
+        return McpResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
+            server=read_or_default(invocation.get("server"), str, default=""),
+            tool=read_or_default(invocation.get("tool"), str, default=""),
             extra=_echoing(payload, kind, {"call_id"}),
         )
     # The pre-0.149 spelling of what ``item_completed`` now carries; the act
     # is the same, so it reads into the same record.
     if kind == "exec_command_end":
-        shell = ShellCommandResult(
+        shell = BashResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
@@ -2305,7 +2314,7 @@ def _read_event(
         if isinstance(results_value, list):
             extra["$rows"] = templates
             extra["$row_order"] = row_order
-        return WebSearchResults(
+        return WebSearchResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
@@ -2462,7 +2471,7 @@ def _read_completed(
                 consumed.add(key)
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        shell = ShellCommandResult(
+        shell = BashResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(item.get("id"), str, default=""),
@@ -2497,7 +2506,7 @@ def _read_completed(
                 consumed.add(key)
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        return WebSearchResults(
+        return WebSearchResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(item.get("id"), str, default=""),
@@ -2596,7 +2605,7 @@ def _per_path_edits(
             # An ADD states the file's whole bytes, which is what a write is --
             # and codex's own writer maps a write back to this entry. Typing it
             # as an edit left the IR unable to round-trip one.
-            FileWriteResult(
+            WriteResult(
                 context_id=context_id,
                 timestamp=timestamp,
                 call_id=call_id,
@@ -2605,7 +2614,7 @@ def _per_path_edits(
                 extra=own,
             )
             if added
-            else FileEditResult(
+            else EditResult(
                 context_id=context_id,
                 timestamp=timestamp,
                 call_id=call_id,
@@ -2616,7 +2625,7 @@ def _per_path_edits(
         )
         at += count
     return out or [
-        FileEditResult(
+        EditResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=call_id,
@@ -2625,10 +2634,10 @@ def _per_path_edits(
     ]
 
 
-def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchResult]:
+def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchHit]:
     """Read a search's result rows."""
     return [
-        WebSearchResult(
+        WebSearchHit(
             url=read_or_default(row.get("url"), str, default=None),
             title=read_or_default(row.get("title"), str, default=None),
             snippet=read_or_default(row.get("snippet"), str, default=None),

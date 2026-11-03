@@ -1,6 +1,6 @@
 """A unified diff decomposes into splices and rebuilds byte for byte.
 
-:class:`FileEditResult` states its edits as :class:`Splice` records, so the
+:class:`EditResult` states its edits as :class:`Splice` records, so the
 diff text a provider wrote has to survive that shape exactly -- a rebuild that
 loses a context line silently rewrites a patch.
 

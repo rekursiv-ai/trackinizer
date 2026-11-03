@@ -68,7 +68,7 @@ async def _session(store: Store) -> UUID:
                 session_id=session_id,
                 part=0,
                 idx=1,
-                kind="ShellCommandResult",
+                kind="BashResult",
                 payload=immutable(
                     {"py/object": "y", "stdout": "exit 1\n" + "spam " * 5_000},
                 ),
@@ -205,11 +205,11 @@ def test_heads_agree_with_the_footprint_mapper() -> None:
 def test_heavy_kinds_cover_the_footprint_headed_set() -> None:
     """Every kind the mapper heads is offloaded; FileRead adds the unindexed."""
     assert {
-        "ShellCommandResult",
+        "BashResult",
         "UncategorizedToolResult",
-        "FileWriteResult",
-        "FileEditResult",
-        "FileReadResult",
+        "WriteResult",
+        "EditResult",
+        "ReadResult",
     } == set(HEAVY_KINDS)
 
 

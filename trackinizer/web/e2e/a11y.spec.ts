@@ -288,21 +288,21 @@ const RECORDS = [
   { kind: "UserMessage", payload: { content: "Check Issue#1 and report." }, text: "Check Issue#1 and report." },
   { kind: "Thinking", payload: { content: "Read the issue, then run its test." } },
   { kind: "ToolCall", payload: { call_id: "c1", name: "Bash", arguments: { command: "pytest -x" } } },
-  { kind: "ShellCommandResult", payload: { call_id: "c1", stdout: "\u001b[32m1 passed\u001b[0m in 0.12s\n", stderr: "", exit_code: 0 } },
+  { kind: "BashResult", payload: { call_id: "c1", stdout: "\u001b[32m1 passed\u001b[0m in 0.12s\n", stderr: "", exit_code: 0 } },
   { kind: "ToolCall", payload: { call_id: "c2", name: "Bash", arguments: { command: "pytest" } } },
   {
-    kind: "ShellCommandResult",
+    kind: "BashResult",
     payload: { call_id: "c2", stdout: Array.from({ length: 80 }, (_, n) => `line ${n}`).join("\n"), stderr: "1 failed\n", exit_code: 1 },
   },
   {
-    kind: "FileEditResult",
+    kind: "EditResult",
     payload: {
       path: "a.py",
       edits: [{ before: "x = 'old'  # was\n", after: "x = 2.5  # now\n", lead: "@@ -3,3 +3,3 @@\n def f():\n", trail: " return x\n", start: 4, count: 1, bare: [] }],
     },
   },
   {
-    kind: "WebSearchResults",
+    kind: "WebSearchResult",
     payload: { query: "wcag contrast", content: [{ url: "https://example.com/wcag", title: "Contrast", snippet: "4.5:1 for text." }] },
   },
   { kind: "TokenUsage", payload: { info: { input_tokens: 3 } } },

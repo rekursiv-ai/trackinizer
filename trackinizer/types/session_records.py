@@ -32,33 +32,32 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from types import MappingProxyType
-from typing import Final, Self
+from typing import Final, Self, cast, get_args
 from uuid import UUID
 
 from treekle import PlainTree, immutable
 
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    RENAMED_KINDS,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AssistantMessage,
-    ContextClear,
+    BashResult,
     ContextCompaction,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
-    ShellCommandResult,
+    ReadResult,
     SystemMessage,
     Thinking,
-    TokenUsage,
     ToolCall,
-    TurnContext,
-    UncategorizedRecord,
+    ToolErrorResult,
+    ToolResult,
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
-    WebSearchResults,
+    WebSearchResult,
+    WriteResult,
     record_classes,
     stored_plain,
     stored_record,
@@ -260,17 +259,17 @@ def _parts(record: object) -> tuple[str, ...]:
                 record.name,
                 *(v for v in record.arguments.values() if isinstance(v, str)),
             )
-        case ShellCommandResult():
+        case BashResult():
             return (" ".join(record.command or ()), record.stdout, record.stderr)
-        case FileReadResult() | FileWriteResult():
+        case ReadResult() | WriteResult():
             return (record.path or "", record.content or "")
-        case FileEditResult():
+        case EditResult():
             return (
                 record.path or "",
                 *(splice.before or "" for splice in record.edits),
                 *(splice.after or "" for splice in record.edits),
             )
-        case WebSearchResults():
+        case WebSearchResult():
             return (
                 record.query or "",
                 *(row.title or "" for row in record.content),
@@ -278,10 +277,13 @@ def _parts(record: object) -> tuple[str, ...]:
             )
         case WebFetchResult():
             return (record.url or "", record.content or "")
-        case AgentStatusResult():
+        case AgentSpawnResult():
             return (record.prompt or "", record.content or "")
-        case UncategorizedToolResult():
+        case UncategorizedToolResult() | ToolErrorResult():
             return (record.content or "",)
+        case ToolResult():
+            # A runtime stand-in: what it shows is all it says.
+            return (record.text(),)
         case IncompleteRecord() | Stdin() | Stdout() | Stderr():
             # A captured stream is prose and nothing else, so the line IS the
             # searchable text -- including a question typed IN, which is what
@@ -320,44 +322,30 @@ def _parsed(raw: str | None) -> datetime | None:
 
 def _record_class(kind: str) -> type[TraxRecord]:
     """Return the record class named by a row's ``kind``."""
-    found = _BY_KIND.get(kind)
+    # A row stored before a record type was renamed carries its old name.
+    found = _BY_KIND.get(RENAMED_KINDS.get(kind, kind))
     if found is None:
         raise ValueError(f"unknown session record kind {kind!r}")
     return found
 
 
-# Every concrete member of ``TraxRecord``, keyed by the name its rows store.
-# Listed rather than walked from the union: ``session_records_test`` asserts the
-# two agree, so a member added upstream fails that test instead of silently
-# decoding as nothing here.
+def _members(alias: object) -> list[type]:
+    """Return each concrete class a possibly nested type alias names."""
+    found: list[type] = []
+    stack: list[object] = [alias]
+    while stack:
+        entry = stack.pop()
+        if isinstance(entry, type):
+            found.append(entry)
+        else:
+            # A ``type`` alias names its union by ``__value__``; a bare union is one.
+            stack.extend(get_args(getattr(entry, "__value__", entry)))
+    return found
+
+
+# Walked from the union, so a record type added upstream decodes here at once.
 _BY_KIND: Final[dict[str, type[TraxRecord]]] = {
-    cls.__name__: cls
-    for cls in (
-        UserMessage,
-        AssistantMessage,
-        Thinking,
-        ToolCall,
-        ShellCommandResult,
-        FileReadResult,
-        FileWriteResult,
-        FileEditResult,
-        WebSearchResults,
-        WebFetchResult,
-        AgentStatusResult,
-        UncategorizedToolResult,
-        SystemMessage,
-        TokenUsage,
-        ContextState,
-        ContextCompaction,
-        ContextClear,
-        AgentToAgentMessage,
-        TurnContext,
-        UncategorizedRecord,
-        IncompleteRecord,
-        Stdin,
-        Stdout,
-        Stderr,
-    )
+    cls.__name__: cast("type[TraxRecord]", cls) for cls in _members(TraxRecord)
 }
 
 # The session's classes and the scrape streams: given ``classes``, a tag naming any

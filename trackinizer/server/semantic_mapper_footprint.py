@@ -16,7 +16,7 @@ classes of record:
   ("Script completed", the traceback, the path) lives in the head; the tail
   is replay material.
 - SILENT -- file reads (the repo is the searchable source of file content),
-  telemetry (``AgentStatusResult`` etc.), and anything unrecognized: no units.
+  telemetry (``AgentSpawnResult`` etc.), and anything unrecognized: no units.
 
 ``Thinking`` is F-only prose here: its stored text is already only the
 readable plaintext -- ``search_text`` excludes sealed bytes by construction.
@@ -76,7 +76,7 @@ class FootprintMapper:
 
         The mapper is the authority on what is indexed; the backfill scanner and
         its pending-count bind THIS set (plus a non-empty-text check) into their
-        SQL predicate, so a never-indexed kind (telemetry: ``AgentStatusResult``,
+        SQL predicate, so a never-indexed kind (telemetry: ``AgentSpawnResult``,
         ``ContextState``, ``TokenUsage``, ...) or an empty-text row is never
         counted pending forever. Sharing the set here keeps the predicate from
         drifting off :meth:`units`. A superset of :attr:`embedded_kinds`: an
@@ -127,7 +127,7 @@ _EMBEDDED_PROSE: Final = frozenset(
         "ToolCall",
         "ContextCompaction",
         "WebFetchResult",
-        "WebSearchResults",
+        "WebSearchResult",
     },
 )
 
@@ -146,10 +146,10 @@ _FTS_ONLY_PROSE: Final = frozenset(
 # (doc footprint table, "F(head)+B"). Stream captures are machine output too.
 _HEADED: Final = frozenset(
     {
-        "ShellCommandResult",
+        "BashResult",
         "UncategorizedToolResult",
-        "FileWriteResult",
-        "FileEditResult",
+        "WriteResult",
+        "EditResult",
         "Stdout",
         "Stderr",
         "Stdin",

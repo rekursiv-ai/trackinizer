@@ -135,10 +135,10 @@ class TestFeedEvent:
             actor="scientist",
             part=0,
             seq=0,
-            kind="ShellCommandResult",
+            kind="BashResult",
             created=_NOW,
         )
-        assert event.kind == "ShellCommandResult"
+        assert event.kind == "BashResult"
 
     def test_kind_must_be_named(self) -> None:
         with pytest.raises(ValidationError):

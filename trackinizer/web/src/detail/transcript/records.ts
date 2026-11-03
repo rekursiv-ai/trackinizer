@@ -101,9 +101,9 @@ type Fields = { readonly [field: string]: unknown };
  * whether they are there: the server stores a record with each field at its default left out.
  */
 const FIELD_DEFAULTS: { readonly [kind: string]: Fields } = {
-  ShellCommandResult: { stdout: "", stderr: "" },
-  FileEditResult: { edits: [] },
-  WebSearchResults: { content: [] },
+  BashResult: { stdout: "", stderr: "" },
+  EditResult: { edits: [] },
+  WebSearchResult: { content: [] },
 };
 
 /** What `record` shows, read from its kind and payload. */
@@ -455,6 +455,8 @@ function shapeOf(record: SessionRecord): Shape {
       meta: `the first ${text.length.toLocaleString("en")} characters; the rest is offloaded`,
     };
   }
+  // What the model read in place of a result's fields: a failure, a stand-in, or a prune.
+  if (typeof payload.shown === "string") return output(record.kind, payload.shown);
   switch (record.kind) {
     case "UserMessage": {
       const text = field("content");
@@ -477,7 +479,7 @@ function shapeOf(record: SessionRecord): Shape {
       return { shape: "thinking", label: "Thinking", text: field("content") || field("summary") };
     case "ToolCall":
       return toolCall(field("name") || "?", plain(payload.arguments));
-    case "ShellCommandResult":
+    case "BashResult":
       if (typeof payload.stdout !== "string" && typeof payload.stderr !== "string") break;
       return {
         shape: "shell",
@@ -487,14 +489,14 @@ function shapeOf(record: SessionRecord): Shape {
         stderr: field("stderr"),
         exit: typeof payload.exit_code === "number" ? payload.exit_code : null,
       };
-    case "FileEditResult": {
+    case "EditResult": {
       const edits = plain(payload.edits);
       // A failed edit that changed nothing shows why, as what the model read.
       if (!Array.isArray(edits) || (!edits.length && failedOf(payload))) break;
       return { shape: "edit", label: "File edit", source: field("path"), lines: edits.flatMap(spliceLines) };
     }
-    case "FileReadResult":
-    case "FileWriteResult":
+    case "ReadResult":
+    case "WriteResult":
       if (typeof payload.content !== "string") break;
       return { ...output(record.kind, payload.content), source: field("path") };
     case "WebFetchResult":
@@ -509,7 +511,7 @@ function shapeOf(record: SessionRecord): Shape {
           .filter(Boolean)
           .join(" · "),
       };
-    case "WebSearchResults": {
+    case "WebSearchResult": {
       const results = plain(payload.content);
       if (!Array.isArray(results)) break;
       return {
@@ -523,7 +525,7 @@ function shapeOf(record: SessionRecord): Shape {
         })),
       };
     }
-    case "AgentStatusResult":
+    case "AgentSpawnResult":
       // A launch still under way has no content; its text, the server's own
       // projection, is then its prompt.
       return {
@@ -540,6 +542,8 @@ function shapeOf(record: SessionRecord): Shape {
       const { text, meta } = toolOutput(typeof payload.content === "string" ? payload.content : record.text || read);
       return { ...output(record.kind, text), label: "Tool result", meta };
     }
+    case "ToolErrorResult":
+      return { ...output(record.kind, field("content") || (record.text ?? "")), label: "Tool error" };
     case "ContextClear":
       return {
         shape: "clear",
@@ -857,14 +861,33 @@ const TERMINAL: ReadonlySet<string> = new Set(["Stdin", "Stdout", "Stderr"]);
 
 /** What each tool result kind did (`ToolKind`). */
 const TOOL_RESULTS: ReadonlyMap<string, ToolKind> = new Map([
-  ["ShellCommandResult", "command"],
-  ["FileReadResult", "read"],
-  ["FileEditResult", "edit"],
-  ["FileWriteResult", "write"],
-  ["WebSearchResults", "web"],
+  ["BashResult", "command"],
+  ["ReadResult", "read"],
+  ["EditResult", "edit"],
+  ["WriteResult", "write"],
+  ["WebSearchResult", "web"],
   ["WebFetchResult", "fetch"],
-  ["AgentStatusResult", "agent"],
+  ["AgentSpawnResult", "agent"],
   ["UncategorizedToolResult", "call"],
+  ["GrepResult", "search"],
+  ["GlobResult", "search"],
+  ["ListResult", "list"],
+  ["SkillResult", "call"],
+  ["AgentSendResult", "call"],
+  ["BackgroundTaskResult", "call"],
+  ["AgentSelfResult", "call"],
+  ["SessionResult", "call"],
+  ["MemoryResult", "call"],
+  ["PlayAudioResult", "call"],
+  ["PaperSearchResult", "call"],
+  ["PaperDetailsResult", "call"],
+  ["PaperAuthorResult", "call"],
+  ["PaperFetchResult", "call"],
+  ["RemoteToolResult", "call"],
+  ["McpResult", "call"],
+  ["FunctionResult", "call"],
+  ["ToolErrorResult", "call"],
+  ["ToolResult", "call"],
 ]);
 
 /**

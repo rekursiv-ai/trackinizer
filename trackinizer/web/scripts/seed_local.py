@@ -33,7 +33,7 @@ import uuid
 from trackinizer.client.client import Client
 from trackinizer.sagent.session.types import (
     AssistantMessage,
-    ShellCommandResult,
+    BashResult,
     Thinking,
     ToolCall,
     TurnContext,
@@ -226,7 +226,7 @@ def _seed_transcript(client: Client) -> None:
         UserMessage(content="What does **Issue#1** ask for?"),
         Thinking(content="Reading the seeded root first."),
         ToolCall(call_id="c1", name="Bash", arguments={"command": "trax issue 1"}),
-        ShellCommandResult(call_id="c1", stdout="Issue#1 [active]\n", exit_code=0),
+        BashResult(call_id="c1", stdout="Issue#1 [active]\n", exit_code=0),
         AssistantMessage(content="It is the seeded root; see `Issue#1`."),
     )
     records = [
