@@ -13,6 +13,8 @@ from trackinizer.wire.wire_job import (
     GATE_RO_VERBS,
     GATE_RW_VERBS,
     MAX_ARGV_CHARS,
+    MAX_GPUS,
+    MAX_MINUTES,
     NODE_PATTERN,
     TERMINAL_STATES,
     Grant,
@@ -153,6 +155,16 @@ def test_a_submit_holds_a_clean_key_and_the_command() -> None:
 def test_a_submit_refuses_a_bad_field(fields: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):
         _submit(**fields)
+
+
+def test_a_submit_may_ask_for_a_whole_node_for_six_hours_and_no_more() -> None:
+    assert (MAX_GPUS, MAX_MINUTES) == (8, 360)
+    body = _submit(gpus=MAX_GPUS, minutes=MAX_MINUTES)
+
+    assert (body.gpus, body.minutes) == (MAX_GPUS, MAX_MINUTES)
+    for fields in ({"gpus": MAX_GPUS + 1}, {"minutes": MAX_MINUTES + 1}):
+        with pytest.raises(pydantic.ValidationError):
+            _submit(**fields)
 
 
 def test_the_command_line_is_capped_with_one_separator_per_word() -> None:

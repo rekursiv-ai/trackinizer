@@ -48,6 +48,8 @@ __all__ = [
     "JOB_START_PATH",
     "JOB_USER_PREFIX",
     "MAX_ARGV_CHARS",
+    "MAX_GPUS",
+    "MAX_MINUTES",
     "NODE_PATTERN",
     "SECRET_NAMES",
     "TERMINAL_STATES",
@@ -102,6 +104,12 @@ GATE_RO_VERBS: Final = ("status", "logs", "manifest", "download")
 
 MAX_ARGV_CHARS: Final = 4_096
 """Longest job command line, all arguments together."""
+
+MAX_GPUS: Final = 8
+"""The most GPUs one job may ask for: one whole node, since a job cannot span nodes."""
+
+MAX_MINUTES: Final = 360
+"""The longest wall-clock limit one job may ask for."""
 
 type JobState = Literal[
     "requested",
@@ -184,8 +192,8 @@ class SubmitBody(BaseModel):
     public_key: PublicKey
     """The one-time key the certificate will be signed for."""
 
-    gpus: int = Field(ge=1, le=8)
-    minutes: int = Field(ge=1, le=360)
+    gpus: int = Field(ge=1, le=MAX_GPUS)
+    minutes: int = Field(ge=1, le=MAX_MINUTES)
     """Wall-clock limit; the job is stopped when it runs out."""
 
     label: str = Field(default="", max_length=80, pattern=r"^[A-Za-z0-9._ -]*$")
