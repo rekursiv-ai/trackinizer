@@ -44,7 +44,7 @@ from treekle import from_plain
 from trackinizer.client.client import Client
 from trackinizer.sagent.session.types import (
     AssistantMessage,
-    ShellCommandResult,
+    BashResult,
     ToolCall,
     UserMessage,
 )
@@ -249,7 +249,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8812")
 
 
-type _Turn = UserMessage | AssistantMessage | ToolCall | ShellCommandResult
+type _Turn = UserMessage | AssistantMessage | ToolCall | BashResult
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -980,7 +980,7 @@ def _shell(
     call_id: str,
     command: str,
     stdout: str,
-) -> tuple[ToolCall, ShellCommandResult]:
+) -> tuple[ToolCall, BashResult]:
     """Make a Bash call at ``called`` and its output at ``answered``."""
     return (
         ToolCall(
@@ -989,7 +989,7 @@ def _shell(
             name="Bash",
             arguments={"command": command},
         ),
-        ShellCommandResult(
+        BashResult(
             timestamp=_when(answered),
             call_id=call_id,
             stdout=stdout,

@@ -479,7 +479,7 @@ second query surface:
 
 ```
 trax agentsession tool_call re bar
-trax agentsession shell_command_result has "pg_advisory_lock"
+trax agentsession bash_result has "pg_advisory_lock"
 ```
 
 Each lowers to a correlated `EXISTS` over `session_records` with the kind

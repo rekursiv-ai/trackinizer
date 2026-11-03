@@ -23,17 +23,17 @@ from trackinizer.lib.agent.sessions import claude, codex, gemini
 from trackinizer.lib.agent.sessions.convert import detect_format
 from trackinizer.lib.agent.sessions.fuse import chain
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AssistantMessage,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
+    ReadResult,
     SessionRecord,
     ToolResult,
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
-    WebSearchResults,
+    WebSearchResult,
+    WriteResult,
 )
 
 
@@ -104,10 +104,10 @@ def _codex_meta() -> str:
 @pytest.mark.parametrize(
     ("native", "source", "expected"),
     [
-        (_claude_read_line(), FileReadResult, FileReadResult),
+        (_claude_read_line(), ReadResult, ReadResult),
         # Codex has no write TOOL, but its ``apply_patch`` add entry states a
         # file's whole bytes -- which IS a write, so the act keeps its type.
-        (_claude_write_line(), FileWriteResult, FileWriteResult),
+        (_claude_write_line(), WriteResult, WriteResult),
     ],
     ids=["read", "write"],
 )
@@ -157,7 +157,7 @@ def test_a_crossed_file_result_keeps_the_path_it_named(native: str, path: str) -
     found = [
         record
         for record in crossed
-        if isinstance(record, FileReadResult | FileWriteResult | FileEditResult)
+        if isinstance(record, ReadResult | WriteResult | EditResult)
     ]
 
     assert [record.path for record in found] == [path]
@@ -179,7 +179,7 @@ def test_a_single_path_codex_edit_names_the_file_it_changed() -> None:
     records = list(codex.normalize(StringIO(native)))
 
     record = records[-1]
-    assert isinstance(record, FileEditResult)
+    assert isinstance(record, EditResult)
     assert record.path == "/w/a.py"
 
 
@@ -187,7 +187,7 @@ def test_a_single_path_codex_edit_names_the_file_it_changed() -> None:
     "record",
     [
         WebFetchResult(call_id="c1", url="https://x/", content="page"),
-        AgentStatusResult(call_id="c1", agent_id="a1", content="report"),
+        AgentSpawnResult(call_id="c1", agent_id="a1", content="report"),
     ],
     ids=["fetch", "agent"],
 )
@@ -232,8 +232,8 @@ def _codex_search_line() -> str:
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
-        (_codex_edit_lines(), FileEditResult),
-        (_codex_search_line(), WebSearchResults),
+        (_codex_edit_lines(), EditResult),
+        (_codex_search_line(), WebSearchResult),
     ],
     ids=["edit", "search"],
 )
@@ -272,7 +272,7 @@ def test_a_crossed_codex_edit_keeps_the_file_and_the_change() -> None:
     claude.denormalize(records, out)
 
     crossed = list(claude.normalize(StringIO(out.getvalue())))
-    edits = [r for r in crossed if isinstance(r, FileEditResult)]
+    edits = [r for r in crossed if isinstance(r, EditResult)]
     assert [(r.path, len(r.edits)) for r in edits] == [("/w/a.py", 1)]
 
 
@@ -335,10 +335,10 @@ def test_a_path_beginning_with_a_dash_is_named_not_flagged() -> None:
     """
     out = StringIO()
 
-    codex.denormalize([FileReadResult(call_id="c1", path="-n", content="x")], out)
+    codex.denormalize([ReadResult(call_id="c1", path="-n", content="x")], out)
 
     crossed = list(codex.normalize(StringIO(out.getvalue())))
-    reads = [r for r in crossed if isinstance(r, FileReadResult)]
+    reads = [r for r in crossed if isinstance(r, ReadResult)]
     assert [r.path for r in reads] == ["-n"]
 
 

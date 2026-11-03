@@ -30,11 +30,11 @@ import pytest
 from trackinizer.lib.agent.sessions import claude, codex
 from trackinizer.lib.agent.sessions.udiff import render_udiff
 from trackinizer.sagent.session.types import (
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
+    ReadResult,
     SessionRecord,
     ToolCall,
+    WriteResult,
 )
 
 
@@ -54,48 +54,48 @@ def rows() -> tuple[tuple[str, str, type[object], str, str | None], ...]:
 
     """
     return (
-        ("read-cat", "/bin/cat a.txt", FileReadResult, "a.txt", "body\n"),
-        ("read-head", "/usr/bin/head -n 1 a.txt", FileReadResult, "a.txt", "body\n"),
-        ("read-tail", "/usr/bin/tail -n 1 a.txt", FileReadResult, "a.txt", "body\n"),
-        ("read-sed", "/bin/sed -n 1p a.txt", FileReadResult, "a.txt", "body\n"),
-        ("read-nl", "/usr/bin/nl -ba a.txt", FileReadResult, "a.txt", "body\n"),
+        ("read-cat", "/bin/cat a.txt", ReadResult, "a.txt", "body\n"),
+        ("read-head", "/usr/bin/head -n 1 a.txt", ReadResult, "a.txt", "body\n"),
+        ("read-tail", "/usr/bin/tail -n 1 a.txt", ReadResult, "a.txt", "body\n"),
+        ("read-sed", "/bin/sed -n 1p a.txt", ReadResult, "a.txt", "body\n"),
+        ("read-nl", "/usr/bin/nl -ba a.txt", ReadResult, "a.txt", "body\n"),
         # A literal ``cd`` composes into the path, per ``shell_results``: the
         # bare operand would name a file in the session's own directory.
-        ("read-cd", "cd sub && /bin/cat a.txt", FileReadResult, "sub/a.txt", "body\n"),
-        ("write-echo", "/bin/echo hi > a.txt", FileWriteResult, "a.txt", "hi\n"),
-        ("write-printf", "/usr/bin/printf hi > a.txt", FileWriteResult, "a.txt", "hi"),
+        ("read-cd", "cd sub && /bin/cat a.txt", ReadResult, "sub/a.txt", "body\n"),
+        ("write-echo", "/bin/echo hi > a.txt", WriteResult, "a.txt", "hi\n"),
+        ("write-printf", "/usr/bin/printf hi > a.txt", WriteResult, "a.txt", "hi"),
         (
             "write-heredoc",
             "/bin/cat > a.txt << 'EOF'\nbeta\nEOF\n",
-            FileWriteResult,
+            WriteResult,
             "a.txt",
             "beta\n",
         ),
-        ("append-echo", "/bin/echo hi >> a.txt", FileEditResult, "a.txt", "+hi\n"),
+        ("append-echo", "/bin/echo hi >> a.txt", EditResult, "a.txt", "+hi\n"),
         (
             "append-heredoc",
             "/bin/cat >> a.txt << 'EOF'\nbeta\nEOF\n",
-            FileEditResult,
+            EditResult,
             "a.txt",
             "+beta\n",
         ),
         (
             "patch-inline",
             "/usr/bin/patch a.txt << 'EOF'\n-old\n+new\nEOF\n",
-            FileEditResult,
+            EditResult,
             "a.txt",
             "-old\n+new\n",
         ),
-        ("rewrite-sed", "/bin/sed -i s/a/b/ a.txt", FileEditResult, "a.txt", None),
+        ("rewrite-sed", "/bin/sed -i s/a/b/ a.txt", EditResult, "a.txt", None),
         (
             "rewrite-perl",
             "/usr/bin/perl -pi -e s/a/b/ a.txt",
-            FileEditResult,
+            EditResult,
             "a.txt",
             None,
         ),
-        ("rewrite-tee", "/usr/bin/tee a.txt", FileEditResult, "a.txt", None),
-        ("rewrite-tee-a", "/usr/bin/tee -a a.txt", FileEditResult, "a.txt", None),
+        ("rewrite-tee", "/usr/bin/tee a.txt", EditResult, "a.txt", None),
+        ("rewrite-tee-a", "/usr/bin/tee -a a.txt", EditResult, "a.txt", None),
     )
 
 
@@ -185,7 +185,7 @@ def _lifted(records: Sequence[SessionRecord]) -> object:
     found = [
         record
         for record in records
-        if isinstance(record, FileReadResult | FileWriteResult | FileEditResult)
+        if isinstance(record, ReadResult | WriteResult | EditResult)
     ]
     return found[0] if len(found) == 1 else None
 
@@ -205,7 +205,7 @@ def test_every_table_row_is_harvested(
     # A read reports what the command printed; a write or append reports the
     # bytes it put in the file; a rewrite reports neither, because the
     # transcript holds no record of the file afterwards.
-    stdout = "body\n" if expected is FileReadResult else ""
+    stdout = "body\n" if expected is ReadResult else ""
     native = (
         _claude_native(command, stdout)
         if provider == "claude"
@@ -216,9 +216,9 @@ def test_every_table_row_is_harvested(
     lifted = _lifted(list(adapter.normalize(StringIO(native))))
 
     assert type(lifted) is expected
-    assert isinstance(lifted, FileReadResult | FileWriteResult | FileEditResult)
+    assert isinstance(lifted, ReadResult | WriteResult | EditResult)
     assert lifted.path == path
-    if isinstance(lifted, FileEditResult):
+    if isinstance(lifted, EditResult):
         assert (render_udiff(lifted.edits) or None) == content
     else:
         assert lifted.content == content
@@ -264,7 +264,7 @@ def test_editing_a_lifted_path_rewrites_the_replayed_command(
     native = _claude_native(command, "body\n")
     records = list(claude.normalize(StringIO(native)))
     lifted = _lifted(records)
-    assert isinstance(lifted, FileReadResult | FileWriteResult | FileEditResult)
+    assert isinstance(lifted, ReadResult | WriteResult | EditResult)
 
     edited = replace(lifted, path="renamed.txt")
     output = StringIO()
@@ -304,7 +304,7 @@ def test_editing_lifted_write_content_rewrites_the_replayed_command() -> None:
     native = _claude_native("/usr/bin/printf body > a.txt", "")
     records = list(claude.normalize(StringIO(native)))
     lifted = _lifted(records)
-    assert isinstance(lifted, FileWriteResult)
+    assert isinstance(lifted, WriteResult)
 
     output = StringIO()
     claude.denormalize(
@@ -329,7 +329,7 @@ def test_a_lifted_result_keeps_the_shell_execution_it_came_from() -> None:
 
     lifted = _lifted(list(claude.normalize(StringIO(native))))
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert "$shell" in lifted.extra
 
 

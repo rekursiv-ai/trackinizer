@@ -173,16 +173,16 @@ def test_a_golden_carries_every_record_type_the_fixture_holds() -> None:
     }
 
     assert kinds == {
-        "AgentStatusResult",
+        "AgentSpawnResult",
         "AssistantMessage",
         # Every session opens with one: the launch line states the context the
         # model starts from, which is the clear's own subject.
         "ContextClear",
         "ContextState",
-        "FileEditResult",
-        "FileReadResult",
-        "FileWriteResult",
-        "ShellCommandResult",
+        "EditResult",
+        "ReadResult",
+        "WriteResult",
+        "BashResult",
         "SystemMessage",
         "Thinking",
         "TokenUsage",
@@ -192,7 +192,7 @@ def test_a_golden_carries_every_record_type_the_fixture_holds() -> None:
         "UncategorizedToolResult",
         "UserMessage",
         "WebFetchResult",
-        "WebSearchResults",
+        "WebSearchResult",
     }
 
 

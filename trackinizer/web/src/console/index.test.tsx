@@ -60,7 +60,7 @@ const EVENTS = [
   said(3, TILES_A, "UncategorizedRecord", { kind: "event_msg/task_started", payload: { type: "task_started" } }),
   said(4, TILES_A, "AssistantMessage", { content: "**Done.**" }, "**Done.**"),
   said(5, TILES_B, "AssistantMessage", { content: "On it." }, "On it."),
-  said(6, CLAUDE, "ShellCommandResult", { command: "pytest -x", stdout: "1 passed", stderr: "", exit_code: 0 }),
+  said(6, CLAUDE, "BashResult", { command: "pytest -x", stdout: "1 passed", stderr: "", exit_code: 0 }),
 ];
 
 /** The audience of each session its owner hid, as the fake server holds it; the rest are open. */
@@ -94,7 +94,7 @@ function facets(query: URLSearchParams, now: number): FeedFacets {
       { kind: "UserMessage", count: 2 },
       { kind: "AssistantMessage", count: 4 },
       { kind: "ToolCall", count: 10 },
-      { kind: "ShellCommandResult", count: 9 },
+      { kind: "BashResult", count: 9 },
       { kind: "TokenUsage", count: 30 },
       { kind: "UncategorizedRecord", count: 15 },
     ],

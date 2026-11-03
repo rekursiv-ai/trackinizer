@@ -15,7 +15,8 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
-from typing import TextIO, TypeGuard, cast
+from types import MappingProxyType
+from typing import Final, TextIO, TypeGuard, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import base64
@@ -57,19 +58,23 @@ from trackinizer.lib.agent.sessions.unmodeled import (
 )
 from trackinizer.sagent.model.capability import ThinkingEffort, literal_members
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AnyToolResult,
     AssistantMessage,
     Attachment,
+    BashResult,
     ContextClear,
     ContextCompaction,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
+    GlobResult,
+    GrepResult,
     IncompleteRecord,
+    ListResult,
+    McpResult,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
+    SkillResult,
     Splice,
     SystemMessage,
     Thinking,
@@ -81,8 +86,9 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WebSearchHit,
     WebSearchResult,
-    WebSearchResults,
+    WriteResult,
 )
 
 
@@ -385,7 +391,7 @@ def _linked(
 class _Emitter:
     """Write lines in order, holding only the window a shell edit can reach.
 
-    A lifted :class:`FileWriteResult` edits the ``command`` of the ``tool_use``
+    A lifted :class:`WriteResult` edits the ``command`` of the ``tool_use``
     line that opened it, so that line must still be mutable when the result
     arrives. Buffering the file to allow it cost 2.6 GB on a 273 MB session
     (axiom 11); buffering ``lookahead`` lines costs a constant.
@@ -470,7 +476,7 @@ class _Emitter:
 
     def _apply_shell_edit(self, record: SessionRecord) -> None:
         """Rewrite a lifted file edit into the Bash call still in the window."""
-        if not isinstance(record, FileReadResult | FileWriteResult | FileEditResult):
+        if not isinstance(record, ReadResult | WriteResult | EditResult):
             return
         if "$shell" not in record.extra:
             return
@@ -1018,13 +1024,13 @@ def _write_result(
 # because the record already holds what it is made of.
 def _result_text(item: ToolResult) -> str:
     """Rebuild the block text a result's own fields render."""
-    if isinstance(item, ShellCommandResult):
+    if isinstance(item, BashResult):
         return _shell_text(item.stdout, item.stderr)
-    if isinstance(item, FileReadResult | FileWriteResult | FileEditResult):
+    if isinstance(item, ReadResult | WriteResult | EditResult):
         shell = shell_result_for_replay(item)
         if shell is not None:
             return _shell_text(shell.stdout, shell.stderr)
-    if isinstance(item, FileReadResult):
+    if isinstance(item, ReadResult):
         return _numbered(item.content or "")
     return ""
 
@@ -1034,7 +1040,15 @@ def _write_result_block(item: ToolResult) -> dict[str, object]:
     shape = from_plain(item.extra.get("$result"), dict[str, object], default={})
     neutral_content = (
         item.content
-        if isinstance(item, UncategorizedToolResult)
+        if isinstance(
+            item,
+            UncategorizedToolResult
+            | McpResult
+            | SkillResult
+            | GrepResult
+            | GlobResult
+            | ListResult,
+        )
         else _result_text(item)
     )
     content = (
@@ -1129,12 +1143,12 @@ def _write_tool_payload(
         payload = {key: value for key, value in values.items() if value is not None}
     # A ``file`` that is no object is the line's own bytes, replayed as stored.
     nested = _text_block(payload.get("file"), kind=None) or {}
-    if isinstance(item, FileReadResult) and nested:
+    if isinstance(item, ReadResult) and nested:
         payload["file"] = restore_unmodeled_fields(
             nested,
             {"filePath": item.path, "content": item.content},
         )
-    if isinstance(item, FileEditResult) and "splice" in shape:
+    if isinstance(item, EditResult) and "splice" in shape:
         # ``structuredPatch`` is claude's rendering of the SAME replacement the
         # splice holds, so an edited splice makes it stale. It is dropped
         # rather than re-rendered: rebuilding it needs the file's surrounding
@@ -1174,17 +1188,33 @@ def _write_tool_payload(
 def _claude_tool(item: ToolResult) -> str:
     """Return the claude tool whose shape states what this act did."""
     for kind, name in (
-        (FileReadResult, "Read"),
-        (FileWriteResult, "Write"),
-        (FileEditResult, "Edit"),
-        (ShellCommandResult, "Bash"),
-        (WebSearchResults, "WebSearch"),
+        (ReadResult, "Read"),
+        (WriteResult, "Write"),
+        (EditResult, "Edit"),
+        (BashResult, "Bash"),
+        (WebSearchResult, "WebSearch"),
         (WebFetchResult, "WebFetch"),
-        (AgentStatusResult, "Agent"),
+        (AgentSpawnResult, "Agent"),
     ):
         if isinstance(item, kind):
             return name
-    return ""
+    if isinstance(item, McpResult):
+        return f"mcp__{item.server}__{item.tool}"
+    return next((n for n, kind in _TEXT_TOOLS.items() if isinstance(item, kind)), "")
+
+
+# Claude's tools whose result is the text the model read, by the sagent type for the
+# act: their fields are claude's own, kept beside the record as for any other tool.
+_TEXT_TOOLS: Final[
+    Mapping[str, type[SkillResult | GrepResult | GlobResult | ListResult]]
+] = MappingProxyType(
+    {
+        "Skill": SkillResult,
+        "Grep": GrepResult,
+        "Glob": GlobResult,
+        "LS": ListResult,
+    },
+)
 
 
 def _ordered(payload: dict[str, object], tool: str) -> dict[str, object]:
@@ -1198,7 +1228,7 @@ def _ordered(payload: dict[str, object], tool: str) -> dict[str, object]:
 # An entry the reader saw as a group is restored as one; anything else was the model's
 # own prose alongside the groups and is replayed as it stood.
 def _write_search_groups(
-    item: WebSearchResults,
+    item: WebSearchResult,
     shape: Mapping[str, object],
 ) -> list[object]:
     """Return a search payload's ``results``, rows back inside their group."""
@@ -1249,7 +1279,7 @@ def _write_search_groups(
 
 
 def _write_search_row(
-    row: WebSearchResult,
+    row: WebSearchHit,
     template: Mapping[str, object] | None,
 ) -> dict[str, object]:
     """Replay a search row's field presence, order, and residual."""
@@ -1271,7 +1301,7 @@ def _write_search_row(
 
 
 def _write_agent_blocks(
-    item: AgentStatusResult,
+    item: AgentSpawnResult,
     shape: Mapping[str, object],
 ) -> list[object]:
     """Replay agent prose blocks while preserving their boundaries."""
@@ -1300,29 +1330,29 @@ def _write_agent_blocks(
 
 def _result_values(item: ToolResult, shape: Mapping[str, object]) -> dict[str, object]:
     """Return current semantic values by their provider field names."""
-    if isinstance(item, ShellCommandResult):
+    if isinstance(item, BashResult):
         return {"stdout": item.stdout, "stderr": item.stderr}
-    if isinstance(item, FileReadResult | FileWriteResult | FileEditResult):
+    if isinstance(item, ReadResult | WriteResult | EditResult):
         shell = shell_result_for_replay(item)
         if shell is not None:
             return {"stdout": shell.stdout, "stderr": shell.stderr}
-    if isinstance(item, FileReadResult):
+    if isinstance(item, ReadResult):
         file = {
             key: value
             for key, value in {"filePath": item.path, "content": item.content}.items()
             if value is not None
         }
         return {"file": file or None}
-    if isinstance(item, FileWriteResult):
+    if isinstance(item, WriteResult):
         return {"filePath": item.path, "content": item.content}
-    if isinstance(item, FileEditResult):
+    if isinstance(item, EditResult):
         splice = item.edits[0] if item.edits else None
         return {
             "filePath": item.path,
             "oldString": splice.before if splice is not None else None,
             "newString": splice.after if splice is not None else None,
         }
-    if isinstance(item, WebSearchResults):
+    if isinstance(item, WebSearchResult):
         return {
             "query": item.query,
             "durationSeconds": item.duration_sec,
@@ -1336,7 +1366,7 @@ def _result_values(item: ToolResult, shape: Mapping[str, object]) -> dict[str, o
             "durationMs": _millis(item.duration_sec, shape.get("duration_ms")),
             "bytes": item.size,
         }
-    if isinstance(item, AgentStatusResult):
+    if isinstance(item, AgentSpawnResult):
         return {
             "agentId": item.agent_id,
             "agentType": item.agent_kind,
@@ -2554,7 +2584,7 @@ def _typed_result(
     if name == "Bash":
         stdout = read_field_keeping_invalid(result, "stdout", str)
         stderr = read_field_keeping_invalid(result, "stderr", str)
-        shell = ShellCommandResult(
+        shell = BashResult(
             timestamp=timestamp,
             call_id=call_id,
             stdout=stdout if isinstance(stdout, str) else "",
@@ -2599,7 +2629,7 @@ def _typed_result(
             )
         else:
             stored = dict(extract_unmodeled_fields(result, fields={"file": file_state}))
-        return FileReadResult(
+        return ReadResult(
             timestamp=timestamp,
             call_id=call_id,
             path=path if isinstance(path, str) else None,
@@ -2611,7 +2641,7 @@ def _typed_result(
     if name == "Write":
         path = read_field_keeping_invalid(result, "filePath", str)
         content = read_field_keeping_invalid(result, "content", str)
-        return FileWriteResult(
+        return WriteResult(
             timestamp=timestamp,
             call_id=call_id,
             path=path if isinstance(path, str) else None,
@@ -2639,7 +2669,7 @@ def _typed_result(
                 old if isinstance(old, str) else None,
                 new if isinstance(new, str) else None,
             ]
-        return FileEditResult(
+        return EditResult(
             timestamp=timestamp,
             call_id=call_id,
             path=path if isinstance(path, str) else None,
@@ -2723,7 +2753,7 @@ def _typed_result(
                 groups.append(cast(PlainTree, group))
         if "results" in result:
             shape["rows"] = groups
-        return WebSearchResults(
+        return WebSearchResult(
             timestamp=timestamp,
             call_id=call_id,
             query=query if isinstance(query, str) else None,
@@ -2806,7 +2836,7 @@ def _typed_result(
         ]
         if isinstance(result.get("content"), list):
             shape["agent_blocks"] = cast(PlainTree, result["content"])
-        return AgentStatusResult(
+        return AgentSpawnResult(
             timestamp=timestamp,
             call_id=call_id,
             agent_id=agent_id if isinstance(agent_id, str) else None,
@@ -2845,21 +2875,42 @@ def _typed_result(
                 ),
             ),
         )
-    # Every other tool -- Skill, ToolSearch, an MCP server's. Its shape is the
-    # tool's own, so naming a type for it would be inventing one.
+    kept = immutable(
+        _result_extra(
+            extra,
+            shape,
+            extract_unmodeled_fields(result),
+            structured=structured_result,
+        ),
+    )
+    # The tools sagent has too: the same act, under sagent's name for it.
+    if name in _TEXT_TOOLS:
+        return _TEXT_TOOLS[name](
+            timestamp=timestamp,
+            call_id=call_id,
+            content=text,
+            attachments=attachments,
+            extra=kept,
+        )
+    if name.startswith("mcp__"):
+        server, _, tool = name.removeprefix("mcp__").partition("__")
+        return McpResult(
+            timestamp=timestamp,
+            call_id=call_id,
+            server=server,
+            tool=tool,
+            content=text,
+            attachments=attachments,
+            extra=kept,
+        )
+    # Every other tool -- ToolSearch, AskUserQuestion. Sagent has none like it, so
+    # naming a type for it would be inventing one.
     return UncategorizedToolResult(
         timestamp=timestamp,
         call_id=call_id,
         content=text or None,
         attachments=attachments,
-        extra=immutable(
-            _result_extra(
-                extra,
-                shape,
-                extract_unmodeled_fields(result),
-                structured=structured_result,
-            ),
-        ),
+        extra=kept,
     )
 
 
@@ -2877,10 +2928,10 @@ def _result_extra(
     return result
 
 
-def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchResult]:
+def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchHit]:
     """Read a search's result rows. Claude reports no snippet."""
     return [
-        WebSearchResult(
+        WebSearchHit(
             url=read_or_default(row.get("url"), str, default=None),
             title=read_or_default(row.get("title"), str, default=None),
             snippet=read_or_default(row.get("snippet"), str, default=None),

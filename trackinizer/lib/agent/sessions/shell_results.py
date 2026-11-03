@@ -10,21 +10,21 @@ THE FORMS THIS MODULE MATCHES -- there are no others:
 ===========  ==================================  =========================
 operation    form                                becomes
 ===========  ==================================  =========================
-read         ``cat [--] F``                      :class:`FileReadResult`
-read         ``head [-n N|-N|--lines=N] F``      :class:`FileReadResult`
-read         ``tail [-n N|-N|--lines=N] F``      :class:`FileReadResult`
-read         ``sed -n 'N,Mp' F``                 :class:`FileReadResult`
-read         ``nl -ba F``                        :class:`FileReadResult`
-write        ``cat > F`` (``<<``/``<<-`` body)   :class:`FileWriteResult`
-write        ``echo ... > F``                    :class:`FileWriteResult`
-write        ``printf ... > F``                  :class:`FileWriteResult`
-edit         ``cat >> F``                        :class:`FileEditResult`
-edit         ``echo ... >> F``                   :class:`FileEditResult`
-edit         ``printf ... >> F``                 :class:`FileEditResult`
-edit         ``tee [-a|--append] F``             :class:`FileEditResult`
-edit         ``sed -i ... F``                    :class:`FileEditResult`
-edit         ``perl -i ... F``                   :class:`FileEditResult`
-edit         ``patch ... F``                     :class:`FileEditResult`
+read         ``cat [--] F``                      :class:`ReadResult`
+read         ``head [-n N|-N|--lines=N] F``      :class:`ReadResult`
+read         ``tail [-n N|-N|--lines=N] F``      :class:`ReadResult`
+read         ``sed -n 'N,Mp' F``                 :class:`ReadResult`
+read         ``nl -ba F``                        :class:`ReadResult`
+write        ``cat > F`` (``<<``/``<<-`` body)   :class:`WriteResult`
+write        ``echo ... > F``                    :class:`WriteResult`
+write        ``printf ... > F``                  :class:`WriteResult`
+edit         ``cat >> F``                        :class:`EditResult`
+edit         ``echo ... >> F``                   :class:`EditResult`
+edit         ``printf ... >> F``                 :class:`EditResult`
+edit         ``tee [-a|--append] F``             :class:`EditResult`
+edit         ``sed -i ... F``                    :class:`EditResult`
+edit         ``perl -i ... F``                   :class:`EditResult`
+edit         ``patch ... F``                     :class:`EditResult`
 ===========  ==================================  =========================
 
 A count spelling is the utility's own: ``head -20 f`` and ``head -n 20 f``
@@ -36,7 +36,7 @@ options, which is the one way to name a file whose name begins with a dash.
 
 ``tee`` is an EDIT even without ``-a``, and even though it truncates: its
 content arrives on a pipe, which is not a form this module matches, so the
-file's new bytes are unknown either way. A :class:`FileWriteResult` would have
+file's new bytes are unknown either way. A :class:`WriteResult` would have
 to state them, and stating ``""`` would claim the command emptied the file.
 
 Only an append states the bytes it added; the other edits state a path and
@@ -54,7 +54,7 @@ text in the transcript.** A path or a body the shell would expand -- ``$VAR``,
 ``` `cmd` ```, ``*.py``, ``{a,b}`` -- names a file, or holds bytes, that
 depend on a machine this reader cannot see. Such a command is a dynamic
 program, not a file operation, and is left as a
-:class:`ShellCommandResult`. So is anything else: a pipeline, a second
+:class:`BashResult`. So is anything else: a pipeline, a second
 command, a redirect this table does not list. Nothing is guessed.
 
 Two consequences of that rule worth stating outright, because both look like
@@ -86,11 +86,11 @@ from treekle import from_plain, immutable, mutable
 
 from trackinizer.lib.agent.sessions.udiff import parse_udiff
 from trackinizer.sagent.session.types import (
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
-    ShellCommandResult,
+    BashResult,
+    EditResult,
+    ReadResult,
     Splice,
+    WriteResult,
 )
 
 
@@ -107,7 +107,7 @@ else:
 __all__ = ["lift_shell_result", "rewrite_shell_source", "shell_result_for_replay"]
 
 
-type FileResult = FileReadResult | FileWriteResult | FileEditResult
+type FileResult = ReadResult | WriteResult | EditResult
 type Act = Literal["read", "write", "append", "rewrite", "patched"]
 """What one matched command did to its file.
 
@@ -186,7 +186,7 @@ class _BashNode(Protocol):
 
 
 def lift_shell_result(
-    result: ShellCommandResult,
+    result: BashResult,
     *,
     command: str | None = None,
     succeeded: bool | None = None,
@@ -230,7 +230,7 @@ def lift_shell_result(
     extra["$shell"] = replay
     extra_frozen = immutable(extra)
     if kind == "read":
-        return FileReadResult(
+        return ReadResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -245,7 +245,7 @@ def lift_shell_result(
         # the file and states no ``edits`` rather than claiming content nobody
         # captured. The command that did it rides in ``$shell``, which is what a
         # replay puts back.
-        return FileEditResult(
+        return EditResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -256,7 +256,7 @@ def lift_shell_result(
         # The one edit whose new bytes the transcript holds, so it renders as
         # the one-sided diff it is. The file BEFORE the append was never
         # recorded, and a two-sided diff would invent that half.
-        return FileEditResult(
+        return EditResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -280,7 +280,7 @@ def lift_shell_result(
         )
     if kind == "patched":
         # The diff arrived inline, so the record states the change itself.
-        return FileEditResult(
+        return EditResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
@@ -288,7 +288,7 @@ def lift_shell_result(
             edits=parse_udiff(content),
             extra=extra_frozen,
         )
-    return FileWriteResult(
+    return WriteResult(
         context_id=result.context_id,
         timestamp=result.timestamp,
         call_id=result.call_id,
@@ -298,7 +298,7 @@ def lift_shell_result(
     )
 
 
-def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
+def shell_result_for_replay(result: FileResult) -> BashResult | None:
     """Recover a lifted shell execution for provider-native replay.
 
     Args:
@@ -322,13 +322,11 @@ def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
     command = _stencil_command(command, result)
     # A field the replay lacks, or one not text, reads as no output.
     stdout = (
-        result.content or ""
-        if isinstance(result, FileReadResult)
-        else replay.get("stdout")
+        result.content or "" if isinstance(result, ReadResult) else replay.get("stdout")
     )
     stderr = replay.get("stderr")
     exit_code = replay.get("exit_code")
-    return ShellCommandResult(
+    return BashResult(
         context_id=result.context_id,
         timestamp=result.timestamp,
         call_id=result.call_id,
@@ -364,7 +362,7 @@ def rewrite_shell_source(command: str, result: FileResult) -> str:
     )
     if (
         operation.act == "write"
-        and isinstance(result, FileWriteResult)
+        and isinstance(result, WriteResult)
         and result.content is not None
         and result.content != operation.content
     ):

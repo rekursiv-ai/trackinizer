@@ -14,11 +14,11 @@ from trackinizer.lib.agent.sessions.shell_results import (
 )
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
 from trackinizer.sagent.session.types import (
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
-    ShellCommandResult,
+    BashResult,
+    EditResult,
+    ReadResult,
     Splice,
+    WriteResult,
 )
 
 
@@ -58,48 +58,48 @@ class _Node:
 @pytest.mark.parametrize(
     ("script", "stdout", "expected", "written", "path"),
     [
-        ("/bin/cat a.txt", "body\n", FileReadResult, None, "a.txt"),
-        ("/usr/bin/head -n 2 a.txt", "first\nsecond\n", FileReadResult, None, "a.txt"),
-        ("/bin/sed -n 1p a.txt", "first\n", FileReadResult, None, "a.txt"),
-        ("/usr/bin/printf body > a.txt", "", FileWriteResult, "body", "a.txt"),
-        ("/bin/echo more > a.txt", "", FileWriteResult, "more\n", "a.txt"),
+        ("/bin/cat a.txt", "body\n", ReadResult, None, "a.txt"),
+        ("/usr/bin/head -n 2 a.txt", "first\nsecond\n", ReadResult, None, "a.txt"),
+        ("/bin/sed -n 1p a.txt", "first\n", ReadResult, None, "a.txt"),
+        ("/usr/bin/printf body > a.txt", "", WriteResult, "body", "a.txt"),
+        ("/bin/echo more > a.txt", "", WriteResult, "more\n", "a.txt"),
         # A ``cd`` chain is the majority shape, not an edge case: 58.3% of
         # 1351 captured claude commands are cd-prefixed. A literal destination
         # composes, because that IS the file the command resolved.
-        ("cd /w && /bin/cat a.txt", "body\n", FileReadResult, None, "/w/a.txt"),
+        ("cd /w && /bin/cat a.txt", "body\n", ReadResult, None, "/w/a.txt"),
         (
             "cd /w && /usr/bin/printf body > a.txt",
             "",
-            FileWriteResult,
+            WriteResult,
             "body",
             "/w/a.txt",
         ),
         # An expanded ``cd`` destination still lifts: the path reported is the
         # operand as written, so the directory never reaches the result.
-        ("cd $HOME && /bin/cat a.txt", "body\n", FileReadResult, None, "a.txt"),
-        ("/usr/bin/tail -n 1 a.txt", "second\n", FileReadResult, None, "a.txt"),
-        ("/usr/bin/nl -ba a.txt", "     1\tbody\n", FileReadResult, None, "a.txt"),
+        ("cd $HOME && /bin/cat a.txt", "body\n", ReadResult, None, "a.txt"),
+        ("/usr/bin/tail -n 1 a.txt", "second\n", ReadResult, None, "a.txt"),
+        ("/usr/bin/nl -ba a.txt", "     1\tbody\n", ReadResult, None, "a.txt"),
         # Heredoc bodies verified against /bin/bash: empty, one line, and
         # several, plus a blank line inside one.
         (
             "/bin/cat > a.txt << 'EOF'\nbeta\nEOF\n",
             "",
-            FileWriteResult,
+            WriteResult,
             "beta\n",
             "a.txt",
         ),
         (
             "/bin/cat > a.txt << 'EOF'\nbeta\ngamma\nEOF\n",
             "",
-            FileWriteResult,
+            WriteResult,
             "beta\ngamma\n",
             "a.txt",
         ),
-        ("/bin/cat > a.txt << 'EOF'\nEOF\n", "", FileWriteResult, "", "a.txt"),
+        ("/bin/cat > a.txt << 'EOF'\nEOF\n", "", WriteResult, "", "a.txt"),
         (
             "/bin/cat > a.txt << 'EOF'\nbeta\n\nEOF\n",
             "",
-            FileWriteResult,
+            WriteResult,
             "beta\n\n",
             "a.txt",
         ),
@@ -124,11 +124,11 @@ class _Node:
 def test_a_static_file_operation_lifts_and_replays(
     script: str,
     stdout: str,
-    expected: type[FileReadResult | FileWriteResult | FileEditResult],
+    expected: type[ReadResult | WriteResult | EditResult],
     written: str | None,
     path: str,
 ) -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", script),
         stdout=stdout,
@@ -141,9 +141,9 @@ def test_a_static_file_operation_lifts_and_replays(
     assert type(lifted) is expected
     assert lifted is not None
     assert lifted.path == path
-    if isinstance(lifted, FileReadResult):
+    if isinstance(lifted, ReadResult):
         assert lifted.content == stdout
-    if isinstance(lifted, FileWriteResult):
+    if isinstance(lifted, WriteResult):
         assert lifted.content == written
     assert shell_result_for_replay(lifted) == shell
 
@@ -201,7 +201,7 @@ def test_a_static_file_operation_lifts_and_replays(
     ],
 )
 def test_an_ambiguous_or_unsupported_operation_returns_none(script: str) -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", script),
         exit_code=0,
@@ -231,7 +231,7 @@ def test_an_ambiguous_or_unsupported_operation_returns_none(script: str) -> None
 def test_an_operation_without_complete_neutral_semantics_returns_none(
     script: str,
 ) -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", script),
         exit_code=0,
@@ -259,7 +259,7 @@ def test_an_append_lifts_to_the_lines_it_added(script: str, udiff: str) -> None:
     before the append was never recorded, so the lines added are the only
     honest rendering. Verified against ``/bin/bash`` for each form.
     """
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", script),
         exit_code=0,
@@ -267,7 +267,7 @@ def test_an_append_lifts_to_the_lines_it_added(script: str, udiff: str) -> None:
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert lifted.path == "a.txt"
     assert render_udiff(lifted.edits) == udiff
 
@@ -323,7 +323,7 @@ def test_a_read_reports_the_lines_it_returned(
     Without it every partial read claims the file's whole content was
     returned, which is wrong for the most common read agents write.
     """
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", script),
         stdout="x\n",
@@ -332,7 +332,7 @@ def test_a_read_reports_the_lines_it_returned(
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.ranges == ranges
 
 
@@ -365,7 +365,7 @@ def test_a_signed_count_names_the_lines_that_utility_prints(
     file's last five lines and ``head -n -5`` claimed five lines from an
     unknown start -- neither of which the command printed.
     """
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", script),
         stdout="x\n",
@@ -374,7 +374,7 @@ def test_a_signed_count_names_the_lines_that_utility_prints(
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.ranges == ranges
 
 
@@ -386,7 +386,7 @@ def test_a_tab_stripped_heredoc_lifts_to_the_body_bash_writes() -> None:
     so an indented ``\tEOF`` never equalled ``EOF`` and the whole write was
     refused. Verified against /bin/bash: the file holds ``body\n``.
     """
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "/bin/cat > a.txt <<- 'EOF'\n\tbody\n\tEOF\n"),
         exit_code=0,
@@ -394,7 +394,7 @@ def test_a_tab_stripped_heredoc_lifts_to_the_body_bash_writes() -> None:
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileWriteResult)
+    assert isinstance(lifted, WriteResult)
     assert lifted.path == "a.txt"
     assert lifted.content == "body\n"
 
@@ -407,7 +407,7 @@ def test_a_static_chdir_composes_the_path_the_read_resolved() -> None:
     composed only when it is literal text; ``cd $HOME`` names a directory this
     reader cannot see, so its operand stays as the command wrote it.
     """
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "cd sub && /bin/cat a.txt"),
         stdout="body\n",
@@ -416,14 +416,14 @@ def test_a_static_chdir_composes_the_path_the_read_resolved() -> None:
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == "sub/a.txt"
     assert shell_result_for_replay(lifted) == shell
 
 
 def test_a_chdir_leaves_an_absolute_operand_alone() -> None:
     """An absolute path resolves against the root, whatever ``cd`` ran."""
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "cd sub && /bin/cat /etc/hosts"),
         stdout="body\n",
@@ -432,13 +432,13 @@ def test_a_chdir_leaves_an_absolute_operand_alone() -> None:
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == "/etc/hosts"
 
 
 def test_a_sed_script_that_does_more_than_print_is_not_a_read() -> None:
     """One non-printing clause refuses the whole script, never just itself."""
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "sed -n '1,5p;6w other.txt' a.txt"),
         stdout="x\n",
@@ -455,7 +455,7 @@ def test_a_bare_utility_name_lifts() -> None:
     corpus: it lifted ZERO of 359 captured codex shell results and zero of 588
     claude ones. A bare name is taken as the coreutils it names.
     """
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "cat a.txt"),
         stdout="body\n",
@@ -464,14 +464,14 @@ def test_a_bare_utility_name_lifts() -> None:
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == "a.txt"
 
 
 @pytest.mark.parametrize("path", ["XX.txt", "a{b.txt", "a}b.txt"])
 def test_a_word_bash_does_not_expand_is_a_literal_path(path: str) -> None:
     """Only a glob character or a ``{...}`` PAIR expands; a lone brace is literal."""
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", f"cat {path}"),
         stdout="body\n",
@@ -480,13 +480,13 @@ def test_a_word_bash_does_not_expand_is_a_literal_path(path: str) -> None:
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == path
 
 
 def test_a_utility_from_an_unexpected_directory_returns_none() -> None:
     """A path ending in the name but living elsewhere is another program."""
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "/opt/tools/cat a.txt"),
         stdout="shadow\n",
@@ -514,7 +514,7 @@ def test_a_shell_consumed_escape_lifts_to_what_the_shell_wrote(
     The neighbouring rejection cases spell doubled backslashes, so nothing
     covered the single-backslash form the guard is phrased against.
     """
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", script),
         exit_code=0,
@@ -522,12 +522,12 @@ def test_a_shell_consumed_escape_lifts_to_what_the_shell_wrote(
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileWriteResult)
+    assert isinstance(lifted, WriteResult)
     assert lifted.content == written
 
 
 def test_a_failed_file_operation_returns_none() -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("cat", "a.txt"),
         stderr="cat: a.txt: No such file\n",
@@ -538,7 +538,7 @@ def test_a_failed_file_operation_returns_none() -> None:
 
 
 def test_an_explicit_success_cannot_override_a_recorded_failure() -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("cat", "missing.txt"),
         exit_code=1,
@@ -548,24 +548,24 @@ def test_an_explicit_success_cannot_override_a_recorded_failure() -> None:
 
 
 def test_provider_shell_source_can_supply_a_missing_argv() -> None:
-    shell = ShellCommandResult(call_id="c1", stdout="body\n")
+    shell = BashResult(call_id="c1", stdout="body\n")
 
     lifted = lift_shell_result(shell, command="/bin/cat a.txt", succeeded=True)
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == "a.txt"
     assert shell_result_for_replay(lifted) == shell
 
 
 def test_replay_stencils_an_edited_path_into_the_original_command() -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "/bin/cat old.txt"),
         stdout="body\n",
         exit_code=0,
     )
     lifted = lift_shell_result(shell)
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
 
     replay = shell_result_for_replay(replace(lifted, path="new name.txt"))
 
@@ -574,13 +574,13 @@ def test_replay_stencils_an_edited_path_into_the_original_command() -> None:
 
 
 def test_replay_stencils_edited_write_content_into_the_original_command() -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/bash", "-lc", "/usr/bin/printf body > a.txt"),
         exit_code=0,
     )
     lifted = lift_shell_result(shell)
-    assert isinstance(lifted, FileWriteResult)
+    assert isinstance(lifted, WriteResult)
 
     replay = shell_result_for_replay(replace(lifted, content="new"))
 
@@ -600,9 +600,9 @@ def test_replay_rewrites_the_path_not_a_trailing_flag() -> None:
     The same value-versus-position defect the matchers carry ``(word, index)``
     pairs to avoid.
     """
-    shell = ShellCommandResult(call_id="c1", command=("tee", "F", "-a"), exit_code=0)
+    shell = BashResult(call_id="c1", command=("tee", "F", "-a"), exit_code=0)
     lifted = lift_shell_result(shell)
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
 
     replay = shell_result_for_replay(replace(lifted, path="NEW.txt"))
 
@@ -611,14 +611,14 @@ def test_replay_rewrites_the_path_not_a_trailing_flag() -> None:
 
 
 def test_replay_uses_the_operand_position_when_argv_values_repeat() -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("/bin/cat", "/bin/cat"),
         stdout="body",
         exit_code=0,
     )
     lifted = lift_shell_result(shell)
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
 
     replay = shell_result_for_replay(replace(lifted, path="new"))
 
@@ -629,13 +629,13 @@ def test_replay_uses_the_operand_position_when_argv_values_repeat() -> None:
 def test_replay_renames_the_operand_not_an_earlier_word_with_its_text() -> None:
     # The script and the file carry the same text, so a lookup by value
     # rewrote the script and left the file named as before.
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("sed", "-i", "s/a/b/", "s/a/b/"),
         exit_code=0,
     )
     lifted = lift_shell_result(shell)
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
 
     replay = shell_result_for_replay(replace(lifted, path="x"))
 
@@ -645,7 +645,7 @@ def test_replay_renames_the_operand_not_an_earlier_word_with_its_text() -> None:
 
 def test_an_edited_quoted_heredoc_write_rewrites_its_content() -> None:
     script = "cat > f << 'EOF'\nold\nEOF\n"
-    result = FileWriteResult(call_id="c1", path="f", content="new\n")
+    result = WriteResult(call_id="c1", path="f", content="new\n")
 
     assert shell_results.rewrite_shell_source(script, result) == (
         "/usr/bin/printf %s 'new\n' > f\n"
@@ -657,7 +657,7 @@ def test_a_write_keeps_the_stdout_it_printed_and_a_read_leaves_it_to_content() -
 
     Storing a read's stdout in ``$shell`` too would hold the file's bytes twice.
     """
-    write = ShellCommandResult(
+    write = BashResult(
         call_id="c1",
         command=("/usr/bin/tee", "a.txt"),
         stdout="echoed\n",
@@ -678,18 +678,18 @@ def test_a_write_keeps_the_stdout_it_printed_and_a_read_leaves_it_to_content() -
 
 
 def test_a_native_file_result_has_no_shell_to_replay() -> None:
-    assert shell_result_for_replay(FileReadResult(call_id="c1", path="a")) is None
+    assert shell_result_for_replay(ReadResult(call_id="c1", path="a")) is None
 
 
 def test_replay_preserves_stderr_from_the_shell_result() -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("cat", "a.txt"),
         stderr="warning",
         exit_code=0,
     )
     lifted = lift_shell_result(shell)
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
 
     replay = shell_result_for_replay(lifted)
 
@@ -698,7 +698,7 @@ def test_replay_preserves_stderr_from_the_shell_result() -> None:
 
 
 def test_rewrite_of_an_unrecognized_command_is_unchanged() -> None:
-    result = FileReadResult(call_id="c1", path="a.txt", content="body")
+    result = ReadResult(call_id="c1", path="a.txt", content="body")
 
     assert (
         shell_results.rewrite_shell_source("unknown a.txt", result) == "unknown a.txt"
@@ -724,13 +724,13 @@ def _other_utility(executable: str) -> str:
 def test_a_rewrite_splices_into_the_original_spans(script: str, expected: str) -> None:
     # Both halves of the old reparse: a heredoc's body and terminator are
     # replaced with the command, and the chdir prefix and trailer survive.
-    result = FileWriteResult(call_id="c1", path="sub/a.txt", content="new")
+    result = WriteResult(call_id="c1", path="sub/a.txt", content="new")
 
     assert shell_results.rewrite_shell_source(script, result) == expected
 
 
 def test_rewrite_shell_source_changes_only_a_write_content() -> None:
-    result = FileWriteResult(call_id="c1", path="a.txt", content="new")
+    result = WriteResult(call_id="c1", path="a.txt", content="new")
 
     assert shell_results.rewrite_shell_source("echo old > a.txt", result) == (
         "/usr/bin/printf %s new > a.txt"
@@ -763,7 +763,7 @@ def test_rewrite_shell_source_changes_only_a_write_content() -> None:
     ],
 )
 def test_unsupported_shell_shapes_are_not_lifted(script: str) -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=("bash", "-lc", script),
         exit_code=0,
@@ -773,7 +773,7 @@ def test_unsupported_shell_shapes_are_not_lifted(script: str) -> None:
 
 
 def test_patch_heredoc_carries_the_inline_diff() -> None:
-    shell = ShellCommandResult(
+    shell = BashResult(
         call_id="c1",
         command=(
             "bash",
@@ -785,7 +785,7 @@ def test_patch_heredoc_carries_the_inline_diff() -> None:
 
     lifted = lift_shell_result(shell)
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert render_udiff(lifted.edits) == "@@ -1 +1 @@\n-a\n+b\n"
 
 
@@ -806,13 +806,13 @@ def test_patch_heredoc_carries_the_inline_diff() -> None:
     ],
 )
 def test_rewriting_unsupported_shapes_preserves_the_source(script: str) -> None:
-    result = FileReadResult(call_id="c1", path="a.txt", content="body")
+    result = ReadResult(call_id="c1", path="a.txt", content="body")
 
     assert shell_results.rewrite_shell_source(script, result) == script
 
 
 def test_rewrite_stencils_a_shell_command_with_an_edited_path() -> None:
-    result = FileReadResult(call_id="c1", path="new.txt", content="body")
+    result = ReadResult(call_id="c1", path="new.txt", content="body")
 
     assert shell_results.rewrite_shell_source("cat old.txt", result) == "cat new.txt"
     assert shell_results._stencil_command(
@@ -971,7 +971,7 @@ def test_line_reader_supports_lines_equals_and_rejects_dash_paths() -> None:
 def _lifted(script: str, *, stdout: str = "") -> object:
     """Return what a successful bash execution of ``script`` lifts to."""
     return lift_shell_result(
-        ShellCommandResult(
+        BashResult(
             call_id="c1",
             command=("bash", "-lc", script),
             stdout=stdout,
@@ -983,8 +983,8 @@ def _lifted(script: str, *, stdout: str = "") -> object:
 def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
     """Position, time, call, path and residual all travel; the shell rides along."""
 
-    def shell(script: str) -> ShellCommandResult:
-        return ShellCommandResult(
+    def shell(script: str) -> BashResult:
+        return BashResult(
             context_id=3,
             timestamp="t",
             call_id="c9",
@@ -1003,7 +1003,7 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
 
     patch = "patch a.txt << 'EOF'\n@@ -1 +1 @@\n-a\n+b\nEOF\n"
 
-    assert lift_shell_result(shell("cat a.txt")) == FileReadResult(
+    assert lift_shell_result(shell("cat a.txt")) == ReadResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1011,7 +1011,7 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         content="out",
         extra=extra("cat a.txt", stdout=False),
     )
-    assert lift_shell_result(shell("printf hi > a.txt")) == FileWriteResult(
+    assert lift_shell_result(shell("printf hi > a.txt")) == WriteResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1019,7 +1019,7 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         content="hi",
         extra=extra("printf hi > a.txt", stdout=True),
     )
-    assert lift_shell_result(shell("echo hi >> a.txt")) == FileEditResult(
+    assert lift_shell_result(shell("echo hi >> a.txt")) == EditResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1027,7 +1027,7 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         edits=(Splice(before="", after="hi\n"),),
         extra=extra("echo hi >> a.txt", stdout=True),
     )
-    assert lift_shell_result(shell(patch)) == FileEditResult(
+    assert lift_shell_result(shell(patch)) == EditResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1035,7 +1035,7 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         edits=parse_udiff("@@ -1 +1 @@\n-a\n+b\n"),
         extra=extra(patch, stdout=True),
     )
-    assert lift_shell_result(shell("sed -i s/a/b/ a.txt")) == FileEditResult(
+    assert lift_shell_result(shell("sed -i s/a/b/ a.txt")) == EditResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1067,26 +1067,26 @@ def test_each_row_names_the_act_it_performed(script: str, act: str) -> None:
 def test_an_empty_append_states_no_splice() -> None:
     lifted = _lifted("cat >> a.txt << 'EOF'\nEOF\n")
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert lifted.edits == ()
 
 
 def test_a_result_with_no_command_and_no_script_lifts_nothing() -> None:
-    shell = ShellCommandResult(call_id="c1", exit_code=0)
+    shell = BashResult(call_id="c1", exit_code=0)
 
     assert lift_shell_result(shell) is None
     assert lift_shell_result(replace(shell, command=("bash", "-x", "cat a"))) is None
 
 
 def test_replay_rebuilds_every_field_and_reads_bad_output_as_none() -> None:
-    read = FileReadResult(
+    read = ReadResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
         path="a.txt",
         extra={"$shell": {"command": ["cat", "a.txt"]}, "k": 1},
     )
-    write = FileWriteResult(
+    write = WriteResult(
         call_id="c9",
         path="a.txt",
         content="x",
@@ -1094,7 +1094,7 @@ def test_replay_rebuilds_every_field_and_reads_bad_output_as_none() -> None:
     )
     bare = replace(write, extra={"$shell": {}})
 
-    assert shell_result_for_replay(read) == ShellCommandResult(
+    assert shell_result_for_replay(read) == BashResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1102,8 +1102,8 @@ def test_replay_rebuilds_every_field_and_reads_bad_output_as_none() -> None:
         stdout="",
         extra={"k": 1},
     )
-    assert shell_result_for_replay(write) == ShellCommandResult(call_id="c9")
-    assert shell_result_for_replay(bare) == ShellCommandResult(call_id="c9")
+    assert shell_result_for_replay(write) == BashResult(call_id="c9")
+    assert shell_result_for_replay(bare) == BashResult(call_id="c9")
 
 
 @pytest.mark.parametrize(
@@ -1153,7 +1153,7 @@ def test_only_a_short_option_bundles_the_c_flag() -> None:
 def test_each_rewrite_form_names_its_file(script: str, path: str) -> None:
     lifted = _lifted(script)
 
-    assert isinstance(lifted, FileEditResult)
+    assert isinstance(lifted, EditResult)
     assert (lifted.path, lifted.edits) == (path, ())
 
 
@@ -1193,31 +1193,31 @@ def test_each_count_spelling_reads_its_lines(
 ) -> None:
     lifted = _lifted(script, stdout="x\n")
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.ranges == ranges
 
 
 def test_a_double_dash_ends_cats_options() -> None:
     lifted = _lifted("cat -- -a.txt", stdout="x\n")
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == "-a.txt"
     assert _lifted("cat x -- a.txt") is None
 
 
 def test_a_chdir_with_a_trailing_slash_composes_one_separator() -> None:
     lifted = _lifted("cd /w/ && cat a.txt", stdout="x\n")
-    result = FileReadResult(call_id="c1", path="/w/b.txt")
+    result = ReadResult(call_id="c1", path="/w/b.txt")
 
-    assert isinstance(lifted, FileReadResult)
+    assert isinstance(lifted, ReadResult)
     assert lifted.path == "/w/a.txt"
     assert shell_results.rewrite_shell_source("cd /w/ && cat a.txt", result) == (
         "cd /w/ && cat b.txt"
     )
     # Only the separator is stripped, whatever letter ends the directory.
     ended = _lifted("cd /wX && cat a.txt", stdout="x\n")
-    renamed = FileReadResult(call_id="c1", path="/wX/b.txt")
-    assert isinstance(ended, FileReadResult)
+    renamed = ReadResult(call_id="c1", path="/wX/b.txt")
+    assert isinstance(ended, ReadResult)
     assert ended.path == "/wX/a.txt"
     assert shell_results.rewrite_shell_source("cd /wX && cat a.txt", renamed) == (
         "cd /wX && cat b.txt"
@@ -1225,7 +1225,7 @@ def test_a_chdir_with_a_trailing_slash_composes_one_separator() -> None:
 
 
 def test_a_rewrite_with_no_path_keeps_the_commands_own() -> None:
-    result = FileReadResult(call_id="c1")
+    result = ReadResult(call_id="c1")
 
     assert shell_results.rewrite_shell_source("cat a.txt", result) == "cat a.txt"
 
@@ -1245,14 +1245,14 @@ def test_a_heredoc_body_is_dedented_only_as_bash_does(
 ) -> None:
     lifted = _lifted(script)
 
-    assert isinstance(lifted, FileWriteResult)
+    assert isinstance(lifted, WriteResult)
     assert lifted.content == content
 
 
 def test_echo_joins_its_words_with_one_space() -> None:
     lifted = _lifted("echo a b > a.txt")
 
-    assert isinstance(lifted, FileWriteResult)
+    assert isinstance(lifted, WriteResult)
     assert lifted.content == "a b\n"
 
 
@@ -1271,21 +1271,21 @@ def test_a_heredoc_write_with_no_body_node_is_refused() -> None:
 
 
 def test_replay_keeps_a_command_it_cannot_reparse() -> None:
-    def read(command: list[str]) -> FileReadResult:
-        return FileReadResult(call_id="c1", extra={"$shell": {"command": command}})
+    def read(command: list[str]) -> ReadResult:
+        return ReadResult(call_id="c1", extra={"$shell": {"command": command}})
 
-    assert shell_result_for_replay(read(["ls"])) == ShellCommandResult(
+    assert shell_result_for_replay(read(["ls"])) == BashResult(
         call_id="c1",
         command=("ls",),
     )
     assert shell_result_for_replay(
         replace(read(["ls"]), path="b.txt"),
-    ) == ShellCommandResult(call_id="c1", command=("ls",))
-    assert shell_result_for_replay(read([])) == ShellCommandResult(
+    ) == BashResult(call_id="c1", command=("ls",))
+    assert shell_result_for_replay(read([])) == BashResult(
         call_id="c1",
         command=(),
     )
-    assert shell_result_for_replay(read(["cat", "a.txt"])) == ShellCommandResult(
+    assert shell_result_for_replay(read(["cat", "a.txt"])) == BashResult(
         call_id="c1",
         command=("cat", "a.txt"),
     )

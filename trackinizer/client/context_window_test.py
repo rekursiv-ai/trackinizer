@@ -32,9 +32,9 @@ from trackinizer.lib.agent.sessions import claude, codex, sagent
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextCompaction,
-    ShellCommandResult,
     ToolCall,
     UserMessage,
 )
@@ -554,9 +554,9 @@ class TestTheBudget:
         assert "done" in said
         # A shell result crosses as structure, so its call does too.
         assert [r.call_id for r in loaded.records if isinstance(r, ToolCall)] == ["new"]
-        assert [
-            r.call_id for r in loaded.records if isinstance(r, ShellCommandResult)
-        ] == ["new"]
+        assert [r.call_id for r in loaded.records if isinstance(r, BashResult)] == [
+            "new",
+        ]
 
     @pytest.mark.parametrize(
         ("fit", "most", "compact", "noted"),
@@ -624,7 +624,7 @@ class TestTheBudget:
 
         loaded = cli_records(seen, "claude", seq=_seven)
 
-        [result] = [r for r in loaded.records if isinstance(r, ShellCommandResult)]
+        [result] = [r for r in loaded.records if isinstance(r, BashResult)]
         assert result.stdout == (
             "h" * 10_000 + "[... 36000 bytes cut ...]" + "t" * 4_000
         )

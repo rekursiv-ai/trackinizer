@@ -37,22 +37,22 @@ from trackinizer.client.conversation import (
     projected,
 )
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextCompaction,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
     ToolCall,
     ToolResult,
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
-    WebSearchResults,
+    WebSearchResult,
+    WriteResult,
 )
 
 
@@ -96,10 +96,10 @@ _WORDED: Final = (
     AssistantMessage,
     AgentToAgentMessage,
     UncategorizedToolResult,
-    FileReadResult,
-    FileWriteResult,
+    ReadResult,
+    WriteResult,
     WebFetchResult,
-    AgentStatusResult,
+    AgentSpawnResult,
 )
 
 
@@ -593,13 +593,13 @@ def _texts(record: SessionRecord) -> list[str]:
     """Return the text of ``record`` that a target reads."""
     if isinstance(record, ToolCall):
         return [record.name, json.dumps(mutable(record.arguments), sort_keys=True)]
-    if isinstance(record, ShellCommandResult):
+    if isinstance(record, BashResult):
         return [record.stdout, record.stderr]
-    if isinstance(record, FileEditResult):
+    if isinstance(record, EditResult):
         return [
             text or "" for edit in record.edits for text in (edit.before, edit.after)
         ]
-    if isinstance(record, WebSearchResults):
+    if isinstance(record, WebSearchResult):
         return [
             text or ""
             for row in record.content
@@ -614,7 +614,7 @@ def _texts(record: SessionRecord) -> list[str]:
 
 def _shortened(record: SessionRecord) -> SessionRecord:
     """Return ``record`` with each text over :data:`CUT_ABOVE` bytes cut."""
-    if isinstance(record, ShellCommandResult):
+    if isinstance(record, BashResult):
         return replace(
             record,
             stdout=cut_text(record.stdout),

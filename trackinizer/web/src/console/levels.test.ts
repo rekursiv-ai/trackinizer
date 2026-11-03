@@ -49,7 +49,7 @@ test("what a harness writes on the user's turn is not Messages: codex's context,
 
 test("+ Calls adds tool calls, + Output their results and thinking, and All the bookkeeping", () => {
   expect(levelOf(record("ToolCall", { call_id: "c1", name: "Bash", arguments: { command: "ls" } }))).toBe(2);
-  for (const kind of ["ShellCommandResult", "FileEditResult", "UncategorizedToolResult", "Thinking", "ContextClear", "Stdout"]) {
+  for (const kind of ["BashResult", "EditResult", "UncategorizedToolResult", "Thinking", "ContextClear", "Stdout"]) {
     expect([kind, levelOf(record(kind, { content: "x" }))]).toEqual([kind, 3]);
   }
   for (const kind of ["TokenUsage", "TurnContext", "SystemMessage", "UncategorizedRecord"]) {
@@ -75,7 +75,7 @@ test("each level counts what it shows: the agents' conversation, then each kind 
     AgentToAgentMessage: 10,
     ContextState: 20,
     ToolCall: 200,
-    ShellCommandResult: 150,
+    BashResult: 150,
     Thinking: 100,
     TokenUsage: 300,
     TurnContext: 90,

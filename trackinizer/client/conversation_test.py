@@ -27,6 +27,8 @@ from trackinizer.sagent.session.types import (
     SystemMessage,
     Thinking,
     ToolCall,
+    ToolErrorResult,
+    ToolResult,
     UncategorizedToolResult,
     UserMessage,
 )
@@ -611,6 +613,34 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
     written = projected(_neutral_conversation([segment]), "claude")
 
     assert not any(isinstance(record, UncategorizedToolResult) for record in written)
+    assert [
+        record.content for record in written if isinstance(record, AssistantMessage)
+    ] == ["[a tool returned: found it]\nok"]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        ToolErrorResult(timestamp=_at(2), call_id="orphan", content="found it"),
+        ToolResult(timestamp=_at(2), call_id="orphan", shown="found it"),
+    ],
+    ids=["error", "stand-in"],
+)
+def test_any_result_crossing_as_text_says_what_the_model_read(
+    result: ToolResult,
+) -> None:
+    segment = _segment(
+        0,
+        "claude",
+        [
+            UserMessage(timestamp=_at(1), content="look"),
+            result,
+            AssistantMessage(timestamp=_at(3), content="ok"),
+        ],
+    )
+
+    written = projected(_neutral_conversation([segment]), "claude")
+
     assert [
         record.content for record in written if isinstance(record, AssistantMessage)
     ] == ["[a tool returned: found it]\nok"]

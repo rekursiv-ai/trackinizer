@@ -30,23 +30,21 @@ import json
 from treekle import from_plain, immutable, mutable
 
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
     AgentToAgentMessage,
     AssistantMessage,
+    BashResult,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
     SystemMessage,
     ToolCall,
     ToolResult,
-    UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
-    WebSearchResults,
+    WebSearchResult,
+    WriteResult,
 )
 from trackinizer.types.streams import Stderr, Stdin, Stdout
 
@@ -109,12 +107,12 @@ _HARNESS: Final = (
 
 # Results whose tool is named by what they DID, so they cross to another CLI as structure.
 _TYPED: Final = (
-    ShellCommandResult,
-    FileReadResult,
-    FileWriteResult,
-    FileEditResult,
+    BashResult,
+    ReadResult,
+    WriteResult,
+    EditResult,
     WebFetchResult,
-    WebSearchResults,
+    WebSearchResult,
 )
 
 
@@ -663,16 +661,10 @@ def _projected(
                 ),
             ]
         name = names.get(record.call_id, "a tool")
-        # Only an uncategorized or agent-status result has words no writer can name.
-        words = (
-            record.content
-            if isinstance(record, UncategorizedToolResult | AgentStatusResult)
-            else None
-        )
         return [
             AssistantMessage(
                 timestamp=record.timestamp,
-                content=f"[{name} returned: {(words or '')[:1500]}]",
+                content=f"[{name} returned: {record.text()[:1500]}]",
             ),
         ]
     return []

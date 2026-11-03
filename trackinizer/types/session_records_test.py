@@ -18,19 +18,18 @@ import pytest
 
 from trackinizer.sagent.session.jsonl import record_line
 from trackinizer.sagent.session.types import (
-    AgentStatusResult,
+    AgentSpawnResult,
     AgentToAgentMessage,
     AssistantMessage,
     Attachment,
+    BashResult,
     ContextClear,
     ContextCompaction,
     ContextState,
-    FileEditResult,
-    FileReadResult,
-    FileWriteResult,
+    EditResult,
     IncompleteRecord,
+    ReadResult,
     SessionRecord,
-    ShellCommandResult,
     Splice,
     SystemMessage,
     Thinking,
@@ -41,8 +40,9 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WebSearchHit,
     WebSearchResult,
-    WebSearchResults,
+    WriteResult,
 )
 from trackinizer.types.session_records import (
     _BY_KIND,
@@ -95,7 +95,7 @@ def test_tool_call_indexes_name_and_string_arguments() -> None:
 def test_shell_result_indexes_command_and_both_streams() -> None:
     """A failed command is findable by what it printed on either stream."""
     text = search_text(
-        ShellCommandResult(
+        BashResult(
             call_id="c1",
             command=("ls", "/nope"),
             stdout="",
@@ -111,11 +111,11 @@ def test_shell_result_indexes_command_and_both_streams() -> None:
 def test_file_edit_indexes_each_splice() -> None:
     """An edit is findable by the text it replaced and the text it wrote.
 
-    ``FileEditResult`` carries no diff field -- a diff IS these splices -- so
+    ``EditResult`` carries no diff field -- a diff IS these splices -- so
     the projection reads them directly rather than rendering one.
     """
     text = search_text(
-        FileEditResult(
+        EditResult(
             call_id="c1",
             path="a/b.py",
             edits=(Splice(before="old_name", after="new_name"),),
@@ -130,12 +130,12 @@ def test_file_edit_indexes_each_splice() -> None:
 def test_web_search_indexes_query_and_every_row() -> None:
     """Each result row's title and snippet is matchable, not just the query."""
     text = search_text(
-        WebSearchResults(
+        WebSearchResult(
             call_id="c1",
             query="postgres toast",
             content=(
-                WebSearchResult(title="TOAST", snippet="oversized attributes"),
-                WebSearchResult(title="Storage", snippet="EXTERNAL vs EXTENDED"),
+                WebSearchHit(title="TOAST", snippet="oversized attributes"),
+                WebSearchHit(title="Storage", snippet="EXTERNAL vs EXTENDED"),
             ),
         ),
     )
@@ -178,11 +178,11 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="UncategorizedToolResult",
         ),
         pytest.param(
-            FileReadResult(call_id="c", path="p", content="hello"),
+            ReadResult(call_id="c", path="p", content="hello"),
             id="FileRead",
         ),
         pytest.param(
-            FileWriteResult(call_id="c", path="p", content="hello"),
+            WriteResult(call_id="c", path="p", content="hello"),
             id="FileWrite",
         ),
         pytest.param(
@@ -190,7 +190,7 @@ def test_metadata_records_index_nothing(record: object) -> None:
             id="WebFetch",
         ),
         pytest.param(
-            AgentStatusResult(call_id="c", prompt="p", content="hello"),
+            AgentSpawnResult(call_id="c", prompt="p", content="hello"),
             id="AgentStatus",
         ),
     ],
@@ -254,7 +254,7 @@ def test_a_rows_payload_is_the_line_a_sagent_journal_writes() -> None:
                 attachments=(Attachment(mime_descriptor="image/png", data=b"\0"),),
             ),
             AssistantMessage(content="a"),
-            FileEditResult(call_id="c1", path="a.py", edits=(Splice(before="x"),)),
+            EditResult(call_id="c1", path="a.py", edits=(Splice(before="x"),)),
         ),
     )
     row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
@@ -269,6 +269,18 @@ def test_a_stored_payload_keeps_the_ciphertext_a_row_strips() -> None:
     row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
 
     assert stored_payload(record) == {**row.payload, "encrypted": _CIPHERTEXT}
+
+
+def test_a_row_stored_under_a_former_kind_reads_as_the_record_now() -> None:
+    """A row ingested before a record type was renamed carries its old name."""
+    old = SessionRecordRow(
+        session_id=uuid4(),
+        idx=0,
+        kind="ShellCommandResult",
+        payload={"py/object": "ShellCommandResult", "call_id": "c", "stdout": "x"},
+    )
+
+    assert old.record() == BashResult(call_id="c", stdout="x")
 
 
 def test_a_row_of_an_unknown_kind_names_it() -> None:

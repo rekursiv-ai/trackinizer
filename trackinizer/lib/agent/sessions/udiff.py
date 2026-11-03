@@ -2,7 +2,7 @@
 
 Both providers state file edits as diff text -- codex writes a per-path
 ``unified_diff``, claude a ``structuredPatch`` of the same lines -- while
-:class:`~trackinizer.sagent.session.types.FileEditResult` states them as
+:class:`~trackinizer.sagent.session.types.EditResult` states them as
 :class:`~trackinizer.sagent.session.types.Splice` records. This is the one
 conversion between those, so a diff read here and written back reproduces the
 provider's own bytes.

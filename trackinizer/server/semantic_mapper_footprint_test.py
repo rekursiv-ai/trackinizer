@@ -30,7 +30,7 @@ class TestProse:
             "ToolCall",
             "ContextCompaction",
             "WebFetchResult",
-            "WebSearchResults",
+            "WebSearchResult",
         ],
     )
     def test_short_prose_is_one_full_embed_unit(self, kind: str) -> None:
@@ -79,10 +79,10 @@ class TestHeaded:
     @pytest.mark.parametrize(
         "kind",
         [
-            "ShellCommandResult",
+            "BashResult",
             "UncategorizedToolResult",
-            "FileWriteResult",
-            "FileEditResult",
+            "WriteResult",
+            "EditResult",
             "Stdout",
             "Stderr",
             "Stdin",
@@ -100,7 +100,7 @@ class TestHeaded:
         assert not head.embed
 
     def test_short_output_is_kept_whole(self) -> None:
-        units = MAPPER.units(kind="ShellCommandResult", text="ok")
+        units = MAPPER.units(kind="BashResult", text="ok")
         assert units[0].text == "ok"
         assert not units[0].embed
 
@@ -109,8 +109,8 @@ class TestSilent:
     @pytest.mark.parametrize(
         "kind",
         [
-            "AgentStatusResult",
-            "FileReadResult",
+            "AgentSpawnResult",
+            "ReadResult",
             "TokenUsage",
             "TurnContext",
             "ContextState",
@@ -139,22 +139,22 @@ _FOOTPRINT: dict[str, tuple[bool, bool, str]] = {
     "ToolCall": (True, True, "full"),
     "ContextCompaction": (True, True, "full"),
     "WebFetchResult": (True, True, "full"),
-    "WebSearchResults": (True, True, "full"),
+    "WebSearchResult": (True, True, "full"),
     # Prose, F-only (embed=False). SystemMessage: user override 2026-09-20.
     "SystemMessage": (True, False, "full"),
     "Thinking": (True, False, "full"),
     "IncompleteRecord": (True, False, "full"),
     # Machine output: F(head), body blobbed. Streams are machine output too.
-    "ShellCommandResult": (True, False, "head"),
+    "BashResult": (True, False, "head"),
     "UncategorizedToolResult": (True, False, "head"),
-    "FileWriteResult": (True, False, "head"),
-    "FileEditResult": (True, False, "head"),
+    "WriteResult": (True, False, "head"),
+    "EditResult": (True, False, "head"),
     "Stdout": (True, False, "head"),
     "Stderr": (True, False, "head"),
     "Stdin": (True, False, "head"),
     # Silent: telemetry, file reads, unrecognized.
-    "AgentStatusResult": (False, False, "silent"),
-    "FileReadResult": (False, False, "silent"),
+    "AgentSpawnResult": (False, False, "silent"),
+    "ReadResult": (False, False, "silent"),
     "TokenUsage": (False, False, "silent"),
     "TurnContext": (False, False, "silent"),
     "ContextState": (False, False, "silent"),
@@ -205,7 +205,7 @@ class TestIndexedKinds:
         # The backfill scanner's pending predicate binds ``indexed_kinds``; a kind
         # absent here must produce no unit, or the predicate would drift off the
         # mapper and re-open the pending-forever leak (ContextState etc.).
-        for kind in ("ContextState", "TokenUsage", "FileReadResult"):
+        for kind in ("ContextState", "TokenUsage", "ReadResult"):
             assert kind not in MAPPER.indexed_kinds
             assert MAPPER.units(kind=kind, text="non-empty text") == ()
 

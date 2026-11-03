@@ -52,11 +52,11 @@ __all__ = [
 
 HEAVY_KINDS: Final = frozenset(
     {
-        "ShellCommandResult",
+        "BashResult",
         "UncategorizedToolResult",
-        "FileReadResult",
-        "FileWriteResult",
-        "FileEditResult",
+        "ReadResult",
+        "WriteResult",
+        "EditResult",
     },
 )
 """Kinds whose bodies live in the sidecar. Messages/tool-call args stay hot

@@ -70,7 +70,7 @@ test("a tool call shows its main argument as written, and its other arguments ap
 
 test("a shell result names its command as a shell would read it, apart from its output and exit (B8)", () => {
   const argv = ["echo", "it's", "a b", "--x=1"];
-  expect(recordView(record("ShellCommandResult", { command: argv, stdout: "it's\n", stderr: "", exit_code: 0 }))).toEqual({
+  expect(recordView(record("BashResult", { command: argv, stdout: "it's\n", stderr: "", exit_code: 0 }))).toEqual({
     shape: "shell",
     label: "Shell command",
     command: `echo 'it'"'"'s' 'a b' --x=1`,
@@ -82,10 +82,10 @@ test("a shell result names its command as a shell would read it, apart from its 
     failed: false,
   });
   const script = ["/bin/bash", "-lc", "cd /w && date -u"];
-  expect(recordView(record("ShellCommandResult", { command: script, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "cd /w && date -u" });
+  expect(recordView(record("BashResult", { command: script, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "cd /w && date -u" });
   // Sagent's argv is the whole command line as one word.
   const line = ["date -u +%s; ls 'a b'"];
-  expect(recordView(record("ShellCommandResult", { command: line, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "date -u +%s; ls 'a b'" });
+  expect(recordView(record("BashResult", { command: line, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "date -u +%s; ls 'a b'" });
 });
 
 test("an edit is a unified diff: the provider's own context and header, else the line it named (B9)", () => {
@@ -93,7 +93,7 @@ test("an edit is a unified diff: the provider's own context and header, else the
       { before: "old\n", after: "new\n", lead: "@@ -3,3 +3,3 @@\n ctx a\n", trail: " ctx b\n", start: 4, count: 1, bare: [] },
       { before: "x\n", after: "", lead: null, trail: null, start: 10, count: 1, bare: [] },
     ];
-  const view = recordView(record("FileEditResult", { path: "a.py", edits }));
+  const view = recordView(record("EditResult", { path: "a.py", edits }));
   expect(view).toMatchObject({ shape: "edit", label: "File edit", source: "a.py" });
   expect(view.shape === "edit" && view.lines.map((line) => `${line.kind}:${line.text}`)).toEqual([
     "hunk:@@ -3,3 +3,3 @@",
@@ -107,7 +107,7 @@ test("an edit is a unified diff: the provider's own context and header, else the
   // Each line's number in the file it is in: the new file's for context and
   // added lines, the old one's for removed lines; none where the provider gave none.
   expect(view.shape === "edit" && view.lines.map((line) => line.line)).toEqual([null, 3, 4, 4, 5, null, 10]);
-  const bare = recordView(record("FileEditResult", { path: "a.py", edits: [{ before: "a\n", after: "b\n", lead: null, trail: null }] }));
+  const bare = recordView(record("EditResult", { path: "a.py", edits: [{ before: "a\n", after: "b\n", lead: null, trail: null }] }));
   expect(bare.shape === "edit" && bare.lines.map((line) => line.line)).toEqual([null, null]);
 });
 
@@ -141,9 +141,9 @@ test("bookkeeping is the harness's records; a legacy turn and a model change are
 test("a result written with its defaults left out shows as one written in full", () => {
   // The server stores a record with each field at its default left out (`to_plain`).
   const cases: [string, { [field: string]: unknown }, { [field: string]: unknown }][] = [
-    ["ShellCommandResult", { command: ["true"], exit_code: 0 }, { stdout: "", stderr: "" }],
-    ["FileEditResult", { path: "a.py" }, { edits: [] }],
-    ["WebSearchResults", { query: "pglite" }, { content: [] }],
+    ["BashResult", { command: ["true"], exit_code: 0 }, { stdout: "", stderr: "" }],
+    ["EditResult", { path: "a.py" }, { edits: [] }],
+    ["WebSearchResult", { query: "pglite" }, { content: [] }],
   ];
   for (const [kind, written, defaults] of cases) {
     expect(recordView(record(kind, written))).toEqual(recordView(record(kind, { ...written, ...defaults })));
@@ -151,7 +151,7 @@ test("a result written with its defaults left out shows as one written in full",
 });
 
 test("a tool result shows its text, where it acted, and whether it failed", () => {
-  expect(recordView(record("ShellCommandResult", { stderr: "no such file", exit_code: 2 }, "no such file"))).toMatchObject({
+  expect(recordView(record("BashResult", { stderr: "no such file", exit_code: 2 }, "no such file"))).toMatchObject({
     shape: "shell",
     label: "Shell command",
     stdout: "",
@@ -160,12 +160,12 @@ test("a tool result shows its text, where it acted, and whether it failed", () =
     failed: true,
     tool: "command",
   });
-  expect(recordView(record("FileReadResult", { path: "/work/a.py" }, "print(1)"))).toMatchObject({
-    label: "File read",
+  expect(recordView(record("ReadResult", { path: "/work/a.py" }, "print(1)"))).toMatchObject({
+    label: "Read",
     source: "/work/a.py",
     failed: false,
   });
-  expect(recordView(record("WebSearchResults", { query: "pglite" }, "…"))).toMatchObject({ label: "Web search", source: "pglite" });
+  expect(recordView(record("WebSearchResult", { query: "pglite" }, "…"))).toMatchObject({ label: "Web search", source: "pglite" });
 });
 
 test("bookkeeping is one line, and a kind this view does not know still shows its text", () => {
@@ -371,13 +371,13 @@ test("a record with nothing to read, which no view draws or counts: sealed reaso
 test("a tool result whose fields are empty shows what the model read instead (claude)", () => {
   // Claude's failed Read and backgrounded Bash, trimmed: the typed fields are
   // empty and the block's text, what the model read, is kept beside them.
-  const failed = record("FileReadResult", {
+  const failed = record("ReadResult", {
     path: null,
     content: null,
     extra: { $result: { block: { is_error: true }, tool_name: "Read", text: "File does not exist." } },
   });
-  expect(recordView(failed)).toMatchObject({ shape: "output", label: "File read", text: "File does not exist.", failed: true });
-  const background = record("ShellCommandResult", {
+  expect(recordView(failed)).toMatchObject({ shape: "output", label: "Read", text: "File does not exist.", failed: true });
+  const background = record("BashResult", {
     command: null,
     stdout: "",
     stderr: "",
@@ -456,17 +456,17 @@ test("a harness's tags in code stay code, fenced or inline, and fold again after
 test("an agent's state, kind and time show whatever its content, and its text when it has none (DR-10)", () => {
   const status = (content: string | null) =>
     recordView(
-      record("AgentStatusResult", { agent_kind: "Explore", prompt: "Find the uses.", content, state: "async_launched", duration_sec: 2.4 }, "Find the uses."),
+      record("AgentSpawnResult", { agent_kind: "Explore", prompt: "Find the uses.", content, state: "async_launched", duration_sec: 2.4 }, "Find the uses."),
     );
   for (const content of [null, ""]) {
-    expect(status(content)).toMatchObject({ shape: "output", label: "Agent status", meta: "async_launched · Explore · 2 s", text: "Find the uses." });
+    expect(status(content)).toMatchObject({ shape: "output", label: "Agent spawn", meta: "async_launched · Explore · 2 s", text: "Find the uses." });
   }
 });
 
 test("a call takes the first result after it with its call_id, however far on, and a run of terminal records is one line (B18, B22, TX-07)", () => {
   const at = (idx: number, kind: string, payload: { [field: string]: unknown } = {}) => ({ ...record(kind, payload), idx });
   const call = (idx: number, id: string) => at(idx, "ToolCall", { call_id: id, name: "Bash" });
-  const answer = (idx: number, id: string) => at(idx, "ShellCommandResult", { call_id: id, stdout: "" });
+  const answer = (idx: number, id: string) => at(idx, "BashResult", { call_id: id, stdout: "" });
   const rows = transcriptRows([call(0, "a"), answer(9, "a"), call(10, "b"), answer(20, "b"), answer(21, "c"), at(22, "Stdout"), at(23, "Stderr"), at(24, "Stdin")]);
   expect(rows.map((row) => [row.record.idx, row.result?.idx ?? null, row.stream?.length ?? 0])).toEqual([
     [0, 9, 0],
@@ -489,8 +489,13 @@ test("a tool step is named by what it did: its result's kind, else its call's na
   // Codex's script tool, an MCP tool: what they did is not known from the name.
   expect(["exec", "mcp__slack__post"].map(call)).toEqual(["call", "call"]);
   const result = (kind: string) => recordView(record(kind)).tool;
-  const results = ["ShellCommandResult", "FileReadResult", "FileEditResult", "FileWriteResult", "WebSearchResults", "WebFetchResult", "AgentStatusResult", "UncategorizedToolResult"];
-  expect(results.map(result)).toEqual(["command", "read", "edit", "write", "web", "fetch", "agent", "call"]);
+  const results = ["BashResult", "ReadResult", "EditResult", "WriteResult", "WebSearchResult", "WebFetchResult", "AgentSpawnResult", "UncategorizedToolResult", "ToolErrorResult", "ToolResult"];
+  expect(results.map(result)).toEqual(["command", "read", "edit", "write", "web", "fetch", "agent", "call", "call", "call"]);
+  // A call no tool answered says why; a stand-in for one still running says only what it shows.
+  expect(recordView(record("ToolErrorResult", { content: "RuntimeError: boom" }))).toMatchObject({ label: "Tool error", text: "RuntimeError: boom" });
+  expect(recordView(record("ToolResult", { stub: "pending", shown: "[running]" }))).toMatchObject({ label: "Tool", text: "[running]" });
+  // A failed write keeps its path; what the model read is why it failed.
+  expect(recordView(record("WriteResult", { path: "/w/a.py", shown: "/w/a.py exists and has not been read." }))).toMatchObject({ text: "/w/a.py exists and has not been read." });
   expect(["UserMessage", "Thinking", "TokenUsage", "UncategorizedRecord", "Stdout"].map(result)).toEqual([null, null, null, null, null]);
 });
 
@@ -544,12 +549,12 @@ test("a preview's lines leave the newline that ends the text out of the count", 
 test("tuples and sets read as the arrays they are stored as", () => {
   const argv = { command: ["bash", "-lc", "ls -la"], workdir: "/w" };
   expect(recordView(record("ToolCall", { name: "shell", arguments: argv }))).toMatchObject({ primary: "ls -la", args: [["workdir", "/w"]] });
-  expect(recordView(record("ShellCommandResult", { command: ["/bin/bash", "-lc", "cd /w && date -u"], stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({
+  expect(recordView(record("BashResult", { command: ["/bin/bash", "-lc", "cd /w && date -u"], stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({
     command: "cd /w && date -u",
   });
   const splice = (extra: object) => ({ before: "old\n", after: "new\n", lead: "@@ -3,3 +3,3 @@\n ctx a\n", trail: " ctx b\n", start: 4, count: 1, ...extra });
   const edits = [splice({ bare: [] }), { ...splice({ bare: [] }), before: "x\n", after: "", lead: null, trail: null, start: 10 }];
-  const view = recordView(record("FileEditResult", { path: "a.py", edits }));
+  const view = recordView(record("EditResult", { path: "a.py", edits }));
   expect(view).toMatchObject({ shape: "edit", label: "File edit", source: "a.py" });
   expect(view.shape === "edit" && view.lines.length).toBeGreaterThan(0);
 });

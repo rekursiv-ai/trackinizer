@@ -20,9 +20,9 @@ from treekle import immutable
 import pytest
 
 from trackinizer.sagent.session.types import (
+    BashResult,
     ContextCompaction,
     SessionRecord,
-    ShellCommandResult,
     Thinking,
     ToolCall,
     UserMessage,
@@ -105,13 +105,13 @@ async def test_a_phrase_in_a_tool_result_matches(store: Store) -> None:
     """The prose a tool printed is searchable, and scoped to its record kind."""
     hit = await _session_with(
         store,
-        [ShellCommandResult(call_id="c", command=("ls",), stdout="pg_advisory_lock")],
+        [BashResult(call_id="c", command=("ls",), stdout="pg_advisory_lock")],
     )
     miss = await _session_with(store, [UserMessage(content="unrelated")])
 
     found = await _matching(
         store,
-        Filter(field="shell_command_result", op="re", value="advisory"),
+        Filter(field="bash_result", op="re", value="advisory"),
     )
 
     assert hit in found
