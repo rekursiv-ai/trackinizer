@@ -121,6 +121,22 @@ class Deployment:
             )
         return self.manifests[name]
 
+    def migrations(self) -> list[tuple[str, str]]:
+        """Return every addon's migrations, addon by addon in field order.
+
+        The server runs them at start (``Store.bootstrap``); a tool that must build
+        a database's tables without serving runs the same list.
+
+        Returns:
+          migrations: ``(name, SQL)`` pairs, each addon's in its own order.
+
+        """
+        return [
+            migration
+            for manifest in self.manifests.values()
+            for migration in manifest.migrations
+        ]
+
 
 def deployment_config(factory: str, *, overrides: list[str]) -> Deployment.Config:
     """Resolve a dotted factory path, then apply ``PATH=VALUE`` overrides.
@@ -203,7 +219,7 @@ async def supervise(
 def _addon_configs(config: Deployment.Config) -> Iterator[tuple[str, Makeable[object]]]:
     """Yield ``(name, config)`` for every addon field that is switched on."""
     for config_field in fields(config):
-        value: object = getattr(config, config_field.name, None)
+        value: object = getattr(config, config_field.name)
         if config_field.name == "visuals" or value is None:
             continue
         if not isinstance(value, Makeable):
