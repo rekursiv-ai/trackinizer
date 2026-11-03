@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, Self, override, runtime_checkable
+from unittest.mock import MagicMock
+
+import sys
+
+from pytest_postgresql.exceptions import ExecutableMissingException
 
 import pytest
 
@@ -187,6 +193,88 @@ async def test_pglite_engine_cache_uses_bare_slot_name(
     engine = await testing._EngineCache(tmp_path).get(())
     assert isinstance(engine, _CachedEngine)
     assert engine.workdir == tmp_path / "pg-bare"
+
+
+class _Janitor:
+    """Records the database a janitor was asked for, and whether it dropped it."""
+
+    def __init__(
+        self,
+        made: list[tuple[str, bool]],
+        *,
+        user: str,
+        host: str,
+        port: int,
+        dbname: str,
+        password: str,
+    ) -> None:
+        del user, host, port, password
+        self.made = made
+        self._dbname = dbname
+
+    def __enter__(self) -> Self:
+        self.made.append((self._dbname, False))
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        del exc
+        self.made.append((self._dbname, True))
+
+
+def test_postgres_database_names_its_own_database_and_drops_it(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    janitor = pytest.importorskip("pytest_postgresql.janitor", exc_type=ImportError)
+    made = list[tuple[str, bool]]()
+    monkeypatch.setattr(janitor, "DatabaseJanitor", partial(_Janitor, made))
+    server = MagicMock(user="u", password="", host="localhost", port=5433)
+
+    def started(name: str) -> object:
+        assert name == "postgresql_proc"
+        return server
+
+    monkeypatch.setattr(request, "getfixturevalue", started)
+
+    with testing.postgres_database(request, dbname="gpu_jobs_tests") as dsn:
+        held = list(made)
+
+    assert dsn == "postgresql://u@localhost:5433/gpu_jobs_tests"
+    assert held == [("gpu_jobs_tests", False)]
+    assert made == [("gpu_jobs_tests", False), ("gpu_jobs_tests", True)]
+
+
+def test_postgres_database_skips_without_a_postgresql_install(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    pytest.importorskip("pytest_postgresql.janitor", exc_type=ImportError)
+
+    def missing(name: str) -> object:
+        raise ExecutableMissingException(name)
+
+    monkeypatch.setattr(request, "getfixturevalue", missing)
+
+    with (
+        pytest.raises(pytest.skip.Exception, match="toolchain unavailable"),
+        testing.postgres_database(request, dbname="gpu_jobs_tests"),
+    ):
+        pass
+
+
+def test_postgres_database_skips_without_libpq(
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    # A module set to None in sys.modules raises ImportError, as psycopg does
+    # without libpq.
+    monkeypatch.setitem(sys.modules, "pytest_postgresql.janitor", None)
+
+    with (
+        pytest.raises(pytest.skip.Exception, match="client library unavailable"),
+        testing.postgres_database(request, dbname="gpu_jobs_tests"),
+    ):
+        pass
 
 
 @pytest.mark.asyncio

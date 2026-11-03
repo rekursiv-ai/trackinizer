@@ -17,6 +17,10 @@ conftest::
     def pglite_extensions() -> tuple[str, ...]:
         return ("pgvector",)
 
+A test that needs a real PostgreSQL server -- requests at once on connections of
+their own, which PGlite's one connection cannot run -- names a database with
+:func:`postgres_database` from a session fixture of its package's.
+
 What sharing does NOT cover: a test that must observe data surviving a real
 PROCESS restart. Those construct their own engine against a ``tmp_path`` and are
 correct to -- restart durability is the behavior under test. Sharing is for the
@@ -28,6 +32,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import contextlib
+import os
+
+from pytest_postgresql.config import get_config
+from pytest_postgresql.exceptions import ExecutableMissingException
 
 import pytest
 import pytest_asyncio
@@ -36,7 +44,7 @@ from trackinizer.lib.postgres import PGliteEngine
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, Generator
     from pathlib import Path
 
     from trackinizer.lib.postgres import DatabaseEngine
@@ -97,6 +105,56 @@ async def pglite_engine(
     with contextlib.suppress(pytest.FixtureLookupError):
         extensions = cast(tuple[str, ...], request.getfixturevalue("pglite_extensions"))
     return await pglite_engine_cache.get(extensions)
+
+
+@contextlib.contextmanager
+def postgres_database(request: pytest.FixtureRequest, *, dbname: str) -> Generator[str]:
+    """Create ``dbname`` on the session's PostgreSQL server; yield its DSN.
+
+    The one way a fixture reaches a real server, which tests need wherever PGlite's one
+    connection cannot show what they test. Each package names a database of its own: a
+    second janitor creating a name another already holds fails every test after it on
+    that worker. Without libpq or a PostgreSQL install, the calling test skips.
+
+    Args:
+      request: The calling fixture's request, which resolves ``postgresql_proc``.
+      dbname: The database, named for the package that owns it.
+
+    Yields:
+      dsn: ``postgresql://`` URL of the database, dropped when the block ends.
+
+    """
+    try:
+        # Both import psycopg, which cannot load without libpq.
+        from pytest_postgresql.executors.proc import (  # noqa: PLC0415 -- Imports psycopg, which needs libpq.
+            PostgreSQLExecutor,
+        )
+        from pytest_postgresql.janitor import (  # noqa: PLC0415 -- Imports psycopg, which needs libpq.
+            DatabaseJanitor,
+        )
+    except ImportError as exc:
+        pytest.skip(f"PostgreSQL client library unavailable: {exc}")
+    # Seeded workers can choose the same ports while their peers are between
+    # reservation and server startup. The plugin's five retries cannot cover
+    # six such peers; allow a collision for every other worker's reservation.
+    request.config.option.postgresql_port_search_count = max(
+        get_config(request).port_search_count,
+        int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")) - 1,
+    )
+    try:
+        server = cast(PostgreSQLExecutor, request.getfixturevalue("postgresql_proc"))
+    except ExecutableMissingException as exc:
+        pytest.skip(f"PostgreSQL toolchain unavailable: {exc}")
+    password = server.password or ""
+    userinfo = f"{server.user}:{password}" if password else server.user
+    with DatabaseJanitor(
+        user=server.user,
+        host=server.host,
+        port=server.port,
+        dbname=dbname,
+        password=server.password,
+    ):
+        yield f"postgresql://{userinfo}@{server.host}:{server.port}/{dbname}"
 
 
 async def reset_schema(engine: DatabaseEngine) -> None:
