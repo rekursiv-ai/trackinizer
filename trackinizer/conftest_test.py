@@ -213,6 +213,66 @@ async def test_a_changed_catalog_is_built_again(pglite_db: PGliteEngine) -> None
     await conftest.restore(pglite_db, empty=_refuse)
 
 
+# Another package's tests leave their schema on the shared engine. Its view or foreign
+# key over a core table refuses a migration test's change to that table: knowaccess's
+# views over ``inquiries`` failed 13 tests of ``schema_migration_test``.
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("over", "found"),
+    [
+        (
+            "CREATE VIEW addon.probe AS SELECT id FROM public.inquiries",
+            "SELECT count(*) FROM pg_views WHERE schemaname = 'addon'",
+        ),
+        (
+            "CREATE TABLE addon.probe (inquiry UUID REFERENCES public.inquiries (id))",
+            (
+                "SELECT count(*) FROM pg_constraint "
+                "WHERE contype = 'f' AND connamespace = 'addon'::regnamespace"
+            ),
+        ),
+    ],
+    ids=["view", "foreign key"],
+)
+async def test_another_schemas_object_over_the_build_is_built_away(
+    pglite_db: PGliteEngine,
+    over: str,
+    found: str,
+) -> None:
+    async with pglite_db.acquire() as conn:
+        await conn.execute("CREATE SCHEMA addon")
+        await conn.execute(over)
+    try:
+        with pytest.raises(_BuildError):
+            await conftest.restore(pglite_db, empty=_refuse)
+        await conftest.restore_pglite(pglite_db)
+        async with pglite_db.acquire() as conn:
+            assert await conn.fetchval(found) == 0
+        await conftest.restore(pglite_db, empty=_refuse)
+    finally:
+        async with pglite_db.acquire() as conn:
+            await conn.execute("DROP SCHEMA addon CASCADE")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_another_schemas_copy_of_a_core_table_is_no_change(
+    pglite_db: PGliteEngine,
+) -> None:
+    """Knowaccess keeps its builds' copies apart: a copy hangs on no core table."""
+    async with pglite_db.acquire() as conn:
+        await conn.execute(
+            "CREATE SCHEMA addon; "
+            "CREATE TABLE addon.copy AS SELECT * FROM public.session_embeddings",
+        )
+    try:
+        await conftest.restore(pglite_db, empty=_refuse)
+    finally:
+        async with pglite_db.acquire() as conn:
+            await conn.execute("DROP SCHEMA addon CASCADE")
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_rolled_back_migration_leaves_the_build(

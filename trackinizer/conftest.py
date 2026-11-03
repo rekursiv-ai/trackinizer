@@ -239,7 +239,11 @@ _BUILD: Final = "trackinizer_build"
 # every later test's rows. Types go by name: a reset drops pgvector with ``public``,
 # and the bootstrap after it makes ``vector`` again under a new oid. An index goes by
 # its definition, not its own columns, which keep the names they had when it was
-# made: a renamed table column leaves them behind.
+# made: a renamed table column leaves them behind. So is every view and foreign key
+# of another schema over one of its tables: another package's tests leave their schema
+# on the shared engine, and a view of it over ``inquiries`` refuses a migration test's
+# change to the table. The reset drops them with ``public``; a copy of a table, as
+# knowaccess keeps its builds', hangs on no table and counts for nothing.
 _CATALOG: Final = (
     "SELECT md5(coalesce(string_agg(item, ',' ORDER BY item), '')) FROM ("
     " SELECT c.relname || ':' || c.relkind::text || ':' || coalesce(a.attname || ':'"
@@ -266,6 +270,20 @@ _CATALOG: Final = (
     " UNION ALL SELECT co.conname || ':' || md5(pg_get_constraintdef(co.oid))"
     " FROM pg_constraint co JOIN pg_namespace n ON n.oid = co.connamespace"
     " WHERE n.nspname = 'public'"
+    " UNION ALL SELECT DISTINCT 'over ' || vn.nspname || '.' || v.relname"
+    " FROM pg_class v JOIN pg_namespace vn ON vn.oid = v.relnamespace"
+    " JOIN pg_rewrite r ON r.ev_class = v.oid"
+    " JOIN pg_depend dep ON dep.classid = 'pg_rewrite'::regclass AND dep.objid = r.oid"
+    " JOIN pg_class c ON c.oid = dep.refobjid"
+    " JOIN pg_namespace n ON n.oid = c.relnamespace"
+    " WHERE v.relkind IN ('v', 'm')"
+    " AND vn.nspname NOT IN ('public', 'pg_catalog', 'information_schema')"
+    " AND dep.refclassid = 'pg_class'::regclass AND n.nspname = 'public'"
+    " UNION ALL SELECT 'over ' || cn.nspname || '.' || co.conname"
+    " FROM pg_constraint co JOIN pg_namespace cn ON cn.oid = co.connamespace"
+    " JOIN pg_class c ON c.oid = co.confrelid"
+    " JOIN pg_namespace n ON n.oid = c.relnamespace"
+    " WHERE co.contype = 'f' AND n.nspname = 'public' AND cn.nspname <> 'public'"
     ") items"
 )
 
@@ -284,8 +302,9 @@ async def restore(
     later restore puts it back in one transaction: every table of schema ``public`` is
     cleared, the build's rows and sequence positions are copied back, and the session's
     temporary tables are discarded, so no test sees another's writes. A test that
-    changes the catalog (a migration, a dropped column, a reset) leaves a database the
-    copied rows no longer fit, so the next restore builds again. Session settings,
+    changes the catalog (a migration, a dropped column, a reset, another schema's view
+    or foreign key over a table) leaves a database the copied rows no longer fit, so
+    the next restore builds again. Session settings,
     advisory locks and listeners are not covered.
 
     Args:
