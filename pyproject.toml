@@ -161,6 +161,8 @@ trackinizer = "trackinizer.server.entry:main"
 trax = "trackinizer.trax.cli:main"
 
 [dependency-groups]
+# NEVER ADD MORE DEPENDENCIES!
+
 cuda = [
     "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torch",
@@ -168,7 +170,6 @@ cuda = [
     "torchaudio",
     "torchvision",
 ]
-# NEVER ADD MORE DEPENDENCIES!
 
 debug = [
     "ipython>=9.18.0",
