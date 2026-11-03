@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import ctypes
 import errno
@@ -50,7 +51,9 @@ def test_an_existing_destination_is_kept(tmp_path: Path, kind: str) -> None:
     with pytest.raises(FileExistsError) as refused:
         rename_noreplace(source, destination)
 
-    assert refused.value.filename == destination
+    assert cast(Path, refused.value.filename) == destination
+    assert refused.value.errno == errno.EEXIST
+    assert refused.value.strerror == os.strerror(errno.EEXIST)
     assert source.exists()
     if kind == "file":
         assert destination.read_text() == "theirs\n"
@@ -94,6 +97,11 @@ def test_a_system_without_the_call_says_enosys(
         rename_noreplace(tmp_path / "source", tmp_path / "destination")
 
     assert refused.value.errno == errno.ENOSYS
+    assert refused.value.strerror == (
+        "no-replace rename (renameat2 or renameatx_np) is unavailable"
+    )
+    assert cast(Path, refused.value.filename) == tmp_path / "destination"
+    assert isinstance(refused.value.__cause__, AttributeError)
     assert (tmp_path / "source").exists()
 
 
@@ -133,6 +141,14 @@ def test_each_platform_passes_its_own_call_at_fdcwd_and_flag(
             flags,
         ),
     ]
+    assert used.argtypes == (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    assert used.restype is ctypes.c_int
     assert unused.calls == []
 
 

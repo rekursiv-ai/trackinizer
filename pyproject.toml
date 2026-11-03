@@ -1,5 +1,6 @@
 # NEVER EDIT THIS FILE!
-# uv sync --all-groups --all-extras --frozen
+# uv sync --all-groups --frozen  # cu132 aka "cuda"
+# uv sync --all-groups --frozen --no-group cuda --extra cpu
 
 [project]
 name = "trackinizer"
@@ -64,6 +65,47 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+cpu = [
+    "torch",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+]
+cu126 = [
+    "jax[cuda12] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+]
+cu128 = [
+    "jax[cuda12] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+]
+cu130 = [
+    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+]
+cu132 = [
+    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+]
+cu134 = [
+    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+]
 # The server: `pip install 'trackinizer[server]'` provides the `trackinizer`
 # command. Nothing in `trax/`, `client/`, `wire/` or `types/` imports these; the
 # test in `light_install_test.py` fails if one starts to.
@@ -119,6 +161,13 @@ trackinizer = "trackinizer.server.entry:main"
 trax = "trackinizer.trax.cli:main"
 
 [dependency-groups]
+cuda = [
+    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "torch",
+    "torchao",
+    "torchaudio",
+    "torchvision",
+]
 # NEVER ADD MORE DEPENDENCIES!
 
 debug = [
@@ -801,6 +850,22 @@ formats = "ipynb,py:percent"
 
 [tool.uv]
 package = true
+default-groups = ["dev", "cuda"]
+conflicts = [[
+    {extra = "cpu"},
+    {extra = "cu126"},
+    {extra = "cu128"},
+    {extra = "cu130"},
+    {extra = "cu132"},
+    {extra = "cu134"},
+], [
+    {group = "cuda"},
+    {extra = "cpu"},
+    {extra = "cu126"},
+    {extra = "cu128"},
+    {extra = "cu130"},
+    {extra = "cu134"},
+]]
 environments = [
     "sys_platform == 'linux'",
     "sys_platform == 'darwin'",
@@ -826,6 +891,9 @@ compile-bytecode = true
 name = "pytorch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
+
+# [[tool.uv.index]]
+# url = "https://pypi.together.ai/"
 
 [tool.uv.sources]
 # uv-only (stripped from the built wheel). Linux -> CPU wheel for lock/CI;

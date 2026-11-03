@@ -42,11 +42,12 @@ def rename_noreplace(source: Path, destination: Path) -> None:
         no no-replace rename.
 
     """
-    if sys.platform == "win32":
+    platform = sys.platform
+    if platform == "win32":
         # Windows' own rename already refuses an existing destination.
         source.rename(destination)
         return
-    darwin = sys.platform == "darwin"
+    darwin = platform == "darwin"
     try:
         library = ctypes.CDLL(None, use_errno=True)
         rename = library.renameatx_np if darwin else library.renameat2
