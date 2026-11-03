@@ -1419,6 +1419,7 @@ async def test_migration_054_matches_the_baseline_gpu_tables(
     await conn.execute(load_sql("schema.057"))
     await conn.execute(load_sql("schema.062"))
     await conn.execute(load_sql("schema.068"))
+    await conn.execute(load_sql("schema.069"))
     migrated = {t: await _table_shape(conn, t) for t in _GPU_TABLES}
     # Replaying it over the existing tables is a no-op, not an error.
     await conn.execute(load_sql("schema.054"))
@@ -1468,7 +1469,7 @@ async def test_migration_056_matches_the_baseline_box_credentials(
 ) -> None:
     """The box-credential table and the job column 056 adds equal the baseline's.
 
-    Drops the table and job columns added since 056, replays 056, 062 and 068, and
+    Drops the table and job columns added since 056, replays 056, 062, 068 and 069, and
     compares both tables' shapes against the baseline, including column order.
     """
     conn = pglite_rollback_conn
@@ -1478,12 +1479,14 @@ async def test_migration_056_matches_the_baseline_box_credentials(
 
     await conn.execute(
         "ALTER TABLE gpu_jobs DROP COLUMN box_credential_id, "
-        "DROP COLUMN requested_node, DROP COLUMN usd_per_gpu_minute",
+        "DROP COLUMN requested_node, DROP COLUMN usd_per_gpu_minute, "
+        "DROP COLUMN campaign_ref",
     )
     await conn.execute("DROP TABLE gpu_box_credentials")
     await conn.execute(load_sql("schema.056"))
     await conn.execute(load_sql("schema.062"))
     await conn.execute(load_sql("schema.068"))
+    await conn.execute(load_sql("schema.069"))
     migrated = {t: await _table_shape(conn, t) for t in tables}
     # Replaying it over the existing table is a no-op, not an error.
     await conn.execute(load_sql("schema.056"))
@@ -1503,7 +1506,9 @@ async def test_migration_068_gives_every_existing_job_the_old_books(
     """
     conn = pglite_rollback_conn
     baseline = await _table_shape(conn, "gpu_jobs")
-    await conn.execute("ALTER TABLE gpu_jobs DROP COLUMN usd_per_gpu_minute")
+    await conn.execute(
+        "ALTER TABLE gpu_jobs DROP COLUMN usd_per_gpu_minute, DROP COLUMN campaign_ref",
+    )
     owner = await conn.fetchval(
         "INSERT INTO gpu_owners (email) VALUES ('jan@example.com') RETURNING id",
     )
@@ -1516,6 +1521,7 @@ async def test_migration_068_gives_every_existing_job_the_old_books(
 
     await conn.execute(load_sql("schema.068"))
     await conn.execute(load_sql("schema.068"))
+    await conn.execute(load_sql("schema.069"))
 
     rate = await conn.fetchval(
         "SELECT usd_per_gpu_minute FROM gpu_jobs WHERE id = $1",
@@ -1523,6 +1529,39 @@ async def test_migration_068_gives_every_existing_job_the_old_books(
     )
     assert await _table_shape(conn, "gpu_jobs") == baseline
     assert rate is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_069_leaves_every_existing_job_and_credential_no_campaigns(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """069's ref columns equal the baseline's, and what exists keeps an empty ref.
+
+    An empty ref is charged under ``gpu/<id>``, so a job running across the upgrade
+    goes on as it was charged.
+    """
+    conn = pglite_rollback_conn
+    tables = ("gpu_box_credentials", "gpu_jobs")
+    baseline = {t: await _table_shape(conn, t) for t in tables}
+    await conn.execute("ALTER TABLE gpu_jobs DROP COLUMN campaign_ref")
+    await conn.execute("ALTER TABLE gpu_box_credentials DROP COLUMN campaign_ref")
+    owner = await conn.fetchval(
+        "INSERT INTO gpu_owners (email) VALUES ('jan@example.com') RETURNING id",
+    )
+    job = await conn.fetchval(
+        "INSERT INTO gpu_jobs (email, owner_id, state, gpus, minutes, argv, commit, "
+        "public_key, key_sha256) VALUES ('jan@example.com', $1, 'running', 1, 10, "
+        "'[]', 'c', 'k', 'h') RETURNING id",
+        owner,
+    )
+
+    await conn.execute(load_sql("schema.069"))
+    await conn.execute(load_sql("schema.069"))
+
+    ref = await conn.fetchval("SELECT campaign_ref FROM gpu_jobs WHERE id = $1", job)
+    assert {t: await _table_shape(conn, t) for t in tables} == baseline
+    assert ref == ""
 
 
 @pytest.mark.db_pglite

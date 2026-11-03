@@ -1235,7 +1235,8 @@ CREATE TABLE IF NOT EXISTS gpu_box_credentials (
     minted_by     UUID,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     expires_at    TIMESTAMPTZ NOT NULL,
-    revoked_at    TIMESTAMPTZ
+    revoked_at    TIMESTAMPTZ,
+    campaign_ref  TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS gpu_box_credentials_live
@@ -1289,7 +1290,8 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     claimed_until      TIMESTAMPTZ,
     box_credential_id  UUID REFERENCES gpu_box_credentials(id),
     requested_node     TEXT,
-    usd_per_gpu_minute DOUBLE PRECISION
+    usd_per_gpu_minute DOUBLE PRECISION,
+    campaign_ref       TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS gpu_jobs_email_created
