@@ -318,10 +318,7 @@ class _Reader:
             )
         tokens = from_plain(record.get("tokens"), dict[str, object], default={})
         spend = from_plain(record.get("spend"), dict[str, object], default={})
-        # pragma: no mutate start -- a None total falls through to the spend, as 0.0 does.
-        total_cost = from_plain(record.get("total_cost_usd"), float, default=0.0)
-        # pragma: no mutate end
-        cost = total_cost or sum(
+        cost = from_plain(record.get("total_cost_usd"), float, default=None) or sum(
             from_plain(v, float, default=0.0) for v in spend.values()
         )
         out.append(
@@ -384,9 +381,7 @@ class _Reader:
         """Type a result by the call it answers."""
         call = self.calls.pop(call_id, None)
         extra = {"is_error": failed}
-        # pragma: no mutate start -- no tool is named that, so no branch matches.
-        name = call.name.lower() if call is not None else ""
-        # pragma: no mutate end
+        name = call.name.lower() if call is not None else None
         args = call.arguments if call is not None else {}
         path = _str(args.get("file_path") or args.get("path")) or None
         if name == "bash":
@@ -406,10 +401,8 @@ class _Reader:
                 content=content,
                 extra=extra,
             )
-        # A refused file op changed nothing; keep its error text instead.
-        if failed and name in {"write", "edit"}:
-            name = ""  # pragma: no mutate -- no tool has that name.
-        if name == "write":
+        # A refused file op changed nothing; it keeps its error text instead.
+        if name == "write" and not failed:
             return FileWriteResult(
                 timestamp=stamp,
                 call_id=call_id,
@@ -417,7 +410,7 @@ class _Reader:
                 content=_str(args.get("content")) or None,
                 extra=extra,
             )
-        if name == "edit":
+        if name == "edit" and not failed:
             return FileEditResult(
                 timestamp=stamp,
                 call_id=call_id,

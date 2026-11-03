@@ -59,7 +59,7 @@ class _Connection:
         return ""
 
     async def fetchval(self, query: str) -> str | None:
-        del query
+        self.commands.append(query)
         return self.temp_schema
 
 
@@ -134,6 +134,7 @@ async def test_reset_schema_recreates_public_and_temp_schemas(
     assert connection.commands == [
         "DROP SCHEMA public CASCADE",
         "CREATE SCHEMA public",
+        "SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema()",
         'DROP SCHEMA "pg_temp_7" CASCADE',
     ]
 
@@ -151,6 +152,7 @@ async def test_reset_schema_skips_missing_temp_schema(
     assert connection.commands == [
         "DROP SCHEMA public CASCADE",
         "CREATE SCHEMA public",
+        "SELECT nspname FROM pg_namespace WHERE oid = pg_my_temp_schema()",
     ]
 
 

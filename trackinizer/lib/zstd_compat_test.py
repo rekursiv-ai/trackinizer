@@ -60,7 +60,11 @@ def test_level_is_forwarded() -> None:
 
 
 def test_default_level_is_the_zstandard_default() -> None:
-    assert zstd_compat.compress(_PAYLOAD) == zstd_compat.compress(_PAYLOAD, level=3)
+    # Varied enough that levels 3 and 4 encode it differently.
+    data = " ".join(str(i * i % 1009) for i in range(500)).encode()
+
+    assert zstd_compat.compress(data) == zstd_compat.compress(data, level=3)
+    assert zstd_compat.compress(data) != zstd_compat.compress(data, level=4)
 
 
 def test_decodes_a_streaming_frame() -> None:

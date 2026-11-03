@@ -36,6 +36,7 @@ settings, claude marks the carried-over summary with ``isCompactSummary``.
 from __future__ import annotations
 
 from dataclasses import replace
+from itertools import count
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
@@ -124,23 +125,20 @@ def unfuse(
 
     """
     stream = iter(records)
-    # A one-slot buffer, because the boundary that ENDS a part is only seen by
-    # trying to read past it: the record belongs to the next part's decision,
-    # not to this one's output.
-    pending: list[SessionRecord] = []
-    root = True
-    while True:
-        part = _until_seam(stream, pending, seam=seam, root=root)
+    # Whether a seam ended the part, because the boundary that ENDS a part is
+    # only seen by trying to read past it.
+    seamed: list[bool] = []
+    for index in count():
+        part = _until_seam(stream, seamed, seam=seam, root=index == 0)
         yield part
         # Drained here rather than trusted to the caller: the next part starts
         # where this one stopped, and a caller that took two records and moved
         # on would otherwise splice this file's tail onto the next.
         for _ in part:
             pass
-        if not pending:
+        if not any(seamed):
             return
-        pending.clear()
-        root = False  # pragma: no mutate -- None reads as False in `if root`.
+        seamed.clear()
 
 
 def part_names(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[str]:
@@ -272,7 +270,7 @@ def _named(
 
 def _until_seam(
     stream: Iterator[SessionRecord],
-    pending: list[SessionRecord],
+    seamed: list[bool],
     *,
     seam: str,
     root: bool,
@@ -280,9 +278,9 @@ def _until_seam(
     """Yield one part's records, stopping at the boundary that ends it."""
     for record in stream:
         if isinstance(record, ContextClear) and seam in record.extra:
-            # Kept, so the loop above can tell "a seam followed" from "the
+            # Noted, so the loop above can tell "a seam followed" from "the
             # stream ended" -- one more part exists in the first case only.
-            pending.append(record)  # pragma: no mutate -- only its presence is read.
+            seamed.append(True)
             return
         yield _unnamed(record, seam=seam) if root else record
 

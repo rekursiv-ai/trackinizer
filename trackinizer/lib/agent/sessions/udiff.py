@@ -119,7 +119,7 @@ def parse_udiff(diff: str) -> tuple[Splice, ...]:
                     lead=lead,
                     removed=removed,
                     added=added,
-                    trail=[],  # pragma: no mutate -- a None trail joins as [] does.
+                    trail=(),
                     start=start,
                     bare=bare,
                 )

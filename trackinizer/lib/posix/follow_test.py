@@ -653,6 +653,21 @@ class TestCursor:
 
         assert cursor.drain() == ["two"]
 
+    def test_a_file_created_after_the_cursor_is_followed_from_its_start(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "log"
+        cursor = follow._Cursor(target, offset=0)
+        _ = target.write_text("one\n")
+        assert cursor.drain() == ["one"]
+
+        with target.open("a") as handle:
+            _ = handle.write("two\n")
+
+        assert cursor.drain() == ["two"]
+        assert not cursor.restarted
+
     def test_every_line_is_delivered_exactly_once(self, tmp_path: Path) -> None:
         """A line read is a line recorded, however the file grew meanwhile.
 

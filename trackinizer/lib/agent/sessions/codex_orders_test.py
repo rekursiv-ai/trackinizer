@@ -6,6 +6,9 @@ from importlib.resources import files
 
 from treekle import ReadError, from_plain, json_loads
 
+import pytest
+
+from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.codex_orders import payload_orders
 
 
@@ -210,6 +213,190 @@ def test_orders_place_keys_where_codex_writes_them() -> None:
     )
     assert orders["compacted"] == ("message", "replacement_history")
     assert orders["error"][-1] == "codex_error_info"
+
+
+_PAYLOAD = ("internal_chat_message_metadata_passthrough",)
+
+
+# Every key, including those no capture holds, by hand: the reader stores a line's own
+# order only where the table cannot reproduce it.
+@pytest.mark.parametrize(
+    ("kind", "order"),
+    [
+        (
+            "session_meta",
+            (
+                "session_id",
+                "id",
+                "forked_from_id",
+                "parent_thread_id",
+                "timestamp",
+                "cwd",
+                "originator",
+                "cli_version",
+                "source",
+                "thread_source",
+                "agent_nickname",
+                "agent_role",
+                "agent_path",
+                "model_provider",
+                "base_instructions",
+                "history_mode",
+                "multi_agent_version",
+                "context_window",
+                "git",
+            ),
+        ),
+        (
+            "turn_context",
+            (
+                "turn_id",
+                "cwd",
+                "workspace_roots",
+                "current_date",
+                "timezone",
+                "approval_policy",
+                "approvals_reviewer",
+                "sandbox_policy",
+                "permission_profile",
+                "active_permission_profile",
+                "file_system_sandbox_policy",
+                "model",
+                "comp_hash",
+                "personality",
+                "collaboration_mode",
+                "multi_agent_version",
+                "multi_agent_mode",
+                "realtime_active",
+                "effort",
+                "summary",
+                "user_instructions",
+                "truncation_policy",
+            ),
+        ),
+        ("message", ("type", "id", "role", "content", "phase", *_PAYLOAD)),
+        (
+            "reasoning",
+            ("type", "id", "summary", "content", "encrypted_content", *_PAYLOAD),
+        ),
+        (
+            "function_call",
+            ("type", "id", "name", "namespace", "arguments", "call_id", *_PAYLOAD),
+        ),
+        (
+            "custom_tool_call",
+            ("type", "id", "status", "call_id", "name", "input", *_PAYLOAD),
+        ),
+        (
+            "function_call_output",
+            ("type", "id", "call_id", "name", "output", *_PAYLOAD),
+        ),
+        (
+            "custom_tool_call_output",
+            ("type", "id", "call_id", "name", "output", *_PAYLOAD),
+        ),
+        (
+            "agent_message",
+            ("type", "id", "author", "recipient", "content", *_PAYLOAD),
+        ),
+        (
+            "tool_search_call",
+            (
+                "type",
+                "id",
+                "call_id",
+                "status",
+                "execution",
+                "action",
+                "arguments",
+                *_PAYLOAD,
+            ),
+        ),
+        ("web_search_call", ("type", "id", "status", "action", *_PAYLOAD)),
+        (
+            "tool_search_output",
+            ("type", "id", "call_id", "status", "execution", "tools", *_PAYLOAD),
+        ),
+        ("token_count", ("type", "info", "rate_limits")),
+        (
+            "exec_command_end",
+            (
+                "type",
+                "call_id",
+                "process_id",
+                "turn_id",
+                "command",
+                "cwd",
+                "parsed_cmd",
+                "source",
+                "stdout",
+                "stderr",
+                "aggregated_output",
+                "exit_code",
+                "duration",
+                "formatted_output",
+            ),
+        ),
+        (
+            "patch_apply_end",
+            (
+                "type",
+                "call_id",
+                "turn_id",
+                "stdout",
+                "stderr",
+                "success",
+                "changes",
+                "status",
+            ),
+        ),
+        ("web_search_end", ("type", "call_id", "query", "action", "results")),
+        ("result_row", ("type", "ref_id", "title", "url", "domain", "snippet")),
+        (
+            "item_completed",
+            (
+                "type",
+                "thread_id",
+                "turn_id",
+                "item",
+                "started_at_ms",
+                "completed_at_ms",
+            ),
+        ),
+        (
+            "CommandExecution",
+            (
+                "type",
+                "id",
+                "process_id",
+                "command",
+                "cwd",
+                "parsed_cmd",
+                "source",
+                "status",
+                "stdout",
+                "stderr",
+                "aggregated_output",
+                "exit_code",
+                "duration",
+                "formatted_output",
+            ),
+        ),
+        ("FileChange", ("type", "id", "changes", "status", "stdout", "stderr")),
+        ("WebSearch", ("type", "id", "query")),
+        ("compacted", ("message", "replacement_history")),
+        ("error", ("type", "message", "codex_error_info")),
+    ],
+)
+def test_a_payload_in_codexs_order_needs_no_stored_order(
+    kind: str,
+    order: tuple[str, ...],
+) -> None:
+    """Pins each table as the spec; it is no evidence of the order codex writes."""
+    # Reversed, with a key no table lists first: it goes last, after the table's.
+    source = dict.fromkeys(("unlisted", *reversed(order)), 0)
+
+    assert codex._canonical_order(source, kind=kind) == [*order, "unlisted"]
 
 
 if __name__ == "__main__":

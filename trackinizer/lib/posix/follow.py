@@ -905,7 +905,7 @@ class _Cursor:
         # re-reads to tell an append from a replacement. Seeded here because a
         # cursor may START mid-file (``offset=_size(path)``, the skip-history
         # case) without ever having read them itself.
-        self._seen = b""  # pragma: no mutate -- unread unless the open below fails.
+        self._seen = b""
         self._identity: tuple[int, int] | None = None
         try:
             with path.open("rb") as handle:
