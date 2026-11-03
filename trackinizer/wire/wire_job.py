@@ -96,7 +96,16 @@ JOB_USER_PREFIX: Final = "rai-ext-job-"
 SECRET_NAMES: Final = frozenset({"HF_TOKEN", "WANDB_API_KEY"})
 """The per-person secrets a job's proxy may use."""
 
-GATE_RW_VERBS: Final = ("bases", "upload", "status", "logs", "manifest", "download")
+GATE_RW_VERBS: Final = (
+    "bases",
+    "upload",
+    "status",
+    "logs",
+    "manifest",
+    "download",
+    "shell",
+    "port",
+)
 """What an upload certificate may ask the node's gate."""
 
 GATE_RO_VERBS: Final = ("status", "logs", "manifest", "download")
