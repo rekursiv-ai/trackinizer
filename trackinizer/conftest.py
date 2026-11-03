@@ -24,11 +24,8 @@ from functools import partial
 from typing import TYPE_CHECKING, Final, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
-import os
 import uuid
 
-from pytest_postgresql.config import get_config
-from pytest_postgresql.exceptions import ExecutableMissingException
 from treekle import from_plain
 
 import pytest
@@ -36,7 +33,7 @@ import pytest_asyncio
 
 from trackinizer.lib import postgres
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.lib.postgres.testing import reset_schema
+from trackinizer.lib.postgres.testing import postgres_database, reset_schema
 from trackinizer.lib.testing.resources import (
     isolate_user_dirs,
     pytest_collection_modifyitems,
@@ -330,59 +327,12 @@ async def restore_pglite(engine: PGliteEngine) -> None:
 
 @pytest.fixture(scope="session")
 def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
-    """Provision a session-scoped Postgres database; yield its DSN.
+    """Provision trackinizer's database on the session's PostgreSQL server.
 
-    The ``postgresql_proc`` fixture needs a real PostgreSQL install
-    (``pg_config`` / ``initdb`` on ``PATH``). When that toolchain is
-    absent -- as on machines without a system Postgres -- these
-    integration tests skip cleanly instead of erroring at setup.
-
-    The same holds for libpq. Without it psycopg cannot load, the root
-    conftest leaves the pytest-postgresql plugin unregistered, and the
-    imports below are what notice.
+    Without a PostgreSQL install or libpq, the integration tests that need it skip.
     """
-    try:
-        from pytest_postgresql.executors.proc import (  # noqa: PLC0415 -- The executors package imports psycopg, which needs libpq.
-            PostgreSQLExecutor,
-        )
-        from pytest_postgresql.janitor import (  # noqa: PLC0415 -- Imports psycopg, which needs libpq.
-            DatabaseJanitor,
-        )
-    except ImportError as exc:
-        pytest.skip(f"PostgreSQL client library unavailable: {exc}")
-    # Seeded workers can choose the same ports while their peers are between
-    # reservation and server startup. The plugin's five retries cannot cover
-    # six such peers; allow a collision for every other worker's reservation.
-    request.config.option.postgresql_port_search_count = max(
-        get_config(request).port_search_count,
-        int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")) - 1,
-    )
-    try:
-        postgresql_proc = cast(
-            PostgreSQLExecutor,
-            request.getfixturevalue("postgresql_proc"),
-        )
-    except ExecutableMissingException as exc:
-        pytest.skip(f"PostgreSQL toolchain unavailable: {exc}")
-    else:
-        with DatabaseJanitor(
-            user=postgresql_proc.user,
-            host=postgresql_proc.host,
-            port=postgresql_proc.port,
-            dbname=postgresql_proc.dbname,
-            password=postgresql_proc.password,
-        ):
-            password = postgresql_proc.password or ""
-            userinfo = (
-                f"{postgresql_proc.user}:{password}"
-                if password
-                else postgresql_proc.user
-            )
-            yield (
-                f"postgresql://{userinfo}"
-                f"@{postgresql_proc.host}:{postgresql_proc.port}/"
-                f"{postgresql_proc.dbname}"
-            )
+    with postgres_database(request, dbname="tests") as dsn:
+        yield dsn
 
 
 @pytest_asyncio.fixture(loop_scope="session", scope="session")
