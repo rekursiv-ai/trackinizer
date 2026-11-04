@@ -793,7 +793,9 @@ session is read into a chat only when everyone who reads the chat reads it too, 
 the assistant would read it for them: its starter, each person it is shared with, and
 while it is not `private` the starter's organisation or every member; else 409
 `chat_readers`. The assistant reads a chat by its id and audience alone only when a
-key of its own opened that chat's session. Another caller's `asker`
+key of its own opened that chat's session, or when it runs on a chat a CLI began
+that its starter's canvas switched to the assistant (section 1.25), which it also
+writes and drains. Another caller's `asker`
 and `chat` are ignored, and so is every bulk route's: the feed, its facets and
 histogram, session search, `GET /api/inquiries` and the export answer for the caller
 alone.
@@ -1098,13 +1100,14 @@ addon's to say).
 
 The partner's key may read and operate a canvas while that canvas's partner
 is the session the key opened, and the live science chat the canvas holds
-(`conversation_id`) is one that key opened with the canvas's owner as its
-account or a poster (section 1.25). The check is per canvas: a canvas without
-a chat takes no key. Any other canvas is 404, so a user who never talked to
-the partner in that canvas gives it nothing. Only the key that opened a
+(`conversation_id`) is one that key opened, or its account drains, with the
+canvas's owner as its account or a poster (section 1.25). The check is per canvas: a
+canvas without a chat takes no key. Any other canvas is 404, so a user who never
+talked to the partner in that canvas gives it nothing. Only the key that opened a
 partner or science-chat session may drain its inbound queue, whatever the role,
 except that a chat on `claude` or `codex` is drained by its starter's run under any
-of their keys. A science chat's queue has one drainer, the provider its starter's
+of their keys, and a chat a CLI began that is switched to `assistant` by the
+assistant, which attaches to it; the assistant then has that chat open. A science chat's queue has one drainer, the provider its starter's
 canvas names: for a CLI, the assistant's key is 409 `provider_is_cli`; for
 `assistant`, an opening key that is not the assistant's is 409
 `provider_is_assistant`. Either holds from the moment the canvas switches. A chat
@@ -1414,7 +1417,8 @@ record is on its way. A put is refused, in this order: 404
 (`TRACKINIZER_CHAT_STREAMING=off`; `on` is the default, anything else stops the
 boot), 403 `not_the_assistant` from anyone but the configured assistant, 404 for
 no session, 404 `not_a_chat` for a session that is no science chat, 403 from a key
-that did not open it, and 409 `session_ended` once it ended. It answers 204.
+that did not open it, unless the assistant runs on it (a chat a CLI began, switched to
+the assistant: section 1.25), and 409 `session_ended` once it ended. It answers 204.
 `DELETE /api/sessions/<uuid>/partial/<turn>` drops the partial if it is of `<turn>`
 and leaves a later turn's, with the same refusals but the last, and answers 204.
 `GET /api/sessions/<uuid>/partial?after=<seq>&wait_sec=<s>` answers `{seq, partial}`
@@ -1440,14 +1444,21 @@ for the session its next start resumes; one that does not is released, and the
 lines it held are logged with their senders.
 
 A science chat (a session under a `chat:` id, a user's own chats included, whether or
-not an assistant is configured) holds one part per run. A file it holds no part for
+not an assistant is configured) holds one part per run. A chat a CLI began keeps its
+session when its starter's canvas switches it to the assistant: the assistant attaches
+to it (`attach` in the start) and runs on it as that run's key did, reading its parts,
+adding its own, draining it, writing its answer in writing, labelling it and using its
+canvas, while that canvas stays on the assistant; it takes that chat's lines, as it
+does those of a chat it opened. Only the chat's session its starter's own key opened
+is so; on a CLI the chat is the CLI's alone. A file it holds no part for
 opens one, from its opening key, a key of the configured assistant or a key of its
 starter; after that the part is written only by the key whose first write opened it,
 and a part opened before parts recorded their key by the chat's opening key alone. The
 same keys end it. Any other key's append or end is 403, a writer's included. Editing
 any of its fields (its labels and account decide who may use it from a canvas and
 which canvases the assistant may use) and purging it by id are 403 from any key but
-its opening one (an admin may purge it), and
+its opening one (an admin may purge it), save that the assistant edits the fields of a
+chat it runs on, and
 `POST /api/sessions/<uuid>/inbound` and
 `/api/messages` refuse it with 409 because a line sent that way names no
 conversation. A browser's `/api/messages` send to a science chat, live or idle, is

@@ -150,32 +150,61 @@ Steps:
    downtime" -- everything needed to make this call, in the file, before it
    ever runs.
 
-   **A single `INSERT ... SELECT` uses ONE core, whatever the machine has.**
-   Postgres never parallelizes a query whose top node writes rows: the plan is
-   serial in the leader, and the source scan gets no workers either. Measured:
-   `schema.020.sql` held one backend at 100% for 11 minutes on a 128-core host,
-   sustaining ~660 MB/min. `max_parallel_workers_per_gather = 2` and
+   **Measure the target before writing the rewrite**, on the live database, and
+   put the numbers in the migration's header: the row count,
+   `pg_total_relation_size`, and the fraction a `TABLESAMPLE SYSTEM (0.05)` of
+   the WHERE matches. A rewrite those numbers put over about a minute runs as
+   above, before the restart, never as a startup migration.
+
+   **One scan per rewrite.** Every statement reads every row it filters, and a
+   predicate over `payload::text` de-TOASTs each payload again. Fold the
+   renames into one `UPDATE` whose WHERE is the union of their predicates, and
+   rewrite a column only where its own predicate matches (`CASE ... ELSE col`).
+   Measured: `schema.067.sql`, first written as three full-table statements
+   over ~10M rows (38 GB: 11 GB heap, 23 GB TOAST, ~4.3% matching), ran 33
+   minutes at startup and had read 360 GB by minute 22.
+
+   A rewrite of a migration that already ran somewhere must leave the same
+   rows the old one did. Prove that before merge with a one-off script, not
+   a test: seed rows covering each predicate, run the old and the new
+   statements on fresh databases, compare every row, and break the new one
+   to see the comparison fail. Record the script's output with the change;
+   never add it to the test suite.
+
+   **A single writing statement uses ONE core, whatever the machine has.**
+   Postgres never parallelizes a query whose top node writes rows
+   (`INSERT ... SELECT`, `UPDATE`): the plan is serial in the leader, and the
+   source scan gets no workers either. Measured on a 128-core host:
+   `schema.020.sql` held one backend at 100% for 11 minutes, sustaining ~660
+   MB/min, and `schema.067.sql` held one at 100% for 33 minutes while writing
+   only ~115 MB/s. `max_parallel_workers_per_gather = 2` and
    `max_worker_processes = 8` are also low for the hardware, but raising them
    changes nothing here -- the restriction is the write, not the budget.
 
    Splitting the work is the only thing that uses the cores. Partition by a
-   key with a usable index (`session_id` range, `created` window) and run the
-   chunks as CONCURRENT CONNECTIONS -- separate sessions, not one statement:
+   key with a usable index (`session_id` range on the primary key, `created`
+   window) and run the chunks as CONCURRENT CONNECTIONS -- separate sessions,
+   not one statement:
 
    ```bash
-   # Bounded by what the DISK sustains, not by nproc: every shard writes rows
-   # and computes a STORED to_tsvector, so past a handful they queue on WAL
-   # and shared buffers instead of going faster. `max_connections` (~100) is a
-   # second ceiling, and the server needs headroom under it while serving.
-   shards=$(( $(nproc) < 16 ? $(nproc) : 16 ))
+   # Against the LIVE database, old server still serving: 16 session_id ranges,
+   # one connection each, the migration's WHERE plus the range.
+   shards=16
+   bound() { printf '%08x-0000-0000-0000-000000000000' $(($1 * 2**32 / shards)); }
    for shard in $(seq 0 $((shards - 1))); do
-     psql -d trackinizer -c "INSERT INTO session_records SELECT ...
-       WHERE hashtext(session_id::text) % $shards = $shard" &
+     range="session_id >= '$(bound "$shard")'"
+     [ "$shard" -lt $((shards - 1)) ] && range="$range AND session_id < '$(bound $((shard + 1)))'"
+     psql -d trackinizer -c "UPDATE session_records SET ... WHERE (...) AND $range" &
    done; wait
    ```
 
-   Measure before widening: run 4 shards, then 8, and keep the count where
-   throughput stops improving. A 128-core host does not want 128 writers.
+   Size the count from `nproc` and measure: run 4 shards, then 8, 16, ..., and
+   keep the count where rows per second stops rising. Where that is depends on
+   the bottleneck. A CPU-bound rewrite (067: a regex over de-TOASTed text, one
+   core saturated, the disk mostly idle) scales toward `nproc`; a write-bound
+   one (020: every row writes a STORED `to_tsvector`) queues on WAL and shared
+   buffers past a handful. `max_connections` (~100) is a second ceiling, and
+   the server needs headroom under it while serving.
 
    Two consequences to accept before doing it: each shard commits separately,
    so a failure leaves a partial backfill (make it idempotent, or record which

@@ -409,8 +409,9 @@ async def session_inbound_drain_route(
 
     Writers retain shared access to the drains of ordinary sessions, but a science
     chat and the assistant's service session are drained by their opening key alone
-    (403 otherwise). Viewer access is scoped to the opening API key so reading chat
-    does not grant graph-write permission.
+    (403 otherwise), save a chat a CLI began that its starter's canvas switched to the
+    assistant, which the assistant drains. Viewer access is scoped to the opening API
+    key so reading chat does not grant graph-write permission.
 
     A science chat's queue has one drainer, the provider its starter's canvas names,
     and one live run. For ``claude`` or ``codex`` a drain by the configured assistant's

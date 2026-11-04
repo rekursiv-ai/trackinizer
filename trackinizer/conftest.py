@@ -4,6 +4,9 @@ Tests across ``trackinizer_test.py`` and friends share:
 
 * mock-based unit testing helpers (``make_conn`` / ``FakeEngine`` /
   ``make_store`` / ``executed_sql`` / ``new_uuid``), imported explicitly;
+* ``ExchangeEngine``, a ``FakeEngine`` that expects exactly the statements a test
+  lists as :class:`Says` steps, and ``RecordingPolicy``, an access policy that
+  records each call;
 * ``pglite_db``, the session's shared PGlite engine, and ``store``, a
   :class:`Store` over it; ``integ_store``, one over the session's PostgreSQL
   database. :func:`restore` bootstraps each engine's schema once a session and
@@ -19,9 +22,13 @@ Tests across ``trackinizer_test.py`` and friends share:
 
 from __future__ import annotations
 
+from collections.abc import (
+    Callable,
+)
 from contextlib import asynccontextmanager, contextmanager
+from dataclasses import dataclass, field
 from functools import partial
-from typing import TYPE_CHECKING, Final, Self, cast
+from typing import TYPE_CHECKING, Final, Literal, Self, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import uuid
@@ -39,11 +46,13 @@ from trackinizer.lib.testing.resources import (
     pytest_collection_modifyitems,
     pytest_configure,
 )
+from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL, tx
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
+from trackinizer.types.errors import ConflictError
 
 
 if TYPE_CHECKING:
@@ -51,12 +60,18 @@ if TYPE_CHECKING:
         AsyncGenerator,
         AsyncIterator,
         Awaitable,
-        Callable,
         Generator,
         Iterator,
     )
 
     from trackinizer.lib.postgres import Conn, PGliteEngine
+    from trackinizer.server.access_policy import (
+        Action,
+        Principal,
+        Resource,
+        ResourceKind,
+    )
+    from trackinizer.server.auth import Role
 
 
 # Re-exported, not merely imported: an autouse fixture reaches only the
@@ -190,6 +205,219 @@ class FakeEngine:
                 yield m
 
         return gen()
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Says:
+    """One statement a code path must send, and the database's answer to it."""
+
+    method: Literal["execute", "fetch", "fetchrow", "fetchval"]
+    sql: str
+    args: tuple[object, ...] = ()
+    answer: object = None
+
+
+BEGIN: Final = Says(method="execute", sql="BEGIN", answer="BEGIN")
+COMMIT: Final = Says(method="execute", sql="COMMIT", answer="COMMIT")
+ROLLBACK: Final = Says(method="fetch", sql="ROLLBACK", answer=[])
+
+TRANSACTION_BEGIN: Final = Says(method="execute", sql="BEGIN;", answer="BEGIN")
+"""What asyncpg's ``conn.transaction()`` sends on entry."""
+
+TRANSACTION_COMMIT: Final = Says(method="execute", sql="COMMIT;", answer="COMMIT")
+"""What asyncpg's ``conn.transaction()`` sends when its block ends cleanly."""
+
+TRANSACTION_ROLLBACK: Final = Says(
+    method="execute",
+    sql="ROLLBACK;",
+    answer="ROLLBACK",
+)
+"""What asyncpg's ``conn.transaction()`` sends when its block raises."""
+
+
+class ExchangeEngine(FakeEngine):
+    """A ``FakeEngine`` whose connection expects exactly ``steps``, in order.
+
+    Each statement must be the next step's method, SQL and arguments; it gets that
+    step's answer. Any other statement fails the test, so a test states a code
+    path's whole exchange with the database. Once a statement has failed, the
+    ``ROLLBACK`` that ``tx`` or ``conn.transaction()`` sends on the way out is let
+    through, so the first mismatch is the one reported. ``said`` keeps each step with
+    the arguments actually sent. An answer that is an exception is raised, as by a
+    database that refuses the statement. ``conn.transaction()`` sends what asyncpg's
+    does (:data:`TRANSACTION_BEGIN`, then :data:`TRANSACTION_COMMIT` or
+    :data:`TRANSACTION_ROLLBACK`) through the same exchange, whether used as a block
+    or started and ended by hand.
+    """
+
+    def __init__(self, *steps: Says) -> None:
+        super().__init__()
+        self.pending = list(steps)
+        self.said: list[Says] = []
+        self.failed = False
+        self.conn.execute = AsyncMock(side_effect=self._execute)
+        self.conn.fetch = AsyncMock(side_effect=self._fetch)
+        self.conn.fetchrow = AsyncMock(side_effect=self._fetchrow)
+        self.conn.fetchval = AsyncMock(side_effect=self._fetchval)
+        self.conn.transaction = MagicMock(side_effect=self._transaction)
+
+    @property
+    def done(self) -> bool:
+        """Whether every step was said."""
+        return not self.pending
+
+    async def _execute(self, sql: str, *args: object) -> object:
+        return self._said("execute", sql, args)
+
+    async def _fetch(self, sql: str, *args: object) -> object:
+        return self._said("fetch", sql, args)
+
+    async def _fetchrow(self, sql: str, *args: object) -> object:
+        return self._said("fetchrow", sql, args)
+
+    async def _fetchval(self, sql: str, *args: object) -> object:
+        return self._said("fetchval", sql, args)
+
+    def _transaction(self) -> _Transaction:
+        return _Transaction(say=self._said)
+
+    def _said(self, method: str, sql: str, args: tuple[object, ...]) -> object:
+        if self.failed and sql in {"ROLLBACK", TRANSACTION_ROLLBACK.sql}:
+            return None
+        step = self.pending.pop(0) if self.pending else None
+        if step is None or (method, sql, args) != (step.method, step.sql, step.args):
+            self.failed = True
+            raise AssertionError(f"sent {method} {sql!r} {args!r}; expected {step!r}")
+        self.said.append(
+            Says(method=step.method, sql=sql, args=args, answer=step.answer),
+        )
+        if isinstance(step.answer, BaseException):
+            raise step.answer
+        return step.answer
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Transaction:
+    """What ``conn.transaction()`` returns, sending asyncpg's statements through ``say``.
+
+    As asyncpg's ``Transaction``, entering it starts it and leaving it commits, or
+    rolls back when its block raises; ``start``, ``commit`` and ``rollback`` also
+    work by hand.
+    """
+
+    say: Callable[[str, str, tuple[object, ...]], object]
+
+    async def start(self) -> None:
+        _ = self.say("execute", TRANSACTION_BEGIN.sql, ())
+
+    async def commit(self) -> None:
+        _ = self.say("execute", TRANSACTION_COMMIT.sql, ())
+
+    async def rollback(self) -> None:
+        _ = self.say("execute", TRANSACTION_ROLLBACK.sql, ())
+
+    async def __aenter__(self) -> None:
+        await self.start()
+
+    async def __aexit__(
+        self,
+        raised: type[BaseException] | None,
+        *rest: object,
+    ) -> None:
+        del rest
+        await (self.commit() if raised is None else self.rollback())
+
+
+@dataclass(slots=True, kw_only=True)
+class RecordingPolicy:
+    """An access policy that records each call and allows what the default allows.
+
+    ``calls`` keeps each call's name and arguments in order; ``sent`` keeps, per
+    call, every statement a mock connection had been sent before it, so a test sees
+    whether the call ran inside the write's transaction.
+    """
+
+    groups_of: frozenset[str] = frozenset({"g1"})
+    """What :meth:`groups` answers."""
+
+    deny_writes: bool = False
+    """Whether :meth:`check` refuses, as a policy whose grants exclude the caller."""
+
+    refuse_states: bool = False
+    """Whether :meth:`validate` refuses the resource's new state."""
+
+    calls: list[tuple[str, object]] = field(default_factory=list)
+    sent: list[list[str]] = field(default_factory=list)
+
+    async def groups(self, conn: Conn, principal: Principal) -> frozenset[str]:
+        del conn
+        self.calls.append(("groups", principal.email))
+        return self.groups_of
+
+    def read_filter(
+        self,
+        kind: ResourceKind,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal,
+    ) -> str:
+        del kind, alias, params, principal
+        self.calls.append(("read_filter", None))
+        return "TRUE"
+
+    async def check(
+        self,
+        conn: Conn,
+        *,
+        principal: Principal,
+        resource: Resource,
+        action: Action,
+    ) -> None:
+        self._called(conn, "check", (principal, resource, action))
+        if self.deny_writes:
+            raise AccessDeniedError("The row's write grant excludes the caller.")
+
+    async def on_create(
+        self,
+        conn: Conn,
+        *,
+        principal: Principal | None,
+        resource: Resource,
+    ) -> None:
+        self._called(conn, "on_create", (principal, resource))
+
+    async def prepare_account_change(self, conn: Conn, *, resource: Resource) -> None:
+        self._called(conn, "prepare_account_change", resource)
+
+    async def validate(self, conn: Conn, *, resource: Resource) -> None:
+        self._called(conn, "validate", resource)
+        if self.refuse_states:
+            raise ConflictError("The new account may not hold the row.")
+
+    async def on_user(self, conn: Conn, *, email: str, role: Role) -> None:
+        self._called(conn, "on_user", (email, role))
+
+    async def prepare_audience_change(self, conn: Conn) -> None:
+        self._called(conn, "prepare_audience_change", None)
+
+    async def on_audience(
+        self,
+        conn: Conn,
+        *,
+        principal: Principal | None,
+        resource: Resource,
+    ) -> None:
+        self._called(conn, "on_audience", (principal, resource))
+
+    def of(self, name: str) -> list[object]:
+        """Return the recorded arguments of every call to ``name``, in order."""
+        return [args for called, args in self.calls if called == name]
+
+    def _called(self, conn: Conn, name: str, args: object) -> None:
+        self.calls.append((name, args))
+        # A live connection keeps no record of what it was sent.
+        self.sent.append(executed_sql(conn) if isinstance(conn, AsyncMock) else [])
 
 
 def make_store(conn: AsyncMock | None = None) -> tuple[Store, FakeEngine]:
