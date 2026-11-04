@@ -27,15 +27,37 @@ from pytest_postgresql.factories import process
 from pytest_postgresql.plugin import postgresql_proc
 
 from trackinizer import conftest
-from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
+from trackinizer.conftest import (
+    BEGIN,
+    COMMIT,
+    ROLLBACK,
+    TRANSACTION_BEGIN,
+    TRANSACTION_COMMIT,
+    TRANSACTION_ROLLBACK,
+    ExchangeEngine,
+    RecordingPolicy,
+    Says,
+)
+from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine, PostgresEngine
+from trackinizer.server.access_policy import (
+    AccessDeniedError,
+    AccessPolicy,
+    Principal,
+    Resource,
+)
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
 from trackinizer.server.notify import tx
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
+from trackinizer.types.errors import ConflictError
 from trackinizer.types.inquiries import Issue
 from trackinizer.wire.bodies import SubmitIssue
 
+
+# A Protocol method the policy lacks fails both type checkers here, not a test that
+# happens to call it.
+_POLICY: Final[AccessPolicy] = RecordingPolicy()
 
 _PROBE_COLUMN: Final = (
     "SELECT count(*) FROM information_schema.columns "
@@ -90,9 +112,12 @@ def test_pg_dsn_reserves_ports_for_seeded_workers(
     monkeypatch.setattr(request.config, "workerinput", {}, raising=False)
     monkeypatch.setattr(request.config.option, "postgresql_port_search_count", retries)
     monkeypatch.setattr(tmp_path_factory, "getbasetemp", lambda: tmp_path / "worker")
-    # Port policy discovery is independent of exclusive reservation. Keep the
-    # real RNG selection, socket availability checks, and sentinel lifecycle.
+    # Port policy discovery and the socket probe are independent of exclusive
+    # reservation: every port reads as free, so seeded workers collide on
+    # their first pick. Keep the real RNG selection and sentinel lifecycle,
+    # which alone must keep the reservations apart.
     monkeypatch.setattr(api, "available_good_ports", lambda: set(range(10_000, 10_032)))
+    monkeypatch.setattr(api, "port_is_used", _never_used)
     monkeypatch.setattr(process, "_pg_exe", MagicMock(return_value=Path("/unused")))
     executor = MagicMock(
         host="localhost",
@@ -303,6 +328,232 @@ async def test_a_refused_statement_in_a_savepoint_leaves_the_transaction_live(
         assert await conn.fetchval(_PROBE_COLUMN) == 1
 
 
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchange_answers_each_step_in_order_with_its_answer() -> None:
+    engine = ExchangeEngine(
+        Says(method="fetchval", sql="SELECT $1", args=(7,), answer=7),
+        Says(method="fetch", sql="SELECT 2", answer=[{"n": 2}]),
+        Says(method="fetchrow", sql="SELECT 3", answer={"n": 3}),
+        Says(method="execute", sql="DELETE 4", answer="DELETE 4"),
+    )
+
+    async with cast(DatabaseEngine, engine).acquire() as conn:
+        answers = [
+            await conn.fetchval("SELECT $1", 7),
+            await conn.fetch("SELECT 2"),
+            await conn.fetchrow("SELECT 3"),
+            await conn.execute("DELETE 4"),
+        ]
+
+    assert answers == [7, [{"n": 2}], {"n": 3}, "DELETE 4"]
+    assert engine.done
+    assert [each.args for each in engine.said] == [(7,), (), (), ()]
+
+
+@pytest.mark.parametrize(
+    ("method", "sql", "args"),
+    [
+        pytest.param("fetch", "SELECT $1", (7,), id="method"),
+        pytest.param("fetchval", "SELECT $2", (7,), id="sql"),
+        pytest.param("fetchval", "SELECT $1", (8,), id="args"),
+    ],
+)
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchange_refuses_a_statement_other_than_the_next_step(
+    method: str,
+    sql: str,
+    args: tuple[object, ...],
+) -> None:
+    engine = ExchangeEngine(Says(method="fetchval", sql="SELECT $1", args=(7,)))
+
+    async with cast(DatabaseEngine, engine).acquire() as conn:
+        with pytest.raises(AssertionError, match=r"^sent .* expected Says\("):
+            _ = await getattr(conn, method)(sql, *args)
+
+    assert (engine.failed, engine.said) == (True, [])
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchange_refuses_a_statement_past_its_last_step() -> None:
+    engine = ExchangeEngine()
+
+    async with cast(DatabaseEngine, engine).acquire() as conn:
+        with pytest.raises(AssertionError, match="expected None"):
+            _ = await conn.execute("SELECT 1")
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchange_raises_an_answer_that_is_an_exception() -> None:
+    refused = ConflictError("taken")
+    engine = ExchangeEngine(
+        BEGIN,
+        Says(method="execute", sql="INSERT 1", answer=refused),
+        ROLLBACK,
+    )
+
+    with pytest.raises(ConflictError, match="taken"):
+        async with cast(DatabaseEngine, engine).acquire() as conn, tx(conn):
+            _ = await conn.execute("INSERT 1")
+
+    assert (engine.failed, engine.done) == (False, True)
+    assert [each.sql for each in engine.said] == ["BEGIN", "INSERT 1", "ROLLBACK"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_after_a_mismatch_only_the_way_outs_rollback_gets_through() -> None:
+    engine = ExchangeEngine(BEGIN, COMMIT)
+
+    with pytest.raises(AssertionError, match="sent execute 'INSERT 2'"):
+        async with cast(DatabaseEngine, engine).acquire() as conn, tx(conn):
+            _ = await conn.execute("INSERT 2")
+
+    # The mismatch took the step it was checked against; the ROLLBACK after it
+    # raised nothing, so the mismatch is what the test reports.
+    assert (engine.failed, engine.done) == (True, True)
+    assert [each.sql for each in engine.said] == ["BEGIN"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_rollback_before_any_mismatch_is_a_step_like_any_other() -> None:
+    engine = ExchangeEngine(ROLLBACK)
+
+    async with cast(DatabaseEngine, engine).acquire() as conn:
+        assert await conn.fetch("ROLLBACK") == []
+
+    assert engine.done
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchanges_transaction_begins_and_commits_as_asyncpgs_does() -> None:
+    select = Says(method="fetchval", sql="SELECT 1", answer=1)
+    engine = ExchangeEngine(TRANSACTION_BEGIN, select, TRANSACTION_COMMIT)
+
+    async with cast(DatabaseEngine, engine).acquire() as conn, conn.transaction():
+        found = await conn.fetchval("SELECT 1")
+
+    assert found == 1
+    assert [(each.method, each.sql) for each in engine.said] == [
+        ("execute", "BEGIN;"),
+        ("fetchval", "SELECT 1"),
+        ("execute", "COMMIT;"),
+    ]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchanges_transaction_rolls_back_a_refused_statement() -> None:
+    refused = Says(method="execute", sql="INSERT 1", answer=ValueError("refused"))
+    engine = ExchangeEngine(TRANSACTION_BEGIN, refused, TRANSACTION_ROLLBACK)
+
+    with pytest.raises(ValueError, match="refused"):
+        async with cast(DatabaseEngine, engine).acquire() as conn, conn.transaction():
+            _ = await conn.execute("INSERT 1")
+
+    assert [each.sql for each in engine.said] == ["BEGIN;", "INSERT 1", "ROLLBACK;"]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchange_reports_the_first_mismatch_not_the_rollback() -> None:
+    engine = ExchangeEngine(TRANSACTION_BEGIN)
+
+    with pytest.raises(AssertionError, match="sent execute 'INSERT 2'"):
+        async with cast(DatabaseEngine, engine).acquire() as conn, conn.transaction():
+            _ = await conn.execute("INSERT 2")
+
+    assert (engine.failed, engine.done) == (True, True)
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_exchanges_transaction_starts_and_ends_by_hand_as_asyncpgs_does() -> (
+    None
+):
+    select = Says(method="fetchval", sql="SELECT 1", answer=1)
+    engine = ExchangeEngine(
+        TRANSACTION_BEGIN,
+        select,
+        TRANSACTION_ROLLBACK,
+        TRANSACTION_BEGIN,
+        TRANSACTION_COMMIT,
+    )
+
+    async with cast(DatabaseEngine, engine).acquire() as conn:
+        undone = conn.transaction()
+        await undone.start()
+        found = await conn.fetchval("SELECT 1")
+        await undone.rollback()
+        kept = conn.transaction()
+        await kept.start()
+        await kept.commit()
+
+    assert found == 1
+    assert [each.sql for each in engine.said] == [
+        "BEGIN;",
+        "SELECT 1",
+        "ROLLBACK;",
+        "BEGIN;",
+        "COMMIT;",
+    ]
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_recording_policy_records_each_call_and_what_was_sent_before() -> None:
+    policy = RecordingPolicy(groups_of=frozenset({"g2"}))
+    engine = conftest.FakeEngine()
+    ada = Principal(email="ada@example.com", role="writer")
+    row = Resource(kind="inquiry", id="1", account="ada@example.com")
+    params: list[object] = []
+
+    async with cast(DatabaseEngine, engine).acquire() as conn:
+        assert await policy.groups(conn, ada) == frozenset({"g2"})
+        _ = await conn.execute("BEGIN")
+        await policy.check(conn, principal=ada, resource=row, action="write")
+        await policy.on_create(conn, principal=None, resource=row)
+        await policy.prepare_account_change(conn, resource=row)
+        await policy.validate(conn, resource=row)
+        await policy.on_user(conn, email="bob@example.com", role="viewer")
+        await policy.prepare_audience_change(conn)
+        await policy.on_audience(conn, principal=ada, resource=row)
+    filtered = policy.read_filter("inquiry", "r", params=params, principal=ada)
+
+    assert (filtered, params) == ("TRUE", [])
+    assert [name for name, _ in policy.calls] == [
+        "groups",
+        "check",
+        "on_create",
+        "prepare_account_change",
+        "validate",
+        "on_user",
+        "prepare_audience_change",
+        "on_audience",
+        "read_filter",
+    ]
+    assert policy.of("groups") == ["ada@example.com"]
+    assert policy.of("check") == [(ada, row, "write")]
+    assert policy.of("on_create") == [(None, row)]
+    assert policy.of("prepare_account_change") == [row]
+    assert policy.of("validate") == [row]
+    assert policy.of("on_user") == [("bob@example.com", "viewer")]
+    assert policy.of("prepare_audience_change") == [None]
+    assert policy.of("on_audience") == [(ada, row)]
+    assert policy.of("read_filter") == [None]
+    assert policy.sent == [["BEGIN"]] * 7
+
+
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_recording_policy_refuses_as_it_is_told() -> None:
+    policy = RecordingPolicy(deny_writes=True, refuse_states=True)
+    ada = Principal(email="ada@example.com", role="writer")
+    row = Resource(kind="inquiry", id="1")
+    conn = cast(Conn, object())
+
+    with pytest.raises(AccessDeniedError, match="excludes the caller"):
+        await policy.check(conn, principal=ada, resource=row, action="write")
+    with pytest.raises(ConflictError, match="may not hold the row"):
+        await policy.validate(conn, resource=row)
+
+    # A live connection keeps no record of what it was sent.
+    assert policy.sent == [[], []]
+
+
 async def _filled(store: Store) -> dict[str, int]:
     """Return how many rows each table of schema ``public`` holds, if any."""
     async with store.engine.acquire() as conn:
@@ -358,6 +609,12 @@ async def _fill_embeddings(engine: DatabaseEngine) -> None:
             "array_fill(n::real, ARRAY[1024])::halfvec, md5(n::text) "
             "FROM generate_series(1, 200) n",
         )
+
+
+def _never_used(port: int, host: str = "127.0.0.1") -> bool:
+    """Answer ``port_is_used`` for every port: free, with no socket opened."""
+    del port, host
+    return False
 
 
 async def _refuse() -> None:
