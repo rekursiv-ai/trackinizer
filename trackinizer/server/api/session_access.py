@@ -21,9 +21,11 @@ lands in the chat, so it reads no chat and no ``private`` session for anyone; a
 only the chat's starter makes it; and any other session only when everyone who
 reads the chat reads it too
 (:func:`~trackinizer.server.private.science_chats.chat_readers`). The
-assistant reads a chat one of its own keys opened by its id and audience alone, as
-it must to answer and fork chats an earlier key of its own opened; any other chat
-only as the transcript test lets it.
+assistant reads a chat one of its own keys opened by its id and audience alone, as it
+must to answer and fork chats an earlier key of its own opened. It reads, writes and
+drains, by its id and audience alone too, a chat a CLI began under its starter's key
+once the starter's canvas answers it with the assistant: it runs there as the CLI's
+run did. Any other chat it reads only as the transcript test lets it.
 
 A session opens into the audience its key is pinned to, else ``open``, and only into
 one its caller may open into: :func:`granted_audience` refuses a pin the caller no
@@ -31,7 +33,8 @@ longer holds instead of lowering the session to ``open``. A caller asks for
 ``private`` to start a session hidden.
 
 A viewer key mutates only the session it opened. A science chat is stricter: only the
-key that opened it edits its row, and only that key or an admin purges it by id,
+key that opened it, or the assistant on a chat it runs, edits its row, and only that
+key or an admin purges it by id,
 where any other row is purged, and moved to another account, by its account or an
 admin. Its lines name their poster, and its labels and account say who started it and
 who posted, so a second writer's write would forge a poster or hide the chat from
@@ -332,8 +335,11 @@ async def require_session_access(
     is asked of the database, by :func:`session_reader`.
 
     The configured assistant acts for an ``asker`` on the asker's rights alone: it
-    reads a session for one only if they read it, and relays a line to a session it cannot read for an asker who is a writer, and is
-    the session's account or reads it.
+    reads a session for one only if they read it, and relays a line to a session it
+    cannot read for an asker who is a writer, and is the session's account or reads
+    it. On its own rights it reads a chat it opened, and reads, writes and drains a
+    chat a CLI began that its starter gave it
+    (:func:`~trackinizer.server.api.private.chat_sessions.assistant_runs_chat`).
 
     Args:
       request: The request, which carries the store and the configuration.
@@ -613,8 +619,9 @@ async def require_session_row_write(
 
     One query reads the row's kind, audience, opening key and ``cli_session_id``,
     so a generic route (a field edit, a purge) learns whether the id is a session
-    before it acts. A science chat is then written by its opening key alone, and
-    any session by a caller who opened it or reads its audience.
+    before it acts. A science chat is then written by its opening key, or the
+    assistant on a chat it runs, and any session by a caller who opened it or reads its
+    audience.
 
     Args:
       request: The request, which carries the store.
