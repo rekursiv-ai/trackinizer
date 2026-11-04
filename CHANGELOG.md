@@ -53,6 +53,10 @@ All notable trackinizer changes are documented here. This project follows
   once more than `--hold-units` (65,536) wait. On one 32 GB GPU the 0.6B went
   from 24.7 to 354.5 vectors a second and the 4B from 14.9 to 75.1.
   `QwenFamilyEmbedder.bucket_queue` replaces `embed_bucketed_batch`.
+- A codex `turn_context` line replays in the key order codex wrote it. Its
+  payload has no `type`, so the writer never stored an order the table could
+  not reproduce and moved unlisted keys to the end: codex 0.163 writes
+  `root_turn_id` and `disabled_plugin_ids` right after `turn_id`.
 
 ### Added
 
