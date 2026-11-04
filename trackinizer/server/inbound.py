@@ -449,11 +449,18 @@ class InboundQueue:
             self._gone.clear()
             return gone
 
-    def active_poller_ids(self, *, cli: str | None = None) -> list[UUID]:
+    def active_poller_ids(
+        self,
+        *,
+        cli: str | None = None,
+        account: str | None = None,
+    ) -> list[UUID]:
         """Snapshot unexpired poller sessions for database candidate filtering.
 
         Args:
           cli: Keep only the sessions whose poller named this CLI; all by default.
+          account: Keep only the sessions a key of this account drains, matched in any
+            case; all by default.
 
         Returns:
           session_ids: Session ids whose leases are still unexpired.
@@ -464,7 +471,10 @@ class InboundQueue:
             return [
                 session_id
                 for session_id, lease in self._leases.items()
-                if cli is None or lease.where.cli == cli
+                if (cli is None or lease.where.cli == cli)
+                and (
+                    account is None or (lease.account or "").lower() == account.lower()
+                )
             ]
 
     def held_by_another(
