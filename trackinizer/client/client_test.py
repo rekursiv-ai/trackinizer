@@ -362,6 +362,39 @@ class TestFlags:
 
 
 class TestRequests:
+    def test_injected_transport_receives_the_base_url_and_client_headers(self) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"ok": True})
+
+        with Client(
+            "https://server/root/",
+            api_key="trax_fake",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            assert (client.author, client.api_key, client.timeout_sec) == (
+                "",
+                "trax_fake",
+                30.0,
+            )
+            answer = client.get("/api/x")
+
+        assert answer == {"ok": True}
+        [request] = seen
+        assert str(request.url) == "https://server/root/api/x"
+        assert request.headers["Accept"] == "application/json"
+        assert request.headers["Authorization"] == "Bearer trax_fake"
+        assert (b"Accept", b"application/json") in request.headers.raw
+        assert (b"Authorization", b"Bearer trax_fake") in request.headers.raw
+        assert request.extensions["timeout"] == {
+            "connect": 5.0,
+            "read": 30.0,
+            "write": 10.0,
+            "pool": 5.0,
+        }
+
     def test_client_bounds_the_transport_connection_pool(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -370,6 +403,7 @@ class TestRequests:
         real_transport = httpx2.HTTPTransport
         observed: list[tuple[int, int, float]] = []
         transport_limits: list[httpx2.Limits] = []
+        transport_retries: list[int] = []
 
         def make_limits(
             *,
@@ -392,6 +426,7 @@ class TestRequests:
             limits: httpx2.Limits,
         ) -> httpx2.HTTPTransport:
             transport_limits.append(limits)
+            transport_retries.append(retries)
             return real_transport(retries=retries, limits=limits)
 
         monkeypatch.setattr(httpx2, "Limits", make_limits)
@@ -402,6 +437,7 @@ class TestRequests:
 
         assert observed == [(8, 8, 90.0)]
         assert len(transport_limits) == 1
+        assert transport_retries == [1]
 
     def test_request_builds_url_headers_and_body(self) -> None:
         seen: dict[str, httpx2.Request] = {}

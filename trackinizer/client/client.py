@@ -256,6 +256,7 @@ class Client:
         author: str = "",
         api_key: str = "",
         timeout_sec: float = 30.0,
+        transport: httpx2.BaseTransport | None = None,
     ) -> None:
         self.base_url = server_url(base_url, "base_url")
         self.author = author
@@ -290,8 +291,11 @@ class Client:
             # Idle-socket lifetime in the pool. Kept below the smallest upstream
             # idle timeout in the path (Cloudflare's ~100s, Caddy's 2m) so the
             # client is the one that decides when to evict.
-            limits=limits,
-            transport=httpx2.HTTPTransport(retries=1, limits=limits),
+            transport=(
+                httpx2.HTTPTransport(retries=1, limits=limits)
+                if transport is None
+                else transport
+            ),
             headers=headers,
         )
 
