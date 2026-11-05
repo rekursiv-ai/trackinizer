@@ -21,7 +21,7 @@
         "app_bar": "top",
         "app_bar_folded": false,
         "app_bar_width": 220,
-        "assistant_prompt": "lead",
+        "assistant_prompt": "sagent",
         "autofix": true,
         "chat_provider": "assistant",
         "chat_side": "left",

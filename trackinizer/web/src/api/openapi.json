@@ -5555,8 +5555,8 @@
      },
      "assistant_prompt": {
       "$ref": "#/components/schemas/AssistantPrompt",
-      "default": "lead",
-      "description": "The assistant's system prompt in a chat you start: its own lead prompt, or sagent's with a note of the canvas, as claude and codex are told of it. A chat keeps the one it started on.",
+      "default": "sagent",
+      "description": "The native sagent prompt and canvas environment for science chats. Hosted assistant code ignores this legacy-compatible field.",
       "x-setting": true
      },
      "autofix": {

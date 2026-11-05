@@ -78,7 +78,7 @@ _DEFAULTS: dict[str, object] = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
-    "assistant_prompt": "lead",
+    "assistant_prompt": "sagent",
     "cli_folder": "",
     "chat_tool_calls": True,
     "autofix": True,

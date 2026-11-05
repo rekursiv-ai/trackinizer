@@ -34,7 +34,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminal_placement: "bottom",
   home: "graph",
   chat_provider: "assistant",
-  assistant_prompt: "lead",
+  assistant_prompt: "sagent",
   cli_folder: "",
   chat_tool_calls: false,
   autofix: true,
