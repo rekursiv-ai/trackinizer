@@ -90,8 +90,6 @@ from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from trackinizer.wire.wire_machines import Facts
 
 
@@ -227,13 +225,7 @@ class TestFlags:
     def _isolated_config(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
     ) -> None:
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-        (tmp_path / "rekursiv-ai" / "trax" / "profiles").mkdir(
-            parents=True,
-            exist_ok=True,
-        )
         monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
         monkeypatch.delenv("TRACKINIZER_URL", raising=False)
 
