@@ -437,11 +437,10 @@ class Preferences(_Strict):
         json_schema_extra=SETTING,
     )
     assistant_prompt: AssistantPrompt = Field(
-        default="lead",
+        default="sagent",
         description=(
-            "The assistant's system prompt in a chat you start: its own lead prompt, "
-            "or sagent's with a note of the canvas, as claude and codex are told of it. "
-            "A chat keeps the one it started on."
+            "The native sagent prompt and canvas environment for science chats. "
+            "Hosted assistant code ignores this legacy-compatible field."
         ),
         json_schema_extra=SETTING,
     )

@@ -63,7 +63,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
-    "assistant_prompt": "lead",
+    "assistant_prompt": "sagent",
     "cli_folder": "",
     "chat_tool_calls": True,
     "autofix": True,
@@ -218,12 +218,16 @@ def test_scanlines_are_on_until_the_user_turns_them_off() -> None:
         Preferences.model_validate({"scanlines": "off"})
 
 
-def test_the_assistant_runs_on_its_lead_prompt_until_the_user_picks_sagents() -> None:
-    assert stored_preferences(None).assistant_prompt == "lead"
+def test_native_sagent_is_the_default_and_legacy_lead_round_trips() -> None:
+    assert stored_preferences(None).assistant_prompt == "sagent"
     assert (
         stored_preferences({"assistant_prompt": "sagent"}).assistant_prompt == "sagent"
     )
     assert "assistant_prompt" in ASSISTANT_KEYS
+    assert stored_preferences({"assistant_prompt": "lead"}).model_dump(
+        mode="json",
+        include={"assistant_prompt"},
+    ) == {"assistant_prompt": "lead"}
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"assistant_prompt": "claude"})
 
