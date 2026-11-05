@@ -137,7 +137,6 @@ if TYPE_CHECKING:
     )
     from trackinizer.wire.wire_sessions import (
         InboundDrainItem,
-        InboundKind,
         SessionEnd,
         SessionEndResponse,
         SessionStart,
@@ -1819,11 +1818,8 @@ class Client:
         self,
         session_id: uuid.UUID,
         text: str,
-        *,
-        kind: InboundKind = "line",
-        payload: dict[str, object] | None = None,
     ) -> int:
-        """Enqueue a message to inject into a live session; return queued count.
+        """Enqueue a line to inject into a live session; return queued count.
 
         The sender is attested server-side from the authenticated principal,
         so the request carries no ``source`` -- the enqueue body forbids it.
@@ -1831,21 +1827,16 @@ class Client:
         Args:
           session_id: AgentSession ID to message.
           text: Message text to enqueue.
-          kind: What the message is: a person's line unless another kind is named.
-          payload: The kind's structured data; ``None`` for a kind that has none.
 
         Returns:
           result: Number of messages now queued for this session.
 
         """
-        # Defaults are left out: an older server forbids every field it does not know,
-        # so a plain line stays the body it always accepted. This client never names
-        # an asker.
-        body = wire_sessions.InboundEnqueueRequest(
-            text=text,
-            kind=kind,
-            payload=payload,
-        ).model_dump(mode="json", exclude={"asker"}, exclude_defaults=True)
+        # This client never names an asker; an older server forbids the field.
+        body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(
+            mode="json",
+            exclude={"asker"},
+        )
         where = wire_sessions.session_inbound_path(session_id)
         response = self._request("POST", where, body=body)
         return _validate_model(

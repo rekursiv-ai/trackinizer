@@ -4,12 +4,12 @@ Who reads a session's transcript is one rule,
 :func:`~trackinizer.server.audience.visible_sql`, which every reader of session
 content takes: its audience, and as the server's organisation mode
 (``TRACKINIZER_CHAT_ORGS``) says, its owner, its organisation, the people who oversee
-and, for a science chat, its members. Whoever reads a session may also write, drain
-and end it. Input is separate: only its account or opening key sends it input,
-regardless of transcript visibility. The opening key always passes, whatever the
-audience, so a key whose owner lost ``staff`` can still run the session it opened. Only
-the transcript is gated: a hidden session still has an open envelope, and the rows it
-files stay open.
+and, for a science chat, its members. Reading a session controls nothing, since a run
+keeps its input, its records and its life there: only its account or opening key sends
+it input, regardless of transcript visibility, and only they write, drain or end it. The
+opening key always passes, whatever the audience, so a key whose owner lost ``staff`` can
+still run the session it opened; its account must read it too. Only the transcript is
+gated: a hidden session still has an open envelope, and the rows it files stay open.
 
 The configured assistant acts for the person it answers, the ``asker`` it names, on
 that person's rights and none of its own, and the server finds them in its own
@@ -335,7 +335,10 @@ async def require_session_access(
     Input requires the session's account or opening key; transcript visibility,
     organisation membership and admin status grant no input rights. When the
     assistant names an asker, only a writer whose account holds the session passes.
-    Other modes ask the database's transcript rule, with the opening key exempt.
+    Reading asks the database's transcript rule, with the opening key exempt; writing
+    and draining ask it of the session's account, for the reason input does. A science
+    chat's own rules (:mod:`~trackinizer.server.api.private.chat_sessions`) narrow
+    a reader's writes and drains instead.
 
     The configured assistant acts for an ``asker`` on the asker's rights alone: it
     reads a session for one only if they read it. On its own rights it reads a chat
@@ -371,7 +374,9 @@ async def require_session_access(
     if _opened_by(identity, session.opened_by_api_key_id):
         return
     async with get_store(request).engine.acquire() as conn:
-        if await reads_session(
+        if (
+            mode == "read" or _holds(identity, account=session.account)
+        ) and await reads_session(
             conn,
             reader=session_reader(request, identity),
             session_id=session.id,
@@ -656,7 +661,7 @@ async def require_row_purge(
         _require_audience(identity, row=row)
     if identity.role == "admin":
         return
-    if not _holds(identity, row=row):
+    if not _holds(identity, account=row.account):
         raise HTTPException(
             status_code=403,
             detail="A row is purged by its account or an admin",
@@ -684,7 +689,7 @@ async def require_row_account(
 
     """
     row = await _read_row(request, target_id=target_id)
-    if row is None or _holds(identity, row=row):
+    if row is None or _holds(identity, account=row.account):
         return
     if row.kind == "AgentSession":
         raise HTTPException(
@@ -800,9 +805,9 @@ def _require_audience(identity: AuthIdentity, *, row: _Row) -> None:
         raise hidden_session(row.audience)
 
 
-def _holds(identity: AuthIdentity, *, row: _Row) -> bool:
+def _holds(identity: AuthIdentity, *, account: str) -> bool:
     """Say whether ``identity`` is the account a row is held under."""
-    return row.account.lower() == identity.email.lower()
+    return account.lower() == identity.email.lower()
 
 
 def _require_input(
@@ -818,8 +823,9 @@ def _require_input(
             asker.email.lower() == session.account.lower()
         ):
             return
-    elif _opened_by(identity, session.opened_by_api_key_id) or (
-        identity.email.lower() == session.account.lower()
+    elif _opened_by(identity, session.opened_by_api_key_id) or _holds(
+        identity,
+        account=session.account,
     ):
         return
     raise hidden_session(session.audience)

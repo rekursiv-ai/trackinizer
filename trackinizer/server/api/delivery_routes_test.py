@@ -63,6 +63,7 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
         AsyncMock(
             return_value=AgentSession(
                 id=_SESSION,
+                account=_IDENTITY.email,
                 owner="scientist",
                 cli="claude",
                 opened_by_api_key_id=_IDENTITY.api_key_id,

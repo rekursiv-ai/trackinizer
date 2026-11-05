@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 
 OPENER = uuid.uuid4()
 MODES: tuple[SessionAccess, ...] = ("read", "write", "drain", "input")
+CONTROLS: tuple[SessionAccess, ...] = ("write", "drain", "input")
 SCOUT: Final = Assistant(actor="scout", email="scout@example.com")
 
 
@@ -139,22 +140,32 @@ class TestRequireSessionAccess:
     """Whether the check asks the database, and what it makes of the answer."""
 
     @pytest.mark.asyncio
-    async def test_transcript_access_does_not_grant_input(self) -> None:
-        session = AgentSession(audience="staff")
-        modes: tuple[SessionAccess, ...] = ("read", "write", "drain")
+    async def test_reading_a_session_grants_no_control_of_it(self) -> None:
+        session = AgentSession(audience="staff", account="owner@example.com")
+        reader = make_caller("open", "staff")
 
-        reads = [
-            await access_refused(make_caller(), session, m, answers=[True])
-            for m in modes
-        ]
-        not_ = [
-            await access_refused(make_caller(), session, m, answers=[False])
-            for m in modes
-        ]
+        assert not await access_refused(reader, session, "read", answers=[True])
+        assert await access_refused(reader, session, "read", answers=[False])
+        for mode in CONTROLS:
+            assert await access_refused(reader, session, mode)
 
-        assert reads == [False] * 3
-        assert not_ == [True] * 3
-        assert await access_refused(make_caller("open", "staff"), session, "input")
+    @pytest.mark.parametrize("mode", ["write", "drain"])
+    @pytest.mark.parametrize("key", [None, uuid.UUID(int=10)])
+    @pytest.mark.asyncio
+    async def test_the_account_writes_and_drains_what_it_still_reads(
+        self,
+        mode: SessionAccess,
+        key: uuid.UUID | None,
+    ) -> None:
+        session = AgentSession(
+            account="Owner@Example.com",
+            audience="staff",
+            opened_by_api_key_id=OPENER,
+        )
+        owner = make_caller("open", email="owner@example.com", key=key)
+
+        assert not await access_refused(owner, session, mode, answers=[True])
+        assert await access_refused(owner, session, mode, answers=[False])
 
     @pytest.mark.parametrize("key", [None, uuid.UUID(int=10)])
     @pytest.mark.asyncio
@@ -197,7 +208,6 @@ class TestRequireSessionAccess:
             make_caller("open", key=None),
             session,
             "write",
-            answers=[False],
         )
 
 
@@ -376,7 +386,6 @@ class TestTheAssistantsAsker:
                 mode,
                 assistant=SCOUT,
                 asker=asker,
-                answers=[False],
             )
             for mode in ("write", "drain")
         ]

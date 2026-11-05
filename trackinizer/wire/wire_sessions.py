@@ -250,6 +250,10 @@ class SessionStartResponse(BaseModel):
     collided with a live session, in which case the server appended a suffix
     (``scientist`` -> ``scientist#2``); the client adopts whatever is here."""
 
+    account: str | None = None
+    """The account that holds the session, whose ``run`` and ``answer`` messages its run
+    acts on; ``None`` from a server that predates the field."""
+
     audience: str | None = None
     """Who reads the session's transcript, as the server holds it; ``None`` from a
     server that predates the field."""
@@ -533,10 +537,13 @@ class SessionRunOutput(BaseModel):
 
 
 class InboundEnqueueRequest(BaseModel):
-    """A message a client asks trackinizer to inject into a live session.
+    """A line a client asks trackinizer to inject into a live session.
 
     The enqueue **request** carries ``text`` -- the one field the route delivers --
-    and, from the configured assistant alone, the ``asker`` it sends for. ``source``
+    and, from the configured assistant alone, the ``asker`` it sends for. It names no
+    kind: every other :data:`InboundKind` acts on the run's machine, and comes from a
+    person in Chat (``POST /api/chats``) alone, so a key that leaked from an agent
+    sends its owner's run nothing but a line. ``source``
     is attested by the route from the authenticated principal (a client cannot forge
     another sender), and ``room`` has no enqueue semantics (the direct-session
     enqueue route discards it; routed delivery is the separate ``@actor:room``
@@ -549,15 +556,7 @@ class InboundEnqueueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
-    """The message as a person reads it: for ``answer`` the one-line form, "Yes" or
-    "No: <reason>"; for ``interrupt``, "interrupt"."""
-
-    kind: InboundKind = "line"
-    """What the message is; a person's line unless the client names another kind."""
-
-    payload: dict[str, object] | None = None
-    """The kind's structured data, as :data:`InboundKind` documents it; ``None`` for
-    the kinds that carry none."""
+    """The line as a person reads it."""
 
     asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
     """The account of the user the configured assistant sends this line for.

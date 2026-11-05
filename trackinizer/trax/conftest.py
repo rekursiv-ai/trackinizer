@@ -38,7 +38,6 @@ from trackinizer.wire.wire_session_ir import (
 )
 from trackinizer.wire.wire_sessions import (
     InboundDrainItem,
-    InboundKind,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
@@ -1010,14 +1009,9 @@ class FakeClient:
         self,
         session_id: uuid.UUID,
         text: str,
-        *,
-        kind: InboundKind = "line",
-        payload: dict[str, object] | None = None,
     ) -> int:
         """Enqueue inbound."""
-        self.calls.append(
-            ("enqueue_inbound", (session_id, text), {"kind": kind, "payload": payload}),
-        )
+        self.calls.append(("enqueue_inbound", (session_id, text), {}))
         return 1
 
     def drain_inbound(

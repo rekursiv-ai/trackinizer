@@ -616,8 +616,11 @@ beside it, `source_role`, that sender's effective role (`viewer`, `writer` or
 `admin`) as the server saw it when the message was sent. Neither is taken from
 the request, and a message the server generates has no `source_role`.
 
-`POST .../inbound` takes `kind`, what the message is: `line` (a person's chat line,
-the default, delivered with its sender), `command` (a slash command typed verbatim),
+`POST .../inbound` takes a line alone: a body naming `kind` or `payload` is 422, so
+no key acts on a run's machine without a person in Chat. `POST /api/chats` (section
+1.25) takes `kind`, what the message is: `line` (a person's chat line,
+the default, delivered with its sender), `command` (a slash command typed verbatim,
+which the server makes of a line, 422 when a client names it),
 `answer` (a decision on a pending prompt), `settings` (a model or effort change),
 `interrupt` (stops the running turn) or `run` (a command the agent wrote that the
 chat's starter clicked Run on, which the run runs on its machine); any other value is
@@ -745,16 +748,18 @@ members instead, no role excepted. The caller must hold the audience too, and th
 that opened a session always reads it, so a key whose owner no longer holds `staff`
 can still run the `staff` session it opened. Otherwise the session answers 403 with
 `{"detail": {"code": "session_audience", "audience": "<value>"}}` on
-`GET .../records`, `.../parts`, `.../turns`, `POST .../records`, `POST .../end` and
-`GET .../inbound` (a drain); `DELETE /api/inquiries/<uuid>` and a field edit of the
-row need the audience. Sending input (`POST .../inbound`, `POST /api/messages`) needs
-the same read. The configured assistant (`--assistant`) relays a user's line to a
-session it cannot read only for an `asker`, an optional field of both bodies naming
-the user's account email. It passes on that user's rights, not its own, and the
-server reads them from its own tables: the asker must be an active user and a writer
-or admin, and be the session's account or read it as a person, whatever key they
-use. A send that names no asker, or one who does not qualify, is 403
-`session_audience`. A session the assistant reads itself needs no asker, and another
+`GET .../records`, `.../parts` and `.../turns`. Reading a session controls nothing:
+`POST .../records`, `POST .../end`, `GET .../inbound` (a drain), a run's reports and an
+attach take its opening key, or its account where that account reads it, and answer
+the same 403 otherwise, an admin's included; `DELETE /api/inquiries/<uuid>` and a field
+edit of the row need the audience. Sending input (`POST .../inbound`,
+`POST /api/messages`) takes the session's opening key or account, whatever else the
+caller reads. The configured assistant (`--assistant`) relays a user's line only for an
+`asker`, an optional field of both bodies naming the user's account email. It passes
+on that user's rights, not its own, and the server reads them from its own tables: the
+asker must be an active user and a writer or admin whose account holds the session,
+whatever key they use. A send that names no asker, or one who does not qualify, is 403
+`session_audience`. A session the assistant's own key opened needs no asker, and another
 sender's `asker` is ignored. `POST /api/messages` is refused whole when any session
 its actor names is hidden from the sender: nothing is queued to the others.
 
@@ -1190,9 +1195,9 @@ is theirs (Deleting below).
 line. The body is `{canvas_id, text, conversation_id, page, trail, kind,
 payload, attachments}`; `text` holds a non-space
 character and at most 16,384 characters, and `canvas_id` is the poster's own
-canvas. `kind` is `line` by default, or `command`, `answer`, `settings`,
-`interrupt` or `run`, with `payload` as `POST /api/sessions/<uuid>/inbound` takes it (a stale
-browser's `science` reads as `line`). An `assistant` canvas takes a `line`, an
+canvas. `kind` is `line` by default, or `answer`, `settings`, `interrupt` or `run`,
+with `payload` as section 1.21 describes it (a stale browser's `science` reads as
+`line`; `command` is 422, since a command is posted as a line). An `assistant` canvas takes a `line`, an
 `answer` or an `interrupt` (422 otherwise), an `answer` being a choice on a card the
 assistant asked, given by the chat's starter alone, as on a `claude` or `codex`
 canvas (403 `answer_not_owner`), and an `interrupt` stopping the turn it is on. Each

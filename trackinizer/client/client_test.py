@@ -2520,29 +2520,6 @@ class TestSessionMethods:
 
         assert bodies == [{"text": "hi"}]
 
-    def test_enqueue_inbound_names_a_kind_and_its_payload(self) -> None:
-        bodies: list[object] = []
-
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            bodies.append(json_loads(request.content))
-            return httpx2.Response(200, json={"queued": 1})
-
-        answer: dict[str, object] = {"prompt_id": "p1", "decision": "allow"}
-        with Client("http://server") as client:
-            _install_mock_transport(client, handler)
-            _ = client.enqueue_inbound(uuid.uuid4(), "/compact", kind="command")
-            _ = client.enqueue_inbound(
-                uuid.uuid4(),
-                "Yes",
-                kind="answer",
-                payload=answer,
-            )
-
-        assert bodies == [
-            {"text": "/compact", "kind": "command"},
-            {"text": "Yes", "kind": "answer", "payload": answer},
-        ]
-
     def test_inbound_drain_returns_each_kind_and_payload(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
