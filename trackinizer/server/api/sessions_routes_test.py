@@ -1476,6 +1476,10 @@ async def test_a_session_starts_on_an_app_built_by_hand_with_no_hub_or_config(
         assert ended.status_code == 200
 
 
+def _inbound_extra_id(extra: dict[str, object]) -> str:
+    return str(extra.get("kind", "payload"))
+
+
 class TestInboundTakesLinesAlone:
     def test_a_line_reaches_the_drain_with_no_payload(
         self,
@@ -1516,7 +1520,7 @@ class TestInboundTakesLinesAlone:
             {"kind": "keys"},
             {"payload": {"run_id": "r1", "block": "b1", "stop": False}},
         ],
-        ids=lambda extra: str(extra.get("kind", "payload")),
+        ids=_inbound_extra_id,
     )
     def test_the_owner_sends_no_kind_and_no_payload(
         self,

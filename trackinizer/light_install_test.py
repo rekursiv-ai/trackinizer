@@ -383,9 +383,9 @@ def _server_only_packages() -> frozenset[str]:
     ):
         if candidate.is_file():
             project = from_plain(
-                tomllib.loads(candidate.read_text())["project"],
-                dict[str, object],
-            )
+                tomllib.loads(candidate.read_text()),
+                dict[str, dict[str, object]],
+            )["project"]
             # The delta also holds operations on the base's extras, as ``!name = true``.
             extras = from_plain(project["optional-dependencies"], dict[str, object])
             return frozenset(

@@ -16,11 +16,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.session_access import (
-    request_principal,
-    require_readable,
-    session_reader,
-)
+from trackinizer.server.api.session_access import require_readable, session_reader
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.store.code_store import (
     SnapshotOwnerError,

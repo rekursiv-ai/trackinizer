@@ -19,6 +19,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
+from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -676,14 +677,17 @@ class _Db:
 
     answers: dict[str, list[object]]
     calls: list[tuple[str, str, tuple[object, ...]]] = field(default_factory=list)
-    conn: AsyncMock = field(init=False)
+    conn: MockConnection = field(init=False)
 
     def __post_init__(self) -> None:
-        self.conn = AsyncMock(
-            execute=AsyncMock(side_effect=self.execute),
-            fetch=AsyncMock(side_effect=self.fetch),
-            fetchval=AsyncMock(side_effect=self.fetchval),
-            fetchrow=AsyncMock(side_effect=self.fetchrow),
+        self.conn = cast(
+            MockConnection,
+            AsyncMock(
+                execute=AsyncMock(side_effect=self.execute),
+                fetch=AsyncMock(side_effect=self.fetch),
+                fetchval=AsyncMock(side_effect=self.fetchval),
+                fetchrow=AsyncMock(side_effect=self.fetchrow),
+            ),
         )
 
     async def execute(self, sql: str, *args: object) -> str:
@@ -729,7 +733,7 @@ class _FakeStore:
         return self
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[AsyncMock]:
+    async def acquire(self) -> AsyncGenerator[MockConnection]:
         yield self.db.conn
 
     async def submit_artifact(
@@ -738,14 +742,18 @@ class _FakeStore:
         *,
         api_key_id: uuid.UUID | None,
         actor: str,
-        conn: AsyncMock,
+        conn: MockConnection,
     ) -> uuid.UUID:
         self.submitted.append(
             (req, {"api_key_id": api_key_id, "actor": actor, "conn": conn}),
         )
         return self.artifact_id
 
-    async def insert_edge_and_audit(self, conn: AsyncMock, **kwargs: object) -> bool:
+    async def insert_edge_and_audit(
+        self,
+        conn: MockConnection,
+        **kwargs: object,
+    ) -> bool:
         self.edges.append({"conn": conn, **kwargs})
         return True
 

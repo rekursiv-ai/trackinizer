@@ -1,6 +1,6 @@
 """Regression tests for shared Trackinizer fixtures."""
 
-from collections.abc import Callable, Generator
+from collections.abc import Awaitable, Callable, Generator
 from contextlib import ExitStack, contextmanager
 from functools import partial
 from pathlib import Path
@@ -152,7 +152,7 @@ def test_pg_dsn_reserves_ports_for_seeded_workers(
             return stack.enter_context(fixture(request, tmp_path_factory))
 
         fixture_request = MagicMock(spec=pytest.FixtureRequest, config=request.config)
-        fixture_request.getfixturevalue.side_effect = get_fixture
+        cast(MagicMock, fixture_request.getfixturevalue).side_effect = get_fixture
         for _ in range(workers):
             random.seed(1337)
             stack.enter_context(
@@ -368,7 +368,10 @@ async def test_an_exchange_refuses_a_statement_other_than_the_next_step(
 
     async with cast(DatabaseEngine, engine).acquire() as conn:
         with pytest.raises(AssertionError, match=r"^sent .* expected Says\("):
-            _ = await getattr(conn, method)(sql, *args)
+            _ = await cast(
+                Callable[..., Awaitable[object]],
+                getattr(conn, method),
+            )(sql, *args)
 
     assert (engine.failed, engine.said) == (True, [])
 

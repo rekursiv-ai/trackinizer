@@ -16,9 +16,9 @@ from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import referenced_ids, require_writable
 from trackinizer.server.api.session_access import (
     granted_audience,
-    request_principal,
     require_attributable,
 )
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,

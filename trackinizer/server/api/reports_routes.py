@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import require_writable
-from trackinizer.server.api.session_access import request_principal
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.artifact_capture import with_capture_script
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.reports import (

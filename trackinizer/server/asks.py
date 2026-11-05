@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.inbound import InboundQueue
-    from trackinizer.server.store.core import Store
+    from trackinizer.server.store.session_ir import _SessionIRMixin
 
 
 __all__ = [
@@ -129,7 +129,7 @@ async def waiting_sessions(conn: Conn, *, session_ids: Sequence[UUID]) -> set[UU
 # Audience: internal -- the server's own sweep: it writes the end of asks that nobody
 # can answer, and what it returns is ids.
 async def release_open_asks(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     session_id: UUID,
     at: datetime,
@@ -181,7 +181,7 @@ async def release_open_asks(
 
 
 async def release_gone_runs(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     inbound: InboundQueue,
     at: datetime,
@@ -214,7 +214,7 @@ async def release_gone_runs(
 # one. A run that is alive polls within its lease's span, so a chat still without one
 # after that span has no run.
 async def release_orphaned_asks(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     inbound: InboundQueue,
     at: datetime,
@@ -261,7 +261,7 @@ async def release_orphaned_asks(
 
 
 async def ask_release_loop(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     inbound: InboundQueue,
     interval_sec: float = RELEASE_INTERVAL_SEC,

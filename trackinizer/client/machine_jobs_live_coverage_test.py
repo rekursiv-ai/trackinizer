@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import httpx2
@@ -29,7 +29,9 @@ if TYPE_CHECKING:
 
 @pytest.fixture
 def wire(request: pytest.FixtureRequest) -> Iterator[_Wire]:
-    found = _Wire(api_key=str(request.param))
+    api_key = cast(object, request.param)
+    assert isinstance(api_key, str)
+    found = _Wire(api_key=api_key)
     try:
         yield found
     finally:
@@ -60,7 +62,15 @@ def test_person_machine_job_methods_match_route_paths_queries_and_bodies(
         queued_at=None,
         started_at=None,
         ended_at=None,
-        **body.model_dump(),
+        machine=body.machine,
+        argv=body.argv,
+        gpus=body.gpus,
+        memory_mb=body.memory_mb,
+        minutes=body.minutes,
+        label=body.label,
+        remote=body.remote,
+        ref=body.ref,
+        commit=body.commit,
     )
     chunk = ReadReply(reply=Chunk(data_b64="aGk=", offset=5, size=7, ended=True))
     manifest = ReadReply(reply=ResultManifest(entries=[], total_bytes=0))

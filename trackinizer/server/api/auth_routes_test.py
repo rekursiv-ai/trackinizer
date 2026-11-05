@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, _Call
+from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock
 
 import uuid
 
@@ -12,6 +12,7 @@ from treekle import from_plain
 
 import pytest
 
+from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
 
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.mock_test_support import MockCall
     from trackinizer.server.store.core import Store
 
 
@@ -511,13 +513,18 @@ class TestSetTokenRole:
 _WHEN = datetime(2026, 10, 9, 8, 0, tzinfo=UTC)
 
 
-def user_row(row: dict[str, object] | None) -> AsyncMock:
+def user_row(
+    row: dict[str, object] | None,
+) -> AsyncMockProtocol[dict[str, object] | None]:
     """Fake ``fetchrow``: ``row`` for the profile's read of the user, None for any other."""
 
     async def fetchrow(sql: str, *_args: object) -> dict[str, object] | None:
         return row if sql.startswith("SELECT name, last_login, preferences ") else None
 
-    return AsyncMock(side_effect=fetchrow)
+    return cast(
+        AsyncMockProtocol[dict[str, object] | None],
+        AsyncMock(side_effect=fetchrow),
+    )
 
 
 class TestProfile:
@@ -827,7 +834,7 @@ class TestRouteRequiresAuth:
         assert r.status_code == 401
 
 
-def _sql(call: _Call) -> str:
+def _sql(call: MockCall) -> str:
     """Narrow a recorded mock argument to the SQL string passed by production."""
     sql = call.args[0]
     assert isinstance(sql, str)

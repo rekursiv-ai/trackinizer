@@ -62,8 +62,7 @@ def _resolve(annotation: object) -> object:
     if isinstance(annotation, typing.TypeAliasType):
         # PEP 695 aliases (``type Actor = str``, ``type Status = Literal[...]``)
         # are values rather than types; unwrap to whatever they name.
-        value: object = annotation.__value__
-        return _resolve(value)
+        return _resolve(cast(object, annotation.__value__))
     return annotation
 
 
@@ -143,7 +142,7 @@ def _sample(annotation: object) -> object:
 # by ``test_every_field_is_populated``.
 def _populated[T: Inquiry](subclass: type[T]) -> T:
     """One instance of ``subclass`` with every field set to a real value."""
-    hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
+    hints = cast(dict[str, object], typing.get_type_hints(subclass, _INQUIRIES_NS))
     return subclass(
         **{  # pyright: ignore[reportArgumentType] -- Dynamic dataclass fields are validated by the runtime oracle.  # ty: ignore[invalid-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.  # pyrefly: ignore[bad-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.
             field.name: _sample(hints[field.name])

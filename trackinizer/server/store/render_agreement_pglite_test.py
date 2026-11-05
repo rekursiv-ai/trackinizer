@@ -24,7 +24,7 @@ templates make.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import pytest
 
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
 # narrow band of the domain, so coverage is what finds it.
 def _spread(count: int) -> Iterator[float]:
     """``count`` points spread over ``[0, 1)``, deterministically."""
-    golden_ratio_minus_one: Final = (5.0**0.5 - 1.0) / 2.0
+    golden_ratio_minus_one: Final = (cast(float, 5.0**0.5) - 1.0) / 2.0
     for index in range(count):
         yield float((index * golden_ratio_minus_one) % 1.0)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import field, fields
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import asyncio
 import logging
@@ -219,7 +219,7 @@ async def supervise(
 def _addon_configs(config: Deployment.Config) -> Iterator[tuple[str, Makeable[object]]]:
     """Yield ``(name, config)`` for every addon field that is switched on."""
     for config_field in fields(config):
-        value: object = getattr(config, config_field.name)
+        value = cast(object, getattr(config, config_field.name))
         if config_field.name == "visuals" or value is None:
             continue
         if not isinstance(value, Makeable):

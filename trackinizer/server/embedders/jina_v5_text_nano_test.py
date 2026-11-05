@@ -8,6 +8,8 @@ Jina recipe is identical for the small variant.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 import torch
 
@@ -92,7 +94,7 @@ async def test_output_is_unit_normed_to_dim(monkeypatch: pytest.MonkeyPatch) -> 
     _patch_load(monkeypatch, fake)
     vector = await JinaV5NanoEmbedder().embed("anything")
     assert len(vector) == JINA_NATIVE_DIM
-    assert abs(sum(v * v for v in vector) ** 0.5 - 1.0) < 1e-4
+    assert abs(cast(float, sum(v * v for v in vector) ** 0.5) - 1.0) < 1e-4
 
 
 if __name__ == "__main__":

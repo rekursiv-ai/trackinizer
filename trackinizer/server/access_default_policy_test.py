@@ -37,7 +37,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
     patch_state,
 )
-from trackinizer.server.api.session_access import request_principal
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.api.session_test_support import (
     OTHER_EMAIL,
     OTHER_USER_ID,

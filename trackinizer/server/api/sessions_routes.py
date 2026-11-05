@@ -30,12 +30,14 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.api.session_access import (
     granted_audience,
-    request_principal,
     require_attributable,
-    require_session,
     require_session_access,
     require_session_write_access,
     resolve_asker,
+)
+from trackinizer.server.api.session_identity import (
+    request_principal,
+    require_session,
 )
 from trackinizer.server.asks import release_open_asks
 from trackinizer.server.auth import (

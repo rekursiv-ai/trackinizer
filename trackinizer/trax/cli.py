@@ -22,7 +22,8 @@ from trackinizer.trax.connection import connect, connect_flags
 from trackinizer.trax.doctor import Doctor
 from trackinizer.trax.forward import MOVED_VERBS, moved
 from trackinizer.trax.parser import parse_backfill_timestamp, parse_list_query
-from trackinizer.trax.profile import Profiles, unmatched_server_hint
+from trackinizer.trax.profile import unmatched_server_hint
+from trackinizer.trax.profiles import Profiles
 from trackinizer.trax.render import SHOW_IDS, echo
 from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.trax.verbs import (

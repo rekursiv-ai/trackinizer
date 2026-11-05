@@ -1136,7 +1136,7 @@ def _update_rate(
     instant = records / interval_sec
     if prev <= 0:
         return instant
-    weight = float(0.5 ** (interval_sec / halflife_sec))
+    weight = float(cast(float, 0.5 ** (interval_sec / halflife_sec)))
     return weight * prev + (1 - weight) * instant
 
 

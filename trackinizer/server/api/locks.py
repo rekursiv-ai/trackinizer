@@ -25,11 +25,8 @@ from treekle import from_plain
 
 from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import get_store
-from trackinizer.server.api.session_access import (
-    check_row_write,
-    request_principal,
-    require_readable,
-)
+from trackinizer.server.api.session_access import check_row_write, require_readable
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import tx
 from trackinizer.server.values import vetted_sql

@@ -7,6 +7,8 @@ truncate-then-normalize slice.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from trackinizer.server.embedders.qwen3_8b import (
@@ -41,7 +43,7 @@ async def test_truncates_to_unit_vector_of_dim(
     install_capturing(monkeypatch, _MODULE, truncated_dim=1024)
     vector = await Qwen8BEmbedder().embed("anything")
     assert len(vector) == QWEN_TRUNCATED_DIM
-    assert abs(sum(v * v for v in vector) ** 0.5 - 1.0) < 1e-4
+    assert abs(cast(float, sum(v * v for v in vector) ** 0.5) - 1.0) < 1e-4
 
 
 if __name__ == "__main__":

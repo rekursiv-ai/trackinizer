@@ -298,12 +298,12 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
         case "inquiry":
             return cast(
                 tuple[Inquiry.InquiryKind, ...],
-                get_args(Inquiry.InquiryKind.__value__),
+                get_args(cast(object, Inquiry.InquiryKind.__value__)),
             )
         case "evidence":
             return cast(
                 tuple[Inquiry.InquiryKind, ...],
-                get_args(Artifact.EvidenceKind.__value__),
+                get_args(cast(object, Artifact.EvidenceKind.__value__)),
             )
         case "belief":
             return ("Belief",)
@@ -618,7 +618,7 @@ def edge_annotations() -> dict[str, list[str]]:
     }
 
 
-_MISSING_POLICY = set(get_args(Edge.Kind.__value__)) - set(EDGE_POLICIES)
+_MISSING_POLICY = set(get_args(cast(object, Edge.Kind.__value__))) - set(EDGE_POLICIES)
 if _MISSING_POLICY:
     raise RuntimeError(
         f"EDGE_POLICIES missing an entry for {sorted(_MISSING_POLICY)}; every "

@@ -20,7 +20,7 @@ from pydantic import BaseModel
 
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.locks import require_writable
-from trackinizer.server.api.session_access import request_principal
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.types.edges import Edge
 from trackinizer.types.errors import ConflictError, ValidationError

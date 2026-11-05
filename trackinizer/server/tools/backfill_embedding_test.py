@@ -783,7 +783,7 @@ def test_update_rate_uses_the_configured_half_life_and_additive_ema() -> None:
 
 def test_update_rate_handles_subsecond_intervals_and_unit_prev_rate() -> None:
     observed = backfill_embedding._update_rate(1.0, 3, 0.5)
-    expected_weight = 0.5 ** (0.5 / 300.0)
+    expected_weight = cast(float, 0.5 ** (0.5 / 300.0))
     assert observed == pytest.approx(expected_weight + (1 - expected_weight) * 6.0)
 
 

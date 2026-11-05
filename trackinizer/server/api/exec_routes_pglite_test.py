@@ -8,7 +8,7 @@ and posts the result, as the machine host does.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import asyncio
 import base64
@@ -302,7 +302,7 @@ def _timed_hub(monkeypatch: pytest.MonkeyPatch) -> _Time:
 
 def _hub() -> ExecHub:
     """Return the hub the app is serving with."""
-    hub: object = app.state.execs
+    hub = cast(object, app.state.execs)
     assert isinstance(hub, ExecHub)
     return hub
 

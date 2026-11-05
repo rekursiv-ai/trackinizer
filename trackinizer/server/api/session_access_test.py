@@ -20,7 +20,6 @@ import pytest
 from trackinizer.conftest import make_conn, make_store, set_field_row
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.session_access import (
-    Asker,
     SessionAccess,
     granted_audience,
     require_attributable,
@@ -30,6 +29,7 @@ from trackinizer.server.api.session_access import (
     resolve_asker,
     session_reader,
 )
+from trackinizer.server.api.session_identity import Asker
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, Role
 from trackinizer.server.config import Assistant, ChatOrgs, Config

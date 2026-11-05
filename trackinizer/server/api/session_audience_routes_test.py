@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID, uuid4
 
 from treekle import from_plain, json_loads
@@ -243,7 +243,7 @@ async def test_an_admin_cannot_reassign_a_run_to_inject_commands(
     session_id = await served.session(opener=_ANN)
     session = await served.store.get_inquiry(session_id)
     assert isinstance(session, AgentSession)
-    inbound = app.state.inbound
+    inbound = cast(object, app.state.inbound)
     assert isinstance(inbound, InboundQueue)
     inbound.mark_poller(session_id, runs=True, account=_ANN)
     served.act_as(_ADA, "admin")

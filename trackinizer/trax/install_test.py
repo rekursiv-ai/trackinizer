@@ -12,6 +12,7 @@ from treekle import json_dumps, json_loads
 
 import pytest
 
+from trackinizer.lib.posix.rename import rename_noreplace
 from trackinizer.trax.install import (
     TARGETS,
     InstallError,
@@ -327,7 +328,7 @@ def test_publish_failure_rolls_back(
     monkeypatch.setattr(
         install_module,
         "rename_noreplace",
-        _failing_rename(install_module.rename_noreplace, rollback=False),
+        _failing_rename(rename_noreplace, rollback=False),
     )
     with pytest.raises(InstallError, match="publish failed"):
         install(TARGETS["claude"])
@@ -345,7 +346,7 @@ def test_failed_rollback_retains_recoverable_backup(
     monkeypatch.setattr(
         install_module,
         "rename_noreplace",
-        _failing_rename(install_module.rename_noreplace, rollback=True),
+        _failing_rename(rename_noreplace, rollback=True),
     )
     with pytest.raises(InstallError, match="previous") as error:
         install(TARGETS["claude"])
@@ -630,7 +631,7 @@ def test_edit_during_publication_retains_recoverable_backup(
 ) -> None:
     destination, _ = install(TARGETS["claude"])
     (bundle / "SKILL.md").write_text("new package version")
-    rename = install_module.rename_noreplace
+    rename = rename_noreplace
 
     def edit_previous(path: Path, target: Path) -> None:
         if path.name == "replacement":
@@ -654,7 +655,7 @@ def test_restore_preserves_a_destination_that_appeared(
     destination, _ = install(TARGETS["claude"])
     previous = (destination / "SKILL.md").read_bytes()
     (bundle / "SKILL.md").write_text("new package version")
-    rename = install_module.rename_noreplace
+    rename = rename_noreplace
 
     def create_conflict(path: Path, target: Path) -> None:
         _create_conflict(path, target=target, rename=rename)
@@ -683,7 +684,7 @@ def test_publication_preserves_a_concurrent_empty_directory(
         "rename_noreplace",
         partial(
             _appear_before_rename,
-            rename=install_module.rename_noreplace,
+            rename=rename_noreplace,
             appeared=appeared,
         ),
     )

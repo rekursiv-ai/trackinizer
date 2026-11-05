@@ -59,7 +59,7 @@ from trackinizer.trax.grammar import (
     VALID_KINDS,
     WRITE_FIELDS_CLI,
 )
-from trackinizer.trax.profile import Profiles
+from trackinizer.trax.profiles import Profiles
 from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.types.inquiries import (
     Belief,

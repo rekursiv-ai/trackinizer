@@ -242,7 +242,7 @@ class TestRoutes:
                 )
                 assert client.get("/api/inquiries", params={"kind": "Issue"}).is_success
                 assert mock.await_args is not None
-                reader = mock.await_args.kwargs["reader"]
+                reader = cast(object, mock.await_args.kwargs["reader"])
                 assert isinstance(reader, SessionReader)
                 asked.append((reader.audiences, reader.email))
 

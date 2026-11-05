@@ -17,7 +17,7 @@ from trackinizer.types.errors import ConflictError, NotFoundError
 
 
 if TYPE_CHECKING:
-    from unittest.mock import _Call
+    from trackinizer.mock_test_support import MockCall
 
 
 class TestEdge:
@@ -223,7 +223,7 @@ class TestEdge:
         assert change_kinds == ["edge_removed", "edge_removed"]
 
 
-def _sql(call: _Call) -> str:
+def _sql(call: MockCall) -> str:
     """Narrow a recorded mock argument to the SQL string passed by production."""
     sql = call.args[0]
     assert isinstance(sql, str)

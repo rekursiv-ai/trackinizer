@@ -75,7 +75,8 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
-from trackinizer.server.api.session_access import request_principal, session_reader
+from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import (
     AuthIdentity,

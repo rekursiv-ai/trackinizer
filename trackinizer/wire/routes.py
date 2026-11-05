@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from functools import cache
-from typing import Final, Literal, get_args, get_origin, get_type_hints
+from typing import Final, Literal, cast, get_args, get_origin, get_type_hints
 
 from trackinizer.types.columns import (
     FlatColumn,
@@ -256,7 +256,7 @@ def inquiry_relation_fields() -> frozenset[str]:
     """
     relations: set[str] = set()
     for cls in INQUIRY_CLASSES:
-        hints = get_type_hints(cls)
+        hints = cast(dict[str, object], get_type_hints(cls))
         for field in fields(cls):
             hint = hints[field.name]
             peer: object = get_args(hint)[0] if get_origin(hint) is tuple else None

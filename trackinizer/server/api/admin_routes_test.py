@@ -15,6 +15,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
+from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.api.admin_routes import _refuse_last_admin_loss
 from trackinizer.server.api.app import app
 from trackinizer.server.api.auth_routes_test import user_row
@@ -883,7 +884,7 @@ class TestRefuseLastAdminLoss:
     async def test_reads_the_target_and_the_other_active_admins_in_one_query(
         self,
     ) -> None:
-        conn = AsyncMock()
+        conn = cast(MockConnection, AsyncMock())
         conn.fetchrow = AsyncMock(return_value=None)
         target = uuid.uuid4()
         await _refuse_last_admin_loss(cast("Conn", conn), target)
@@ -903,13 +904,13 @@ class TestRefuseLastAdminLoss:
         self,
         row: dict[str, object] | None,
     ) -> None:
-        conn = AsyncMock()
+        conn = cast(MockConnection, AsyncMock())
         conn.fetchrow = AsyncMock(return_value=row)
         await _refuse_last_admin_loss(cast("Conn", conn), uuid.uuid4())
 
     @pytest.mark.asyncio
     async def test_the_last_active_admin_is_refused_with_409(self) -> None:
-        conn = AsyncMock()
+        conn = cast(MockConnection, AsyncMock())
         conn.fetchrow = AsyncMock(
             return_value={"target_is_admin_active": True, "other_admins": 0},
         )

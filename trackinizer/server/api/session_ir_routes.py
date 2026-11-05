@@ -31,11 +31,11 @@ from trackinizer.server.api._deps import (
     get_store,
 )
 from trackinizer.server.api.session_access import (
-    require_session,
     require_session_access,
     require_session_write_access,
     resolve_asker,
 )
+from trackinizer.server.api.session_identity import require_session
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
