@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, cast
 from unittest.mock import AsyncMock, MagicMock, _Call
 
 import logging
@@ -70,6 +70,10 @@ from trackinizer.server.session import (
     set_session_cookie,
 )
 from trackinizer.server.store.core import Store
+
+
+if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockCall
 
 
 class TestHashSecret:
@@ -2516,7 +2520,7 @@ class TestSetApiKeyRole:
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
 
 
-def _sql(call: _Call) -> str:
+def _sql(call: MockCall) -> str:
     """Return a recorded SQL argument after narrowing the mock call boundary."""
     sql = call.args[0]
     assert isinstance(sql, str)

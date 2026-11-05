@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import get_args
+from typing import cast, get_args
 
 import uuid
 
@@ -52,7 +52,9 @@ def test_a_post_is_a_persons_line_by_default() -> None:
 
 def test_the_post_kinds_are_the_inbound_kinds() -> None:
     """A post's kind is handed on as the queued message's, so the sets match."""
-    assert get_args(ChatLineKind.__value__) == get_args(InboundKind.__value__)
+    assert get_args(cast(object, ChatLineKind.__value__)) == get_args(
+        cast(object, InboundKind.__value__),
+    )
 
 
 def test_a_browser_that_still_sends_science_posts_a_line() -> None:
@@ -86,7 +88,7 @@ def test_a_run_command_is_one_line_of_printable_ascii(
 
 
 def test_a_run_post_refuses_a_command_it_would_not_run() -> None:
-    run = {"run_id": "a" * 32}
+    run: dict[str, object] = {"run_id": "a" * 32}
     with pytest.raises(ValidationError, match="one line of printable ASCII"):
         _ = ChatSend(canvas_id=_CANVAS, text="a\nb", kind="run", payload=run)
     stop = ChatSend(

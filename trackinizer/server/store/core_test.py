@@ -44,7 +44,7 @@ class TestStubEmbedder:
         emb = StubEmbedder()
         v = await emb.embed("hello")
         assert len(v) == StubEmbedder.dim
-        norm = sum(x * x for x in v) ** 0.5
+        norm = cast(float, sum(x * x for x in v) ** 0.5)
         assert abs(norm - 1.0) < 1e-9
 
     @pytest.mark.asyncio

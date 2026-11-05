@@ -6,14 +6,13 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl
 from uuid import UUID, uuid4
 
-import json
+import time
 
-from treekle import from_plain
+from treekle import from_plain, json_loads
 
 import httpx2
 import pytest
 
-from trackinizer.client import client
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.wire import wire_exec
@@ -84,7 +83,7 @@ def test_a_command_goes_to_the_machines_exec_route_for_the_asker() -> None:
         "/api/machines/gx10/exec",
         {"asker": "ada@x.y"},
     )
-    assert from_plain(json.loads(sent.content), dict[str, object]) == {
+    assert json_loads(sent.content, dict[str, object]) == {
         "command": "ls",
         "cwd": "~",
         "timeout_sec": 9,
@@ -189,7 +188,7 @@ def test_the_hosts_wait_returns_the_next_command_or_none() -> None:
 def test_a_wait_whose_response_was_lost_is_retried_under_the_same_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(client.time, "sleep", _no_sleep)
+    monkeypatch.setattr(time, "sleep", _no_sleep)
     recorder = _Recorder(
         httpx2.ReadError("response lost"),
         httpx2.Response(200, json=None),

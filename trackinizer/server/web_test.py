@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -39,6 +39,7 @@ import pytest
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
 from trackinizer.lib.postgres import Conn
+from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.server import web
 from trackinizer.server.api import auth_routes
 from trackinizer.server.api.query import get_inquiry_route
@@ -118,6 +119,26 @@ _EDGE_RELATIONS: Final = frozenset(
         "cited_by",
     },
 )
+
+
+@dataclass(slots=True, kw_only=True)
+class _FeedStore:
+    engine: FakeEngine = field(default_factory=FakeEngine)
+    read_feed: AsyncMockProtocol[list[FeedEvent]] = field(
+        default_factory=lambda: cast(AsyncMockProtocol[list[FeedEvent]], AsyncMock()),
+    )
+    read_feed_facets: AsyncMockProtocol[FeedFacetsResponse] = field(
+        default_factory=lambda: cast(
+            AsyncMockProtocol[FeedFacetsResponse],
+            AsyncMock(),
+        ),
+    )
+    read_feed_histogram: AsyncMockProtocol[FeedHistogramResponse] = field(
+        default_factory=lambda: cast(
+            AsyncMockProtocol[FeedHistogramResponse],
+            AsyncMock(),
+        ),
+    )
 
 
 @dataclass(slots=True, kw_only=True)
@@ -1096,8 +1117,8 @@ class TestFeedReads:
     """The feed, its facets and its histogram take one set of repeatable filters."""
 
     def test_backward_feed_cursor_reaches_the_store_whole(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
         session = new_uuid()
         created = datetime(2026, 6, 1, tzinfo=UTC)
@@ -1112,7 +1133,7 @@ class TestFeedReads:
             },
         )
         assert response.status_code == 200
-        assert store.read_feed.call_args.kwargs.get("before") == (
+        assert store.read_feed.call_args_list[-1].kwargs.get("before") == (
             created,
             session,
             1,
@@ -1120,7 +1141,7 @@ class TestFeedReads:
         )
 
     def test_backward_feed_cursor_requires_every_component(self) -> None:
-        store = AsyncMock()
+        store = _FeedStore()
         client = self._client(store)
         cursor = {
             "before_created": "2026-06-01T00:00:00Z",
@@ -1138,7 +1159,7 @@ class TestFeedReads:
         store.read_feed.assert_not_called()
 
     @classmethod
-    def _client(cls, store: AsyncMock) -> TestClient:
+    def _client(cls, store: _FeedStore) -> TestClient:
         app = FastAPI()
         app.state.engine = FakeEngine()
         app.state.store = store
@@ -1147,14 +1168,16 @@ class TestFeedReads:
         return TestClient(app)
 
     def test_each_filter_repeats_and_one_room_or_actor_still_filters(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
 
-        def fake_scope(*params: tuple[str, str]) -> object:
+        def fake_scope(*params: tuple[str, str]) -> FeedScope:
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
-            return store.read_feed.call_args.kwargs["scope"]
+            scope = store.read_feed.call_args_list[-1].kwargs["scope"]
+            assert isinstance(scope, FeedScope)
+            return scope
 
         assert fake_scope(
             ("actor", "a"),
@@ -1179,9 +1202,11 @@ class TestFeedReads:
 
     def test_each_read_is_scoped_to_the_reader_its_caller_is(self) -> None:
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         reads = {
             "/api/web/feed": store.read_feed,
@@ -1206,7 +1231,8 @@ class TestFeedReads:
             app.dependency_overrides[current_user] = identity
             for path, read in reads.items():
                 assert client.get(path).status_code == 200, path
-                scope = cast(FeedScope, read.call_args.kwargs["scope"])
+                scope = read.call_args_list[-1].kwargs["scope"]
+                assert isinstance(scope, FeedScope)
                 assert scope.reader == SessionReader(
                     audiences=audiences,
                     email=_TEST_IDENTITY.email,
@@ -1247,7 +1273,7 @@ class TestFeedReads:
         assert named == self._scopes({}) == [FeedScope(reader=_TEST_READER)] * 3
         assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
         assert (
-            self._client(AsyncMock())
+            self._client(_FeedStore())
             .get(
                 "/api/web/feed",
                 params={"whose": "theirs"},
@@ -1259,9 +1285,11 @@ class TestFeedReads:
     def _scopes(self, params: dict[str, str]) -> list[FeedScope]:
         """Return the scope each of the feed, its facets and histogram was read with."""
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         scopes: list[FeedScope] = []
@@ -1271,12 +1299,14 @@ class TestFeedReads:
             ("/api/web/feed/histogram", store.read_feed_histogram),
         ):
             assert client.get(path, params=params).status_code == 200, path
-            scopes.append(cast(FeedScope, read.call_args.kwargs["scope"]))
+            scope = read.call_args_list[-1].kwargs["scope"]
+            assert isinstance(scope, FeedScope)
+            scopes.append(scope)
         return scopes
 
     def test_the_feed_keeps_only_conversation_when_asked(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
 
         for params, conversation in (
@@ -1285,13 +1315,18 @@ class TestFeedReads:
         ):
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
-            assert store.read_feed.call_args.kwargs["conversation"] is conversation
+            assert (
+                store.read_feed.call_args_list[-1].kwargs["conversation"]
+                is conversation
+            )
 
     def test_a_canvas_filters_all_three_reads_to_its_callers_agents(self) -> None:
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         canvas = uuid.uuid4()
@@ -1311,13 +1346,15 @@ class TestFeedReads:
                 params={"canvas": str(canvas), "kind": "ToolCall"},
             )
             assert response.status_code == 200, response.text
-            assert read.call_args.kwargs["scope"] == wanted
+            assert read.call_args_list[-1].kwargs["scope"] == wanted
         assert client.get("/api/web/feed", params={"canvas": "x"}).status_code == 422
 
     def test_facets_count_a_window_under_the_filters(self) -> None:
-        store = AsyncMock()
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         window = (("since", "2026-10-01T00:00:00Z"), ("until", "2026-10-02T00:00:00Z"))
@@ -1329,7 +1366,7 @@ class TestFeedReads:
 
         assert response.status_code == 200, response.text
         assert response.json() == {"actors": [], "rooms": [], "kinds": []}
-        assert store.read_feed_facets.call_args.kwargs == {
+        assert store.read_feed_facets.call_args_list[-1].kwargs == {
             "since": datetime(2026, 10, 1, tzinfo=UTC),
             "until": datetime(2026, 10, 2, tzinfo=UTC),
             "scope": FeedScope(clis=("codex",), reader=_TEST_READER),
@@ -1345,35 +1382,32 @@ class TestFeedReads:
         for session in (taken, waiting, ended):
             inbound.mark_poller(session, cli="claude", instance=run)
         assert inbound.report_state(taken, instance=run, state="taken_over")
-        store = AsyncMock()
-        store.engine = FakeEngine()
+        store = _FeedStore()
         store.engine.conn.fetch.return_value = [
             {"session_id": waiting, "opened": "a1", "closed": None},
         ]
         last = datetime(2026, 10, 1, tzinfo=UTC)
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(
-                actors=[
-                    FeedActorFacet(
-                        actor=name,
-                        session_id=session,
-                        cli="claude",
-                        rooms=[],
-                        count=1,
-                        conversation=1,
-                        last=last,
-                        ended=last if session == ended else None,
-                    )
-                    for name, session in (
-                        ("taken", taken),
-                        ("waiting", waiting),
-                        ("quiet", quiet),
-                        ("ended", ended),
-                    )
-                ],
-                rooms=[],
-                kinds=[],
-            ),
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[
+                FeedActorFacet(
+                    actor=name,
+                    session_id=session,
+                    cli="claude",
+                    rooms=[],
+                    count=1,
+                    conversation=1,
+                    last=last,
+                    ended=last if session == ended else None,
+                )
+                for name, session in (
+                    ("taken", taken),
+                    ("waiting", waiting),
+                    ("quiet", quiet),
+                    ("ended", ended),
+                )
+            ],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         cast("FastAPI", client.app).state.inbound = inbound
@@ -1407,7 +1441,7 @@ class TestFeedReads:
         assert from_plain(response.json(), dict[str, object])["counts"] == [
             {"start": "2026-10-01T00:00:00Z", "count": 3},
         ]
-        kwargs = store.read_feed_histogram.call_args.kwargs
+        kwargs = store.read_feed_histogram.call_args_list[-1].kwargs
         assert {name: kwargs[name] for name in kwargs if name != "earliest"} == {
             "since": None,
             "until": None,
@@ -1440,7 +1474,7 @@ class TestFeedReads:
         after = datetime.now(UTC)
 
         assert response.status_code == 200, response.text
-        earliest = store.read_feed_histogram.call_args.kwargs["earliest"]
+        earliest = store.read_feed_histogram.call_args_list[-1].kwargs["earliest"]
         assert isinstance(earliest, datetime)
         assert before - week <= earliest <= after - week
         for days, status in ((8, 400), (6, 200)):
@@ -1452,16 +1486,14 @@ class TestFeedReads:
             assert response.status_code == status, days
 
     @classmethod
-    def _histogram_store(cls) -> AsyncMock:
+    def _histogram_store(cls) -> _FeedStore:
         """Return a store whose histogram read answers one bucket."""
-        store = AsyncMock()
-        store.read_feed_histogram = AsyncMock(
-            return_value=FeedHistogramResponse(
-                start=datetime(2026, 10, 1, tzinfo=UTC),
-                end=datetime(2026, 10, 2, tzinfo=UTC),
-                bucket_seconds=86_400,
-                counts=[FeedBucket(start=datetime(2026, 10, 1, tzinfo=UTC), count=3)],
-            ),
+        store = _FeedStore()
+        store.read_feed_histogram.return_value = FeedHistogramResponse(
+            start=datetime(2026, 10, 1, tzinfo=UTC),
+            end=datetime(2026, 10, 2, tzinfo=UTC),
+            bucket_seconds=86_400,
+            counts=[FeedBucket(start=datetime(2026, 10, 1, tzinfo=UTC), count=3)],
         )
         return store
 
@@ -1511,9 +1543,9 @@ class TestRouteBounds:
         zone: str,
     ) -> None:
         """Read a naive ``since`` and ``until`` as UTC whatever the zone is."""
-        store = AsyncMock()
-        read_feed = AsyncMock(return_value=[])
-        store.read_feed = read_feed
+        store = _FeedStore()
+        read_feed = store.read_feed
+        read_feed.return_value = []
         app = FastAPI()
         app.state.engine = FakeEngine()
         app.state.store = store
@@ -1529,11 +1561,14 @@ class TestRouteBounds:
         finally:
             monkeypatch.undo()
             time.tzset()
-        kwargs = cast("dict[str, datetime]", read_feed.call_args.kwargs)
-        assert kwargs["since"].tzinfo is not None
-        assert kwargs["until"].tzinfo is not None
-        assert kwargs["since"] == datetime(2024, 12, 10, tzinfo=UTC)
-        assert kwargs["until"] == datetime(2024, 12, 11, tzinfo=UTC)
+        kwargs = read_feed.call_args_list[-1].kwargs
+        since, until = kwargs["since"], kwargs["until"]
+        assert isinstance(since, datetime)
+        assert isinstance(until, datetime)
+        assert since.tzinfo is not None
+        assert until.tzinfo is not None
+        assert since == datetime(2024, 12, 10, tzinfo=UTC)
+        assert until == datetime(2024, 12, 11, tzinfo=UTC)
 
     def test_search_rejects_invalid_regex(self) -> None:
         engine = FakeEngine()

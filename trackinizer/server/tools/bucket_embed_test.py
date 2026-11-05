@@ -9,7 +9,7 @@ the one that would have caught the 11x8192 OOM.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 import pytest
 import torch
@@ -382,7 +382,7 @@ async def test_vectors_return_in_input_order_across_buckets() -> None:
     )
     assert len(vectors) == len(texts)
     for vector in vectors:
-        norm = sum(v * v for v in vector) ** 0.5
+        norm = cast(float, sum(v * v for v in vector) ** 0.5)
         # Row 0 within its bucket has an all-zero vector (ordinal 0); norm 0 or 1.
         assert norm == pytest.approx(0.0) or norm == pytest.approx(1.0, abs=1e-4)
 

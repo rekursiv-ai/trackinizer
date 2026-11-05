@@ -7,7 +7,7 @@ module's ``_load`` seam, so they run in milliseconds and need no network.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 
 import pytest
 import torch
@@ -299,7 +299,7 @@ async def test_truncates_before_normalizing(monkeypatch: pytest.MonkeyPatch) -> 
     embedder = QwenEmbedder()
     vector = await embedder.embed("anything")
     assert len(vector) == QWEN_TRUNCATED_DIM
-    norm = sum(v * v for v in vector) ** 0.5
+    norm = cast(float, sum(v * v for v in vector) ** 0.5)
     assert abs(norm - 1.0) < 1e-4
 
 

@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
+import fcntl
+import os
 import threading
-import time
+
+import pytest
 
 from trackinizer.web import hatch_build
 
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from pathlib import Path
-
-    import pytest
 
 
 def _web(root: Path, *, built: bool) -> Path:
@@ -86,25 +90,32 @@ def test_concurrent_wheel_builds_build_the_app_once(
     web = _web(tmp_path, built=False)
     calls: list[str] = []
 
-    def slow_npm(npm_web: Path, *args: str) -> None:
+    def locked_npm(npm_web: Path, *args: str) -> None:
+        _assert_locked(npm_web)
         calls.append(args[0])
-        time.sleep(0.2)
         if args[:2] == ("run", "build"):
             (npm_web / "dist").mkdir(exist_ok=True)
             (npm_web / "dist" / "index.html").write_text("<html></html>\n")
 
-    monkeypatch.setattr(hatch_build, "_npm", slow_npm)
+    monkeypatch.setattr(hatch_build, "_npm", locked_npm)
     start = threading.Barrier(2)
+    web_lock = hatch_build.web_lock
+
+    @contextmanager
+    def contended_lock(path: Path) -> Generator[None]:
+        start.wait(timeout=2)
+        with web_lock(path):
+            yield
+
+    monkeypatch.setattr(hatch_build, "web_lock", contended_lock)
 
     def build() -> None:
-        start.wait()
         hatch_build.build_web_app(root=tmp_path, version="standard")
 
-    threads = [threading.Thread(target=build) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        builds = [pool.submit(build) for _ in range(2)]
+        for result in builds:
+            result.result()
 
     assert calls == ["ci", "run"]
     assert (web / "dist" / "index.html").is_file()
@@ -126,16 +137,31 @@ def test_web_lock_lets_one_holder_in_at_a_time(tmp_path: Path) -> None:
         with hatch_build.web_lock(web):
             inside.append(1)
             overlaps.append(len(inside))
-            time.sleep(0.1)
+            _assert_locked(web)
             inside.pop()
 
-    threads = [threading.Thread(target=hold) for _ in range(2)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        holders = [pool.submit(hold) for _ in range(2)]
+        for result in holders:
+            result.result()
 
     assert overlaps == [1, 1]
+    descriptor = os.open(web, os.O_RDONLY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        os.close(descriptor)
+
+
+def _assert_locked(web: Path) -> None:
+    """Probe a separate open description while the real holder owns the lock."""
+    descriptor = os.open(web, os.O_RDONLY)
+    try:
+        for mode in (fcntl.LOCK_EX, fcntl.LOCK_SH):
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(descriptor, mode | fcntl.LOCK_NB)
+    finally:
+        os.close(descriptor)
 
 
 if __name__ == "__main__":

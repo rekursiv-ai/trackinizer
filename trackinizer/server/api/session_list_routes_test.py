@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, cast
 
 from treekle import json_loads
 
@@ -59,21 +59,32 @@ async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
     await seed_accounts(store)
     mine = await seed_session(store, USER_AGENT, actor="Agent", cli="claude")
     _ = await seed_session(store, OTHER_AGENT, actor="Other", cli="codex")
-    inbound = app.state.inbound
-    assert isinstance(inbound, InboundQueue)
+    inbound = cast(InboundQueue, app.state.inbound)
     inbound.mark_poller(mine, machine="workstation", cli="claude")
     browser()
 
     answer = await client.get("/api/sessions")
 
     assert answer.status_code == 200, answer.text
-    listed = json_loads(answer.content, dict[str, object])
-    sessions = listed["sessions"]
-    assert isinstance(sessions, list)
-    assert [(each["id"], each["live"], each["machine"]) for each in sessions] == [
+    listed = json_loads(answer.content, _Listing)
+    assert [
+        (each["id"], each["live"], each["machine"]) for each in listed["sessions"]
+    ] == [
         (str(mine), True, "workstation"),
     ]
     assert (listed["issues"], listed["more"]) == ([], False)
+
+
+class _Session(TypedDict):
+    id: str
+    live: bool
+    machine: str | None
+
+
+class _Listing(TypedDict):
+    sessions: list[_Session]
+    issues: list[object]
+    more: bool
 
 
 if __name__ == "__main__":

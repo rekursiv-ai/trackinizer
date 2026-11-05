@@ -12,6 +12,7 @@ from pydantic import JsonValue
 import pydantic
 import pytest
 
+from trackinizer.mock_test_support import AsyncMockProtocol, MockConnection
 from trackinizer.server.preferences import (
     ASSISTANT_KEYS,
     SETTING,
@@ -295,8 +296,14 @@ def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
 
 @pytest.mark.asyncio
 async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_provider": "claude"}})
+    conn = cast(
+        MockConnection,
+        AsyncMock(
+            fetchrow=AsyncMock(
+                return_value={"preferences": {"chat_provider": "claude"}},
+            ),
+        ),
+    )
     written = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
@@ -338,8 +345,14 @@ def test_autofix_is_on_until_the_user_or_their_agent_turns_it_off() -> None:
 
 @pytest.mark.asyncio
 async def test_a_write_turns_tool_calls_in_chat_off_and_back_to_the_default() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_tool_calls": False}})
+    conn = cast(
+        MockConnection,
+        AsyncMock(
+            fetchrow=AsyncMock(
+                return_value={"preferences": {"chat_tool_calls": False}},
+            ),
+        ),
+    )
     written = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
@@ -355,7 +368,10 @@ async def test_a_write_turns_tool_calls_in_chat_off_and_back_to_the_default() ->
         ["chat_style"],
         _USER,
     )
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"theme": "light"}})
+    conn.fetchrow = cast(
+        AsyncMockProtocol[object],
+        AsyncMock(return_value={"preferences": {"theme": "light"}}),
+    )
     reset = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
@@ -392,8 +408,10 @@ _USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 @pytest.mark.asyncio
 async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"theme": "light"}})
+    conn = cast(
+        MockConnection,
+        AsyncMock(fetchrow=AsyncMock(return_value={"preferences": {"theme": "light"}})),
+    )
 
     written = await write_preferences(
         cast("Conn", conn),
@@ -414,8 +432,7 @@ async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
 
 @pytest.mark.asyncio
 async def test_a_write_for_a_user_who_is_gone_is_none() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn = cast(MockConnection, AsyncMock(fetchrow=AsyncMock(return_value=None)))
     assert (
         await write_preferences(
             cast("Conn", conn),
@@ -442,7 +459,7 @@ async def test_a_key_or_value_the_preferences_do_not_take_writes_nothing(
     change: dict[str, object],
     message: str,
 ) -> None:
-    conn = AsyncMock()
+    conn = cast(MockConnection, AsyncMock())
     with pytest.raises(ValueError, match=message):
         await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
     assert not conn.fetchrow.called

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
@@ -21,6 +21,7 @@ from trackinizer.conftest import (
     new_uuid,
     set_field_row,
 )
+from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.server.access_policy import (
     AccessDeniedError,
     Principal,
@@ -281,7 +282,12 @@ class TestSetSessionAudience:
         session = from_plain(row["id"], UUID)
         conn = self._conn(row)
         store, _ = make_store(conn)
-        policy = AsyncMock()
+        prepare_audience_change = AsyncMock()
+        on_audience = AsyncMock()
+        policy = AsyncMock(
+            prepare_audience_change=prepare_audience_change,
+            on_audience=on_audience,
+        )
         principal = Principal(email="ada@example.com", role="viewer")
         with (
             patch.object(store, "access_policy", new=policy),
@@ -304,7 +310,7 @@ class TestSetSessionAudience:
         conn.fetch.assert_awaited_once_with(self._LOCK, [session])
         assert conn.fetchval.await_args is not None
         assert conn.fetchval.await_args.args[1:] == (opener,)
-        policy.prepare_audience_change.assert_awaited_once_with(conn)
+        prepare_audience_change.assert_awaited_once_with(conn)
         update.assert_awaited_once_with(
             conn,
             session,
@@ -322,7 +328,7 @@ class TestSetSessionAudience:
             actor="ada",
             reason="hidden by its owner",
         )
-        policy.on_audience.assert_awaited_once_with(
+        on_audience.assert_awaited_once_with(
             conn,
             principal=principal,
             resource=Resource(
@@ -341,7 +347,8 @@ class TestSetSessionAudience:
         conn = self._conn(row)
         store, _ = make_store(conn)
         session = from_plain(row["id"], UUID)
-        with patch.object(store, "_emit_field_change", new=AsyncMock()) as emit:
+        emit = cast(AsyncMockProtocol[object], AsyncMock())
+        with patch.object(store, "_emit_field_change", new=emit):
             assert await self._hide(store, [session], caller="ADA@example.com") == [
                 session,
             ]

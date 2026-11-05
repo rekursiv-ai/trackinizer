@@ -7,6 +7,7 @@ code is open, and which address the page link names.
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -15,6 +16,7 @@ from starlette.requests import Request
 
 import pytest
 
+from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.api import device_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.device_limits import device_wrong_entries
@@ -56,13 +58,14 @@ async def _open(
     request: Request,
     row: dict[str, object] | None,
     typed: str = "bcdf-ghjk",
-) -> tuple[AsyncMock, device_routes._Login | HTTPException]:
-    conn = AsyncMock()
+) -> tuple[MockConnection, device_routes._Login | HTTPException]:
+    raw = AsyncMock()
+    conn = cast(MockConnection, raw)
     conn.fetchrow.return_value = row
     try:
         return conn, await device_routes._open_login(
             request,
-            conn,
+            raw,
             identity=_IDENTITY,
             body=DeviceDecision(user_code=typed),
         )
@@ -89,6 +92,7 @@ async def test_an_open_code_returns_its_login_and_forgives_the_entry() -> None:
         user_code="BCDFGHJK",
     )
     assert _entries(request) == 0
+    assert conn.fetchrow.await_args is not None
     sql, code = conn.fetchrow.await_args.args
     assert sql == (
         "SELECT id, user_code, client, host, machine, status FROM device_logins "
@@ -152,7 +156,7 @@ async def test_the_public_address_is_the_deployments_the_sign_ins_or_the_request
     monkeypatch.setenv("TRACKINIZER_PUBLIC_URL", public_url)
     request = _request()
     if sign_in:
-        request.app.state.sign_in_base = sign_in
+        cast(FastAPI, request.app).state.sign_in_base = sign_in
 
     assert device_routes._public_base(request) == expected
 

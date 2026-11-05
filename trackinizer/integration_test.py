@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Protocol, cast
-from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 import asyncio
@@ -5010,16 +5009,18 @@ class TestIntegrationAuth:
             )
         # The dependency must round-trip the secret straight back to
         # the same principal.
-        request = MagicMock()
-        request.headers = {"Authorization": f"Bearer {secret}"}
-        request.app.state.engine = integ_store.engine
-        request.app.state.store = integ_store
-        # MagicMock auto-creates ``app.state.config`` as a Mock whose
-        # attribute access is truthy; pin to a real Config so
-        # ``current_user`` reads ``auth_disabled=False`` and exercises
-        # the bearer path.
-        request.app.state.config = Config()
-        identity = await current_user(cast(Request, request))
+        app = FastAPI()
+        app.state.engine = integ_store.engine
+        app.state.store = integ_store
+        app.state.config = Config()
+        request = Request(
+            {
+                "type": "http",
+                "app": app,
+                "headers": [(b"authorization", f"Bearer {secret}".encode())],
+            },
+        )
+        identity = await current_user(request)
         assert identity.user_id == user_id
         assert identity.email == "alice@example.com"
         assert identity.role == "admin"
@@ -5050,13 +5051,19 @@ class TestIntegrationAuth:
             )
             revoked = await revoke_api_key(conn, key_id=key_id, user_id=user_id)
             assert revoked is True
-        request = MagicMock()
-        request.headers = {"Authorization": f"Bearer {secret}"}
-        request.app.state.engine = integ_store.engine
-        request.app.state.store = integ_store
-        request.app.state.config = Config()  # See test_create_token rationale.
+        app = FastAPI()
+        app.state.engine = integ_store.engine
+        app.state.store = integ_store
+        app.state.config = Config()
+        request = Request(
+            {
+                "type": "http",
+                "app": app,
+                "headers": [(b"authorization", f"Bearer {secret}".encode())],
+            },
+        )
         with pytest.raises(HTTPException) as exc_info:
-            await current_user(cast(Request, request))
+            await current_user(request)
         assert exc_info.value.status_code == 401
 
     async def test_bootstrap_admin_seeds_with_null_added_by(

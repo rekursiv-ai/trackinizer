@@ -23,6 +23,10 @@ _RESULT = {
 }
 
 
+def _change_id(change: dict[str, object]) -> str:
+    return next(iter(change))
+
+
 def test_a_request_needs_only_a_command_a_folder_and_a_timeout() -> None:
     request = ExecRequest.model_validate(_REQUEST)
 
@@ -63,7 +67,7 @@ def test_a_request_carries_stdin_as_base64_and_an_environment() -> None:
         {"env": {f"K{n}": "v" for n in range(wire_exec.MAX_ENV_VARS + 1)}},
         {"host": "other"},
     ],
-    ids=lambda change: next(iter(change)),
+    ids=_change_id,
 )
 def test_a_request_outside_the_limits_is_refused(change: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):
@@ -107,7 +111,7 @@ def test_a_full_size_stream_fits_a_result() -> None:
         {"truncated": "maybe"},
         {"extra": 1},
     ],
-    ids=lambda change: next(iter(change)),
+    ids=_change_id,
 )
 def test_a_result_outside_the_limits_is_refused(change: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):

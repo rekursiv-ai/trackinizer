@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 
 import pytest
 
-from trackinizer.conftest import make_store, set_field_row
+from trackinizer.conftest import FakeEngine, make_store, set_field_row
 from trackinizer.server.api import sessions_routes, terminal_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
@@ -50,6 +50,7 @@ class _Clock:
 class _Server:
     app: FastAPI
     store: Store
+    engine: FakeEngine
     inbound: InboundQueue
     hub: TerminalHub
     clock: _Clock
@@ -85,7 +86,14 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
     clock = _Clock()
     app.state.terminals = hub = TerminalHub(alive=_alive, clock=clock)
     asyncio.run(hub.wait(_MACHINE, wait_sec=0))
-    return _Server(app=app, store=store, inbound=inbound, hub=hub, clock=clock)
+    return _Server(
+        app=app,
+        store=store,
+        engine=engine,
+        inbound=inbound,
+        hub=hub,
+        clock=clock,
+    )
 
 
 def _headers(key: UUID) -> dict[str, str]:
@@ -207,7 +215,7 @@ def test_a_retried_run_open_replays_its_terminal_and_a_new_open_is_refused(
 ) -> None:
     server = _server(monkeypatch)
     set_field_row(
-        server.app.state.engine.conn,
+        server.engine.conn,
         {"id": _MACHINE, "facts": {"clis": ["claude"]}, "confirmed": True},
     )
     run = {

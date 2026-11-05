@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import TYPE_CHECKING, Literal, override
+from typing import TYPE_CHECKING, Literal, cast, override
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -22,6 +22,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import FakeEngine
+from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.api import terminal_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import make_test_identity, patch_state
@@ -52,12 +53,15 @@ def _request(conn: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> Request:
 async def test_a_confirmed_machine_is_returned_with_its_facts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = {
-        "id": str(_MACHINE),
-        "facts": {"clis": ["claude", "git"]},
-        "confirmed": True,
-    }
+    conn = AsyncMock(
+        fetchrow=AsyncMock(
+            return_value={
+                "id": str(_MACHINE),
+                "facts": {"clis": ["claude", "git"]},
+                "confirmed": True,
+            },
+        ),
+    )
 
     found = await terminal_routes._owned_machine(
         _request(conn, monkeypatch),
@@ -71,21 +75,26 @@ async def test_a_confirmed_machine_is_returned_with_its_facts(
 async def test_the_lookup_asks_for_an_online_machine_of_the_caller_with_a_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = {
-        "id": str(_MACHINE),
-        "facts": dict[str, object](),
-        "confirmed": True,
-    }
+    raw = AsyncMock(
+        fetchrow=AsyncMock(
+            return_value={
+                "id": str(_MACHINE),
+                "facts": dict[str, object](),
+                "confirmed": True,
+            },
+        ),
+    )
+    conn = cast(MockConnection, raw)
 
     _ = await terminal_routes._owned_machine(
-        _request(conn, monkeypatch),
+        _request(raw, monkeypatch),
         _IDENTITY,
         name="gx10",
     )
 
     # The whole query, since any changed word in it lets an unscoped machine, or one
     # whose host is gone, be offered a terminal.
+    assert conn.fetchrow.call_args is not None
     assert from_plain(conn.fetchrow.call_args.args[0], str) == (
         "SELECT m.id, m.facts, m.confirmed_at IS NOT NULL AS confirmed "
         "FROM machines m WHERE m.name = $1 AND m.owner = $2 "
@@ -104,12 +113,15 @@ async def test_the_lookup_asks_for_an_online_machine_of_the_caller_with_a_creden
 async def test_an_unconfirmed_machine_is_refused_until_its_owner_confirms(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = {
-        "id": str(_MACHINE),
-        "facts": dict[str, object](),
-        "confirmed": False,
-    }
+    conn = AsyncMock(
+        fetchrow=AsyncMock(
+            return_value={
+                "id": str(_MACHINE),
+                "facts": dict[str, object](),
+                "confirmed": False,
+            },
+        ),
+    )
 
     with pytest.raises(HTTPException) as refused:
         _ = await terminal_routes._owned_machine(
@@ -128,8 +140,7 @@ async def test_an_unconfirmed_machine_is_refused_until_its_owner_confirms(
 async def test_a_machine_the_caller_does_not_own_or_that_is_offline_is_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    conn = AsyncMock()
-    conn.fetchrow.return_value = None
+    conn = AsyncMock(fetchrow=AsyncMock(return_value=None))
 
     with pytest.raises(NotFoundError) as missing:
         _ = await terminal_routes._owned_machine(
@@ -187,8 +198,9 @@ class _ConcurrentEngine(FakeEngine):
 async def test_concurrent_opens_reserve_one_run_for_a_chat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    conn = AsyncMock()
-    conn.execute.side_effect = partial(_barrier_update, asyncio.Barrier(2))
+    conn = AsyncMock(
+        execute=AsyncMock(side_effect=partial(_barrier_update, asyncio.Barrier(2))),
+    )
     request = _request(conn, monkeypatch)
     patch_state(monkeypatch, "engine", _ConcurrentEngine(conn))
     patch_state(monkeypatch, "terminals", TerminalHub(alive=_alive))

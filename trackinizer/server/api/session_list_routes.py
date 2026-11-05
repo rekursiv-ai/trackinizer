@@ -8,10 +8,8 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from trackinizer.server.api._deps import get_inbound, get_store
 from trackinizer.server.api._routes_shared import request_engine
-from trackinizer.server.api.session_access import (
-    request_principal,
-    session_reader,
-)
+from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.session_list import (
     MAX_DAYS,

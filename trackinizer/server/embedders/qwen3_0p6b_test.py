@@ -7,6 +7,8 @@ is a unit vector with no ``"- "`` / instruction prefix.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from trackinizer.server.embedders.qwen3_0p6b import (
@@ -40,7 +42,7 @@ async def test_document_is_bare_and_unit_norm(monkeypatch: pytest.MonkeyPatch) -
     vector = await Qwen06BEmbedder().embed("a stored session line")
     assert tokenizer.seen[0][0] == "a stored session line"  # Bare corpus side.
     assert len(vector) == QWEN_TRUNCATED_DIM
-    assert abs(sum(v * v for v in vector) ** 0.5 - 1.0) < 1e-4
+    assert abs(cast(float, sum(v * v for v in vector) ** 0.5) - 1.0) < 1e-4
 
 
 if __name__ == "__main__":

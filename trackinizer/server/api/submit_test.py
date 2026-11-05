@@ -117,7 +117,7 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200, r.text
-        forwarded_items = captured.call_args.args[0]
+        forwarded_items = cast(object, captured.call_args.args[0])
         assert isinstance(forwarded_items, list)
         assert isinstance(forwarded_items[0], SubmitBase)
         assert isinstance(forwarded_items[1], SubmitBase)

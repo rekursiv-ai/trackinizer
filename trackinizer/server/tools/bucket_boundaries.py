@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import itertools
 
@@ -506,7 +506,7 @@ def knee(points: list[SweepPoint]) -> int:
     first, last = points[0], points[-1]
     dk = last.k - first.k
     dc = last.cost - first.cost
-    norm = (dk * dk + dc * dc) ** 0.5
+    norm = cast(float, (dk * dk + dc * dc) ** 0.5)
     if norm == 0:
         return first.k
     best = max(

@@ -17,6 +17,7 @@ import time
 
 import pytest
 
+from trackinizer.lib.files.source_version import source_version
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.daemon.protocol import (
     PROTOCOL_VERSION,
@@ -28,7 +29,6 @@ from trackinizer.trax.daemon.protocol import (
     package_root,
     read_frame,
     socket_path,
-    source_version,
     write_frame,
 )
 

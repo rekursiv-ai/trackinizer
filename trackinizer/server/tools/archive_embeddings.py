@@ -65,7 +65,9 @@ def main() -> int:
     try:
         counts = asyncio.run(restore(flags.dsn, source=flags.source))
     except FileNotFoundError as error:
-        parser.error(f"--from {flags.source} is not an archive: no {error.filename}")
+        parser.error(
+            f"--from {flags.source} is not an archive: no {cast(object, error.filename)}",
+        )
     print(f"restored from {flags.source}: {_describe(counts)}")
     return 0
 

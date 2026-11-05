@@ -8,6 +8,8 @@ name, and its dim.
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 
 from trackinizer.server.embedders.octen_8b import (
@@ -68,7 +70,7 @@ async def test_embed_returns_unit_vector_of_dim(
     install_capturing(monkeypatch, _MODULE, truncated_dim=1024)
     vector = await OctenEmbedder().embed("anything")
     assert len(vector) == OCTEN_TRUNCATED_DIM
-    assert abs(sum(v * v for v in vector) ** 0.5 - 1.0) < 1e-4
+    assert abs(cast(float, sum(v * v for v in vector) ** 0.5) - 1.0) < 1e-4
 
 
 if __name__ == "__main__":

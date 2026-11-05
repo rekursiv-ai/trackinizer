@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol, cast
-from unittest.mock import AsyncMock, _Call
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import asyncio
@@ -27,6 +27,7 @@ from trackinizer.wire.routes import InquiryFieldRoute, inquiry_field_routes
 
 
 if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockCall
     from trackinizer.types.inquiries import Inquiry
 
 
@@ -611,7 +612,7 @@ class TestAddCostZeroDelta:
             await store.add_cost(new_uuid(), Cost(), actor="alice")
 
 
-def _sql(call: _Call) -> str:
+def _sql(call: MockCall) -> str:
     """Narrow a recorded mock argument to the SQL statements under test."""
     sql = call.args[0]
     assert isinstance(sql, str)

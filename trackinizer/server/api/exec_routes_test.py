@@ -7,7 +7,7 @@ routes the schema lists.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -192,7 +192,7 @@ def test_only_the_assistants_route_is_in_the_schema_and_not_the_hosts_legs() -> 
     app = FastAPI()
     app.include_router(exec_routes.router)
 
-    paths = app.openapi()["paths"]
+    paths = cast(dict[str, object], app.openapi()["paths"])
 
     assert list(paths) == [EXEC_PATH]
     assert MACHINE_EXEC_WAIT_PATH not in paths

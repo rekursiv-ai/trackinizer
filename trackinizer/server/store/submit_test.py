@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from collections.abc import Awaitable
 from datetime import datetime
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import inspect
 
@@ -23,6 +24,7 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.lib.postgres import DatabaseEngine
+from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.change_id_slot import (
@@ -41,6 +43,10 @@ from trackinizer.wire.bodies import (
     SubmitIssue,
     SubmitPaper,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockConnection
 
 
 class TestSubmit:
@@ -563,7 +569,7 @@ class _BeginRecordingEmbedder:
     name = "begin-recorder"
     dim = StubEmbedder.dim
 
-    def __init__(self, conn: AsyncMock) -> None:
+    def __init__(self, conn: MockConnection) -> None:
         self._conn = conn
         self.began_before_embed: list[bool] = []
 
@@ -850,7 +856,7 @@ class TestSubmitBatch:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         store, _engine = make_store()
-        submitted = AsyncMock(return_value=new_uuid())
+        submitted = cast(AsyncMockProtocol[UUID], AsyncMock(return_value=new_uuid()))
         monkeypatch.setattr(store, "submit", submitted)
 
         await store.submit_batch(

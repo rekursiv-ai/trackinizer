@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Literal, Self
+from typing import TYPE_CHECKING, Literal, Self, cast
 from uuid import UUID, uuid4
 
 import sys
@@ -168,7 +168,7 @@ class _ShortCopy:
         self._conn = conn
 
     def __getattr__(self, name: str) -> object:
-        return getattr(self._conn, name)
+        return cast(object, getattr(self._conn, name))
 
     async def copy_from_query(
         self,
