@@ -14,6 +14,16 @@ from trackinizer.trax.login import LoginResult
 from trackinizer.trax.profile import Profile
 
 
+def test_profile_store_uses_shared_user_directory_isolation(
+    isolate_user_dirs: Path | None,
+    tmp_path: Path,
+) -> None:
+    assert isolate_user_dirs is not None
+    assert config_dir() == isolate_user_dirs / "config"
+    assert (config_dir() / "rekursiv-ai" / "trax" / "profiles").is_dir()
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_profile_help_shows_local_forms(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
