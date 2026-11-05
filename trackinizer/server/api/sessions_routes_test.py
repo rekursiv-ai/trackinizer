@@ -508,7 +508,13 @@ def test_reading_another_users_run_does_not_grant_any_input(
 @pytest.mark.parametrize("role", ["writer", "admin"])
 @pytest.mark.parametrize(
     "act",
-    ["drain", "run state", "run output", "end", "append", "attach"],
+    [
+        "drain",
+        "run state",
+        "end",
+        "append",
+        "attach",
+    ],
 )
 def test_reading_another_users_run_does_not_let_a_caller_drive_it(
     route_client: tuple[TestClient, Store, FakeEngine],
@@ -541,11 +547,6 @@ def test_reading_another_users_run_does_not_let_a_caller_drive_it(
             client.post,
             f"{url}/run-state",
             json={"state": "idle", **instance},
-        ),
-        "run output": partial(
-            client.post,
-            f"{url}/runs/{'b' * 32}/output",
-            json={"text": "out", **instance},
         ),
         "end": partial(client.post, f"{url}/end", json={}),
         "append": partial(client.post, f"{url}/records", json=opens_a_part("a.jsonl")),

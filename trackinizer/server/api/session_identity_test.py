@@ -140,7 +140,6 @@ def test_asker_reader_keeps_personal_rights_and_removes_delegated_oversight(
         audiences=asker.read_audiences,
         org="lab.example",
         oversight=not delegated,
-        assistant="bot@example.com" if configured else "",
     )
 
 
