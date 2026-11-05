@@ -562,10 +562,9 @@ class InboundEnqueueRequest(BaseModel):
     asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
     """The account of the user the configured assistant sends this line for.
 
-    The server lets the assistant send to a session the assistant cannot read only
-    for a user who may write to it (that session's account, or a writer who holds its
-    audience), so the assistant names whom it speaks for. Any other sender's ``asker``
-    is ignored.
+    The server lets the assistant relay input only for a writer whose account holds
+    the session, even if the assistant itself opened or reads it. Any other sender's
+    ``asker`` is ignored.
     """
 
     _validate_scalars = field_validator("asker", mode="after")(

@@ -375,15 +375,12 @@ async def test_staff_edits_and_purges_a_staff_session_by_id(
     assert (edited.status_code, purged.status_code) == (200, 200)
 
 
-async def test_input_to_a_staff_session_needs_its_audience_or_the_assistant(
+async def test_staff_visibility_does_not_grant_the_assistants_asker_input(
     pglite_route_client: _Client,
     hidden: _Hidden,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The assistant relays for an asker who holds staff, as staff sends itself.
-
-    The askers it is refused for are in ``assistant_asker_pglite_test``.
-    """
+    """The opening key sends input; the assistant's asker only reads the session."""
     patch_state(monkeypatch, "config", _SERVING_STAFF)
     client, _ = pglite_route_client
     url = f"/api/sessions/{hidden.lead}/inbound"
@@ -400,9 +397,8 @@ async def test_input_to_a_staff_session_needs_its_audience_or_the_assistant(
             body["asker"] = STAFF_USER.email
         answers[name] = (await client.post(url, json=body)).status_code
 
-    assert answers["writer"] == answers["viewer"] == 403
-    assert answers["staff"] == answers["assistant"] == 200
-    assert _inbound().pending(hidden.lead) == 2
+    assert answers == {"writer": 403, "viewer": 403, "staff": 200, "assistant": 403}
+    assert _inbound().pending(hidden.lead) == 1
 
 
 async def test_only_the_opener_or_a_holder_drains_a_staff_sessions_queue(
@@ -442,7 +438,7 @@ async def test_a_message_to_a_staff_actor_is_refused_whole_and_queues_nothing(
     assert _inbound().pending(hidden.lead) == 0
 
 
-async def test_the_assistant_and_staff_message_a_staff_actor(
+async def test_only_the_opening_key_messages_this_staff_actor(
     pglite_route_client: _Client,
     hidden: _Hidden,
     monkeypatch: pytest.MonkeyPatch,
@@ -462,11 +458,14 @@ async def test_the_assistant_and_staff_message_a_staff_actor(
                 **({"asker": STAFF_USER.email} if principal is ASSISTANT else {}),
             },
         )
-        assert sent.status_code == 200, sent.text
-        delivered.append(from_plain(sent.json(), dict[str, object])["delivered"])
+        if principal is ASSISTANT:
+            assert sent.status_code == 403, sent.text
+        else:
+            assert sent.status_code == 200, sent.text
+            delivered.append(from_plain(sent.json(), dict[str, object])["delivered"])
 
-    assert delivered == [[str(hidden.lead)]] * 2
-    assert _inbound().pending(hidden.lead) == 2
+    assert delivered == [[str(hidden.lead)]]
+    assert _inbound().pending(hidden.lead) == 1
 
 
 async def test_a_staff_sessions_envelope_and_filed_rows_stay_open(

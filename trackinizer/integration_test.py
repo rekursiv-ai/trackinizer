@@ -1954,7 +1954,7 @@ class TestIntegrationEndToEnd:
         """
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(
-                account="tester@example.com",
+                account="router@test",
                 title="inbox",
                 cli="claude",
             ),

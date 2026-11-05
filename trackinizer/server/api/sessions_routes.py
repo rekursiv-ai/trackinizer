@@ -191,9 +191,9 @@ async def session_inbound_enqueue_route(
     carries no ``source`` at all -- a client that sends one gets 422, not a
     silently-ignored field. The session must exist and have a recent inbound
     poll; an ended or stale session is rejected (409) because no poller will
-    drain it. A session whose audience the sender does not read is 403
-    ``session_audience``, unless the sender is the configured assistant sending for
-    an ``asker`` who is that session's account or a writer who holds its audience.
+    drain it. Only the session's account or opening key may send input; everyone
+    else is 403 ``session_audience``, even if they read the transcript. The configured
+    assistant may relay for a writer ``asker`` whose account holds the session.
 
     Args:
       session_id: UUID of the session to message.
@@ -273,13 +273,11 @@ async def send_message_route(
     drop-if-absent -- the response lists the sessions enqueued; an empty list
     means no live session matched.
 
-    Policy: any ``writer`` may message the agent of any session whose audience it
-    reads. The configured assistant may message one it does not read only for an
-    ``asker`` it names, who is that session's account or a writer who holds its
-    audience: it relays a user's line and passes on that user's rights, not its own.
-    Sessions are a shared canvas and cross-agent messaging is the feature, so there
-    is no per-opener ownership gate here (or on the direct ``/inbound`` route). The
-    sender is always truthfully attested. When any live session the name resolves to
+    Policy: only the session's account or opening key may send input. The configured
+    assistant may relay for a writer ``asker`` whose account holds the session, on
+    that user's rights alone. Reading a session, sharing an organisation or being
+    an admin grants no input rights. Same-account cross-agent messaging remains.
+    The sender is always truthfully attested. When any live session the name resolves to
     is one the sender may not message, the whole send is 403 ``session_audience`` and
     nothing is queued, so a send never reports a delivery that did not happen.
 

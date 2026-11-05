@@ -39,6 +39,8 @@ from trackinizer.server.api.conftest import (
 from trackinizer.server.api.session_test_support import (
     ASSISTANT_CONFIG,
     KB_ACTOR,
+    KB_EMAIL,
+    KB_KEY_ID,
     USER_AGENT,
     act_as_assistant,
     act_as_other_agent,
@@ -64,6 +66,7 @@ from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import (
     RUN_NAME_PATTERN,
     CanvasMessageContext,
+    InboundKind,
 )
 
 
@@ -467,6 +470,144 @@ async def _seen_as_the_session_ends(
     """Stand in for the liveness write, with the session's end landing during it."""
     del args, kwargs
     inbound.forget_poller(session_id)
+
+
+@pytest.mark.parametrize(
+    ("cli_session_id", "role"),
+    [("vendor-1", "writer"), ("campaign:lead", "admin")],
+)
+@pytest.mark.parametrize(
+    "kind",
+    ["line", "command", "answer", "settings", "interrupt", "run"],
+)
+def test_reading_another_users_run_does_not_grant_any_input(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    cli_session_id: str,
+    role: Role,
+    kind: InboundKind,
+) -> None:
+    client, store, engine = route_client
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    session = replace(
+        live_session(uuid.uuid4()),
+        account="owner@example.com",
+        cli_session_id=cli_session_id,
+        audience="open",
+    )
+    engine.conn.fetchval.return_value = True
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(session.id, runs=True, account=session.account)
+    install_identity(make_test_identity(role=role))
+
+    response = client.post(
+        f"/api/sessions/{session.id}/inbound",
+        json={
+            "text": "whoami",
+            "kind": kind,
+            "payload": {"run_id": "r1", "block": "b1", "stop": False},
+            "asker": session.account,
+        },
+    )
+
+    assert response.status_code == 403, response.text
+    assert inbound.pending(session.id) == 0
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_a_routed_send_with_a_foreign_target_queues_nothing(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scoped: bool,
+) -> None:
+    client, store, engine = route_client
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    own = replace(live_session(), account=TEST_USER_EMAIL, audience="open")
+    other = replace(
+        live_session(uuid.uuid4()),
+        account="owner@example.com",
+        audience="open",
+    )
+    engine.conn.fetchval.return_value = True
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(side_effect=[own, other]))
+    monkeypatch.setattr(
+        store,
+        "resolve_live_sessions",
+        AsyncMock(return_value=[(own.id, ("ops",)), (other.id, ("ops",))]),
+    )
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(own.id)
+    inbound.mark_poller(other.id)
+
+    response = client.post(
+        "/api/messages",
+        json={"actor": "scientist", "text": "hello", "room": "ops" if scoped else None},
+    )
+
+    assert response.status_code == 403, response.text
+    assert (inbound.pending(own.id), inbound.pending(other.id)) == (0, 0)
+
+
+@pytest.mark.parametrize("key", [None, uuid.UUID(int=10)])
+def test_the_session_account_can_send_with_a_browser_or_another_key(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    key: uuid.UUID | None,
+) -> None:
+    client, store, _engine = route_client
+    session = replace(live_session(), account=TEST_USER_EMAIL.upper(), audience="staff")
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+    monkeypatch.setattr(
+        store,
+        "resolve_live_sessions",
+        AsyncMock(return_value=[(session.id, ())]),
+    )
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(session.id)
+    install_identity(make_test_identity(api_key_id=key))
+
+    direct = client.post(f"/api/sessions/{session.id}/inbound", json={"text": "direct"})
+    routed = client.post("/api/messages", json={"actor": "scientist", "text": "routed"})
+
+    assert [direct.status_code, routed.status_code] == [200, 200]
+    assert [(m.text, m.source) for m in inbound.drain(session.id)] == [
+        ("direct", TEST_USER_EMAIL),
+        ("routed", TEST_USER_EMAIL),
+    ]
+
+
+def test_the_assistant_seeds_its_owners_campaign_before_the_poller_starts(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, engine = route_client
+    patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    session = replace(
+        live_session(KB_KEY_ID),
+        account=TEST_USER_EMAIL,
+        cli_session_id="campaign:lead",
+        labels=("campaign",),
+    )
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+    set_field_row(
+        engine.conn,
+        {"email": TEST_USER_EMAIL, "role": "writer", "hosted_domain": None},
+    )
+    install_identity(make_test_identity(email=KB_EMAIL, api_key_id=KB_KEY_ID))
+    inbound = cast("InboundQueue", app.state.inbound)
+
+    sent = client.post(
+        f"/api/sessions/{session.id}/inbound",
+        json={"text": "begin", "asker": TEST_USER_EMAIL},
+    )
+
+    assert sent.status_code == 200, sent.text
+    assert not inbound.has_poller(session.id)
+    assert [(m.text, m.source) for m in inbound.drain(session.id)] == [
+        ("begin", KB_EMAIL),
+    ]
 
 
 class TestInboundEnqueueRejectsSource:
@@ -1339,10 +1480,7 @@ def test_a_session_the_old_chat_helper_opened_takes_messages_like_any_other(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A session an old helper opened is refused neither a send nor another writer's drain.
-
-    The helper is gone, and with it the refusals keyed on its CLI name.
-    """
+    """The helper's name grants no input rights, as for every other CLI."""
     client, store, engine = route_client
     inbound = InboundQueue()
     app.state.inbound = inbound
@@ -1372,12 +1510,8 @@ def test_a_session_the_old_chat_helper_opened_takes_messages_like_any_other(
     routed = client.post("/api/messages", json={"actor": "helper", "text": "b"})
     drained = client.get(f"/api/sessions/{session_id}/inbound")
 
-    assert [r.status_code for r in (direct, routed, drained)] == [200] * 3, direct.text
-    messages = from_plain(
-        from_plain(drained.json(), dict[str, object])["messages"],
-        list[dict[str, object]],
-    )
-    assert [m["text"] for m in messages] == ["a", "b"]
+    assert [r.status_code for r in (direct, routed, drained)] == [403, 403, 200]
+    assert json_loads(drained.content, dict[str, object])["messages"] == []
 
 
 def opens_a_part(name: str) -> dict[str, object]:

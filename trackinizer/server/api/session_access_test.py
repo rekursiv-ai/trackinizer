@@ -1,8 +1,8 @@
 """Who reads, writes and drains a session, and who opens one into which audience.
 
 A session is read, written and drained by the key that opened it and by a caller the
-transcript test lets read it; the assistant may also send input to a session for a
-user who may write there, and read one for a user who reads it.
+transcript test lets read it. Input requires its account or opening key; the assistant
+may relay input for a writer of that account, and read for a user who reads it.
 """
 
 from __future__ import annotations
@@ -139,22 +139,40 @@ class TestRequireSessionAccess:
     """Whether the check asks the database, and what it makes of the answer."""
 
     @pytest.mark.asyncio
-    async def test_a_caller_the_database_says_reads_it_may_do_everything(
-        self,
-    ) -> None:
+    async def test_transcript_access_does_not_grant_input(self) -> None:
         session = AgentSession(audience="staff")
+        modes: tuple[SessionAccess, ...] = ("read", "write", "drain")
 
         reads = [
             await access_refused(make_caller(), session, m, answers=[True])
-            for m in MODES
+            for m in modes
         ]
         not_ = [
             await access_refused(make_caller(), session, m, answers=[False])
-            for m in MODES
+            for m in modes
         ]
 
-        assert reads == [False] * 4
-        assert not_ == [True] * 4
+        assert reads == [False] * 3
+        assert not_ == [True] * 3
+        assert await access_refused(make_caller("open", "staff"), session, "input")
+
+    @pytest.mark.parametrize("key", [None, uuid.UUID(int=10)])
+    @pytest.mark.asyncio
+    async def test_the_account_sends_input_with_a_browser_or_another_key(
+        self,
+        key: uuid.UUID | None,
+    ) -> None:
+        session = AgentSession(
+            account="Owner@Example.com",
+            audience="staff",
+            opened_by_api_key_id=OPENER,
+        )
+
+        assert not await access_refused(
+            make_caller("open", email="owner@example.com", key=key),
+            session,
+            "input",
+        )
 
     @pytest.mark.asyncio
     async def test_the_opening_key_passes_every_mode_without_asking(self) -> None:
@@ -243,12 +261,28 @@ def test_without_auth_the_one_caller_reads_every_session_and_open_chat() -> None
     )
 
 
-class TestTheAssistantsAsker:
-    """The assistant reaches a session it cannot read only for a user who may write there.
+@pytest.mark.asyncio
+async def test_the_transcript_check_names_the_target_session() -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = True
+    store, _engine = make_store(conn)
+    request = cast(
+        "Request",
+        SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(store=store))),
+    )
+    session = AgentSession(audience="open")
 
-    It sends a line for a signed-in user, so it passes on that user's rights and none
-    of its own: the user is the session's account, or reads the session, and can write
-    as a person.
+    await require_session_access(request, make_caller(), session=session, mode="read")
+
+    assert conn.fetchval.await_args is not None
+    assert conn.fetchval.await_args.args[1] == session.id
+
+
+class TestTheAssistantsAsker:
+    """The assistant relays input only for a writer whose account holds the session.
+
+    Naming an asker restricts the assistant to that user's rights, even when it opened
+    the target session or can read its transcript.
     """
 
     _session = AgentSession(audience="staff", account="owner@example.com")
@@ -271,11 +305,8 @@ class TestTheAssistantsAsker:
         )
 
     @pytest.mark.asyncio
-    async def test_it_relays_for_an_asker_who_reads_the_session(self) -> None:
-        assert not await self._refused_read(
-            make_asker("open", "staff"),
-            answers=[False, True],
-        )
+    async def test_it_refuses_an_asker_who_only_reads_the_session(self) -> None:
+        assert await self._refused_read(make_asker("open", "staff"), answers=[])
 
     @pytest.mark.asyncio
     async def test_it_relays_for_the_user_whose_session_it_is_without_asking(
@@ -284,7 +315,7 @@ class TestTheAssistantsAsker:
         """A tester steers the campaign attributed to them, though it is staff's to read."""
         asker = make_asker("open", email="owner@example.com")
 
-        assert not await self._refused_read(asker, answers=[False])
+        assert not await self._refused_read(asker, answers=[])
 
     @pytest.mark.asyncio
     async def test_it_refuses_an_asker_who_neither_reads_nor_owns_the_session(
@@ -292,11 +323,11 @@ class TestTheAssistantsAsker:
     ) -> None:
         stranger = make_asker("open", email="stranger@example.com")
 
-        assert await self._refused_read(stranger, answers=[False, False])
+        assert await self._refused_read(stranger, answers=[])
 
     @pytest.mark.asyncio
     async def test_it_refuses_a_send_that_names_no_asker(self) -> None:
-        assert await self._refused_read(None, answers=[False])
+        assert await self._refused_read(None, answers=[])
 
     @pytest.mark.parametrize(
         "asker",
@@ -310,20 +341,20 @@ class TestTheAssistantsAsker:
     )
     @pytest.mark.asyncio
     async def test_it_refuses_an_asker_who_may_not_write(self, asker: Asker) -> None:
-        assert await self._refused_read(asker, answers=[False])
+        assert await self._refused_read(asker, answers=[])
 
     @pytest.mark.parametrize("role", ["writer", "admin"])
     @pytest.mark.asyncio
     async def test_a_writer_or_an_admin_asker_may_write(self, role: Role) -> None:
-        asker = make_asker("open", "staff", role=role)
+        asker = make_asker("open", "staff", role=role, email="owner@example.com")
 
-        assert not await self._refused_read(asker, answers=[False, True])
+        assert not await self._refused_read(asker, answers=[])
 
     @pytest.mark.asyncio
     async def test_an_asker_lends_its_rights_to_no_sender_but_the_assistant(
         self,
     ) -> None:
-        asker = make_asker("open", "staff")
+        asker = make_asker("open", "staff", email="owner@example.com")
 
         assert await access_refused(
             make_caller("open", email="other@example.com"),
@@ -331,7 +362,6 @@ class TestTheAssistantsAsker:
             "input",
             assistant=SCOUT,
             asker=asker,
-            answers=[False],
         )
 
     @pytest.mark.asyncio
@@ -355,19 +385,40 @@ class TestTheAssistantsAsker:
 
     @pytest.mark.parametrize("audience", ["open", "staff"])
     @pytest.mark.asyncio
-    async def test_a_session_the_assistant_reads_needs_no_asker(
+    async def test_a_session_the_assistant_only_reads_still_needs_its_owner(
         self,
         audience: str,
     ) -> None:
-        """The assistant is then a writer like another, and asks no one's leave."""
         reading = make_caller("open", "staff", email="scout@example.com")
 
-        assert not await access_refused(
+        assert await access_refused(
             reading,
             AgentSession(audience=audience),
             "input",
             assistant=SCOUT,
-            answers=[True],
+        )
+
+    @pytest.mark.parametrize(
+        "asker",
+        [
+            make_asker("open", "staff"),
+            make_asker("open", role="viewer", email="owner@example.com"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_named_asker_cannot_borrow_the_assistants_opening_key(
+        self,
+        asker: Asker,
+    ) -> None:
+        caller = replace(self._scout, api_key_id=OPENER)
+        session = replace(self._session, opened_by_api_key_id=OPENER)
+
+        assert await access_refused(
+            caller,
+            session,
+            "input",
+            assistant=SCOUT,
+            asker=asker,
         )
 
 
@@ -520,7 +571,7 @@ class TestResolveAsker:
 
 
 class TestRowHolder:
-    """A row is purged, and moved to another account, by its account or an admin."""
+    """An admin may purge rows, but only a session's account may reassign it."""
 
     @classmethod
     def _serving(cls, row: dict[str, object] | None) -> Request:
@@ -554,12 +605,60 @@ class TestRowHolder:
             await require_row_purge(request, caller, uuid.uuid4())
 
         assert [moved.value.status_code, purged.value.status_code] == [403, 403]
+        assert (
+            moved.value.detail
+            == "A row's account is changed by that account or an admin"
+        )
+
+    @pytest.mark.parametrize("audience", ["open", "staff", "private", None])
+    @pytest.mark.asyncio
+    async def test_an_admin_cannot_reassign_another_accounts_session(
+        self,
+        audience: str | None,
+    ) -> None:
+        request = self._serving(
+            {
+                "kind": "AgentSession",
+                "account": "ada@example.com",
+                "audience": audience,
+            },
+        )
+        caller = replace(make_caller("open", email="root@example.com"), role="admin")
+
+        with pytest.raises(HTTPException) as refused:
+            await require_row_account(request, caller, uuid.uuid4())
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "A session's account is changed by that account alone",
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_session_account_can_still_transfer_it(self) -> None:
+        request = self._serving(
+            {"kind": "AgentSession", "account": "Ada@Example.com", "audience": "open"},
+        )
+
+        await require_row_account(
+            request,
+            make_caller("open", email="ada@example.com"),
+            uuid.uuid4(),
+        )
 
     @pytest.mark.asyncio
     async def test_a_row_that_is_gone_is_left_to_the_route(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, None)
+        store, _engine = make_store(conn)
+        state = SimpleNamespace(store=store, config=Config())
+        request = cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
         caller = make_caller("open", email="bob@example.com")
+        target_id = uuid.uuid4()
 
-        await require_row_account(self._serving(None), caller, uuid.uuid4())
+        await require_row_account(request, caller, target_id)
+
+        assert conn.fetchrow.await_args is not None
+        assert conn.fetchrow.await_args.args[1] == target_id
 
 
 def _opener(pin: str | None, *opens: str) -> AuthIdentity:

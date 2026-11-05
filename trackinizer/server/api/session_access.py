@@ -5,16 +5,17 @@ Who reads a session's transcript is one rule,
 content takes: its audience, and as the server's organisation mode
 (``TRACKINIZER_CHAT_ORGS``) says, its owner, its organisation, the people who oversee
 and, for a science chat, its members. Whoever reads a session may also write, drain
-and end it, and the key that opened a session always may, whatever the audience, so a
-key whose owner lost ``staff`` can still run the ``staff`` session it opened. Only
+and end it. Input is separate: only its account or opening key sends it input,
+regardless of transcript visibility. The opening key always passes, whatever the
+audience, so a key whose owner lost ``staff`` can still run the session it opened. Only
 the transcript is gated: a hidden session still has an open envelope, and the rows it
 files stay open.
 
 The configured assistant acts for the person it answers, the ``asker`` it names, on
 that person's rights and none of its own, and the server finds them in its own
-tables. It relays a line to a session it cannot read for an asker who is a writer and
-is the session's account or reads it. It reads a session for an asker into the chat
-it answers them in, the ``chat`` it names, when the asker reads both. What it reads
+tables. It relays input only for a writer whose account holds the target session,
+even when its own key opened that session. It reads a session for an asker into the
+chat it answers them in, the ``chat`` it names, when the asker reads both. What it reads
 lands in the chat, so it reads no chat and no ``private`` session for anyone; a
 ``staff`` session only once the chat is ``staff`` too
 (:func:`~trackinizer.server.private.chat_audience.raise_chat_audience`), which
@@ -34,9 +35,10 @@ longer holds instead of lowering the session to ``open``. A caller asks for
 
 A viewer key mutates only the session it opened. A science chat is stricter: only the
 key that opened it, or the assistant on a chat it runs, edits its row, and only that
-key or an admin purges it by id,
-where any other row is purged, and moved to another account, by its account or an
-admin. Its lines name their poster, and its labels and account say who started it and
+key or an admin purges it by id. Other rows are purged by their account or an admin.
+Only a session's account may reassign it, since the account controls its input;
+other rows may also be reassigned by an admin. A chat's lines name their poster,
+and its labels and account say who started it and
 who posted, so a second writer's write would forge a poster or hide the chat from
 History. Its transcript is one part per run that answered in it: a new part, or a run
 attaching to it, comes from its opening key, the configured assistant's or its
@@ -77,7 +79,7 @@ from trackinizer.server.audience import (
     person_audiences,
     reads_session,
 )
-from trackinizer.server.auth import ROLE_ORDER, Role
+from trackinizer.server.auth import Role
 from trackinizer.server.config import Config
 from trackinizer.server.notify import tx
 from trackinizer.server.values import vetted_sql
@@ -330,15 +332,14 @@ async def require_session_access(
 ) -> None:
     """Refuse a caller who may not do ``mode`` to this session.
 
-    A session with no audience reads as hidden from everyone but its opening key,
-    so a row that lost its audience fails closed rather than open. Any other caller
-    is asked of the database, by :func:`session_reader`.
+    Input requires the session's account or opening key; transcript visibility,
+    organisation membership and admin status grant no input rights. When the
+    assistant names an asker, only a writer whose account holds the session passes.
+    Other modes ask the database's transcript rule, with the opening key exempt.
 
     The configured assistant acts for an ``asker`` on the asker's rights alone: it
-    reads a session for one only if they read it, and relays a line to a session it
-    cannot read for an asker who is a writer, and is the session's account or reads
-    it. On its own rights it reads a chat it opened, and reads, writes and drains a
-    chat a CLI began that its starter gave it
+    reads a session for one only if they read it. On its own rights it reads a chat
+    it opened, and reads, writes and drains a chat a CLI began that its starter gave it
     (:func:`~trackinizer.server.api.private.chat_sessions.assistant_runs_chat`).
 
     Args:
@@ -351,13 +352,15 @@ async def require_session_access(
         nothing to a caller that is not the assistant.
 
     Raises:
-      HTTPException: 403 ``session_audience``: the caller neither opened the session
-        nor reads it, and is not the assistant acting for an asker who may do
-        ``mode`` there either.
+      HTTPException: 403 ``session_audience``: the caller may not do ``mode`` there,
+        either on its own rights or for the asker it names.
 
     """
     assistant = get_assistant(request)
     lender = asker if is_the_assistant(identity, assistant) else None
+    if mode == "input":
+        _require_input(identity, session=session, asker=lender)
+        return
     if mode == "read" and lender is not None:
         await _require_asker_reads(
             request,
@@ -372,20 +375,6 @@ async def require_session_access(
             conn,
             reader=session_reader(request, identity),
             session_id=session.id,
-        ):
-            return
-        if (
-            mode == "input"
-            and lender is not None
-            and ROLE_ORDER.index(lender.role) >= ROLE_ORDER.index("writer")
-            and (
-                session.account == lender.email
-                or await reads_session(
-                    conn,
-                    reader=asker_reader(request, lender, delegated=False),
-                    session_id=session.id,
-                )
-            )
         ):
             return
     raise hidden_session(session.audience)
@@ -679,12 +668,10 @@ async def require_row_account(
     identity: AuthIdentity,
     target_id: uuid.UUID,
 ) -> None:
-    """Refuse moving a row to another account by anyone but its account or an admin.
+    """Require the current account to reassign a session; other rows also allow admins.
 
-    A writer who could name themselves a row's account could then purge it, so the
-    purge rule holds only while this one does. A ``private`` session's account is
-    moved by that account alone: its account is an owner, who reads it and may show
-    it again, so an admin who moved it to themselves could undo its owner's hide.
+    A session's account controls its input and visibility, so even an admin may not
+    take it by changing its account. Other rows keep the account-or-admin rule.
 
     Args:
       request: The request, which carries the store.
@@ -692,17 +679,17 @@ async def require_row_account(
       target_id: The row whose ``account`` a route is about to change.
 
     Raises:
-      HTTPException: 403: the caller is neither the row's account nor an admin, or
-        the row is a ``private`` session and the caller is not its account.
+      HTTPException: 403: the caller does not hold the session's account, or is
+        neither the account nor an admin for another kind of row.
 
     """
     row = await _read_row(request, target_id=target_id)
     if row is None or _holds(identity, row=row):
         return
-    if row.kind == "AgentSession" and row.audience == PRIVATE:
+    if row.kind == "AgentSession":
         raise HTTPException(
             status_code=403,
-            detail="A hidden session's account is changed by that account alone",
+            detail="A session's account is changed by that account alone",
         )
     if identity.role != "admin":
         raise HTTPException(
@@ -816,6 +803,26 @@ def _require_audience(identity: AuthIdentity, *, row: _Row) -> None:
 def _holds(identity: AuthIdentity, *, row: _Row) -> bool:
     """Say whether ``identity`` is the account a row is held under."""
     return row.account.lower() == identity.email.lower()
+
+
+def _require_input(
+    identity: AuthIdentity,
+    *,
+    session: AgentSession,
+    asker: Asker | None,
+) -> None:
+    """Allow input only from the account, its delegated writer, or the opening key."""
+    # Reading a transcript grants no control of the machine that consumes its input.
+    if asker is not None:
+        if asker.role in {"writer", "admin"} and (
+            asker.email.lower() == session.account.lower()
+        ):
+            return
+    elif _opened_by(identity, session.opened_by_api_key_id) or (
+        identity.email.lower() == session.account.lower()
+    ):
+        return
+    raise hidden_session(session.audience)
 
 
 def _opened_by(identity: AuthIdentity, opener: uuid.UUID | None) -> bool:
