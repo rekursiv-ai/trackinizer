@@ -7,6 +7,9 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- `NodeAddress.user` also takes a job user that carries its server's tag,
+  `rai-ext-<tag>-job-<id>`, and `job_user` takes a `tag`. A client from before
+  this release refuses a grant from a server that sets one.
 - The session-embedding sweep reads only the records changed since its last
   pass instead of rescanning every record. A trigger stamps each record's
   `changed_xid` on insert and on a text change, and each mapper and model keeps
