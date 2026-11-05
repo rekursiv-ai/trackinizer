@@ -195,31 +195,26 @@ class TestResponsePayload:
 
 
 class TestSocketPath:
-    def test_lives_under_the_user_state_dir(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_lives_under_the_user_state_dir(self) -> None:
         """The socket is per-user session state, not scratch or config."""
-        monkeypatch.setenv("XDG_STATE_HOME", "/s")
-        path = socket_path()
+        path = socket_path().resolve()
         assert "rekursiv-ai" in path.parts
         assert "traxd" in path.parts
 
     def test_is_stable_across_calls(self) -> None:
         assert socket_path() == socket_path()
 
-    def test_resolves_through_the_shared_userdirs_helper(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_resolves_through_the_shared_userdirs_helper(self) -> None:
         """Re-deriving the XDG layout gets the wrong answer off Linux.
 
         ``state_dir`` resolves under ``Library/Application Support`` on macOS
         and ``LOCALAPPDATA`` on Windows; a hand-rolled ``~/.local/state``
         silently puts the socket somewhere else on those platforms.
         """
-        monkeypatch.setenv("XDG_STATE_HOME", "/s")
-        assert socket_path().parent == state_dir() / "rekursiv-ai" / "traxd"
+        assert (
+            socket_path().resolve().parent
+            == (state_dir() / "rekursiv-ai" / "traxd").resolve()
+        )
 
     def test_differs_when_the_config_directory_differs(
         self,
@@ -233,9 +228,15 @@ class TestSocketPath:
         that caller never chose -- the wrong profiles, under the wrong token.
         Keying the socket on the config directory routes them apart instead.
         """
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "one"))
+        monkeypatch.setattr(
+            "trackinizer.trax.daemon.protocol.config_dir",
+            lambda: tmp_path / "one",
+        )
         first = socket_path()
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "two"))
+        monkeypatch.setattr(
+            "trackinizer.trax.daemon.protocol.config_dir",
+            lambda: tmp_path / "two",
+        )
 
         assert socket_path() != first
 
@@ -248,7 +249,10 @@ class TestSocketPath:
         state_root = tmp_path / ("long-state-segment-" * 12)
         logical_parent = state_root / "rekursiv-ai" / "traxd"
         logical_parent.mkdir(parents=True)
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+        monkeypatch.setattr(
+            "trackinizer.trax.daemon.protocol.state_dir",
+            lambda: state_root,
+        )
         path = socket_path()
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
