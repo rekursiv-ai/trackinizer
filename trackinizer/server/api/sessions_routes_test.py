@@ -66,7 +66,6 @@ from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import (
     RUN_NAME_PATTERN,
     CanvasMessageContext,
-    InboundKind,
 )
 
 
@@ -251,7 +250,7 @@ class TestSessionEndAtomicity:
 
     @pytest.mark.parametrize("original_id", [None, "vendor-old"])
     @pytest.mark.parametrize("owns_session", [True, False])
-    def test_vendor_id_finalization_preserves_shared_writer_access(
+    def test_vendor_id_finalization_takes_only_what_the_end_takes(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
@@ -262,6 +261,7 @@ class TestSessionEndAtomicity:
         engine.conn.fetchval.return_value = True
         session = replace(
             live_session(TEST_API_KEY_ID if owns_session else uuid.uuid4()),
+            account=TEST_USER_EMAIL,
             cli_session_id=original_id,
             audience="open",
         )
@@ -476,16 +476,11 @@ async def _seen_as_the_session_ends(
     ("cli_session_id", "role"),
     [("vendor-1", "writer"), ("campaign:lead", "admin")],
 )
-@pytest.mark.parametrize(
-    "kind",
-    ["line", "command", "answer", "settings", "interrupt", "run"],
-)
 def test_reading_another_users_run_does_not_grant_any_input(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
     cli_session_id: str,
     role: Role,
-    kind: InboundKind,
 ) -> None:
     client, store, engine = route_client
     patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
@@ -503,16 +498,67 @@ def test_reading_another_users_run_does_not_grant_any_input(
 
     response = client.post(
         f"/api/sessions/{session.id}/inbound",
-        json={
-            "text": "whoami",
-            "kind": kind,
-            "payload": {"run_id": "r1", "block": "b1", "stop": False},
-            "asker": session.account,
-        },
+        json={"text": "whoami", "asker": session.account},
     )
 
     assert response.status_code == 403, response.text
     assert inbound.pending(session.id) == 0
+
+
+@pytest.mark.parametrize("role", ["writer", "admin"])
+@pytest.mark.parametrize(
+    "act",
+    ["drain", "run state", "run output", "end", "append", "attach"],
+)
+def test_reading_another_users_run_does_not_let_a_caller_drive_it(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    role: Role,
+    act: str,
+) -> None:
+    client, store, engine = route_client
+    session = replace(
+        live_session(uuid.uuid4()),
+        account="owner@example.com",
+        cli_session_id="vendor-1",
+        audience="open",
+    )
+    engine.conn.fetchval.return_value = True
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+    ended = AsyncMock()
+    monkeypatch.setattr(store, "end_session", ended)
+    inbound = InboundQueue()
+    app.state.inbound = inbound
+    inbound.mark_poller(session.id, account=session.account)
+    _ = inbound.enqueue(session.id, Inbound(text="mine", source=session.account))
+    install_identity(make_test_identity(role=role))
+    url = f"/api/sessions/{session.id}"
+    instance = {"instance": "a" * 32}
+
+    response = {
+        "drain": partial(client.get, f"{url}/inbound"),
+        "run state": partial(
+            client.post,
+            f"{url}/run-state",
+            json={"state": "idle", **instance},
+        ),
+        "run output": partial(
+            client.post,
+            f"{url}/runs/{'b' * 32}/output",
+            json={"text": "out", **instance},
+        ),
+        "end": partial(client.post, f"{url}/end", json={}),
+        "append": partial(client.post, f"{url}/records", json=opens_a_part("a.jsonl")),
+        "attach": partial(
+            client.post,
+            "/api/sessions/start",
+            json={"cli": "claude", "attach": str(session.id)},
+        ),
+    }[act]()
+
+    assert response.status_code == 403, response.text
+    assert inbound.pending(session.id) == 1
+    ended.assert_not_awaited()
 
 
 @pytest.mark.parametrize("scoped", [False, True])
@@ -835,6 +881,27 @@ class TestSessionStartAccountValidation:
         # creator's email, not left for the Store to default to the handle.
         assert captured["account"] == TEST_USER_EMAIL
 
+    def test_start_names_the_account_that_holds_the_session(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "start_session",
+            AsyncMock(return_value=(uuid.uuid4(), "scientist", 0)),
+        )
+        held = replace(live_session(), account="owner@example.com")
+        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=held))
+
+        response = client.post("/api/sessions/start", json={"cli": "claude"})
+
+        assert response.status_code == 201, response.text
+        assert (
+            json_loads(response.content, dict[str, object])["account"] == held.account
+        )
+
     def test_start_refuses_another_accounts_service_address(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -1144,11 +1211,11 @@ def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_without_an_assistant_a_writer_still_drains_any_session(
+async def test_without_an_assistant_a_writer_still_drains_only_its_own(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The refusal is the assistant's alone: on one organisation, the writer reads it."""
+    """On one organisation the writer reads the session, which grants no drain."""
     client, store = pglite_route_client
     patch_state(monkeypatch, "config", Config(chat_orgs="single"))
     patch_state(monkeypatch, "inbound", InboundQueue())
@@ -1156,7 +1223,7 @@ async def test_without_an_assistant_a_writer_still_drains_any_session(
     act_as_assistant()
     kb = await start_session(client, actor=KB_ACTOR)
     act_as_other_agent("writer")
-    assert (await drain(client, session_id=kb)).status_code == 200
+    assert (await drain(client, session_id=kb)).status_code == 403
 
 
 def refusal_code(response: httpx2.Response) -> str:
@@ -1409,13 +1476,12 @@ async def test_a_session_starts_on_an_app_built_by_hand_with_no_hub_or_config(
         assert ended.status_code == 200
 
 
-class TestInboundKinds:
-    def test_a_kind_and_its_payload_reach_the_drain(
+class TestInboundTakesLinesAlone:
+    def test_a_line_reaches_the_drain_with_no_payload(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """An answer is drained as one, and a bare line as a ``line`` with no payload."""
         client, store, _engine = route_client
         inbound = InboundQueue()
         app.state.inbound = inbound
@@ -1427,34 +1493,36 @@ class TestInboundKinds:
         )
         monkeypatch.setattr(store, "record_session_seen", AsyncMock())
         inbound.mark_poller(session_id)
-        answer: dict[str, object] = {
-            "prompt_id": "p1",
-            "decision": "deny",
-            "updated_input": None,
-            "message": "not now",
-        }
 
-        sent = client.post(
-            f"/api/sessions/{session_id}/inbound",
-            json={"text": "No: not now", "kind": "answer", "payload": answer},
-        )
         plain = client.post(f"/api/sessions/{session_id}/inbound", json={"text": "hi"})
         drained = client.get(f"/api/sessions/{session_id}/inbound")
 
-        assert (sent.status_code, plain.status_code) == (200, 200), sent.text
+        assert plain.status_code == 200, plain.text
         messages = from_plain(
             from_plain(drained.json(), dict[str, object])["messages"],
             list[dict[str, object]],
         )
         assert [(m["text"], m["kind"], m["payload"]) for m in messages] == [
-            ("No: not now", "answer", answer),
             ("hi", "line", None),
         ]
 
-    def test_a_kind_the_server_does_not_know_is_422(
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"kind": "run"},
+            {"kind": "answer"},
+            {"kind": "command"},
+            {"kind": "line"},
+            {"kind": "keys"},
+            {"payload": {"run_id": "r1", "block": "b1", "stop": False}},
+        ],
+        ids=lambda extra: str(extra.get("kind", "payload")),
+    )
+    def test_the_owner_sends_no_kind_and_no_payload(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
         monkeypatch: pytest.MonkeyPatch,
+        extra: dict[str, object],
     ) -> None:
         client, store, _engine = route_client
         inbound = InboundQueue()
@@ -1469,7 +1537,7 @@ class TestInboundKinds:
 
         refused = client.post(
             f"/api/sessions/{session_id}/inbound",
-            json={"text": "x", "kind": "keys"},
+            json={"text": "x", **extra},
         )
 
         assert refused.status_code == 422, refused.text
@@ -1510,8 +1578,8 @@ def test_a_session_the_old_chat_helper_opened_takes_messages_like_any_other(
     routed = client.post("/api/messages", json={"actor": "helper", "text": "b"})
     drained = client.get(f"/api/sessions/{session_id}/inbound")
 
-    assert [r.status_code for r in (direct, routed, drained)] == [403, 403, 200]
-    assert json_loads(drained.content, dict[str, object])["messages"] == []
+    assert [r.status_code for r in (direct, routed, drained)] == [403, 403, 403]
+    assert inbound.pending(session_id) == 0
 
 
 def opens_a_part(name: str) -> dict[str, object]:

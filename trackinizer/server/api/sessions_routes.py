@@ -172,6 +172,7 @@ async def session_start_route(
         seq=next_seq,
         cli_session_id=row.cli_session_id,
         actor=row.owner,
+        account=row.account,
         audience=row.audience,
     )
 
@@ -183,7 +184,7 @@ async def session_inbound_enqueue_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> InboundEnqueueResponse:
-    """Enqueue a message to inject into a live session's input.
+    """Enqueue a line to inject into a live session's input.
 
     The sender is **attested by the route**, never trusted from the body: the
     stored ``source`` is always the authenticated principal, so an agent
@@ -232,7 +233,6 @@ async def session_inbound_enqueue_route(
         and identity.api_key_id == session.opened_by_api_key_id
         and (session.cli_session_id or "").startswith("campaign:")
         and "campaign" in (session.labels or ())
-        and body.kind == "line"
     )
     if not inbound.has_poller(session_id) and not prestart_campaign:
         raise HTTPException(status_code=409, detail="No active inbound poller")
@@ -247,8 +247,6 @@ async def session_inbound_enqueue_route(
                 session_id,
                 Inbound(
                     text=body.text,
-                    kind=body.kind,
-                    payload=body.payload,
                     source=identity.email,
                     source_role=identity.role,
                 ),
@@ -402,14 +400,13 @@ async def session_inbound_drain_route(
     a proxy that would otherwise cut it. Ending the session ends the hold, so
     the run that ends it as it exits is not kept waiting on its own poller.
 
-    The drain is 403 ``session_audience`` unless the caller opened the session or reads
-    its audience.
+    The drain is 403 ``session_audience`` unless the caller opened the session or is
+    its account and reads it: a drain takes the lines its run was sent.
 
-    Writers retain shared access to the drains of ordinary sessions, but a science
-    chat and the assistant's service session are drained by their opening key alone
-    (403 otherwise), save a chat a CLI began that its starter's canvas switched to the
-    assistant, which the assistant drains. Viewer access is scoped to the opening API
-    key so reading chat does not grant graph-write permission.
+    A science chat and the assistant's service session are drained by their opening
+    key alone (403 otherwise), save a chat a CLI began that its starter's canvas switched
+    to the assistant, which the assistant drains. Viewer access is scoped to the opening
+    API key so reading chat does not grant graph-write permission.
 
     A science chat's queue has one drainer, the provider its starter's canvas names,
     and one live run. For ``claude`` or ``codex`` a drain by the configured assistant's
@@ -592,7 +589,7 @@ async def session_end_route(
     ``status`` non-terminal -- and the inbound queue is drained only after
     the close commits, so a failed end never silently discards undelivered
     steering messages. A second end on an already-closed session is a 409. A
-    session whose audience the caller neither reads nor opened is 403
+    session the caller neither opened nor holds the account of is 403
     ``session_audience``. A science chat is closed by a key that may run on it: its
     opening key, the assistant's or its starter's (403 otherwise); its starter may also
     close it from a browser, which has no key. An end that names

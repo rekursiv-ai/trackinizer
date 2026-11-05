@@ -254,7 +254,7 @@ async def test_an_admin_cannot_reassign_a_run_to_inject_commands(
     )
     direct = await served.http.post(
         f"/api/sessions/{session_id}/inbound",
-        json={"text": "AUDIT_COMMAND", "kind": "run"},
+        json={"text": "AUDIT_COMMAND"},
     )
     routed = await served.http.post(
         "/api/messages",
