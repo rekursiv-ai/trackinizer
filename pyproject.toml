@@ -1,6 +1,6 @@
 # NEVER EDIT THIS FILE!
-# uv sync --all-groups --no-group jax --no-group tf --frozen  # cu132 aka "cuda"
-# uv sync --all-groups --no-group jax --no-group tf --frozen --no-group cuda --extra cpu
+# uv sync --all-groups --frozen  # cu132 aka "cuda"
+# uv sync --all-groups --frozen --no-group cuda --extra cpu
 
 [project]
 name = "trackinizer"
@@ -62,6 +62,63 @@ dependencies = [
     # the model catalog: `wire/chat_commands.py` reads its roles, and
     # `sagent/providers/table.py` loads them from YAML.
     "pyyaml>=6.0.3",
+]
+
+[project.scripts]
+trackinizer = "trackinizer.server.entry:main"
+trax = "trackinizer.trax.cli:main"
+
+[dependency-groups]
+
+# Requirements are floors; uv.lock fixes versions. Never cap a dependency.
+# Public package deltas replace project.dependencies; these groups are monorepo-only.
+
+cuda = [
+    "torch",
+    "torchao",
+    "torchvision",
+]
+
+lint = [
+    "codespell>=2.4.3",
+    "ruff>=0.17.3",
+]
+test = [
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "nodejs-wheel-binaries>=24.19.0",
+    "hypothesis>=6.170.14",
+    "pytest-asyncio>=1.4.1",
+    # Bundles libpq, so pytest-postgresql's autoloaded plugin imports everywhere.
+    "psycopg[binary]>=3.3.6",
+    "pytest-postgresql>=9.1.1",
+    # The server's tests import its packages; CI syncs groups, never extras.
+    "trackinizer[server]",
+    # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
+    "hatchling>=1.33.0",
+]
+typecheck = [
+    "basedpyright>=1.40.2",
+    "pyrefly>=1.4.0",
+    "ty>=0.0.95",
+    "rekursiv-ai-typings>=0.1.11",
+    "hatchling>=1.33.0",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
+]
+"pre-commit" = [
+    "pre-commit>=4.7.0",
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "typecheck"},
+]
+dev = [
+    {include-group = "pre-commit"},
+    {include-group = "debug"},
+]
+debug = [
+    "ipython>=9.18.0",
+    "tqdm>=4.70.1",
 ]
 
 [project.optional-dependencies]
@@ -144,63 +201,6 @@ server = [
     # (`peft>=0.21.0`); only the jina embedders reach it, lazily.
     "peft>=0.21.2",
 ]
-
-[project.scripts]
-trackinizer = "trackinizer.server.entry:main"
-trax = "trackinizer.trax.cli:main"
-
-[dependency-groups]
-# NEVER ADD MORE DEPENDENCIES!
-
-cuda = [
-    "torch",
-    "torchao",
-    "torchvision",
-]
-
-debug = [
-    "ipython>=9.18.0",
-    "tqdm>=4.70.1",
-]
-lint = [
-    "codespell>=2.4.3",
-    "ruff>=0.17.3",
-]
-test = [
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.8.0",
-    "pytest>=9.2.0",
-    "pytest-cov>=7.1.0",
-    "nodejs-wheel-binaries>=24.19.0",
-    "hypothesis>=6.170.14",
-    "pytest-asyncio>=1.4.1",
-    # Bundles libpq, so pytest-postgresql's autoloaded plugin imports everywhere.
-    "psycopg[binary]>=3.3.6",
-    "pytest-postgresql>=9.1.1",
-    # The server's tests import its packages; CI syncs groups, never extras.
-    "trackinizer[server]",
-    # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
-    "hatchling>=1.33.0",
-]
-typecheck = [
-    "basedpyright>=1.40.2",
-    "pyrefly>=1.4.0",
-    "ty>=0.0.95",
-    "rekursiv-ai-typings>=0.1.11",
-    "hatchling>=1.33.0",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
-]
-"pre-commit" = [
-    "pre-commit>=4.7.0",
-    {include-group = "lint"},
-    {include-group = "test"},
-    {include-group = "typecheck"},
-]
-dev = [
-    {include-group = "pre-commit"},
-    {include-group = "debug"},
-]
-
-# NEVER ADD OTHER DEPENDENCY GROUPS: A NEW GROUP SERVES A PROJECT, AS ABOVE.
 
 [project.urls]
 Homepage = "https://www.rekursiv.ai"
