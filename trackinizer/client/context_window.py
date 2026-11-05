@@ -50,6 +50,7 @@ from trackinizer.sagent.session.types import (
     ToolResult,
     UncategorizedToolResult,
     UserMessage,
+    WebBrowserResult,
     WebFetchResult,
     WebSearchResult,
     WriteResult,
@@ -99,6 +100,7 @@ _WORDED: Final = (
     ReadResult,
     WriteResult,
     WebFetchResult,
+    WebBrowserResult,
     AgentSpawnResult,
 )
 
