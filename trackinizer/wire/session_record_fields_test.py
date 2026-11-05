@@ -87,8 +87,8 @@ class TestTheFieldSetIsDerived:
         (``TokenUsage``), and the one whose payload is untyped
         (``UncategorizedRecord``). Everything else carries prose.
         """
-        assert len(_BY_KIND) == 43
-        assert len(SESSION_RECORD_FIELDS) == 39
+        assert len(_BY_KIND) == 44
+        assert len(SESSION_RECORD_FIELDS) == 40
 
 
 # One populated instance per record class, spelled out rather than reflected:
@@ -110,6 +110,7 @@ _SAMPLES: Final[dict[str, TraxRecord]] = {
     "EditResult": EditResult(call_id="c", path="probe"),
     "WebSearchResult": WebSearchResult(call_id="c", query="probe"),
     "WebFetchResult": WebFetchResult(call_id="c", url="probe"),
+    "WebBrowserResult": types.WebBrowserResult(call_id="c", content="probe"),
     "AgentSpawnResult": AgentSpawnResult(call_id="c", prompt="probe"),
     "UncategorizedToolResult": UncategorizedToolResult(call_id="c", content="probe"),
     "GrepResult": types.GrepResult(call_id="c", content="probe"),
