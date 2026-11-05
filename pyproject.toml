@@ -187,7 +187,6 @@ typecheck = [
     "pyrefly>=1.4.0",
     "ty>=0.0.95",
     "rekursiv-ai-typings>=0.1.11",
-    "asyncpg-stubs>=0.32.0",
     "hatchling>=1.33.0",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
 ]
 "pre-commit" = [
