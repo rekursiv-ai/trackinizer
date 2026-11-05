@@ -201,6 +201,11 @@ def test_a_node_name_outside_the_pattern_is_refused(name: str) -> None:
         {"user": "rai-ext-job-1234567890123"},
         {"user": "gj7"},
         {"user": "rai-ext-owner-7"},
+        {"user": "rai-ext-staging-owner-7"},
+        {"user": "rai-ext-Staging-job-7"},
+        {"user": "rai-ext-a-b-job-7"},
+        {"user": "rai-ext-a2345678901-job-7"},
+        {"user": "rai-ext-staging-job-1234567890123"},
         {"port": 0},
         {"port": 65_536},
         {"host": ""},
@@ -216,6 +221,13 @@ def test_a_node_address_refuses_a_bad_field(fields: dict[str, object]) -> None:
 def test_a_jobs_node_user_is_one_a_node_address_accepts(job_id: int) -> None:
     assert job_user(job_id) == f"rai-ext-job-{job_id}"
     assert _node(user=job_user(job_id)).user == job_user(job_id)
+
+
+def test_a_tagged_servers_job_user_is_one_a_node_address_accepts() -> None:
+    user = job_user(7, tag="staging")
+
+    assert user == "rai-ext-staging-job-7"
+    assert _node(user=user).user == user
 
 
 def _grant(**fields: object) -> dict[str, object]:
