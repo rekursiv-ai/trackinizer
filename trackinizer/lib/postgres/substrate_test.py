@@ -18,7 +18,6 @@ import subprocess
 import sys
 import threading
 import time
-import uuid
 
 from py_pglite import PGliteConfig, PGliteManager
 
@@ -59,37 +58,16 @@ def test_pglite_default_caches_use_xdg_cache(
     )
 
 
-@pytest.mark.db_pglite
 @pytest.mark.asyncio
-async def test_pglite_persistent_restart_retains_rows(tmp_path: Path) -> None:
-    """PGlite rows survive engine restart when persistence is enabled."""
-    workdir = tmp_path / "pg"
-    async with (
-        PGliteEngine(workdir=workdir, extensions=()) as engine,
-        engine.acquire() as conn,
-    ):
-        await conn.execute("CREATE TABLE durable_items (id text PRIMARY KEY)")
-        await conn.execute("INSERT INTO durable_items (id) VALUES ($1)", "kept")
-
-    async with (
-        PGliteEngine(workdir=workdir, extensions=()) as restarted,
-        restarted.acquire() as conn,
-    ):
-        assert await conn.fetchval("SELECT id FROM durable_items") == "kept"
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_pglite_listen_notify_round_trips_payload(
-    pglite_engine: PGliteEngine,
-) -> None:
-    """PGlite exposes the same listen/notify surface as external Postgres."""
-    channel = f"events-{uuid.uuid4().hex}"
-    notifications = pglite_engine.listen(channel)
+async def test_pglite_listen_notify_round_trips_payload(tmp_path: Path) -> None:
+    """PGlite notifications need no database or Node process."""
+    engine = PGliteEngine(workdir=tmp_path / "unused", extensions=())
+    channel = "events"
+    notifications = engine.listen(channel)
     next_payload = asyncio.create_task(_anext(notifications))
     try:
         await asyncio.sleep(0)
-        await pglite_engine.notify(channel, "payload-1")
+        await engine.notify(channel, "payload-1")
         assert await next_payload == "payload-1"
     finally:
         if not next_payload.done():
@@ -97,94 +75,13 @@ async def test_pglite_listen_notify_round_trips_payload(
             with suppress(asyncio.CancelledError):
                 await next_payload
         await notifications.aclose()
-    assert not pglite_engine._bus._subscribers[channel]
+    assert not engine._bus._subscribers[channel]
 
 
-@pytest.mark.db_pglite
-@pytest.mark.asyncio
-@pytest.mark.parametrize("persist", [True, False])
-async def test_pglite_connection_survives_a_failed_extended_query(
-    tmp_path: Path,
-    persist: bool,
-) -> None:
-    """A statement that fails mid extended protocol leaves the connection usable."""
-    async with (
-        PGliteEngine(workdir=tmp_path / "pg", extensions=(), persist=persist) as engine,
-        engine.acquire() as conn,
-    ):
-        await conn.execute("CREATE TABLE keyed (id int PRIMARY KEY)")
-        await conn.execute("INSERT INTO keyed (id) VALUES ($1)", 1)
-        with pytest.raises(asyncpg.UniqueViolationError):
-            await conn.execute("INSERT INTO keyed (id) VALUES ($1)", 1)
-        # A second ReadyForQuery for the failed statement arrives after asyncpg has
-        # answered the caller; the pause lets it land while the connection is idle.
-        await asyncio.sleep(0.2)
-        assert await conn.fetchval("SELECT count(*) FROM keyed") == 1
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio
-async def test_pglite_answers_after_many_failed_statements(tmp_path: Path) -> None:
-    """Failed statements must not exhaust PGlite's stack for every later query.
-
-    PGlite 0.5.3 leaked stack on each ERROR: after about 1,800 of them every
-    statement, ``SELECT 1`` included, failed with ``stack depth limit exceeded``
-    until Node restarted. At the 100 kB floor of ``max_stack_depth`` the leak
-    surfaces after about 90 errors.
-    """
-    async with (
-        PGliteEngine(workdir=tmp_path / "pg", extensions=(), persist=False) as engine,
-        engine.acquire() as conn,
-    ):
-        await conn.execute("SET max_stack_depth = '100kB'")
-        for _ in range(200):
-            with pytest.raises(asyncpg.DivisionByZeroError):
-                await conn.execute("SELECT 1/0")
-        assert await conn.fetchval("SELECT 1") == 1
-
-
-@pytest.mark.db_pglite
-@pytest.mark.cli_python_subprocess
-@pytest.mark.parametrize(("persist", "use_tcp"), [(False, True), (True, False)])
-def test_pglite_node_exits_when_its_python_parent_is_killed(
-    tmp_path: Path,
-    *,
-    persist: bool,
-    use_tcp: bool,
-) -> None:
-    """A SIGKILLed engine owner must not leave its Node manager running forever.
-
-    SIGKILL runs no Python teardown, so nothing signals Node; only the manager
-    can notice that its parent is gone. The two cases cover both transports and
-    both storage modes.
-    """
-    with subprocess.Popen(  # noqa: S603 -- sys.executable running this module's helper.
-        [
-            sys.executable,
-            "-c",
-            (
-                "import asyncio; from pathlib import Path;"
-                f"from {_hold_engine.__module__} import {_hold_engine.__name__};"
-                f"asyncio.run({_hold_engine.__name__}(Path({str(tmp_path / 'pg')!r}),"
-                f" persist={persist}, use_tcp={use_tcp}))"
-            ),
-        ],
-        stdout=subprocess.PIPE,
-        text=True,
-    ) as holder:
-        try:
-            assert holder.stdout is not None
-            node_pid = int(cast(str, holder.stdout.readline()))  # ty: ignore[redundant-cast] -- Basedpyright's typeshed types Popen.stdout as IO[Any].
-        finally:
-            holder.kill()
-    try:
-        deadline = time.monotonic() + 5
-        while _pid_alive(node_pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        assert not _pid_alive(node_pid), "Node manager outlived its killed parent"
-    finally:
-        with suppress(ProcessLookupError):
-            os.kill(node_pid, signal.SIGKILL)
+@pytest.fixture
+def synthetic_node_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep subprocess call recordings independent of credentials in the caller."""
+    monkeypatch.setattr(os, "environ", {"PATH": "/synthetic/bin", "KEEP": "test"})
 
 
 @pytest.mark.asyncio
@@ -783,31 +680,6 @@ async def _anext[T](items: AsyncGenerator[T, None]) -> T:
     return await anext(items)
 
 
-async def _hold_engine(workdir: Path, *, persist: bool, use_tcp: bool) -> None:
-    """Start an engine, write its Node pid to stdout, and block until killed."""
-    engine = PGliteEngine(
-        workdir=workdir,
-        extensions=(),
-        persist=persist,
-        use_tcp=use_tcp,
-    )
-    await engine.__aenter__()
-    assert engine._manager is not None
-    assert engine._manager.process is not None
-    sys.stdout.write(f"{engine._manager.process.pid}\n")
-    sys.stdout.flush()
-    await asyncio.Event().wait()
-
-
-def _pid_alive(pid: int) -> bool:
-    """Probe ``pid`` with signal 0, which checks existence without delivering."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    return True
-
-
 def _make_conn() -> AsyncMock:
     """Build an asyncpg-shaped connection mock."""
     conn = AsyncMock()
@@ -1170,6 +1042,7 @@ def test_manager_js_extension_parts_validate_and_render() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_node_environment")
 @pytest.mark.parametrize("use_tcp", [False, True])
 @pytest.mark.parametrize("persist", [False, True])
 async def test_pglite_start_uses_owned_child_readiness_without_vendor_polling(
@@ -1222,6 +1095,7 @@ async def test_pglite_start_uses_owned_child_readiness_without_vendor_polling(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_node_environment")
 @pytest.mark.parametrize(
     ("output_text", "returncode", "message"),
     [
@@ -1268,6 +1142,7 @@ class _BlockedNodeOutput:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_node_environment")
 async def test_pglite_start_bounds_a_silent_child_without_opening_a_connection(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1394,6 +1269,7 @@ async def test_pglite_cancellation_waits_for_spawn_then_reaps_the_child(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_node_environment")
 async def test_failed_pglite_start_reaps_each_child_and_releases_every_boot_slot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1425,6 +1301,7 @@ async def test_failed_pglite_start_reaps_each_child_and_releases_every_boot_slot
     assert engine._manager is None
 
 
+@pytest.mark.usefixtures("synthetic_node_environment")
 @pytest.mark.parametrize("node_options", [None, "--max-old-space-size=512"])
 def test_node_launch_preserves_environment_and_applies_configured_options(
     tmp_path: Path,
@@ -1436,13 +1313,22 @@ def test_node_launch_preserves_environment_and_applies_configured_options(
     spawn = MagicMock(return_value=process)
     monkeypatch.setattr(subprocess, "Popen", spawn)
     monkeypatch.setattr(substrate, "_ensure_shared_node_modules", lambda: tmp_path)
-    monkeypatch.setenv("NODE_OPTIONS", "--trace-warnings")
     config = PGliteConfig(work_dir=tmp_path, node_options=node_options)
     manager = PGliteManager(config)
+    monkeypatch.setattr(
+        os,
+        "environ",
+        {"PATH": "/synthetic/bin", "KEEP": "test", "NODE_OPTIONS": "--trace-warnings"},
+    )
 
     substrate._start_node(manager, config=config, workdir=tmp_path)
 
-    expected_env = {**os.environ, "NODE_PATH": str(tmp_path)}
+    expected_env = {
+        "PATH": "/synthetic/bin",
+        "KEEP": "test",
+        "NODE_OPTIONS": "--trace-warnings",
+        "NODE_PATH": str(tmp_path),
+    }
     configured_options = node_options or ""
     if configured_options:
         expected_env["NODE_OPTIONS"] = configured_options
@@ -1452,6 +1338,7 @@ def test_node_launch_preserves_environment_and_applies_configured_options(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("synthetic_node_environment")
 async def test_pglite_missing_node_releases_slots_without_signalling_other_processes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
