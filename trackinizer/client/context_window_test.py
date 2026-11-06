@@ -37,6 +37,7 @@ from trackinizer.sagent.session.types import (
     ContextCompaction,
     ToolCall,
     UserMessage,
+    WebBrowserResult,
 )
 
 
@@ -635,6 +636,41 @@ class TestTheBudget:
 
 def test_a_text_at_the_cap_is_kept_whole() -> None:
     assert cut_text("x" * CUT_ABOVE) == "x" * CUT_ABOVE
+
+
+def test_a_browser_result_weighs_its_content() -> None:
+    record = WebBrowserResult(call_id="b1", action="snapshot", content="p" * 50_000)
+
+    assert weight(record) == 50_000
+
+
+def test_a_huge_browser_result_keeps_its_head_and_tail() -> None:
+    content = "h" * 25_000 + "t" * 25_000
+    records: list[SessionRecord] = [
+        UserMessage(content="open it", timestamp=_at(1)),
+        ToolCall(
+            call_id="b1",
+            name="browser",
+            arguments={"action": "snapshot"},
+            timestamp=_at(2),
+        ),
+        WebBrowserResult(
+            call_id="b1",
+            action="snapshot",
+            content=content,
+            timestamp=_at(3),
+        ),
+    ]
+
+    loaded = cli_records(
+        window([_segment(0, "claude", records)]),
+        "claude",
+        seq=_seven,
+    )
+
+    [result] = [r for r in loaded.records if isinstance(r, WebBrowserResult)]
+    assert result.content == cut_text(content)
+    assert len(result.content.encode()) < len(content)
 
 
 def test_a_claude_target_reads_the_summary_as_claude_flags_its_own() -> None:
