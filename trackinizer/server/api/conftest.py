@@ -14,10 +14,8 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Final, override
-from unittest.mock import (
-    DEFAULT,  # pyright: ignore[reportAny] -- unittest.mock stubs DEFAULT as Any.
-)
+from typing import TYPE_CHECKING, Final, cast, override
+from unittest import mock
 
 import uuid
 
@@ -91,7 +89,7 @@ class _StateEntries(MutableMapping[str, object]):
 
     @override
     def __getitem__(self, key: str) -> object:
-        return self._state[key]
+        return cast(object, self._state[key])
 
     @override
     def __setitem__(self, key: str, value: object) -> None:
@@ -139,7 +137,7 @@ def answer_account_active(engine: FakeEngine) -> None:
         # ``conn.fetchval.return_value = "Issue"`` still drives ``lookup_kind``.
         if "FROM users" in sql and "status = 'active'" in sql:
             return 1
-        return DEFAULT  # pyright: ignore[reportAny] -- unittest.mock stubs type DEFAULT as Any.
+        return cast(object, mock.DEFAULT)
 
     conn.fetchval.side_effect = fetchval
 

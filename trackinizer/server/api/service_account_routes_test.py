@@ -203,7 +203,8 @@ class TestCreate:
     ) -> None:
         client, _store, engine = route_client
         _admin()
-        engine.conn.fetchrow = AsyncMock(return_value=_account_row())
+        engine.conn.fetchrow.side_effect = None
+        engine.conn.fetchrow.return_value = _account_row()
         response = client.post(_ACCOUNTS, json={"name": "campaign", "role": "writer"})
         assert response.status_code == 201, response.text
         assert from_plain(response.json(), dict[str, object]) == {
@@ -217,7 +218,10 @@ class TestCreate:
             "staff": False,
         }
         call = engine.conn.fetchrow.call_args
-        sql = " ".join(str(call.args[0]).split())
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        sql = " ".join(sql.split())
         assert "INSERT INTO users" in sql
         assert "ON CONFLICT (email) DO NOTHING" in sql
         assert call.args[2:] == ("campaign@service.invalid", "campaign", "writer")
@@ -395,9 +399,13 @@ class TestMint:
         _admin()
         _script_mint(engine, account=_account_row())
         client.post(_TOKENS, json={"name": "host"})
-        sql = " ".join(str(engine.conn.fetchrow.call_args.args[0]).split())
+        call = engine.conn.fetchrow.call_args
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        sql = " ".join(sql.split())
         assert sql.endswith("FROM users WHERE id = $1 FOR SHARE")
-        assert engine.conn.fetchrow.call_args.args[1] == _ACCOUNT_ID
+        assert call.args[1] == _ACCOUNT_ID
         sqls = executed_sql(engine.conn)
         assert sqls[0] == "BEGIN"
         assert sqls[-1] == "COMMIT"
@@ -646,7 +654,7 @@ class TestRevoke:
         _admin()
         secret, _prefix = generate_token()
         engine.conn.fetchrow = AsyncMock(return_value=_account_row())
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         store.remember_bearer_identity(
             secret,
             AuthIdentity(

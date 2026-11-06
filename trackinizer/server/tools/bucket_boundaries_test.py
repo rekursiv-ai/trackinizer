@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 import dataclasses
 import itertools
+import struct
 
 import pytest
 
@@ -32,7 +34,7 @@ from trackinizer.server.tools.bucket_boundaries import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Callable, Generator, Mapping
     from pathlib import Path
 
 
@@ -97,6 +99,147 @@ def test_cost_callable_reweights_boundaries() -> None:
 def test_edges_round_up_to_the_pad_multiple() -> None:
     edges = optimal_boundaries({100: 5, 700: 1}, 2, pad_multiple=128)
     assert edges == [128, 768]
+
+
+def test_fill_evaluates_cost_once_per_sorted_padded_edge() -> None:
+    calls: list[int] = []
+
+    def cost(edge: int) -> float:
+        calls.append(edge)
+        return float(edge * edge)
+
+    table = bucket_boundaries._fill(
+        {9: 1, 1: 7, 3: 2, 6: 3},
+        3,
+        cost=cost,
+        pad_multiple=4,
+    )
+
+    assert calls == [4, 4, 8, 12]
+    assert bucket_boundaries._best_edges(table, 3) == [4, 8, 12]
+    assert table.dp[2][3] == (7 + 2) * 4**2 + 3 * 8**2 + 12**2
+
+
+def test_fill_preserves_fractional_cost_arithmetic_and_every_cut() -> None:
+    assert bucket_boundaries._fill(
+        {1: 7, 2: 2, 3: 9, 4: 1},
+        3,
+        cost=lambda edge: edge / 10,
+        pad_multiple=1,
+    ) == bucket_boundaries._Table(
+        edges=[1, 2, 3, 4],
+        dp=[
+            {0: 7 * 0.1, 1: 9 * 0.2, 2: 18 * 0.3, 3: 19 * 0.4},
+            {
+                1: 7 * 0.1 + 2 * 0.2,
+                2: 7 * 0.1 + 11 * 0.3,
+                3: 7 * 0.1 + 12 * 0.4,
+            },
+            {
+                2: (7 * 0.1 + 2 * 0.2) + 9 * 0.3,
+                3: (7 * 0.1 + 11 * 0.3) + 0.4,
+            },
+        ],
+        cut=[{}, {1: 0, 2: 0, 3: 0}, {2: 1, 3: 2}],
+    )
+
+
+@pytest.mark.parametrize("pad_multiple", [1, 4])
+@pytest.mark.parametrize("count_scale", [1, 10**100])
+@pytest.mark.parametrize(
+    "costs",
+    [
+        (1, 2, 3, 4),
+        (0.1, 0.2, 0.3, 0.4),
+        (1.0, 1.0, 1.0, 1.0),
+        (3.0, -2.0, 7.0, -1.0),
+        (0.0, -0.0, 0.0, -0.0),
+        (float("inf"), 2.0, float("-inf"), 4.0),
+        (1.0, float("nan"), 3.0, 4.0),
+    ],
+)
+def test_fill_preserves_every_reference_cell_type_bit_and_cut(
+    costs: tuple[float, ...],
+    count_scale: int,
+    pad_multiple: int,
+) -> None:
+    freq = {9: count_scale, 1: 7 * count_scale, 3: 2 * count_scale, 6: 9 * count_scale}
+    padded = [-(-length // pad_multiple) * pad_multiple for length in sorted(freq)]
+    curve = dict(zip(padded, costs, strict=True))
+    expected = _reference_fill(
+        freq,
+        5,
+        cost=curve.__getitem__,
+        pad_multiple=pad_multiple,
+    )
+    actual = bucket_boundaries._fill(
+        freq,
+        5,
+        cost=curve.__getitem__,
+        pad_multiple=pad_multiple,
+    )
+    assert actual.edges == expected.edges
+    assert actual.cut == expected.cut
+    assert len(actual.dp) == len(expected.dp)
+    for actual_row, expected_row in zip(actual.dp, expected.dp, strict=True):
+        assert actual_row.keys() == expected_row.keys()
+        for column, expected_value in expected_row.items():
+            value = actual_row[column]
+            assert type(value) is type(expected_value)
+            if isinstance(expected_value, float):
+                assert struct.pack("!d", value) == struct.pack("!d", expected_value)
+            else:
+                assert value == expected_value
+    for k in range(1, 6):
+        assert bucket_boundaries._best_edges(
+            actual,
+            k,
+        ) == bucket_boundaries._best_edges(
+            expected,
+            k,
+        )
+
+
+def _reference_fill(
+    freq: Mapping[int, int],
+    max_k: int,
+    *,
+    cost: Callable[[int], float],
+    pad_multiple: int,
+) -> bucket_boundaries._Table:
+    # Keep the original tuple-min arithmetic independent of the optimized loop.
+    lengths = sorted(freq)
+    n = len(lengths)
+    through = list(itertools.accumulate(freq[length] for length in lengths))
+    edges = [-(-length // pad_multiple) * pad_multiple for length in lengths]
+    dp = [{j: through[j] * cost(edges[j]) for j in range(n)}]
+    cut: list[dict[int, int]] = [{}]
+    for b in range(1, min(max_k, n)):
+        prev = dp[-1]
+        row: dict[int, float] = {}
+        cut_row: dict[int, int] = {}
+        for j in range(b, n):
+            row[j], cut_row[j] = min(
+                (prev[i] + (through[j] - through[i]) * cost(edges[j]), i)
+                for i in range(b - 1, j)
+            )
+        dp.append(row)
+        cut.append(cut_row)
+    return bucket_boundaries._Table(edges=edges, dp=dp, cut=cut)
+
+
+def test_cold_derive_edges_fills_the_dp_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    fill = Mock(wraps=bucket_boundaries._fill)
+    monkeypatch.setattr(bucket_boundaries, "_fill", fill)
+    bucket_boundaries._cached_derive_edges.cache_clear()
+
+    assert derive_edges(
+        QWEN3_4B,
+        {32: 7, 96: 2, 8_192: 1},
+        min_buckets=3,
+        max_buckets=3,
+    ) == (32, 96, 8_192)
+    assert fill.call_count == 1
 
 
 def test_empty_freq_rejected() -> None:
@@ -348,15 +491,17 @@ def test_derive_edges_share_a_prefix_and_diverge_in_the_tail() -> None:
     assert edges[QWEN3_0P6B][:6] == edges[QWEN3_8B][:6]
 
 
-def test_derive_edges_appends_the_safety_tail() -> None:
-    """The 8192 tail is present even though the histogram is clamped to it."""
-    edges = derive_edges(QWEN3_4B, _corpus(), min_buckets=10, max_buckets=20)
+@pytest.mark.parametrize("histogram", [{32: 5}, {32: 5, 8_192: 1}])
+def test_derive_edges_appends_the_safety_tail(histogram: dict[int, int]) -> None:
+    """The safety tail is appended when absent and preserved when already present."""
+    edges = derive_edges(QWEN3_4B, histogram, min_buckets=10, max_buckets=20)
     assert edges[-1] == 8_192
+    assert edges.count(8_192) == 1
 
 
 def test_derive_edges_honors_the_bucket_count_clamp() -> None:
     """The chosen k is clamped into ``[min_buckets, max_buckets]``."""
-    hist = _corpus()
+    hist = dict.fromkeys([*range(32, 20 * 32, 32), 8_192], 1)
     few = derive_edges(QWEN3_4B, hist, min_buckets=3, max_buckets=5)
     many = derive_edges(QWEN3_4B, hist, min_buckets=15, max_buckets=20)
     assert len(few) <= 5

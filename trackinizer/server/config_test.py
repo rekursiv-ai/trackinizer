@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 import argparse
+import re
 
 import pytest
 
@@ -29,6 +30,8 @@ from trackinizer.server.config import (
     parse_terminal_stun,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.wire.wire_terminals import MAX_ICE_SERVERS
 
 
 if TYPE_CHECKING:
@@ -104,6 +107,8 @@ class TestPureFunctions:
             == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata-ephemeral"
         )
         assert a._persist is False
+        assert a._own_workdir is True
+        assert b._own_workdir is True
 
     def test_ephemeral_explicit_datadir_wins(
         self,
@@ -116,6 +121,7 @@ class TestPureFunctions:
         engine = build_engine(Config(ephemeral=True, datadir=chosen))
         assert isinstance(engine, PGliteEngine)
         assert engine._workdir == chosen
+        assert engine._own_workdir is False
 
     def test_persistent_uses_shared_default_datadir(
         self,
@@ -128,12 +134,15 @@ class TestPureFunctions:
         assert isinstance(engine, PGliteEngine)
         assert engine._workdir == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata"
         assert engine._persist is True
+        assert engine._own_workdir is False
 
     def testbuild_engine_pg(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pg")
         monkeypatch.setenv("TRACKINIZER_DSN", "postgresql:///x")
         engine = build_engine()
         assert isinstance(engine, PostgresEngine)
+        assert engine._dsn == "postgresql:///x"
+        assert engine.listen_channel == NOTIFY_CHANNEL
 
     def testbuild_engine_pg_missing_dsn(
         self,
@@ -141,7 +150,10 @@ class TestPureFunctions:
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pg")
         monkeypatch.setenv("TRACKINIZER_DSN", "")
-        with pytest.raises(ConfigError):
+        with pytest.raises(
+            ConfigError,
+            match=r"^--engine pg requires --dsn \(or \$TRACKINIZER_DSN\)\.$",
+        ):
             build_engine()
 
     def testbuild_engine_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -421,7 +433,13 @@ class TestAssistant:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Every key of the account is the assistant's, so it must be a program's."""
-        with pytest.raises(ConfigError, match=r"service account.*@service\.invalid"):
+        with pytest.raises(
+            ConfigError,
+            match=(
+                r"^--assistant \(TRACKINIZER_ASSISTANT\) must name a service account, "
+                r"NAME@service\.invalid, got "
+            ),
+        ):
             Config.from_args(_server_args(assistant=raw))
         monkeypatch.setenv("TRACKINIZER_ASSISTANT", raw)
         with pytest.raises(ConfigError, match="TRACKINIZER_ASSISTANT"):
@@ -593,6 +611,10 @@ class TestTerminalStun:
         )
         assert Config().terminal_stun == ()
 
+    def test_the_maximum_number_of_stun_servers_is_allowed(self) -> None:
+        servers = tuple(f"stun:host{index}" for index in range(MAX_ICE_SERVERS))
+        assert parse_terminal_stun(", ".join(servers)) == servers
+
     @pytest.mark.parametrize(
         "value",
         [
@@ -603,7 +625,11 @@ class TestTerminalStun:
         ],
     )
     def test_anything_but_a_few_stun_urls_is_a_config_error(self, value: str) -> None:
-        with pytest.raises(ConfigError, match="TRACKINIZER_TERMINAL_STUN"):
+        expected = (
+            f"TRACKINIZER_TERMINAL_STUN takes at most {MAX_ICE_SERVERS} "
+            f"comma separated stun:HOST[:PORT] URLs, got {value!r}"
+        )
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
             parse_terminal_stun(value)
 
     def test_both_ways_to_build_a_config_read_the_environment(

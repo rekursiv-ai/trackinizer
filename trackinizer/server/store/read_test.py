@@ -57,7 +57,7 @@ class TestStoreReads:
         cursor_created = datetime(2026, 1, 1, tzinfo=UTC)
         # The cursor lookup resolves after_id's ``created``.
         conn.fetchval = AsyncMock(return_value=cursor_created)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.list_changes(after_id=cursor_id)
         main = next(
             c
@@ -108,8 +108,9 @@ class TestStoreReads:
         store, _engine = make_store(conn)
         since = datetime(2026, 1, 1, tzinfo=UTC)
         after = new_uuid()
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.what_changed_for_anyone(since, after_id=after)
+        assert conn.fetch.call_args is not None
         sql = conn.fetch.call_args.args[0]
         assert isinstance(sql, str)
         assert "(c.created, c.id) > ($1, $2)" in sql

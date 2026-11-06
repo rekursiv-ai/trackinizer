@@ -170,9 +170,7 @@ class TestPureFunctions:
         """
         rid = new_uuid()
         conn = make_conn()
-        conn.fetch = AsyncMock(
-            return_value=[{"id": rid, "kind": "CodeChange"}],
-        )
+        conn.fetch.return_value = [{"id": rid, "kind": "CodeChange"}]
         await validate_list_references(
             cast(Conn, conn),
             [rid],

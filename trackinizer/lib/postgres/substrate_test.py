@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import asyncio
 import hashlib
+import io
 import os
 import signal
 import subprocess
@@ -246,9 +247,10 @@ async def test_pglite_acquire_restarts_manager_when_node_died(tmp_path: Path) ->
             MagicMock(return_value=fresh_manager),
         )
         monkeypatch.setattr(
-            "trackinizer.lib.postgres.substrate._drain_node_stdout",
+            "trackinizer.lib.postgres.substrate._start_node",
             MagicMock(),
         )
+        monkeypatch.setattr(substrate, "_stop_node", stop)
         monkeypatch.setattr(
             "trackinizer.lib.postgres.substrate._ensure_shared_node_modules",
             MagicMock(),
@@ -259,7 +261,7 @@ async def test_pglite_acquire_restarts_manager_when_node_died(tmp_path: Path) ->
 
     assert engine._manager is fresh_manager
     assert engine._conn is fresh_conn
-    stop.assert_called()
+    stop.assert_called_once_with(dead_manager)
 
 
 @pytest.mark.asyncio
@@ -413,7 +415,10 @@ class _InvertedSubstrate(SourceFileLoader):
         return compile(Path(self.path).read_bytes(), substrate.__file__, "exec")
 
 
-def test_install_lock_invariant_rejects_inverted_constants(tmp_path: Path) -> None:
+def test_install_lock_invariant_rejects_inverted_constants(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     stale = "_INSTALL_LOCK_STALE_SECONDS: Final = 900.0"
     source = Path(substrate.__file__).read_text()
     assert stale in source
@@ -422,12 +427,14 @@ def test_install_lock_invariant_rejects_inverted_constants(tmp_path: Path) -> No
     loader = _InvertedSubstrate("substrate_inverted", str(copy))
     spec = util.spec_from_loader("substrate_inverted", loader)
     assert spec is not None
+    module = util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
 
     with pytest.raises(
         RuntimeError,
         match=r"^PGlite install lock stale window must exceed the install timeout$",
     ):
-        loader.exec_module(util.module_from_spec(spec))
+        loader.exec_module(module)
 
 
 def test_install_lock_reclaimed_when_stale(tmp_path: Path) -> None:
@@ -710,7 +717,10 @@ async def test_unowned_workdir_kept_on_exit(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_pglite_exit_terminates_client_socket(tmp_path: Path) -> None:
+async def test_pglite_exit_terminates_client_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """PGlite shutdown does not wait on asyncpg's broken close handshake."""
     engine = PGliteEngine(workdir=tmp_path / "scratch", extensions=())
     close = AsyncMock()
@@ -718,14 +728,15 @@ async def test_pglite_exit_terminates_client_socket(tmp_path: Path) -> None:
     conn = MagicMock(close=close, terminate=terminate)
     engine._conn = cast("asyncpg.Connection[asyncpg.Record]", conn)
     stop = MagicMock()
-    manager = MagicMock(stop=stop)
+    manager = MagicMock()
     engine._manager = cast(PGliteManager, manager)
+    monkeypatch.setattr(substrate, "_stop_node", stop)
 
     await engine.__aexit__()
 
     terminate.assert_called_once_with()
     close.assert_not_awaited()
-    stop.assert_called_once_with()
+    stop.assert_called_once_with(manager)
 
 
 @pytest.mark.asyncio
@@ -842,7 +853,7 @@ async def test_pglite_start_once_tcp_configures_port_and_manager(
     monkeypatch.setattr(substrate, "_pick_free_port", lambda: 54_321)
     monkeypatch.setattr(substrate, "PGliteManager", make_manager)
     monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
-    monkeypatch.setattr(substrate, "_drain_node_stdout", MagicMock())
+    monkeypatch.setattr(substrate, "_start_node", start)
     monkeypatch.setattr(engine, "_open_conn", AsyncMock(return_value=_make_conn()))
 
     await engine._start_once(tmp_path)
@@ -852,7 +863,7 @@ async def test_pglite_start_once_tcp_configures_port_and_manager(
     assert config.use_tcp is True
     assert config.tcp_port == 54_321
     assert engine._manager is manager
-    start.assert_called_once_with()
+    start.assert_called_once_with(manager, config=config, workdir=tmp_path)
     assert (tmp_path / "pglite_manager.js").read_text().find("54321") >= 0
 
 
@@ -975,6 +986,7 @@ async def test_postgres_enter_configures_pool_listener_and_exit(
     await engine.__aexit__()
     listener_close.assert_awaited_once_with()
     pool_close.assert_awaited_once_with()
+    assert engine._listener is None
 
 
 def test_postgres_on_notify_publishes_string_payload() -> None:
@@ -1000,7 +1012,7 @@ def test_postgres_acquire_requires_entered_engine() -> None:
 
 @pytest.mark.asyncio
 async def test_postgres_exit_requires_pool() -> None:
-    with pytest.raises(ValueError, match=r"Expected self\._pool"):
+    with pytest.raises(ValueError, match=r"^Expected self\._pool is not None\.$"):
         await PostgresEngine(
             "postgresql:///unused",
             listen_channel="updates",
@@ -1065,22 +1077,11 @@ async def test_local_bus_removes_subscriber_when_closed() -> None:
     assert not bus._subscribers["events"]
 
 
-def test_drain_node_stdout_handles_missing_and_failing_streams(
+@pytest.mark.parametrize("read_error", [OSError("closed"), ValueError("closed")])
+def test_drain_node_stdout_reports_read_failures_and_drains_to_eof(
     monkeypatch: pytest.MonkeyPatch,
+    read_error: OSError | ValueError,
 ) -> None:
-    manager = PGliteManager.__new__(PGliteManager)
-    monkeypatch.setattr(manager, "process", None, raising=False)
-    substrate._drain_node_stdout(manager)
-
-    no_stdout = PGliteManager.__new__(PGliteManager)
-    monkeypatch.setattr(
-        no_stdout,
-        "process",
-        MagicMock(stdout=None),
-        raising=False,
-    )
-    substrate._drain_node_stdout(no_stdout)
-
     class Thread:
         def __init__(self) -> None:
             self.started = False
@@ -1092,37 +1093,29 @@ def test_drain_node_stdout_handles_missing_and_failing_streams(
     thread = Thread()
 
     def make_thread(*, target: Callable[[], None], daemon: bool) -> Thread:
-        del daemon
+        assert daemon
         targets.append(target)
         return thread
 
     monkeypatch.setattr(threading, "Thread", make_thread)
-    readline = MagicMock(side_effect=OSError("closed"))
+    readline = MagicMock(side_effect=read_error)
     stdout = MagicMock(readline=readline)
-    manager = PGliteManager.__new__(PGliteManager)
-    monkeypatch.setattr(
-        manager,
-        "process",
-        MagicMock(stdout=stdout),
-        raising=False,
-    )
-    substrate._drain_node_stdout(manager)
+    failed = substrate._drain_node_stdout(stdout)
     assert thread.started
     targets.pop()()
     readline.assert_called_once_with()
+    assert failed.changed.is_set()
+    assert not failed.ready
+    assert failed.tail == "closed"
 
     complete_readline = MagicMock(side_effect=["line", ""])
     complete = MagicMock(readline=complete_readline)
-    manager = PGliteManager.__new__(PGliteManager)
-    monkeypatch.setattr(
-        manager,
-        "process",
-        MagicMock(stdout=complete),
-        raising=False,
-    )
-    substrate._drain_node_stdout(manager)
+    finished = substrate._drain_node_stdout(complete)
     targets.pop()()
     assert complete_readline.call_count == 2
+    assert finished.changed.is_set()
+    assert not finished.ready
+    assert finished.tail == "line"
 
 
 def test_install_wait_retries_until_ready(
@@ -1174,6 +1167,360 @@ def test_manager_js_extension_parts_validate_and_render() -> None:
     assert substrate._manager_js_extension_parts(()) == ("", "{}")
     with pytest.raises(ValueError, match="unknown pglite extension"):
         substrate._manager_js_extension_parts(("missing",))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_tcp", [False, True])
+@pytest.mark.parametrize("persist", [False, True])
+async def test_pglite_start_uses_owned_child_readiness_without_vendor_polling(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    use_tcp: bool,
+    persist: bool,
+) -> None:
+    output = io.StringIO("loading wasm\nServer started on socket test\n")
+    process = MagicMock(stdout=output, poll=MagicMock(return_value=None))
+    spawn = MagicMock(return_value=process)
+    vendor_start = MagicMock(side_effect=AssertionError("vendor startup must not run"))
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(PGliteManager, "start", vendor_start)
+    monkeypatch.setattr(substrate, "_ensure_shared_node_modules", lambda: tmp_path)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    monkeypatch.setattr(substrate, "_pick_free_port", lambda: 54_321)
+    connection = _make_conn()
+    handshake = AsyncMock(return_value=connection)
+    engine = PGliteEngine(
+        workdir=tmp_path,
+        extensions=("pgvector",),
+        persist=persist,
+        use_tcp=use_tcp,
+    )
+    monkeypatch.setattr(engine, "_open_conn", handshake)
+    cwd = Path.cwd()
+    (tmp_path / "package.json").write_text('{"type":"module"}\n')
+
+    await engine._start_once(tmp_path)
+
+    assert (tmp_path / "package.json").read_text() == '{"type":"commonjs"}\n'
+    vendor_start.assert_not_called()
+    assert Path.cwd() == cwd
+    assert engine._conn is connection
+    handshake.assert_awaited_once_with()
+    assert spawn.call_count == 1
+    assert spawn.call_args.args == (["node", "pglite_manager.js"],)
+    assert spawn.call_args.kwargs["text"] is True
+    assert spawn.call_args.kwargs["cwd"] == tmp_path
+    assert spawn.call_args.kwargs["start_new_session"] is True
+    assert spawn.call_args.kwargs["stdout"] == subprocess.PIPE
+    assert spawn.call_args.kwargs["stderr"] == subprocess.STDOUT
+    script = (tmp_path / "pglite_manager.js").read_text()
+    assert ("dataDir:" in script) is persist
+    assert "@electric-sql/pglite-pgvector" in script
+    assert ("54321" in script) is use_tcp
+    output.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("output_text", "returncode", "message"),
+    [
+        ("WASM boot failed\n", 13, "WASM boot failed"),
+        ("WASM boot failed\n", None, "WASM boot failed"),
+        ("Server started on socket test\n", 13, "process died during startup"),
+    ],
+)
+async def test_pglite_start_rejects_eof_or_death_without_live_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    output_text: str,
+    returncode: int | None,
+    message: str,
+) -> None:
+    output = io.StringIO(output_text)
+    process = MagicMock(stdout=output, poll=MagicMock(return_value=returncode))
+    monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=process))
+    monkeypatch.setattr(
+        PGliteManager,
+        "start",
+        MagicMock(side_effect=AssertionError("vendor startup must not run")),
+    )
+    monkeypatch.setattr(substrate, "_ensure_shared_node_modules", lambda: tmp_path)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    engine = PGliteEngine(workdir=tmp_path, extensions=())
+    handshake = AsyncMock()
+    monkeypatch.setattr(engine, "_open_conn", handshake)
+
+    with pytest.raises(RuntimeError, match=message):
+        await engine._start_once(tmp_path)
+
+    handshake.assert_not_awaited()
+    output.close()
+
+
+class _BlockedNodeOutput:
+    def __init__(self) -> None:
+        self.release = threading.Event()
+
+    def readline(self) -> str:
+        self.release.wait(timeout=2)
+        return ""
+
+
+@pytest.mark.asyncio
+async def test_pglite_start_bounds_a_silent_child_without_opening_a_connection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = _BlockedNodeOutput()
+    config = PGliteConfig(work_dir=tmp_path, timeout=1)
+    config.timeout = 0
+    process = MagicMock(stdout=output, poll=MagicMock(return_value=None))
+    monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=process))
+    monkeypatch.setattr(substrate, "PGliteConfig", MagicMock(return_value=config))
+    monkeypatch.setattr(
+        PGliteManager,
+        "start",
+        MagicMock(side_effect=AssertionError("vendor startup must not run")),
+    )
+    monkeypatch.setattr(substrate, "_ensure_shared_node_modules", lambda: tmp_path)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    engine = PGliteEngine(workdir=tmp_path, extensions=())
+    handshake = AsyncMock()
+    monkeypatch.setattr(engine, "_open_conn", handshake)
+
+    try:
+        with pytest.raises(RuntimeError, match="startup timeout"):
+            await engine._start_once(tmp_path)
+    finally:
+        output.release.set()
+
+    handshake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("force_kill", [False, True])
+async def test_pglite_shutdown_reaps_only_its_owned_process_group(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    force_kill: bool,
+) -> None:
+    output = io.StringIO()
+    wait = MagicMock(
+        side_effect=[subprocess.TimeoutExpired("node", 5), 0] if force_kill else [0],
+    )
+    process = MagicMock(pid=12_345, stdout=output, wait=wait)
+    manager = PGliteManager()
+    monkeypatch.setattr(manager, "process", process)
+    vendor_stop = MagicMock(side_effect=AssertionError("vendor cleanup must not run"))
+    monkeypatch.setattr(manager, "stop", vendor_stop)
+    killpg = MagicMock()
+    monkeypatch.setattr(os, "killpg", killpg)
+    engine = PGliteEngine(workdir=tmp_path, extensions=())
+    engine._manager = manager
+
+    await engine._shutdown()
+
+    expected_signals = (
+        [signal.SIGTERM, signal.SIGKILL] if force_kill else [signal.SIGTERM]
+    )
+    assert [call.args for call in killpg.call_args_list] == [
+        (12_345, each) for each in expected_signals
+    ]
+    assert wait.call_count == (2 if force_kill else 1)
+    assert engine._manager is None
+    assert manager.process is None
+    assert output.closed
+    vendor_stop.assert_not_called()
+
+
+def test_node_stdout_readiness_keeps_diagnostics_bounded_and_drains_to_eof() -> None:
+    output = substrate._NodeOutput()
+    stdout = io.StringIO(
+        "Server started on socket test\n" + "x" * 8000 + "\nlast line\n",
+    )
+
+    substrate._consume_node_stdout(stdout, output=output)
+
+    assert output.ready
+    assert output.changed.is_set()
+    assert len(output.tail) == 4000
+    assert output.tail.endswith("\nlast line\n")
+    assert stdout.read() == ""
+    stdout.close()
+
+
+@pytest.mark.asyncio
+async def test_pglite_cancellation_waits_for_spawn_then_reaps_the_child(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started = asyncio.Event()
+    release = threading.Event()
+    loop = asyncio.get_running_loop()
+    output = io.StringIO()
+    wait = MagicMock(return_value=0)
+    process = MagicMock(pid=12_345, stdout=output, wait=wait)
+
+    def start(manager: PGliteManager, *, config: PGliteConfig, workdir: Path) -> None:
+        del config, workdir
+        monkeypatch.setattr(manager, "process", process)
+        loop.call_soon_threadsafe(started.set)
+        assert release.wait(timeout=2)
+
+    monkeypatch.setattr(substrate, "_start_node", start)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    monkeypatch.setattr(os, "killpg", MagicMock())
+    engine = PGliteEngine(workdir=tmp_path, extensions=())
+    handshake = AsyncMock()
+    monkeypatch.setattr(engine, "_open_conn", handshake)
+    task = asyncio.create_task(engine._start_once(tmp_path))
+    try:
+        await started.wait()
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done(), "spawn must finish before cancellation cleanup"
+    finally:
+        release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert engine._manager is None
+    assert output.closed
+    wait.assert_called_once_with(timeout=5)
+    handshake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_failed_pglite_start_reaps_each_child_and_releases_every_boot_slot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outputs = [io.StringIO("WASM trap\n") for _ in range(5)]
+    waits = [MagicMock(return_value=13) for _ in range(5)]
+    processes = [
+        MagicMock(pid=12_345 + i, stdout=output, wait=wait, poll=lambda: 13)
+        for i, (output, wait) in enumerate(zip(outputs, waits, strict=True))
+    ]
+    monkeypatch.setattr(subprocess, "Popen", MagicMock(side_effect=processes))
+    monkeypatch.setattr(substrate, "_ensure_shared_node_modules", lambda: tmp_path)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    slot = substrate._BootSlot(path=tmp_path / "slot", token="test-token")  # noqa: S106 -- Fixed ownership token in an isolated fixture.
+    monkeypatch.setattr(substrate, "_acquire_boot_slot", MagicMock(return_value=slot))
+    released = MagicMock()
+    monkeypatch.setattr(substrate, "_release_boot_slot", released)
+    monkeypatch.setattr(os, "killpg", MagicMock())
+    engine = PGliteEngine(workdir=tmp_path, extensions=())
+
+    with pytest.raises(RuntimeError, match="failed to start after 5 attempts"):
+        await engine._start_with_retries()
+
+    assert released.call_count == 5
+    assert all(call.args == (slot,) for call in released.call_args_list)
+    for wait, output in zip(waits, outputs, strict=True):
+        wait.assert_called_once_with(timeout=5)
+        assert output.closed
+    assert engine._manager is None
+
+
+@pytest.mark.parametrize("node_options", [None, "--max-old-space-size=512"])
+def test_node_launch_preserves_environment_and_applies_configured_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    node_options: str | None,
+) -> None:
+    output = io.StringIO("Server started on socket test\n")
+    process = MagicMock(stdout=output, poll=MagicMock(return_value=None))
+    spawn = MagicMock(return_value=process)
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(substrate, "_ensure_shared_node_modules", lambda: tmp_path)
+    monkeypatch.setenv("NODE_OPTIONS", "--trace-warnings")
+    config = PGliteConfig(work_dir=tmp_path, node_options=node_options)
+    manager = PGliteManager(config)
+
+    substrate._start_node(manager, config=config, workdir=tmp_path)
+
+    expected_env = {**os.environ, "NODE_PATH": str(tmp_path)}
+    configured_options = node_options or ""
+    if configured_options:
+        expected_env["NODE_OPTIONS"] = configured_options
+    assert spawn.call_args.kwargs["env"] == expected_env
+    assert manager.process is process
+    output.close()
+
+
+@pytest.mark.asyncio
+async def test_pglite_missing_node_releases_slots_without_signalling_other_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spawn = MagicMock(side_effect=FileNotFoundError("node missing"))
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(substrate, "_ensure_shared_node_modules", lambda: tmp_path)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    slot = substrate._BootSlot(path=tmp_path / "slot", token="test-token")  # noqa: S106 -- Fixed ownership token in an isolated fixture.
+    monkeypatch.setattr(substrate, "_acquire_boot_slot", MagicMock(return_value=slot))
+    released = MagicMock()
+    monkeypatch.setattr(substrate, "_release_boot_slot", released)
+    killpg = MagicMock()
+    monkeypatch.setattr(os, "killpg", killpg)
+    engine = PGliteEngine(workdir=tmp_path, extensions=())
+
+    with pytest.raises(
+        RuntimeError,
+        match="failed to start after 5 attempts",
+    ) as failed:
+        await engine._start_with_retries()
+
+    assert isinstance(failed.value.__cause__, FileNotFoundError)
+    assert spawn.call_count == 5
+    assert released.call_count == 5
+    assert engine._manager is None
+    killpg.assert_not_called()
+
+
+@pytest.mark.parametrize("force_kill", [False, True])
+def test_owned_node_cleanup_without_process_group_support(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    force_kill: bool,
+) -> None:
+    wait = MagicMock(
+        side_effect=[subprocess.TimeoutExpired("node", 5), 0] if force_kill else [0],
+    )
+    terminate = MagicMock()
+    kill = MagicMock()
+    process = MagicMock(wait=wait, terminate=terminate, kill=kill)
+    manager = PGliteManager()
+    monkeypatch.setattr(manager, "process", process)
+    monkeypatch.delattr(os, "killpg", raising=False)
+
+    substrate._stop_node(manager)
+
+    terminate.assert_called_once_with()
+    assert kill.call_count == int(force_kill)
+    assert [call.kwargs for call in wait.call_args_list] == [
+        {"timeout": 5},
+        *([{"timeout": 2}] if force_kill else []),
+    ]
+    assert manager.process is None
+
+
+def test_owned_node_cleanup_reaps_an_already_exited_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wait = MagicMock(return_value=13)
+    process = MagicMock(pid=12_345, wait=wait)
+    manager = PGliteManager()
+    monkeypatch.setattr(manager, "process", process)
+    monkeypatch.setattr(os, "killpg", MagicMock(side_effect=ProcessLookupError))
+
+    substrate._stop_node(manager)
+
+    wait.assert_called_once_with(timeout=5)
+    assert manager.process is None
 
 
 if __name__ == "__main__":

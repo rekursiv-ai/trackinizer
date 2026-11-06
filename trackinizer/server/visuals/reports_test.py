@@ -19,7 +19,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, queue_field_rows
-from trackinizer.mock_test_support import MockConnection
+from trackinizer.lib.postgres.substrate import Conn
 from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -257,6 +257,7 @@ async def test_read_artifact_content_returns_the_stored_revision_or_none() -> No
     revision = await read_artifact_content(store, artifact_id)
     assert revision is not None
     assert (revision.revision, revision.html) == (2, "<h1>Hi</h1>")
+    assert engine.conn.fetchrow.call_args is not None
     sql, *params = engine.conn.fetchrow.call_args.args
     assert sql == _READ
     assert params == [artifact_id]
@@ -677,11 +678,11 @@ class _Db:
 
     answers: dict[str, list[object]]
     calls: list[tuple[str, str, tuple[object, ...]]] = field(default_factory=list)
-    conn: MockConnection = field(init=False)
+    conn: Conn = field(init=False)
 
     def __post_init__(self) -> None:
         self.conn = cast(
-            MockConnection,
+            Conn,
             AsyncMock(
                 execute=AsyncMock(side_effect=self.execute),
                 fetch=AsyncMock(side_effect=self.fetch),
@@ -733,7 +734,7 @@ class _FakeStore:
         return self
 
     @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[MockConnection]:
+    async def acquire(self) -> AsyncGenerator[Conn]:
         yield self.db.conn
 
     async def submit_artifact(
@@ -742,7 +743,7 @@ class _FakeStore:
         *,
         api_key_id: uuid.UUID | None,
         actor: str,
-        conn: MockConnection,
+        conn: Conn,
     ) -> uuid.UUID:
         self.submitted.append(
             (req, {"api_key_id": api_key_id, "actor": actor, "conn": conn}),
@@ -751,7 +752,7 @@ class _FakeStore:
 
     async def insert_edge_and_audit(
         self,
-        conn: MockConnection,
+        conn: Conn,
         **kwargs: object,
     ) -> bool:
         self.edges.append({"conn": conn, **kwargs})

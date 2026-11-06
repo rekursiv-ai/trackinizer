@@ -39,6 +39,7 @@ from trackinizer.wire.bodies import SubmitAgentSession
 
 
 if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockConnection
     from trackinizer.server.store.core import Store
 
 
@@ -247,7 +248,7 @@ class TestSetSessionAudience:
         }
 
     @classmethod
-    def _conn(cls, *rows: dict[str, object]) -> AsyncMock:
+    def _conn(cls, *rows: dict[str, object]) -> MockConnection:
         async def fetch(sql: str, *_args: object) -> list[dict[str, object]]:
             return list(rows) if sql == cls._LOCK else []
 

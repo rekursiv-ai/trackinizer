@@ -45,13 +45,23 @@ def test_importing_registry_pulls_no_torch() -> None:
     package = importlib.import_module(module.split(".", 1)[0])
     assert package.__file__ is not None
     source = (
-        "import sys; "
-        "assert 'torch' not in sys.modules; "
-        "assert 'transformers' not in sys.modules; "
-        "import MODULE; "
-        "assert 'torch' not in sys.modules; "
-        "assert 'transformers' not in sys.modules"
-    ).replace("MODULE", module)
+        (
+            "import sys; "
+            "assert 'torch' not in sys.modules; "
+            "assert 'transformers' not in sys.modules; "
+            "import MODULE; "
+            "assert 'torch' not in sys.modules; "
+            "assert 'transformers' not in sys.modules; "
+            "assert 'py_pglite' not in sys.modules; "
+            "assert 'asyncpg' not in sys.modules; "
+            "assert 'pydantic' not in sys.modules; "
+            "assert 'treekle' not in sys.modules; "
+            "assert not any(name.startswith(('PACKAGE.qwen', 'PACKAGE.jina', "
+            "'PACKAGE.octen')) for name in sys.modules)"
+        )
+        .replace("MODULE", module)
+        .replace("PACKAGE", module.rpartition(".")[0])
+    )
     probe = subprocess.run(  # noqa: S603 -- argv is this module's own import path.
         [sys.executable, "-c", source],
         cwd=Path(package.__file__).resolve().parents[1],
@@ -247,10 +257,21 @@ def test_backfill_resolves_bare_name_and_dim() -> None:
     assert (embedder._device, embedder._batch_size) == ("cuda:1", 8)
 
 
-def test_weights_present_resolves_bare_name() -> None:
-    """``weights_present`` accepts a bare name (resolution is shared)."""
-    # Stubs are always present; a bare real name resolves then probes its cache.
-    assert registry.weights_present("stub")
+@pytest.mark.parametrize("present", [False, True])
+@pytest.mark.parametrize("name", ["qwen3-embedding-4b", "qwen3-embedding-4b@512"])
+def test_weights_present_resolves_bare_name(
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    present: bool,
+) -> None:
+    check = Mock(return_value=present)
+    monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
+
+    assert registry.weights_present(name, dim=512) is present
+    check.assert_called_once_with()
+    with pytest.raises(ConfigError, match="out of range"):
+        registry.weights_present(name.partition("@")[0], dim=4_096)
+    assert check.call_count == 1
 
 
 @pytest.mark.parametrize(
@@ -303,6 +324,64 @@ def test_cached_builder_never_constructs_uncached_weights(
     assert registry.build_cached_session_embedder("qwen3-embedding-4b", dim=256) is None
     check.assert_called_once_with("qwen3-embedding-4b", dim=256)
     build.assert_not_called()
+
+
+@pytest.mark.parametrize("dim", [None, 256])
+def test_cached_builder_constructs_the_requested_cached_model(
+    monkeypatch: pytest.MonkeyPatch,
+    dim: int | None,
+) -> None:
+    check = Mock(return_value=True)
+    monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
+
+    embedder = registry.build_cached_session_embedder("qwen3-embedding-4b", dim=dim)
+
+    assert embedder is not None
+    assert embedder.name == f"qwen3-embedding-4b@{dim or 1_024}"
+    assert embedder.dim == (dim or 1_024)
+    check.assert_called_once_with()
+
+
+@pytest.mark.parametrize("name", ["", "stub", "stub-1024"])
+def test_backfill_rejects_weightless_models(name: str) -> None:
+    with pytest.raises(ConfigError) as caught:
+        registry.build_backfill_embedder(name, device="cpu", batch_size=3)
+    assert str(caught.value) == f"backfill needs a real model, not {name!r}"
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["qwen3-embedding-4b@oops", "qwen3-embedding-4b@512@256"],
+)
+def test_malformed_dim_names_the_invalid_input(name: str) -> None:
+    with pytest.raises(ConfigError) as caught:
+        registry.resolved_name(name)
+    assert str(caught.value) == f"malformed dim in {name!r}"
+
+
+def test_malformed_stub_names_the_invalid_input() -> None:
+    with pytest.raises(ConfigError) as caught:
+        registry.build_session_embedder("stub-oops")
+    assert str(caught.value) == "unknown session embedder 'stub-oops'"
+
+
+@pytest.mark.parametrize(
+    ("name", "hint"),
+    [
+        ("stbu", "stub"),
+        ("stbu@512", "stub"),
+        ("stbu-<dim>", "stub-<dim>"),
+        ("zzzzzzzzzz", ""),
+    ],
+)
+def test_unknown_name_suggests_a_matching_stub_only_when_one_exists(
+    name: str,
+    hint: str,
+) -> None:
+    with pytest.raises(ConfigError) as caught:
+        registry.build_session_embedder(name)
+    suffix = f" (did you mean {hint!r}?)" if hint else ""
+    assert str(caught.value) == f"unknown session embedder {name!r}{suffix}"
 
 
 if __name__ == "__main__":

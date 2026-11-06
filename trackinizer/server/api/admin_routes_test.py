@@ -407,7 +407,7 @@ class TestAdminUsers:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         r = client.put(
             f"/api/admin/users/{TEST_USER_ID}/role",
             json={"role": "viewer"},
@@ -463,7 +463,7 @@ class TestAdminUsers:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         r = client.post(f"/api/admin/users/{TEST_USER_ID}/disable")
         assert r.status_code == 409, r.text
         assert not any(
@@ -540,7 +540,7 @@ class TestLastAdminGuard:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         self._stub_target_active_admin(engine, others=0)
         target = uuid.uuid4()
         r = client.put(
@@ -560,7 +560,7 @@ class TestLastAdminGuard:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         self._stub_target_active_admin(engine, others=0)
         target = uuid.uuid4()
         r = client.post(f"/api/admin/users/{target}/disable")
@@ -577,7 +577,7 @@ class TestLastAdminGuard:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="DELETE 1")
+        engine.conn.execute.return_value = "DELETE 1"
         self._stub_target_active_admin(engine, others=0)
         target = uuid.uuid4()
         r = client.delete(f"/api/admin/users/{target}")
@@ -808,9 +808,8 @@ class TestAdminRemoveUser:
         """
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        # Re-mock so a stray SQL call would surface as an unexpected
-        # ``DELETE 1`` and fail the post-condition assertion below.
-        engine.conn.execute = AsyncMock(return_value="DELETE 1")
+        # A stray SQL call returns ``DELETE 1`` and fails the assertion below.
+        engine.conn.execute.return_value = "DELETE 1"
         r = client.delete(f"/api/admin/users/{TEST_USER_ID}")
         assert r.status_code == 409, r.text
         assert "own account" in _json_detail(r)
@@ -947,7 +946,7 @@ class TestAdminAllowlist:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="INSERT 0 1")
+        engine.conn.execute.return_value = "INSERT 0 1"
         r = client.post(
             "/api/admin/allowlist",
             json={"email_or_pattern": "new@example.com", "role": "viewer"},
@@ -1032,7 +1031,7 @@ class TestAdminAllowlist:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         r = client.put(
             "/api/admin/allowlist/*@Example.com/role",
             json={"role": "writer"},
@@ -1051,7 +1050,7 @@ class TestAdminAllowlist:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="DELETE 1")
+        engine.conn.execute.return_value = "DELETE 1"
         r = client.delete("/api/admin/allowlist/*@Example.com")
         assert r.status_code == 200, r.text
         delete = next(
@@ -1115,7 +1114,7 @@ class TestAdminAllowlist:
         """
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="DELETE 1")
+        engine.conn.execute.return_value = "DELETE 1"
         r = client.delete("/api/admin/allowlist/%2A%40example.com")
         assert r.status_code == 200
         delete = next(
@@ -1141,7 +1140,7 @@ class TestAdminAllowlist:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         r = client.put(
             "/api/admin/allowlist/x@example.com/role",
             json={"role": "admin"},
@@ -1167,7 +1166,7 @@ class TestAdminAllowlist:
         """
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
-        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.execute.return_value = "UPDATE 1"
         r = client.put(
             "/api/admin/allowlist/%2A%40example.com/role",
             json={"role": "writer"},
