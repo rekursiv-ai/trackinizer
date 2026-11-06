@@ -18,6 +18,8 @@ import pytest
 
 _CWD: Final = Path(__file__).resolve().parent
 
+pytestmark = pytest.mark.cli_bash
+
 
 def test_the_shim_takes_the_umask_not_mktemps_owner_only_mode(tmp_path: Path) -> None:
     """Under the ops umask the shim is group-usable, as ``mkdir`` would make it.

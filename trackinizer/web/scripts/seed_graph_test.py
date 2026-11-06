@@ -40,6 +40,19 @@ if TYPE_CHECKING:
     from trackinizer.wire.wire_sessions import SessionEnd
 
 
+@pytest.fixture(scope="module")
+def committed() -> Structure:
+    """Return the committed structure, loaded once: a load takes ~150 ms."""
+    return load(GRAPH_STRUCTURE.read_text())
+
+
+@pytest.fixture(scope="module")
+def committed_seed(committed: Structure) -> tuple[_FakeClient, SeededGraph]:
+    """Seed the committed structure once; tests only read what it wrote."""
+    client = _FakeClient()
+    return client, seed_graph(client, committed, actor="ada@example.com")
+
+
 def test_islands_are_the_issues_atop_narrows_and_what_they_produced() -> None:
     found = islands(_STRUCTURE)
     assert found.roots == (6, 0)
@@ -69,10 +82,15 @@ def test_the_showcase_is_the_island_most_argued_over_and_its_most_cited_belief()
 @pytest.mark.parametrize("structure", ["small", "committed"])
 def test_nodes_are_created_in_order_and_every_edge_once_with_its_sign(
     structure: str,
+    committed: Structure,
+    committed_seed: tuple[_FakeClient, SeededGraph],
 ) -> None:
-    seeding = _STRUCTURE if structure == "small" else load(GRAPH_STRUCTURE.read_text())
-    client = _FakeClient()
-    seeded = seed_graph(client, seeding, actor="ada@example.com")
+    if structure == "small":
+        seeding, client = _STRUCTURE, _FakeClient()
+        seeded = seed_graph(client, seeding, actor="ada@example.com")
+    else:
+        seeding = committed
+        client, seeded = committed_seed
     assert [kind for kind, _ in client.items] == [n.kind for n in seeding.nodes]
     index = {node: n for n, node in enumerate(seeded.ids)}
     written = {
@@ -185,11 +203,12 @@ def test_a_kind_takes_its_built_titles_in_order() -> None:
     assert experiments == titles[:2]
 
 
-def test_no_kind_repeats_a_built_title_before_it_has_used_every_one() -> None:
+def test_no_kind_repeats_a_built_title_before_it_has_used_every_one(
+    committed_seed: tuple[_FakeClient, SeededGraph],
+) -> None:
     # Lists show the newest rows of a kind together: a title repeated among them
     # reads as a placeholder.
-    client = _FakeClient()
-    seed_graph(client, load(GRAPH_STRUCTURE.read_text()), actor="ada@example.com")
+    client, _ = committed_seed
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
     shown = from_plain(contents.get("showcase"), dict[str, object], default={})
     written = {
@@ -224,13 +243,13 @@ def test_two_seeds_write_the_same() -> None:
     assert first.edges == second.edges
 
 
-def test_in_cascade_order_the_committed_structure_walks_a_tenth_as_far() -> None:
+def test_in_cascade_order_the_committed_structure_walks_a_tenth_as_far(
+    committed: Structure,
+) -> None:
     # In creation order the server's cascade walks 1,521,324 steps, which took half
     # an hour; in this order, measured 2026-10-03, 129,290.
     cascade = _Cascade()
-    steps = sum(
-        cascade.add(link) for link in cascade_order(load(GRAPH_STRUCTURE.read_text()))
-    )
+    steps = sum(cascade.add(link) for link in cascade_order(committed))
     assert steps < 150_000
 
 
@@ -309,10 +328,11 @@ def test_the_showcase_counts_only_evidence_on_a_belief() -> None:
     assert showcase(structure, islands(structure)) == Showcase(root=0, belief=3)
 
 
-def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root() -> None:
-    structure = load(GRAPH_STRUCTURE.read_text())
-    found = islands(structure)
-    picked = showcase(structure, found)
+def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root(
+    committed: Structure,
+) -> None:
+    found = islands(committed)
+    picked = showcase(committed, found)
     assert found.home[picked.belief] == picked.root
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
     assert len(from_plain(contents.get("roots"), list[str], default=[])) >= len(
