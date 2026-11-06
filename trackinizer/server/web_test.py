@@ -1264,20 +1264,23 @@ class TestFeedReads:
 
     def test_feed_whose_everyone_is_the_default(self) -> None:
         """Everyone is every session the caller reads; ``hidden`` keeps private ones."""
-        named = self._scopes({"whose": "everyone"})
-        hidden = self._scopes({"hidden": "true"})
-
-        assert named == self._scopes({}) == [FeedScope(reader=_TEST_READER)] * 3
-        assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
-        assert (
-            self._client(_FeedStore())
-            .get(
-                "/api/web/feed",
-                params={"whose": "theirs"},
-            )
-            .status_code
-            == 422
+        store = self._histogram_store()
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
+        with self._client(store) as client:
+            named = self._read_scopes(client, store, params={"whose": "everyone"})
+            hidden = self._read_scopes(client, store, params={"hidden": "true"})
+            default = self._read_scopes(client, store, params={})
+            assert named == default == [FeedScope(reader=_TEST_READER)] * 3
+            assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
+            assert (
+                client.get("/api/web/feed", params={"whose": "theirs"}).status_code
+                == 422
+            )
 
     def _scopes(self, params: dict[str, str]) -> list[FeedScope]:
         """Return the scope each of the feed, its facets and histogram was read with."""
@@ -1288,7 +1291,17 @@ class TestFeedReads:
             rooms=[],
             kinds=[],
         )
-        client = self._client(store)
+        with self._client(store) as client:
+            return self._read_scopes(client, store, params=params)
+
+    def _read_scopes(
+        self,
+        client: TestClient,
+        store: _FeedStore,
+        *,
+        params: dict[str, str],
+    ) -> list[FeedScope]:
+        """Read all three endpoints through the same app and client."""
         scopes: list[FeedScope] = []
         for path, read in (
             ("/api/web/feed", store.read_feed),
@@ -2354,19 +2367,21 @@ class TestOldPathsWithTheApp:
             ("/app/ref/Issue/7", "/trax/ref/Issue/7"),
             ("/trax/ref/Issue/7", "/trax/ref/Issue/7"),
         )
-        for identity in (_viewer_identity(), None):
-            _install_identity(app, identity)
-            client = TestClient(app)
-            for link, page in links:
-                r = client.get(link)
-                assert r.status_code == 200, link
-                landing = (r.url.path, parse_qs(r.url.query.decode()), r.text)
-                if identity is None:
-                    assert landing == ("/auth/login_page", {"next": [page]}, "LOGIN"), (
-                        link
-                    )
-                else:
-                    assert landing == (page, {}, "INDEX-a"), link
+        with TestClient(app) as client:
+            for identity in (_viewer_identity(), None):
+                _install_identity(app, identity)
+                for link, page in links:
+                    r = client.get(link)
+                    assert r.status_code == 200, link
+                    landing = (r.url.path, parse_qs(r.url.query.decode()), r.text)
+                    if identity is None:
+                        assert landing == (
+                            "/auth/login_page",
+                            {"next": [page]},
+                            "LOGIN",
+                        ), link
+                    else:
+                        assert landing == (page, {}, "INDEX-a"), link
 
 
 # ---- Read routes on a real engine ----------------------------------------

@@ -17,6 +17,7 @@ from unicodedata import normalize
 from unittest.mock import Mock
 
 import ast
+import gc
 import json
 import subprocess
 import sys
@@ -138,7 +139,18 @@ def test_import_probe_reports_a_module_that_needs_a_server_only_package(
     assert failures == {"leaky": "ModuleNotFoundError: No module named 'torch'"}
 
 
-def test_client_side_modules_never_name_a_server_only_package() -> None:
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """Give each client entry point its own transitive import check."""
+    if (
+        metafunc.definition.originalname
+        == "test_client_side_modules_never_name_a_server_only_package"
+    ):
+        metafunc.parametrize("client_module", _client_side_modules())
+
+
+def test_client_side_modules_never_name_a_server_only_package(
+    client_module: str,
+) -> None:
     """No module the client side can reach imports a package of the ``server`` extra.
 
     The import probe sees only what runs at import time. This scan follows every
@@ -147,10 +159,8 @@ def test_client_side_modules_never_name_a_server_only_package() -> None:
     function imports later, such as ``watchdog`` on macOS from the filesystem
     follower, would fail ``trax run`` on a bare install, and the probe cannot see it.
     """
-    modules = _client_side_modules()
-
     reached = _blocked_imports(
-        modules,
+        [client_module],
         root=_ROOT,
         blocked=_blocked_names(),
         skip=frozenset(f"{_BASE}.{name}" for name in _SERVER_ONLY_MODULES),
@@ -208,7 +218,7 @@ def test_static_scan_does_not_walk_unrelated_expression_trees(
     children = Mock(wraps=ast.iter_child_nodes)
     monkeypatch.setattr(ast, "iter_child_nodes", children)
 
-    assert _imported_names(path, package="pkg") == {"torch"}
+    assert _imported_names(path.read_text(), package="pkg") == {"torch"}
     assert children.call_count < 20
 
 
@@ -245,7 +255,7 @@ def test_static_scan_keeps_dynamic_imports_in_every_expression(
         ),
     )
 
-    assert _imported_names(path, package="pkg") == {
+    assert _imported_names(path.read_text(), package="pkg") == {
         "pkg",
         "pkg.sibling",
         "json",
@@ -357,35 +367,44 @@ def _blocked_imports(
     reached: dict[str, set[str]] = {}
     pending = list(modules)
     seen = set(modules)
-    while pending:
-        module = pending.pop()
-        path = module_path(module)
-        assert path is not None, module
-        package = module if path.name == "__init__.py" else module.rpartition(".")[0]
-        for name in _imported_names(path, package=package):
-            hit = _blocked_prefix(name, blocked)
-            if hit is not None:
-                reached.setdefault(module, set()).add(hit)
-                continue
-            # Importing a.b.c also imports a and a.b.
-            parts = name.split(".")
-            for end in range(1, len(parts) + 1):
-                parent = ".".join(parts[:end])
-                if (
-                    parent not in seen
-                    and parent not in skip
-                    and module_path(parent) is not None
-                ):
-                    seen.add(parent)
-                    pending.append(parent)
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        while pending:
+            module = pending.pop()
+            path = module_path(module)
+            assert path is not None, module
+            package = (
+                module if path.name == "__init__.py" else module.rpartition(".")[0]
+            )
+            for name in _imported_names(path.read_text(), package=package):
+                hit = _blocked_prefix(name, blocked)
+                if hit is not None:
+                    reached.setdefault(module, set()).add(hit)
+                    continue
+                # Importing a.b.c also imports a and a.b.
+                parts = name.split(".")
+                for end in range(1, len(parts) + 1):
+                    parent = ".".join(parts[:end])
+                    if (
+                        parent not in seen
+                        and parent not in skip
+                        and module_path(parent) is not None
+                    ):
+                        seen.add(parent)
+                        pending.append(parent)
+    finally:
+        if collecting:
+            gc.enable()
     return reached
 
 
 def _blocked_prefix(name: str, blocked: frozenset[str]) -> str | None:
     """Return the blocked name that ``name`` is or lies inside, if any."""
-    for blocked_name in blocked:
-        if name == blocked_name or name.startswith(blocked_name + "."):
-            return blocked_name
+    while name:
+        if name in blocked:
+            return name
+        name = name.rpartition(".")[0]
     return None
 
 
@@ -398,10 +417,11 @@ def _module_path(module: str, *, root: Path) -> Path | None:
     return None
 
 
-def _imported_names(path: Path, *, package: str) -> set[str]:
-    """Return every dotted module name ``path`` imports, however and wherever."""
+@cache
+def _imported_names(source: str, *, package: str) -> frozenset[str]:
+    """Return the imports of ``source``, shared by entries reaching the same module."""
     names: set[str] = set()
-    for node in _executed_nodes(path.read_text()):
+    for node in _executed_nodes(source):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -426,22 +446,26 @@ def _imported_names(path: Path, *, package: str) -> set[str]:
                 first = node.args[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     names.add(first.value)
-    return names
+    return frozenset(names)
 
 
 def _executed_nodes(source: str) -> Iterator[ast.Import | ast.ImportFrom | ast.Call]:
     """Yield imports and candidate calls outside ``if TYPE_CHECKING`` bodies."""
-    dynamic_lines = [
+    import_lines = [
         number
         for number, line in enumerate(normalize("NFKC", source).split("\n"), start=1)
-        if "lazy_import" in line or "import_module" in line
+        if "import" in line
     ]
     pending: list[ast.AST] = [ast.parse(source)]
     while pending:
         node = pending.pop()
-        if isinstance(node, ast.expr):
-            at = bisect_left(dynamic_lines, node.lineno)
-            if at == len(dynamic_lines) or dynamic_lines[at] > (
+        # Definition line ranges exclude decorators, which can import dynamically.
+        if isinstance(node, ast.stmt | ast.expr) and not isinstance(
+            node,
+            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        ):
+            at = bisect_left(import_lines, node.lineno)
+            if at == len(import_lines) or import_lines[at] > (
                 node.end_lineno or node.lineno
             ):
                 continue
