@@ -95,6 +95,15 @@ class TestUnauthenticatedReturns401:
 
 
 class TestTheRouteMapNeedsASignIn:
+    @pytest.fixture(autouse=True)
+    def served_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Serve a stand-in schema; ``openapi_drift_test.py`` checks the real one."""
+
+        def small_schema() -> dict[str, object]:
+            return {"paths": {"/api/version": {}}}
+
+        monkeypatch.setattr(app, "openapi", small_schema)
+
     def test_the_schema_is_refused_from_outside(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

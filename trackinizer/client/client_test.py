@@ -2035,6 +2035,80 @@ def test_append_records_names_the_verb_and_route_when_the_server_refuses_or_garb
             _ = client.append_records(uuid.uuid4())
 
 
+@pytest.mark.parametrize("plaintext_only", [False, True], ids=["sealed", "plaintext"])
+def test_read_session_records_pages_until_empty_and_preserves_controls(
+    plaintext_only: bool,
+) -> None:
+    session = uuid.UUID(int=1)
+    records = [
+        {
+            "idx": idx,
+            "kind": "Thinking",
+            "context_id": 2,
+            "timestamp": f"2026-11-06T12:00:{idx:02d}Z",
+            "model": f"model-{idx}",
+            "payload": {"summary": [f"thought-{idx}", {"complete": True}]},
+            "text": f"search-{idx}",
+            "ciphertext": None if plaintext_only else f"sealed-{idx}",
+        }
+        for idx in (2, 5, 9, 14)
+    ]
+    pages = iter([records[:3], records[3:], []])
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json={"part": -1, "records": next(pages)})
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        found = client.read_session_records(
+            session,
+            part=-1,
+            after_idx=1,
+            limit=3,
+            plaintext_only=plaintext_only,
+        )
+
+    assert all(isinstance(record, RecordBody) for record in found)
+    assert [
+        (
+            record.idx,
+            record.kind,
+            record.context_id,
+            record.timestamp,
+            record.model,
+            record.payload,
+            record.text,
+            record.ciphertext,
+        )
+        for record in found
+    ] == [
+        (
+            idx,
+            "Thinking",
+            2,
+            datetime(2026, 11, 6, 12, 0, idx, tzinfo=UTC),
+            f"model-{idx}",
+            {"summary": [f"thought-{idx}", {"complete": True}]},
+            f"search-{idx}",
+            None if plaintext_only else f"sealed-{idx}",
+        )
+        for idx in (2, 5, 9, 14)
+    ]
+    assert [(request.method, request.url.path) for request in sent] == [
+        ("GET", f"/api/sessions/{session}/records"),
+    ] * 3
+    assert [dict(request.url.params) for request in sent] == [
+        {
+            "part": "-1",
+            "after_idx": str(cursor),
+            "limit": "3",
+            "plaintext_only": str(plaintext_only),
+        }
+        for cursor in (1, 9, 14)
+    ]
+
+
 def test_list_kind_sends_its_defaults_under_the_servers_parameter_names() -> None:
     seen: list[dict[str, str]] = []
 
@@ -4005,6 +4079,38 @@ class TestMachineJobMethods:
             )
 
         assert len(seen) == 1
+
+
+def test_inbound_delivery_identity_is_independent_between_pending_sessions() -> None:
+    first, second = uuid.UUID(int=1), uuid.UUID(int=2)
+    sent: list[httpx2.Request] = []
+    answers = iter(
+        [
+            httpx2.Response(200, json={"messages": [{"text": ""}]}),
+            httpx2.Response(200, json={"messages": [{"text": "second"}]}),
+            httpx2.Response(200, json={"messages": [{"text": "first"}]}),
+            httpx2.Response(200, json={"messages": []}),
+        ],
+    )
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return next(answers)
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        with pytest.raises(ClientError):
+            client.drain_inbound(first)
+        assert [item.text for item in client.drain_inbound(second)] == ["second"]
+        assert [item.text for item in client.drain_inbound(first)] == ["first"]
+        assert client.drain_inbound(first) == []
+
+    assert [(request.method, request.url.path) for request in sent] == [
+        ("GET", f"/api/sessions/{session}/inbound")
+        for session in (first, second, first, first)
+    ]
+    keys = [uuid.UUID(request.headers["Idempotency-Key"]) for request in sent]
+    assert keys[0] == keys[2]
+    assert len({keys[0], keys[1], keys[3]}) == 3
 
 
 @pytest.mark.parametrize("use_filters", [False, True], ids=["ids", "filters"])

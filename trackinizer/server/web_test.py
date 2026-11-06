@@ -2839,19 +2839,19 @@ class TestSubscribeProbe:
 
     def test_frames_follow_the_schedule_then_the_stream_ends(self) -> None:
         status, headers, frames = self._get(
-            first_after_sec=0.02,
-            every_sec=0.02,
-            for_sec=0.09,
+            first_after_sec=0.01,
+            every_sec=0.01,
+            for_sec=0.045,
         )
         assert status == 200
         assert headers["content-type"].startswith("text/event-stream")
         assert "no-transform" not in headers.get("cache-control", "")
-        # Frames at 0.02, 0.04, 0.06 and 0.08 s; none at or after for_sec.
+        # Frames at 0.01, 0.02, 0.03 and 0.04 s; none at or after for_sec.
         assert [from_plain(f["seq"], int) for f in frames] == [0, 1, 2, 3]
         elapsed = [from_plain(f["t"], float) for f in frames]
-        assert elapsed[0] >= 0.02
+        assert elapsed[0] >= 0.01
         assert elapsed == sorted(elapsed)
-        assert elapsed[-1] < 0.09
+        assert elapsed[-1] < 0.045
 
     def test_one_frame_without_an_interval(self) -> None:
         # One byte, then silence until for_sec: the idle-cut experiment.

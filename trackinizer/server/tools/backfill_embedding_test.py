@@ -2719,6 +2719,107 @@ def test_main_aborts_with_failure_when_every_worker_dies_mid_scan(
     assert [args[0] for args, _kwargs in printed.calls][-1] != "ALL DONE"
 
 
+def test_main_aborts_a_full_scanner_feed_after_its_consumer_exits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A dead consumer fails the real scanner and releases all run resources."""
+    _clear_embedder_env(monkeypatch)
+    conn = _BlockedFeedConn()
+    queue = _BoundedMainQueue(maxsize=2)
+    events: list[str] = []
+
+    def make_queue(maxsize: int) -> _BoundedMainQueue:
+        assert maxsize == queue.maxsize
+        return queue
+
+    monkeypatch.setattr(
+        backfill_embedding,
+        "PostgresEngine",
+        _EngineFactory(*[conn] * 4),
+    )
+    monkeypatch.setattr(
+        multiprocessing,
+        "Process",
+        partial(_FakeProcess, exitcode=0, events=events),
+    )
+    monkeypatch.setattr(multiprocessing, "Queue", make_queue)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backfill",
+            "postgresql://full-feed",
+            "--model",
+            "qwen3-embedding-0.6b",
+            "--page",
+            "1",
+            "--compile-cache",
+            str(tmp_path / "compile.bin"),
+        ],
+    )
+
+    assert backfill_embedding.main() == 1
+    assert queue.put_items == [
+        (_queued(0), _queued(0)),
+        (_queued(1), _queued(1)),
+    ]
+    assert queue.attempts == 3
+    assert queue.cancelled
+    assert events == ["start embed-worker-0-gpu0", "join embed-worker-0-gpu0"]
+    assert conn.lock_events == ["lock", "unlock"]
+    assert len(conn.fetches) == 3
+    assert conn.counts == 2
+
+
+class _BlockedFeedConn(_ScriptedConn):
+    """Supply three pending pages and record the real writer lock lifecycle."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            *[
+                [{"created": _CREATED, "session_id": _SID, "part": 0, "idx": idx}]
+                for idx in range(3)
+            ],
+        )
+        self.lock_events: list[str] = []
+        self.counts = 0
+
+    async def fetchval(self, query: str, *args: object) -> object:
+        del args
+        if query.startswith("SELECT count(*) FROM session_records"):
+            self.counts += 1
+            return 3
+        assert query == "SELECT pg_try_advisory_lock(hashtext($1))"
+        self.lock_events.append("lock")
+        return True
+
+    async def execute(self, query: str, *args: object) -> None:
+        del args
+        assert query == "SELECT pg_advisory_unlock(hashtext($1))"
+        self.lock_events.append("unlock")
+
+
+class _BoundedMainQueue(_FakeQueue):
+    """Keep accepted pages until capacity, with no consumer draining them."""
+
+    def __init__(self, *, maxsize: int) -> None:
+        super().__init__()
+        self.maxsize = maxsize
+        self.attempts = 0
+        self.cancelled = False
+
+    @override
+    def put(self, item: backfill_embedding.PageTask | None, *, timeout: float) -> None:
+        self.attempts += 1
+        if len(self.put_items) >= self.maxsize:
+            raise Full
+        super().put(item, timeout=timeout)
+
+    def cancel_join_thread(self) -> None:
+        self.cancelled = True
+
+
 def test_main_reports_a_model_another_process_is_embedding(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
