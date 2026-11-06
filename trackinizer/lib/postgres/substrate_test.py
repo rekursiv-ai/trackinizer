@@ -8,6 +8,7 @@ from importlib.machinery import SourceFileLoader
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlsplit
 
 import asyncio
 import hashlib
@@ -56,6 +57,59 @@ def test_pglite_default_caches_use_xdg_cache(
     assert substrate._boot_slots_root() == (
         cache_dir() / "rekursiv-ai" / "pglite" / "boot-slots" / host_key
     )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_pglite_persistent_restart_retains_rows(tmp_path: Path) -> None:
+    """PGlite rows survive engine restart when persistence is enabled."""
+    workdir = tmp_path / "pg"
+    async with (
+        PGliteEngine(workdir=workdir, extensions=()) as engine,
+        engine.acquire() as conn,
+    ):
+        await conn.execute("CREATE TABLE durable_items (id text PRIMARY KEY)")
+        await conn.execute("INSERT INTO durable_items (id) VALUES ($1)", "kept")
+
+    async with (
+        PGliteEngine(workdir=workdir, extensions=()) as restarted,
+        restarted.acquire() as conn,
+    ):
+        assert await conn.fetchval("SELECT id FROM durable_items") == "kept"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_pglite_defaults_to_a_live_unix_socket(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connect = AsyncMock(wraps=asyncpg.connect)
+    monkeypatch.setattr(asyncpg, "connect", connect)
+
+    async with (
+        PGliteEngine(workdir=tmp_path / "pg", extensions=(), persist=False) as engine,
+        engine.acquire() as conn,
+    ):
+        assert await conn.fetchval("SELECT 7") == 7
+        assert connect.await_args is not None
+        dsn = urlsplit(cast(str, connect.await_args.kwargs["dsn"]))
+        assert dsn.hostname is None
+        assert Path(parse_qs(dsn.query)["host"][0]).is_absolute()
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_pglite_creates_missing_workdir_ancestors(tmp_path: Path) -> None:
+    workdir = tmp_path / "missing-parent" / "pg"
+    assert not workdir.parent.exists()
+
+    async with (
+        PGliteEngine(workdir=workdir, extensions=(), persist=False) as engine,
+        engine.acquire() as conn,
+    ):
+        assert await conn.fetchval("SELECT 1") == 1
+        assert workdir.is_dir()
 
 
 @pytest.mark.asyncio
@@ -204,6 +258,31 @@ async def test_pglite_reentrant_acquire_raises_not_deadlocks(tmp_path: Path) -> 
                     pass
 
     assert not engine._lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_a_second_task_waits_for_the_borrowed_pglite_connection(
+    tmp_path: Path,
+) -> None:
+    engine = PGliteEngine(workdir=tmp_path, extensions=())
+    engine._manager = cast(
+        PGliteManager,
+        MagicMock(is_running=MagicMock(return_value=True)),
+    )
+    engine._conn = cast("asyncpg.Connection[asyncpg.Record]", _make_conn())
+    attempted = asyncio.Event()
+
+    async def borrow() -> object:
+        attempted.set()
+        async with engine.acquire() as connection:
+            return connection
+
+    async with asyncio.TaskGroup() as tasks, engine.acquire() as first:
+        borrower = tasks.create_task(borrow())
+        await attempted.wait()
+        assert not borrower.done()
+
+    assert borrower.result() is first
 
 
 def test_postgres_engine_listens_on_configured_channel() -> None:

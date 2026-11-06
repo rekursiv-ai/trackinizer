@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, TypedDict, cast, override
 from urllib.parse import parse_qsl
 
 import argparse
@@ -75,6 +75,7 @@ from trackinizer.wire.wire_machines import (
     MACHINES_PATH,
     MAX_HOW_CHARS,
 )
+from trackinizer.wire.wire_metrics_query import MetricMaskClause
 from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     RecordBody,
@@ -918,6 +919,68 @@ class TestClientErrorContract:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.recent_changes()
+
+    @pytest.mark.parametrize("payload", [[], 7], ids=["list", "scalar"])
+    def test_resolve_seq_rejects_non_mapping_responses(
+        self,
+        payload: PlainTree,
+    ) -> None:
+        with _answering(payload) as client, pytest.raises(ClientError) as raised:
+            client.resolve_id(SeqRef(kind="Issue", seq=4))
+
+        assert str(raised.value).startswith("/api/inquiries/Issue/4 returned")
+
+    @pytest.mark.parametrize("payload", [[], 7], ids=["list", "scalar"])
+    def test_submit_rejects_non_mapping_responses(
+        self,
+        payload: PlainTree,
+    ) -> None:
+        with _answering(payload) as client, pytest.raises(ClientError) as raised:
+            client.submit("Issue", {"title": "x"})
+
+        assert str(raised.value).startswith("/api/inquiries/issue returned")
+
+    @pytest.mark.parametrize("found", [[], 7], ids=["list", "scalar"])
+    def test_resolve_ids_rejects_non_mapping_found(
+        self,
+        found: PlainTree,
+    ) -> None:
+        with _answering({"found": found}) as client, pytest.raises(ClientError):
+            client.resolve_ids([UuidRef(uuid=uuid.UUID(int=1))])
+
+    @pytest.mark.parametrize(
+        "ids",
+        [None, {}, "00000000-0000-0000-0000-000000000001"],
+        ids=["null", "mapping", "uuid-string"],
+    )
+    def test_submit_batch_rejects_non_list_ids(
+        self,
+        ids: PlainTree,
+    ) -> None:
+        with _answering({"ids": ids}) as client, pytest.raises(ClientError):
+            client.submit_batch([("Issue", {"title": "x"})])
+
+    @pytest.mark.parametrize("bad_id", [None, 7, "not-a-uuid"])
+    def test_submit_batch_rejects_a_bad_id_after_a_valid_id(
+        self,
+        bad_id: PlainTree,
+    ) -> None:
+        ids = [str(uuid.UUID(int=1)), bad_id]
+        with _answering({"ids": ids}) as client, pytest.raises(ClientError):
+            client.submit_batch(
+                [("Issue", {"title": "first"}), ("Issue", {"title": "second"})],
+            )
+
+    @pytest.mark.parametrize("bad_row", [None, [], 7], ids=["null", "list", "scalar"])
+    def test_recent_changes_rejects_a_bad_row_after_a_valid_row(
+        self,
+        bad_row: PlainTree,
+    ) -> None:
+        with (
+            _answering([{"id": "change"}, bad_row]) as client,
+            pytest.raises(ClientError),
+        ):
+            client.recent_changes()
 
     def test_session_start_malformed_wraps_validation_error(self) -> None:
         """A pydantic ``model_validate`` seam must wrap ``ValidationError``."""
@@ -3942,6 +4005,252 @@ class TestMachineJobMethods:
             )
 
         assert len(seen) == 1
+
+
+@pytest.mark.parametrize("use_filters", [False, True], ids=["ids", "filters"])
+def test_rank_metrics_preserves_selection_controls_and_ranked_rows(
+    use_filters: bool,
+) -> None:
+    experiments = [uuid.UUID(int=2), uuid.UUID(int=1)]
+    filters = [
+        Filter(field="labels", op="is", value="study:alpha"),
+        Filter(field="status", op="ne", value="abandoned"),
+    ]
+    sent: list[httpx2.Request] = []
+    answer = {
+        "rows": [
+            {
+                "experiment_id": str(experiments[1]),
+                "point": {"key": "loss", "step": 7, "value": 0.25},
+            },
+            {
+                "experiment_id": str(experiments[0]),
+                "point": {"key": "loss", "step": 9, "value": 0.75},
+            },
+        ],
+    }
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json=answer)
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        ranked = client.rank_metrics(
+            filters if use_filters else experiments,
+            masks=[
+                MetricMaskClause(axis="key", op="is", value="loss"),
+                MetricMaskClause(axis="step", op="max"),
+            ],
+            sort="asc",
+            limit=3,
+            offset=2,
+        )
+
+    assert [
+        (row.experiment_id, row.point.key, row.point.step, row.point.value)
+        for row in ranked
+    ] == [
+        (experiments[1], "loss", 7, 0.25),
+        (experiments[0], "loss", 9, 0.75),
+    ]
+    [request] = sent
+    assert (request.method, request.url.path) == ("POST", "/api/metrics/rank")
+    assert json_loads(request.content) == {
+        "experiment_ids": None if use_filters else [str(e) for e in experiments],
+        "filters": [
+            {"field": "labels", "op": "is", "value": "study:alpha"},
+            {"field": "status", "op": "ne", "value": "abandoned"},
+        ]
+        if use_filters
+        else None,
+        "query": {
+            "masks": [
+                {"axis": "key", "op": "is", "value": "loss"},
+                {"axis": "step", "op": "max", "value": ""},
+            ],
+            "write": None,
+            "sort": "asc",
+            "limit": 3,
+            "offset": 2,
+        },
+    }
+
+
+def test_list_kind_all_keeps_selectors_and_page_cap_on_every_request() -> None:
+    full_page = [{"seq": seq} for seq in range(MAX_LIST_LIMIT)]
+    pages = iter([full_page, [{"seq": MAX_LIST_LIMIT}]])
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, json=next(pages))
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        rows = client.list_kind_all(
+            "Issue",
+            status="active",
+            seq_ranges=[SeqRange(start=2, stop=7), SeqRange(start=11)],
+            filters=[
+                Filter(field="labels", op="is", value="team:alpha"),
+                Filter(field="priority", op="le", value="20"),
+            ],
+        )
+
+    assert rows == [*full_page, {"seq": MAX_LIST_LIMIT}]
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("GET", "/api/inquiries"),
+    ] * 2
+    assert [parse_qsl(r.url.query.decode()) for r in sent] == [
+        [
+            ("kind", "Issue"),
+            ("status", "active"),
+            ("limit", str(MAX_LIST_LIMIT)),
+            ("offset", str(offset)),
+            ("seq_range", "2..7"),
+            ("seq_range", "11.."),
+            ("filter", '{"field":"labels","op":"is","value":"team:alpha"}'),
+            ("filter", '{"field":"priority","op":"le","value":"20"}'),
+        ]
+        for offset in (0, MAX_LIST_LIMIT)
+    ]
+
+
+def test_export_keeps_selector_order_and_returns_the_streamed_lines() -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(200, content=b'{"selector":true}\n\n{"row":2}\n')
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        lines = list(
+            client.export(
+                selector=[
+                    Filter(field="labels", op="is", value="org:alpha"),
+                    Filter(field="labels", op="ne", value="private"),
+                ],
+            ),
+        )
+
+    assert lines == ['{"selector":true}', '{"row":2}']
+    [request] = sent
+    assert (request.method, request.url.path) == ("GET", EXPORT_API_PATH)
+    assert parse_qsl(request.url.query.decode()) == [
+        ("filter", '{"field":"labels","op":"is","value":"org:alpha"}'),
+        ("filter", '{"field":"labels","op":"ne","value":"private"}'),
+    ]
+
+
+class _BatchItemBody(TypedDict):
+    kind: str
+    title: str
+    idempotency_key: str
+
+
+class _BatchSubmitBody(TypedDict):
+    items: list[_BatchItemBody]
+    edges: list[dict[str, str | int]]
+    actor: str
+
+
+def test_submit_batch_preserves_keys_actor_edges_and_server_result_order() -> None:
+    explicit_key = str(uuid.UUID(int=3))
+    bodies = [
+        {"title": "first", "idempotency_key": explicit_key},
+        {"title": "second"},
+        {"title": "third", "idempotency_key": None},
+    ]
+    ids = [uuid.UUID(int=9), uuid.UUID(int=7), uuid.UUID(int=8)]
+    edges = [{"from_index": 2, "to_index": 0, "edge_kind": "requires"}]
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(201, json={"ids": [str(row) for row in ids]})
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        created = client.submit_batch(
+            [("Issue", bodies[0]), ("Belief", bodies[1]), ("Issue", bodies[2])],
+            edges=edges,
+            actor="alice",
+        )
+
+    assert created == ids
+    [request] = sent
+    assert (request.method, request.url.path) == ("POST", "/api/inquiries/batch")
+    body = json_loads(request.content, _BatchSubmitBody)
+    assert (body["actor"], body["edges"]) == ("alice", edges)
+    assert [(item["kind"], item["title"]) for item in body["items"]] == [
+        ("Issue", "first"),
+        ("Belief", "second"),
+        ("Issue", "third"),
+    ]
+    keys = [uuid.UUID(item["idempotency_key"]) for item in body["items"]]
+    assert keys[0] == uuid.UUID(explicit_key)
+    assert len(set(keys)) == 3
+    assert bodies == [
+        {"title": "first", "idempotency_key": explicit_key},
+        {"title": "second"},
+        {"title": "third", "idempotency_key": None},
+    ]
+
+
+@pytest.mark.parametrize("as_tuple", [False, True], ids=["list", "tuple"])
+def test_get_drops_empty_middle_query_values_without_losing_later_values(
+    as_tuple: bool,
+) -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(
+            200,
+            json={"selected": request.url.params.get_list("select")},
+        )
+
+    values = ["first", "", None, "last", 0, False]
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        result = client.get(
+            "/api/x",
+            params={
+                "select": tuple(values) if as_tuple else values,
+                "empty": "",
+                "missing": None,
+            },
+        )
+
+    assert result == {"selected": ["first", "last", "0", "False"]}
+    [request] = sent
+    assert parse_qsl(request.url.query.decode(), keep_blank_values=True) == [
+        ("select", "first"),
+        ("select", "last"),
+        ("select", "0"),
+        ("select", "False"),
+    ]
+
+
+@pytest.mark.parametrize("length", [2_047, 2_048, 2_049])
+@pytest.mark.parametrize("streaming", [False, True], ids=["request", "export"])
+def test_error_text_truncates_only_past_the_2048_character_boundary(
+    length: int,
+    streaming: bool,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(400, text="x" * length)
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        if streaming:
+            with pytest.raises(ClientError) as raised:
+                list(client.export())
+        else:
+            with pytest.raises(ClientError) as raised:
+                client.get("/api/x")
+
+    path = EXPORT_API_PATH if streaming else "/api/x"
+    expected = "x" * length if length <= 2_048 else "x" * 2_048 + "... (truncated)"
+    assert str(raised.value) == f"GET {path} -> 400: {expected}"
+    assert raised.value.status_code == 400
 
 
 if __name__ == "__main__":

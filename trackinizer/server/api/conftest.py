@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import MutableMapping
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Final, cast, override
+from typing import TYPE_CHECKING, Final, NoReturn, cast, override
 from unittest import mock
 
 import uuid
@@ -36,6 +36,7 @@ from trackinizer.server.store.core import Store
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Generator, Iterator
 
+    from fastapi import FastAPI
     from starlette.datastructures import State
 
     from trackinizer.lib.postgres import PGliteEngine
@@ -142,6 +143,17 @@ def answer_account_active(engine: FakeEngine) -> None:
     conn.fetchval.side_effect = fetchval
 
 
+@pytest.fixture(autouse=True)
+def refuse_app_lifespan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail a test that runs the global ``app``'s lifespan (``with TestClient(app)``).
+
+    The lifespan boots a real PGlite engine from the environment, about 2.5 s a
+    test, and leaves ``config`` on the shared ``app.state``, which ``_serving``
+    never restores. A lifespan test drives ``lifespan`` on an app of its own.
+    """
+    monkeypatch.setattr(app.router, "lifespan_context", _refused_lifespan)
+
+
 @pytest.fixture
 def route_client() -> Iterator[tuple[TestClient, Store, FakeEngine]]:
     """``TestClient`` + ``Store`` + ``FakeEngine`` with a writer principal injected.
@@ -215,3 +227,12 @@ def _serving(
             del app.state.inbound
         else:
             app.state.inbound = prev_inbound
+
+
+def _refused_lifespan(app: FastAPI) -> NoReturn:
+    """Stand in for the global ``app``'s lifespan; see ``refuse_app_lifespan``."""
+    del app
+    raise RuntimeError(
+        "A route test ran the global app's lifespan, which boots a real PGlite "
+        "engine. Use TestClient(app) without `with`.",
+    )
