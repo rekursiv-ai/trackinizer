@@ -72,6 +72,21 @@ test("abandoning asks for a reason first", async () => {
   ]);
 });
 
+test("stopping asks for a reason first, and is not drawn as destructive", async () => {
+  const server = serveRow(row("Issue", 1));
+  await open(server);
+  await pick("Status", "Stopped");
+  const dialog = await screen.findByRole("dialog", { name: "Stop Issue#1" });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "Campaign budget spent" } });
+  const confirm = within(dialog).getByRole("button", { name: /^Stop/ });
+  expect(confirm.className).toBe("btn primary");
+  fireEvent.click(confirm);
+  await waitFor(() => expect(prop("Status").textContent).toBe("Stopped"));
+  expect(server.writes()).toEqual([
+    { call: "PUT status", body: { value: "stopped", mode: "cas", expected: "active", reason: "Campaign budget spent" } },
+  ]);
+});
+
 test("a cancelled invalidation writes nothing", async () => {
   const server = serveRow(row("Issue", 1, { status: "abandoned" }));
   await open(server);

@@ -649,7 +649,7 @@ _FIELDS: tuple[Field, ...] = (
         cli_name="status",
         payload_key="status",
         shape="scalar",
-        help="active|complete|abandoned|invalid",
+        help="active|complete|stopped|abandoned|invalid",
     ),
     Field(
         cli_name="validation",

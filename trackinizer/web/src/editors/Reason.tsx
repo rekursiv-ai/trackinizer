@@ -11,9 +11,36 @@ export type ReasonAsk = {
   readonly danger?: boolean;
 };
 
+/** What a status ending the work asks before `what` (`Issue#12`, `3 inquiries`) takes it; null for the rest. */
+export function statusAsk(to: string, what: string): ReasonAsk | null {
+  switch (to) {
+    case "stopped":
+      return {
+        title: `Stop ${what}`,
+        body: "Stopped means a budget or usage limit ended the work before it finished. The reason is kept in activity.",
+        confirm: "Stop",
+      };
+    case "abandoned":
+      return {
+        title: `Abandon ${what}`,
+        body: "Abandoned keeps the history but takes it off active lists.",
+        confirm: "Abandon",
+      };
+    case "invalid":
+      return {
+        title: `Invalidate ${what}`,
+        body: "Invalid means the inquiry was wrong from the start. The reason is kept in activity.",
+        confirm: "Invalidate",
+        danger: true,
+      };
+    default:
+      return null;
+  }
+}
+
 /**
- * Ask why before a change the plan wants explained: abandoning, invalidating,
- * or a judgement. The reason is optional, as in the old UI; the server keeps it
+ * Ask why before a change the plan wants explained: stopping, abandoning,
+ * invalidating, or a judgement. The reason is optional, as in the old UI; the server keeps it
  * on the change, and activity shows it. ⌘↵ confirms, Escape cancels.
  *
  * `returnFocus` gets focus back on close: the dialog opens from a menu pick, so

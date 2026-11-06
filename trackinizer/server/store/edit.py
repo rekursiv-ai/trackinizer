@@ -802,7 +802,7 @@ class _EditMixin(_CascadeAuditMixin):
         Args:
           target_id: ID of the Inquiry to edit.
           expected_from: Current status that must match before transition.
-          to: Desired terminal status (complete, abandoned, or invalidate).
+          to: Desired terminal status (complete, stopped, abandoned, or invalid).
           api_key_id: ID of the API key used for this edit, if any.
           actor: Identifier of the user making this edit.
           reason: Optional explanation of the status change.

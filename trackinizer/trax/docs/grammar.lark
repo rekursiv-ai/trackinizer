@@ -197,7 +197,7 @@ VERB_ARG: /\S+/
 // ==== SEMANTICS: rules the shape accepts but the tool enforces (generated) ====
 // ENUM VALUES (a set to one of these fields must use a listed value;
 // all other fields take free text -- title, description, validation, etc.):
-//   status: active complete abandoned invalid   judgement: proven disproven unproven undecidable
+//   status: active complete stopped abandoned invalid   judgement: proven disproven unproven undecidable
 //   issue_kind/kind: feature bug task question   publication_type: article inproceedings book thesis techreport misc
 //   priority: an int, or critical=0 high=10 medium=20 low=30 backlog=40
 //   confidence/valence: a float (valence in [-1,1], sign = for/against)

@@ -197,11 +197,13 @@ class Inquiry:
     branch-narrow union.
     """
 
-    type Status = Literal["active", "complete", "abandoned", "invalid"]
+    type Status = Literal["active", "complete", "stopped", "abandoned", "invalid"]
     """Whether the row is still relevant in the system.
 
     This is not truth-value (that is :attr:`Belief.judgement`) and not
-    supersession (derived from the ``supersedes`` edges). Something is
+    supersession (derived from the ``supersedes`` edges). ``complete`` work
+    finished; ``stopped`` work was ended from outside before it finished, by a
+    budget or a usage limit; ``abandoned`` work a person gave up. Something is
     ``invalid`` when, say, an Experiment measurement is retracted, an Issue
     no longer applies, or a Belief's framing is withdrawn. Status and
     judgement are orthogonal: a Belief can be ``invalid`` and ``proven`` at
@@ -259,7 +261,7 @@ class Inquiry:
         default="active",
         metadata=ColumnSpec(
             sql_type="TEXT",
-            sql_check="status IN ('active', 'complete', 'abandoned', 'invalid')",
+            sql_check="status IN ('active', 'complete', 'stopped', 'abandoned', 'invalid')",
             required=True,
             compare_and_set=True,
         ),

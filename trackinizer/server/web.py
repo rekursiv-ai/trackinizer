@@ -1450,8 +1450,8 @@ def _build_term_clause(
     return " AND ".join(clauses), params
 
 
-# Carries id, kind, seq, title, status (so the view can dim retired ``abandoned`` /
-# ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
+# Carries id, kind, seq, title, status (so the view can dim retired ``stopped`` /
+# ``abandoned`` / ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
 # confidence so the view can encode a claim's verdict and certainty. The two belief
 # fields are emitted only when present, so a non-Belief row stays clean.
 def _graph_node(row: asyncpg.Record) -> WebView:

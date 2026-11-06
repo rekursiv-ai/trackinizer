@@ -16,10 +16,12 @@ from trackinizer.conftest import (
     make_conn,
     make_store,
     new_uuid,
+    queue_field_rows,
     set_field_row,
 )
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.setter_dispatch import COLUMN_SPECS
+from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.types.columns import storage_name
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError, NotFoundError
@@ -58,6 +60,159 @@ class TestStatusEdits:
         store, _engine = make_store(conn)
         with pytest.raises(ConflictError):
             await store.set_status(new_uuid(), "complete", actor="user")
+
+
+class TestTransitionStatus:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("given", [True, False])
+    async def test_moves_the_status_and_audits_both_sides(self, *, given: bool) -> None:
+        """The row read under its lock moves; the audit row keeps the key and the reason."""
+        conn = make_conn()
+        set_field_row(conn, {"status": "active", "kind": "Issue"})
+        store, _engine = make_store(conn)
+        target, key = new_uuid(), new_uuid()
+        change = (
+            await store.transition_status(
+                target,
+                expected_from="active",
+                to="stopped",
+                api_key_id=key,
+                actor="meter",
+                reason="budget_stop",
+            )
+            if given
+            else await store.transition_status(
+                target,
+                expected_from="active",
+                to="stopped",
+                actor="meter",
+            )
+        )
+        read = conn.fetchrow.call_args_list[0]
+        update = next(
+            c for c in conn.execute.call_args_list if "UPDATE inquiries SET" in _sql(c)
+        )
+        audit = next(
+            c
+            for c in conn.execute.call_args_list
+            if "INSERT INTO change_log" in _sql(c)
+        )
+        columns = _sql(audit).split("(", 1)[1].split(")", 1)[0].split(", ")
+        logged = dict(zip(columns, audit.args[1:], strict=True))
+        assert read.args == (
+            "SELECT status, kind FROM inquiries WHERE id = $1 FOR UPDATE",
+            target,
+        )
+        assert "SET status" in _sql(update)
+        assert update.args[1:3] == ("stopped", target)
+        assert {
+            name: logged[name]
+            for name in (
+                "id",
+                "api_key_id",
+                "actor",
+                "subject_id",
+                "subject_kind",
+                "kind",
+                "reason",
+                "old_status",
+                "new_status",
+            )
+        } == {
+            "id": change,
+            "api_key_id": key if given else None,
+            "actor": "meter",
+            "subject_id": target,
+            "subject_kind": "Issue",
+            "kind": "status",
+            "reason": "budget_stop" if given else "",
+            "old_status": "active",
+            "new_status": "stopped",
+        }
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_status_other_than_the_expected_one(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"status": "complete", "kind": "Issue"})
+        store, _engine = make_store(conn)
+        with pytest.raises(
+            ConflictError,
+            match=r"^status transition rejected: expected 'active', found 'complete'$",
+        ):
+            await store.transition_status(
+                new_uuid(),
+                expected_from="active",
+                to="stopped",
+                actor="meter",
+            )
+        assert not any("UPDATE inquiries SET" in s for s in executed_sql(conn))
+
+    @pytest.mark.asyncio
+    async def test_the_status_it_already_has_changes_nothing(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"status": "stopped", "kind": "Issue"})
+        store, _engine = make_store(conn)
+        change = await store.transition_status(
+            new_uuid(),
+            expected_from="stopped",
+            to="stopped",
+            actor="meter",
+        )
+        sqls = executed_sql(conn)
+        assert change is None
+        assert not any("UPDATE inquiries SET" in s for s in sqls)
+        assert not any("INSERT INTO change_log" in s for s in sqls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("committed_before_the_read", [True, False])
+    async def test_a_retry_replays_its_committed_change(
+        self,
+        *,
+        committed_before_the_read: bool,
+    ) -> None:
+        """A retry's key returns its change, found before or after the status read."""
+        conn = make_conn()
+        target, key = new_uuid(), new_uuid()
+        committed = {"actor": "meter", "subject_id": target, "kind": "status"}
+        row = {"status": "active", "kind": "Issue"}
+        queue_field_rows(
+            conn,
+            *((committed,) if committed_before_the_read else (None, row, committed)),
+        )
+        store, _engine = make_store(conn)
+        set_client_change_id(key)
+        try:
+            change = await store.transition_status(
+                target,
+                expected_from="active",
+                to="stopped",
+                actor="meter",
+            )
+        finally:
+            set_client_change_id(None)
+        assert change == key
+        assert not any("UPDATE inquiries SET" in s for s in executed_sql(conn))
+
+    @pytest.mark.asyncio
+    async def test_a_key_used_for_another_field_is_refused(self) -> None:
+        conn = make_conn()
+        target = new_uuid()
+        queue_field_rows(
+            conn,
+            {"actor": "meter", "subject_id": target, "kind": "title"},
+        )
+        store, _engine = make_store(conn)
+        set_client_change_id(new_uuid())
+        try:
+            with pytest.raises(ConflictError, match="already used"):
+                await store.transition_status(
+                    target,
+                    expected_from="active",
+                    to="stopped",
+                    actor="meter",
+                )
+        finally:
+            set_client_change_id(None)
 
 
 class TestCLIHelpers:

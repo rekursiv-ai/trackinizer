@@ -21,7 +21,7 @@ const ARTIFACTS = ALL_KINDS.filter((kind) => kind !== "Issue");
 export const META: Meta = {
   kinds: ALL_KINDS,
   enums: {
-    status: ["active", "complete", "abandoned", "invalid"],
+    status: ["active", "complete", "stopped", "abandoned", "invalid"],
     judgement: ["proven", "disproven", "unproven", "undecidable"],
     issue_kind: ["feature", "bug", "task", "question"],
     publication_type: ["article", "inproceedings", "book", "thesis", "techreport", "misc"],

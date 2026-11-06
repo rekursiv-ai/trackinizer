@@ -43,7 +43,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from trackinizer.conftest import restore_pglite
+from trackinizer.conftest import restore_pglite, savepoint
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import tx
 from trackinizer.server.preferences import stored_preferences
@@ -1569,6 +1569,80 @@ async def test_migration_069_leaves_every_existing_job_and_credential_no_campaig
     ref = await conn.fetchval("SELECT campaign_ref FROM gpu_jobs WHERE id = $1", job)
     assert {t: await _table_shape(conn, t) for t in tables} == baseline
     assert ref == ""
+
+
+# The status CHECK on inquiries and its change-log mirror are the CHECKs that say
+# ``stopped``; each is rebuilt under its own name without it.
+async def _make_stopped_old(conn: Conn) -> None:
+    """Turn a fresh database back into 070's shape: no row can be ``stopped``."""
+    for row in await conn.fetch(
+        "SELECT conrelid::regclass::text AS relation, conname, "
+        "pg_get_constraintdef(oid) AS definition FROM pg_constraint "
+        "WHERE conrelid IN ('inquiries'::regclass, 'change_log'::regclass) "
+        "AND pg_get_constraintdef(oid) LIKE '%''stopped''%'",
+    ):
+        relation = from_plain(row["relation"], str)
+        name = from_plain(row["conname"], str)
+        definition = from_plain(row["definition"], str)
+        await conn.execute(
+            f'ALTER TABLE {relation} DROP CONSTRAINT "{name}", ADD CONSTRAINT "{name}" '
+            + definition.replace(", 'stopped'::text", ""),
+        )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.071.sql'")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_071_matches_the_baseline_status_checks(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    """A 070 database migrated by 071, once or twice, has a fresh install's catalog.
+
+    The two tables it touches keep their constraints' names too.
+    """
+    conn = pglite_rollback_conn
+    tables = ("inquiries", "change_log")
+    baseline = {t: await _table_shape(conn, t) for t in tables}
+    await _make_stopped_old(conn)
+    assert {t: await _table_shape(conn, t) for t in tables} != baseline
+    assert await _catalog_names_aside(conn) != fresh_install
+
+    await conn.execute(load_sql("schema.071"))
+    await conn.execute(load_sql("schema.071"))
+
+    assert {t: await _table_shape(conn, t) for t in tables} == baseline
+    assert await _catalog_names_aside(conn) == fresh_install
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_071_lets_an_existing_issue_be_stopped(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """A 070 database refuses ``stopped``; after 071 an Issue it holds takes it, audited."""
+    conn = pglite_rollback_conn
+    await _make_stopped_old(conn)
+    issue = await _old_issue(conn)
+    stop = "UPDATE inquiries SET status = 'stopped' WHERE id = $1"
+    audit = (
+        "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
+        "old_status, new_status) VALUES (gen_random_uuid(), 'tester', $1, 'Issue', "
+        "'status', $2, $3)"
+    )
+    for statement, args in ((stop, ()), (audit, ("active", "stopped"))):
+        with pytest.raises(asyncpg.CheckViolationError):
+            async with savepoint(conn):
+                await conn.execute(statement, issue, *args)
+
+    await conn.execute(load_sql("schema.071"))
+
+    await conn.execute(stop, issue)
+    await conn.execute(audit, issue, "active", "stopped")
+    await conn.execute(audit, issue, "stopped", "active")
+    assert await conn.fetchval("SELECT status FROM inquiries WHERE id = $1", issue) == (
+        "stopped"
+    )
 
 
 @pytest.mark.db_pglite

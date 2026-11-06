@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS inquiries (
     -- never a DB-side stand-in.
     account        TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN (
-                       'active', 'complete', 'abandoned', 'invalid'
+                       'active', 'complete', 'stopped', 'abandoned', 'invalid'
                    )),
     title          TEXT NOT NULL,
     description    TEXT,

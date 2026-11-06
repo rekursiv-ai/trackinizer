@@ -76,7 +76,7 @@ export type NodeShape = {
  * How the node `shape` is drawn.
  *
  * Size is prominence: the radius grows with the square root of the degree, 4 to
- * 14, and a root Issue is the largest. Retired work (abandoned, invalid)
+ * 14, and a root Issue is the largest. Retired work (stopped, abandoned, invalid)
  * recedes. A Belief's confidence washes its fill out, and its judgement marks
  * the disc: hollow when disproven, half-toned when undecidable, dotted when
  * proven.
@@ -94,7 +94,7 @@ export function nodeLook(
   { dimmed = false, far = false, halo = null, label = null }: Standing = {},
 ): NodeLook {
   const fill = palette.kinds[shape.kind] ?? palette.fallback;
-  const retired = shape.status === "abandoned" || shape.status === "invalid";
+  const retired = shape.status === "stopped" || shape.status === "abandoned" || shape.status === "invalid";
   const belief = shape.kind === "Belief";
   const judgement = belief ? shape.judgement : undefined;
   const fade = far ? FAR_FADE : 1;

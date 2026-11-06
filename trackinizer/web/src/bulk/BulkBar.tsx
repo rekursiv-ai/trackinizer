@@ -4,7 +4,7 @@ import type { InquiryRow } from "../api/inquiries";
 import { useMeta, useWriteMode } from "../app/boot";
 import { CopyDetails } from "../debug/CopyDetails";
 import { PriorityPicker, priorityText } from "../editors/Priority";
-import { type ReasonAsk, ReasonDialog } from "../editors/Reason";
+import { type ReasonAsk, ReasonDialog, statusAsk } from "../editors/Reason";
 import { loadedValues } from "../editors/values";
 import { Menu } from "../lists/Menu";
 import { PeoplePicker } from "../people/Picker";
@@ -81,7 +81,7 @@ type ActionProps = {
 };
 
 /**
- * Status for every row; abandoning and invalidating ask for a reason first, as
+ * Status for every row; stopping, abandoning and invalidating ask for a reason first, as
  * the detail does. The rows are guarded as they were when the status was
  * picked, not as a refetch shows them once the reason is given.
  */
@@ -103,23 +103,11 @@ function StatusAction({ rows, button, apply }: ActionProps) {
           icon: <StatusGlyph status={value} />,
           checked: rows.every((row) => row.status === value),
         }))}
-        onPick={(to) =>
-          to === "abandoned" || to === "invalid"
-            ? setAsking({
-                to,
-                rows,
-                ask: {
-                  title: `${to === "invalid" ? "Invalidate" : "Abandon"} ${what}`,
-                  body:
-                    to === "invalid"
-                      ? "Invalid means the inquiry was wrong from the start. The reason is kept in activity."
-                      : "Abandoned keeps the history but takes it off active lists.",
-                  confirm: to === "invalid" ? "Invalidate" : "Abandon",
-                  danger: to === "invalid",
-                },
-              })
-            : set(to)
-        }
+        onPick={(to) => {
+          const ask = statusAsk(to, what);
+          if (ask) setAsking({ to, rows, ask });
+          else set(to);
+        }}
       />
       <ReasonDialog
         ask={asking?.ask ?? null}
