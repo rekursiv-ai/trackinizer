@@ -288,6 +288,27 @@ def test_reads_of_the_newest_issues_are_named_for_the_issues_there_are(
     assert ("refetch: 50 Issues by seq_range" in names) == bool(count)
 
 
+def test_measure_keeps_nonempty_issue_reads_when_narrows_is_missing() -> None:
+    paths: list[str] = []
+    with httpx2.Client(
+        base_url="http://server",
+        transport=httpx2.MockTransport(partial(_answer_without_narrows, paths=paths)),
+    ) as http:
+        rows = measure(http, repeats=1, queries=(), hub="")
+    by_name = {row.name: row for row in rows}
+    assert "detail: hub" not in by_name
+    for name, count in (
+        ("detail: newest Issues", 2),
+        ("refetch: 50 Issues by seq_range", 1),
+        ("membership: 2 ids, three kinds", 1),
+    ):
+        assert [sample.status for sample in by_name[name].samples] == [200] * count
+    assert [path for path in paths if path.startswith("/api/web/get/")] == [
+        "/api/web/get/orphan-a",
+        "/api/web/get/orphan-b",
+    ]
+
+
 def test_moved_flags_a_median_time_or_size_over_2x_either_way() -> None:
     def row(name: str, seconds: float, json_bytes: int) -> Row:
         sample = Sample(
@@ -657,6 +678,23 @@ def test_report_keeps_status_boundary_samples_and_error_messages() -> None:
             }
             for s in samples
         ],
+    }
+
+
+def test_report_json_preserves_complete_stream_measurements() -> None:
+    document = report(
+        [],
+        stream=Stream(seconds=2.0, frames=7, distinct_ids=3, status=200),
+        url="server",
+        sha="build",
+    )
+    restored = json_loads(json_dumps(document), _MeasurementReport)
+    assert restored["stream"] == {
+        "status": 200,
+        "seconds": 2.0,
+        "frames": 7,
+        "distinct_ids": 3,
+        "frames_per_sec": 3.5,
     }
 
 
@@ -1044,6 +1082,9 @@ class _RowDocument(TypedDict):
 
 class _StreamDocument(TypedDict):
     status: int
+    seconds: float
+    frames: int
+    distinct_ids: int
     frames_per_sec: float | None
 
 
@@ -1288,6 +1329,21 @@ class _MainMeasurementServer(_MeasurementServer):
 
 def _fixed_now(tz: tzinfo | None = None) -> datetime:
     return datetime(2026, 11, 6, 12, 34, 56, tzinfo=UTC).astimezone(tz)
+
+
+def _answer_without_narrows(
+    request: httpx2.Request,
+    *,
+    paths: list[str],
+) -> httpx2.Response:
+    assert request.method == "GET"
+    paths.append(request.url.path)
+    if request.url.path == "/api/inquiries":
+        body = json_dumps(
+            [{"id": "orphan-a", "seq": 2}, {"id": "orphan-b", "seq": 4}],
+        ).encode()
+        return httpx2.Response(200, content=iter([body]))
+    return _answer(request, [])
 
 
 # Bodies go out as iterators, which stream as a network response does: a body given

@@ -40,6 +40,30 @@ if TYPE_CHECKING:
 _CWD: Final = Path(__file__).resolve().parent
 
 
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    if "outside_path" not in metafunc.fixturenames:
+        return
+    stated: list[str] = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "stat", partial(_recorded_stat, os.stat, stated=stated))
+        daemon_source_version()
+    inside = f"{package_root()}{os.sep}"
+    outside = sorted(
+        {
+            os.path.normpath(path)
+            for path in stated
+            if not os.path.normpath(path).startswith(inside)
+        }
+        | {os.path.realpath(inspect.getfile(state_dir))},
+    )
+    metafunc.parametrize("outside_path", outside, ids=outside)
+
+
+@pytest.fixture(scope="module")
+def daemon_source_version_baseline() -> str:
+    return daemon_source_version()
+
+
 class _FragmentedSocket:
     """Socket-shaped reader that deterministically limits every ``recv``."""
 
@@ -314,17 +338,11 @@ class TestSourceVersionCoverage:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Each module it reads beside the root, and ``userdirs``, must move it.
-
-        The fast half of the drift guard below: a listed path naming no file
-        is skipped without a word, and ``userdirs`` -- which this module
-        imports -- must count in either layout. Names are matched exactly,
-        since a case-insensitive filesystem would stat a miscased one.
-        """
+        """Each path it lists exists; per-path digest checks run separately."""
         stated: list[str] = []
         with monkeypatch.context() as patch:
             patch.setattr(os, "stat", partial(_recorded_stat, os.stat, stated=stated))
-            before = daemon_source_version()
+            daemon_source_version()
         listings = {
             directory: {entry.name for entry in directory.glob("*")}
             for directory in {Path(path).parent for path in stated}
@@ -334,23 +352,24 @@ class TestSourceVersionCoverage:
             for path in stated
             if Path(path).name not in listings[Path(path).parent]
         ]
-        inside = f"{package_root()}{os.sep}"
-        beside = {
-            os.path.normpath(path)
-            for path in stated
-            if not os.path.normpath(path).startswith(inside)
-        }
-        unmoved: list[str] = []
-        for path in sorted(beside | {os.path.realpath(inspect.getfile(state_dir))}):
-            with monkeypatch.context() as patch:
-                patch.setattr(os, "stat", partial(_grown_stat, os.stat, grown=path))
-                if daemon_source_version() == before:
-                    unmoved.append(path)
 
         assert not unnamed, (
             f"the fingerprint lists modules that do not exist: {unnamed}"
         )
-        assert not unmoved, f"growing these left the fingerprint unchanged: {unmoved}"
+
+    def test_each_listed_external_path_changes_the_fingerprint(
+        self,
+        outside_path: str,
+        daemon_source_version_baseline: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                os,
+                "stat",
+                partial(_grown_stat, os.stat, grown=outside_path),
+            )
+            assert daemon_source_version() != daemon_source_version_baseline
 
     def test_covers_modules_outside_the_root(self, tmp_path: Path) -> None:
         """A module imported from beside the package root is source too.
