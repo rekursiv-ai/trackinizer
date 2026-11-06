@@ -230,7 +230,7 @@ async def follow_tree(
 
 if sys.platform == "darwin":
 
-    @asynccontextmanager  # pyright: ignore[reportUnreachable] -- Linux-targeted checking omits macOS select types.
+    @asynccontextmanager
     async def _watch_lines(
         *directories: Path,
         match: Callable[[Path], bool],

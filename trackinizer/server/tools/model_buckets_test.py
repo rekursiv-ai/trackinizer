@@ -6,12 +6,24 @@ from typing import TYPE_CHECKING
 
 import logging
 
+import pytest
+
 from trackinizer.server.embedders import registry
 from trackinizer.server.tools import bucket_boundaries, model_buckets
 
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Generator
+
+
+@pytest.fixture
+def cold_edges() -> Generator[None]:
+    """Run the generator even when another model or test populated its cache."""
+    bucket_boundaries._cached_derive_edges.cache_clear()
+    try:
+        yield
+    finally:
+        bucket_boundaries._cached_derive_edges.cache_clear()
 
 
 def _corpus() -> dict[int, int]:
@@ -31,25 +43,34 @@ def test_every_registry_key_has_a_plan_or_an_explicit_fallback() -> None:
         assert name in model_buckets.MODEL_BUCKETS, name
 
 
-def test_shipped_edges_equal_the_generator_output() -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        name
+        for name, plan in model_buckets.MODEL_BUCKETS.items()
+        if isinstance(plan, model_buckets.BucketPlan)
+    ],
+)
+def test_shipped_edges_equal_the_generator_output(
+    name: str,
+    cold_edges: None,
+) -> None:
     """The shipped edge tuples EQUAL the DP over the shipped histogram.
 
     The drift gate: regenerating the table is a conscious act. A hand-edited
     literal that no longer matches ``derive_edges`` fails here, so stale
-    constants are impossible.
+    constants are impossible. Every model runs a cold generator independently.
     """
-    hist = _corpus()
-    for name, plan in model_buckets.MODEL_BUCKETS.items():
-        if not isinstance(plan, model_buckets.BucketPlan):
-            continue
-        spec = model_buckets.SPEC_FOR_MODEL[name]
-        expected = bucket_boundaries.derive_edges(
-            spec,
-            hist,
-            min_buckets=model_buckets.DEFAULT_MIN_BUCKETS,
-            max_buckets=model_buckets.DEFAULT_MAX_BUCKETS,
-        )
-        assert plan.edges == expected, (name, plan.edges, expected)
+    del cold_edges
+    plan = model_buckets.MODEL_BUCKETS[name]
+    assert isinstance(plan, model_buckets.BucketPlan)
+    expected = bucket_boundaries.derive_edges(
+        model_buckets.SPEC_FOR_MODEL[name],
+        _corpus(),
+        min_buckets=model_buckets.DEFAULT_MIN_BUCKETS,
+        max_buckets=model_buckets.DEFAULT_MAX_BUCKETS,
+    )
+    assert plan.edges == expected, (name, plan.edges, expected)
 
 
 def test_shipped_reference_rows_equal_the_generator_at_32gb() -> None:

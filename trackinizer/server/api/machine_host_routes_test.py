@@ -80,16 +80,21 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
     assert parsed is not None
     upsert = engine.conn.fetchrow.call_args
     insert = engine.conn.fetchval.call_args
+    assert upsert is not None
+    assert insert is not None
     # One statement registers the machine or locks its row; a separate insert and
     # lock leave a gap in which a delete commits and the lock finds no machine.
-    sql = from_plain(upsert.args[0], str)
+    sql = upsert.args[0]
+    assert isinstance(sql, str)
     assert "INSERT INTO machines (name, updated_by, owner, role, confirmed_at)" in sql
     assert "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END)" in sql
     assert "ON CONFLICT (name) DO UPDATE SET" in sql
     assert "COALESCE(machines.confirmed_at, now())" in sql
     assert "RETURNING id, owner" in sql
     assert upsert.args[1:] == ("dev-1", TEST_USER_EMAIL, "", True)
-    assert "INSERT INTO machine_enrollments" in from_plain(insert.args[0], str)
+    sql = insert.args[0]
+    assert isinstance(sql, str)
+    assert "INSERT INTO machine_enrollments" in sql
     assert insert.args[1:] == (
         parsed.id,
         _MACHINE_ID,
@@ -264,6 +269,7 @@ def test_a_writer_enrolls_a_machine_that_is_new_as_their_own_personal_one(
 
     assert response.status_code == 201
     upsert = engine.conn.fetchrow.call_args
+    assert upsert is not None
     assert upsert.args[1:] == ("laptop", TEST_USER_EMAIL, "personal", False)
 
 
@@ -298,8 +304,11 @@ def test_the_assistant_enrolls_a_machine_for_its_asker_as_their_confirmed_person
     assert response.status_code == 201, response.text
     assert from_plain(response.json(), dict[str, str])["owner"] == "ada@x.y"
     upsert = engine.conn.fetchrow.call_args
+    assert upsert is not None
     assert upsert.args[1:] == ("box-1a2b3c4d", "ada@x.y", "personal", True)
-    assert engine.conn.fetchval.call_args.args[4] == "ada@x.y"
+    insert = engine.conn.fetchval.call_args
+    assert insert is not None
+    assert insert.args[4] == "ada@x.y"
 
 
 @pytest.mark.parametrize(
@@ -377,7 +386,8 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     check, lock, claim = engine.conn.fetchval.call_args_list
     # A plain read first: join has no authentication, so a token that cannot succeed
     # must be refused before it queues for the machine row.
-    sql = from_plain(check.args[0], str)
+    sql = check.args[0]
+    assert isinstance(sql, str)
     assert "FOR UPDATE" not in sql
     assert "FROM machine_enrollments e JOIN machines m ON m.id = e.machine_id" in sql
     assert "e.id = $1 AND m.name = $2 AND e.used_at IS NULL" in sql
@@ -391,9 +401,12 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     assert check.args[1:] == (parsed_enrollment.id, "dev-1", "personal")
     # The same first lock as enroll, revoke and delete take, or a join racing one of
     # them deadlocks.
-    assert "FROM machines WHERE name = $1 FOR UPDATE" in from_plain(lock.args[0], str)
+    sql = lock.args[0]
+    assert isinstance(sql, str)
+    assert "FROM machines WHERE name = $1 FOR UPDATE" in sql
     assert lock.args[1:] == ("dev-1",)
-    sql = from_plain(claim.args[0], str)
+    sql = claim.args[0]
+    assert isinstance(sql, str)
     assert "UPDATE machine_enrollments SET used_at = now()" in sql
     assert "used_at IS NULL AND expires_at > now() AND secret_sha256 = $2" in sql
     assert "AND machine_id = $3" in sql
@@ -473,7 +486,11 @@ def test_join_refused_by_the_unlocked_check_is_401_takes_no_lock_and_writes_noth
     # No BEGIN: the refusal opened no transaction, so it holds no row lock.
     assert executed_sql(engine.conn) == []
     engine.conn.fetchval.assert_called_once()
-    assert "FOR UPDATE" not in from_plain(engine.conn.fetchval.call_args.args[0], str)
+    check = engine.conn.fetchval.call_args
+    assert check is not None
+    sql = check.args[0]
+    assert isinstance(sql, str)
+    assert "FOR UPDATE" not in sql
 
 
 @pytest.mark.parametrize(
@@ -508,7 +525,9 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
         "server_time": "2026-10-07T12:00:00Z",
     }
     lookup = engine.conn.fetchrow.call_args
-    sql = from_plain(lookup.args[0], str)
+    assert lookup is not None
+    sql = lookup.args[0]
+    assert isinstance(sql, str)
     assert "FROM machine_credentials c JOIN machines m ON m.id = c.machine_id" in sql
     assert "WHERE c.id = $1" in sql
     assert "revoked_at IS NULL" not in sql
@@ -516,17 +535,16 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
     lock, live, beat = engine.conn.fetchval.call_args_list
     # The lock comes first, so a revoke in flight has committed before the check
     # reads the credential, and the update cannot land after it.
-    assert "FROM machines WHERE id = $1 FOR UPDATE" in from_plain(lock.args[0], str)
+    sql = lock.args[0]
+    assert isinstance(sql, str)
+    assert "FROM machines WHERE id = $1 FOR UPDATE" in sql
     assert lock.args[1:] == (_MACHINE_ID,)
-    assert (
-        "FROM machine_credentials WHERE id = $1 AND revoked_at IS NULL"
-        in from_plain(
-            live.args[0],
-            str,
-        )
-    )
+    sql = live.args[0]
+    assert isinstance(sql, str)
+    assert "FROM machine_credentials WHERE id = $1 AND revoked_at IS NULL" in sql
     assert live.args[1:] == (credential.id,)
-    sql = from_plain(beat.args[0], str)
+    sql = beat.args[0]
+    assert isinstance(sql, str)
     assert "($6::boolean OR host_instance IS NULL OR host_instance = $2" in sql
     assert "last_heartbeat < now() - make_interval(secs => $5)" in sql
     assert "facts = COALESCE($4, facts)" in sql
@@ -597,7 +615,8 @@ def test_a_take_passes_the_instance_rule_by_and_a_release_only_lets_go(
     assert (take.status_code, release.status_code) == (200, 200)
     took, let_go = engine.conn.fetchval.call_args_list[2::3]
     assert took.args[-1] is True
-    sql = from_plain(let_go.args[0], str)
+    sql = let_go.args[0]
+    assert isinstance(sql, str)
     assert "CASE WHEN host_instance = $2 THEN NULL ELSE host_instance END" in sql
     assert "last_heartbeat" not in sql
     assert let_go.args[1:] == (_MACHINE_ID, uuid.UUID(_INSTANCE))
@@ -630,13 +649,13 @@ def test_last_used_is_written_by_the_first_authenticated_request_only(
     _heartbeat(client, credential.token)
     _heartbeat(client, credential.token)
 
-    touches = [
-        c
-        for c in engine.conn.execute.call_args_list
-        if "UPDATE machine_credentials SET last_used = now()"
-        in from_plain(c.args[0], str)
-    ]
-    assert [t.args[1:] for t in touches] == [(credential.id,)]
+    touches: list[tuple[object, ...]] = []
+    for recorded in engine.conn.execute.call_args_list:
+        sql = recorded.args[0]
+        assert isinstance(sql, str)
+        if "UPDATE machine_credentials SET last_used = now()" in sql:
+            touches.append(recorded.args[1:])
+    assert touches == [(credential.id,)]
 
 
 def test_a_revoked_credential_is_410_only_when_its_secret_matches(
@@ -736,7 +755,10 @@ def test_revoke_closes_credentials_enrollments_and_the_host_instance(
 
     assert (response.status_code, response.content) == (204, b"")
     select = engine.conn.fetchrow.call_args
-    assert "FROM machines WHERE name = $1 FOR UPDATE" in from_plain(select.args[0], str)
+    assert select is not None
+    sql = select.args[0]
+    assert isinstance(sql, str)
+    assert "FROM machines WHERE name = $1 FOR UPDATE" in sql
     assert select.args[1:] == ("dev-1",)
     sent = executed_sql(engine.conn)
     assert [sql.split(" SET")[0] for sql in sent] == [

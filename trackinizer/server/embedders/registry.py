@@ -35,6 +35,24 @@ if TYPE_CHECKING:
         qwen3_4b,
         qwen3_8b,
     )
+    from trackinizer.server.embedders.jina_v5_text_nano import (
+        weights_present as jina_v5_text_nano_weights_present,
+    )
+    from trackinizer.server.embedders.jina_v5_text_small import (
+        weights_present as jina_v5_text_small_weights_present,
+    )
+    from trackinizer.server.embedders.octen_8b import (
+        weights_present as octen_8b_weights_present,
+    )
+    from trackinizer.server.embedders.qwen3_0p6b import (
+        weights_present as qwen3_0p6b_weights_present,
+    )
+    from trackinizer.server.embedders.qwen3_4b import (
+        weights_present as qwen3_4b_weights_present,
+    )
+    from trackinizer.server.embedders.qwen3_8b import (
+        weights_present as qwen3_8b_weights_present,
+    )
 else:
     from wrapt import lazy_import
 
@@ -50,6 +68,30 @@ else:
     )
     jina_v5_text_small = lazy_import(
         "trackinizer.server.embedders.jina_v5_text_small",
+    )
+    qwen3_0p6b_weights_present = lazy_import(
+        "trackinizer.server.embedders.qwen3_0p6b",
+        "weights_present",
+    )
+    qwen3_4b_weights_present = lazy_import(
+        "trackinizer.server.embedders.qwen3_4b",
+        "weights_present",
+    )
+    qwen3_8b_weights_present = lazy_import(
+        "trackinizer.server.embedders.qwen3_8b",
+        "weights_present",
+    )
+    octen_8b_weights_present = lazy_import(
+        "trackinizer.server.embedders.octen_8b",
+        "weights_present",
+    )
+    jina_v5_text_nano_weights_present = lazy_import(
+        "trackinizer.server.embedders.jina_v5_text_nano",
+        "weights_present",
+    )
+    jina_v5_text_small_weights_present = lazy_import(
+        "trackinizer.server.embedders.jina_v5_text_small",
+        "weights_present",
     )
 
 
@@ -265,7 +307,7 @@ def _qwen3_0p6b_entry() -> ModelEntry:
             batch_size,
             dim,
         ),
-        weights_present=qwen3_0p6b.weights_present,
+        weights_present=qwen3_0p6b_weights_present,
     )
 
 
@@ -282,7 +324,7 @@ def _qwen3_4b_entry() -> ModelEntry:
             batch_size,
             dim,
         ),
-        weights_present=qwen3_4b.weights_present,
+        weights_present=qwen3_4b_weights_present,
     )
 
 
@@ -299,7 +341,7 @@ def _qwen3_8b_entry() -> ModelEntry:
             batch_size,
             dim,
         ),
-        weights_present=qwen3_8b.weights_present,
+        weights_present=qwen3_8b_weights_present,
     )
 
 
@@ -316,7 +358,7 @@ def _octen_8b_entry() -> ModelEntry:
             batch_size,
             dim,
         ),
-        weights_present=octen_8b.weights_present,
+        weights_present=octen_8b_weights_present,
     )
 
 
@@ -333,7 +375,7 @@ def _jina_v5_text_nano_entry() -> ModelEntry:
             batch_size,
             dim,
         ),
-        weights_present=jina_v5_text_nano.weights_present,
+        weights_present=jina_v5_text_nano_weights_present,
     )
 
 
@@ -350,13 +392,14 @@ def _jina_v5_text_small_entry() -> ModelEntry:
             batch_size,
             dim,
         ),
-        weights_present=jina_v5_text_small.weights_present,
+        weights_present=jina_v5_text_small_weights_present,
     )
 
 
-# ``slug`` -> a thunk building that family's ``ModelEntry``. The dict is
-# torch-free: the thunks are not called at import, and each imports its model
-# module lazily. Keyed by the bare slug (the dim-resolution layer); the frozen
+# ``slug`` -> a thunk building that family's ``ModelEntry``. The entry thunks
+# defer model access until build/backfill/cache-check: binding weights_present
+# directly would load every lazy model while deriving EMBEDDERS below.
+# Keyed by the bare slug (the dim-resolution layer); the frozen
 # ``session_embeddings.model`` identities (``slug@default_dim``) derive as
 # :data:`EMBEDDERS`. ``stub``/``stub-<dim>`` are handled separately.
 _MODELS: dict[str, Callable[[], ModelEntry]] = {

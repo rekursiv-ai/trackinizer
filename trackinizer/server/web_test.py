@@ -585,7 +585,7 @@ class TestRoutes:
             == []
         )
 
-        engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
+        engine.conn.fetch.return_value = [_inquiry_row()]
         rows = await web.web_search(
             cast(Request, request),
             q="hello",
@@ -689,9 +689,7 @@ class TestRoutes:
         engine = FakeEngine()
         store = _store(engine)
         request = _request(store, engine)
-        engine.conn.fetch = AsyncMock(
-            return_value=[_change_row(principal="api@example.com")],
-        )
+        engine.conn.fetch.return_value = [_change_row(principal="api@example.com")]
         recent = await web.web_recent_changes(
             cast(Request, request),
             identity=_TEST_IDENTITY,
@@ -699,6 +697,7 @@ class TestRoutes:
         )
         assert recent[0]["actor"] == "alice"
         assert recent[0]["principal"] == "api@example.com"
+        assert engine.conn.fetch.call_args is not None
         sql = engine.conn.fetch.call_args.args[0]
         assert isinstance(sql, str)
         assert "LEFT JOIN api_keys" in sql
@@ -747,7 +746,7 @@ class TestRoutes:
         engine = FakeEngine()
         request = _request(_store(engine), engine)
         engine.conn.fetchrow = AsyncMock(return_value=_inquiry_row(id=target_id))
-        engine.conn.fetch = AsyncMock(return_value=[])
+        engine.conn.fetch.return_value = []
         await web.web_get(target_id, cast(Request, request), identity=_TEST_IDENTITY)
         changes_sql = engine.conn.fetch.call_args_list[-1].args[0]
         assert isinstance(changes_sql, str)
@@ -774,33 +773,31 @@ class TestRoutes:
                 "valence": 0.4,
             },
         ]
-        engine.conn.fetch = AsyncMock(
-            side_effect=[
-                [
-                    {
-                        "id": root_id,
-                        "kind": "Belief",
-                        "seq": 1,
-                        "title": "root",
-                        "status": "active",
-                        "created": early,
-                        "belief_judgement": "proven",
-                        "belief_confidence": 0.8,
-                    },
-                    {
-                        "id": child_id,
-                        "kind": "WebSearch",
-                        "seq": 2,
-                        "title": "child",
-                        "status": "complete",
-                        "created": late,
-                        "belief_judgement": None,
-                        "belief_confidence": None,
-                    },
-                ],
-                edge_rows,
+        engine.conn.fetch.side_effect = [
+            [
+                {
+                    "id": root_id,
+                    "kind": "Belief",
+                    "seq": 1,
+                    "title": "root",
+                    "status": "active",
+                    "created": early,
+                    "belief_judgement": "proven",
+                    "belief_confidence": 0.8,
+                },
+                {
+                    "id": child_id,
+                    "kind": "WebSearch",
+                    "seq": 2,
+                    "title": "child",
+                    "status": "complete",
+                    "created": late,
+                    "belief_judgement": None,
+                    "belief_confidence": None,
+                },
             ],
-        )
+            edge_rows,
+        ]
         graph = await web.web_graph(
             cast(Request, request),
             identity=_TEST_IDENTITY,
@@ -1425,6 +1422,7 @@ class TestFeedReads:
             "quiet": "idle",
             "ended": "idle",
         }
+        assert store.engine.conn.fetch.call_args is not None
         asked = from_plain(
             store.engine.conn.fetch.call_args.args[1],
             list[uuid.UUID],

@@ -130,7 +130,7 @@ class TestReadMetrics:
         conn = make_conn()
         set_field_row(conn, {"kind": "Experiment"})
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.read_metrics(uuid.uuid4(), key="loss")
         call_args = conn.fetch.call_args
         assert call_args is not None
@@ -188,7 +188,7 @@ class TestQueryMetrics:
         """The PK-leading ``experiment_id = ANY($1)`` constraint is always $1."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         eids = [uuid.uuid4(), uuid.uuid4()]
         await store.query_metrics(eids, masks=[])
         call_args = conn.fetch.call_args
@@ -197,7 +197,7 @@ class TestQueryMetrics:
         assert isinstance(sql_arg, str)
         sql = sql_arg
         assert "experiment_id = ANY($1::uuid[])" in sql
-        assert conn.fetch.call_args[0][1] == eids
+        assert call_args[0][1] == eids
 
     @pytest.mark.asyncio
     async def test_comparator_op_maps_to_sql(self) -> None:
@@ -213,7 +213,7 @@ class TestQueryMetrics:
         for op, sql_op in cases.items():
             conn = make_conn()
             store, _engine = make_store(conn)
-            conn.fetch = AsyncMock(return_value=[])
+            conn.fetch.return_value = []
             await store.query_metrics(
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis="step", op=op, value="3")],
@@ -236,7 +236,7 @@ class TestQueryMetrics:
         for axis, val, cast_sql in cases:
             conn = make_conn()
             store, _engine = make_store(conn)
-            conn.fetch = AsyncMock(return_value=[])
+            conn.fetch.return_value = []
             await store.query_metrics(
                 [uuid.uuid4()],
                 masks=[MetricMaskClause(axis=axis, op="is", value=val)],
@@ -286,7 +286,7 @@ class TestQueryMetrics:
         """``step max`` selects the highest step per (experiment_id, key)."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.query_metrics(
             [uuid.uuid4()],
             masks=[MetricMaskClause(axis="step", op="max")],
@@ -303,7 +303,7 @@ class TestQueryMetrics:
     async def test_step_min_uses_distinct_on_asc(self) -> None:
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.query_metrics(
             [uuid.uuid4()],
             masks=[MetricMaskClause(axis="step", op="min")],
@@ -319,7 +319,7 @@ class TestQueryMetrics:
     async def test_no_reduction_orders_by_key_step(self) -> None:
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.query_metrics([uuid.uuid4()], masks=[])
         call_args = conn.fetch.call_args
         assert call_args is not None
@@ -359,7 +359,7 @@ class TestQueryMetrics:
         """An operand is held to the field contract of the cell it compares."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         with pytest.raises(ConflictError, match=f"not a valid metric {axis}"):
             await store.query_metrics(
                 [uuid.uuid4()],
@@ -372,7 +372,7 @@ class TestQueryMetrics:
         """Two reductions conflict; taking the last made clause order matter."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         with pytest.raises(ConflictError, match="one reduction"):
             await store.query_metrics(
                 [uuid.uuid4()],
@@ -387,7 +387,7 @@ class TestQueryMetrics:
         """``step max`` takes no operand; one supplied was silently dropped."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         with pytest.raises(ConflictError, match="takes no operand"):
             await store.query_metrics(
                 [uuid.uuid4()],
@@ -418,7 +418,7 @@ class TestQueryMetrics:
     async def test_sort_orders_by_value_and_limit_windows(self) -> None:
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.query_metrics([uuid.uuid4()], masks=[], sort="desc", limit=5)
         call_args = conn.fetch.call_args
         assert call_args is not None
@@ -427,14 +427,14 @@ class TestQueryMetrics:
         sql = sql_arg
         assert "ORDER BY value DESC" in sql
         assert "LIMIT $" in sql
-        assert 5 in conn.fetch.call_args[0]
+        assert 5 in call_args[0]
 
     @pytest.mark.asyncio
     async def test_sort_breaks_value_ties_by_cell(self) -> None:
         """Equal values order by cell, so a ``limit`` cut is deterministic."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.query_metrics([uuid.uuid4()], masks=[], sort="asc", limit=5)
         call_args = conn.fetch.call_args
         assert call_args is not None
@@ -447,7 +447,7 @@ class TestQueryMetrics:
         """An omitted ``limit`` reads up to ``MAX_LIST_LIMIT``, not a 50-row page."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.query_metrics([uuid.uuid4()], masks=[])
         call_args = conn.fetch.call_args
         assert call_args is not None
@@ -465,7 +465,7 @@ class TestQueryMetricsSelection:
         """Return the rank SQL and its bound params for ``experiments``."""
         conn = make_conn()
         store, _engine = make_store(conn)
-        conn.fetch = AsyncMock(return_value=[])
+        conn.fetch.return_value = []
         await store.query_metrics(experiments, masks=[])
         call_args = conn.fetch.call_args
         assert call_args is not None

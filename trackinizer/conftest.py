@@ -46,6 +46,7 @@ from trackinizer.lib.testing.resources import (
     pytest_collection_modifyitems,
     pytest_configure,
 )
+from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -63,6 +64,7 @@ if TYPE_CHECKING:
         Generator,
         Iterator,
     )
+    from contextlib import AbstractAsyncContextManager
 
     from trackinizer.lib.postgres import Conn, PGliteEngine
     from trackinizer.server.access_policy import (
@@ -93,7 +95,7 @@ def isolate_bootstrap_environment() -> Iterator[None]:
         yield
 
 
-def make_conn() -> AsyncMock:
+def make_conn() -> MockConnection:
     """Build an ``AsyncMock`` connection with permissive default returns.
 
     ``fetchrow`` dispatches: SQL matching ``emit_change``'s cost-update
@@ -102,7 +104,7 @@ def make_conn() -> AsyncMock:
     everything else flows through a per-mock queue / default that tests
     drive via :func:`set_field_row` and :func:`queue_field_rows`.
     """
-    conn = AsyncMock()
+    conn = MockConnection()
     conn.execute = AsyncMock(return_value="UPDATE 1")
     field_default: list[object] = [None]
     field_queue: list[object] = []
@@ -138,21 +140,21 @@ def make_conn() -> AsyncMock:
     return conn
 
 
-def set_field_row(conn: AsyncMock, row: object | None) -> None:
+def set_field_row(conn: MockConnection, row: object | None) -> None:
     """Set the default field-read row returned by ``conn.fetchrow``."""
-    cast(list[object], conn.field_default)[0] = row
+    conn.field_default[0] = row
 
 
-def queue_field_rows(conn: AsyncMock, *rows: object) -> None:
+def queue_field_rows(conn: MockConnection, *rows: object) -> None:
     """Queue field-read rows; ``conn.fetchrow`` pops one per call."""
-    cast(list[object], conn.field_queue).extend(rows)
+    conn.field_queue.extend(rows)
 
 
 class FakeEngine:
     """``DatabaseEngine`` Protocol stub backed by one ``AsyncMock`` connection."""
 
-    def __init__(self, conn: AsyncMock | None = None) -> None:
-        self.conn: AsyncMock = conn or make_conn()
+    def __init__(self, conn: MockConnection | None = None) -> None:
+        self.conn: MockConnection = conn or make_conn()
         self.notify_calls: list[tuple[str, str]] = []
         self.notify_error: BaseException | None = None
         """When set, ``notify`` raises it -- the post-commit fanout is
@@ -171,13 +173,13 @@ class FakeEngine:
         del exc
         self.exited = True
 
-    def acquire(self) -> object:
+    def acquire(self) -> AbstractAsyncContextManager[MockConnection]:
         # Model the real single-connection substrate: a nested acquire while
         # one is already held would deadlock on PGlite, so it must raise here
         # too -- otherwise reentrancy bugs pass under the mock and only blow
         # up against a live server (see substrate.py's PGlite guard).
         @asynccontextmanager
-        async def cm() -> AsyncGenerator[AsyncMock]:
+        async def cm() -> AsyncGenerator[MockConnection]:
             if self._held:
                 raise RuntimeError(
                     "Reentrant acquire on the single connection would "
@@ -420,7 +422,7 @@ class RecordingPolicy:
         self.sent.append(executed_sql(conn) if isinstance(conn, AsyncMock) else [])
 
 
-def make_store(conn: AsyncMock | None = None) -> tuple[Store, FakeEngine]:
+def make_store(conn: MockConnection | None = None) -> tuple[Store, FakeEngine]:
     """Construct a ``Store`` bound to a fresh ``FakeEngine``."""
     engine = FakeEngine(conn)
     store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())

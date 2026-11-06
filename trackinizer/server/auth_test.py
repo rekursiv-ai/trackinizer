@@ -18,7 +18,7 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
-from unittest.mock import AsyncMock, MagicMock, _Call
+from unittest.mock import AsyncMock, MagicMock
 
 import logging
 import os
@@ -2057,7 +2057,7 @@ class TestAllowlistMatch:
     @pytest.mark.asyncio
     async def test_literal_match_returns_role(self) -> None:
         conn = make_conn()
-        conn.fetchval = AsyncMock(return_value="admin")
+        conn.fetchval.return_value = "admin"
         role = await allowlist_match(cast(Conn, conn), email="alice@example.com")
         assert role == "admin"
         # The first SQL probe must be the literal lookup.
@@ -2084,7 +2084,7 @@ class TestAllowlistMatch:
     async def test_pattern_match_returns_role(self) -> None:
         # Literal probe misses (returns None), pattern probe wins.
         conn = make_conn()
-        conn.fetchval = AsyncMock(side_effect=[None, "writer"])
+        conn.fetchval.side_effect = [None, "writer"]
         role = await allowlist_match(cast(Conn, conn), email="bob@example.com")
         assert role == "writer"
         # Second probe queries the LIKE-anchored pattern table.
@@ -2277,7 +2277,11 @@ def _minter(
     )
 
 
-async def _mint(minter: AuthIdentity, *, open_into: str | None = None) -> list[_Call]:
+async def _mint(
+    minter: AuthIdentity,
+    *,
+    open_into: str | None = None,
+) -> list[MockCall]:
     """Mint a key as ``minter``; return the INSERT calls it made."""
     conn = make_conn()
     conn.fetchval = AsyncMock(return_value="admin")

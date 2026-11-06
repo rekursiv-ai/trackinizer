@@ -35,7 +35,7 @@ from trackinizer.server.api.app import (
     validation_handler,
 )
 from trackinizer.server.config import Config, ConfigError
-from trackinizer.server.embedders import qwen3_4b, registry
+from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.secrets import FileSecrets, SecretRef
 from trackinizer.types.errors import (
@@ -586,7 +586,8 @@ class TestSessionEmbedderResolution:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Weights absent -> embedder None (degrade), prep command logged, NO download."""
-        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: False)
+        check = Mock(return_value=False)
+        monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
         fastapi_app = FastAPI()
         with caplog.at_level(logging.ERROR):
             task = app._resolve_session_embedder(
@@ -596,13 +597,15 @@ class TestSessionEmbedderResolution:
         assert task is None
         assert cast(object, fastapi_app.state.session_embedder) is None
         assert "prep_models" in caplog.text
+        check.assert_called_once_with()
 
     def test_qwen_with_weights_sets_embedder_and_schedules_warm(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Weights present -> embedder set + a warm task scheduled (no query embed here)."""
-        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: True)
+        check = Mock(return_value=True)
+        monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
         warmed: list[str] = []
 
         async def _fake_warm(embedder: QueryEmbedder) -> None:
@@ -627,6 +630,7 @@ class TestSessionEmbedderResolution:
         embedder, _task = asyncio.run(_drive())
         assert embedder is not None
         assert warmed == ["warmed"]  # The warm task ran, without downloading.
+        check.assert_called_once_with()
 
 
 @pytest.mark.asyncio

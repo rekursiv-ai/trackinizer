@@ -77,7 +77,9 @@ def test_listing_asks_for_every_machine_in_byte_order_of_name(
         ("a-box", "dev", ["gpu"]),
         ("b-box", "", ["gpu"]),
     ]
-    sql, *args = engine.conn.fetch.call_args.args
+    call = engine.conn.fetch.call_args
+    assert call is not None
+    sql, *args = call.args
     assert isinstance(sql, str)
     assert '(role <> $3 OR owner = $4) ORDER BY name COLLATE "C"' in sql
     assert args == [OFFLINE_AFTER_SEC, None, "personal", TEST_USER_EMAIL]
@@ -103,7 +105,9 @@ def test_listing_reports_the_status_the_database_derived(
         ("a-box", "online", "2026-10-06T12:00:00Z"),
         ("b-box", "revoked", None),
     ]
-    sql = from_plain(engine.conn.fetch.call_args.args[0], str)
+    call = engine.conn.fetch.call_args
+    assert call is not None
+    sql = from_plain(call.args[0], str)
     assert "last_heartbeat > now() - make_interval(secs => $1)" in sql
     assert "revoked_at IS NULL" in sql
 
@@ -127,7 +131,9 @@ def test_getting_one_machine_asks_for_it_by_name(
 
     assert response.status_code == 200
     assert from_plain(response.json(), dict[str, object])["how"] == "ssh dev-1"
-    sql, *args = engine.conn.fetch.call_args.args
+    call = engine.conn.fetch.call_args
+    assert call is not None
+    sql, *args = call.args
     assert isinstance(sql, str)
     assert "WHERE ($2::text IS NULL OR name = $2)" in sql
     assert args == [OFFLINE_AFTER_SEC, "dev-1", "personal", TEST_USER_EMAIL]
@@ -176,7 +182,9 @@ def test_a_put_upserts_and_keeps_a_field_left_out(
     assert [(r.status_code, r.content) for r in (only_role, only_how, cleared)] == [
         (204, b""),
     ] * 3
-    sql = from_plain(engine.conn.execute.call_args.args[0], str)
+    call = engine.conn.execute.call_args
+    assert call is not None
+    sql = from_plain(call.args[0], str)
     assert "ON CONFLICT (name) DO UPDATE" in sql
     assert "role = COALESCE($2, machines.role)" in sql
     assert "how = COALESCE($3, machines.how)" in sql
@@ -196,7 +204,9 @@ def test_a_put_with_no_fields_registers_a_bare_machine(
     response = client.put(_path("dev-1"), json={})
 
     assert response.status_code == 204
-    assert engine.conn.execute.call_args.args[1:] == (
+    call = engine.conn.execute.call_args
+    assert call is not None
+    assert call.args[1:] == (
         "dev-1",
         None,
         None,
@@ -319,7 +329,9 @@ def test_labels_are_added_then_removed_in_one_statement(
     )
 
     assert (response.status_code, response.content) == (204, b"")
-    sql, *args = engine.conn.fetchval.call_args.args
+    call = engine.conn.fetchval.call_args
+    assert call is not None
+    sql, *args = call.args
     assert isinstance(sql, str)
     assert args == ["dev-1", ["gpu", "a100"], ["old"], TEST_USER_EMAIL]
     assert "WHERE name = $1 RETURNING name" in " ".join(sql.split())

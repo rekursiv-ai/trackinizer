@@ -160,7 +160,11 @@ def test_attaching_sets_the_deployments_visual_catalog() -> None:
     assert _visual_catalog(app).default_visual == "x.notes"
 
 
-def test_a_real_deployment_replaces_the_default_one_of_a_built_app() -> None:
+def test_a_real_deployment_replaces_the_default_one_of_a_built_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unrelated core routes need no re-registration to test deployment replacement.
+    monkeypatch.setattr(app, "ROUTERS", (addons_routes.router,))
     built = _build_app()
     assert app_deployment(built).manifests == {}
     cfg = ProbeSite()

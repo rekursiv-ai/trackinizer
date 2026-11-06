@@ -513,18 +513,13 @@ class TestSetTokenRole:
 _WHEN = datetime(2026, 10, 9, 8, 0, tzinfo=UTC)
 
 
-def user_row(
-    row: dict[str, object] | None,
-) -> AsyncMockProtocol[dict[str, object] | None]:
+def user_row(row: dict[str, object] | None) -> AsyncMockProtocol[object]:
     """Fake ``fetchrow``: ``row`` for the profile's read of the user, None for any other."""
 
     async def fetchrow(sql: str, *_args: object) -> dict[str, object] | None:
         return row if sql.startswith("SELECT name, last_login, preferences ") else None
 
-    return cast(
-        AsyncMockProtocol[dict[str, object] | None],
-        AsyncMock(side_effect=fetchrow),
-    )
+    return cast(AsyncMockProtocol[object], AsyncMock(side_effect=fetchrow))
 
 
 class TestProfile:

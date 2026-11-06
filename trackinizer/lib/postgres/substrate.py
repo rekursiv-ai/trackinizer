@@ -17,7 +17,8 @@ NOTIFY; PostgresEngine bridges the dedicated listener into the same bus).
 from __future__ import annotations
 
 from contextlib import AbstractAsyncContextManager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, Self, cast
 
@@ -26,6 +27,7 @@ import hashlib
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -49,6 +51,7 @@ if TYPE_CHECKING:
         Mapping,
         Sequence,
     )
+    from subprocess import Popen
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -220,6 +223,7 @@ class PGliteEngine:
         # (mitigated by the boot retry in ``_start_with_retries``).
         self._use_tcp = use_tcp
         self._manager: PGliteManager | None = None
+        self._socket_path: Path | None = None
         self._conn: asyncpg.Connection[asyncpg.Record] | None = None
         self._lock = asyncio.Lock()
         self._bus = _LocalBus()
@@ -320,10 +324,24 @@ class PGliteEngine:
         # Symlink the shared node_modules so py-pglite skips its per-workdir
         # ``npm install`` (a ~20 MB install per fresh tmp dir otherwise).
         await asyncio.to_thread(_link_shared_node_modules, workdir)
+        self._socket_path = None if config.use_tcp else Path(config.socket_path)
         self._manager = PGliteManager(config)
-        await asyncio.to_thread(self._manager.start)
-        _drain_node_stdout(self._manager)
-        self._conn = await self._open_conn()
+        start = asyncio.create_task(
+            asyncio.to_thread(
+                _start_node,
+                self._manager,
+                config=config,
+                workdir=workdir,
+            ),
+        )
+        try:
+            await asyncio.shield(start)
+            self._conn = await self._open_conn()
+        except asyncio.CancelledError:
+            with suppress(OSError, RuntimeError):
+                await start
+            await self._shutdown()
+            raise
 
     async def _teardown_failed_start(self) -> None:
         """Best-effort cleanup of partial state between retry attempts."""
@@ -339,17 +357,16 @@ class PGliteEngine:
             self._conn.terminate()
             self._conn = None
         if self._manager is not None:
-            # py-pglite spawns Node with ``stdout=PIPE`` and its ``stop()`` drops
-            # the Popen without closing that pipe, so the reader is finalized by
-            # GC and emits ``ResourceWarning: unclosed file``. Grab the handle
-            # before ``stop()`` clears ``manager.process``, close it after the
-            # process is dead so ``_drain_node_stdout`` sees EOF rather than a
-            # closed file mid-read.
             proc = self._manager.process
-            await asyncio.to_thread(self._manager.stop)
-            if proc is not None and proc.stdout is not None:
-                proc.stdout.close()
-            self._manager = None
+            try:
+                await asyncio.to_thread(_stop_node, self._manager)
+            finally:
+                if proc is not None and proc.stdout is not None:
+                    proc.stdout.close()
+                self._manager = None
+                if self._socket_path is not None:
+                    self._socket_path.unlink(missing_ok=True)
+                    self._socket_path = None
 
     async def __aexit__(self, *exc: object) -> None:
         """Close the connection, stop Node, and discard an owned scratch workdir."""
@@ -647,29 +664,91 @@ async def _init_connection(conn: Connection[Record]) -> None:
     )
 
 
-# ``py-pglite`` spawns Node with ``stdout=PIPE`` and never reads it; under sustained
-# traffic the ~64KB OS pipe buffer fills, Node blocks on ``write()``, and the postgres
-# protocol hangs. We start a daemon thread that reads and discards until the process
-# exits.
-#
-# The thread is single-shot per Node lifetime: it exits when ``readline`` hits EOF on
-# process death, so a fresh thread per restart is bounded by the number of restarts, not
-# a leak.
-def _drain_node_stdout(manager: PGliteManager) -> None:
-    """Drain Node's stdout pipe in a daemon thread."""
+def _start_node(
+    manager: PGliteManager,
+    *,
+    config: PGliteConfig,
+    workdir: Path,
+) -> None:
+    """Start our Node child and await its readiness event, not a polling interval."""
+    env = os.environ.copy()
+    env["NODE_PATH"] = str(_ensure_shared_node_modules())
+    node_options = config.node_options or ""
+    if node_options:
+        env["NODE_OPTIONS"] = node_options
+    proc = subprocess.Popen(
+        ["node", "pglite_manager.js"],  # noqa: S607 -- Node is the required PGlite runtime.
+        cwd=workdir,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+    )
+    manager.process = proc
+    output = _drain_node_stdout(cast(_ReadableStdout, proc.stdout))
+    if not output.changed.wait(timeout=config.timeout):
+        raise RuntimeError(f"PGlite startup timeout. Output: {output.tail}")
+    if not output.ready or proc.poll() is not None:
+        raise RuntimeError(f"PGlite process died during startup. Output: {output.tail}")
+
+
+def _stop_node(manager: PGliteManager) -> None:
+    """Terminate and reap only the child process group this manager owns."""
     proc = manager.process
-    if proc is None or proc.stdout is None:
+    if proc is None:
         return
-    stdout = cast(_ReadableStdout, proc.stdout)
-
-    def _consume() -> None:
+    try:
+        _signal_node(proc, signal.SIGTERM)
         try:
-            for _line in iter(stdout.readline, ""):
-                pass
-        except (OSError, ValueError):
-            pass
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _signal_node(proc, signal.SIGKILL)
+            proc.wait(timeout=2)
+    finally:
+        manager.process = None
 
-    threading.Thread(target=_consume, daemon=True).start()
+
+def _signal_node(proc: Popen[str], sig: signal.Signals) -> None:
+    """Signal the owned session, including children of a Node wrapper."""
+    with suppress(ProcessLookupError):
+        if hasattr(os, "killpg"):
+            os.killpg(proc.pid, sig)
+        elif sig == signal.SIGTERM:
+            proc.terminate()
+        else:
+            proc.kill()
+
+
+@dataclass(kw_only=True, slots=True)
+class _NodeOutput:
+    changed: threading.Event = field(default_factory=threading.Event)
+    ready: bool = False
+    tail: str = ""
+
+
+def _drain_node_stdout(stdout: _ReadableStdout) -> _NodeOutput:
+    """Keep draining after readiness so Node cannot block on a full stdout pipe."""
+    output = _NodeOutput()
+    threading.Thread(
+        target=partial(_consume_node_stdout, stdout, output=output),
+        daemon=True,
+    ).start()
+    return output
+
+
+def _consume_node_stdout(stdout: _ReadableStdout, *, output: _NodeOutput) -> None:
+    """Signal readiness or EOF while retaining bounded startup diagnostics."""
+    try:
+        for line in iter(stdout.readline, ""):
+            output.tail = (output.tail + line)[-4000:]
+            if line.startswith("Server started on "):
+                output.ready = True
+                output.changed.set()
+    except (OSError, ValueError) as err:
+        output.tail = (output.tail + str(err))[-4000:]
+    finally:
+        output.changed.set()
 
 
 class _ReadableStdout(Protocol):
@@ -797,9 +876,7 @@ def _link_shared_node_modules(work_dir: Path) -> None:
     if target.exists() or target.is_symlink():
         return
     shared = _ensure_shared_node_modules()
-    # On any link failure (lost race, or a filesystem without symlinks) leave
-    # ``target`` absent: py-pglite then runs its own per-workdir ``npm install``
-    # -- slower, but a correct fallback rather than a failed engine start.
+    # NODE_PATH still resolves the shared install if symlinks are unavailable.
     with suppress(OSError):
         target.symlink_to(shared, target_is_directory=True)
 
@@ -993,6 +1070,7 @@ def _write_manager_js(
     extensions: Sequence[str],
 ) -> None:
     """Write the ``pglite_manager.js`` that serves PGlite on ``listen``."""
+    (workdir / "package.json").write_text('{"type":"commonjs"}\n')
     ext_requires_str, extensions_obj = _manager_js_extension_parts(extensions)
     data_dir_js = f"dataDir: {json.dumps(str(data_dir))}," if data_dir else ""
     script = f"""\

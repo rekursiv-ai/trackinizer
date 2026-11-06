@@ -13,21 +13,27 @@ import shutil
 import time
 import uuid
 
-from treekle import json_loads
-
-from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.notify import NOTIFY_CHANNEL
-from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_service_accounts import (
-    SERVICE_DOMAIN,
-    is_service_address,
-)
 
 
+# Registry only needs ConfigError; eager engines/wire models cost ~200 ms.
 if TYPE_CHECKING:
+    from treekle import json_loads
+
+    from trackinizer.lib.postgres import substrate
+    from trackinizer.lib.postgres.substrate import DatabaseEngine
+    from trackinizer.server import notify
     from trackinizer.types.embedder import Embedder
+    from trackinizer.wire import wire_service_accounts, wire_terminals
+else:
+    from wrapt import lazy_import
+
+    substrate = lazy_import("trackinizer.lib.postgres.substrate")
+    notify = lazy_import("trackinizer.server.notify")
+    wire_service_accounts = lazy_import("trackinizer.wire.wire_service_accounts")
+    wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
+    json_loads = lazy_import("treekle", "json_loads")
 
 
 __all__ = [
@@ -379,10 +385,10 @@ def parse_assistant(value: str) -> Assistant | None:
         raise ConfigError(f"--assistant must be ACTOR=EMAIL, got {value!r}")
     # A person's address would make every key of theirs the assistant: their own runs
     # would be refused their chats, and their keys would act for any asker.
-    if not is_service_address(email):
+    if not wire_service_accounts.is_service_address(email):
         raise ConfigError(
             "--assistant (TRACKINIZER_ASSISTANT) must name a service account, "
-            f"NAME@{SERVICE_DOMAIN}, got {email.strip()!r}",
+            f"NAME@{wire_service_accounts.SERVICE_DOMAIN}, got {email.strip()!r}",
         )
     # users.email is stored lowercase, so only a lowercase one can match it.
     return Assistant(actor=actor.strip(), email=email.strip().lower())
@@ -561,7 +567,7 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
             workdir = _ephemeral_workdir()
         else:
             workdir = data_dir() / "rekursiv-ai" / "trackinizer" / "pgdata"
-        return PGliteEngine(
+        return substrate.PGliteEngine(
             workdir=workdir,
             persist=not config.ephemeral,
             use_tcp=config.pglite_tcp,
@@ -569,7 +575,10 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
         )
     if not config.dsn:
         raise ConfigError("--engine pg requires --dsn (or $TRACKINIZER_DSN).")
-    return PostgresEngine(dsn=config.dsn, listen_channel=NOTIFY_CHANNEL)
+    return substrate.PostgresEngine(
+        dsn=config.dsn,
+        listen_channel=notify.NOTIFY_CHANNEL,
+    )
 
 
 def build_embedder(name: str) -> Embedder:

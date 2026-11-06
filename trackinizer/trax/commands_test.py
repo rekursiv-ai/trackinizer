@@ -266,7 +266,7 @@ class _ParsingCommand(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
     ) -> None:
-        del client_factory
+        assert client_factory is _refuse_client
         echo(f"{verb} {args}")
 
 

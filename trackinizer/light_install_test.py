@@ -9,6 +9,7 @@ explains a missing extra instead of printing a traceback.
 
 from __future__ import annotations
 
+from functools import cache, partial
 from pathlib import Path
 from typing import Final
 
@@ -187,6 +188,28 @@ def test_static_scan_follows_later_lazy_and_relative_imports(tmp_path: Path) -> 
     }
 
 
+def test_static_scan_resolves_new_modules_on_every_invocation(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "root.py").write_text("from . import later\n")
+    blocked = frozenset({"torch"})
+
+    assert not _blocked_imports(
+        ["pkg.root"],
+        root=tmp_path,
+        blocked=blocked,
+        skip=frozenset(),
+    )
+    (package / "later.py").write_text("import torch\n")
+    assert _blocked_imports(
+        ["pkg.root"],
+        root=tmp_path,
+        blocked=blocked,
+        skip=frozenset(),
+    ) == {"pkg.later": {"torch"}}
+
+
 def test_missing_extra_guard_names_every_package_of_the_server_extra() -> None:
     """``entry.SERVER_ONLY`` is the ``server`` extra, by import name."""
     assert _server_only_packages() == entry.SERVER_ONLY
@@ -256,12 +279,13 @@ def _blocked_imports(
     skip: frozenset[str],
 ) -> dict[str, set[str]]:
     """Return the blocked names each module reachable from ``modules`` imports."""
+    module_path = cache(partial(_module_path, root=root))
     reached: dict[str, set[str]] = {}
     pending = list(modules)
     seen = set(modules)
     while pending:
         module = pending.pop()
-        path = _module_path(module, root=root)
+        path = module_path(module)
         assert path is not None, module
         package = module if path.name == "__init__.py" else module.rpartition(".")[0]
         for name in _imported_names(path, package=package):
@@ -276,7 +300,7 @@ def _blocked_imports(
                 if (
                     parent not in seen
                     and parent not in skip
-                    and _module_path(parent, root=root) is not None
+                    and module_path(parent) is not None
                 ):
                     seen.add(parent)
                     pending.append(parent)
