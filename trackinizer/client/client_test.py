@@ -3661,7 +3661,7 @@ _JOB_VIEW: dict[str, object] = {
     "created_at": "2026-10-21T12:00:00Z",
     "started_at": None,
     "ended_at": None,
-    "gpu_minutes": None,
+    "gpu_seconds": None,
     "usd": None,
     "reason": "",
     "upload_serial": 3,

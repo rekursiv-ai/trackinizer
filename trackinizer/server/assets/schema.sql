@@ -1280,6 +1280,7 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     ended_at           TIMESTAMPTZ,
     sealed_at          TIMESTAMPTZ,
     elapsed_s          BIGINT,
+    -- Whole minutes charged, read only by builds before 070; see gpu_seconds.
     gpu_minutes        BIGINT,
     usd                NUMERIC(12, 4),
     files              BIGINT,
@@ -1291,7 +1292,8 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     box_credential_id  UUID REFERENCES gpu_box_credentials(id),
     requested_node     TEXT,
     usd_per_gpu_minute DOUBLE PRECISION,
-    campaign_ref       TEXT NOT NULL DEFAULT ''
+    campaign_ref       TEXT NOT NULL DEFAULT '',
+    gpu_seconds        BIGINT
 );
 
 CREATE INDEX IF NOT EXISTS gpu_jobs_email_created
