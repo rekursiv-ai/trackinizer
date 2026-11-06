@@ -581,6 +581,10 @@ class TestRetiredRecordFormat:
         assert response.status_code == 426, response.text
         detail = from_plain(response.json(), dict[str, dict[str, str]])["detail"]
         assert detail["code"] == CLIENT_OUTDATED
+        assert detail["message"] == (
+            "Update this client and trax (uv tool upgrade --all): it writes "
+            "session records in a retired format"
+        )
         manifest.assert_not_awaited()
         append.assert_not_awaited()
 

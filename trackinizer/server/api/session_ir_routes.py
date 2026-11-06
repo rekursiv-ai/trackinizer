@@ -57,7 +57,6 @@ from trackinizer.wire.wire_session_ir import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from trackinizer.server.store.core import Store
     from trackinizer.types.session_records import SessionRecordRow
 
 
@@ -225,12 +224,24 @@ async def read_session_usage_route(
         mode="read",
         asker=await resolve_asker(request, identity, email=asker, chat=chat),
     )
+    # The records are read here, beside the check, rather than in a helper: a helper
+    # that returns a session's records is one more reader a later route could call
+    # without the check.
     manifests = await store.read_session_manifests(session_id)
-    rows = [
-        row
-        for manifest in manifests
-        for row in await _all_records(store, session_id, part=manifest.part)
-    ]
+    rows: list[SessionRecordRow] = []
+    for manifest in manifests:
+        after_idx = -1
+        while page := await store.read_session_records(
+            session_id,
+            part=manifest.part,
+            after_idx=after_idx,
+            limit=MAX_LIST_LIMIT,
+            plaintext_only=True,
+        ):
+            rows.extend(page)
+            if len(page) < MAX_LIST_LIMIT:
+                break
+            after_idx = page[-1].idx
     return session_usage(
         rows,
         formats={manifest.part: manifest.format for manifest in manifests},
@@ -374,24 +385,3 @@ def _refuse_outdated_records(records: Sequence[RecordBody]) -> None:
                 ),
             },
         )
-
-
-async def _all_records(
-    store: Store,
-    session_id: UUID,
-    *,
-    part: int,
-) -> list[SessionRecordRow]:
-    """Read every record of one part, a page at a time."""
-    rows: list[SessionRecordRow] = []
-    while page := await store.read_session_records(
-        session_id,
-        part=part,
-        after_idx=rows[-1].idx if rows else -1,
-        limit=MAX_LIST_LIMIT,
-        plaintext_only=True,
-    ):
-        rows.extend(page)
-        if len(page) < MAX_LIST_LIMIT:
-            break
-    return rows
