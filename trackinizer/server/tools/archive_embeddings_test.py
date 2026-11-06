@@ -9,8 +9,13 @@ from uuid import UUID, uuid4
 import sys
 
 import pytest
+import pytest_asyncio
 
 from trackinizer.lib.postgres import PostgresEngine
+from trackinizer.lib.postgres.testing import postgres_database
+from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.server.store.core import Store
 from trackinizer.server.tools import archive_embeddings
 
 
@@ -19,7 +24,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from trackinizer.lib.postgres import Conn
-    from trackinizer.server.store.core import Store
 
 
 _OLD = "qwen3-embedding-4b@1024"
@@ -105,10 +109,11 @@ async def test_archive_moves_one_model_out_and_restore_brings_it_back(
     await _session_with_vectors(store, chunks=2)
     before = await _rows(store, _OLD)
     kept = await _rows(store, _NEW)
-    out = tmp_path / "embeddings-4b"
+    out = tmp_path / "nested" / "embeddings-4b"
 
     archived = await archive_embeddings.archive(pg_dsn, model=_OLD, out=out)
 
+    assert (out / "model.txt").read_text() == _OLD + "\n"
     assert archived == {"session_embeddings": 2, "session_index_state": 1}
     assert await _rows(store, _OLD) == {
         "session_embeddings": set(),
@@ -143,6 +148,55 @@ async def test_restore_skips_deleted_sessions_and_rows_already_present(
 
     assert first == {"session_embeddings": 1, "session_index_state": 1}
     assert again == {"session_embeddings": 0, "session_index_state": 0}
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def schema_growth_store(
+    request: pytest.FixtureRequest,
+) -> AsyncGenerator[tuple[str, Store]]:
+    """Isolate catalog changes from the shared engine's cached pgvector types."""
+    with postgres_database(request, dbname="archive_schema_growth") as dsn:
+        async with PostgresEngine(dsn=dsn, listen_channel=NOTIFY_CHANNEL) as engine:
+            store = Store(engine, embed=StubEmbedder())
+            await store.bootstrap()
+            yield dsn, store
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_restore_uses_defaults_for_columns_added_after_archive(
+    schema_growth_store: tuple[str, Store],
+    tmp_path: Path,
+) -> None:
+    """An older binary archive restores after either table gains a default column."""
+    pg_dsn, store = schema_growth_store
+    await _session_with_vectors(store, chunks=2)
+    before = await _rows(store, _OLD)
+    out = tmp_path / "archive"
+    archived = await archive_embeddings.archive(pg_dsn, model=_OLD, out=out)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "ALTER TABLE session_embeddings ADD COLUMN archive_note "
+            "text NOT NULL DEFAULT 'new-default'",
+        )
+        await conn.execute(
+            "ALTER TABLE session_index_state ADD COLUMN archive_note "
+            "text NOT NULL DEFAULT 'new-default'",
+        )
+
+    assert await archive_embeddings.restore(pg_dsn, source=out) == archived
+    assert await _rows(store, _OLD) == {**before, "session_index_cursor": {(0,)}}
+    async with store.engine.acquire() as conn:
+        vectors = await conn.fetch(
+            "SELECT archive_note FROM session_embeddings WHERE model = $1",
+            _OLD,
+        )
+        markers = await conn.fetch(
+            "SELECT archive_note FROM session_index_state WHERE model = $1",
+            _OLD,
+        )
+    assert [row["archive_note"] for row in vectors] == ["new-default"] * 2
+    assert [row["archive_note"] for row in markers] == ["new-default"]
 
 
 @pytest.mark.db_pglite
@@ -221,6 +275,54 @@ async def test_an_archive_that_lost_a_row_deletes_nothing(
         await archive_embeddings.archive(pg_dsn, model=_OLD, out=tmp_path / "a")
 
     assert await _rows(store, _OLD) == before
+
+
+@pytest.mark.parametrize(
+    ("argv", "missing"),
+    [
+        (["dsn"], "command"),
+        (["dsn", "archive", "--out", "archive"], "--model"),
+        (["dsn", "archive", "--model", "m"], "--out"),
+        (["dsn", "restore"], "--from"),
+    ],
+)
+def test_main_requires_command_and_operation_arguments(
+    argv: list[str],
+    missing: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["archive", *argv])
+    with pytest.raises(SystemExit) as exited:
+        archive_embeddings.main()
+    assert exited.value.code == 2
+    assert missing in capsys.readouterr().err
+
+
+def test_main_archives_with_the_named_model_and_directory(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, Path]] = []
+
+    async def archive(dsn: str, *, model: str, out: Path) -> dict[str, int]:
+        calls.append((dsn, model, out))
+        return {"session_embeddings": 3, "session_index_state": 2}
+
+    out = tmp_path / "archive"
+    monkeypatch.setattr(archive_embeddings, "archive", archive)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["archive", "dsn", "archive", "--model", _OLD, "--out", str(out)],
+    )
+
+    assert archive_embeddings.main() == 0
+    assert calls == [("dsn", _OLD, out)]
+    assert capsys.readouterr().out == (
+        f"archived {_OLD} to {out}: session_embeddings=3 session_index_state=2\n"
+    )
 
 
 def test_main_reports_a_mismatch_and_exits_1(

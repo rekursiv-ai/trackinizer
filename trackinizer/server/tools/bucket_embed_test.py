@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast, override
 
+from torch import _dynamo
+
 import pytest
 import torch
 
@@ -113,6 +115,12 @@ def test_routes_to_the_smallest_edge_at_least_the_token_count() -> None:
     assert bucket_embed.route(33, _EDGES) == 128
     assert bucket_embed.route(500, _EDGES) == 512
     assert bucket_embed.route(513, _EDGES) == 8192
+
+
+def test_route_reports_the_overflow_count_and_final_edge() -> None:
+    count = _EDGES[-1] + 1
+    with pytest.raises(ValueError, match=rf"{count}.*{_EDGES[-1]}"):
+        bucket_embed.route(count, _EDGES)
 
 
 @pytest.mark.asyncio
@@ -358,6 +366,39 @@ async def test_vectors_are_cut_to_dim_then_normalized() -> None:
     assert vectors[1] == pytest.approx([0.5] * 4)
 
 
+class _Float64Model:
+    """Return distinct nonzero rows with extra features beyond the output width."""
+
+    def __call__(self, **batch: torch.Tensor) -> _FakeOutput:
+        rows, seq = batch["input_ids"].shape
+        hidden = torch.zeros((rows, seq, 5), dtype=torch.float64)
+        hidden[:, -1, :] = torch.tensor(
+            [[1, 2, 2, 9, 10], [2, 3, 6, 11, 12]],
+            dtype=torch.float64,
+        )
+        return _FakeOutput(hidden)
+
+
+@pytest.mark.asyncio
+async def test_nonzero_rows_are_normalized_separately_and_exported_as_float32() -> None:
+    vectors = await bucket_embed.embed_bucketed(
+        _Float64Model(),
+        _FakeTokenizer(len),
+        ["a", "bb"],
+        edges=(4,),
+        rows={4: 2},
+        dim=3,
+    )
+
+    expected = [[1 / 3, 2 / 3, 2 / 3], [2 / 7, 3 / 7, 6 / 7]]
+    rounded = [
+        [float(torch.tensor(value, dtype=torch.float32)) for value in row]
+        for row in expected
+    ]
+    assert vectors == rounded
+    assert vectors != expected
+
+
 # ---- scatter / order preservation ------------------------------------------
 
 
@@ -412,6 +453,20 @@ def test_recompile_limits_distinguish_per_frame_from_accumulated(
     seen["accumulated"] = _Config.accumulated_recompile_limit
     assert seen["recompile_limit"] == len(_EDGES)
     assert seen["accumulated"] == len(_EDGES) * 1000
+
+
+def test_recompile_limits_update_the_runtime_config() -> None:
+    config = _dynamo.config
+    before = (config.recompile_limit, config.accumulated_recompile_limit)
+    for _ in range(2):
+        with config.patch(
+            recompile_limit=before[0],
+            accumulated_recompile_limit=before[1],
+        ):
+            bucket_embed.configure_recompile_limits((4, 8))
+            assert config.recompile_limit == 2
+            assert config.accumulated_recompile_limit == 2000
+        assert (config.recompile_limit, config.accumulated_recompile_limit) == before
 
 
 if __name__ == "__main__":

@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Final
 
 import ast
 
+import pytest
+
 
 _CWD: Final = Path(__file__).resolve().parent
 
@@ -73,10 +75,12 @@ def _imported_modules(path: Path, *, package: tuple[str, ...]) -> Iterator[str]:
 
 
 def _violations(root: Path, *, package: tuple[str, ...] = ()) -> list[str]:
-    """Name every ``loop.*`` package imported under ``root`` outside the allowlist."""
+    """Name disallowed imports in a Python file or recursively under a directory."""
+    paths = (root,) if root.is_file() else root.rglob("*.py")
+    root = root.parent if root.is_file() else root
     return sorted(
         f"{path.relative_to(root)} imports {'.'.join(parts[:2])}"
-        for path in root.rglob("*.py")
+        for path in paths
         for module in _imported_modules(
             path,
             package=(*package, *path.relative_to(root).parent.parts),
@@ -87,8 +91,15 @@ def _violations(root: Path, *, package: tuple[str, ...] = ()) -> list[str]:
     )
 
 
-def test_core_imports_only_allowlisted_monorepo_packages() -> None:
-    violations = _violations(_CWD, package=("loop", "trackinizer"))
+@pytest.mark.parametrize(
+    "relative",
+    sorted(str(path.relative_to(_CWD)) for path in _CWD.rglob("*.py")),
+)
+def test_core_imports_only_allowlisted_monorepo_packages(relative: str) -> None:
+    violations = _violations(
+        _CWD / relative,
+        package=("loop", "trackinizer", *Path(relative).parent.parts),
+    )
     assert not violations, "trackinizer imports a package off its allowlist:\n" + (
         "\n".join(violations)
     )
@@ -122,6 +133,34 @@ def test_every_spelling_of_an_import_is_caught(tmp_path: Path) -> None:
             "module.py imports loop.paywall",
         ]
         * 5
+    )
+
+
+def test_single_file_preserves_nested_relative_import_resolution(
+    tmp_path: Path,
+) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    module = nested / "module.py"
+    module.write_text(
+        "from ... import paywall\n"
+        "from ...paywall import charge\n"
+        "from .. import sibling\n"
+        "from . import neighbor\n",
+    )
+    assert (
+        _violations(
+            module,
+            package=("loop", "trackinizer", "nested"),
+        )
+        == ["module.py imports loop.paywall"] * 2
+    )
+    assert (
+        _violations(tmp_path, package=("loop", "trackinizer"))
+        == [
+            "nested/module.py imports loop.paywall",
+        ]
+        * 2
     )
 
 
