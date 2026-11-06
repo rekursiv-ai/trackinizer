@@ -606,6 +606,7 @@ _EMPTY_USER_DATA: dict[str, object] = {
     "read": {"boundary": None, "marks": []},
     "collapsed": [],
     "dismissed": [],
+    "unread_tabs": [],
     "lens": None,
     "drafts": {},
     "create_draft": None,

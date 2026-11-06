@@ -39,6 +39,7 @@ from trackinizer.server.api.session_identity import require_session
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
+from trackinizer.server.visuals.session_usage import SessionUsage, session_usage
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.wire_session_ir import (
     CLIENT_OUTDATED,
@@ -55,6 +56,9 @@ from trackinizer.wire.wire_session_ir import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from trackinizer.server.store.core import Store
+    from trackinizer.types.session_records import SessionRecordRow
 
 
 router = APIRouter()
@@ -188,6 +192,49 @@ async def read_session_parts_route(
             )
             for m in manifests
         ],
+    )
+
+
+@router.get("/api/sessions/{session_id}/usage")
+async def read_session_usage_route(
+    session_id: UUID,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    asker: str | None = None,
+    chat: UUID | None = None,
+) -> SessionUsage:
+    """Say what the session's model calls used and cost, as sagent's status line does.
+
+    Args:
+      session_id: AgentSession ID to total.
+      request: FastAPI request (carries auth and store).
+      identity: Authenticated reader.
+      asker: The account the configured assistant reads for.
+      chat: The conversation the configured assistant reads into.
+
+    Returns:
+      usage: The tokens its calls sent and got, how full its window is, and the cost.
+
+    """
+    store = get_store(request)
+    await require_session_access(
+        request,
+        identity,
+        session=await require_session(store, session_id),
+        mode="read",
+        asker=await resolve_asker(request, identity, email=asker, chat=chat),
+    )
+    manifests = await store.read_session_manifests(session_id)
+    rows = [
+        row
+        for manifest in manifests
+        for row in await _all_records(store, session_id, part=manifest.part)
+    ]
+    return session_usage(
+        rows,
+        formats={manifest.part: manifest.format for manifest in manifests},
+        today=datetime.now(UTC).date(),
     )
 
 
@@ -327,3 +374,24 @@ def _refuse_outdated_records(records: Sequence[RecordBody]) -> None:
                 ),
             },
         )
+
+
+async def _all_records(
+    store: Store,
+    session_id: UUID,
+    *,
+    part: int,
+) -> list[SessionRecordRow]:
+    """Read every record of one part, a page at a time."""
+    rows: list[SessionRecordRow] = []
+    while page := await store.read_session_records(
+        session_id,
+        part=part,
+        after_idx=rows[-1].idx if rows else -1,
+        limit=MAX_LIST_LIMIT,
+        plaintext_only=True,
+    ):
+        rows.extend(page)
+        if len(page) < MAX_LIST_LIMIT:
+            break
+    return rows

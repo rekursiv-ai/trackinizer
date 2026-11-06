@@ -46,6 +46,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   read: { boundary: null, marks: [] },
   collapsed: [],
   dismissed: [],
+  unread_tabs: [],
   lens: null,
   drafts: {},
   create_draft: null,

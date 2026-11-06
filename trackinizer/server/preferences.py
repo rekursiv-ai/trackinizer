@@ -506,6 +506,13 @@ class Preferences(_Strict):
         default=list[_Id](),
         description="The notes you dismissed, by key: each stays hidden wherever it would show.",
     )
+    unread_tabs: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description=(
+            "The tabs whose session finished since you looked, or that you marked "
+            "unread, by canvas id: each shows a dot until you open it."
+        ),
+    )
     lens: _Id | None = Field(
         default=None,
         description="The detail lens you used last; none until you pick one.",
