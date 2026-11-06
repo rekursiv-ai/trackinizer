@@ -29,8 +29,8 @@ test("a node's radius grows with the square root of its degree up to 14; a root 
   expect(radius({ root: true, degree: 100 })).toBe(18);
 });
 
-test("an abandoned or invalid node recedes to a quarter", () => {
-  for (const status of ["abandoned", "invalid"]) {
+test("a stopped, abandoned or invalid node recedes to a quarter", () => {
+  for (const status of ["stopped", "abandoned", "invalid"]) {
     expect(nodeLook(shape({ status }), PALETTE)).toMatchObject({ fillAlpha: 0.25, ringAlpha: 0.25, ring: `${status}-ring` });
   }
 });

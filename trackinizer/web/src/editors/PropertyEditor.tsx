@@ -14,7 +14,7 @@ import { WriteButton } from "../writes/WriteButton";
 import { unsettled, WriteStatus } from "../writes/WriteStatus";
 import { type Draft, useDraft, useDraftKeeper } from "./drafts";
 import { PriorityPicker, priorityText } from "./Priority";
-import { type ReasonAsk, ReasonDialog } from "./Reason";
+import { type ReasonAsk, ReasonDialog, statusAsk } from "./Reason";
 import {
   asList,
   BYLINES,
@@ -83,19 +83,7 @@ function StatusEditor({ detail, field, children }: EditorProps) {
         icon: <StatusGlyph status={value} />,
         checked: value === status,
       }))}
-      ask={(to) =>
-        to === "abandoned" || to === "invalid"
-          ? {
-              title: `${to === "invalid" ? "Invalidate" : "Abandon"} ${refOf(detail)}`,
-              body:
-                to === "invalid"
-                  ? "Invalid means the inquiry was wrong from the start. The reason is kept in activity."
-                  : "Abandoned keeps the history but takes it off active lists.",
-              confirm: to === "invalid" ? "Invalidate" : "Abandon",
-              danger: to === "invalid",
-            }
-          : null
-      }
+      ask={(to) => (to === null ? null : statusAsk(to, refOf(detail)))}
     >
       {children}
     </ChoiceEditor>

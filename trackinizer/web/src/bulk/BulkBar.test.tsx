@@ -205,6 +205,24 @@ test("abandoning asks for a reason once, for every row", async () => {
   ]);
 });
 
+test("stopping asks for a reason once, for every row", async () => {
+  const server = serve([issue(1), issue(2)]);
+  show();
+  await screen.findByText("Issue 2");
+  fireEvent.click(check(1));
+  fireEvent.click(check(2));
+  fireEvent.click(within(bar()!).getByRole("button", { name: "Status" }));
+  fireEvent.click(screen.getByRole("option", { name: "Stopped" }));
+  const dialog = await screen.findByRole("dialog", { name: "Stop 2 inquiries" });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "Spend limit" } });
+  fireEvent.click(within(dialog).getByRole("button", { name: /^Stop/ }));
+  await screen.findByText("Status set to Stopped on 2 inquiries.");
+  expect(server.sent.filter((request) => request.method === "PUT").map((request) => request.body)).toEqual([
+    { value: "stopped", mode: "cas", expected: "active", reason: "Spend limit" },
+    { value: "stopped", mode: "cas", expected: "active", reason: "Spend limit" },
+  ]);
+});
+
 test("rows of different priorities tick none in the Priority menu, and rows of one tick it", async () => {
   serve([issue(1, { priority: 0 }), issue(2, { priority: 20 }), issue(3, { priority: 20 })]);
   show();

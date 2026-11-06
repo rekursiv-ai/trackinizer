@@ -78,8 +78,8 @@ def _policy_exclude_clauses(
 # caller.
 #
 # A prerequisite blocks only while it is ``active``. Terminal is not the same as
-# complete -- ``abandoned`` and ``invalid`` also unblock -- so this deliberately
-# tests ``status = 'active'`` rather than ``status = 'complete'``.
+# complete -- ``stopped``, ``abandoned`` and ``invalid`` also unblock -- so this
+# deliberately tests ``status = 'active'`` rather than ``status = 'complete'``.
 _ELIGIBLE_ISSUE_PREDICATE: Final[str] = vetted_sql(
     "issue.kind = 'Issue' AND issue.status = 'active' "
     "  AND issue.owner IS NULL AND NOT issue.locked "

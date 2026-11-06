@@ -542,7 +542,7 @@ def _semantics_block() -> str:
     status = " ".join(
         get_args(
             cast(
-                Literal["active", "complete", "abandoned", "invalid"],
+                Literal["active", "complete", "stopped", "abandoned", "invalid"],
                 Inquiry.Status.__value__,
             ),
         ),

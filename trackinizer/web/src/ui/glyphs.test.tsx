@@ -4,7 +4,7 @@ import { afterEach, expect, test } from "vitest";
 import { JudgementGlyph, PriorityGlyph, priorityBand, priorityName, StateGlyphs, StatusGlyph } from "./glyphs";
 
 // The server's closed sets, as the local preview's `/api/meta/enums` returned them.
-const STATUSES = ["active", "complete", "abandoned", "invalid"];
+const STATUSES = ["active", "complete", "stopped", "abandoned", "invalid"];
 const JUDGEMENTS = ["proven", "disproven", "unproven", "undecidable"];
 
 afterEach(cleanup);

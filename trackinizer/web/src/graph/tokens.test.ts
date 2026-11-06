@@ -53,7 +53,7 @@ test.each(fixed)("under the %s skin the graph draws every node and ring at least
   const tokens = resolve(graph, (selector) => selector === ":root" || selector === own);
   const theme = contrast(bg, "#ffffff") < contrast(bg, "#000000") ? light : dark;
   // A node, and the active and invalid rings, at WCAG's 3:1 for graphics; a ring the theme draws faint on
-  // purpose (complete, abandoned) at least as plain as the theme draws it.
+  // purpose (complete, stopped, abandoned) at least as plain as the theme draws it.
   for (const [name, value] of drawn(tokens)) {
     const floor = Math.min(3, contrast(theme.graph.get(name)!, theme.bg));
     expect(contrast(value, bg), `${name} ${value} on ${bg}`).toBeGreaterThanOrEqual(floor);

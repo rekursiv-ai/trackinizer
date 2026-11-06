@@ -176,6 +176,12 @@ const STATUS_MARKS: { readonly [status: string]: ReactNode } = {
       {CHECK}
     </>
   ),
+  stopped: (
+    <>
+      <circle cx="7" cy="7" r="5.5" fill="none" stroke="var(--amber)" strokeWidth="1.6" />
+      <rect x="4.6" y="4.6" width="4.8" height="4.8" rx="0.6" fill="var(--amber)" />
+    </>
+  ),
   abandoned: (
     <>
       <circle cx="7" cy="7" r="6.2" fill="var(--ink-tertiary)" />

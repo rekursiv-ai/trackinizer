@@ -2484,7 +2484,7 @@ Examples:
   trax issue 7 status to complete              move issue to complete
 
 Values:
-  status: active complete abandoned invalid
+  status: active complete stopped abandoned invalid
 
 Options:
   --width INT                                  truncate rows to this width

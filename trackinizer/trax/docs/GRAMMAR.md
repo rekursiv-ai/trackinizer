@@ -657,7 +657,7 @@ also an edge alias.
 
 ### Statuses (`Inquiry.Status`)
 
-`active`, `complete`, `abandoned`, `invalid`.
+`active`, `complete`, `stopped`, `abandoned`, `invalid`.
 
 ### Priority aliases (`PRIORITY_ALIASES`)
 

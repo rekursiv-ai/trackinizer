@@ -88,11 +88,12 @@ by default so priority retains a clear dynamic range.
 
 ## Status model
 
-Statuses are `active|complete|abandoned|invalid`. `active` with no `owner` is
-open; with an `owner` it is in progress. `trax next`, `board`, and `blocked`
-operate over `active` rows. `abandoned` = work stopped before completion;
-`invalid` = should not have been opened. Prefer either over `del` when history
-matters.
+Statuses are `active|complete|stopped|abandoned|invalid`. `active` with no
+`owner` is open; with an `owner` it is in progress. `trax next`, `board`, and
+`blocked` operate over `active` rows. `complete` = the work finished;
+`stopped` = a budget or usage limit ended the work before it finished;
+`abandoned` = a person gave the work up before completion; `invalid` = should
+not have been opened. Prefer any of these over `del` when history matters.
 
 ## Kinds and artifacts
 
