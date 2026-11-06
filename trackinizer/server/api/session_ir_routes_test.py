@@ -24,6 +24,7 @@ import pytest
 from trackinizer.sagent.session.types import (
     SessionRecord,
     Thinking,
+    TokenUsage,
     UncategorizedRecord,
     UserMessage,
 )
@@ -197,6 +198,52 @@ class TestReadParts:
         assert response.status_code == 404
         assert response.json() == {"detail": f"unknown session {asked}"}
         read.assert_awaited_once_with(asked)
+
+
+class TestReadUsage:
+    def test_totals_every_part_paged_by_its_own_format(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="sagent",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            store,
+            "read_session_manifests",
+            AsyncMock(
+                return_value=[
+                    SessionManifest(
+                        part=part,
+                        name=f"p{part}",
+                        metadata=immutable({}),
+                        ir_id=uuid.uuid4(),
+                        format="sagent",
+                        records=1,
+                    )
+                    for part in (0, 1)
+                ],
+            ),
+        )
+        spent = _row(0, TokenUsage(info=immutable({"spend_usd": 0.5})))
+        read = AsyncMock(side_effect=[[spent], [spent]])
+        monkeypatch.setattr(store, "read_session_records", read)
+
+        response = client.get(f"/api/sessions/{uuid.uuid4()}/usage")
+
+        assert response.status_code == 200, response.text
+        assert from_plain(response.json(), dict[str, object])["usd"] == 1.0
+        assert [call.kwargs["part"] for call in read.await_args_list] == [0, 1]
 
 
 class TestReadRecords:

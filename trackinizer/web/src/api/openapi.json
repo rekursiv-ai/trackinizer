@@ -5802,6 +5802,17 @@
       "type": "string",
       "x-setting": true
      },
+     "unread_tabs": {
+      "default": [],
+      "description": "The tabs whose session finished since you looked, or that you marked unread, by canvas id: each shows a dot until you open it.",
+      "items": {
+       "maxLength": 100,
+       "type": "string"
+      },
+      "maxItems": 500,
+      "title": "Unread Tabs",
+      "type": "array"
+     },
      "views": {
       "default": [],
       "description": "Your saved views: a name and the list query each one shows.",
@@ -7071,6 +7082,61 @@
      "seq"
     ],
     "title": "SessionStartResponse",
+    "type": "object"
+   },
+   "SessionUsage": {
+    "description": "What a session's model calls used and cost, as Chat shows it.",
+    "properties": {
+     "cache_read_tokens": {
+      "default": 0,
+      "title": "Cache Read Tokens",
+      "type": "integer"
+     },
+     "context_tokens": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Context Tokens"
+     },
+     "context_window": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Context Window"
+     },
+     "input_tokens": {
+      "default": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+     },
+     "output_tokens": {
+      "default": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+     },
+     "usd": {
+      "anyOf": [
+       {
+        "type": "number"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Usd"
+     }
+    },
+    "title": "SessionUsage",
     "type": "object"
    },
    "SlashCommandBody": {
@@ -18717,6 +18783,80 @@
      }
     },
     "summary": "Read Recent Session Turns Route"
+   }
+  },
+  "/api/sessions/{session_id}/usage": {
+   "get": {
+    "description": "Say what the session's model calls used and cost, as sagent's status line does.\n\nArgs:\n  session_id: AgentSession ID to total.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  usage: The tokens its calls sent and got, how full its window is, and the cost.",
+    "operationId": "read_session_usage_route_api_sessions__session_id__usage_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "asker",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Asker"
+      }
+     },
+     {
+      "in": "query",
+      "name": "chat",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "format": "uuid",
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Chat"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/SessionUsage"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Read Session Usage Route"
    }
   },
   "/api/terminals": {

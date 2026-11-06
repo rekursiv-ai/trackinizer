@@ -76,6 +76,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "read": {"boundary": None, "marks": []},
     "collapsed": [],
     "dismissed": [],
+    "unread_tabs": [],
     "lens": None,
     "drafts": {},
     "create_draft": None,

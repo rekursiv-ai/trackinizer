@@ -72,6 +72,7 @@
         "terminal_placement": "bottom",
         "terminal_tab_chords": false,
         "theme": "dark",
+        "unread_tabs": [],
         "views": [],
         "workspaces": {
           "colors": {},
