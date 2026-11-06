@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 import json
+import re
 import shutil
 import sys
 
@@ -41,6 +42,31 @@ def show_ids() -> bool:
     return SHOW_IDS.get()
 
 
+# C0 but tab and newline, DEL and C1, bidi marks and controls, the language tag block.
+_UNSAFE_OUTPUT = re.compile(
+    "[\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f\\u061c\\u200e\\u200f"
+    "\\u202a-\\u202e\\u2066-\\u2069\\U000e0000-\\U000e007f]",
+)
+
+
+def terminal_safe(text: str) -> str:
+    """Drop what a terminal would act on, or a reader could not see, from ``text``.
+
+    Rows hold text from outside, such as a signup's address. ANSI and OSC sequences could
+    hide or forge rows, set a title or reach a clipboard, in their 7-bit or C1 forms, and
+    bidi and tag characters hide what a person reads. Tabs and newlines stay; JSON output
+    escapes all of these anyway.
+
+    Args:
+      text: What is about to be written.
+
+    Returns:
+      text: The same, without those characters.
+
+    """
+    return _UNSAFE_OUTPUT.sub("", text)
+
+
 def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
     """Write one message to stdout (or stderr when ``err``).
 
@@ -56,7 +82,7 @@ def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
 
     """
     stream = err_stream() if err else out_stream()
-    stream.write(str(message))
+    stream.write(terminal_safe(str(message)))
     if nl:
         stream.write("\n")
 
