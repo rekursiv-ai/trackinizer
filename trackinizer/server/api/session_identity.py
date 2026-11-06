@@ -126,14 +126,12 @@ def is_the_assistant(identity: AuthIdentity, assistant: Assistant | None) -> boo
     return assistant is not None and identity.email == assistant.email
 
 
-def asker_reader(request: Request, asker: Asker, *, delegated: bool) -> SessionReader:
+def asker_reader(request: Request, asker: Asker) -> SessionReader:
     """Describe the person the assistant acts for as the transcript test reads them.
 
     Args:
       request: The request, which carries the configuration.
       asker: The person, as ``session_access.resolve_asker`` finds them.
-      delegated: The assistant reads for them into a chat, which takes away their
-        oversight and the every-chat grant.
 
     Returns:
       reader: Their reader on this server.
@@ -147,5 +145,4 @@ def asker_reader(request: Request, asker: Asker, *, delegated: bool) -> SessionR
         orgs=get_chat_orgs(request),
         assistant="" if assistant is None else assistant.email,
         hosted_domain=asker.hosted_domain,
-        delegated=delegated,
     )
