@@ -16,7 +16,7 @@ that person's rights and none of its own, and the server finds them in its own
 tables. It relays input only for a writer whose account holds the target session,
 even when its own key opened that session. It reads a session for an asker into the
 chat it answers them in, the ``chat`` it names, when the asker reads both. What it reads
-lands in the chat, so it reads no chat and no ``private`` session for anyone; a
+lands in the chat, so every destination reader must be allowed to read it; a
 ``staff`` session only once the chat is ``staff`` too
 (:func:`~trackinizer.server.private.chat_audience.raise_chat_audience`), which
 only the chat's starter makes it; and any other session only when everyone who
@@ -643,7 +643,7 @@ async def _require_asker_reads(
     async with get_store(request).engine.acquire() as conn:
         if not await reads_session(
             conn,
-            reader=asker_reader(request, asker, delegated=True),
+            reader=asker_reader(request, asker),
             session_id=session.id,
         ):
             raise hidden_session(session.audience)

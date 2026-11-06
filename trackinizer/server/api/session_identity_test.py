@@ -28,6 +28,7 @@ from trackinizer.types.inquiries import AgentSession, Inquiry, Issue
 
 if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn
+    from trackinizer.server.auth import Role
 
 
 @pytest.mark.asyncio
@@ -112,11 +113,11 @@ def test_only_the_configured_assistant_matches(
     )
 
 
-@pytest.mark.parametrize("delegated", [False, True])
 @pytest.mark.parametrize("configured", [False, True])
-def test_asker_reader_keeps_personal_rights_and_removes_delegated_oversight(
+@pytest.mark.parametrize("role", ["writer", "admin"])
+def test_asker_reader_keeps_the_humans_personal_rights(
+    role: Role,
     *,
-    delegated: bool,
     configured: bool,
 ) -> None:
     app = FastAPI()
@@ -127,19 +128,19 @@ def test_asker_reader_keeps_personal_rights_and_removes_delegated_oversight(
     request = Request({"type": "http", "app": app})
     asker = Asker(
         email="Reader@Lab.Example",
-        role="admin",
-        read_audiences=frozenset({"open", "private", "staff"}),
+        role=role,
+        read_audiences=frozenset({"open", "private"}),
         hosted_domain="Lab.Example",
         chat=uuid4(),
     )
 
-    reader = asker_reader(request, asker, delegated=delegated)
+    reader = asker_reader(request, asker)
 
     assert reader == SessionReader(
         email="reader@lab.example",
         audiences=asker.read_audiences,
         org="lab.example",
-        oversight=not delegated,
+        oversight=role == "admin",
     )
 
 

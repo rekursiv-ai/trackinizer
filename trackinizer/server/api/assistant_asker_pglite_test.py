@@ -498,20 +498,20 @@ async def test_naming_an_asker_reads_nothing_for_another_caller(
     )
 
 
-async def test_a_read_for_an_admin_asker_holds_no_oversight(
+async def test_a_read_for_an_admin_asker_keeps_their_human_access(
     served: _Served,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An admin reads every session, but nothing of it goes into a chat for them."""
+    """The admin's own private chat reaches no one beyond that authorized reader."""
     patch_state(monkeypatch, "config", replace(_CONFIG, chat_orgs="individual"))
-    chat = await served.chat(starter=_OPEN_ADMIN)
+    chat = await served.chat(starter=_OPEN_ADMIN, audience="private")
     served.act_as(_OPEN_ADMIN, role="admin")
     themselves = await served.reads(served.public)
     served.act_as(_ASSISTANT)
 
     read = await served.reads(served.public, asker=_OPEN_ADMIN, chat=chat.conversation)
 
-    assert (themselves, read) == ([200] * 3, [403] * 3)
+    assert (themselves, read) == ([200] * 3, [200] * 3)
 
 
 async def test_an_open_read_leaves_the_chat_open(served: _Served) -> None:
