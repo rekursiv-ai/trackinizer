@@ -90,6 +90,35 @@ class TestUnauthenticatedReturns401:
         assert r.status_code == 401
 
 
+class TestTheRouteMapNeedsASignIn:
+    def test_the_schema_is_refused_without_auth(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        clear_identity_override()
+        assert client.get("/openapi.json").status_code == 401
+
+    def test_a_signed_in_viewer_reads_the_schema(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        install_identity(make_test_identity(role="viewer"))
+        response = client.get("/openapi.json")
+        assert response.status_code == 200
+        paths = from_plain(response.json(), dict[str, object])["paths"]
+        assert "/api/version" in from_plain(paths, dict[str, object])
+
+    def test_there_are_no_doc_pages(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            assert client.get(path).status_code == 404
+
+
 class TestViewerHitsWriterRoute403:
     def test_viewer_cannot_submit(
         self,

@@ -770,6 +770,33 @@ def test_actor_display_uses_system_and_omits_redundant_principal() -> None:
     )
 
 
+def test_nothing_echoed_can_drive_a_terminal_or_hide_from_a_reader() -> None:
+    for unsafe in (
+        "\x1b[8mhidden",
+        "\u009b8mhidden",
+        "\u009d0;title\x07",
+        "\x1b]52;c;aGk=\x07",
+        "over\rwrite",
+        "a\u202eb",
+        "tag\U000e0049",
+    ):
+        cleaned = render.terminal_safe(unsafe)
+        assert not set(cleaned) & {
+            "\x1b",
+            "\u009b",
+            "\u009d",
+            "\x07",
+            "\r",
+            "\u202e",
+            "\U000e0049",
+        }
+
+
+def test_what_a_reader_needs_is_left_as_it_was() -> None:
+    plain = "Issue#1\tZoë 蛋白质 🧬 -- a\u200db\nnext line\n"
+    assert render.terminal_safe(plain) == plain
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

@@ -367,7 +367,15 @@ ROUTERS: Final = (
 
 def _build_app() -> FastAPI:
     """Assemble the application: middleware, then every route module's router."""
-    built = FastAPI(title="Trackinizer", lifespan=lifespan)
+    # No public /docs or /redoc, and the schema is read signed in (`meta_routes`): this
+    # server is reachable from the internet, and its full route map need not be.
+    built = FastAPI(
+        title="Trackinizer",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     built.add_middleware(ChangeIdMiddleware)
     built.add_middleware(RequestLoggingMiddleware)
     built.exception_handler(ConflictError)(conflict_handler)

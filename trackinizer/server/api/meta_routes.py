@@ -7,14 +7,18 @@ the SHA is resolved. The metadata routes (``/api/meta/enums``,
 ``/api/meta/fields``, ``/api/meta/edges``) are likewise store-free -- each
 reflects the type ``Literal``s / route table so the SPA needs no
 hand-maintained copy of the enums, field-owner map, or edge topology.
+
+The OpenAPI schema is the exception: the whole route map needs no anonymous reader, so it
+takes a sign-in, and FastAPI's own open ``/docs`` and ``/redoc`` are off.
 """
 
 from __future__ import annotations
 
 from typing import Protocol, cast, get_args
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends, FastAPI, Request
 
+from trackinizer.server.auth import require_role
 from trackinizer.server.version import build_sha
 from trackinizer.types.edges import (
     Edge,
@@ -32,6 +36,16 @@ from trackinizer.wire.routes import field_owner_kind
 
 
 router = APIRouter()
+
+
+@router.get(
+    "/openapi.json",
+    include_in_schema=False,
+    dependencies=[Depends(require_role("viewer"))],
+)
+def openapi_route(request: Request) -> dict[str, object]:
+    """Serve the app's OpenAPI schema to a signed-in caller."""
+    return cast("dict[str, object]", cast(FastAPI, request.app).openapi())
 
 
 @router.get("/api/version")
