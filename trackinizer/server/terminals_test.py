@@ -83,6 +83,19 @@ class _BlockedSocket(_Socket):
         await super().close(code)
 
 
+class _ClosingSocket(_Socket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closing = asyncio.Event()
+        self.release = asyncio.Event()
+
+    @override
+    async def close(self, code: int) -> None:
+        self.closing.set()
+        await self.release.wait()
+        await super().close(code)
+
+
 class _World:
     def __init__(self) -> None:
         self.clock = _Clock()
@@ -244,7 +257,12 @@ async def test_a_browser_that_left_is_stopped_after_the_grace_and_not_before() -
     await world.hub.sweep()
     assert not term.ended
 
-    world.clock.now += 2
+    world.clock.now += 1
+    await world.hub.sweep()
+    assert not term.ended
+    assert host.sent == []
+
+    world.clock.now += 1
     await world.hub.sweep()
     assert term.ended
     assert (Frame.STOP, b"") in host.sent
@@ -274,7 +292,7 @@ async def test_idle_and_lifetime_close_the_terminal(seconds: int, code: int) -> 
 @pytest.mark.asyncio
 async def test_input_resets_the_idle_clock() -> None:
     world = _World()
-    term, _, _ = await world.live()
+    term, _, browser = await world.live()
     world.clock.now += wire_terminals.IDLE_SEC - 1
     await world.hub.from_browser(term, Frame.INPUT, b"x")
     world.clock.now += wire_terminals.IDLE_SEC - 1
@@ -282,6 +300,10 @@ async def test_input_resets_the_idle_clock() -> None:
     await world.hub.sweep()
 
     assert not term.ended
+    world.clock.now += 2
+    await world.hub.sweep()
+    assert browser.closed == [wire_terminals.CLOSE_IDLE]
+    assert world.hub.terminal(term.id) is None
 
 
 @pytest.mark.asyncio
@@ -303,7 +325,7 @@ async def test_opens_per_minute_are_limited_and_the_window_slides() -> None:
     with pytest.raises(TerminalLimitError):
         world.open(machine_id=uuid.uuid4())
 
-    world.clock.now += 61
+    world.clock.now += 60
     world.open(machine_id=uuid.uuid4())
 
 
@@ -500,6 +522,7 @@ async def test_a_retry_can_replace_a_claim_whose_acknowledgement_is_still_blocke
         assert accepted
         assert term.host is second
         assert not term.ended
+        assert first.closed == [wire_terminals.CLOSE_TAKEN_OVER]
         assert second.sent == [(Frame.ACK, b"")]
         await world.hub.host_lost(term, first)
         assert term.host is second
@@ -634,13 +657,19 @@ async def test_a_wait_returns_an_open_at_once_and_marks_the_machine_ready() -> N
     world = _World()
     assert not world.hub.ready(_MACHINE)
 
-    waiting = asyncio.create_task(world.hub.wait(_MACHINE, wait_sec=5))
-    await asyncio.sleep(0)
-    term = world.open()
+    waiting = asyncio.create_task(world.hub.wait(_MACHINE, wait_sec=0.5))
+    try:
+        await asyncio.sleep(0)
+        assert world.hub.ready(_MACHINE)
+        term = world.open()
+        assert await waiting is term
+    finally:
+        waiting.cancel()
+        await asyncio.gather(waiting, return_exceptions=True)
 
-    assert await waiting is term
+    world.clock.now += wire_terminals.WAIT_LEASE_SEC
     assert world.hub.ready(_MACHINE)
-    world.clock.now += wire_terminals.WAIT_LEASE_SEC + 1
+    world.clock.now += 1
     assert not world.hub.ready(_MACHINE)
 
 
@@ -1138,6 +1167,279 @@ async def test_a_run_open_hands_the_wait_the_folder_it_starts_in_as_named() -> N
     assert offered is not None
     assert offered.cwd == "~/project"
     assert world.open().cwd is None
+
+
+@pytest.mark.asyncio
+async def test_a_pending_open_lives_through_its_exact_startup_deadline() -> None:
+    world = _World()
+    term = world.open()
+    browser = _Socket()
+    await world.hub.attach_browser(term, browser, offset=0)
+
+    world.clock.now += wire_terminals.OPEN_TTL_SEC
+    await world.hub.sweep()
+    assert world.hub.terminal(term.id) is term
+    assert browser.closed == []
+
+    world.clock.now += 1
+    await world.hub.sweep()
+    assert browser.closed == [wire_terminals.CLOSE_HOST_LOST]
+    assert world.hub.terminal(term.id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("seconds", "code"),
+    [
+        (wire_terminals.IDLE_SEC, wire_terminals.CLOSE_IDLE),
+        (wire_terminals.LIFETIME_SEC, wire_terminals.CLOSE_LIFETIME),
+    ],
+)
+async def test_idle_and_lifetime_allow_the_exact_boundary(
+    seconds: int,
+    code: int,
+) -> None:
+    world = _World()
+    term, host, browser = await world.live()
+    world.clock.now += seconds
+    if code == wire_terminals.CLOSE_LIFETIME:
+        assert await world.hub.from_browser(term, Frame.INPUT, b"active")
+
+    await world.hub.sweep()
+    assert world.hub.terminal(term.id) is term
+    assert host.closed == browser.closed == []
+
+    world.clock.now += 1
+    await world.hub.sweep()
+    assert host.closed == browser.closed == [code]
+    assert world.hub.terminal(term.id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("now", [0.0, float(wire_terminals.LIFETIME_SEC)])
+async def test_a_fresh_terminal_does_not_expire_at_a_different_clock_origin(
+    now: float,
+) -> None:
+    world = _World()
+    world.clock.now = now
+    term, host, browser = await world.live()
+
+    await world.hub.sweep()
+
+    assert world.hub.terminal(term.id) is term
+    assert host.closed == browser.closed == []
+
+
+@pytest.mark.asyncio
+async def test_wait_skips_an_open_that_ended_before_it_was_offered() -> None:
+    world = _World()
+    ended = world.open()
+    await world.hub.end(ended, code=wire_terminals.CLOSE_ENDED)
+    live = world.open()
+
+    assert await world.hub.wait(_MACHINE, wait_sec=0) is live
+    assert await world.hub.wait(_MACHINE, wait_sec=0) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prefix_bytes", [0, 3])
+async def test_input_buffered_before_the_host_accepts_exactly_one_full_frame(
+    prefix_bytes: int,
+) -> None:
+    world = _World()
+    term = world.open()
+    prefix = b"a" * prefix_bytes
+    suffix = b"b" * (wire_terminals.MAX_INPUT_FRAME_BYTES - prefix_bytes)
+    assert await world.hub.from_browser(term, Frame.INPUT, prefix)
+    assert await world.hub.from_browser(term, Frame.INPUT, suffix)
+    host = _Socket()
+
+    assert await world.hub.host_connected(term, host)
+
+    assert host.sent == [(Frame.INPUT, prefix + suffix)]
+
+
+@pytest.mark.asyncio
+async def test_browser_input_during_host_close_is_not_forwarded() -> None:
+    world = _World()
+    term = world.open()
+    host, browser = _ClosingSocket(), _Socket()
+    assert await world.hub.host_connected(term, host)
+    await world.hub.attach_browser(term, browser, offset=0)
+    host.sent.clear()
+    ending = asyncio.create_task(world.hub.end(term, code=wire_terminals.CLOSE_ENDED))
+    try:
+        await asyncio.wait_for(host.closing.wait(), 1)
+        assert await world.hub.from_browser(term, Frame.INPUT, b"late")
+        assert host.sent == []
+    finally:
+        host.release.set()
+        await ending
+
+    assert host.closed == browser.closed == [wire_terminals.CLOSE_ENDED]
+
+
+@pytest.mark.asyncio
+async def test_failed_host_input_closes_the_browser_with_host_lost() -> None:
+    world = _World()
+    term, host, browser = await world.live()
+    host.gone = True
+
+    assert await world.hub.from_browser(term, Frame.INPUT, b"lost")
+
+    assert browser.closed == [wire_terminals.CLOSE_HOST_LOST]
+    assert world.hub.terminal(term.id) is None
+
+
+@pytest.mark.asyncio
+async def test_a_host_without_a_first_browser_still_expires_after_the_grace() -> None:
+    world = _World()
+    term = world.open()
+    host = _Socket()
+    assert await world.hub.host_connected(term, host)
+
+    world.clock.now += wire_terminals.DETACH_GRACE_SEC + 1
+    await world.hub.sweep()
+
+    assert host.sent == [(Frame.STOP, b"")]
+    assert host.closed == [wire_terminals.CLOSE_ENDED]
+    assert world.hub.terminal(term.id) is None
+
+
+@pytest.mark.asyncio
+async def test_output_during_startup_does_not_confirm_the_host() -> None:
+    world = _World()
+    term = world.open()
+    host, browser = _Socket(), _Socket()
+    assert await world.hub.host_connected(term, host, ready=True)
+    await world.hub.attach_browser(term, browser, offset=0)
+
+    await world.hub.from_host(term, Frame.OUTPUT, b"early")
+    assert browser.sent[-1] == (Frame.OUTPUT, b"early")
+    assert await world.hub.from_browser(term, Frame.INPUT, b"buffered")
+    assert host.sent == [(Frame.ACK, b"")]
+
+    await world.hub.from_host(term, Frame.ACK, b"")
+    assert host.sent == [(Frame.ACK, b""), (Frame.INPUT, b"buffered")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cols", [0, 1])
+async def test_resize_allows_a_single_column(cols: int) -> None:
+    world = _World()
+    term, host, _ = await world.live()
+
+    assert await world.hub.from_browser(term, Frame.RESIZE, encode_winsize(3, cols))
+
+    assert host.sent == [(Frame.RESIZE, encode_winsize(3, 1))]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("now", [0.0, 1_000.0])
+@pytest.mark.parametrize(
+    ("kind", "limit"),
+    [
+        (Frame.INPUT, wire_terminals.MAX_INPUT_BYTES_PER_SEC),
+        (Frame.OUTPUT, wire_terminals.MAX_OUTPUT_BYTES_PER_SEC),
+    ],
+)
+async def test_byte_rates_allow_the_cap_and_reset_at_exactly_one_second(
+    now: float,
+    kind: Frame,
+    limit: int,
+) -> None:
+    world = _World()
+    world.clock.now = now
+    term, _, _ = await world.live()
+    send = world.hub.from_browser if kind is Frame.INPUT else world.hub.from_host
+    chunk = bytes(wire_terminals.MAX_INPUT_FRAME_BYTES)
+    for _ in range(limit // len(chunk)):
+        await send(term, kind, chunk)
+    assert world.slept == []
+    await send(term, kind, b"x")
+    assert world.slept == [1.0]
+
+    world.slept.clear()
+    world.clock.now += 1
+    for _ in range(limit // len(chunk)):
+        await send(term, kind, chunk)
+    assert world.slept == []
+    world.clock.now += 0.25
+    await send(term, kind, b"x")
+    assert world.slept == [0.75]
+
+
+@pytest.mark.asyncio
+async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_offer() -> (
+    None
+):
+    world = _World()
+    workspace, session = uuid.UUID(int=13), uuid.UUID(int=17)
+    opened = world.hub.open(
+        Opening(
+            user="context@x.y",
+            machine_id=_MACHINE,
+            machine="worker-2",
+            rows=37,
+            cols=91,
+            canvas=_CANVAS,
+            workspace=workspace,
+            requested_by="campaign-helper",
+            surface="run-tile",
+            command="sagent",
+            attach=session,
+            run_name="campaign-context",
+            cwd="~/context",
+        ),
+    )
+
+    [listed] = world.hub.live_in("context@x.y", canvas=_CANVAS)
+    assert (listed.id, listed.machine, listed.surface) == (
+        opened.id,
+        "worker-2",
+        "run-tile",
+    )
+    offered = await world.hub.wait(_MACHINE, wait_sec=0)
+    assert offered is opened
+    assert offered is not None
+    assert (offered.user, offered.rows, offered.cols) == ("context@x.y", 37, 91)
+    assert (offered.canvas, offered.workspace, offered.requested_by) == (
+        _CANVAS,
+        workspace,
+        "campaign-helper",
+    )
+    assert (offered.command, offered.attach, offered.run_name, offered.cwd) == (
+        "sagent",
+        session,
+        "campaign-context",
+        "~/context",
+    )
+    assert world.hub.attached_to(session) == [offered]
+
+
+@pytest.mark.asyncio
+async def test_a_files_open_reaches_only_its_machine_and_keeps_its_kind() -> None:
+    world = _World()
+    machine = uuid.UUID(int=19)
+    opened = world.hub.open(
+        Opening(
+            user="files@x.y",
+            machine_id=machine,
+            machine="file-worker",
+            rows=3,
+            cols=5,
+            kind="files",
+        ),
+    )
+
+    assert await world.hub.wait(_MACHINE, wait_sec=0) is None
+    offered = await world.hub.wait(machine, wait_sec=0)
+    assert offered is opened
+    assert offered is not None
+    assert (offered.machine, offered.kind) == ("file-worker", "files")
+    assert (offered.command, offered.attach, offered.run_name) == (None, None, None)
+    assert world.hub.live_in("files@x.y", canvas=_CANVAS) == []
+    assert await world.hub.wait(machine, wait_sec=0) is None
 
 
 if __name__ == "__main__":

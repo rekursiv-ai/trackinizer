@@ -1569,6 +1569,52 @@ def test_a_foreign_call_after_its_result_is_written_once() -> None:
     assert _tool_uses(records) == ["a"]
 
 
+@pytest.mark.parametrize("late_call", [False, True])
+def test_a_foreign_result_preserves_its_tool_identity_and_late_arguments(
+    late_call: bool,
+) -> None:
+    arguments = {"command": "pwd", "description": "show directory"}
+    records: list[SessionRecord] = [
+        _FOREIGN,
+        BashResult(call_id="a", stdout="ok"),
+    ]
+    if late_call:
+        records.append(ToolCall(call_id="a", name="shell", arguments=arguments))
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    call, result = _transcript(claude.normalize(StringIO(output.getvalue())))
+    assert isinstance(call, ToolCall)
+    assert isinstance(result, BashResult)
+    assert (call.call_id, call.name, dict(call.arguments)) == (
+        "a",
+        "Bash",
+        arguments if late_call else {},
+    )
+    assert (result.call_id, result.stdout) == ("a", "ok")
+
+
+def test_a_foreign_session_preserves_stated_identity_and_parent_links() -> None:
+    stated = "11111111-1111-4111-8111-111111111111"
+    output = StringIO()
+
+    claude.denormalize(
+        [
+            _FOREIGN,
+            UserMessage(content="hi", extra={"uuid": stated}),
+            AssistantMessage(content="reply"),
+        ],
+        output,
+    )
+
+    user, assistant = _transcript(claude.normalize(StringIO(output.getvalue())))
+    assert isinstance(user, UserMessage)
+    assert isinstance(assistant, AssistantMessage)
+    assert user.extra["uuid"] == stated
+    assert assistant.extra["parentUuid"] == stated
+
+
 def test_a_call_added_after_a_deleted_one_is_still_written() -> None:
     native = _line(
         type='"assistant"',

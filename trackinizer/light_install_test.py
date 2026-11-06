@@ -9,9 +9,12 @@ explains a missing extra instead of printing a traceback.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from functools import cache, partial
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+from unicodedata import normalize
+from unittest.mock import Mock
 
 import ast
 import json
@@ -26,6 +29,10 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.server import entry
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -188,6 +195,73 @@ def test_static_scan_follows_later_lazy_and_relative_imports(tmp_path: Path) -> 
     }
 
 
+def test_static_scan_does_not_walk_unrelated_expression_trees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(
+        "def unrelated():\n    return "
+        + " + ".join(str(value) for value in range(32))
+        + '\n\ndef caller():\n    return lazy_import("torch")\n',
+    )
+    children = Mock(wraps=ast.iter_child_nodes)
+    monkeypatch.setattr(ast, "iter_child_nodes", children)
+
+    assert _imported_names(path, package="pkg") == {"torch"}
+    assert children.call_count < 20
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_static_scan_keeps_dynamic_imports_in_every_expression(
+    tmp_path: Path,
+    newline: str,
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(
+        newline.join(
+            [
+                "from . import sibling",
+                "import json",
+                '@lazy_import("decorator")',
+                'def caller(default=import_module("default")):',
+                "    if TYPE_CHECKING:",
+                "        import hidden",
+                '        value = lazy_import("hidden_dynamic")',
+                "    else:",
+                "        import visible",
+                '    return [lazy_import("comprehension") for item in ()]',
+                "value = f\"{import_module('formatted')}\"",
+                'value = (lambda: loader.import_module("lambda_body"))()',
+                'value = Ｌａｚｙ.lazy_import("qualified")',
+                'value = ｌａｚｙ＿ｉｍｐｏｒｔ("normalized")',
+                "value = (loader",
+                " .import_module",
+                ')("multiline")',
+                "value = lazy_import(",
+                '    "argument_on_next_line",',
+                ")",
+            ],
+        ),
+    )
+
+    assert _imported_names(path, package="pkg") == {
+        "pkg",
+        "pkg.sibling",
+        "json",
+        "decorator",
+        "default",
+        "visible",
+        "comprehension",
+        "formatted",
+        "lambda_body",
+        "qualified",
+        "normalized",
+        "multiline",
+        "argument_on_next_line",
+    }
+
+
 def test_static_scan_resolves_new_modules_on_every_invocation(tmp_path: Path) -> None:
     package = tmp_path / "pkg"
     package.mkdir()
@@ -327,7 +401,7 @@ def _module_path(module: str, *, root: Path) -> Path | None:
 def _imported_names(path: Path, *, package: str) -> set[str]:
     """Return every dotted module name ``path`` imports, however and wherever."""
     names: set[str] = set()
-    for node in _executed_nodes(ast.parse(path.read_text())):
+    for node in _executed_nodes(path.read_text()):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -340,7 +414,7 @@ def _imported_names(path: Path, *, package: str) -> set[str]:
                 source = "" if module is None else module
             names.add(source)
             names.update(f"{source}.{alias.name}" for alias in node.names)
-        elif isinstance(node, ast.Call):
+        else:
             callee = node.func
             if isinstance(callee, ast.Attribute):
                 called = callee.attr
@@ -355,18 +429,28 @@ def _imported_names(path: Path, *, package: str) -> set[str]:
     return names
 
 
-def _executed_nodes(tree: ast.AST) -> list[ast.AST]:
-    """Return every node of ``tree`` outside an ``if TYPE_CHECKING`` body."""
-    found: list[ast.AST] = []
-    pending: list[ast.AST] = [tree]
+def _executed_nodes(source: str) -> Iterator[ast.Import | ast.ImportFrom | ast.Call]:
+    """Yield imports and candidate calls outside ``if TYPE_CHECKING`` bodies."""
+    dynamic_lines = [
+        number
+        for number, line in enumerate(normalize("NFKC", source).split("\n"), start=1)
+        if "lazy_import" in line or "import_module" in line
+    ]
+    pending: list[ast.AST] = [ast.parse(source)]
     while pending:
         node = pending.pop()
-        found.append(node)
+        if isinstance(node, ast.expr):
+            at = bisect_left(dynamic_lines, node.lineno)
+            if at == len(dynamic_lines) or dynamic_lines[at] > (
+                node.end_lineno or node.lineno
+            ):
+                continue
+        if isinstance(node, ast.Import | ast.ImportFrom | ast.Call):
+            yield node
         if isinstance(node, ast.If) and _is_type_checking(node.test):
             pending.extend(node.orelse)
         else:
             pending.extend(ast.iter_child_nodes(node))
-    return found
 
 
 def _is_type_checking(test: ast.expr) -> bool:

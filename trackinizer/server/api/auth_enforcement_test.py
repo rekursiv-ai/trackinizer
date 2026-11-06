@@ -25,6 +25,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.server.api import meta_routes
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -109,8 +110,9 @@ class TestTheRouteMapNeedsASignIn:
         host: str,
     ) -> None:
         clear_identity_override()
-        with TestClient(route_client[0].app, client=(host, 50_000)) as local:
-            response = local.get("/openapi.json")
+        del route_client
+        local = TestClient(app, client=(host, 50_000))
+        response = local.get("/openapi.json")
         assert response.status_code == 200
         paths = from_plain(response.json(), dict[str, object])["paths"]
         assert "/api/version" in from_plain(paths, dict[str, object])
@@ -125,8 +127,9 @@ class TestTheRouteMapNeedsASignIn:
         header: str,
     ) -> None:
         clear_identity_override()
-        with TestClient(route_client[0].app, client=("127.0.0.1", 50_000)) as local:
-            response = local.get("/openapi.json", headers={header: "203.0.113.9"})
+        del route_client
+        local = TestClient(app, client=("127.0.0.1", 50_000))
+        response = local.get("/openapi.json", headers={header: "203.0.113.9"})
         assert response.status_code == 401
 
     def test_a_signed_in_caller_reads_the_schema(
