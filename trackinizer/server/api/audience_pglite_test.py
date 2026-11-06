@@ -212,7 +212,7 @@ async def _session_audience(store: Store, session_id: uuid.UUID) -> str:
     return from_plain(found, str)
 
 
-@pytest.mark.parametrize("route", ["parts", "records", "turns"])
+@pytest.mark.parametrize("route", ["parts", "records", "turns", "usage"])
 async def test_an_open_reader_is_refused_a_staff_sessions_transcript(
     pglite_route_client: _Client,
     hidden: _Hidden,
@@ -230,7 +230,8 @@ async def test_an_open_reader_is_refused_a_staff_sessions_transcript(
 
     assert refusals == [{"code": "session_audience", "audience": "staff"}] * 3
     assert allowed.status_code == 200
-    assert route == "parts" or _CANARY in allowed.text
+    # A part list and a usage total name no line, so only the others carry the canary.
+    assert route in {"parts", "usage"} or _CANARY in allowed.text
 
 
 async def test_the_key_that_opened_a_staff_session_reads_appends_drains_and_ends_it(

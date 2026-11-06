@@ -63,6 +63,10 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("GET", "/api/sessions/{session_id}/records"),
         ("POST", "/api/sessions/{session_id}/records"),
         ("GET", "/api/sessions/{session_id}/turns"),
+        # What a session's model calls used and cost, totalled from its records: it
+        # returns no transcript, but tells how much a session did, so a read takes the
+        # records' read test.
+        ("GET", "/api/sessions/{session_id}/usage"),
         ("POST", "/api/messages"),
         ("GET", "/api/web/feed"),
         ("GET", "/api/web/feed/facets"),
