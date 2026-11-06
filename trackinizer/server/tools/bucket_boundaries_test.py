@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import dataclasses
 import itertools
 
 import pytest
 
+from trackinizer.server.tools import bucket_boundaries
 from trackinizer.server.tools.bucket_boundaries import (
     CORPUS_HISTOGRAM_PATH,
     OCTEN_8B,
     QWEN3_0P6B,
     QWEN3_4B,
     QWEN3_8B,
+    SweepPoint,
+    TransformerSpec,
     bucketed_cost,
     derive_edges,
     derive_rows,
@@ -24,6 +29,20 @@ from trackinizer.server.tools.bucket_boundaries import (
     sweep,
     transformer_cost,
 )
+
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
+    from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def isolate_derived_edges_cache() -> Generator[None]:
+    bucket_boundaries._cached_derive_edges.cache_clear()
+    try:
+        yield
+    finally:
+        bucket_boundaries._cached_derive_edges.cache_clear()
 
 
 def _corpus() -> dict[int, int]:
@@ -363,6 +382,126 @@ def test_dim_in_range_rejects_dims_outside_the_matryoshka_span() -> None:
     assert not dim_in_range(QWEN3_4B, 31)
     assert not dim_in_range(QWEN3_4B, 2_561)
     assert not dim_in_range(QWEN3_0P6B, 2_560)  # 0.6B tops out at 1024.
+
+
+@pytest.mark.parametrize(
+    ("intermediate_dim", "edge", "parameters", "activation_elements"),
+    [
+        (13, 3, 1_365, 219),
+        (13, 7, 1_365, 595),
+        (61, 3, 3_381, 408),
+        (61, 7, 3_381, 952),
+    ],
+)
+@pytest.mark.parametrize("dtype_bytes", [2, 4])
+@pytest.mark.parametrize("dim", [5, 11])
+def test_derive_rows_accounts_for_weights_peak_activations_and_output(
+    *,
+    intermediate_dim: int,
+    edge: int,
+    parameters: int,
+    activation_elements: int,
+    dtype_bytes: int,
+    dim: int,
+) -> None:
+    spec = TransformerSpec(
+        hidden_dim=7,
+        intermediate_dim=intermediate_dim,
+        num_layers=2,
+        num_heads=3,
+        num_kv_heads=2,
+        head_dim=5,
+        native_dim=11,
+        min_dim=2,
+        max_dim=11,
+        vocab_size=17,
+    )
+    assert param_count(spec) == parameters
+    expected = int(
+        ((1_000_000 - parameters * dtype_bytes) * 0.8)
+        / ((activation_elements + dim) * dtype_bytes),
+    )
+    assert (
+        derive_rows(spec, edge, vram_gb=0.001, dim=dim, dtype_bytes=dtype_bytes)
+        == expected
+    )
+
+
+def test_derive_rows_floors_an_exhausted_weight_budget_at_one() -> None:
+    assert derive_rows(QWEN3_8B, 8_192, vram_gb=1, dim=1_024) == 1
+
+
+@pytest.mark.parametrize(
+    ("histogram", "min_buckets", "max_buckets", "expected"),
+    [
+        ({33: 2, 65: 3}, 2, 2, (64, 96, 8_192)),
+        ({32: 2}, 1, 1, (32, 8_192)),
+        ({32: 2, 8_192: 3}, 2, 2, (32, 8_192)),
+    ],
+)
+def test_derive_edges_rounds_raw_lengths_and_includes_the_tail_once(
+    histogram: dict[int, int],
+    min_buckets: int,
+    max_buckets: int,
+    expected: tuple[int, ...],
+) -> None:
+    assert (
+        derive_edges(
+            QWEN3_4B,
+            histogram,
+            min_buckets=min_buckets,
+            max_buckets=max_buckets,
+        )
+        == expected
+    )
+
+
+def test_derive_edges_uses_model_cost_to_choose_the_knee() -> None:
+    histogram = {32: 7, 96: 2, 97: 9, 320: 2, 352: 5, 960: 3}
+    assert knee(sweep(histogram, max_k=6, pad_multiple=32)) == 3
+    assert derive_edges(QWEN3_4B, histogram, min_buckets=1, max_buckets=6) == (
+        352,
+        960,
+        8_192,
+    )
+
+
+def test_corpus_loader_sums_raw_lengths_comments_and_clamped_tails(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "histogram.txt"
+    path.write_text(
+        "# raw lengths\n\n1|2\n31|3\n32|5\n33|7\n33|11\n8191|13\n8193|17\n9000|19\n",
+    )
+    assert load_corpus_histogram(path) == {32: 10, 64: 18, 8_192: 49}
+
+
+def test_sweep_returns_exactly_the_requested_bucket_counts() -> None:
+    points = sweep({32: 7, 96: 2, 320: 9}, max_k=5)
+    assert [point.k for point in points] == [1, 2, 3, 4, 5]
+
+
+def test_bucketed_cost_reports_the_overflow_length_and_final_edge() -> None:
+    with pytest.raises(ValueError, match=r"97.*96"):
+        bucketed_cost({97: 2}, [32, 64, 96])
+
+
+@pytest.mark.parametrize(
+    ("coordinates", "expected"),
+    [
+        ([(7, 100)], 7),
+        ([(3, 100), (8, 50)], 8),
+        ([(2, 100), (5, 30), (11, 20)], 5),
+        ([(2, 9), (5, 9), (11, 9)], 2),
+        ([(10, 100), (11, 50), (19, 20), (20, 0)], 11),
+    ],
+)
+def test_knee_handles_short_flat_and_irregular_sweeps(
+    coordinates: list[tuple[int, int]],
+    expected: int,
+) -> None:
+    points = [SweepPoint(k=k, cost=cost, edges=[]) for k, cost in coordinates]
+    assert knee(points) == expected
 
 
 if __name__ == "__main__":

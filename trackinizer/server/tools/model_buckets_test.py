@@ -145,6 +145,21 @@ def test_resolve_plan_defaults_dim_to_the_registered_identity() -> None:
     assert rows_default == rows_explicit
 
 
+def test_resolve_plan_uses_nondefault_output_dimensions() -> None:
+    """Explicit output widths change the head memory and derived row counts."""
+    name = "qwen3-embedding-4b@1024"
+    spec = model_buckets.SPEC_FOR_MODEL[name]
+    default_edges, default_rows = model_buckets.resolve_plan(name, vram_gb=32)
+    for dim in (spec.min_dim, spec.max_dim):
+        edges, rows = model_buckets.resolve_plan(name, vram_gb=32, dim=dim)
+        assert edges == default_edges
+        assert rows == {
+            edge: bucket_boundaries.derive_rows(spec, edge, vram_gb=32, dim=dim)
+            for edge in edges
+        }
+        assert rows != default_rows
+
+
 def test_resolve_plan_falls_back_conservatively_and_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

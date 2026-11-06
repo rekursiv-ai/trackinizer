@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, Protocol, overload
+from unittest.mock import AsyncMock
 
 
 if TYPE_CHECKING:
@@ -23,6 +24,7 @@ __all__ = [
     "MockConnection",
     "MockControl",
     "MockProtocol",
+    "MockTransaction",
 ]
 
 
@@ -130,7 +132,15 @@ class MockControl(Protocol):
 class MockProtocol[T](MockControl, Protocol):
     """A synchronous mock whose return schema is fixed by its consumer."""
 
-    return_value: T
+    @property
+    def return_value(self) -> T:
+        """Return the configured result."""
+        ...
+
+    @return_value.setter
+    def return_value(self, value: T) -> None:
+        """Set the configured result."""
+        ...
 
     def __call__(self, *args: object, **kwargs: object) -> T:
         """Call the mock and return its configured result."""
@@ -140,7 +150,15 @@ class MockProtocol[T](MockControl, Protocol):
 class AsyncMockProtocol[T](MockControl, Protocol):
     """An asynchronous mock whose awaited result has a declared schema."""
 
-    return_value: T
+    @property
+    def return_value(self) -> T:
+        """Return the configured result."""
+        ...
+
+    @return_value.setter
+    def return_value(self, value: T) -> None:
+        """Set the configured result."""
+        ...
 
     @property
     def await_args(self) -> MockCall | None:
@@ -194,8 +212,8 @@ class AsyncMockProtocol[T](MockControl, Protocol):
         ...
 
 
-class MockConnection(MockControl, Protocol):
-    """The shared database mock's methods, field queue, and chronological calls."""
+class MockConnection(AsyncMock):
+    """An AsyncMock connection with typed query methods and field queues."""
 
     execute: AsyncMockProtocol[object]
     fetch: AsyncMockProtocol[object]
@@ -208,4 +226,13 @@ class MockConnection(MockControl, Protocol):
     transaction: MockProtocol[AbstractAsyncContextManager[object]]
     field_default: list[object]
     field_queue: list[object]
-    mock_calls: Sequence[tuple[str, tuple[object, ...], dict[str, object]]]
+
+
+class MockTransaction(AsyncMock):
+    """An AsyncMock transaction supporting manual and context-managed lifecycles."""
+
+    start: AsyncMockProtocol[object]
+    commit: AsyncMockProtocol[object]
+    rollback: AsyncMockProtocol[object]
+    __aenter__: AsyncMockProtocol[object]
+    __aexit__: AsyncMockProtocol[bool | None]
