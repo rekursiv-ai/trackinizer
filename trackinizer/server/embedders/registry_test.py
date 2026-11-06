@@ -31,6 +31,7 @@ _QWEN_FAMILY = (
 )
 
 
+@pytest.mark.cli_python_subprocess
 def test_importing_registry_pulls_no_torch() -> None:
     """The registry (and thus config) must import without dragging in torch.
 
