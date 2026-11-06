@@ -270,6 +270,7 @@ class TestSchema:
             "schema.067.sql",
             "schema.068.sql",
             "schema.069.sql",
+            "schema.070.sql",
         ]
 
     def test_the_pin_check_spells_the_wire_shape(self) -> None:

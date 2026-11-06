@@ -257,11 +257,12 @@ class JobView(BaseModel):
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
-    gpu_minutes: int | None
-    """GPUs times minutes charged so far; every minute charged once the job ended."""
+    gpu_seconds: int | None = None
+    """GPUs times seconds charged so far; every second Slurm counted once the job
+    ended; ``None`` before the first charge, or when the server does not say."""
 
     usd: float | None
-    """What those minutes cost the person."""
+    """What those seconds cost the person."""
 
     usd_per_gpu_minute: float | None = None
     """What one GPU minute costs, fixed when the job was submitted, before any
