@@ -21,7 +21,7 @@ import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.server.access_policy import AccessDeniedError
-from trackinizer.server.api import app
+from trackinizer.server.api import app, machine_host_routes, meta_routes, query
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
     _RequestLogSpan,
@@ -255,13 +255,21 @@ def test_fresh_apps_serve_all_exception_handlers(
     assert "Infinity" not in response.text
 
 
+@pytest.fixture
+def logging_client() -> TestClient:
+    """Keep production middleware and the store-free routes logging exercises."""
+    built = FastAPI(middleware=app.app.user_middleware)
+    built.include_router(meta_routes.router)
+    return TestClient(built)
+
+
 class TestRequestLogging:
     def test_request_completion_is_correlated_and_timed(
         self,
-        route_client: tuple[TestClient, Store, FakeEngine],
+        logging_client: TestClient,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        client, _store, _engine = route_client
+        client = logging_client
         request_id = uuid4()
 
         with caplog.at_level(logging.INFO):
@@ -293,10 +301,10 @@ class TestRequestLogging:
 
     def test_invalid_request_id_is_replaced_and_rejection_is_classified(
         self,
-        route_client: tuple[TestClient, Store, FakeEngine],
+        logging_client: TestClient,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        client, _store, _engine = route_client
+        client = logging_client
 
         with caplog.at_level(logging.INFO):
             response = client.get(
@@ -669,11 +677,27 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
     assert engine.exited
 
 
-def test_a_validation_error_outside_variables_keeps_its_input(
+@pytest.fixture
+def validation_client(
     route_client: tuple[TestClient, Store, FakeEngine],
+) -> TestClient:
+    """Keep the real handlers and the two routers whose bodies are validated."""
+    _, store, engine = route_client
+    built = FastAPI(middleware=app.app.user_middleware)
+    built.exception_handlers.update(app.app.exception_handlers)
+    built.state.store = store
+    built.state.engine = engine
+    built.dependency_overrides.update(app.app.dependency_overrides)
+    built.include_router(query.router)
+    built.include_router(machine_host_routes.router)
+    return TestClient(built)
+
+
+def test_a_validation_error_outside_variables_keeps_its_input(
+    validation_client: TestClient,
 ) -> None:
     """Only the variables family drops the rejected input from its 422."""
-    client, _, _ = route_client
+    client = validation_client
 
     response = client.post("/api/inquiries/lookup", json=["not-a-uuid"])
 
@@ -683,10 +707,10 @@ def test_a_validation_error_outside_variables_keeps_its_input(
 
 
 def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
-    route_client: tuple[TestClient, Store, FakeEngine],
+    validation_client: TestClient,
 ) -> None:
     """``Infinity`` parses, but cannot be echoed back, so its 422 drops the input."""
-    client, _, _ = route_client
+    client = validation_client
 
     response = client.post(
         "/api/inquiries/lookup",
@@ -713,11 +737,11 @@ def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
     ids=["missing", "uuid", "type", "facts", "long", "extra"],
 )
 def test_join_422_does_not_echo_the_token(
-    route_client: tuple[TestClient, Store, FakeEngine],
+    validation_client: TestClient,
     overrides: dict[str, object],
 ) -> None:
     """A rejected join body names each error's type, location and message only."""
-    client, _, _ = route_client
+    client = validation_client
     token = "enr_" + "0" * 32 + "_" + "SECRETMARKER" * 3 + "x" * 7
     body: dict[str, object] = {
         "name": "dev-1",
