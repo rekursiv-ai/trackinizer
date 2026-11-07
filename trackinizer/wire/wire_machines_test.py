@@ -4,13 +4,14 @@ from datetime import UTC, datetime
 
 import uuid
 
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 import pytest
 
 from trackinizer.wire.wire_machines import (
     MAX_FACTS_BYTES,
     MAX_HOW_CHARS,
+    Facts,
     Machine,
     MachineDetail,
     MachinePut,
@@ -56,6 +57,21 @@ def test_detail_facts_validate_and_bound_size() -> None:
         MachineDetail.model_validate(_machine(facts=too_big))
     with pytest.raises(ValidationError):
         MachineDetail.model_validate(_machine(facts={"Upper": "x"}))
+
+
+def test_facts_accept_the_exact_byte_limit_but_refuse_one_more() -> None:
+    values = ["x" * 255] * 15 + [""]
+    facts: Facts = {"a": values}
+    adapter = TypeAdapter(Facts)
+    padding = MAX_FACTS_BYTES - len(adapter.dump_json(facts))
+    values[-1] = "x" * padding
+
+    assert len(adapter.dump_json(facts)) == MAX_FACTS_BYTES
+    assert MachineDetail.model_validate(_machine(facts=facts)).facts == facts
+
+    values[-1] += "x"
+    with pytest.raises(ValidationError, match="facts exceed"):
+        MachineDetail.model_validate(_machine(facts=facts))
 
 
 def test_put_refuses_nul_and_keeps_omitted_fields_none() -> None:

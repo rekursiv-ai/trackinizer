@@ -109,13 +109,14 @@ def test_room_facets_total_each_room_largest_first() -> None:
             ("a", ("r2",), 3),
             ("c", ("r3",), 2),
             ("d", ("r2",), 1),
+            ("b", ("r1", "r3"), 1),
         )
     ]
 
     assert _room_facets(actors) == [
         FeedRoomFacet(room="r2", count=6, actors=["a", "b", "d"]),
-        FeedRoomFacet(room="r1", count=2, actors=["b"]),
-        FeedRoomFacet(room="r3", count=2, actors=["c"]),
+        FeedRoomFacet(room="r1", count=3, actors=["b"]),
+        FeedRoomFacet(room="r3", count=3, actors=["b", "c"]),
     ]
 
 
@@ -973,7 +974,25 @@ async def _counts(
 
 
 @pytest.mark.asyncio
-async def test_facets_project_counts_and_session_ownership_from_one_snapshot() -> None:
+@pytest.mark.parametrize("ended", [None, _T0 + timedelta(hours=1)])
+@pytest.mark.parametrize(
+    ("caller", "opener", "audience", "cli_session_id", "hideable"),
+    [
+        ("ann@lab.example", None, "open", None, True),
+        ("other@lab.example", None, "open", None, False),
+        ("opener@lab.example", "opener@lab.example", "private", None, True),
+        ("ann@lab.example", None, "staff", None, False),
+    ],
+)
+async def test_facets_project_counts_and_session_ownership_from_one_snapshot(
+    *,
+    ended: datetime | None,
+    caller: str,
+    opener: str | None,
+    audience: str,
+    cli_session_id: str | None,
+    hideable: bool,
+) -> None:
     store, engine = make_store()
     session_id = uuid4()
     engine.conn.fetch.side_effect = [
@@ -995,25 +1014,36 @@ async def test_facets_project_counts_and_session_ownership_from_one_snapshot() -
                 "account": "ann@lab.example",
                 "agentsession_cli": "claude",
                 "agentsession_rooms": ["lab"],
-                "agentsession_ended": None,
-                "agentsession_audience": "open",
-                "agentsession_cli_session_id": None,
-                "opener": None,
+                "agentsession_ended": ended,
+                "agentsession_audience": audience,
+                "agentsession_cli_session_id": cli_session_id,
+                "opener": opener,
             },
         ],
     ]
     scope = FeedScope(
         actors=("agent",),
         kinds=("UserMessage", "ToolCall"),
-        reader=SessionReader(email="ann@lab.example", audiences=AUDIENCES),
+        reader=SessionReader(email=caller, audiences=AUDIENCES),
     )
 
     facets = await store.read_feed_facets(since=_T0, until=_T0, scope=scope)
 
-    assert [
-        (actor.actor, actor.count, actor.conversation, actor.hideable)
-        for actor in facets.actors
-    ] == [("agent", 2, 1, True)]
+    assert facets.actors == [
+        FeedActorFacet(
+            actor="agent",
+            session_id=session_id,
+            cli="claude",
+            rooms=["lab"],
+            count=2,
+            conversation=1,
+            last=_T0,
+            ended=ended,
+            account="ann@lab.example",
+            audience=audience,
+            hideable=hideable,
+        ),
+    ]
     assert facets.rooms == [FeedRoomFacet(room="lab", count=2, actors=["agent"])]
     assert facets.kinds == [
         FeedKindFacet(kind="ToolCall", count=1),
@@ -1028,6 +1058,48 @@ async def test_facets_project_counts_and_session_ownership_from_one_snapshot() -
     assert "REPEATABLE READ, READ ONLY" in str(
         engine.conn.execute.await_args_list[1].args[0],
     )
+
+
+@pytest.mark.asyncio
+async def test_facets_order_sessions_newest_first_and_kinds_by_count() -> None:
+    store, engine = make_store()
+    sessions = [
+        (UUID(int=1), _T0),
+        (UUID(int=3), _T0 - timedelta(seconds=1)),
+        (UUID(int=2), _T0),
+    ]
+    engine.conn.fetch.side_effect = [
+        [
+            {
+                "session_id": session_id,
+                "records": 1,
+                "conversation": 0,
+                "last": last,
+            }
+            for session_id, last in sessions
+        ]
+        + [
+            {"session_id": None, "kind": kind, "records": count}
+            for kind, count in (("ToolCall", 1), ("UserMessage", 2), ("Thinking", 2))
+        ],
+        [
+            {"id": session_id, "agentsession_ended": None}
+            for session_id, _last in sessions
+        ],
+    ]
+
+    facets = await store.read_feed_facets(since=None, until=None, scope=_ALL_SESSIONS)
+
+    assert [actor.session_id for actor in facets.actors] == [
+        UUID(int=2),
+        UUID(int=1),
+        UUID(int=3),
+    ]
+    assert facets.kinds == [
+        FeedKindFacet(kind="Thinking", count=2),
+        FeedKindFacet(kind="UserMessage", count=2),
+        FeedKindFacet(kind="ToolCall", count=1),
+    ]
 
 
 @pytest.mark.asyncio

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
+from unittest.mock import Mock
 
 import contextlib
 import functools
@@ -16,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 import pytest
 
@@ -144,6 +146,10 @@ class TestShouldDelegate:
     def test_refuses_run_in_verb_position_after_global_flags(self) -> None:
         """Global flags precede the verb, so the scan cannot just read argv[0]."""
         assert not should_delegate(["--profile", "origin", "run", "claude"])
+        assert not should_delegate(["--profile", "origin", "--host", "run", "export"])
+        assert not should_delegate(["--host=origin", "export"])
+        assert not should_delegate(["--host=origin", "--verbose", "export"])
+        assert not should_delegate(["agentsession", "run", "codex"])
 
     def test_refuses_the_resume_tail(self) -> None:
         """``agentsession 42 run codex`` spawns a PTY too, under another verb.
@@ -169,6 +175,25 @@ class TestShouldDelegate:
         """
         assert should_delegate(["issue", "7", "title", "to", "run"])
         assert should_delegate(["agentsession", "title", "re", "run"])
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["issue", "title", "to", "run", "--help"],
+            ["-", "to"],
+            ["issue", "-", "title", "to", "plain"],
+            ["--profile=run", "issue"],
+            ["--host=run", "issue"],
+        ],
+    )
+    def test_delegates_flag_values_and_nonterminal_run_tails(
+        self,
+        argv: list[str],
+    ) -> None:
+        assert should_delegate(argv)
+
+    def test_refuses_a_stdin_sentinel_immediately_after_the_verb(self) -> None:
+        assert not should_delegate(["to", "-"])
 
 
 class TestTokenNeverCrossesTheSocket:
@@ -648,6 +673,10 @@ class TestDelegate:
             "--__serve",
             "v1",
         ]
+        assert spawned[0]["stdin"] == subprocess.DEVNULL
+        assert spawned[0]["stdout"] == subprocess.DEVNULL
+        assert spawned[0]["stderr"] == subprocess.DEVNULL
+        assert spawned[0]["start_new_session"] is True
 
     def test_spawned_daemon_imports_the_clients_source(
         self,
@@ -699,6 +728,94 @@ class TestDelegate:
             Path(probe.stdout.strip()).resolve()
             == Path(inspect.getfile(client)).resolve()
         )
+
+
+class TestSpawnReadiness:
+    def test_spawn_failure_is_not_reported_as_ready(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(subprocess, "Popen", Mock(side_effect=OSError))
+
+        assert client._spawn(tmp_path / "traxd.sock", source_version="v1") is False
+
+    def test_the_default_socket_returns_the_freshly_spawned_daemons_response(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "traxd.sock"
+        reply = Response(stdout="created issue 7", stderr="", exit_code=0)
+        payload = reply.to_json()
+        connect = Mock()
+        send = Mock()
+        refused = Mock(connect=Mock(side_effect=ConnectionRefusedError))
+        ready = Mock()
+        answering = Mock(
+            connect=connect,
+            sendall=send,
+            recv=Mock(side_effect=[len(payload).to_bytes(4, "big"), payload]),
+        )
+        monkeypatch.setattr(client, "socket_path", Mock(return_value=path))
+        monkeypatch.setattr(
+            socket,
+            "socket",
+            Mock(side_effect=[refused, ready, answering]),
+        )
+        monkeypatch.setattr(subprocess, "Popen", Mock())
+
+        assert delegate(["issue"], source_version="v1") == reply
+
+        connect.assert_called_once_with(str(path))
+        send.assert_called_once()
+
+    def test_waits_for_a_successful_connection_and_secures_the_parent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "daemon" / "private" / "traxd.sock"
+        connect = Mock(side_effect=[ConnectionRefusedError, None])
+        close = Mock()
+        probe = Mock(connect=connect, close=close)
+        pause = Mock()
+        monkeypatch.setattr(subprocess, "Popen", Mock())
+        monkeypatch.setattr(socket, "socket", Mock(return_value=probe))
+        monkeypatch.setattr(time, "monotonic", Mock(return_value=0.0))
+        monkeypatch.setattr(time, "sleep", pause)
+
+        assert client._spawn(path, source_version="v1") is True
+
+        assert path.parent.is_dir()
+        assert path.parent.stat().st_mode & 0o077 == 0
+        connect.assert_called_with(str(path))
+        assert connect.call_count == 2
+        assert close.call_count == 2
+        pause.assert_called_once()
+
+    def test_stops_waiting_when_the_deadline_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "traxd.sock"
+        connect = Mock(side_effect=ConnectionRefusedError)
+        close = Mock()
+        probe = Mock(connect=connect, close=close)
+        monkeypatch.setattr(subprocess, "Popen", Mock())
+        monkeypatch.setattr(socket, "socket", Mock(return_value=probe))
+        monkeypatch.setattr(
+            time,
+            "monotonic",
+            Mock(side_effect=[0.0, 0.0, client._SPAWN_TIMEOUT_SEC + 1.0]),
+        )
+        monkeypatch.setattr(time, "sleep", Mock())
+
+        assert client._spawn(path, source_version="v1") is False
+
+        connect.assert_called_once_with(str(path))
+        close.assert_called_once_with()
 
 
 def _broken_pipe(conn: socket.socket, payload: bytes) -> None:

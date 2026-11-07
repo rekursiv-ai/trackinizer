@@ -493,21 +493,29 @@ class TestSubmitBatch:
                 edges=[BatchEdge(from_index=0, to_index=5, edge_kind="requires")],
             )
 
-    def test_rejects_edge_index_kind_mismatch(self) -> None:
-        """A new-row edge whose endpoint kinds violate the policy is rejected.
-
-        ``proves`` requires ``from`` in {Artifact kinds} and ``to`` in
-        {Belief, Experiment}. An edge linking two new Issue rows by index
-        carries kinds the DB ``CHECK`` would reject mid-transaction -> a 500;
-        catch it at the wire as a clean 422 (F64).
-        """
+    @pytest.mark.parametrize(
+        ("from_kind", "to_kind"),
+        [("Issue", "Belief"), ("Artifact", "Issue")],
+    )
+    def test_rejects_edge_index_kind_mismatch(
+        self,
+        from_kind: str,
+        to_kind: str,
+    ) -> None:
+        """Reject each incompatible endpoint independently."""
         with pytest.raises(ValueError, match="edge_kind"):
-            SubmitBatch(
-                items=[
-                    SubmitIssue(title="a", idempotency_key=new_uuid()),
-                    SubmitIssue(title="b", idempotency_key=new_uuid()),
-                ],
-                edges=[BatchEdge(from_index=0, to_index=1, edge_kind="proves")],
+            SubmitBatch.model_validate(
+                {
+                    "items": [
+                        {
+                            "kind": from_kind,
+                            "title": "a",
+                            "idempotency_key": new_uuid(),
+                        },
+                        {"kind": to_kind, "title": "b", "idempotency_key": new_uuid()},
+                    ],
+                    "edges": [{"from_index": 0, "to_index": 1, "edge_kind": "proves"}],
+                },
             )
 
     def test_accepts_edge_index_kind_match(self) -> None:
