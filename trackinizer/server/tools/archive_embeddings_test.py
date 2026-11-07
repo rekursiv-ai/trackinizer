@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Literal, Self, cast
+from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
 import sys
@@ -11,6 +12,7 @@ import sys
 import pytest
 import pytest_asyncio
 
+from trackinizer.conftest import FakeEngine
 from trackinizer.lib.postgres import PostgresEngine
 from trackinizer.lib.postgres.testing import postgres_database
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -407,6 +409,174 @@ def test_main_restores_from_the_named_directory(
     assert capsys.readouterr().out == (
         f"restored from {tmp_path}: session_embeddings=3 session_index_state=2\n"
     )
+
+
+@pytest.mark.asyncio
+async def test_archive_copies_every_table_before_deleting_the_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine()
+    engine.conn.fetchval.side_effect = [2, 1]
+    copy = AsyncMock(side_effect=["COPY 2", "COPY 1"])
+    execute = AsyncMock(return_value="UPDATE 1")
+    events = Mock()
+    events.attach_mock(copy, "copy")
+    events.attach_mock(execute, "execute")
+    monkeypatch.setattr(engine.conn, "copy_from_query", copy)
+    monkeypatch.setattr(engine.conn, "execute", execute)
+    factory = Mock(return_value=engine)
+    monkeypatch.setattr(archive_embeddings, "PostgresEngine", factory)
+    out = tmp_path / "nested" / "archive"
+
+    counts = await archive_embeddings.archive("dsn", model=_OLD, out=out)
+
+    assert counts == {"session_embeddings": 2, "session_index_state": 1}
+    assert (out / "model.txt").read_text() == _OLD + "\n"
+    factory.assert_called_once_with(dsn="dsn", listen_channel=NOTIFY_CHANNEL)
+    assert engine.entered
+    assert engine.exited
+    tables = archive_embeddings._archived_tables()
+    assert tables == {
+        "session_embeddings": (
+            "session_id, part, idx, field, chunk, mapper, model, embedding, "
+            "text_md5, created"
+        ),
+        "session_index_state": "session_id, part, idx, mapper, model, text_md5, created",
+    }
+    assert [event[0] for event in events.mock_calls] == [
+        "execute",
+        "execute",
+        "copy",
+        "copy",
+        "execute",
+        "execute",
+        "execute",
+        "execute",
+    ]
+    queries = (
+        (
+            "SELECT session_id, part, idx, field, chunk, mapper, model, embedding, "
+            "text_md5, created FROM session_embeddings WHERE model = $1"
+        ),
+        (
+            "SELECT session_id, part, idx, mapper, model, text_md5, created "
+            "FROM session_index_state WHERE model = $1"
+        ),
+    )
+    for call, table, query in zip(copy.await_args_list, tables, queries, strict=True):
+        assert call.args == (query, _OLD)
+        assert call.kwargs == {"output": out / f"{table}.copy", "format": "binary"}
+    executed = [call.args for call in engine.conn.execute.await_args_list]
+    assert executed == [
+        ("BEGIN",),
+        ("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",),
+        ("DELETE FROM session_embeddings WHERE model = $1", _OLD),
+        ("DELETE FROM session_index_state WHERE model = $1", _OLD),
+        ("DELETE FROM session_index_cursor WHERE model = $1", _OLD),
+        ("COMMIT",),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_short_second_copy_rolls_back_before_any_model_is_deleted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine()
+    engine.conn.fetchval.side_effect = [2, 1]
+    copy = AsyncMock(side_effect=["COPY 2", "COPY 0"])
+    monkeypatch.setattr(engine.conn, "copy_from_query", copy)
+    monkeypatch.setattr(archive_embeddings, "PostgresEngine", Mock(return_value=engine))
+
+    with pytest.raises(
+        archive_embeddings.ArchiveMismatchError,
+        match=(
+            r"^session_index_state: copied 0 rows of "
+            r"qwen3-embedding-4b@1024, the table holds 1$"
+        ),
+    ):
+        await archive_embeddings.archive("dsn", model=_OLD, out=tmp_path / "archive")
+
+    assert [call.args for call in engine.conn.execute.await_args_list] == [
+        ("BEGIN",),
+        ("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ",),
+    ]
+    engine.conn.fetch.assert_awaited_once_with("ROLLBACK")
+    assert copy.await_count == 2
+    assert engine.exited
+
+
+@pytest.mark.asyncio
+async def test_restore_stages_explicit_columns_and_counts_only_inserted_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    (tmp_path / "model.txt").write_text(f"  {_OLD}\n")
+    engine = FakeEngine()
+    copy = AsyncMock(return_value="COPY 3")
+    monkeypatch.setattr(engine.conn, "copy_to_table", copy)
+    engine.conn.execute.side_effect = [
+        "BEGIN",
+        "CREATE TABLE",
+        "INSERT 0 2",
+        "CREATE TABLE",
+        "INSERT 0 1",
+        "COMMIT",
+    ]
+    monkeypatch.setattr(archive_embeddings, "PostgresEngine", Mock(return_value=engine))
+
+    assert await archive_embeddings.restore("dsn", source=tmp_path) == {
+        "session_embeddings": 2,
+        "session_index_state": 1,
+    }
+
+    statements = (
+        (
+            (
+                "CREATE TEMP TABLE restore_session_embeddings "
+                "(LIKE session_embeddings INCLUDING DEFAULTS) ON COMMIT DROP"
+            ),
+            (
+                "INSERT INTO session_embeddings (session_id, part, idx, field, chunk, "
+                "mapper, model, embedding, text_md5, created) SELECT session_id, part, "
+                "idx, field, chunk, mapper, model, embedding, text_md5, created "
+                "FROM restore_session_embeddings s WHERE s.model = $1 "
+                "AND EXISTS (SELECT 1 FROM inquiries i WHERE i.id = s.session_id) "
+                "ON CONFLICT DO NOTHING"
+            ),
+        ),
+        (
+            (
+                "CREATE TEMP TABLE restore_session_index_state "
+                "(LIKE session_index_state INCLUDING DEFAULTS) ON COMMIT DROP"
+            ),
+            (
+                "INSERT INTO session_index_state (session_id, part, idx, mapper, model, "
+                "text_md5, created) SELECT session_id, part, idx, mapper, model, "
+                "text_md5, created FROM restore_session_index_state s WHERE s.model = $1 "
+                "AND EXISTS (SELECT 1 FROM inquiries i WHERE i.id = s.session_id) "
+                "ON CONFLICT DO NOTHING"
+            ),
+        ),
+    )
+    for index, (table, columns) in enumerate(
+        archive_embeddings._archived_tables().items(),
+    ):
+        assert copy.await_args_list[index].args == (f"restore_{table}",)
+        assert copy.await_args_list[index].kwargs == {
+            "source": tmp_path / f"{table}.copy",
+            "columns": columns.split(", "),
+            "format": "binary",
+        }
+        create, insert = engine.conn.execute.await_args_list[
+            1 + 2 * index : 3 + 2 * index
+        ]
+        create_sql, insert_sql = statements[index]
+        assert create.args == (create_sql,)
+        assert insert.args == (insert_sql, _OLD)
+    assert engine.conn.execute.await_args_list[-1].args == ("COMMIT",)
+    assert engine.exited
 
 
 if __name__ == "__main__":

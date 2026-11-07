@@ -313,6 +313,15 @@ async def _ping() -> dict[str, bool]:
     return {"pong": True}
 
 
+def test_app_without_a_deployment_gets_an_empty_catalog_without_mounting() -> None:
+    isolated = FastAPI()
+    routes = list(isolated.routes)
+    assert app_deployment(isolated).catalog().addons == []
+    isolated.state.deployment = "invalid"
+    assert app_deployment(isolated).manifests == {}
+    assert isolated.routes == routes
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

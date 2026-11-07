@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from unittest.mock import AsyncMock, patch
 from uuid import UUID, uuid4
 
 import pytest
 
 from trackinizer.conftest import make_store
+from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.store.store_test_support import (
     EVERY_SESSION,
@@ -20,6 +21,7 @@ from trackinizer.server.store.store_test_support import (
     polled_session,
     seed_active_user,
 )
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.bodies import SubmitAgentSession
 
@@ -162,6 +164,59 @@ async def _session(store: Store) -> UUID:
             session_id,
         )
     return session_id
+
+
+@pytest.mark.asyncio
+async def test_message_helper_bounds_the_same_record_it_appends() -> None:
+    store, _engine = make_store()
+    session_id = uuid4()
+    manifest = cast(AsyncMockProtocol[int], AsyncMock(return_value=0))
+    append = cast(
+        AsyncMockProtocol[tuple[int, int, int]],
+        AsyncMock(return_value=(1, 0, 0)),
+    )
+    with (
+        patch.object(store, "upsert_session_manifest", new=manifest),
+        patch.object(store, "append_session_records", new=append),
+    ):
+        await append_user_message(store, session_id, idx=2, text="hi")
+
+    assert manifest.await_args is not None
+    assert manifest.await_args.args == (session_id,)
+    assert manifest.await_args.kwargs["records"] == 3
+    assert manifest.await_args.kwargs["name"] == "part0.jsonl"
+    assert manifest.await_args.kwargs["format"] == "claude"
+    assert manifest.await_args.kwargs["metadata"] == {}
+    assert append.await_args is not None
+    assert append.await_args.args[0] == session_id
+    rows = cast(list[SessionRecordRow], append.await_args.args[1])
+    assert len(rows) == 1
+    assert (rows[0].session_id, rows[0].part, rows[0].idx) == (session_id, 0, 2)
+    assert rows[0].record() == UserMessage(content="hi")
+
+
+@pytest.mark.asyncio
+async def test_polled_helper_records_its_start_receipt_at_the_given_time() -> None:
+    store, _engine = make_store()
+    session_id = uuid4()
+    start = cast(
+        AsyncMockProtocol[tuple[UUID, str, int]],
+        AsyncMock(return_value=(session_id, "agent", 0)),
+    )
+    seen = cast(AsyncMockProtocol[None], AsyncMock())
+    with (
+        patch.object(store, "start_session", new=start),
+        patch.object(store, "record_session_seen", new=seen),
+    ):
+        assert (
+            await polled_session(store, at=_SEEN, cli_session_id="cli-2") == session_id
+        )
+
+    seen.assert_awaited_once_with(session_id, at=_SEEN, polled=True)
+    assert start.await_args is not None
+    body = start.await_args.args[0]
+    assert isinstance(body, SubmitAgentSession)
+    assert body.cli_session_id == "cli-2"
 
 
 if __name__ == "__main__":

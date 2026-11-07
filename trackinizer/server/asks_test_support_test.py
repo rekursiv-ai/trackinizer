@@ -2,12 +2,23 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+from treekle import immutable
 
 import pytest
 
-from trackinizer.runs.asks import Option, Resolved
-from trackinizer.sagent.session.types import AssistantMessage, UserMessage
+from trackinizer.conftest import make_store
+from trackinizer.runs.asks import Option, Resolved, opened_record
+from trackinizer.sagent.session.types import (
+    AssistantMessage,
+    SystemMessage,
+    UserMessage,
+)
+from trackinizer.server import asks_test_support
 from trackinizer.server.asks import open_ask_ids
 from trackinizer.server.asks_test_support import (
     command_ask,
@@ -16,6 +27,8 @@ from trackinizer.server.asks_test_support import (
     resolve_ask,
     write_records,
 )
+from trackinizer.server.store.session_ir import SessionManifest
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.bodies import SubmitAgentSession
 
 
@@ -111,6 +124,88 @@ async def _session(store: Store) -> UUID:
 async def _open(store: Store, session_id: UUID) -> list[str]:
     async with store.engine.acquire() as conn:
         return await open_ask_ids(conn, session_id=session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("bound", [None, 1])
+async def test_write_records_preserves_part_identity_and_explicit_live_bound(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+    bound: int | None,
+) -> None:
+    store, _ = make_store()
+    session, ir = uuid4(), uuid4()
+    manifest = (
+        SessionManifest(
+            part=2,
+            name="run.jsonl",
+            metadata=immutable({}),
+            ir_id=ir,
+            format="",
+            records=3,
+        )
+        if existing
+        else None
+    )
+    upsert = AsyncMock(return_value=2)
+    append = AsyncMock(return_value=1)
+    monkeypatch.setattr(
+        store,
+        "read_session_manifest",
+        AsyncMock(return_value=manifest),
+    )
+    monkeypatch.setattr(store, "upsert_session_manifest", upsert)
+    monkeypatch.setattr(store, "append_session_records", append)
+    record = UserMessage(content="one")
+    await write_records(store, session, [record], bound=bound)
+    start = 3 if existing else 0
+    assert upsert.call_args is not None
+    assert append.call_args is not None
+    assert upsert.call_args.args == (session,)
+    assert upsert.call_args.kwargs["records"] == (start + 1 if bound is None else bound)
+    assert upsert.call_args.kwargs["name"] == "run.jsonl"
+    assert upsert.call_args.kwargs["format"] == ""
+    assert upsert.call_args.kwargs["metadata"] == {}
+    if existing:
+        assert upsert.call_args.kwargs["ir_id"] == ir
+    else:
+        assert isinstance(upsert.call_args.kwargs["ir_id"], type(ir))
+    rows = cast(list[SessionRecordRow], append.call_args.args[1])
+    assert rows == [
+        SessionRecordRow.of(session_id=session, part=2, idx=start, record=record),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_open_and_resolve_write_the_expected_interaction_records(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _ = make_store()
+    session = uuid4()
+    write = AsyncMock()
+    monkeypatch.setattr(asks_test_support, "write_records", write)
+    await open_ask(store, session, ask_id="a")
+    await resolve_ask(store, session, ask_id="a", by="released")
+    records = [
+        cast(list[SystemMessage], call.args[2])[0] for call in write.call_args_list
+    ]
+    assert (
+        records[0].extra
+        == opened_record(
+            command_ask("a"),
+            at=datetime.now(UTC),
+        ).extra
+    )
+    assert records[1].extra["$interaction_resolved"] == {
+        "id": "a",
+        "option": "",
+        "by": "released",
+        "who": "",
+        "decision": "released",
+    }
+    assert all(record.timestamp for record in records)
+    assert all(call.args[:2] == (store, session) for call in write.call_args_list)
 
 
 if __name__ == "__main__":

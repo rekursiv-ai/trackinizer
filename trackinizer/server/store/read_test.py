@@ -23,6 +23,7 @@ from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.audience import SessionReader, hidden_exists_sql
 from trackinizer.server.store import read
 from trackinizer.server.values import manifest_bound, vetted_sql
+from trackinizer.types.belief_confidence import fold_confidence
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.wire.filters import Filter
@@ -775,6 +776,59 @@ def _ancestor_row(parent: uuid.UUID, *, child: uuid.UUID) -> dict[str, object]:
         "status": "active",
         "child": child,
     }
+
+
+@pytest.mark.asyncio
+async def test_get_inquiry_materializes_the_found_row_with_its_id() -> None:
+    row = TestCoverageStoreReads()._row()
+    conn = make_conn()
+    queue_field_rows(conn, row)
+    store, _engine = make_store(conn)
+
+    found = await store.get_inquiry(cast(uuid.UUID, row["id"]))
+
+    assert found is not None
+    assert (found.id, found.title, found.owner) == (row["id"], "title", "alice")
+    assert found.produced_by == ()
+    assert conn.fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("joined", [False, True])
+@pytest.mark.parametrize("kind", [None, "Issue", "Belief", "Experiment"])
+async def test_confidence_applies_only_to_claimable_rows(
+    joined: bool,
+    kind: str | None,
+) -> None:
+    store, engine = make_store()
+    engine.conn.fetchval.return_value = kind
+    confidence = await store.derived_confidence(
+        new_uuid(),
+        conn=cast(Conn, engine.conn) if joined else None,
+    )
+    assert confidence == (0.5 if kind in {"Belief", "Experiment"} else None)
+    assert engine.conn.fetch.await_count == (
+        1 if kind in {"Belief", "Experiment"} else 0
+    )
+
+
+@pytest.mark.asyncio
+async def test_confidence_memoizes_shared_claims_and_breaks_cycles_at_neutral() -> None:
+    root, child = new_uuid(), new_uuid()
+    store, engine = make_store()
+    engine.conn.fetchval.return_value = "Belief"
+    engine.conn.fetch.side_effect = [
+        [
+            {"from_id": child, "from_kind": "Belief", "valence": 0.8},
+            {"from_id": child, "from_kind": "Experiment", "valence": 0.2},
+            {"from_id": root, "from_kind": "Belief", "valence": -0.4},
+            {"from_id": new_uuid(), "from_kind": "Paper", "valence": 0.3},
+        ],
+        [],
+    ]
+
+    assert await store.derived_confidence(root) == pytest.approx(fold_confidence(0.6))
+    assert [call.args[1] for call in engine.conn.fetch.await_args_list] == [root, child]
 
 
 if __name__ == "__main__":

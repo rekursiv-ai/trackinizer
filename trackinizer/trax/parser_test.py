@@ -970,7 +970,7 @@ def test_parse_range_csv_round_trips_through_bulk_apply() -> None:
 
 def test_consume_ref_empty_raises() -> None:
 
-    with pytest.raises(ClientError, match="expected reference"):
+    with pytest.raises(ClientError, match=r"^expected reference$"):
         consume_ref([], 0)
 
 
@@ -2312,6 +2312,23 @@ def test_parse_actions_refuses_a_malformed_edge(
 def test_a_kindless_query_on_fields_no_one_kind_carries_is_refused() -> None:
     with pytest.raises(ClientError, match="no kind carries every filtered field"):
         parse_list_query(None, ["judgement", "is", "proven", "query", "is", "x"])
+
+
+@pytest.mark.parametrize("field", ["agent-cost", "resource-cost"])
+def test_cost_replacement_is_refused(field: str) -> None:
+    with pytest.raises(
+        ClientError,
+        match="cost fields use add with a signed USD delta",
+    ):
+        parse_actions([field, "to", "1"])
+
+
+@pytest.mark.parametrize(
+    ("field", "payload"),
+    [("label", "labels"), ("subscriber", "subscribers"), ("codechange", "codechanges")],
+)
+def test_bare_list_field_projects_its_payload_name(field: str, payload: str) -> None:
+    assert parse_actions([field]) == [ReadField(field=payload)]
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import Mock
 
 import pytest
 
@@ -12,6 +13,8 @@ from trackinizer.trax.client_cache import Target
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from trackinizer.mock_test_support import MockProtocol
 
 
 _KEY: Final = "tok-SENTINEL-5e2a10"
@@ -88,6 +91,38 @@ class TestSharedClient:
 
         assert before.closed
         assert after is not before
+
+
+def test_shared_clients_reuse_identity_and_close_every_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first, second, replacement = _ClientMock(), _ClientMock(), _ClientMock()
+    factory = Mock(side_effect=[first, second, replacement])
+    monkeypatch.setattr(client_cache, "Client", factory)
+    monkeypatch.setattr(client_cache, "_CLIENTS", {})
+    target = Target(url="https://server.test", author="actor", api_key="key")
+    other = Target(url=target.url, author=target.author, api_key="other-key")
+
+    assert client_cache.shared_client(target) is first
+    assert client_cache.shared_client(target) is first
+    assert client_cache.shared_client(other) is second
+    assert factory.call_count == 2
+    factory.assert_any_call(target.url, author="actor", api_key="key")
+    factory.assert_any_call(target.url, author="actor", api_key="other-key")
+
+    client_cache.close_clients()
+    client_cache.close_clients()
+    first.close.assert_called_once_with()
+    second.close.assert_called_once_with()
+    assert client_cache.shared_client(target) is replacement
+    client_cache.close_clients()
+    replacement.close.assert_called_once_with()
+
+
+class _ClientMock(Mock):
+    """Declare the shared client's shutdown boundary."""
+
+    close: MockProtocol[None]
 
 
 if __name__ == "__main__":

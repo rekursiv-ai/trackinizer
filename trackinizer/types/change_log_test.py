@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from datetime import UTC, datetime
-from typing import cast, get_args
+from typing import Literal, cast, get_args
 
 import pytest
 
@@ -159,6 +159,30 @@ class TestSnapshot:
         row = {"old_title": "before", "new_title": "after"}
         assert Snapshot.from_row(row, prefix="old_") == Snapshot(title="before")
         assert not Snapshot.from_row({"new_title": "after"}, prefix="old_")
+
+
+def test_snapshot_truth_distinguishes_absent_from_cleared_fields() -> None:
+    assert not Snapshot()
+    assert Snapshot(title="")
+    assert Snapshot(labels=())
+    assert Snapshot(belief_confidence=0.0)
+
+
+@pytest.mark.parametrize("prefix", ["old_", "new_"])
+def test_snapshot_array_columns_preserve_absence_and_legacy_empty(
+    prefix: Literal["old_", "new_"],
+) -> None:
+    row: dict[str, object] = {
+        prefix + "labels": [],
+        prefix + "subscribers": None,
+        prefix + "paper_authors": ("Ada",),
+    }
+    snapshot = Snapshot.from_row(row, prefix=prefix)
+
+    assert snapshot.labels == ()
+    assert snapshot.subscribers is None
+    assert snapshot.paper_authors == ("Ada",)
+    assert snapshot.issue_kind is None
 
 
 if __name__ == "__main__":

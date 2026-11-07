@@ -7,7 +7,9 @@ shipping a client typed against routes that no longer exist.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import Mock, call
 
 import difflib
 import hashlib
@@ -30,6 +32,8 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from treekle import MutablePlainTree
+
+    from trackinizer.mock_test_support import MockProtocol
 
 
 def test_a_servers_own_schema_comes_back_unchanged() -> None:
@@ -212,6 +216,79 @@ def test_committed_schema_matches_the_app() -> None:
         "  trackinizer/web/scripts/openapi_dump.py\n"
         "then run `./npm run typecheck` in trackinizer/web.\n" + "".join(diff)[:4000]
     )
+
+
+def test_main_writes_a_tiny_schema_to_the_requested_file(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    destination = tmp_path / "schema.json"
+    monkeypatch.setattr(openapi_dump, "web_app_schema", _server)
+    monkeypatch.setattr(openapi_dump, "app_operations", frozenset)
+    monkeypatch.setattr(sys, "argv", ["openapi_dump", "--output", str(destination)])
+
+    assert openapi_dump.main() == 0
+
+    text = destination.read_text()
+    assert text == render(_server())
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == f"openapi_sha256 {hashlib.sha256(text.encode()).hexdigest()}\n"
+
+
+def test_web_schema_builds_a_fresh_app_and_attaches_web_routes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    served = _AppMock()
+    served.openapi.return_value = _server()
+    factory = Mock(return_value=served)
+    attach = Mock()
+    first, second = object(), object()
+    monkeypatch.setattr(openapi_dump, "FastAPI", factory)
+    monkeypatch.setattr(
+        openapi_dump,
+        "app",
+        SimpleNamespace(
+            app=SimpleNamespace(title="tiny", version="1"),
+            ROUTERS=(first, second),
+        ),
+    )
+    monkeypatch.setattr(openapi_dump, "web", SimpleNamespace(attach=attach))
+
+    assert web_app_schema() == _server()
+
+    factory.assert_called_once_with(title="tiny", version="1")
+    assert served.include_router.call_args_list == [call(first), call(second)]
+    attach.assert_called_once_with(served)
+    served.openapi.assert_called_once_with()
+
+
+def test_private_operations_collect_each_router_path_and_method(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    schema: dict[str, MutablePlainTree] = {
+        "paths": {"/private": {"get": {}, "post": {}}},
+    }
+    served = _AppMock()
+    served.openapi.return_value = schema
+    factory = Mock(return_value=served)
+    router = object()
+    monkeypatch.setattr(openapi_dump, "FastAPI", factory)
+    monkeypatch.setattr(openapi_dump, "routers", SimpleNamespace(ROUTERS=(router,)))
+
+    assert app_operations() == frozenset({("/private", "get"), ("/private", "post")})
+
+    factory.assert_called_once_with()
+    served.include_router.assert_called_once_with(router)
+    served.openapi.assert_called_once_with()
+
+
+class _AppMock(Mock):
+    """Declare schema generation and router registration boundaries."""
+
+    openapi: MockProtocol[dict[str, MutablePlainTree]]
+    include_router: MockProtocol[None]
 
 
 if __name__ == "__main__":

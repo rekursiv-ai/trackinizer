@@ -34,6 +34,7 @@ from trackinizer.server.store.change_id_slot import (
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.wire.bodies import (
+    BatchEdge,
     Citation,
     SubmitAccessGroup,
     SubmitAgentSession,
@@ -1215,6 +1216,72 @@ class TestSubmitBatch:
             for call in conn.execute.call_args_list
             if call.args
         )
+
+
+@pytest.mark.asyncio
+async def test_codechange_carries_its_sha_to_the_insert_columns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _engine = make_store()
+    row_id = new_uuid()
+    generic = AsyncMock(return_value=row_id)
+    monkeypatch.setattr(store, "_submit_generic", generic)
+    body = SubmitCodeChange(title="change", sha="a" * 40, account="t@e")
+
+    assert await store.submit_codechange(body, actor="author") == row_id
+
+    generic.assert_awaited_once_with(
+        body,
+        kind="CodeChange",
+        api_key_id=None,
+        actor="author",
+        extras={"codechange_sha": "a" * 40},
+        principal=None,
+        conn=None,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("indexed", [False, True])
+async def test_batch_edges_resolve_ids_and_forward_edge_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    indexed: bool,
+) -> None:
+    store, engine = make_store()
+    source, target = new_uuid(), new_uuid()
+    submitted = AsyncMock(side_effect=[source, target])
+    edge_write = AsyncMock()
+    monkeypatch.setattr(store, "submit", submitted)
+    monkeypatch.setattr(store, "_add_edge_on_conn", edge_write)
+    edge = BatchEdge(
+        from_index=0 if indexed else None,
+        to_index=1 if indexed else None,
+        from_id=None if indexed else source,
+        to_id=None if indexed else target,
+        edge_kind="requires",
+        priority=2,
+        note="dependency",
+        labels=["ready"],
+    )
+
+    assert await store.submit_batch(
+        [SubmitIssue(title="a"), SubmitIssue(title="b")],
+        edges=[edge],
+        actor="author",
+    ) == [source, target]
+
+    edge_write.assert_awaited_once_with(
+        engine.conn,
+        from_id=source,
+        to_id=target,
+        edge_kind="requires",
+        priority=2,
+        note="dependency",
+        valence=edge.valence,
+        labels=edge.labels,
+        api_key_id=None,
+        actor="author",
+    )
 
 
 if __name__ == "__main__":

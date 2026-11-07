@@ -2,22 +2,34 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import json
 import uuid
 
+from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
 from treekle import from_plain, json_loads
 
 import pytest
 
+from trackinizer.conftest import make_store
+from trackinizer.server.access_policy import Principal
+from trackinizer.server.api import reports_routes
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
     install_identity,
     make_test_identity,
 )
-from trackinizer.server.visuals.reports import read_artifact_content_on_conn
+from trackinizer.server.visuals.reports import (
+    ArtifactContentConflictError,
+    ArtifactContentRevision,
+    PublishArtifactContent,
+    read_artifact_content_on_conn,
+)
 from trackinizer.wire.artifact_html import CONTENT_SECURITY_POLICY
 from trackinizer.wire.bodies import (
     SubmitArtifact,
@@ -621,6 +633,193 @@ async def test_structured_report_freezes_signed_evidence(
             )
             == 1
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("previous", [None, uuid.UUID(int=2)])
+async def test_report_publication_checks_linked_locks_and_forwards_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    previous: uuid.UUID | None,
+) -> None:
+    store, _engine = make_store()
+    app = FastAPI()
+    app.state.store = store
+    request = Request({"type": "http", "app": app})
+    identity = make_test_identity()
+    principal = Principal(email=identity.email, role="writer")
+    request.state.access_principal = principal
+    body = PublishArtifactContent(
+        issue_id=uuid.UUID(int=1),
+        previous_artifact_id=previous,
+        title="Report",
+        summary="Measured",
+        format="html",
+        html="<h1>Result</h1>",
+    )
+    revision = _unit_revision()
+    publish = AsyncMock(return_value=revision)
+    writable = AsyncMock()
+    monkeypatch.setattr(reports_routes, "publish_artifact_content", publish)
+    monkeypatch.setattr(reports_routes, "require_writable", writable)
+    key = uuid.UUID(int=3)
+
+    result = await reports_routes.publish_artifact_content_route(
+        body,
+        request,
+        identity,
+        key,
+    )
+
+    assert result is revision
+    writable.assert_awaited_once_with(
+        request,
+        identity,
+        [body.issue_id] if previous is None else [body.issue_id, previous],
+    )
+    publish.assert_awaited_once_with(
+        store,
+        user_id=identity.user_id,
+        author=identity.email,
+        api_key_id=identity.api_key_id,
+        body=body,
+        key=key,
+        principal=principal,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [
+        (ArtifactContentConflictError("Key reused"), 409),
+        (ValueError("Bad citation"), 422),
+    ],
+)
+async def test_report_publication_maps_domain_refusals(
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    status: int,
+) -> None:
+    app = FastAPI()
+    store, _engine = make_store()
+    app.state.store = store
+    request = Request({"type": "http", "app": app})
+    request.state.access_principal = Principal(email=TEST_USER_EMAIL, role="writer")
+    monkeypatch.setattr(reports_routes, "require_writable", AsyncMock())
+    monkeypatch.setattr(
+        reports_routes,
+        "publish_artifact_content",
+        AsyncMock(side_effect=error),
+    )
+    body = PublishArtifactContent(
+        issue_id=uuid.UUID(int=1),
+        title="Report",
+        summary="Result",
+        format="html",
+        html="<h1>Result</h1>",
+    )
+    with pytest.raises(HTTPException) as refused:
+        await reports_routes.publish_artifact_content_route(
+            body,
+            request,
+            make_test_identity(),
+            uuid.UUID(int=2),
+        )
+    assert (refused.value.status_code, refused.value.detail) == (status, str(error))
+    assert refused.value.__cause__ is error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("found", [False, True])
+async def test_report_content_returns_exact_revision_or_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+    found: bool,
+) -> None:
+    store, _engine = make_store()
+    app = FastAPI()
+    app.state.store = store
+    request = Request({"type": "http", "app": app})
+    revision = _unit_revision()
+    read = AsyncMock(return_value=revision if found else None)
+    monkeypatch.setattr(reports_routes, "read_artifact_content", read)
+    if found:
+        assert (
+            await reports_routes.read_artifact_content_route(
+                revision.artifact_id,
+                request,
+                make_test_identity(),
+            )
+            is revision
+        )
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await reports_routes.read_artifact_content_route(
+                revision.artifact_id,
+                request,
+                make_test_identity(),
+            )
+        assert (refused.value.status_code, refused.value.detail) == (
+            404,
+            "Artifact content not found.",
+        )
+    read.assert_awaited_once_with(store, revision.artifact_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["missing", "structured", "html"])
+async def test_report_html_refuses_non_html_and_serves_sandboxed_capture(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    store, _engine = make_store()
+    app = FastAPI()
+    app.state.store = store
+    request = Request({"type": "http", "app": app})
+    revision = _unit_revision()
+    if kind == "structured":
+        revision = revision.model_copy(update={"format": "structured", "html": None})
+    read = AsyncMock(return_value=None if kind == "missing" else revision)
+    monkeypatch.setattr(reports_routes, "read_artifact_content", read)
+    if kind == "html":
+        page = await reports_routes.read_artifact_html_route(
+            revision.artifact_id,
+            request,
+            make_test_identity(),
+        )
+        assert bytes(page.body).startswith(b"<h1>Result</h1>")
+        assert b"trax-capture" in bytes(page.body)
+        assert page.headers["Content-Security-Policy"] == CONTENT_SECURITY_POLICY
+        assert page.headers["X-Content-Type-Options"] == "nosniff"
+        assert page.headers["Referrer-Policy"] == "no-referrer"
+        assert page.headers["Cache-Control"] == "private, no-transform"
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await reports_routes.read_artifact_html_route(
+                revision.artifact_id,
+                request,
+                make_test_identity(),
+            )
+        assert (refused.value.status_code, refused.value.detail) == (
+            404,
+            "HTML Artifact not found.",
+        )
+    read.assert_awaited_once_with(store, revision.artifact_id)
+
+
+def _unit_revision() -> ArtifactContentRevision:
+    return ArtifactContentRevision(
+        revision=1,
+        artifact_id=uuid.UUID(int=4),
+        issue_id=uuid.UUID(int=1),
+        title="Report",
+        summary="Measured",
+        author=TEST_USER_EMAIL,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC),
+        format="html",
+        html="<h1>Result</h1>",
+        sections=[],
+        citations=[],
+    )
 
 
 if __name__ == "__main__":

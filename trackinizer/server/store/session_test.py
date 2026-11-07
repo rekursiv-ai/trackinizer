@@ -35,9 +35,11 @@ from trackinizer.server.store.change_id_slot import (
 from trackinizer.server.store.session import (
     _LOCK_SESSION_SQL,
     PastRun,
+    RunPlace,
     _optional_datetime,
     _optional_str,
 )
+from trackinizer.server.store.session_feed import CONVERSATION
 from trackinizer.server.store.store_test_support import (
     EVERY_SESSION,
     append_user_message,
@@ -51,6 +53,7 @@ from trackinizer.wire.bodies import SubmitAgentSession
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from trackinizer.lib.postgres import Conn
     from trackinizer.mock_test_support import MockConnection
     from trackinizer.server.store.core import Store
 
@@ -1024,6 +1027,554 @@ async def _close_audit(
             session_id,
         )
     return {(row["kind"], row["actor"], row["api_key_id"]) for row in rows}
+
+
+@pytest.mark.asyncio
+async def test_actor_reservation_uses_the_first_gap_in_taken_suffixes() -> None:
+    store, engine = make_store()
+    engine.conn.fetch.return_value = [
+        {"owner": owner} for owner in ("agent", "agent#2", "agent#4")
+    ]
+    assert await store.reserve_session_actor("agent") == "agent#3"
+    assert engine.conn.fetch.await_args is not None
+    assert engine.conn.fetch.await_args.args[1:] == ("agent",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attach", [False, True])
+@pytest.mark.parametrize("found", [False, True])
+async def test_start_routes_attach_and_cli_resume_before_reserving(
+    attach: bool,
+    found: bool,
+) -> None:
+    store, _engine = make_store()
+    session_id = uuid4()
+    receipt = (session_id, "original", 0)
+    resume = cast(
+        AsyncMockProtocol[tuple[UUID, str, int] | None],
+        AsyncMock(return_value=receipt if found else None),
+    )
+    reserve = cast(AsyncMockProtocol[str], AsyncMock(return_value="fresh"))
+    body = SubmitAgentSession(title="s", cli_session_id="cli-1", account="t@e")
+    with (
+        patch.object(store, "_resume_session", new=resume),
+        patch.object(store, "reserve_session_actor", new=reserve),
+    ):
+        if found:
+            assert (
+                await store.start_session(
+                    body,
+                    requested_actor="agent",
+                    audience="private",
+                    attach=session_id if attach else None,
+                )
+                == receipt
+            )
+        elif attach:
+            with pytest.raises(NotFoundError):
+                await store.start_session(
+                    body,
+                    requested_actor="agent",
+                    audience="private",
+                    attach=session_id,
+                )
+        else:
+            with pytest.raises(ConflictError, match="after 0 attempts"):
+                await store.start_session(
+                    body,
+                    requested_actor="agent",
+                    audience="private",
+                    max_reserve_attempts=0,
+                )
+    reserve.assert_not_awaited()
+    assert resume.await_args is not None
+    assert resume.await_args.kwargs["hide"] is True
+    assert resume.await_args.kwargs["actor"] == "agent"
+    assert resume.await_count == 1
+    assert resume.await_args.args == (body,)
+    assert resume.await_args.kwargs.get("attach") == (session_id if attach else None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body_key", [False, True])
+async def test_start_replays_a_spent_key_without_reserving_and_drains_the_slot(
+    body_key: bool,
+) -> None:
+    store, engine = make_store()
+    session_id, key, header_key = uuid4(), uuid4(), uuid4()
+    set_field_row(
+        engine.conn,
+        {
+            "subject_id": session_id,
+            "change_kind": "created",
+            "subject_kind": "AgentSession",
+        },
+    )
+    engine.conn.fetchval.return_value = "original"
+    set_client_change_id(header_key if body_key else key)
+    assert await store.start_session(
+        SubmitAgentSession(title="s", idempotency_key=key if body_key else None),
+        requested_actor="agent",
+        audience="open",
+    ) == (session_id, "original", 0)
+    assert _peek_client_change_id() is None
+    assert not any("INSERT INTO inquiries" in sql for sql in executed_sql(engine.conn))
+    assert engine.conn.fetchrow.await_args is not None
+    assert engine.conn.fetchrow.await_args.args[1:] == (key,)
+    assert engine.conn.fetchval.await_args is not None
+    assert engine.conn.fetchval.await_args.args[1:] == (session_id,)
+    engine.conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attach", [False, True])
+@pytest.mark.parametrize("ended", [False, True])
+async def test_resume_keeps_the_owner_hides_and_joins_requested_rooms(
+    attach: bool,
+    ended: bool,
+) -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    set_field_row(
+        engine.conn,
+        {
+            "id": session_id,
+            "owner": "original",
+            "account": "t@e",
+            "status": "complete" if ended else "active",
+            "agentsession_ended": at if ended else None,
+            "agentsession_audience": "open",
+        },
+    )
+    emit = cast(AsyncMockProtocol[object], AsyncMock())
+    rooms = cast(AsyncMockProtocol[object], AsyncMock())
+    policy = RecordingPolicy()
+    store.access_policy = policy
+    with (
+        patch.object(store, "_emit_field_change", new=emit),
+        patch.object(store, "_mutate_list_field_on_conn", new=rooms),
+    ):
+        receipt = await store._resume_session(
+            SubmitAgentSession(title="ignored", cli_session_id="cli-1", rooms=["lab"]),
+            api_key_id=None,
+            actor="resumer",
+            hide=True,
+            attach=session_id if attach else None,
+        )
+    assert receipt == (session_id, "original", 0)
+    assert policy.of("prepare_audience_change") == [None]
+    assert len(policy.of("on_audience")) == 1
+    assert policy.of("on_audience") == [
+        (None, Resource(kind="session", id=str(session_id), account="t@e")),
+    ]
+    audience_change = emit.await_args_list[0]
+    assert audience_change.args[4] == Snapshot(agentsession_audience="open")
+    assert audience_change.kwargs["new"] == Snapshot(agentsession_audience="private")
+    assert audience_change.kwargs["reason"] == "hidden by its owner on resume"
+    assert all(call.kwargs["actor"] == "resumer" for call in emit.await_args_list)
+    rooms.assert_awaited_once_with(
+        engine.conn,
+        session_id,
+        "lab",
+        column="agentsession_rooms",
+        api_key_id=None,
+        actor="resumer",
+        include=True,
+    )
+    assert [call.args[3] for call in emit.await_args_list] == (
+        ["agentsession_audience", "agentsession_ended", "status"]
+        if ended
+        else ["agentsession_audience"]
+    )
+    assert engine.conn.fetchrow.await_args is not None
+    assert engine.conn.fetchrow.await_args.args[1:] == (
+        (session_id,) if attach else ("cli-1", None)
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_resume_without_a_correlated_row_returns_none() -> None:
+    store, _engine = make_store()
+    assert (
+        await store._resume_session(
+            SubmitAgentSession(title="s", cli_session_id="absent"),
+            api_key_id=None,
+            actor="agent",
+            hide=False,
+        )
+        is None
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held", ["private", "staff"])
+async def test_private_resume_never_rewrites_private_or_staff_audiences(
+    held: str,
+) -> None:
+    store, engine = make_store()
+    if held == "private":
+        await store._hide_resumed(
+            cast("Conn", engine.conn),
+            session_id=uuid4(),
+            account="t@e",
+            held=held,
+            api_key_id=None,
+            actor="agent",
+            principal=None,
+        )
+    else:
+        with pytest.raises(ConflictError, match="never hides"):
+            await store._hide_resumed(
+                cast("Conn", engine.conn),
+                session_id=uuid4(),
+                account="t@e",
+                held=held,
+                api_key_id=None,
+                actor="agent",
+                principal=None,
+            )
+    engine.conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("polled", [False, True])
+async def test_liveness_writes_the_poll_place_or_only_refreshes_a_watched_session(
+    polled: bool,
+) -> None:
+    store, engine = make_store()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    session_id = uuid4()
+    await store.record_session_seen(
+        session_id,
+        at=at,
+        polled=polled,
+        place=RunPlace(machine="box", run="r", cli="codex", cwd="/work"),
+    )
+    assert engine.conn.execute.await_args is not None
+    sql, *args = engine.conn.execute.await_args.args
+    assert args == [
+        session_id,
+        at,
+        at - timedelta(minutes=1),
+        *(["box", "r", "codex", "/work"] if polled else []),
+    ]
+    assert ("INSERT INTO session_liveness" in str(sql)) == polled
+
+
+@pytest.mark.asyncio
+async def test_silent_sessions_and_live_resolution_project_ids_and_rooms() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    engine.conn.fetch.side_effect = [
+        [{"session_id": session_id}],
+        [{"id": session_id, "agentsession_rooms": ["lab"]}],
+        [{"id": session_id, "agentsession_rooms": None}],
+    ]
+    assert await store.silent_sessions(before=at) == [session_id]
+    assert await store.resolve_live_sessions("agent", room="lab") == [
+        (session_id, ("lab",)),
+    ]
+    assert await store.resolve_live_sessions("agent") == [(session_id, ())]
+    calls = engine.conn.fetch.await_args_list
+    assert calls[0].args[1:] == (at,)
+    assert "NOT liveness.reaped AND liveness.last_seen <= $1" in str(calls[0].args[0])
+    assert "inquiries.agentsession_ended IS NULL" in str(calls[0].args[0])
+    assert calls[1].args[1:] == ("agent", "lab")
+    assert "$2 = ANY(agentsession_rooms)" in str(calls[1].args[0])
+    assert calls[2].args[1:] == ("agent",)
+    assert "ANY(agentsession_rooms)" not in str(calls[2].args[0])
+    assert all("ORDER BY created, id" in str(call.args[0]) for call in calls[1:])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("eligible", [False, True])
+async def test_reaper_ends_only_the_still_silent_session_and_marks_it_reaped(
+    eligible: bool,
+) -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    set_field_row(engine.conn, TestEndSession._live_row())
+    engine.conn.fetchval.return_value = at if eligible else None
+    emit = cast(AsyncMockProtocol[object], AsyncMock())
+    with patch.object(store, "_emit_field_change", new=emit):
+        assert await store.reap_session(session_id, before=at, actor="reaper") == (
+            at if eligible else None
+        )
+    updates = [str(call.args[0]) for call in engine.conn.execute.await_args_list]
+    assert any("SET reaped = TRUE" in sql for sql in updates) == eligible
+    assert emit.await_count == (2 if eligible else 0)
+    assert engine.conn.fetchrow.await_args is not None
+    assert engine.conn.fetchrow.await_args.args == (_LOCK_SESSION_SQL, session_id)
+    assert engine.conn.fetchval.await_args is not None
+    assert engine.conn.fetchval.await_args.args[1:] == (session_id, at)
+    if eligible:
+        ended_change = emit.await_args_list[0]
+        assert ended_change.args[3:] == (
+            "agentsession_ended",
+            Snapshot(agentsession_ended=None),
+        )
+        assert ended_change.kwargs["new"] == Snapshot(agentsession_ended=at)
+        assert ended_change.kwargs["actor"] == "reaper"
+        assert [
+            call.args[1:]
+            for call in engine.conn.execute.await_args_list
+            if "SET agentsession_ended" in str(call.args[0])
+        ] == [(at, "complete", session_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reaped", [False, True])
+async def test_revival_reopens_only_a_reaped_ended_session(reaped: bool) -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    set_field_row(
+        engine.conn,
+        {
+            **TestEndSession._live_row(),
+            "agentsession_ended": at,
+            "status": "complete",
+        },
+    )
+    engine.conn.fetchval.return_value = reaped
+    emit = cast(AsyncMockProtocol[object], AsyncMock())
+    with patch.object(store, "_emit_field_change", new=emit):
+        assert await store.revive_reaped_session(session_id, actor="agent") is reaped
+    assert emit.await_count == (2 if reaped else 0)
+    assert (
+        any("SET reaped = FALSE" in sql for sql in executed_sql(engine.conn)) == reaped
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", [None, "Issue", "AgentSession"])
+async def test_reopen_checks_the_locked_row_before_updating(kind: str | None) -> None:
+    store, engine = make_store()
+    if kind is not None:
+        set_field_row(engine.conn, {**TestEndSession._live_row(), "kind": kind})
+    if kind == "AgentSession":
+        await store.reopen_session(uuid4(), conn=cast("Conn", engine.conn), actor="a")
+    else:
+        with pytest.raises(NotFoundError if kind is None else ConflictError):
+            await store.reopen_session(
+                uuid4(),
+                conn=cast("Conn", engine.conn),
+                actor="a",
+            )
+    engine.conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tail", [False, True])
+async def test_feed_binds_composite_bounds_and_returns_tail_in_display_order(
+    tail: bool,
+) -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    engine.conn.fetch.return_value = [
+        {
+            "session_id": session_id,
+            "part": 2,
+            "idx": idx,
+            "kind": "UserMessage",
+            "created": at,
+            "timestamp": at,
+            "model": "m",
+            "payload": '{"content":"hi"}',
+            "text": "hi",
+            "owner": "agent",
+            "agentsession_rooms": ["lab"],
+            "agentsession_cli": "codex",
+        }
+        for idx in ((4, 3) if tail else (3, 4))
+    ]
+    cursor = (at, session_id, 2, 2)
+    events = await store.read_feed(
+        after=cursor,
+        before=(at, session_id, 2, 5),
+        since=at,
+        until=at,
+        scope=EVERY_SESSION,
+        conversation=True,
+        tail=tail,
+        limit=2,
+    )
+    assert [
+        (event.part, event.seq, event.actor, event.rooms, event.cli, event.text)
+        for event in events
+    ] == [
+        (2, 3, "agent", ["lab"], "codex", "hi"),
+        (2, 4, "agent", ["lab"], "codex", "hi"),
+    ]
+    assert events[0].message == {"content": "hi"}
+    assert engine.conn.fetch.await_args is not None
+    sql, *args = engine.conn.fetch.await_args.args
+    assert args[:10] == [*cursor, at, session_id, 2, 5, at, at]
+    assert " > ($1, $2, $3, $4)" in str(sql)
+    assert " < ($5, $6, $7, $8)" in str(sql)
+    assert f"(CASE WHEN {CONVERSATION} THEN true ELSE false END)" in str(sql)
+    assert ("ORDER BY e.created DESC" in str(sql)) == tail
+    assert "e.created >= $9" in str(sql)
+    assert "e.created <= $10" in str(sql)
+    assert "e.idx < (SELECT m.records FROM session_manifests m" in str(sql)
+    assert args[-1] == 2
+    assert (events[0].session_id, events[0].created, events[0].timestamp) == (
+        session_id,
+        at,
+        at,
+    )
+    assert (events[0].kind, events[0].model) == ("UserMessage", "m")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ended", [False, True])
+async def test_reaper_leaves_missing_and_already_ended_sessions_alone(
+    ended: bool,
+) -> None:
+    store, engine = make_store()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    set_field_row(
+        engine.conn,
+        {**TestEndSession._live_row(), "agentsession_ended": at} if ended else None,
+    )
+    engine.conn.fetchval.return_value = at
+    assert await store.reap_session(uuid4(), before=at, actor="reaper") is None
+    assert executed_sql(engine.conn) == ["BEGIN", "COMMIT"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exists", [False, True])
+async def test_revival_leaves_missing_and_live_sessions_alone(exists: bool) -> None:
+    store, engine = make_store()
+    set_field_row(engine.conn, TestEndSession._live_row() if exists else None)
+    engine.conn.fetchval.return_value = True
+    assert await store.revive_reaped_session(uuid4(), actor="agent") is False
+    assert executed_sql(engine.conn) == ["BEGIN", "COMMIT"]
+
+
+@pytest.mark.asyncio
+async def test_reopen_clears_ended_and_restarts_liveness_with_audits() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    set_field_row(
+        engine.conn,
+        {
+            **TestEndSession._live_row(),
+            "agentsession_ended": at,
+            "status": "complete",
+        },
+    )
+    emit = cast(AsyncMockProtocol[object], AsyncMock())
+    with patch.object(store, "_emit_field_change", new=emit):
+        await store.reopen_session(
+            session_id,
+            conn=cast("Conn", engine.conn),
+            actor="resumer",
+        )
+    assert [call.args for call in engine.conn.execute.await_args_list] == [
+        (
+            (
+                "UPDATE inquiries SET agentsession_ended = NULL, "
+                "status = 'active', modified = clock_timestamp() WHERE id = $1"
+            ),
+            session_id,
+        ),
+        (
+            (
+                "UPDATE session_liveness SET reaped = FALSE, last_seen = clock_timestamp() "
+                "WHERE session_id = $1"
+            ),
+            session_id,
+        ),
+    ]
+    assert [(call.args[3:], call.kwargs["new"]) for call in emit.await_args_list] == [
+        (
+            ("agentsession_ended", Snapshot(agentsession_ended=at)),
+            Snapshot(agentsession_ended=None),
+        ),
+        (("status", Snapshot(status="complete")), Snapshot(status="active")),
+    ]
+    assert all(call.kwargs["actor"] == "resumer" for call in emit.await_args_list)
+    assert all(call.kwargs["api_key_id"] is None for call in emit.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_a_poll_without_place_stores_empty_location_fields() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    await store.record_session_seen(session_id, at=at, polled=True)
+    assert engine.conn.execute.await_args is not None
+    assert engine.conn.execute.await_args.args[1:] == (
+        session_id,
+        at,
+        at - timedelta(minutes=1),
+        None,
+        None,
+        None,
+        None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_captured_resume_without_owner_keeps_its_empty_routing_name() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    set_field_row(
+        engine.conn,
+        {"id": session_id, "owner": None, "agentsession_ended": None},
+    )
+    assert await store._resume_session(
+        SubmitAgentSession(title="s", cli_session_id="cli-1"),
+        api_key_id=None,
+        actor="agent",
+        hide=False,
+    ) == (session_id, "", 0)
+    assert executed_sql(engine.conn) == ["BEGIN", "COMMIT"]
+
+
+@pytest.mark.asyncio
+async def test_unbounded_feed_maps_null_context_without_conversation_filter() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 1, 1, tzinfo=UTC)
+    engine.conn.fetch.return_value = [
+        {
+            "session_id": session_id,
+            "part": 0,
+            "idx": 0,
+            "kind": "UserMessage",
+            "created": at,
+            "timestamp": None,
+            "model": None,
+            "payload": "{}",
+            "text": "",
+            "owner": None,
+            "agentsession_rooms": None,
+            "agentsession_cli": None,
+        },
+    ]
+    (event,) = await store.read_feed(scope=EVERY_SESSION, limit=3)
+    assert (event.actor, event.rooms, event.cli, event.model, event.timestamp) == (
+        "",
+        [],
+        None,
+        None,
+        None,
+    )
+    assert (event.message, event.text, event.part, event.seq) == ({}, "", 0, 0)
+    assert engine.conn.fetch.await_args is not None
+    sql, *args = engine.conn.fetch.await_args.args
+    assert f"(CASE WHEN {CONVERSATION} THEN true ELSE false END)" not in str(sql)
+    assert "e.created >=" not in str(sql)
+    assert "e.created <=" not in str(sql)
+    assert "ORDER BY e.created ASC" in str(sql)
+    assert args[-1] == 3
 
 
 if __name__ == "__main__":

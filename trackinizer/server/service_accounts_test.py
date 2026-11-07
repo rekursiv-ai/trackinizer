@@ -142,6 +142,32 @@ class TestRequireGrantable:
             require_grantable(caller, reads=_OPEN, opens=_BOTH)
 
 
+def test_assistant_grant_requires_every_read_and_open_audience() -> None:
+    assistant = Assistant(actor="scout", email="scout@service.invalid")
+    all_audiences = frozenset({"open", "private", "staff"})
+    require_assistant_grant(
+        _caller(reads=all_audiences),
+        email=assistant.email,
+        assistant=assistant,
+    )
+    for caller, message in (
+        (_caller(reads=_OPEN, opens=all_audiences), "reads"),
+        (_caller(reads=all_audiences, opens=_OPEN), "opens"),
+    ):
+        with pytest.raises(AudienceCeilingError, match=message):
+            require_assistant_grant(caller, email=assistant.email, assistant=assistant)
+    require_assistant_grant(
+        _caller(reads=_OPEN),
+        email="other@service.invalid",
+        assistant=assistant,
+    )
+    require_assistant_grant(
+        _caller(reads=_OPEN),
+        email=assistant.email,
+        assistant=None,
+    )
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

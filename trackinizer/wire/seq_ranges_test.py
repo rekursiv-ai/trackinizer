@@ -27,6 +27,10 @@ def test_parse_interval_rejects_malformed() -> None:
         parse_interval("foo..5")
     with pytest.raises(ValueError, match="invalid seq range stop 'bar'"):
         parse_interval("5..bar")
+    with pytest.raises(ValueError, match="invalid seq range stop 'foo'"):
+        parse_interval("5..foo")
+    with pytest.raises(ValueError, match="invalid seq range stop '-1'"):
+        parse_interval("..-1")
 
 
 def test_format_interval_round_trips_through_parse() -> None:

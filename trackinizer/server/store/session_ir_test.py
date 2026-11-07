@@ -8,11 +8,12 @@ landing in its own table, and the generated tsvector never seeing it.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import asyncio
 
+from asyncpg import ForeignKeyViolationError
 from treekle import immutable, json_loads
 
 import pytest
@@ -36,6 +37,7 @@ from trackinizer.types.session_records import SessionRecordRow
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from trackinizer.lib.postgres import Conn
     from trackinizer.server.store.core import Store
 
 
@@ -1146,6 +1148,273 @@ def test_a_payload_nul_is_replaced_in_keys_and_nested_strings() -> None:
         "n": 1,
         "lit": "\\u0000",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restart", [False, True])
+async def test_append_stores_sanitized_records_ciphertext_and_slash_commands(
+    restart: bool,
+) -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 6, 1, tzinfo=UTC)
+    set_field_row(
+        engine.conn,
+        {
+            "kind": "AgentSession",
+            "agentsession_ended": None,
+            "agentsession_audience": "staff",
+        },
+    )
+    engine.conn.fetch.side_effect = [[{"idx": 2}], [{"seq": 0}]]
+    row = SessionRecordRow(
+        session_id=session_id,
+        part=1,
+        idx=2,
+        kind="Thinking",
+        model="m\x00",
+        payload=immutable({"content": "a\x00"}),
+        text="a\x00",
+        ciphertext="sealed_+/=",
+    )
+
+    assert await store.append_session_records(
+        session_id,
+        [row],
+        restart=restart,
+        slash_commands=[SlashCommandRow(timestamp=at, command="mo\x00", args="x\x00")],
+    ) == (1, 0, 1)
+
+    record = engine.conn.fetch.await_args_list[0].args
+    assert ("DO UPDATE SET" in str(record[0])) == restart
+    assert record[1:4] == ([session_id], [1], [2])
+    assert record[7] == ["m\ufffd"]
+    assert record[8] == ['{"content":"a\\ufffd"}']
+    assert record[9] == ["a\ufffd"]
+    encrypted = next(
+        call
+        for call in engine.conn.execute.await_args_list
+        if "INSERT INTO session_ciphertext" in str(call.args[0])
+    )
+    assert encrypted.args[1:] == ([session_id], [1], [2], [b"sealed_+/="])
+    slash = engine.conn.fetch.await_args_list[1].args
+    assert slash[1:] == (session_id, [at], ["mo\ufffd"], ["x\ufffd"])
+    assert len(engine.notify_calls) == 1
+    assert json_loads(engine.notify_calls[0][1]) == {
+        "id": str(session_id),
+        "audience": "staff",
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing", [False, True])
+async def test_append_refuses_missing_or_ended_sessions_before_record_writes(
+    missing: bool,
+) -> None:
+    store, engine = make_store()
+    if not missing:
+        set_field_row(
+            engine.conn,
+            {
+                "kind": "AgentSession",
+                "agentsession_ended": datetime(2026, 1, 1, tzinfo=UTC),
+            },
+        )
+    session_id = uuid4()
+    with pytest.raises(NotFoundError if missing else ConflictError):
+        await store.append_session_records(
+            session_id,
+            _rows(session_id, [UserMessage(content="hi")]),
+        )
+    assert engine.notify_calls == []
+    assert not any(
+        "INSERT INTO session_records" in sql for sql in executed_sql(engine.conn)
+    )
+
+
+@pytest.mark.asyncio
+async def test_slash_and_recent_turn_readers_keep_stored_order_and_fields() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    at = datetime(2026, 6, 1, tzinfo=UTC)
+    engine.conn.fetch.side_effect = [
+        [{"timestamp": at, "command": "model", "args": "opus"}],
+        [
+            {"part": 1, "idx": 2, "kind": "AssistantMessage", "content": "new"},
+            {"part": 0, "idx": 3, "kind": "UserMessage", "content": "old"},
+        ],
+    ]
+    assert await store.read_session_slash_commands(session_id) == [
+        SlashCommandRow(timestamp=at, command="model", args="opus"),
+    ]
+    assert await store.read_recent_session_turns(session_id, limit=2) == [
+        session_ir.RecentSessionTurn(part=0, idx=3, kind="UserMessage", content="old"),
+        session_ir.RecentSessionTurn(
+            part=1,
+            idx=2,
+            kind="AssistantMessage",
+            content="new",
+        ),
+    ]
+    assert engine.conn.fetch.await_args_list[1].args[1:] == (session_id, 2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [None, 2])
+@pytest.mark.parametrize("refused", [False, True])
+async def test_manifest_reuses_its_part_or_allocates_the_next_and_enforces_exclusivity(
+    existing: int | None,
+    refused: bool,
+) -> None:
+    store, engine = make_store()
+    session_id, ir_id, key = uuid4(), uuid4(), uuid4()
+    part = 3 if existing is None else existing
+    engine.conn.fetchval.side_effect = [
+        session_id,
+        existing,
+        *([part] if existing is None else []),
+        None if refused else part,
+    ]
+    if refused:
+        with pytest.raises(ConflictError, match="opened by another key"):
+            await store.upsert_session_manifest(
+                session_id,
+                name="a.jsonl",
+                metadata=immutable({}),
+                ir_id=ir_id,
+                format="claude",
+                records=2,
+                api_key_id=key,
+                exclusive=True,
+            )
+    else:
+        assert (
+            await store.upsert_session_manifest(
+                session_id,
+                name="a.jsonl",
+                metadata=immutable({}),
+                ir_id=ir_id,
+                format="claude",
+                records=2,
+                api_key_id=key,
+                exclusive=True,
+            )
+            == part
+        )
+    write = engine.conn.fetchval.await_args_list[-1].args
+    assert "WHERE session_manifests.opened_by_api_key_id IS NULL" in str(write[0])
+    assert write[1:] == (session_id, part, "a.jsonl", "{}", ir_id, "claude", 2, key)
+
+
+@pytest.mark.asyncio
+async def test_manifest_readers_decode_metadata_and_keep_the_opening_key() -> None:
+    store, engine = make_store()
+    session_id, ir_id, key = uuid4(), uuid4(), uuid4()
+    row = {
+        "part": 2,
+        "name": "a.jsonl",
+        "metadata": '{"newline_terminated":true}',
+        "ir_id": ir_id,
+        "format": "claude",
+        "records": 3,
+        "opened_by_api_key_id": key,
+    }
+    engine.conn.fetch.return_value = [row]
+    set_field_row(engine.conn, row)
+    expected = session_ir.SessionManifest(
+        part=2,
+        name="a.jsonl",
+        metadata=immutable({"newline_terminated": True}),
+        ir_id=ir_id,
+        format="claude",
+        records=3,
+        opened_by_api_key_id=key,
+    )
+    assert await store.read_session_manifests(session_id) == [expected]
+    assert await store.read_session_manifest(session_id, name="a.jsonl") == expected
+    set_field_row(engine.conn, None)
+    assert await store.read_session_manifest(session_id, name="missing") is None
+
+
+@pytest.mark.asyncio
+async def test_copy_parts_remaps_each_table_with_the_same_prefix_bounds() -> None:
+    store, engine = make_store()
+    source, target, key = uuid4(), uuid4(), uuid4()
+    await store.copy_session_parts(
+        cast("Conn", engine.conn),
+        source=source,
+        target=target,
+        prefixes=[session_ir.PartPrefix(part=3, records=2)],
+        api_key_id=key,
+    )
+    writes = [call.args for call in engine.conn.execute.await_args_list]
+    assert len(writes) == 4
+    assert writes[0][1:] == (source, target, [3], [2], [0], key)
+    assert all(write[1:] == (source, target, [3], [2], [0]) for write in writes[1:])
+    assert [str(write[0]).split(" ")[2] for write in writes] == [
+        "session_manifests",
+        "session_records",
+        "session_ciphertext",
+        "session_bodies",
+    ]
+    assert all("idx < copied.records" in str(write[0]) for write in writes[1:])
+
+
+@pytest.mark.asyncio
+async def test_a_purge_during_record_insertion_is_not_found_and_rolls_back() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    set_field_row(
+        engine.conn,
+        {
+            "kind": "AgentSession",
+            "agentsession_ended": None,
+            "agentsession_audience": "open",
+        },
+    )
+    violation = ForeignKeyViolationError("session removed")
+    engine.conn.fetch.side_effect = [violation, []]
+
+    with pytest.raises(NotFoundError, match=str(session_id)) as caught:
+        await store.append_session_records(
+            session_id,
+            _rows(session_id, [UserMessage(content="hi")]),
+        )
+
+    assert caught.value.__cause__ is violation
+    assert engine.conn.fetch.await_args_list[-1].args == ("ROLLBACK",)
+    engine.conn.execute.assert_awaited_once_with("BEGIN")
+    assert engine.notify_calls == []
+
+
+@pytest.mark.asyncio
+async def test_record_only_append_skips_the_slash_command_write() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    set_field_row(
+        engine.conn,
+        {
+            "kind": "AgentSession",
+            "agentsession_ended": None,
+            "agentsession_audience": "open",
+        },
+    )
+    engine.conn.fetch.return_value = [{"idx": 0}]
+
+    assert await store.append_session_records(
+        session_id,
+        _rows(session_id, [UserMessage(content="hi")]),
+    ) == (1, 0, 0)
+
+    assert engine.conn.fetch.await_count == 1
+    assert "INSERT INTO session_records" in str(
+        engine.conn.fetch.await_args_list[0].args[0],
+    )
+    assert [call.args for call in engine.conn.execute.await_args_list] == [
+        ("BEGIN",),
+        ("COMMIT",),
+    ]
+    assert len(engine.notify_calls) == 1
 
 
 if __name__ == "__main__":

@@ -623,11 +623,13 @@ async def test_a_kept_may_have_run_ends_as_a_taken_command(
     kind: type[ExecRevokedError | ExecLostError],
     message: str,
 ) -> None:
-    error = MayHaveRun(revoked=revoked).error()
+    receipt = MayHaveRun(revoked=revoked)
+    error = receipt.error()
 
     assert type(error) is kind
     assert error.taken is True
     assert str(error) == message
+    assert receipt.error() is not error
 
 
 if __name__ == "__main__":

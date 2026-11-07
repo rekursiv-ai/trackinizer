@@ -103,6 +103,26 @@ class TestTokenCount:
         assert delta == TokenCount(input_tokens=3, cache_creation_tokens=7)
 
 
+@pytest.mark.parametrize("prefix", ["", "old_", "new_"])
+def test_cost_row_uses_only_its_prefixed_axes(prefix: str) -> None:
+    assert Cost.from_row({}, prefix=prefix) == Cost()
+    assert Cost.from_row(
+        {prefix + "marginal_cost_agent_usd": 1.25},
+        prefix=prefix,
+    ) == Cost(agent_usd=1.25)
+    assert Cost.from_row(
+        {prefix + "marginal_cost_resource_usd": 2.5},
+        prefix=prefix,
+    ) == Cost(resource_usd=2.5)
+    assert Cost.from_row(
+        {
+            prefix + "marginal_cost_agent_usd": 1.25,
+            prefix + "marginal_cost_resource_usd": 2.5,
+        },
+        prefix=prefix,
+    ) == Cost(agent_usd=1.25, resource_usd=2.5)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

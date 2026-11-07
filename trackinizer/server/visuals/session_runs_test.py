@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import AsyncMock
 
 import uuid
 
 import pytest
 
+from trackinizer.conftest import make_conn
 from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue, PollerRun
 from trackinizer.server.store.core import Store
+from trackinizer.server.visuals import session_runs
 from trackinizer.server.visuals.session_runs import (
     live_run_states,
     opener_email,
@@ -126,6 +129,45 @@ async def test_opener_email_names_the_account_of_a_key(
         assert await opener_email(conn, api_key_id=_USER_KEY) == "user@example.com"
         assert await opener_email(conn, api_key_id=uuid.uuid4()) is None
         assert await opener_email(conn, api_key_id=None) is None
+
+
+@pytest.mark.asyncio
+async def test_live_states_only_query_waiting_for_current_pollers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running, waiting, taken, gone = (uuid.uuid4() for _ in range(4))
+    inbound = InboundQueue()
+    for session_id in (running, waiting, taken):
+        inbound.mark_poller(session_id, instance="run")
+    assert inbound.report_state(running, instance="run", state="running")
+    assert inbound.report_state(taken, instance="run", state="taken_over")
+    asks = AsyncMock(return_value={waiting, taken, gone})
+    monkeypatch.setattr(session_runs, "waiting_sessions", asks)
+    conn = cast("Conn", make_conn())
+
+    assert await live_run_states(
+        conn,
+        inbound=inbound,
+        session_ids=[running, waiting, taken, gone],
+    ) == {running: "running", waiting: "requires_action", taken: "taken_over"}
+    asks.assert_awaited_once_with(conn, session_ids=[running, waiting, taken])
+    assert await live_run_states(conn, inbound=inbound, session_ids=[]) == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("email", ["owner@example.com", None])
+async def test_opener_email_returns_the_key_owner_or_absence(email: str | None) -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = email
+    assert await opener_email(cast("Conn", conn), api_key_id=None) is None
+    conn.fetchval.assert_not_awaited()
+    assert await opener_email(cast("Conn", conn), api_key_id=_USER_KEY) == email
+    conn.fetchval.assert_awaited_once_with(
+        "SELECT member.email FROM api_keys AS credential "
+        "JOIN users AS member ON member.id = credential.user_id "
+        "WHERE credential.id = $1",
+        _USER_KEY,
+    )
 
 
 if __name__ == "__main__":

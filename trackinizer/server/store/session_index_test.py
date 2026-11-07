@@ -187,6 +187,20 @@ async def test_dimensionless_column_holds_the_seeded_vectors(store: Store) -> No
     assert stored.count(",") == _DIM - 1
 
 
+@pytest.mark.asyncio
+async def test_a_valid_model_creates_its_named_dimensioned_partial_index() -> None:
+    conn = make_conn()
+
+    await ensure_model_index(cast("Conn", conn), "Model-X@2", 2)
+
+    conn.execute.assert_awaited_once_with(
+        "CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_model_x_2 "
+        "ON session_embeddings USING hnsw "
+        "((embedding::halfvec(2)) halfvec_cosine_ops) "
+        "WHERE model = 'Model-X@2'",
+    )
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

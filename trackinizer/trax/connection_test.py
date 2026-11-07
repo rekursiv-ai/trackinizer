@@ -280,6 +280,30 @@ def test_a_url_that_names_no_host_has_no_directory() -> None:
         _ = connection.server_dir("not a url")
 
 
+def test_connection_flags_parse_defaults_and_explicit_values() -> None:
+    parser = argparse.ArgumentParser()
+    connection.connect_flags(parser)
+
+    assert vars(parser.parse_args([])) == {"profile": None, "host": None, "port": None}
+    flags = parser.parse_args(["--profile", "lab", "--host", "server", "--port", "9"])
+    assert vars(flags) == {"profile": "lab", "host": "server", "port": 9}
+
+
+@pytest.mark.parametrize("token", ["secret\n", "secret value", "secreté"])
+def test_malformed_environment_key_is_refused_without_echoing(
+    monkeypatch: pytest.MonkeyPatch,
+    token: str,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_URL", "https://server.test")
+    monkeypatch.setenv("TRACKINIZER_TOKEN", token)
+
+    with pytest.raises(ClientError, match="printable ASCII") as error:
+        _resolve()
+
+    assert token not in str(error.value)
+    assert "secret" not in str(error.value)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

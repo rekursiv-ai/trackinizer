@@ -8,26 +8,31 @@ may open, which CLIs its machine offers, and whether it serves files.
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import TYPE_CHECKING, Literal, cast, override
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import asyncio
 import uuid
 
-from fastapi import HTTPException
+from fastapi import HTTPException, WebSocket
 from starlette.requests import Request
 from starlette.websockets import WebSocketDisconnect
 from treekle import from_plain
 
 import pytest
 
-from trackinizer.conftest import FakeEngine
-from trackinizer.lib.posix.host import Frame
+from trackinizer.conftest import FakeEngine, make_conn
+from trackinizer.lib.posix.host import Frame, encode_frame
 from trackinizer.mock_test_support import MockConnection
+from trackinizer.server import auth
 from trackinizer.server.api import terminal_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import make_test_identity, patch_state
+from trackinizer.server.api.replays import Replays
+from trackinizer.server.api.session_identity import Asker
 from trackinizer.server.config import Config
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.terminals import (
@@ -37,16 +42,17 @@ from trackinizer.server.terminals import (
     TerminalHub,
 )
 from trackinizer.types.errors import NotFoundError
-from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
+from trackinizer.wire import wire_terminals
+from trackinizer.wire.wire_machine_host import MIN_HOST_VERSION, OFFLINE_AFTER_SEC
 from trackinizer.wire.wire_terminals import OpenTerminal, TerminalWait
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from fastapi import WebSocket
     from starlette.types import Message
 
+    from trackinizer.mock_test_support import AsyncMockProtocol
     from trackinizer.wire.wire_terminals import TerminalKind
 
 
@@ -376,6 +382,629 @@ async def test_with_authentication_off_no_one_opens_a_run_for_an_asker(
         )
 
     assert refused.value.status_code == 403
+
+
+def _browser_request(monkeypatch: pytest.MonkeyPatch) -> Request:
+    patch_state(monkeypatch, "config", Config(auth_disabled=False))
+    patch_state(monkeypatch, "replays", Replays())
+    patch_state(monkeypatch, "inbound", InboundQueue())
+    return Request(
+        {
+            "type": "http",
+            "app": app,
+            "headers": [(b"host", b"trax.test"), (b"origin", b"https://trax.test")],
+        },
+    )
+
+
+def _opening(*, canvas: uuid.UUID | None = None) -> Opening:
+    return Opening(
+        user=_IDENTITY.email,
+        machine_id=_MACHINE,
+        machine="gx10",
+        rows=2,
+        cols=3,
+        canvas=canvas,
+        surface="chat",
+    )
+
+
+async def test_open_route_queues_once_and_mints_fresh_replay_tickets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _browser_request(monkeypatch)
+    request.state.idempotency_key = uuid.uuid4()
+    hub = TerminalHub(alive=_alive, ice_servers=("stun:trax.test:3478",))
+    patch_state(monkeypatch, "terminals", hub)
+    await hub.wait(_MACHINE, wait_sec=0)
+    monkeypatch.setattr(
+        terminal_routes,
+        "_owned_machine",
+        AsyncMock(return_value=(_MACHINE, {})),
+    )
+    body = OpenTerminal(machine="gx10", rows=2, cols=3, surface="chat")
+    human = replace(_IDENTITY, api_key_id=None)
+    first = await terminal_routes.open_terminal_route(body, request, human)
+    second = await terminal_routes.open_terminal_route(body, request, human)
+    assert first.terminal_id == second.terminal_id
+    assert first.ticket != second.ticket
+    assert first.ice_servers == ["stun:trax.test:3478"]
+    term = hub.terminal(first.terminal_id)
+    assert term is not None
+    assert (term.rows, term.cols, term.surface, term.user) == (
+        2,
+        3,
+        "chat",
+        human.email,
+    )
+    assert hub.redeem(first.ticket, user=human.email, terminal_id=term.id)
+    await hub.end(term, code=wire_terminals.CLOSE_ENDED)
+    with pytest.raises(HTTPException) as ended:
+        await terminal_routes.open_terminal_route(body, request, human)
+    assert ended.value.status_code == 410
+
+
+@pytest.mark.parametrize("failure", ["cli", "files", "offline", "limit"])
+async def test_open_route_reports_capability_readiness_and_rate_refusals(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    request = _browser_request(monkeypatch)
+    hub = TerminalHub(alive=_alive)
+    patch_state(monkeypatch, "terminals", hub)
+    if failure != "offline":
+        await hub.wait(_MACHINE, wait_sec=0)
+    if failure == "limit":
+        for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
+            hub.open(_opening())
+    monkeypatch.setattr(
+        terminal_routes,
+        "_owned_machine",
+        AsyncMock(return_value=(_MACHINE, {})),
+    )
+    body = OpenTerminal(
+        machine="gx10",
+        rows=2,
+        cols=3,
+        command="claude" if failure == "cli" else None,
+        kind="files" if failure == "files" else "shell",
+    )
+    with pytest.raises(HTTPException) as refused:
+        await terminal_routes.open_terminal_route(
+            body,
+            request,
+            replace(_IDENTITY, api_key_id=None),
+        )
+    assert refused.value.status_code == (429 if failure == "limit" else 409)
+    assert (
+        from_plain(refused.value.detail, dict[str, str])["code"]
+        == {
+            "cli": "cli_not_installed",
+            "files": "files_not_enabled",
+            "offline": "terminal_not_enabled",
+            "limit": "terminal_limit",
+        }[failure]
+    )
+
+
+async def test_machine_listing_filters_owner_sorts_and_includes_canvas_terminals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _browser_request(monkeypatch)
+    patch_state(monkeypatch, "engine", FakeEngine(make_conn()))
+    hub = TerminalHub(alive=_alive)
+    patch_state(monkeypatch, "terminals", hub)
+    await hub.wait(_MACHINE, wait_sec=0)
+    canvas = uuid.uuid4()
+    term = hub.open(_opening(canvas=canvas))
+    created = datetime.now(UTC)
+    row = {
+        "id": str(_MACHINE),
+        "name": "gx10",
+        "owner": _IDENTITY.email,
+        "status": "online",
+        "confirmed_at": created,
+        "facts": {"clis": ["claude"], "files": True},
+        "last_run_cwd": "~/work",
+        "host_version": MIN_HOST_VERSION,
+        "created": created,
+    }
+    fetch = AsyncMock(
+        return_value=[
+            row,
+            {**row, "name": "foreign", "owner": "other@example.com"},
+            {
+                **row,
+                "name": "older",
+                "status": "offline",
+                "confirmed_at": None,
+                "created": created - timedelta(seconds=1),
+            },
+        ],
+    )
+    monkeypatch.setattr(terminal_routes, "fetch_machines", fetch)
+    monkeypatch.setattr(terminal_routes, "live_runs", Mock(return_value=[]))
+    human = replace(_IDENTITY, api_key_id=None)
+    listing = await terminal_routes.list_terminal_machines_route(
+        request,
+        human,
+        canvas=canvas,
+    )
+    assert [machine.name for machine in listing.machines] == ["gx10", "older"]
+    assert [machine.terminal_ready for machine in listing.machines] == [True, False]
+    assert [machine.confirmed for machine in listing.machines] == [True, False]
+    assert listing.machines[0].clis == ["claude"]
+    assert listing.machines[0].files is True
+    assert listing.machines[0].cwd == "~/work"
+    assert [(live.terminal_id, live.surface) for live in listing.terminals] == [
+        (term.id, "chat"),
+    ]
+    without_canvas = await terminal_routes.list_terminal_machines_route(request, human)
+    assert without_canvas.terminals == []
+
+
+@pytest.mark.parametrize("exists", [False, True])
+async def test_confirm_updates_only_the_browser_owners_machine(
+    monkeypatch: pytest.MonkeyPatch,
+    exists: bool,
+) -> None:
+    request = _browser_request(monkeypatch)
+    conn = make_conn()
+    conn.fetchval.return_value = _MACHINE if exists else None
+    patch_state(monkeypatch, "engine", FakeEngine(conn))
+    human = replace(_IDENTITY, api_key_id=None)
+    if exists:
+        assert (
+            await terminal_routes.confirm_terminal_machine_route(
+                "gx10",
+                request,
+                human,
+            )
+            is None
+        )
+    else:
+        with pytest.raises(NotFoundError, match="no machine gx10 of yours"):
+            await terminal_routes.confirm_terminal_machine_route("gx10", request, human)
+    assert conn.fetchval.call_args is not None
+    assert conn.fetchval.call_args.args[1:] == ("gx10", human.email)
+    assert "COALESCE(confirmed_at, now())" in str(conn.fetchval.call_args.args[0])
+
+
+async def test_attach_and_close_require_a_live_terminal_of_the_human_owner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = _browser_request(monkeypatch)
+    hub = TerminalHub(alive=_alive, ice_servers=("stun:trax.test:3478",))
+    patch_state(monkeypatch, "terminals", hub)
+    term = hub.open(_opening())
+    human = replace(_IDENTITY, api_key_id=None)
+    ticket = await terminal_routes.attach_terminal_route(term.id, request, human)
+    assert ticket.ice_servers == ["stun:trax.test:3478"]
+    assert hub.redeem(ticket.ticket, user=human.email, terminal_id=term.id)
+    with pytest.raises(NotFoundError):
+        await terminal_routes.attach_terminal_route(
+            term.id,
+            request,
+            replace(human, email="other@example.com"),
+        )
+    await terminal_routes.close_terminal_route(term.id, request, human)
+    assert term.stopping
+    assert term.ended
+    with pytest.raises(NotFoundError):
+        await terminal_routes.attach_terminal_route(term.id, request, human)
+    assert terminal_routes._is_attached_to_a_live_run(request, session_id=None) is False
+
+
+@pytest.mark.parametrize("disabled", [False, True])
+async def test_host_wait_checks_authentication_and_clamps_the_hold(
+    monkeypatch: pytest.MonkeyPatch,
+    disabled: bool,
+) -> None:
+    request = _browser_request(monkeypatch)
+    patch_state(monkeypatch, "config", Config(auth_disabled=disabled))
+    hub = TerminalHub(alive=_alive)
+    patch_state(monkeypatch, "terminals", hub)
+    current = AsyncMock()
+    instance = AsyncMock()
+    wait = AsyncMock(return_value=None)
+    monkeypatch.setattr(terminal_routes, "current_machine", current)
+    monkeypatch.setattr(terminal_routes, "_require_instance", instance)
+    monkeypatch.setattr(hub, "wait", wait)
+    host_instance = uuid.uuid4()
+    if disabled:
+        with pytest.raises(HTTPException) as refused:
+            await terminal_routes.terminal_wait_route(
+                _MACHINE,
+                request,
+                host_instance,
+                wait_sec=99,
+            )
+        assert refused.value.status_code == 403
+        current.assert_not_awaited()
+    else:
+        assert (
+            await terminal_routes.terminal_wait_route(
+                _MACHINE,
+                request,
+                host_instance,
+                wait_sec=99,
+            )
+            is None
+        )
+        current.assert_awaited_once_with(request, _MACHINE)
+        instance.assert_awaited_once_with(request, _MACHINE, instance=host_instance)
+        wait.assert_awaited_once_with(_MACHINE, wait_sec=wire_terminals.WAIT_MAX_SEC)
+
+
+@pytest.mark.parametrize("bad", ["key", "service", "origin", "disabled"])
+async def test_terminal_owner_rejects_nonhuman_and_foreign_browser_requests(
+    monkeypatch: pytest.MonkeyPatch,
+    bad: str,
+) -> None:
+    request = _browser_request(monkeypatch)
+    identity = replace(_IDENTITY, api_key_id=None)
+    if bad == "key":
+        identity = _IDENTITY
+    elif bad == "service":
+        identity = replace(identity, email="agent@service.invalid")
+    elif bad == "origin":
+        request.scope["headers"] = list[tuple[bytes, bytes]]()
+    else:
+        patch_state(monkeypatch, "config", Config(auth_disabled=True))
+    with pytest.raises(HTTPException) as refused:
+        await terminal_routes._terminal_owner(
+            request,
+            identity,
+            asker=None,
+            body=OpenTerminal(machine="gx10", rows=2, cols=3),
+        )
+    assert refused.value.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "none",
+        "role",
+        "command",
+        "attach",
+        "canvas",
+        "cwd",
+        "run_name",
+        "prefix",
+        "valid",
+    ],
+)
+async def test_attested_terminal_owner_requires_the_complete_campaign_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    missing: str,
+) -> None:
+    request = _browser_request(monkeypatch)
+    asker = Asker(
+        email="ada@example.com",
+        role="viewer" if missing == "role" else "writer",
+        read_audiences=frozenset(),
+    )
+    monkeypatch.setattr(
+        terminal_routes,
+        "resolve_asker",
+        AsyncMock(return_value=None if missing == "none" else asker),
+    )
+    body = OpenTerminal.model_construct(
+        machine="gx10",
+        rows=2,
+        cols=3,
+        command=None if missing == "command" else "claude",
+        attach=None if missing == "attach" else uuid.uuid4(),
+        canvas=None if missing == "canvas" else uuid.uuid4(),
+        cwd=None if missing == "cwd" else "~/work",
+        run_name=(
+            None
+            if missing == "run_name"
+            else "run-x"
+            if missing == "prefix"
+            else "campaign-x"
+        ),
+    )
+    if missing == "valid":
+        assert (
+            await terminal_routes._terminal_owner(
+                request,
+                _IDENTITY,
+                asker=asker.email,
+                body=body,
+            )
+            == asker.email
+        )
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await terminal_routes._terminal_owner(
+                request,
+                _IDENTITY,
+                asker=asker.email,
+                body=body,
+            )
+        assert refused.value.status_code == 403
+
+
+@pytest.mark.parametrize("mode", ["human", "foreign", "viewer", "writer", "disabled"])
+async def test_machine_owner_refuses_unattested_names_and_viewers(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    request = _browser_request(monkeypatch)
+    human = replace(_IDENTITY, api_key_id=None)
+    found = Asker(
+        email="ada@example.com",
+        role="viewer" if mode == "viewer" else "writer",
+        read_audiences=frozenset(),
+    )
+    monkeypatch.setattr(
+        terminal_routes,
+        "resolve_asker",
+        AsyncMock(return_value=found if mode in {"viewer", "writer"} else None),
+    )
+    patch_state(monkeypatch, "config", Config(auth_disabled=mode == "disabled"))
+    owner = None if mode == "human" else found.email
+    if mode in {"human", "writer"}:
+        assert await terminal_routes._machines_owner(
+            request,
+            human,
+            owner=owner,
+        ) == (human.email if mode == "human" else found.email)
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await terminal_routes._machines_owner(request, human, owner=owner)
+        assert refused.value.status_code == 403
+
+
+@pytest.mark.parametrize("workspace", [None, "", "id", "missing"])
+async def test_canvas_workspace_reads_only_an_owned_active_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace: str | None,
+) -> None:
+    request = _browser_request(monkeypatch)
+    conn = make_conn()
+    patch_state(monkeypatch, "engine", FakeEngine(conn))
+    expected = uuid.uuid4()
+    conn.fetchrow = AsyncMock(
+        return_value=None
+        if workspace == "missing"
+        else {"workspace": str(expected) if workspace == "id" else ""},
+    )
+    canvas = None if workspace is None else uuid.uuid4()
+    if workspace == "missing":
+        with pytest.raises(NotFoundError):
+            await terminal_routes._canvas_workspace(
+                request,
+                owner=_IDENTITY.email,
+                canvas=canvas,
+            )
+    else:
+        assert await terminal_routes._canvas_workspace(
+            request,
+            owner=_IDENTITY.email,
+            canvas=canvas,
+        ) == (expected if workspace == "id" else None)
+    if canvas is None:
+        conn.fetchrow.assert_not_awaited()
+    else:
+        assert conn.fetchrow.call_args is not None
+        assert conn.fetchrow.call_args.args[1:] == (canvas, _IDENTITY.email)
+
+
+@pytest.mark.parametrize("current", [True, False, None])
+async def test_host_instance_requires_an_explicit_match(
+    monkeypatch: pytest.MonkeyPatch,
+    current: bool | None,
+) -> None:
+    request = _browser_request(monkeypatch)
+    conn = make_conn()
+    conn.fetchval.return_value = current
+    patch_state(monkeypatch, "engine", FakeEngine(conn))
+    instance = uuid.uuid4()
+    if current is True:
+        assert (
+            await terminal_routes._require_instance(
+                request,
+                _MACHINE,
+                instance=instance,
+            )
+            is None
+        )
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await terminal_routes._require_instance(
+                request,
+                _MACHINE,
+                instance=instance,
+            )
+        assert refused.value.status_code == 403
+    assert conn.fetchval.call_args is not None
+    assert conn.fetchval.call_args.args[1:] == (_MACHINE, instance)
+
+
+class _WebPeer:
+    """Script an ASGI peer without a server or a network socket."""
+
+    def __init__(self, *frames: bytes) -> None:
+        self.messages: list[Message] = [
+            {"type": "websocket.connect"},
+            *({"type": "websocket.receive", "bytes": frame} for frame in frames),
+            {"type": "websocket.disconnect", "code": 1000},
+        ]
+        self.sent: list[Message] = []
+
+    async def receive(self) -> Message:
+        """Return the next scripted peer message."""
+        return self.messages.pop(0)
+
+    async def send(self, message: Message) -> None:
+        """Record one message sent to the peer."""
+        self.sent.append(message)
+
+    def socket(self) -> WebSocket:
+        """Build the WebSocket adapter the route receives."""
+        return WebSocket(
+            {
+                "type": "websocket",
+                "app": app,
+                "headers": [
+                    (b"host", b"trax.test"),
+                    (b"origin", b"https://trax.test"),
+                ],
+            },
+            self.receive,
+            self.send,
+        )
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "ok",
+        "bad_frame",
+        "unknown",
+        "key",
+        "ticket",
+        "auth",
+        "origin",
+        "disabled",
+        "invalid",
+        "taken",
+    ],
+)
+async def test_browser_socket_authenticates_attaches_relays_and_detaches(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    _browser_request(monkeypatch)
+    hub = TerminalHub(alive=_alive)
+    patch_state(monkeypatch, "terminals", hub)
+    term = hub.open(_opening())
+    ticket = hub.mint_ticket(term)
+    attach = encode_frame(
+        Frame.ATTACH,
+        ("x" * 43 if mode == "ticket" else ticket).encode() + (0).to_bytes(8),
+    )
+    peer = _WebPeer(
+        b"bad" if mode == "bad_frame" else attach,
+        encode_frame(Frame.INPUT, b"x"),
+    )
+    socket = peer.socket()
+    identity = _IDENTITY if mode == "key" else replace(_IDENTITY, api_key_id=None)
+    monkeypatch.setattr(
+        auth,
+        "request_user",
+        AsyncMock(
+            return_value=identity,
+            side_effect=HTTPException(401) if mode == "auth" else None,
+        ),
+    )
+    if mode == "origin":
+        socket.scope["headers"] = list[tuple[bytes, bytes]]()
+    if mode == "disabled":
+        patch_state(monkeypatch, "config", Config(auth_disabled=True))
+    if mode == "invalid":
+        monkeypatch.setattr(hub, "from_browser", AsyncMock(return_value=False))
+    if mode == "taken":
+        monkeypatch.setattr(hub, "attach_browser", AsyncMock())
+    await terminal_routes.terminal_web_socket(
+        socket,
+        uuid.uuid4() if mode == "unknown" else term.id,
+    )
+    assert peer.sent[0]["type"] == "websocket.accept"
+    assert peer.sent[-1] == {
+        "type": "websocket.close",
+        "code": wire_terminals.CLOSE_REFUSED,
+        "reason": "",
+    }
+    assert term.browser is None
+    assert bytes(term.pre_input) == (b"x" if mode == "ok" else b"")
+    assert any(
+        message.get("bytes") == encode_frame(Frame.ACK, (0).to_bytes(8))
+        for message in peer.sent
+    ) == (mode in {"ok", "invalid"})
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "ok",
+        "ready",
+        "disabled",
+        "revoked",
+        "forbidden",
+        "bad_ack",
+        "unknown",
+        "machine",
+        "occupied",
+        "taken",
+    ],
+)
+async def test_host_socket_authenticates_claims_relays_and_releases(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    _browser_request(monkeypatch)
+    hub = TerminalHub(alive=_alive)
+    patch_state(monkeypatch, "terminals", hub)
+    term = hub.open(_opening())
+    frames = [encode_frame(Frame.OUTPUT, b"out")]
+    if mode in {"ready", "bad_ack"}:
+        frames.insert(0, encode_frame(Frame.ACK if mode == "ready" else Frame.INPUT))
+    peer = _WebPeer(*frames)
+    socket = peer.socket()
+    status = 410 if mode == "revoked" else 403 if mode == "forbidden" else None
+    monkeypatch.setattr(
+        terminal_routes,
+        "request_machine",
+        AsyncMock(side_effect=HTTPException(status) if status else None),
+    )
+    monkeypatch.setattr(terminal_routes, "_require_instance", AsyncMock())
+    if mode == "disabled":
+        patch_state(monkeypatch, "config", Config(auth_disabled=True))
+    if mode == "machine":
+        term.machine_id = uuid.uuid4()
+    if mode == "occupied":
+        monkeypatch.setattr(hub, "host_connected", AsyncMock(return_value=False))
+    if mode == "taken":
+        monkeypatch.setattr(hub, "host_connected", AsyncMock(return_value=True))
+    await terminal_routes.terminal_host_socket(
+        socket,
+        _MACHINE,
+        uuid.uuid4() if mode == "unknown" else term.id,
+        uuid.uuid4(),
+        ready=mode in {"ready", "bad_ack"},
+    )
+    assert peer.sent[0]["type"] == "websocket.accept"
+    if mode in {"ok", "ready"}:
+        assert term.ring.since(0)[0] == b"out"
+        assert term.ended == (mode == "ok")
+        assert term.host is None or term.ended
+    elif mode == "taken":
+        assert term.ring.since(0)[0] == b""
+        assert term.ended is False
+    else:
+        assert peer.sent[-1]["code"] == (
+            wire_terminals.CLOSE_MACHINE_REVOKED
+            if mode == "revoked"
+            else wire_terminals.CLOSE_REFUSED
+        )
+        assert term.host is None
+
+
+@pytest.mark.parametrize(
+    "error",
+    [None, WebSocketDisconnect(), RuntimeError("closed"), OSError("reset")],
+)
+async def test_leg_close_absorbs_a_peer_that_already_left(
+    error: BaseException | None,
+) -> None:
+    close: AsyncMockProtocol[None] = AsyncMock(side_effect=error)
+    socket = AsyncMock(spec=WebSocket, close=close)
+    await terminal_routes._Leg(socket).close(wire_terminals.CLOSE_REFUSED)
+    close.assert_awaited_once_with(wire_terminals.CLOSE_REFUSED)
 
 
 if __name__ == "__main__":

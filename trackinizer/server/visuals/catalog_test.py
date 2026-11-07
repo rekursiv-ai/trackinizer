@@ -282,6 +282,11 @@ def test_two_visuals_of_one_type_are_rejected() -> None:
         Canvas.Config(visuals=[notes, notes], default_visual="x.notes").make()
 
 
+def test_an_unregistered_default_visual_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Default visual must be registered"):
+        Canvas.Config(default_visual="x.absent").make()
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 
