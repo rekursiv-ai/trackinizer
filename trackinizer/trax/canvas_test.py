@@ -236,6 +236,8 @@ def test_canvas_show_sends_one_operation_through_the_clients_one_path(
     _canvas(client, "focus", str(instance))
     _canvas(client, "place", str(instance), "floating")
     _canvas(client, "place", str(instance), "left")
+    _canvas(client, "place", str(instance), "main")
+    _canvas(client, "place", str(instance), "side")
 
     assert client.operations == [
         {
@@ -248,6 +250,8 @@ def test_canvas_show_sends_one_operation_through_the_clients_one_path(
         {"kind": "focus", "instance_id": str(instance)},
         {"kind": "place", "instance_id": str(instance), "placement": "floating"},
         {"kind": "place", "instance_id": str(instance), "placement": "left"},
+        {"kind": "place", "instance_id": str(instance), "placement": "main"},
+        {"kind": "place", "instance_id": str(instance), "placement": "side"},
     ]
     assert client.reads == []
     assert f"canvas {client.canvas} revision 9" in capsys.readouterr().out
@@ -269,6 +273,7 @@ def test_canvas_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None
         "flag=true",
     )
     _canvas(client, "show", "x.demo", "--param", "flag=false")
+    _canvas(client, "show", "x.demo", "--param", "label=left=right")
 
     assert client.operations == [
         {
@@ -277,6 +282,11 @@ def test_canvas_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None
             "params": {"label": "123", "count": -5, "flag": True},
         },
         {"kind": "show", "visual_type": "x.demo", "params": {"flag": False}},
+        {
+            "kind": "show",
+            "visual_type": "x.demo",
+            "params": {"label": "left=right"},
+        },
     ]
 
 
@@ -625,6 +635,10 @@ def test_a_malformed_placed_canvas_names_no_canvas() -> None:
         (["show"], "show requires one visual type"),
         (["show", "trax.browse", "trax.subgraph"], "show requires one visual type"),
         (["hide"], "hide requires one instance UUID"),
+        (
+            ["hide", str(uuid.uuid4()), "--record", str(uuid.uuid4())],
+            "hide requires one instance UUID",
+        ),
         (["focus", str(uuid.uuid4()), "--placement", "main"], "focus requires one"),
         (["hide", "not-a-uuid"], "instance is not a valid UUID"),
         (["place", str(uuid.uuid4())], "place requires an instance UUID and placement"),

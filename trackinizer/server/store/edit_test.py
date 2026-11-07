@@ -200,12 +200,25 @@ class TestTransitionStatus:
         assert not any("UPDATE inquiries SET" in s for s in executed_sql(conn))
 
     @pytest.mark.asyncio
-    async def test_a_key_used_for_another_field_is_refused(self) -> None:
+    @pytest.mark.parametrize(
+        "same_subject",
+        [True, False],
+        ids=["other-field", "other-subject"],
+    )
+    async def test_a_key_used_for_another_operation_is_refused(
+        self,
+        *,
+        same_subject: bool,
+    ) -> None:
         conn = make_conn()
         target = new_uuid()
         queue_field_rows(
             conn,
-            {"actor": "meter", "subject_id": target, "kind": "title"},
+            {
+                "actor": "meter",
+                "subject_id": target if same_subject else new_uuid(),
+                "kind": "title" if same_subject else "status",
+            },
         )
         store, _engine = make_store(conn)
         set_client_change_id(new_uuid())

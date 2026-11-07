@@ -186,6 +186,8 @@ def test_each_session_is_a_conversation_in_a_room() -> None:
         kinds = [record.kind for record in records]
         assert {"UserMessage", "AssistantMessage"} <= set(kinds)
         assert [record.idx for record in records] == list(range(len(records)))
+        assert records[0].timestamp is not None
+        assert start.started == records[0].timestamp
 
 
 def test_turns_reach_the_server_in_the_order_they_happened_across_sessions() -> None:
