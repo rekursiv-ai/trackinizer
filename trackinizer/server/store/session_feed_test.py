@@ -1144,8 +1144,14 @@ async def test_histogram_fills_empty_buckets_and_clamps_its_first_record(
         expected_start,
         _T0 + timedelta(seconds=2),
     )
+    assert engine.conn.fetchval.await_args is not None
+    assert engine.conn.fetchval.await_args.args[1:3] == (
+        _T0,
+        _T0 + timedelta(seconds=1),
+    )
     if named:
         assert engine.conn.fetch.await_args.args[-2:] == (["a"], ["UserMessage"])
+        assert engine.conn.fetchval.await_args.args[3:5] == (["a"], ["UserMessage"])
     sql = str(engine.conn.fetch.await_args.args[0])
     assert ("CROSS JOIN LATERAL" in sql) == named
     assert ("session_id IN (SELECT i.id" in sql) == named
