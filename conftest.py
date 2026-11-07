@@ -12,15 +12,18 @@ does this; the public tree has no such root, so it is declared here.
 
 The math-thread caps run here, at the root, because this conftest loads before
 any test or package conftest imports NumPy or torch. In the monorepo the
-repo-root conftest applies them; the public tree has no such root.
+repo-root conftest applies them; the public tree has no such root. So, likewise,
+are the Hypothesis budgets, before any property test draws.
 """
 
 from typing import Final
 
+from trackinizer.lib.testing.hypothesis_profiles import configure_hypothesis
 from trackinizer.lib.testing.resources import cap_math_threads
 
 
 cap_math_threads()
+configure_hypothesis()
 
 
 # The basetemp plugin claims one basetemp per invocation, so concurrent sessions
