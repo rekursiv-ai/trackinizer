@@ -1139,6 +1139,13 @@ async def test_histogram_fills_empty_buckets_and_clamps_its_first_record(
         else [FeedBucket(start=_T0 + timedelta(seconds=1), count=0)]
     )
     assert engine.conn.fetch.await_args is not None
+    assert engine.conn.fetch.await_args.args[1:4] == (
+        timedelta(seconds=1),
+        expected_start,
+        _T0 + timedelta(seconds=2),
+    )
+    if named:
+        assert engine.conn.fetch.await_args.args[-2:] == (["a"], ["UserMessage"])
     sql = str(engine.conn.fetch.await_args.args[0])
     assert ("CROSS JOIN LATERAL" in sql) == named
     assert ("session_id IN (SELECT i.id" in sql) == named
@@ -1149,15 +1156,25 @@ async def test_explicit_histogram_start_is_clamped_without_reading_the_first_row
     None
 ):
     store, engine = make_store()
+    earliest = _T0 + timedelta(microseconds=500_000)
     histogram = await store.read_feed_histogram(
         since=_T0 - timedelta(days=1),
-        until=_T0,
-        earliest=_T0,
+        until=_T0 + timedelta(seconds=1),
+        earliest=earliest,
         buckets=2,
         scope=_ALL_SESSIONS,
     )
-    assert histogram.counts == [FeedBucket(start=_T0, count=0)]
+    assert histogram.counts == [
+        FeedBucket(start=_T0, count=0),
+        FeedBucket(start=_T0 + timedelta(seconds=1), count=0),
+    ]
     engine.conn.fetchval.assert_not_awaited()
+    assert engine.conn.fetch.await_args is not None
+    assert engine.conn.fetch.await_args.args[1:4] == (
+        timedelta(seconds=1),
+        earliest,
+        _T0 + timedelta(seconds=2),
+    )
 
 
 if __name__ == "__main__":
