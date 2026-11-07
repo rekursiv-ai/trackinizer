@@ -348,12 +348,15 @@ def test_failed_rollback_retains_recoverable_backup(
         "rename_noreplace",
         _failing_rename(rename_noreplace, rollback=True),
     )
-    with pytest.raises(InstallError, match="previous") as error:
+    with pytest.raises(InstallError) as error:
         install(TARGETS["claude"])
     backups = list(destination.parent.glob(".trax-*/previous/SKILL.md"))
     assert len(backups) == 1
     assert backups[0].read_bytes() == previous
-    assert str(backups[0].parent) in str(error.value)
+    assert str(error.value) == (
+        f"could not publish {destination}: publish failed; restore failed: "
+        f"publish failed; previous installation retained at {backups[0].parent}"
+    )
 
 
 def test_published_install_reports_retained_cleanup(
@@ -664,14 +667,17 @@ def test_restore_preserves_a_destination_that_appeared(
         _create_conflict(path, target=target, rename=rename)
 
     monkeypatch.setattr(install_module, "rename_noreplace", create_conflict)
-    with pytest.raises(InstallError, match="retained") as error:
+    with pytest.raises(InstallError) as error:
         install(TARGETS["claude"])
     assert destination.is_dir()
     assert list(destination.iterdir()) == []
     backups = list(destination.parent.glob(".trax-*/previous/SKILL.md"))
     assert len(backups) == 1
     assert backups[0].read_bytes() == previous
-    assert str(backups[0].parent) in str(error.value)
+    assert str(error.value) == (
+        f"publish failed; destination appeared at {destination}; "
+        f"previous installation retained at {backups[0].parent}"
+    )
 
 
 def test_publication_preserves_a_concurrent_empty_directory(
@@ -882,13 +888,18 @@ def test_a_destination_created_after_inspection_is_preserved(
     assert [path.name for path in destination.parent.iterdir()] == ["trax"]
 
 
+@pytest.mark.parametrize("refresh", [False, True])
 def test_a_destination_created_before_publication_is_preserved(
     monkeypatch: pytest.MonkeyPatch,
     fake_home: Path,
     bundle: Path,
+    *,
+    refresh: bool,
 ) -> None:
-    del bundle
     destination = fake_home / ".claude/skills/trax"
+    if refresh:
+        install(TARGETS["claude"])
+        (bundle / "SKILL.md").write_text("new package version")
     quarantine = install_module._quarantine
 
     def appear_after_quarantine(
@@ -903,11 +914,22 @@ def test_a_destination_created_before_publication_is_preserved(
 
     monkeypatch.setattr(install_module, "_quarantine", appear_after_quarantine)
 
-    with pytest.raises(InstallError, match="destination changed while installing"):
+    with pytest.raises(InstallError) as error:
         install(TARGETS["claude"])
 
+    changed = f"destination changed while installing at {destination}"
     assert list(destination.iterdir()) == []
-    assert [path.name for path in destination.parent.iterdir()] == ["trax"]
+    if refresh:
+        backups = list(destination.parent.glob(".trax-*/previous"))
+        assert len(backups) == 1
+        assert (backups[0] / "SKILL.md").read_text() == "router: belief/SKILL.md"
+        assert str(error.value) == (
+            f"{changed}; destination appeared at {destination}; "
+            f"previous installation retained at {backups[0]}"
+        )
+    else:
+        assert str(error.value) == changed
+        assert [path.name for path in destination.parent.iterdir()] == ["trax"]
 
 
 def test_uninstall_leaves_a_created_parent_since_replaced_by_a_link(

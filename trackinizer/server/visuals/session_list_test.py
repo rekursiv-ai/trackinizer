@@ -404,9 +404,7 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
     predicate: str,
 ) -> None:
     chat, placed, foreign, overflow = (uuid.uuid4() for _ in range(4))
-    conversation, chat_canvas, placed_canvas, workspace, issue, parent = (
-        uuid.uuid4() for _ in range(6)
-    )
+    conversation, placed_canvas, issue, parent = (uuid.uuid4() for _ in range(4))
     engine = FakeEngine()
     rows = [
         _listing_row(chat, chat=wire_science_chat.chat_session_id(conversation)),

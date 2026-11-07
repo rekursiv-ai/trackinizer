@@ -89,10 +89,7 @@ async def test_row_write_asks_policy_inside_transaction(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("kind", [None, "Issue", "AgentSession"])
-async def test_session_row_guard_only_checks_sessions(
-    monkeypatch: pytest.MonkeyPatch,
-    kind: str | None,
-) -> None:
+async def test_session_row_guard_only_checks_sessions(kind: str | None) -> None:
     store, engine = make_store()
     identity, target_id = make_test_identity(), uuid4()
     chat_id = f"chat:{uuid4()}"
@@ -121,9 +118,7 @@ async def test_session_row_guard_only_checks_sessions(
 
 
 @pytest.mark.asyncio
-async def test_session_row_guard_refuses_hidden_audience_before_chat_writer(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_session_row_guard_refuses_hidden_audience_before_chat_writer() -> None:
     store, engine = make_store()
     set_field_row(
         engine.conn,
