@@ -1,7 +1,6 @@
 """Unit coverage for session write guards and transactional policy checks."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, Request
@@ -17,7 +16,6 @@ from trackinizer.conftest import (
 from trackinizer.server.access_policy import AccessDeniedError, Principal, Resource
 from trackinizer.server.api import session_access
 from trackinizer.server.api.conftest import make_test_identity
-from trackinizer.server.api.private import chat_sessions
 from trackinizer.types.inquiries import AgentSession
 
 
@@ -118,19 +116,7 @@ async def test_session_row_guard_only_checks_sessions(
             ),
         },
     )
-    writer = AsyncMock()
-    monkeypatch.setattr(chat_sessions, "require_row_writer", writer)
     await session_access.require_session_row_write(request, identity, target_id)
-    if kind == "AgentSession":
-        writer.assert_awaited_once_with(
-            request,
-            identity,
-            session_id=target_id,
-            cli_session_id=chat_id,
-            opener=identity.api_key_id,
-        )
-    else:
-        writer.assert_not_awaited()
     assert engine.conn.fetchrow.await_count == 1
 
 
@@ -157,8 +143,6 @@ async def test_session_row_guard_refuses_hidden_audience_before_chat_writer(
             ),
         },
     )
-    writer = AsyncMock()
-    monkeypatch.setattr(chat_sessions, "require_row_writer", writer)
     with pytest.raises(HTTPException) as refused:
         await session_access.require_session_row_write(
             request,
@@ -167,7 +151,6 @@ async def test_session_row_guard_refuses_hidden_audience_before_chat_writer(
         )
     assert refused.value.status_code == 403
     assert refused.value.detail == {"code": "session_audience", "audience": "staff"}
-    writer.assert_not_awaited()
 
 
 @pytest.mark.asyncio

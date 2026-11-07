@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
 
@@ -10,7 +10,6 @@ from trackinizer.conftest import make_store
 from trackinizer.server.api import session_test_support
 from trackinizer.server.api.conftest import patch_state
 from trackinizer.server.inbound import InboundQueue, PollerRun
-from trackinizer.server.private.chat_hub import ChatHub
 
 
 @pytest.mark.asyncio
@@ -22,9 +21,8 @@ async def test_seed_inserts_canonical_envelope_and_optionally_marks_poller(
     custom: bool,
 ) -> None:
     store, engine = make_store()
-    inbound, hub = InboundQueue(), ChatHub()
+    inbound = InboundQueue()
     patch_state(monkeypatch, "inbound", inbound)
-    patch_state(monkeypatch, "hub", hub)
     sightings: list[tuple[UUID, datetime, bool]] = []
 
     async def record_seen(session_id: UUID, *, at: datetime, polled: bool) -> None:
@@ -36,19 +34,17 @@ async def test_seed_inserts_canonical_envelope_and_optionally_marks_poller(
     monkeypatch.setattr(store, "record_session_seen", seen)
     agent = session_test_support.USER_AGENT
     before = datetime.now(UTC)
-    with hub.subscribe(uuid4()) as stream:
-        session_id = await session_test_support.seed_session(
-            store,
-            agent,
-            actor="runner" if custom else None,
-            account="owner@example.com" if custom else None,
-            cli="codex",
-            cli_session_id="vendor-id",
-            labels=("z", "a", "z"),
-            polled=polled,
-            drained_by="codex",
-        )
-        assert stream.nudged.is_set()
+    session_id = await session_test_support.seed_session(
+        store,
+        agent,
+        actor="runner" if custom else None,
+        account="owner@example.com" if custom else None,
+        cli="codex",
+        cli_session_id="vendor-id",
+        labels=("z", "a", "z"),
+        polled=polled,
+        drained_by="codex",
+    )
     insert.assert_awaited_once_with(
         engine.conn,
         session_id,

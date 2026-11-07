@@ -225,7 +225,6 @@ def test_main_writes_a_tiny_schema_to_the_requested_file(
 ) -> None:
     destination = tmp_path / "schema.json"
     monkeypatch.setattr(openapi_dump, "web_app_schema", _server)
-    monkeypatch.setattr(openapi_dump, "app_operations", frozenset)
     monkeypatch.setattr(sys, "argv", ["openapi_dump", "--output", str(destination)])
 
     assert openapi_dump.main() == 0
@@ -261,26 +260,6 @@ def test_web_schema_builds_a_fresh_app_and_attaches_web_routes(
     factory.assert_called_once_with(title="tiny", version="1")
     assert served.include_router.call_args_list == [call(first), call(second)]
     attach.assert_called_once_with(served)
-    served.openapi.assert_called_once_with()
-
-
-def test_private_operations_collect_each_router_path_and_method(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    schema: dict[str, MutablePlainTree] = {
-        "paths": {"/private": {"get": {}, "post": {}}},
-    }
-    served = _AppMock()
-    served.openapi.return_value = schema
-    factory = Mock(return_value=served)
-    router = object()
-    monkeypatch.setattr(openapi_dump, "FastAPI", factory)
-    monkeypatch.setattr(openapi_dump, "routers", SimpleNamespace(ROUTERS=(router,)))
-
-    assert app_operations() == frozenset({("/private", "get"), ("/private", "post")})
-
-    factory.assert_called_once_with()
-    served.include_router.assert_called_once_with(router)
     served.openapi.assert_called_once_with()
 
 

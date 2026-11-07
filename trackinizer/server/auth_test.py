@@ -919,6 +919,7 @@ class TestBearerAudiences:
         )
         consumer = await _bearer_identity(email="ada@example.com", staff=staff)
         assert member.read_audiences == {"open", "private", "staff"}
+        assert member.hosted_domain == "example.com"
         assert consumer.read_audiences == {"open", "private"}
 
     @pytest.mark.asyncio
@@ -1038,6 +1039,7 @@ class TestSessionAudiences:
         assert identity.read_audiences == {"open", "private", "staff"}
         assert identity.open_audiences == {"open", "private", "staff"}
         assert identity.pinned_audience is None
+        assert identity.hosted_domain == "example.com"
 
     @pytest.mark.asyncio
     async def test_a_consumer_account_on_the_staff_domain_holds_open_only(self) -> None:
@@ -2160,23 +2162,44 @@ class TestCreateApiKey:
     """Unit-level ceiling enforcement for :func:`create_api_key`."""
 
     @pytest.mark.asyncio
-    async def test_defaults_to_user_role(self) -> None:
+    @pytest.mark.parametrize("enrolled", [False, True])
+    async def test_defaults_to_user_role(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        enrolled: bool,
+    ) -> None:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="writer")
-        user_id = uuid.uuid4()
+        user_id, expected_key = uuid.uuid4(), uuid.uuid4()
+        machine_id = uuid.uuid4() if enrolled else None
+        monkeypatch.setattr(auth, "uuid", SimpleNamespace(uuid4=lambda: expected_key))
         # A non-binding admin ceiling: the default still caps at the user role.
-        _key_id, _secret, _prefix, role = await create_api_key(
+        key_id, secret, prefix, role = await create_api_key(
             cast(Conn, conn),
             user_id=user_id,
             name="laptop",
             ceiling="admin",
+            machine_id=machine_id,
         )
-        assert role == "writer"
-        # The INSERT must carry the inferred role as the 6th bind.
-        insert = next(
-            c for c in conn.execute.call_args_list if "INSERT INTO api_keys" in _sql(c)
+        assert (key_id, role) == (expected_key, "writer")
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1:] == (user_id,)
+        insert = conn.execute.await_args
+        assert insert is not None
+        stored_hash = insert.args[4]
+        assert isinstance(stored_hash, str)
+        assert verify_secret(secret, stored_hash)
+        assert insert.args[1:] == (
+            expected_key,
+            user_id,
+            "laptop",
+            stored_hash,
+            prefix,
+            "writer",
+            None,
+            machine_id,
         )
-        assert insert.args[6] == "writer"
 
     @pytest.mark.asyncio
     async def test_accepts_role_at_or_below_ceiling(self) -> None:
@@ -2295,8 +2318,9 @@ class TestCreateApiKeyAudiences:
     """A key's pin stays inside what its minter opens into."""
 
     @pytest.mark.asyncio
-    async def test_the_insert_carries_the_requested_pin(self) -> None:
-        minter = _minter(read={"open", "staff"}, opening={"open", "staff"})
+    @pytest.mark.parametrize("key", [False, True])
+    async def test_the_insert_carries_the_requested_pin(self, *, key: bool) -> None:
+        minter = _minter(read={"open", "staff"}, opening={"open", "staff"}, key=key)
         (insert,) = await _mint(minter, open_into="staff")
         assert insert.args[7] == "staff"
 
@@ -2369,11 +2393,15 @@ class TestKeyWithinCaller:
         conn.fetchrow = AsyncMock(
             return_value=None if absent else {"open_into": target},
         )
+        key_id = key_id or uuid.uuid4()
         within = await key_within_caller(
             cast(Conn, conn),
             identity=caller,
-            key_id=key_id or uuid.uuid4(),
+            key_id=key_id,
         )
+        if conn.fetchrow.await_count:
+            assert conn.fetchrow.await_args is not None
+            assert conn.fetchrow.await_args.args[1:] == (key_id, caller.user_id)
         return within, conn.fetchrow.await_count
 
     @pytest.mark.asyncio
@@ -2461,14 +2489,19 @@ class TestSetApiKeyRole:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="writer")
         conn.execute = AsyncMock(return_value="UPDATE 1")
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
         updated = await set_api_key_role(
             cast(Conn, conn),
-            key_id=uuid.uuid4(),
-            user_id=uuid.uuid4(),
+            key_id=key_id,
+            user_id=user_id,
             role="writer",
             ceiling="admin",
         )
         assert updated is True
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1:] == (user_id,)
+        assert conn.execute.await_args is not None
+        assert conn.execute.await_args.args[1:] == (key_id, user_id, "writer")
 
     @pytest.mark.asyncio
     async def test_rejects_above_ceiling(self) -> None:

@@ -13,7 +13,6 @@ from trackinizer.conftest import make_store
 from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import make_test_identity
-from trackinizer.server.api.private import chat_sessions
 from trackinizer.server.config import Config
 from trackinizer.server.store.session_ir import SessionManifest
 from trackinizer.server.visuals.session_usage import SessionUsage
@@ -43,11 +42,6 @@ async def test_ended_append_revives_before_writing(
     )
     monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
     monkeypatch.setattr(session_ir_routes, "require_session_access", AsyncMock())
-    monkeypatch.setattr(
-        chat_sessions,
-        "require_part_writer",
-        AsyncMock(),
-    )
     revive = AsyncMock(return_value=True)
     append = AsyncMock(return_value=(0, 0, 0))
     seen = AsyncMock()

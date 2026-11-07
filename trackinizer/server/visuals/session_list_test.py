@@ -39,6 +39,7 @@ from trackinizer.server.visuals.session_list import (
     list_own_sessions,
 )
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire import wire_science_chat
 
 
 if TYPE_CHECKING:
@@ -423,10 +424,6 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
     ]
     engine.conn.fetch.side_effect = [
         rows,
-        [
-            {"id": chat_canvas, "chat": str(conversation), "workspace": str(workspace)},
-            {"id": placed_canvas, "chat": None, "workspace": None},
-        ],
         [{"from_id": chat, "to_id": issue}, {"from_id": placed, "to_id": issue}],
         [
             {
@@ -469,7 +466,6 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
     listed = await list_own_sessions(
         cast("DatabaseEngine", engine),
         email=_EMAIL,
-        user_id=_USER,
         reader=_OPEN,
         inbound=inbound,
         days=2,
@@ -481,22 +477,14 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
     assert listed.more
     assert [each.id for each in listed.sessions] == [chat, placed, foreign]
     first, second, third = listed.sessions
-    assert (first.conversation_id, first.canvas_id, first.workspace_id) == (
-        conversation,
-        chat_canvas,
-        workspace,
-    )
+    assert first.conversation_id == conversation
     assert (first.goal, first.first_line, first.last_line) == (
         "Ship",
         "Please fix",
         line,
     )
     assert (first.live, first.state, first.machine) == (True, "running", "live-box")
-    assert (second.canvas_id, second.workspace_id, second.produced_by) == (
-        placed_canvas,
-        None,
-        [issue],
-    )
+    assert second.produced_by == [issue]
     assert (second.live, second.state, second.machine) == (False, "idle", "old-box")
     assert (third.canvas_id, third.workspace_id, third.machine) == (None, None, None)
     assert (third.goal, third.first_line, third.last_line, third.produced_by) == (
@@ -519,14 +507,15 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
         inbound=inbound,
         session_ids=[chat, placed, foreign],
     )
-    recent, places, produced, issues = engine.conn.fetch.await_args_list
+    calls = engine.conn.fetch.await_args_list
+    recent = calls[0]
+    produced, issues = calls[-2:]
     assert recent.args[1] == _EMAIL
     since = recent.args[2]
     assert isinstance(since, datetime)
     assert before - timedelta(days=2) <= since <= datetime.now(UTC) - timedelta(days=2)
     assert recent.args[3] == 4
     assert "ORDER BY active DESC, s.id DESC LIMIT $3" in str(recent.args[0])
-    assert places.args[1:] == (_USER,)
     assert produced.args[1:] == ([chat, placed, foreign],)
     assert issues.args[1:] == ([issue],)
     for call in (produced, issues):
@@ -546,7 +535,6 @@ async def test_no_matching_sessions_returns_empty_lists_without_more(
     listed = await list_own_sessions(
         cast("DatabaseEngine", engine),
         email=_EMAIL,
-        user_id=_USER,
         reader=_OPEN,
         inbound=InboundQueue(),
         days=1,
