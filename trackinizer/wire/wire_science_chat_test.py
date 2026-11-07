@@ -89,6 +89,8 @@ def test_a_browser_that_still_sends_science_posts_a_line() -> None:
     ("command", "refused"),
     [
         ("git status --short && echo 'done'", ""),
+        ("echo ~", ""),
+        ("echo \x7f", "one line of printable ASCII"),
         ("x" * RUN_COMMAND_CHARS, ""),
         ("x" * (RUN_COMMAND_CHARS + 1), "at most 2,000 characters"),
         ("echo one\necho two", "one line of printable ASCII"),

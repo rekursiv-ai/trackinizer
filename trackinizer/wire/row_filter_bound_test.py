@@ -949,9 +949,9 @@ class TestAnOperandTheTemplateCannotTake:
         with pytest.raises(ValidationError, match="not a number"):
             match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value))
 
-    @pytest.mark.parametrize("value", ["nan", "abc"])
+    @pytest.mark.parametrize("value", ["nan", "abc", "2027", "2027-01-01"])
     def test_a_timestamp_column_takes_any_text(self, value: str) -> None:
-        # Live PG16 compares these as text and answers true for both, exactly
+        # Live PG16 compares these as text and answers true, exactly
         # as Python does; refusing them would remove capability for nothing.
         row = {"created": "2026-01-01 00:00:00+00:00"}
         assert (

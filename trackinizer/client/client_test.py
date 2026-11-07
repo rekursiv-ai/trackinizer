@@ -989,6 +989,7 @@ class TestClientMethods:
                 {"id": str(target_id)},
                 [{"id": "c"}],
                 {"agent_usd": 1.0},
+                {"agent_usd": 0.5},
             ],
         )
         assert client.list_kind(
@@ -1002,6 +1003,15 @@ class TestClientMethods:
         assert client.next_issue() == {"id": str(target_id)}
         assert client.recent_changes(limit=2) == [{"id": "c"}]
         assert client.inquiry_cost(target_id, deep=True) == {"agent_usd": 1.0}
+        assert client.inquiry_cost(target_id, deep=False) == {"agent_usd": 0.5}
+        assert client.get_calls[-3] == ("/api/web/recent_changes", {"limit": 2})
+        assert [
+            (path, str((params or {}).get("deep", False)).casefold())
+            for path, params in client.get_calls[-2:]
+        ] == [
+            (f"/api/inquiries/{target_id}/cost", "true"),
+            (f"/api/inquiries/{target_id}/cost", "false"),
+        ]
 
     def test_list_kind_serializes_filters_as_repeated_query_params(self) -> None:
         """Each filter rides the wire as a discrete ``filter`` query param.
@@ -1134,6 +1144,7 @@ class TestClientMethods:
             offset = cast(object, request.url.params.get("offset"))
             assert offset is None or isinstance(offset, str)
             offsets.append(offset)
+            assert offset == str((len(offsets) - 1) * MAX_LIST_LIMIT)
             if offset == "0":
                 return httpx2.Response(
                     200,
@@ -1160,6 +1171,7 @@ class TestClientMethods:
         def handler(request: httpx2.Request) -> httpx2.Response:
             nonlocal calls
             calls += 1
+            assert request.url.params.get("offset") == str((calls - 1) * MAX_LIST_LIMIT)
             if request.url.params.get("offset") == "0":
                 return httpx2.Response(
                     200,
@@ -1175,11 +1187,16 @@ class TestClientMethods:
 
     def test_resolve_ids_posts_bare_array(self) -> None:
         target_id = uuid.uuid4()
+        seq_id = uuid.uuid4()
         client = _ClientSpy(
+            get_results=[{"id": str(seq_id)}],
             post_result={"found": {str(target_id): "Issue"}, "missing": []},
         )
-        result = client.resolve_ids([UuidRef(uuid=target_id)])
-        assert result == [("Issue", target_id)]
+        result = client.resolve_ids(
+            [SeqRef(kind="Belief", seq=4), UuidRef(uuid=target_id)],
+        )
+        assert result == [("Belief", seq_id), ("Issue", target_id)]
+        assert client.get_calls == [("/api/inquiries/Belief/4", None)]
         path, body = client.post_calls[0]
         assert path == "/api/inquiries/lookup"
         assert body == [str(target_id)]
@@ -1286,6 +1303,20 @@ class TestClientMethods:
             ("PUT", f"{base}/labels", {"value": None, "actor": "alice"}),
         ]
 
+    def test_a_fractional_cost_increase_sends_an_add_delta(self) -> None:
+        target_id = uuid.uuid4()
+        client = _ClientSpy(post_result={"ok": True})
+
+        client.add_cost(target_id, "marginal_cost_agent_usd", 0.5, actor="alice")
+
+        assert client.request_calls == [
+            (
+                "PATCH",
+                f"/api/inquiries/{target_id}/marginal_cost_agent_usd",
+                {"op": "add", "value": 0.5, "actor": "alice"},
+            ),
+        ]
+
     def test_atomic_list_primitives_dispatch(self) -> None:
         """Every new server primitive has a one-shot Client method."""
         target_id = uuid.uuid4()
@@ -1335,6 +1366,14 @@ class TestClientMethods:
             "value": "bob",
             "actor": "alice",
         }
+        assert [body for _, _, body in client.request_calls[2:8]] == [
+            {"op": "add", "value": "urgent", "actor": "alice"},
+            {"op": "sub", "value": "urgent", "actor": "alice"},
+            {"op": "add", "value": "bug", "actor": "alice"},
+            {"op": "sub", "value": "bug", "actor": "alice"},
+            {"op": "add", "value": str(codechange_id), "actor": "alice"},
+            {"op": "sub", "value": str(codechange_id), "actor": "alice"},
+        ]
         # compare-and-set status: PUT with mode='cas' + the ``value``/
         # ``expected`` pair.
         assert client.request_calls[-1][2] == {
@@ -1682,6 +1721,11 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
             client.get("/x")
 
 
+class _CanvasOperationBody(TypedDict):
+    revision: int
+    operation: dict[str, str]
+
+
 def test_a_stale_canvas_operation_is_retried_once_on_the_live_revision() -> None:
     """A 409 re-reads the revision and resends with a fresh ``Idempotency-Key``."""
     canvas = uuid.uuid4()
@@ -1690,14 +1734,18 @@ def test_a_stale_canvas_operation_is_retried_once_on_the_live_revision() -> None
 
     def handler(request: httpx2.Request) -> httpx2.Response:
         if request.method == "GET":
+            assert request.url.path == f"/api/canvases/{canvas}"
             return httpx2.Response(
                 200,
                 json={"id": str(canvas), "revision": next(revisions)},
             )
-        revision = from_plain(
-            json_loads(request.content, dict[str, object])["revision"],
-            int,
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/canvases/{canvas}/operations",
         )
+        body = json_loads(request.content, _CanvasOperationBody)
+        revision = body["revision"]
+        assert body["operation"] == {"kind": "hide"}
         sent.append((revision, request.headers["Idempotency-Key"]))
         if revision == 3:
             return httpx2.Response(409, json={"detail": "stale canvas revision"})
@@ -3561,26 +3609,45 @@ class TestTerminalMethods:
 
 
 class TestMetricQueries:
-    def test_query_metrics_sends_offset(self) -> None:
-        """The query route pages by ``offset``; the client must carry it."""
-        sent: list[dict[str, object]] = []
+    def test_query_metrics_preserves_the_mask_page_and_returned_points(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        points = [
+            {"key": "loss", "step": 3, "value": 0.25},
+            {"key": "loss", "step": 7, "value": 0.5},
+        ]
 
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            sent.append(json_loads(request.content, dict[str, object]))
-            return httpx2.Response(200, json={"points": []})
-
-        with Client("https://server") as client:
-            _install_mock_transport(client, handler)
-            client.query_metrics(
-                uuid.uuid4(),
-                masks=[],
+        with _recording(sent, httpx2.Response(200, json={"points": points})) as client:
+            found = client.query_metrics(
+                experiment,
+                masks=[
+                    MetricMaskClause(axis="key", op="is", value="loss"),
+                    MetricMaskClause(axis="step", op="ge", value="3"),
+                ],
                 sort="asc",
-                limit=1,
+                limit=2,
                 offset=1,
             )
-        assert [(body["sort"], body["limit"], body["offset"]) for body in sent] == [
-            ("asc", 1, 1),
+
+        assert [(point.key, point.step, point.value) for point in found] == [
+            ("loss", 3, 0.25),
+            ("loss", 7, 0.5),
         ]
+        [request] = sent
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/experiments/{experiment}/metrics/query",
+        )
+        assert json_loads(request.content) == {
+            "masks": [
+                {"axis": "key", "op": "is", "value": "loss"},
+                {"axis": "step", "op": "ge", "value": "3"},
+            ],
+            "write": None,
+            "sort": "asc",
+            "limit": 2,
+            "offset": 1,
+        }
 
     @pytest.mark.parametrize(
         "experiments",
@@ -4410,39 +4477,65 @@ class TestWaitUntilReady:
 
         assert next(answers, "drained") == "drained"
 
-    def test_a_dead_server_fails_at_once(self) -> None:
-        def handler(request: httpx2.Request) -> httpx2.Response:
-            del request
-            raise httpx2.ConnectError("refused")
-
-        with (
-            Client("https://server", transport=httpx2.MockTransport(handler)) as client,
-            pytest.raises(ClientError, match="died before becoming ready") as raised,
-        ):
-            client.wait_until_ready(timeout_sec=60, alive=lambda: False)
-
-        assert isinstance(raised.value.__cause__, ClientError)
-
-    def test_a_5xx_past_the_deadline_reraises_the_last_failure(
+    def test_a_dead_server_fails_at_once(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        def no_sleep(seconds: float) -> None:
-            del seconds
-
-        monkeypatch.setattr("trackinizer.client.client.time.sleep", no_sleep)
+        sent: list[httpx2.Request] = []
+        pauses: list[float] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
-            del request
-            return httpx2.Response(503, text="booting")
+            sent.append(request)
+            if len(sent) == 1:
+                raise httpx2.ConnectError("refused")
+            return httpx2.Response(200, json={"sha": "abc"})
 
-        with (
-            Client("https://server", transport=httpx2.MockTransport(handler)) as client,
-            pytest.raises(ClientError, match="-> 503") as raised,
-        ):
-            client.wait_until_ready(timeout_sec=0, alive=lambda: True)
+        monkeypatch.setattr("trackinizer.client.client.time.sleep", pauses.append)
+        with Client(
+            "https://server",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            monkeypatch.setattr(
+                "trackinizer.client.client.time.monotonic",
+                lambda: 10.0,
+            )
+            with pytest.raises(
+                ClientError,
+                match="died before becoming ready",
+            ) as raised:
+                client.wait_until_ready(timeout_sec=60, alive=lambda: False)
 
-        assert raised.value.status_code == 503
+        assert isinstance(raised.value.__cause__, ClientError)
+        assert len(sent) == 1
+        assert pauses == []
+
+    @pytest.mark.parametrize("status", [500, 503])
+    def test_a_5xx_at_the_deadline_reraises_without_another_pause(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        status: int,
+    ) -> None:
+        error = ClientError("booting", status_code=status)
+        pauses: list[float] = []
+
+        def probe(client: Client) -> str:
+            del client
+            raise error
+
+        monkeypatch.setattr(Client, "version", probe)
+        monkeypatch.setattr("trackinizer.client.client.time.sleep", pauses.append)
+
+        with Client("https://server") as client:
+            moments = iter([10.0, 12.0, 13.0])
+            monkeypatch.setattr(
+                "trackinizer.client.client.time.monotonic",
+                lambda: next(moments),
+            )
+            with pytest.raises(ClientError) as raised:
+                client.wait_until_ready(timeout_sec=2, probe_interval_sec=0.5)
+
+        assert raised.value is error
+        assert pauses == []
 
 
 def test_search_sessions_sends_the_query_arms_and_limit() -> None:
@@ -4554,7 +4647,12 @@ class TestMetricPoints:
             logged = client.log_metrics(
                 experiment,
                 [
-                    MetricPoint(key="loss", step=1, value=0.5),
+                    MetricPoint(
+                        key="loss",
+                        step=1,
+                        value=0.5,
+                        timestamp=datetime(2026, 11, 7, 12, tzinfo=UTC),
+                    ),
                     MetricPoint(key="loss", step=2, value=0.25),
                 ],
             )
@@ -4572,7 +4670,7 @@ class TestMetricPoints:
                     "step": step,
                     "value": value,
                     "kind": "scalar",
-                    "timestamp": None,
+                    "timestamp": "2026-11-07T12:00:00Z" if step == 1 else None,
                 }
                 for step, value in ((1, 0.5), (2, 0.25))
             ],
@@ -4592,6 +4690,9 @@ class TestMetricPoints:
 
         assert [(p.key, p.step, p.value) for p in narrowed] == [("loss", 3, 0.125)]
         assert every == []
+        assert [(request.method, request.url.path) for request in sent] == [
+            ("GET", f"/api/experiments/{experiment}/metrics"),
+        ] * 2
         assert [dict(r.url.params) for r in sent] == [
             {"limit": "5", "offset": "2", "key": "loss"},
             {"limit": str(DEFAULT_LIST_LIMIT), "offset": "0"},
@@ -4609,7 +4710,10 @@ class TestMetricPoints:
 
         assert written == 4
         [request] = sent
-        assert request.url.path == f"/api/experiments/{experiment}/metrics/write"
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/experiments/{experiment}/metrics/write",
+        )
         body = json_loads(request.content, dict[str, object])
         assert (body["write"], body["masks"]) == (
             1.5,

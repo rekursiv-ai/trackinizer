@@ -1541,24 +1541,36 @@ class _FullQueue:
         raise Full
 
 
-def test_put_aborts_when_every_consumer_has_exited() -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize("closing", [False, True])
+async def test_put_aborts_when_every_consumer_has_exited(closing: bool) -> None:
     """A put blocked on a full queue re-checks liveness and aborts on all-dead.
 
     The old untimed ``queue.put`` blocked forever once every worker died.
     """
     queue = _FullQueue()
+    source = cast("Queue[backfill_embedding.PageTask | None]", queue)
     liveness = iter([True, True, False])
 
-    with pytest.raises(
-        backfill_embedding._NoLiveWorkersError,
-        match=r"^every embed worker exited; aborting the scan$",
-    ):
-        backfill_embedding._put(
-            cast("Queue[backfill_embedding.PageTask | None]", queue),
-            None,
-            alive=lambda: next(liveness),
-            poll_sec=0.0,
-        )
+    if closing:
+        with pytest.raises(backfill_embedding._NoLiveWorkersError):
+            await backfill_embedding._close_feed(
+                source,
+                1,
+                alive=lambda: next(liveness),
+                poll_sec=0.0,
+            )
+    else:
+        with pytest.raises(
+            backfill_embedding._NoLiveWorkersError,
+            match=r"^every embed worker exited; aborting the scan$",
+        ):
+            backfill_embedding._put(
+                source,
+                None,
+                alive=lambda: next(liveness),
+                poll_sec=0.0,
+            )
 
     assert queue.attempts == 3
 
@@ -2050,9 +2062,9 @@ async def test_run_follow_ensures_indexes_then_sweeps_every_model_per_round(
     fake_asyncio = _FakeAsyncio(rounds=1)
     printed = _PrintRecorder()
     stats = {
-        "a": SweepStats(records_embedded=3, units_written=5, full_scan=True),
-        "b": SweepStats(),
-        "c": SweepStats(busy=True),
+        "a": SweepStats(busy=True),
+        "b": SweepStats(records_embedded=3, units_written=5, full_scan=True),
+        "c": SweepStats(),
     }
 
     async def ensure(conn: object, model: str, dim: int) -> None:
@@ -2091,12 +2103,12 @@ async def test_run_follow_ensures_indexes_then_sweeps_every_model_per_round(
         (engine, mapper, "c"),
     ]
     assert printed.calls == [
-        (("follow: model=a embedded=3 units=5 (full scan)",), {"flush": True}),
-        (("follow: model=b embedded=0 units=0",), {"flush": True}),
         (
-            ("follow: model=c skipped: another process is embedding it",),
+            ("follow: model=a skipped: another process is embedding it",),
             {"flush": True},
         ),
+        (("follow: model=b embedded=3 units=5 (full scan)",), {"flush": True}),
+        (("follow: model=c embedded=0 units=0",), {"flush": True}),
     ]
     assert fake_asyncio.sleeps == [11]
 
@@ -3042,8 +3054,20 @@ def _smi(cards: str, apps: str) -> Callable[..., CompletedProcess[str]]:
     """Return a ``subprocess.run`` answering nvidia-smi's two queries."""
 
     def run(argv: list[str], **kwargs: object) -> CompletedProcess[str]:
-        del kwargs
-        out = cards if argv[1].startswith("--query-gpu") else apps
+        assert argv in [
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid",
+                "--format=csv,noheader,nounits",
+            ],
+        ]
+        assert kwargs == {"capture_output": True, "text": True, "check": True}
+        out = cards if argv[1] == "--query-gpu=index,uuid,memory.used" else apps
         return CompletedProcess(argv, 0, stdout=out, stderr="")
 
     return run

@@ -163,6 +163,14 @@ class _World:
         return term, host, browser
 
 
+def test_the_hub_keeps_the_stun_servers_for_both_connection_legs() -> None:
+    world = _World()
+    servers = ("stun:stun.example.org:3478",)
+    hub = TerminalHub(alive=world._alive, ice_servers=servers)
+
+    assert hub.ice_servers == servers
+
+
 @pytest.mark.asyncio
 async def test_output_reaches_the_browser_and_ring_and_input_the_host() -> None:
     world = _World()
