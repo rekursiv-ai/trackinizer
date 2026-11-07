@@ -135,6 +135,12 @@ def test_sagent_states_its_own_spend() -> None:
     assert usage.input_tokens == 0
 
 
+def test_one_call_is_enough_to_know_the_cost() -> None:
+    rows = _rows(("TokenUsage", {"info": {"spend_usd": 0.25}}))
+    usage = session_usage(rows, formats={0: "sagent"}, today=_DAY)
+    assert usage.usd == pytest.approx(0.25)
+
+
 def test_a_model_the_tables_do_not_know_leaves_the_cost_unknown_not_low() -> None:
     def known(cli: str, model: str) -> ModelCapability | None:
         del cli, model
