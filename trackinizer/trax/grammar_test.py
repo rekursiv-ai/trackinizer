@@ -607,6 +607,20 @@ def test_ref_list_aliases_sharing_a_wire_key_must_share_a_ref_kind(
         grammar._ref_fields_by_payload()
 
 
+@pytest.mark.parametrize(
+    ("field", "message"),
+    [
+        ("priority", "priority must be an int"),
+        ("confidence", "confidence must be a number"),
+    ],
+)
+def test_numeric_field_coercion_reports_its_field(field: str, message: str) -> None:
+    with pytest.raises(ClientError, match=message) as error:
+        field_value(field, "invalid")
+
+    assert isinstance(error.value.__cause__, ValueError)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

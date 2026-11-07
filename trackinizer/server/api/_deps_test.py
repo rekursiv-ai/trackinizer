@@ -514,6 +514,64 @@ class TestTagKind:
         assert not unset, f"{subclass.__name__} left unpopulated: {unset}"
 
 
+def test_state_dependencies_return_the_apps_store_and_inbound_queue() -> None:
+    app = FastAPI()
+    store, _engine = make_store()
+    inbound = InboundQueue()
+    app.state.store = store
+    app.state.inbound = inbound
+    request = _request(app)
+    assert _deps.get_store(request) is store
+    assert _deps.get_inbound(request) is inbound
+
+
+def test_replay_and_exec_dependencies_replace_invalid_state_then_reuse_it() -> None:
+    app = FastAPI()
+    request = _request(app)
+    app.state.replays = "invalid"
+    app.state.execs = "invalid"
+    replays = _deps.get_replays(request)
+    execs = _deps.get_exec_hub(request)
+    assert _deps.get_replays(request) is replays
+    assert _deps.get_exec_hub(request) is execs
+    other = _request(FastAPI())
+    assert _deps.get_replays(other) is not replays
+    assert _deps.get_exec_hub(other) is not execs
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_terminal_dependency_retains_one_hub_with_the_configured_stun_servers(
+    *,
+    configured: bool,
+) -> None:
+    app = FastAPI()
+    app.state.store, _engine = make_store()
+    servers = ("stun:relay.example",) if configured else ()
+    app.state.config = Config(terminal_stun=servers) if configured else "invalid"
+    app.state.terminals = "invalid"
+    hub = _deps.terminal_hub(app)
+    assert hub.ice_servers == servers
+    assert _deps.terminal_hub(app) is hub
+    assert _deps.get_terminal_hub(_request(app)) is hub
+
+
+def test_auth_and_staff_dependencies_require_a_real_config() -> None:
+    app = FastAPI()
+    request = _request(app)
+    assert _deps.auth_is_disabled(request) is False
+    assert _deps.get_staff(request) == ()
+    app.state.config = "invalid"
+    assert _deps.auth_is_disabled(request) is False
+    assert _deps.get_staff(request) == ()
+    app.state.config = Config()
+    assert _deps.auth_is_disabled(request) is False
+    assert _deps.get_staff(request) == ()
+    staff = ("*@example.com",)
+    app.state.config = Config(auth_disabled=True, staff=staff)
+    assert _deps.auth_is_disabled(request) is True
+    assert _deps.get_staff(request) == staff
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

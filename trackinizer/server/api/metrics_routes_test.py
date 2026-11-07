@@ -8,19 +8,34 @@ exception handlers, and the response serializer all in the path.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import json
 import uuid
 
+from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
 from treekle import from_plain, json_loads
 
 import pytest
 
+from trackinizer.conftest import make_store
+from trackinizer.server.access_policy import Principal
+from trackinizer.server.api import metrics_routes
+from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.wire.bodies import SubmitExperiment, SubmitIssue
 from trackinizer.wire.routes import MAX_LIST_LIMIT
-from trackinizer.wire.wire_metrics import MetricPoint, experiment_metrics_path
+from trackinizer.wire.wire_metrics import (
+    LogMetricsRequest,
+    MetricPoint,
+    experiment_metrics_path,
+)
 from trackinizer.wire.wire_metrics_query import (
     METRIC_RANK_PATH,
+    MetricMaskClause,
+    MetricQueryRequest,
+    MetricRankRequest,
+    RankFilter,
     experiment_metric_query_path,
     experiment_metric_write_path,
 )
@@ -575,6 +590,209 @@ def _cell(key: str, step: str) -> list[dict[str, str]]:
 def _reduce(op: str) -> dict[str, str]:
     """Return a step-axis reduction clause."""
     return {"axis": "step", "op": op}
+
+
+@pytest.mark.asyncio
+async def test_metric_log_and_read_forward_counts_points_and_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, store, principal = _unit_metrics_request()
+    identity = make_test_identity()
+    experiment = uuid.UUID(int=1)
+    point = MetricPoint(key="score", step=2, value=0.5)
+    log = AsyncMock(return_value=(1, 2))
+    read = AsyncMock(return_value=[point])
+    monkeypatch.setattr(store, "log_metrics", log)
+    monkeypatch.setattr(store, "read_metrics", read)
+
+    logged = await metrics_routes.log_metrics_route(
+        experiment,
+        LogMetricsRequest(points=[point]),
+        request,
+        identity,
+    )
+    result = await metrics_routes.read_metrics_route(
+        experiment,
+        request,
+        identity=identity,
+        key="score",
+        limit=2,
+        offset=3,
+    )
+
+    assert (logged.logged, logged.skipped) == (1, 2)
+    assert result.points == [point]
+    log.assert_awaited_once_with(experiment, [point], principal=principal)
+    read.assert_awaited_once_with(
+        experiment,
+        key="score",
+        limit=2,
+        offset=3,
+        principal=principal,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit", "offset", "detail"),
+    [
+        (0, 0, "limit must be"),
+        (MAX_LIST_LIMIT + 1, 0, "limit must be"),
+        (1, -1, "offset must be >= 0"),
+    ],
+)
+async def test_metric_read_refuses_bad_pages_before_store_access(
+    limit: int,
+    offset: int,
+    detail: str,
+) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as refused:
+        await metrics_routes.read_metrics_route(
+            uuid.UUID(int=1),
+            request,
+            identity=make_test_identity(),
+            limit=limit,
+            offset=offset,
+        )
+    assert refused.value.status_code == 400
+    assert detail in refused.value.detail
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("offset", [None, 2])
+async def test_metric_mask_query_and_write_preserve_selection_and_zero_value(
+    monkeypatch: pytest.MonkeyPatch,
+    offset: int | None,
+) -> None:
+    request, store, principal = _unit_metrics_request()
+    experiment = uuid.UUID(int=1)
+    identity = make_test_identity()
+    point = MetricPoint(key="score", step=0, value=0.0)
+    masks = [MetricMaskClause(axis="key", op="is", value="score")]
+    query = MetricQueryRequest(masks=masks, sort="desc", limit=2, offset=offset)
+    write = MetricQueryRequest(masks=masks, write=0.0)
+    query_store = AsyncMock(return_value=[(experiment, point)])
+    write_store = AsyncMock(return_value=2)
+    monkeypatch.setattr(store, "query_metrics", query_store)
+    monkeypatch.setattr(store, "write_metrics_masked", write_store)
+
+    read = await metrics_routes.query_metrics_route(
+        experiment,
+        query,
+        request,
+        identity,
+    )
+    written = await metrics_routes.write_metrics_route(
+        experiment,
+        write,
+        request,
+        identity,
+    )
+
+    assert read.points == [point]
+    assert written.written == 2
+    query_store.assert_awaited_once_with(
+        [experiment],
+        masks=masks,
+        sort="desc",
+        limit=2,
+        offset=offset or 0,
+        principal=principal,
+    )
+    write_store.assert_awaited_once_with(
+        experiment,
+        masks=masks,
+        value=0.0,
+        principal=principal,
+    )
+
+
+@pytest.mark.asyncio
+async def test_metric_routes_reject_misplaced_write_controls_before_store_access() -> (
+    None
+):
+    request = Request({"type": "http", "app": FastAPI()})
+    identity = make_test_identity()
+    experiment = uuid.UUID(int=1)
+    write = MetricQueryRequest(write=0.0)
+    with pytest.raises(HTTPException, match="takes no 'to' value") as refused:
+        await metrics_routes.query_metrics_route(experiment, write, request, identity)
+    assert refused.value.status_code == 400
+    with pytest.raises(HTTPException, match="requires a 'to' value") as refused:
+        await metrics_routes.write_metrics_route(
+            experiment,
+            MetricQueryRequest(),
+            request,
+            identity,
+        )
+    assert refused.value.status_code == 400
+    with pytest.raises(HTTPException, match="takes no 'to' value") as refused:
+        await metrics_routes.rank_metrics_route(
+            MetricRankRequest(experiment_ids=[experiment], query=write),
+            request,
+            identity,
+        )
+    assert refused.value.status_code == 400
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("by_filter", [False, True])
+async def test_metric_rank_preserves_ids_or_validated_filters_and_tags_points(
+    monkeypatch: pytest.MonkeyPatch,
+    by_filter: bool,
+) -> None:
+    request, store, principal = _unit_metrics_request()
+    experiment = uuid.UUID(int=1)
+    point = MetricPoint(key="score", step=0, value=0.5)
+    clause = RankFilter(field="title", op="is", value="run")
+    query = MetricQueryRequest(sort="asc", limit=2, offset=1)
+    body = MetricRankRequest(
+        experiment_ids=None if by_filter else [experiment],
+        filters=[clause] if by_filter else None,
+        query=query,
+    )
+    read = AsyncMock(return_value=[(experiment, point)])
+    monkeypatch.setattr(store, "query_metrics", read)
+
+    ranked = await metrics_routes.rank_metrics_route(
+        body,
+        request,
+        make_test_identity(),
+    )
+
+    assert [(row.experiment_id, row.point) for row in ranked.rows] == [
+        (experiment, point),
+    ]
+    selection = (metrics_routes._rank_filter(clause),) if by_filter else [experiment]
+    read.assert_awaited_once_with(
+        selection,
+        masks=[],
+        sort="asc",
+        limit=2,
+        offset=1,
+        principal=principal,
+    )
+
+
+def test_metric_rank_refuses_filters_without_a_sql_form() -> None:
+    with pytest.raises(HTTPException) as refused:
+        metrics_routes._rank_filter(RankFilter(field="config", op="is", value="x"))
+    assert refused.value.status_code == 400
+    assert refused.value.detail == (
+        "filter experiment_config is has no SQL form; "
+        "a metric query cannot select runs by it"
+    )
+
+
+def _unit_metrics_request() -> tuple[Request, Store, Principal]:
+    store, _engine = make_store()
+    app = FastAPI()
+    app.state.store = store
+    request = Request({"type": "http", "app": app})
+    principal = Principal(email="reader@example.com", role="writer")
+    request.state.access_principal = principal
+    return request, store, principal
 
 
 if __name__ == "__main__":

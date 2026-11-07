@@ -41,7 +41,9 @@ from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
 from trackinizer.lib.postgres import Conn
 from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.server import web
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.api import auth_routes
+from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
@@ -57,6 +59,7 @@ from trackinizer.server.store.session_feed import (
     CanvasAgents,
     FeedScope,
 )
+from trackinizer.server.store.session_search import SessionSearchHit
 from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
@@ -3131,6 +3134,172 @@ def _png_size(path: Path) -> tuple[int, int]:
     assert data[:8] == b"\x89PNG\r\n\x1a\n", path
     width, height = struct.unpack(">II", data[16:24])
     return width, height
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "limit", "detail"),
+    [
+        ("x", 0, "limit must be in [1, 200]"),
+        ("x", 201, "limit must be in [1, 200]"),
+        (" \t", 1, "q must be non-empty"),
+    ],
+)
+async def test_session_search_validates_before_reading_dependencies(
+    query: str,
+    limit: int,
+    detail: str,
+) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as caught:
+        await web.web_search_sessions(
+            request,
+            q=query,
+            identity=_TEST_IDENTITY,
+            limit=limit,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (400, detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [None, 2])
+async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int | None,
+) -> None:
+    focus, peer = new_uuid(), new_uuid()
+    distances = {focus: 0, peer: 1}
+    neighbourhood: AsyncMockProtocol[dict[uuid.UUID, int]] = AsyncMock(
+        return_value=distances,
+    )
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    engine.conn.fetch.side_effect = [
+        [
+            {
+                "id": node_id,
+                "kind": "Issue",
+                "seq": seq,
+                "title": title,
+                "status": "active",
+                "created": datetime(2026, 5, 18, tzinfo=UTC),
+                "belief_judgement": None,
+                "belief_confidence": None,
+            }
+            for node_id, seq, title in ((peer, 1, "Peer"), (focus, 2, "Focus"))
+        ],
+        [{"from_id": peer, "to_id": focus, "edge_kind": "narrows", "valence": None}],
+    ]
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        focus=focus,
+        limit=limit,
+    )
+
+    assert graph == {
+        "nodes": [
+            {
+                "id": str(node_id),
+                "kind": "Issue",
+                "seq": seq,
+                "title": title,
+                "status": "active",
+                "created": "2026-05-18T00:00:00+00:00",
+                "hops": distances[node_id],
+            }
+            for node_id, seq, title in ((peer, 1, "Peer"), (focus, 2, "Focus"))
+        ],
+        "edges": [{"from_id": str(peer), "to_id": str(focus), "edge_kind": "narrows"}],
+    }
+    assert neighbourhood.await_args is not None
+    assert neighbourhood.await_args.args == (engine.conn, focus)
+    assert neighbourhood.await_args.kwargs["limit"] == (60 if limit is None else limit)
+    assert neighbourhood.await_args.kwargs["hops"] == 2
+    assert neighbourhood.await_args.kwargs["policy"] is get_store(request).access_policy
+    principal = neighbourhood.await_args.kwargs["principal"]
+    assert isinstance(principal, Principal)
+    assert principal.email == _TEST_IDENTITY.email
+    assert principal.role == _TEST_IDENTITY.role
+    assert engine.conn.fetch.await_args_list[0].args[1:] == ([focus, peer],)
+    assert engine.conn.fetch.await_args_list[1].args[1:] == ([peer, focus],)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hops", "status", "detail"),
+    [
+        (0, 400, "hops must be in [1, 3]"),
+        (4, 400, "hops must be in [1, 3]"),
+        (2, 404, "focus not found"),
+    ],
+)
+async def test_focused_graph_rejects_bad_hops_and_missing_focus_without_fetching_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+    hops: int,
+    status: int,
+    detail: str,
+) -> None:
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    neighbourhood = AsyncMock(return_value={})
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
+            request,
+            identity=_TEST_IDENTITY,
+            focus=new_uuid(),
+            hops=hops,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (status, detail)
+    engine.conn.fetch.assert_not_awaited()
+    assert neighbourhood.await_count == (1 if status == 404 else 0)
+
+
+def test_session_search_hit_keeps_every_record_coordinate_and_display_field() -> None:
+    session_id = new_uuid()
+    hit = SessionSearchHit(
+        session_id=session_id,
+        part=2,
+        idx=3,
+        field="content",
+        chunk=4,
+        score=0.25,
+        source="both",
+        snippet="Found text",
+        title="Deploy",
+    )
+    assert web._session_hit_to_dict(hit) == {
+        "session_id": str(session_id),
+        "part": 2,
+        "idx": 3,
+        "field": "content",
+        "chunk": 4,
+        "score": 0.25,
+        "source": "both",
+        "snippet": "Found text",
+        "title": "Deploy",
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "dim"),
+    [
+        ("unknown-embedder", None),
+        ("qwen3-embedding-4b", 99_999),
+    ],
+)
+def test_invalid_override_configuration_becomes_a_client_error(
+    name: str,
+    dim: int | None,
+) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as caught:
+        web._override_embedder(request, name, dim)
+    assert caught.value.status_code == 400
+    assert name in caught.value.detail or str(dim) in caught.value.detail
 
 
 if __name__ == "__main__":

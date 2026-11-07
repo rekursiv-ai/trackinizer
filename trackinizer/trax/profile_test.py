@@ -385,6 +385,13 @@ def test_profile_repr_and_str_hold_no_key_text() -> None:
     assert shown != Profile(url="http://prod:9000", author="alice", api_key="other")
 
 
+def test_read_missing_profile_names_it_and_preserves_the_cause() -> None:
+    with pytest.raises(ClientError, match="profile 'missing' not found") as error:
+        profile.read_profile("missing")
+
+    assert isinstance(error.value.__cause__, FileNotFoundError)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

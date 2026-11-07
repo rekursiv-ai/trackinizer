@@ -677,6 +677,44 @@ class TestCoverageRoutesAndCli:
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("priority", 10), ("priority", None), ("valence", 0.5), ("valence", None)],
+)
+async def test_scalar_edge_annotation_dispatch_preserves_value_and_audit(
+    field: str,
+    value: float | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _engine = make_store()
+    change = new_uuid()
+    setter = AsyncMock(return_value=change)
+    monkeypatch.setattr(store, "set_edge_annotation", setter)
+    source, target, key = new_uuid(), new_uuid(), new_uuid()
+    result = await _set_edge_annotation(
+        store,
+        field,
+        value,
+        from_id=source,
+        to_id=target,
+        edge_kind="proves",
+        reason="correct weight",
+        api_key_id=key,
+        actor="auditor",
+    )
+    assert result == change
+    setter.assert_awaited_once_with(
+        from_id=source,
+        to_id=target,
+        edge_kind="proves",
+        reason="correct weight",
+        api_key_id=key,
+        actor="auditor",
+        **{field: value},
+    )
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

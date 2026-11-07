@@ -113,6 +113,17 @@ def _set_then_consume_twice(key: UUID) -> tuple[object, object]:
     return _consume_client_change_id(), _consume_client_change_id()
 
 
+def test_an_uninstalled_slot_clears_and_consumes_without_installing_a_holder() -> None:
+    token = _CLIENT_CHANGE_ID.set(None)
+    try:
+        set_client_change_id(None)
+        assert _CLIENT_CHANGE_ID.get() is None
+        assert _peek_client_change_id() is None
+        assert _consume_client_change_id() is None
+    finally:
+        _CLIENT_CHANGE_ID.reset(token)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

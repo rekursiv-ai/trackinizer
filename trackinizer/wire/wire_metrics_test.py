@@ -19,6 +19,13 @@ from trackinizer.wire.wire_metrics import (
 )
 
 
+def test_metrics_path_interpolates_the_experiment_uuid() -> None:
+    experiment_id = uuid.UUID(int=1)
+    assert experiment_metrics_path(experiment_id) == (
+        "/api/experiments/00000000-0000-0000-0000-000000000001/metrics"
+    )
+
+
 class TestMetricPointValueDomain:
     @pytest.mark.parametrize("bad", [math.nan, math.inf, -math.inf])
     def test_rejects_non_finite_value(self, bad: float) -> None:

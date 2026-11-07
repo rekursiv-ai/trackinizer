@@ -14,6 +14,7 @@ from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, connection
 from trackinizer.trax.client_cache import Target, close_clients
 from trackinizer.trax.conftest import FakeClient, run
+from trackinizer.trax.verbs import Recent
 
 
 if TYPE_CHECKING:
@@ -559,6 +560,16 @@ def test_any_other_verb_still_prints_the_unmatched_server_hint(
     _ = cli.main(["profile"])
 
     assert "this shell came from https://elsewhere.test" in capsys.readouterr().err
+
+
+def test_help_topic_dispatches_without_connecting(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["help", "recent"], client)
+
+    assert capsys.readouterr().out == Recent.verb_help_text("recent")
+    assert client.calls == []
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast, override
+from unittest.mock import Mock
 
 import asyncpg
 import pytest
@@ -383,6 +384,61 @@ class _Restricted(RecordingPolicy):
     ) -> str:
         del kind, alias, params, principal
         return "FALSE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("restricted", [False, True])
+async def test_bulk_edges_keep_empty_subjects_and_bucket_both_endpoints(
+    monkeypatch: pytest.MonkeyPatch,
+    restricted: bool,
+) -> None:
+    conn = make_conn()
+    first, second, peer = new_uuid(), new_uuid(), new_uuid()
+    outgoing = _edge("requires", from_id=second, to_id=peer, to_kind="Issue")
+    incoming = _edge("requires", from_id=peer, from_kind="Issue", to_id=first)
+    assert await fetch_edges_bulk(cast(Conn, conn), []) == ({}, {})
+    conn.fetch.assert_not_awaited()
+    conn.fetch.side_effect = [[outgoing], [incoming]]
+    policy = RecordingPolicy()
+    monkeypatch.setattr(
+        RecordingPolicy,
+        "read_filter",
+        Mock(return_value="FALSE" if restricted else "TRUE"),
+    )
+    outbound, inbound = await fetch_edges_bulk(
+        cast(Conn, conn),
+        [first, second],
+        policy=policy,
+        principal=Principal(email="reader@example.com", role="viewer"),
+    )
+    assert outbound == {first: [], second: [outgoing]}
+    assert inbound == {first: [incoming], second: []}
+    assert [entry.args[1:] for entry in conn.fetch.await_args_list] == [
+        ([first, second],),
+        ([first, second],),
+    ]
+    for sent in conn.fetch.await_args_list:
+        assert ("AND (EXISTS" in str(sent.args[0])) is restricted
+
+
+@pytest.mark.parametrize("has_edges", [False, True])
+def test_materialize_dispatches_the_row_kind_and_uses_its_own_buckets(
+    monkeypatch: pytest.MonkeyPatch,
+    has_edges: bool,
+) -> None:
+    subject, peer, other = new_uuid(), new_uuid(), new_uuid()
+    row = cast(asyncpg.Record, {"id": subject, "kind": "Issue"})
+    read = Mock(return_value=Issue(id=subject, title="Persisted title"))
+    monkeypatch.setattr(Issue, "from_row", read)
+    edges = [_edge("requires", to_id=peer, to_kind="Issue", priority=10)]
+    projected = materialize(row, {subject if has_edges else other: edges}, {})
+    assert isinstance(projected, Issue)
+    assert (projected.id, projected.title) == (subject, "Persisted title")
+    assert projected.requires == (
+        (IssueEdge(id=peer, kind="Issue", priority=10),) if has_edges else ()
+    )
+    assert projected.required_by == ()
+    read.assert_called_once_with(row)
 
 
 if __name__ == "__main__":

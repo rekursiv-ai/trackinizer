@@ -9,14 +9,21 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, cast, override
+from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
 
 import asyncio
+import time
+
+from treekle import immutable
 
 import pytest
 
+from trackinizer.conftest import make_conn, make_store
 from trackinizer.runs.asks import opened_record, resolved_record
 from trackinizer.sagent.session.types import AssistantMessage, SystemMessage
+from trackinizer.server import asks
 from trackinizer.server.asks import (
     ASKS_PART,
     _released,
@@ -36,7 +43,9 @@ from trackinizer.server.asks_test_support import (
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
-from trackinizer.types.errors import NotFoundError
+from trackinizer.server.store.session_ir import SessionManifest
+from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.bodies import SubmitAgentSession
 
 
@@ -654,6 +663,187 @@ def _gone(ask_id: str) -> dict[str, str]:
         "who": "",
         "decision": "released",
     }
+
+
+@pytest.mark.asyncio
+async def test_open_asks_preserve_order_deduplicate_and_scope_closures() -> None:
+    conn = make_conn()
+    first, second = uuid4(), uuid4()
+    conn.fetch.return_value = [
+        {"session_id": first, "opened": "b", "closed": None},
+        {"session_id": first, "opened": "a", "closed": None},
+        {"session_id": first, "opened": "b", "closed": "a"},
+        {"session_id": second, "opened": "a", "closed": "b"},
+        {"session_id": second, "opened": "", "closed": None},
+    ]
+    assert await asks.open_ask_ids(conn, session_id=first) == ["b"]
+    assert await asks.waiting_sessions(conn, session_ids=[first, second]) == {
+        first,
+        second,
+    }
+    conn.fetch.return_value = []
+    assert await asks.open_ask_ids(conn, session_id=first) == []
+    assert await asks.waiting_sessions(conn, session_ids=[]) == set()
+    assert conn.fetch.call_args is not None
+    sql = conn.fetch.call_args.args[0]
+    assert isinstance(sql, str)
+    assert "r.idx < m.records" in sql
+    assert "ORDER BY r.session_id, r.part, r.idx" in sql
+    assert conn.fetch.call_args.args[1:] == (
+        [],
+        ["extra", "$interaction", "id"],
+        ["extra", "$interaction_resolved", "id"],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [None, "ada@example.com"])
+async def test_ask_asker_reads_the_latest_live_card(answer: str | None) -> None:
+    conn = make_conn()
+    session = uuid4()
+    conn.fetchval.return_value = answer
+    assert await asks.ask_asker(conn, session_id=session, ask_id="a") == (answer or "")
+    assert conn.fetchval.call_args is not None
+    sql = conn.fetchval.call_args.args[0]
+    assert isinstance(sql, str)
+    assert "r.idx < m.records" in sql
+    assert "ORDER BY r.part DESC, r.idx DESC LIMIT 1" in sql
+    assert conn.fetchval.call_args.args[1:] == (
+        session,
+        "a",
+        ["extra", "$interaction", "input", "asker"],
+        ["extra", "$interaction", "id"],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing", [False, True])
+async def test_release_appends_typed_records_to_the_server_part(
+    monkeypatch: pytest.MonkeyPatch,
+    existing: bool,
+) -> None:
+    store, _ = make_store()
+    session, ir = uuid4(), uuid4()
+    manifest = (
+        SessionManifest(
+            part=7,
+            name=ASKS_PART,
+            metadata=immutable({}),
+            ir_id=ir,
+            format="",
+            records=3,
+        )
+        if existing
+        else None
+    )
+    read = AsyncMock(return_value=manifest)
+    upsert = AsyncMock(return_value=7)
+    append = AsyncMock(return_value=2)
+    monkeypatch.setattr(asks, "open_ask_ids", AsyncMock(return_value=["a", "b"]))
+    monkeypatch.setattr(store, "read_session_manifest", read)
+    monkeypatch.setattr(store, "upsert_session_manifest", upsert)
+    monkeypatch.setattr(store, "append_session_records", append)
+    assert await asks.release_open_asks(store, session_id=session, at=_AT) == ["a", "b"]
+    read.assert_awaited_once_with(session, name=ASKS_PART)
+    assert upsert.call_args is not None
+    assert append.call_args is not None
+    assert upsert.call_args.kwargs["records"] == (5 if existing else 2)
+    assert upsert.call_args.kwargs["format"] == ""
+    assert upsert.call_args.kwargs["metadata"] == {}
+    if existing:
+        assert upsert.call_args.kwargs["ir_id"] == ir
+    else:
+        assert isinstance(upsert.call_args.kwargs["ir_id"], type(ir))
+    rows = cast(list[SessionRecordRow], append.call_args.args[1])
+    assert [(row.session_id, row.part, row.idx, row.record()) for row in rows] == [
+        (session, 7, (3 if existing else 0) + index, _released(ask_id, at=_AT))
+        for index, ask_id in enumerate(["a", "b"])
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("conflict", [False, True])
+async def test_release_writes_nothing_when_quiet_or_conflicted(
+    monkeypatch: pytest.MonkeyPatch,
+    conflict: bool,
+) -> None:
+    store, _ = make_store()
+    read = AsyncMock(return_value=None)
+    upsert = AsyncMock(side_effect=ConflictError("ended"))
+    append = AsyncMock()
+    monkeypatch.setattr(
+        asks,
+        "open_ask_ids",
+        AsyncMock(return_value=["a"] if conflict else []),
+    )
+    monkeypatch.setattr(store, "read_session_manifest", read)
+    monkeypatch.setattr(store, "upsert_session_manifest", upsert)
+    monkeypatch.setattr(store, "append_session_records", append)
+    assert await asks.release_open_asks(store, session_id=uuid4(), at=_AT) == []
+    assert read.await_count == int(conflict)
+    append.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_release_passes_count_only_released_asks_and_skip_live_pollers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    gone, quiet, live = uuid4(), uuid4(), uuid4()
+    inbound = InboundQueue()
+    for session in (gone, quiet):
+        inbound.mark_poller(session, cli="claude")
+        inbound.forget_poller(session)
+    release = AsyncMock(side_effect=[["a", "b"], []])
+    monkeypatch.setattr(asks, "release_open_asks", release)
+    assert await asks.release_gone_runs(store, inbound=inbound, at=_AT) == 2
+    assert await asks.release_gone_runs(store, inbound=inbound, at=_AT) == 0
+    assert {call.kwargs["session_id"] for call in release.call_args_list} == {
+        gone,
+        quiet,
+    }
+    engine.conn.fetch.return_value = [{"id": live}, {"id": gone}]
+    inbound.mark_poller(live, cli="codex")
+    release.reset_mock(side_effect=True)
+    release.return_value = ["c"]
+    assert await asks.release_orphaned_asks(store, inbound=inbound, at=_AT) == 1
+    release.assert_awaited_once_with(store, session_id=gone, at=_AT)
+    assert engine.conn.fetch.call_args is not None
+    assert engine.conn.fetch.call_args.args[1:] == (
+        ["claude", "codex"],
+        "chat:",
+        ["extra", "$interaction", "id"],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sweep_after", [None, 0.0])
+async def test_release_loop_retries_errors_and_sweeps_only_once(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    sweep_after: float | None,
+) -> None:
+    store, _ = make_store()
+    inbound = InboundQueue(poller_ttl_sec=0)
+    sleep = AsyncMock(side_effect=[None, None, None, asyncio.CancelledError()])
+    gone = AsyncMock(side_effect=[RuntimeError("pass failed"), 0, 0])
+    orphaned = AsyncMock(return_value=0)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    monkeypatch.setattr(time, "monotonic", Mock(return_value=1.0))
+    monkeypatch.setattr(asks, "release_gone_runs", gone)
+    monkeypatch.setattr(asks, "release_orphaned_asks", orphaned)
+    with pytest.raises(asyncio.CancelledError):
+        await asks.ask_release_loop(
+            store,
+            inbound=inbound,
+            interval_sec=0.01,
+            sweep_after_sec=sweep_after,
+        )
+    assert gone.await_count == 3
+    assert orphaned.await_count == 1
+    assert sleep.call_args is not None
+    assert sleep.call_args.args == (0.01,)
+    assert "ask release pass failed" in caplog.text
 
 
 if __name__ == "__main__":

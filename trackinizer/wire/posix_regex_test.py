@@ -325,6 +325,30 @@ class TestPosixPattern:
         assert posix_pattern(r"\ya$") == r"(?s)\ba\Z"
 
 
+@pytest.mark.parametrize(
+    ("pattern", "translated"),
+    [
+        ("a$", r"(?s)a\Z"),
+        ("(?m)a$", "(?s)(?m)a$"),
+        (r"\y[\d]$", r"(?s)\b[0-9]\Z"),
+        (r"\mword\M", r"(?s)(?<!\w)(?=\w)word(?<=\w)(?!\w)"),
+        (r"\\m[$]\w", r"(?s)\\m[$]\w"),
+        (r"(?P<word>a)\y", r"(?s)(?P<word>a)\b"),
+    ],
+)
+def test_translation_rewrites_ordered_active_spans_only(
+    pattern: str,
+    translated: str,
+) -> None:
+    assert posix_pattern(pattern) == translated
+
+
+def test_scanning_continues_after_named_groups_and_backreferences() -> None:
+    assert [(escape.char, escape.start) for escape in escapes(r"(?P<x>a)(?P=x)\y")] == [
+        ("y", 14),
+    ]
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

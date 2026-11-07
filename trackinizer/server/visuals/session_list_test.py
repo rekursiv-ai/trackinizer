@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import AsyncMock, Mock
 
 import uuid
 
@@ -12,6 +13,7 @@ from treekle import immutable
 import pytest
 import pytest_asyncio
 
+from trackinizer.conftest import FakeEngine, RecordingPolicy
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -20,10 +22,16 @@ from trackinizer.sagent.session.types import (
     UncategorizedRecord,
     UserMessage,
 )
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
-from trackinizer.server.visuals.session_lines import LINE_CHARS, LastLine
+from trackinizer.server.visuals import session_list
+from trackinizer.server.visuals.session_lines import (
+    LINE_CHARS,
+    LastLine,
+    SessionLines,
+)
 from trackinizer.server.visuals.session_list import SessionList, list_own_sessions
 from trackinizer.types.session_records import SessionRecordRow
 
@@ -31,6 +39,7 @@ from trackinizer.types.session_records import SessionRecordRow
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from trackinizer.lib.postgres import DatabaseEngine
     from trackinizer.sagent.session.types import SessionRecord
     from trackinizer.server.store.core import Store
 
@@ -366,6 +375,185 @@ async def test_campaign_sessions_name_their_issues_and_each_issue_its_parents(
         (meta, []),
         (campaign, [meta]),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("predicate", ["TRUE", "FALSE"])
+async def test_own_session_listing_joins_places_issues_and_live_state_without_a_database(
+    monkeypatch: pytest.MonkeyPatch,
+    predicate: str,
+) -> None:
+    chat, placed, foreign, overflow = (uuid.uuid4() for _ in range(4))
+    conversation, chat_canvas, placed_canvas, workspace, issue, parent = (
+        uuid.uuid4() for _ in range(6)
+    )
+    engine = FakeEngine()
+    rows = [
+        _listing_row(chat, chat=wire_science_chat.chat_session_id(conversation)),
+        _listing_row(
+            placed,
+            labels=[
+                "git:main",
+                "canvas:invalid",
+                f"canvas:{uuid.uuid4()}",
+                f"canvas:{placed_canvas}",
+            ],
+        ),
+        _listing_row(foreign, labels=["canvas:invalid", f"canvas:{uuid.uuid4()}"]),
+        _listing_row(overflow),
+    ]
+    engine.conn.fetch.side_effect = [
+        rows,
+        [
+            {"id": chat_canvas, "chat": str(conversation), "workspace": str(workspace)},
+            {"id": placed_canvas, "chat": None, "workspace": None},
+        ],
+        [{"from_id": chat, "to_id": issue}, {"from_id": placed, "to_id": issue}],
+        [
+            {
+                "id": parent,
+                "seq": 1,
+                "title": "Meta",
+                "status": "active",
+                "parents": [],
+            },
+            {
+                "id": issue,
+                "seq": 2,
+                "title": "Work",
+                "status": "complete",
+                "parents": [parent],
+            },
+        ],
+    ]
+    line = LastLine(author=None, text="Done")
+    lines = AsyncMock(
+        return_value={
+            chat: SessionLines(
+                goal="Ship",
+                first_line="Please fix",
+                last_line=line,
+            ),
+        },
+    )
+    states = AsyncMock(return_value={chat: "running"})
+    monkeypatch.setattr(session_list, "session_lines", lines)
+    monkeypatch.setattr(session_list, "live_run_states", states)
+    policy = RecordingPolicy()
+    monkeypatch.setattr(RecordingPolicy, "read_filter", Mock(return_value=predicate))
+    inbound = InboundQueue()
+    inbound.mark_poller(placed, machine="old-box")
+    inbound.forget_poller(placed)
+    inbound.mark_poller(chat, machine="live-box")
+    before = datetime.now(UTC)
+
+    listed = await list_own_sessions(
+        cast("DatabaseEngine", engine),
+        email=_EMAIL,
+        user_id=_USER,
+        reader=_OPEN,
+        inbound=inbound,
+        days=2,
+        limit=3,
+        policy=policy,
+        principal=Principal(email=_EMAIL, role="viewer"),
+    )
+
+    assert listed.more
+    assert [each.id for each in listed.sessions] == [chat, placed, foreign]
+    first, second, third = listed.sessions
+    assert (first.conversation_id, first.canvas_id, first.workspace_id) == (
+        conversation,
+        chat_canvas,
+        workspace,
+    )
+    assert (first.goal, first.first_line, first.last_line) == (
+        "Ship",
+        "Please fix",
+        line,
+    )
+    assert (first.live, first.state, first.machine) == (True, "running", "live-box")
+    assert (second.canvas_id, second.workspace_id, second.produced_by) == (
+        placed_canvas,
+        None,
+        [issue],
+    )
+    assert (second.live, second.state, second.machine) == (False, "idle", "old-box")
+    assert (third.canvas_id, third.workspace_id, third.machine) == (None, None, None)
+    assert (third.goal, third.first_line, third.last_line, third.produced_by) == (
+        None,
+        None,
+        None,
+        [],
+    )
+    assert [(each.id, each.parent_ids) for each in listed.issues] == [
+        (parent, []),
+        (issue, [parent]),
+    ]
+    lines.assert_awaited_once_with(
+        engine.conn,
+        session_ids=[chat, placed, foreign],
+        account=_EMAIL,
+    )
+    states.assert_awaited_once_with(
+        engine.conn,
+        inbound=inbound,
+        session_ids=[chat, placed, foreign],
+    )
+    recent, places, produced, issues = engine.conn.fetch.await_args_list
+    assert recent.args[1] == _EMAIL
+    since = recent.args[2]
+    assert isinstance(since, datetime)
+    assert before - timedelta(days=2) <= since <= datetime.now(UTC) - timedelta(days=2)
+    assert recent.args[3] == 4
+    assert "ORDER BY active DESC, s.id DESC LIMIT $3" in str(recent.args[0])
+    assert places.args[1:] == (_USER,)
+    assert produced.args[1:] == ([chat, placed, foreign],)
+    assert issues.args[1:] == ([issue],)
+    for call in (produced, issues):
+        assert (
+            "EXISTS (SELECT 1 FROM inquiries readable_inquiry" in str(call.args[0])
+        ) == (predicate == "FALSE")
+        assert "ARRAY['workspace']" in str(call.args[0])
+
+
+@pytest.mark.asyncio
+async def test_no_matching_sessions_returns_empty_lists_without_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine()
+    monkeypatch.setattr(session_list, "session_lines", AsyncMock(return_value={}))
+    monkeypatch.setattr(session_list, "live_run_states", AsyncMock(return_value={}))
+    listed = await list_own_sessions(
+        cast("DatabaseEngine", engine),
+        email=_EMAIL,
+        user_id=_USER,
+        reader=_OPEN,
+        inbound=InboundQueue(),
+        days=1,
+        limit=1,
+    )
+    assert listed == SessionList(sessions=[], issues=[], more=False)
+
+
+def _listing_row(
+    session_id: uuid.UUID,
+    *,
+    chat: str | None = None,
+    labels: Sequence[str] = (),
+) -> dict[str, object]:
+    return {
+        "id": session_id,
+        "seq": 1,
+        "title": "Session",
+        "status": "active",
+        "cli": "claude",
+        "created": _NOW,
+        "ended": None,
+        "active": _NOW,
+        "chat": chat,
+        "labels": list(labels),
+    }
 
 
 if __name__ == "__main__":

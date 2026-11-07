@@ -20,6 +20,7 @@ from treekle import mutable
 
 import pytest
 
+from trackinizer.conftest import make_store
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     Attachment,
@@ -952,6 +953,122 @@ async def _counts(
         scope=scope,
     )
     return [bucket.count for bucket in histogram.counts]
+
+
+@pytest.mark.asyncio
+async def test_facets_project_counts_and_session_ownership_from_one_snapshot() -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    engine.conn.fetch.side_effect = [
+        [
+            {
+                "session_id": session_id,
+                "kind": None,
+                "records": 2,
+                "conversation": 1,
+                "last": _T0,
+            },
+            {"session_id": None, "kind": "UserMessage", "records": 1},
+            {"session_id": None, "kind": "ToolCall", "records": 1},
+        ],
+        [
+            {
+                "id": session_id,
+                "owner": "agent",
+                "account": "ann@lab.example",
+                "agentsession_cli": "claude",
+                "agentsession_rooms": ["lab"],
+                "agentsession_ended": None,
+                "agentsession_audience": "open",
+                "agentsession_cli_session_id": None,
+                "opener": None,
+            },
+        ],
+    ]
+    scope = FeedScope(
+        actors=("agent",),
+        kinds=("UserMessage", "ToolCall"),
+        reader=SessionReader(email="ann@lab.example", audiences=AUDIENCES),
+    )
+
+    facets = await store.read_feed_facets(since=_T0, until=_T0, scope=scope)
+
+    assert [
+        (actor.actor, actor.count, actor.conversation, actor.hideable)
+        for actor in facets.actors
+    ] == [("agent", 2, 1, True)]
+    assert facets.rooms == [FeedRoomFacet(room="lab", count=2, actors=["agent"])]
+    assert facets.kinds == [
+        FeedKindFacet(kind="ToolCall", count=1),
+        FeedKindFacet(kind="UserMessage", count=1),
+    ]
+    assert engine.conn.fetch.await_args_list[1].args[1] == [session_id]
+    assert engine.conn.fetch.await_args_list[0].args[1:4] == (
+        _T0,
+        _T0,
+        ["UserMessage", "ToolCall"],
+    )
+    assert "REPEATABLE READ, READ ONLY" in str(
+        engine.conn.execute.await_args_list[1].args[0],
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("named", [False, True])
+@pytest.mark.parametrize("first", [None, _T0])
+async def test_histogram_fills_empty_buckets_and_clamps_its_first_record(
+    named: bool,
+    first: datetime | None,
+) -> None:
+    store, engine = make_store()
+    engine.conn.fetchval.return_value = first
+    engine.conn.fetch.return_value = [{"bucket": _T0, "records": 2}]
+    scope = FeedScope(
+        reader=_ANYONE,
+        actors=("a",) if named else (),
+        kinds=("UserMessage",) if named else (),
+    )
+
+    histogram = await store.read_feed_histogram(
+        since=None,
+        until=_T0 + timedelta(seconds=1),
+        earliest=_T0,
+        buckets=2,
+        scope=scope,
+    )
+
+    expected_start = _T0 if first is not None else _T0 + timedelta(seconds=1)
+    assert histogram.start == expected_start
+    assert histogram.end == _T0 + timedelta(seconds=2)
+    assert histogram.bucket_seconds == 1
+    assert histogram.counts == (
+        [
+            FeedBucket(start=_T0, count=2),
+            FeedBucket(start=_T0 + timedelta(seconds=1), count=0),
+        ]
+        if first is not None
+        else [FeedBucket(start=_T0 + timedelta(seconds=1), count=0)]
+    )
+    assert engine.conn.fetch.await_args is not None
+    sql = str(engine.conn.fetch.await_args.args[0])
+    assert ("CROSS JOIN LATERAL" in sql) == named
+    assert ("session_id IN (SELECT i.id" in sql) == named
+
+
+@pytest.mark.asyncio
+async def test_explicit_histogram_start_is_clamped_without_reading_the_first_row() -> (
+    None
+):
+    store, engine = make_store()
+    histogram = await store.read_feed_histogram(
+        since=_T0 - timedelta(days=1),
+        until=_T0,
+        earliest=_T0,
+        buckets=2,
+        scope=_ALL_SESSIONS,
+    )
+    assert histogram.counts == [FeedBucket(start=_T0, count=0)]
+    engine.conn.fetchval.assert_not_awaited()
 
 
 if __name__ == "__main__":

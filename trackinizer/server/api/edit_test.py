@@ -14,7 +14,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, new_uuid, set_field_row
-from trackinizer.server.api.conftest import TEST_USER_EMAIL
+from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.wire.bodies import FieldSet
@@ -752,6 +752,40 @@ class TestCoverageRoutesAndCli:
             ).status_code
             == 200
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_app_compare_and_set_preserves_objects_audit_and_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    changed: bool,
+) -> None:
+    route = next(route for route in inquiry_field_routes() if route.column == "app")
+    previous = {"notes": {"text": "before"}}
+    updated = {"notes": {"text": "after"}}
+    body: FieldSet[object] = FieldSet(
+        value=updated,
+        expected=previous,
+        mode="cas",
+        actor="editor",
+        reason="correct",
+    )
+    store, _engine = make_store()
+    change = new_uuid() if changed else None
+    transition = AsyncMock(return_value=change)
+    monkeypatch.setattr(store, "transition_app", transition)
+    target = new_uuid()
+    identity = make_test_identity()
+    assert await _run_compare_and_set(route, target, body, store, identity) == change
+    transition.assert_awaited_once_with(
+        target,
+        expected_from=previous,
+        to=updated,
+        api_key_id=identity.api_key_id,
+        actor="editor",
+        reason="correct",
+    )
 
 
 if __name__ == "__main__":

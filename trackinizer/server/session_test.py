@@ -1,8 +1,10 @@
 """Signed-cookie payload validation at the authentication boundary."""
 
+from collections.abc import Callable
 from typing import Literal
 from uuid import uuid4
 
+from fastapi import Response
 from itsdangerous import URLSafeTimedSerializer
 
 import pytest
@@ -172,6 +174,72 @@ class TestOAuthStateCookie:
         clear_oauth_state_cookie(response)
 
         assert response.deleted == {OAUTH_STATE_COOKIE_NAME: _ATTRIBUTES}
+
+
+def test_issued_session_cookie_round_trips_with_secure_attributes() -> None:
+    response = Response()
+    secret = uuid4().hex
+    user = str(uuid4())
+    set_session_cookie(response, user_id=user, secret=secret, max_age_seconds=120)
+    header = response.headers["set-cookie"]
+    raw = header.split(";", 1)[0].split("=", 1)[1]
+    assert (
+        read_session_cookie(
+            {SESSION_COOKIE_NAME: raw},
+            secret=secret,
+            max_age_seconds=120,
+        )
+        == user
+    )
+    for attribute in ("HttpOnly", "Secure", "SameSite=lax", "Path=/", "Max-Age=120"):
+        assert attribute in header
+    assert read_session_cookie({}, secret=secret, max_age_seconds=120) is None
+
+
+def test_issued_oauth_state_round_trips_without_becoming_a_session() -> None:
+    response = Response()
+    secret = uuid4().hex
+    issue_oauth_state(response, state="nonce", next_url="/trax/?q=x", secret=secret)
+    header = response.headers["set-cookie"]
+    raw = header.split(";", 1)[0].split("=", 1)[1]
+    assert read_oauth_state_cookie(
+        {OAUTH_STATE_COOKIE_NAME: raw},
+        secret=secret,
+    ) == ("nonce", "/trax/?q=x")
+    assert (
+        read_session_cookie(
+            {SESSION_COOKIE_NAME: raw},
+            secret=secret,
+            max_age_seconds=120,
+        )
+        is None
+    )
+    for attribute in (
+        "HttpOnly",
+        "Secure",
+        "SameSite=lax",
+        "Path=/",
+        f"Max-Age={OAUTH_STATE_MAX_AGE_SECONDS}",
+    ):
+        assert attribute in header
+    assert read_oauth_state_cookie({}, secret=secret) is None
+
+
+@pytest.mark.parametrize("clear", [clear_session_cookie, clear_oauth_state_cookie])
+def test_cleared_cookie_expires_with_the_same_security_attributes(
+    clear: Callable[[Response], None],
+) -> None:
+    response = Response()
+    clear(response)
+    header = response.headers["set-cookie"]
+    name = (
+        SESSION_COOKIE_NAME
+        if clear is clear_session_cookie
+        else OAUTH_STATE_COOKIE_NAME
+    )
+    assert header.startswith(f'{name}="";')
+    for attribute in ("Max-Age=0", "HttpOnly", "Secure", "SameSite=lax", "Path=/"):
+        assert attribute in header
 
 
 if __name__ == "__main__":

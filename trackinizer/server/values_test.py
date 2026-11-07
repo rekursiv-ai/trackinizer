@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from trackinizer.server.values import (
     byline_strs,
     canonical_strs,
@@ -68,6 +70,26 @@ class TestModels:
         assert list_or_none(None) is None
         assert list_or_none(("a", "b")) == ["a", "b"]
         assert list_or_none(()) == []
+
+
+@pytest.mark.parametrize("value", ["", " \t\n", [], (), b""])
+def test_empty_optional_shapes_are_absent(value: object) -> None:
+    assert empty_optional_to_none(value) is None
+
+
+@pytest.mark.parametrize("value", [" padded ", [0], (False,), 0, 0.0, False, {}, None])
+def test_nonempty_sequences_and_scalar_values_are_unchanged(value: object) -> None:
+    assert empty_optional_to_none(value) is value
+
+
+def test_list_or_none_preserves_absence_and_materializes_sequences() -> None:
+    assert list_or_none(None) is None
+    assert list_or_none(()) == []
+    original = [1, 2]
+    materialized = list_or_none(original)
+    assert materialized == [1, 2]
+    assert materialized is not original
+    assert list_or_none((2, 1)) == [2, 1]
 
 
 if __name__ == "__main__":

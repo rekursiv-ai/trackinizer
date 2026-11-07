@@ -14,7 +14,7 @@ from starlette.requests import Request
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_conn, set_field_row
-from trackinizer.server import auth
+from trackinizer.server import auth, machine_auth
 from trackinizer.server.auth import LAST_USED_BUMP_INTERVAL_SEC
 from trackinizer.server.machine_auth import (
     MachineIdentity,
@@ -256,6 +256,108 @@ class TestCurrentMachine:
             await current_machine(_host(conn, bearer=minted.token), _MACHINE)
 
         conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_machine_identity_is_looked_up_each_time_but_last_used_is_throttled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    minted = mint_secret(CREDENTIAL_PREFIX)
+    machine_id = uuid.uuid4()
+    engine = FakeEngine()
+    set_field_row(
+        engine.conn,
+        {
+            "secret_sha256": minted.digest,
+            "revoked_at": None,
+            "machine_id": machine_id,
+            "name": "build-box",
+        },
+    )
+    app = FastAPI()
+    app.state.engine = engine
+    request = _host_request(app, token=minted.token)
+    monkeypatch.setattr(auth, "monotonic_clock", lambda: 100.0)
+
+    first = await machine_auth.current_machine(request, machine_id)
+    second = await machine_auth.request_machine(request, machine_id)
+
+    assert (
+        first
+        == second
+        == machine_auth.MachineIdentity(
+            machine_id=machine_id,
+            name="build-box",
+            credential_id=minted.id,
+        )
+    )
+    assert engine.conn.fetchrow.await_count == 2
+    engine.conn.execute.assert_awaited_once_with(
+        "UPDATE machine_credentials SET last_used = now() WHERE id = $1",
+        minted.id,
+    )
+    monkeypatch.setattr(
+        auth,
+        "monotonic_clock",
+        lambda: 100.0 + LAST_USED_BUMP_INTERVAL_SEC,
+    )
+    assert await machine_auth.request_machine(request, machine_id) == first
+    assert engine.conn.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case",
+    ["malformed", "absent", "wrong_secret", "revoked", "foreign"],
+)
+async def test_machine_authentication_refuses_without_touching_last_used(
+    case: str,
+) -> None:
+    minted = mint_secret(CREDENTIAL_PREFIX)
+    machine_id = uuid.uuid4()
+    engine = FakeEngine()
+    if case != "absent":
+        set_field_row(
+            engine.conn,
+            {
+                "secret_sha256": b"wrong" if case == "wrong_secret" else minted.digest,
+                "revoked_at": "revoked"
+                if case in {"wrong_secret", "revoked"}
+                else None,
+                "machine_id": uuid.uuid4() if case == "foreign" else machine_id,
+                "name": "build-box",
+            },
+        )
+    app = FastAPI()
+    app.state.engine = engine
+    request = _host_request(
+        app,
+        token="malformed" if case == "malformed" else minted.token,
+    )
+    if case == "foreign":
+        with pytest.raises(NotFoundError, match="machine is not registered"):
+            await machine_auth.request_machine(request, machine_id)
+    else:
+        with pytest.raises(HTTPException) as caught:
+            await machine_auth.request_machine(request, machine_id)
+        assert (caught.value.status_code, caught.value.detail) == (
+            (410, "machine_revoked")
+            if case == "revoked"
+            else (401, "invalid machine credential")
+        )
+    engine.conn.execute.assert_not_awaited()
+    if case == "malformed":
+        engine.conn.fetchrow.assert_not_awaited()
+
+
+def _host_request(app: FastAPI, *, token: str) -> Request:
+    return Request(
+        {
+            "type": "http",
+            "app": app,
+            "headers": [(b"authorization", f"Bearer {token}".encode())],
+        },
+    )
 
 
 if __name__ == "__main__":
