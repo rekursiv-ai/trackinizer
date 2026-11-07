@@ -26,6 +26,7 @@ from starlette.datastructures import State
 if TYPE_CHECKING:
     import asyncpg
 
+    from trackinizer.mock_test_support import MockCall
     from trackinizer.server.store.core import Store
     from trackinizer.wire.bodies import SubmitBase
 else:
@@ -3214,12 +3215,12 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
         ],
         "edges": [{"from_id": str(peer), "to_id": str(focus), "edge_kind": "narrows"}],
     }
-    assert neighbourhood.await_args is not None
-    assert neighbourhood.await_args.args == (engine.conn, focus)
-    assert neighbourhood.await_args.kwargs["limit"] == (60 if limit is None else limit)
-    assert neighbourhood.await_args.kwargs["hops"] == 2
-    assert neighbourhood.await_args.kwargs["policy"] is get_store(request).access_policy
-    principal = neighbourhood.await_args.kwargs["principal"]
+    call = _neighbourhood_call(neighbourhood)
+    assert call.args == (engine.conn, focus)
+    assert call.kwargs["limit"] == (60 if limit is None else limit)
+    assert call.kwargs["hops"] == 2
+    assert call.kwargs["policy"] is get_store(request).access_policy
+    principal = call.kwargs["principal"]
     assert isinstance(principal, Principal)
     assert principal.email == _TEST_IDENTITY.email
     assert principal.role == _TEST_IDENTITY.role
@@ -3300,6 +3301,14 @@ def test_invalid_override_configuration_becomes_a_client_error(
         web._override_embedder(request, name, dim)
     assert caught.value.status_code == 400
     assert name in caught.value.detail or str(dim) in caught.value.detail
+
+
+def _neighbourhood_call(
+    mock: AsyncMockProtocol[dict[uuid.UUID, int]],
+) -> MockCall:
+    mock.assert_awaited_once()
+    assert mock.await_args is not None
+    return mock.await_args
 
 
 if __name__ == "__main__":
