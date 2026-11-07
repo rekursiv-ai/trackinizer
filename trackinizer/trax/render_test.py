@@ -1445,6 +1445,43 @@ def test_print_rows_json(capsys: pytest.CaptureFixture[str]) -> None:
     assert '"id": "abc"' in out
 
 
+def test_show_recent_history_keeps_only_first_ten_entries() -> None:
+    changes = [{"kind": "updated", "actor": f"history-{index}"} for index in range(11)]
+    text = render.format_show(
+        {
+            "self": {"kind": "Issue", "seq": 17, "status": "active"},
+            "changes": changes,
+        },
+        changes=True,
+    )
+
+    assert re.findall(r"actor=(history-\d+)", text) == [
+        f"history-{index}" for index in range(10)
+    ]
+
+
+def test_edge_recent_history_keeps_only_first_ten_entries() -> None:
+    changes = [
+        {"kind": "edge_added", "actor": f"history-{index}"} for index in range(11)
+    ]
+    text = render.format_edge(
+        {
+            "title": "requires",
+            "endpoints": [
+                {"label": "dependent", "kind": "Issue", "seq": 17},
+                {"label": "prerequisite", "kind": "Issue", "seq": 18},
+            ],
+            "edge": {},
+            "changes": changes,
+        },
+        changes=True,
+    )
+
+    assert re.findall(r"actor=(history-\d+)", text) == [
+        f"history-{index}" for index in range(10)
+    ]
+
+
 def test_format_edge_includes_changes_section() -> None:
     view: dict[str, object] = {
         "title": "blocked_by",

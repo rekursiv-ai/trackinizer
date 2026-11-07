@@ -166,8 +166,36 @@ class TestFraming:
             left.close()
             right.close()
 
+    def test_accepts_the_maximum_frame_length_before_reading_its_body(self) -> None:
+        left, right = socket.socketpair()
+        try:
+            left.sendall((64 * 1024 * 1024).to_bytes(4, "big"))
+            left.shutdown(socket.SHUT_WR)
+            with pytest.raises(ConnectionError):
+                read_frame(right)
+        finally:
+            left.close()
+            right.close()
+
 
 class TestRequestPayload:
+    @pytest.mark.parametrize("isatty", [False, True])
+    def test_construction_preserves_the_callers_terminal_state(
+        self,
+        isatty: bool,
+    ) -> None:
+        request = Request(
+            argv=("issue",),
+            cwd="/caller",
+            env={},
+            isatty=isatty,
+            columns=80,
+            protocol_version=PROTOCOL_VERSION,
+            source_version="source",
+        )
+
+        assert request.isatty is isatty
+
     def test_rejects_unknown_protocol_version(self) -> None:
         raw = json.dumps({"protocol_version": PROTOCOL_VERSION + 1, "argv": []})
         with pytest.raises(ProtocolVersionError, match="protocol version"):

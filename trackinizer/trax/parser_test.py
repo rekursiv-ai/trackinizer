@@ -266,6 +266,29 @@ def test_kindless_query_binds_ranges_after_explicit_kinds() -> None:
     }
 
 
+@pytest.mark.parametrize("op", ["isnull", "notnull"])
+def test_export_selector_presence_clauses_preserve_neighbors(op: FilterOp) -> None:
+    assert parse_export_selector(
+        [
+            "label",
+            "is",
+            "Research",
+            "kind",
+            op,
+            "owner",
+            "is",
+            "Ada",
+            "subscriber",
+            op,
+        ],
+    ) == (
+        Filter(field="labels", op="is", value="Research"),
+        Filter(field="issue_kind", op=op, value=""),
+        Filter(field="owner", op="is", value="Ada"),
+        Filter(field="subscribers", op=op, value=""),
+    )
+
+
 def test_parse_list_query_filter_missing_value_raises() -> None:
 
     with pytest.raises(ClientError, match="expected value for filter field"):
