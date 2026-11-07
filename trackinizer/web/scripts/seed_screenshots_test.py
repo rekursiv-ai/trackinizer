@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import itertools
@@ -267,6 +267,30 @@ def test_an_unstamped_turn_is_a_bug_in_the_seed() -> None:
         seed_screenshots._stamp(UserMessage(content="hi"))
 
 
+def test_a_session_starts_with_its_title_routing_and_first_turn_time() -> None:
+    session = seed_screenshots._Session(
+        actor="benchmark",
+        room="tokenizer",
+        title="Measure the cache",
+        produced_by="cache-issue",
+        turns=(
+            UserMessage(timestamp=_NOW.isoformat(), content="Run the benchmark"),
+            UserMessage(
+                timestamp=(_NOW + timedelta(seconds=1)).isoformat(),
+                content="Report the results",
+            ),
+        ),
+    )
+
+    assert seed_screenshots._start(session) == SessionStart(
+        cli="claude",
+        title="Measure the cache",
+        actor="benchmark",
+        rooms=["tokenizer"],
+        started=_NOW,
+    )
+
+
 def test_two_seeds_write_the_same() -> None:
     first, first_shots = _seeded()
     second, second_shots = _seeded()
@@ -388,6 +412,8 @@ class _FakeClient:
         held = self.sessions[session_id][1]
         held.extend(records)
         assert manifest is not None
+        assert name == manifest.name
+        assert manifest.format == self.sessions[session_id][0].cli
         assert manifest.records == len(held), "a manifest counts all the part holds"
 
     def add_edge(

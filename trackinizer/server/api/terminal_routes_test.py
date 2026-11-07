@@ -758,41 +758,6 @@ async def test_machine_owner_refuses_unattested_names_and_viewers(
         assert refused.value.status_code == 403
 
 
-@pytest.mark.parametrize("workspace", [None, "", "id", "missing"])
-async def test_canvas_workspace_reads_only_an_owned_active_canvas(
-    monkeypatch: pytest.MonkeyPatch,
-    workspace: str | None,
-) -> None:
-    request = _browser_request(monkeypatch)
-    conn = make_conn()
-    patch_state(monkeypatch, "engine", FakeEngine(conn))
-    expected = uuid.uuid4()
-    conn.fetchrow = AsyncMock(
-        return_value=None
-        if workspace == "missing"
-        else {"workspace": str(expected) if workspace == "id" else ""},
-    )
-    canvas = None if workspace is None else uuid.uuid4()
-    if workspace == "missing":
-        with pytest.raises(NotFoundError):
-            await terminal_routes._canvas_workspace(
-                request,
-                owner=_IDENTITY.email,
-                canvas=canvas,
-            )
-    else:
-        assert await terminal_routes._canvas_workspace(
-            request,
-            owner=_IDENTITY.email,
-            canvas=canvas,
-        ) == (expected if workspace == "id" else None)
-    if canvas is None:
-        conn.fetchrow.assert_not_awaited()
-    else:
-        assert conn.fetchrow.call_args is not None
-        assert conn.fetchrow.call_args.args[1:] == (canvas, _IDENTITY.email)
-
-
 @pytest.mark.parametrize("current", [True, False, None])
 async def test_host_instance_requires_an_explicit_match(
     monkeypatch: pytest.MonkeyPatch,

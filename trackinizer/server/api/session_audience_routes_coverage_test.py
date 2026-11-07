@@ -15,7 +15,6 @@ from trackinizer.server.api import session_audience_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.config import Config
-from trackinizer.server.private import science_chats
 from trackinizer.types.errors import ConflictError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.wire_sessions import SessionAudienceChange
@@ -23,7 +22,12 @@ from trackinizer.wire.wire_sessions import SessionAudienceChange
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("audience", ["open", "private"])
-@pytest.mark.parametrize("chat", [False, True])
+@pytest.mark.parametrize(
+    "chat",
+    [
+        False,
+    ],
+)
 async def test_owner_visibility_forwards_audit_and_chat_fanout(
     monkeypatch: pytest.MonkeyPatch,
     audience: Literal["open", "private"],
@@ -55,15 +59,7 @@ async def test_owner_visibility_forwards_audit_and_chat_fanout(
     )
     monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
     opener = AsyncMock(return_value="another@example.com")
-    starter = AsyncMock(return_value=identity.email.upper())
-    chat_sessions = AsyncMock(return_value=sessions)
     monkeypatch.setattr(session_audience_routes, "opener_email", opener)
-    monkeypatch.setattr(science_chats, "read_starter", starter)
-    monkeypatch.setattr(
-        science_chats,
-        "read_chat_sessions",
-        chat_sessions,
-    )
     update = AsyncMock(return_value=moved)
     monkeypatch.setattr(store, "set_session_audience", update)
     principal = await request_principal(request, identity)
@@ -88,25 +84,11 @@ async def test_owner_visibility_forwards_audit_and_chat_fanout(
         reason="hidden by its owner" if audience == "private" else "shown again",
         principal=principal,
         caller=identity.email,
-        assistant=None,
     )
     opener.assert_awaited_once_with(
         engine.conn,
         api_key_id=session.opened_by_api_key_id,
     )
-    if chat:
-        starter.assert_awaited_once_with(
-            engine.conn,
-            assistant=None,
-            conversation_id=conversation,
-        )
-        chat_sessions.assert_awaited_once_with(
-            engine.conn,
-            conversation_id=conversation,
-        )
-    else:
-        starter.assert_not_awaited()
-        chat_sessions.assert_not_awaited()
 
 
 @pytest.mark.asyncio

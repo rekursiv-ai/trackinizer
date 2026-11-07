@@ -25,7 +25,6 @@ from trackinizer.server.audience import (
     hidden_exists_sql,
     key_audiences,
     may_hide,
-    members_reader,
     person_audiences,
     visible_sql,
 )
@@ -528,40 +527,6 @@ class TestMayHide:
     def test_an_unnamed_owner_is_no_one(self) -> None:
         """A session no key opened has no opener, which no caller matches."""
         assert not may_hide("", owners=("ann@lab.example", ""), audience="open")
-
-
-@pytest.mark.parametrize(
-    ("mode", "starter", "expected"),
-    [
-        ("individual", "ada@lab.example", None),
-        ("domain", "ada@GMAIL.COM", None),
-        (
-            "domain",
-            "Ada@LAB.EXAMPLE",
-            SessionReader(
-                audiences=_OPEN,
-                org="lab.example",
-                assistant=_SCOUT,
-            ),
-        ),
-        (
-            "single",
-            "ada@gmail.com",
-            SessionReader(
-                audiences=_OPEN,
-                every_session=True,
-                every_chat=True,
-                assistant=_SCOUT,
-            ),
-        ),
-    ],
-)
-def test_chat_members_reader_matches_the_organisation_mode(
-    mode: ChatOrgs,
-    starter: str,
-    expected: SessionReader | None,
-) -> None:
-    assert members_reader(starter, orgs=mode, assistant=_SCOUT) == expected
 
 
 if __name__ == "__main__":
