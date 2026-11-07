@@ -165,6 +165,24 @@ class TestTokenEnvironment:
 
         assert _resolve() == Target(url="http://env:1", author="", api_key="")
 
+    @pytest.mark.parametrize(
+        "bad_key",
+        [f"{_KEY} trailing", f"{_KEY}\n", f"{_KEY}\u00e9"],
+        ids=["space", "newline", "non-ascii"],
+    )
+    def test_a_malformed_token_is_refused_without_echoing_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        bad_key: str,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_TOKEN", bad_key)
+
+        with pytest.raises(ClientError, match="printable ASCII") as caught:
+            _ = _resolve()
+
+        assert _KEY not in str(caught.value)
+
     def test_profile_flag_needs_no_url_for_an_unused_token(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -241,6 +259,20 @@ def test_a_server_has_one_directory_named_by_its_host_and_port(
     expected: str,
 ) -> None:
     assert connection.server_dir(url) == expected
+
+
+def test_connect_flags_parse_profile_host_and_port() -> None:
+    parser = argparse.ArgumentParser()
+    connection.connect_flags(parser)
+
+    assert parser.parse_args([]) == argparse.Namespace(
+        profile=None,
+        host=None,
+        port=None,
+    )
+    assert parser.parse_args(
+        ["--profile", "prod", "--host", "h", "--port", "9"],
+    ) == argparse.Namespace(profile="prod", host="h", port=9)
 
 
 def test_a_url_that_names_no_host_has_no_directory() -> None:

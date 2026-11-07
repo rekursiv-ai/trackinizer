@@ -17,7 +17,14 @@ from fastapi import HTTPException
 
 import pytest
 
-from trackinizer.conftest import make_conn, make_store, set_field_row
+from trackinizer.conftest import (
+    FakeEngine,
+    RecordingPolicy,
+    make_conn,
+    make_store,
+    set_field_row,
+)
+from trackinizer.server.access_policy import AccessDeniedError, Resource
 from trackinizer.server.api.conftest import (
     OPENER,
     SCOUT,
@@ -33,8 +40,11 @@ from trackinizer.server.api.session_access import (
     require_readable,
     require_row_account,
     require_row_purge,
+    require_row_write,
     require_session_access,
     require_session_id_change,
+    require_session_row_write,
+    require_session_write_access,
     resolve_asker,
     session_reader,
 )
@@ -42,6 +52,8 @@ from trackinizer.server.api.session_identity import Asker
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, Role
 from trackinizer.server.config import Assistant, ChatOrgs, Config
+from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.store.core import Store
 from trackinizer.types.errors import NotFoundError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import AUDIENCES
@@ -52,6 +64,10 @@ if TYPE_CHECKING:
     from unittest.mock import AsyncMock
 
     from fastapi import Request
+
+    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.mock_test_support import MockConnection
+    from trackinizer.server.access_policy import Principal
 
 
 MODES: tuple[SessionAccess, ...] = ("read", "write", "drain", "input")
@@ -692,6 +708,153 @@ class TestRequireReadable:
         conn.fetchval.assert_not_awaited()
 
 
+class TestRequireSessionWriteAccess:
+    """A viewer writes only the session its own key opened; a writer any."""
+
+    def test_a_viewer_writes_the_session_its_key_opened(self) -> None:
+        viewer = replace(make_caller("open", key=OPENER), role="viewer")
+
+        require_session_write_access(
+            viewer,
+            AgentSession(opened_by_api_key_id=OPENER),
+        )
+
+    @pytest.mark.parametrize("key", [None, uuid.UUID(int=7)])
+    def test_a_viewer_without_the_opening_key_is_refused(
+        self,
+        key: uuid.UUID | None,
+    ) -> None:
+        viewer = replace(make_caller("open", key=key), role="viewer")
+
+        with pytest.raises(HTTPException) as refused:
+            require_session_write_access(
+                viewer,
+                AgentSession(opened_by_api_key_id=OPENER),
+            )
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "Own session key required",
+        )
+
+    def test_a_writer_needs_no_key(self) -> None:
+        require_session_write_access(
+            make_caller("open", key=None),
+            AgentSession(opened_by_api_key_id=OPENER),
+        )
+
+
+class TestRowWrite:
+    """The access policy is asked about an existing row, inside a transaction."""
+
+    @pytest.mark.asyncio
+    async def test_the_policy_is_asked_about_the_row_and_its_account(self) -> None:
+        policy = RecordingPolicy()
+        request, conn = _policed(policy, account="ada@example.com")
+        target_id = uuid.uuid4()
+
+        await require_row_write(request, make_caller("open"), target_id)
+
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1] == target_id
+        principal, resource, action = cast(
+            "tuple[Principal, Resource, str]",
+            policy.of("check")[0],
+        )
+        assert principal.email == "caller@example.com"
+        assert principal.groups == policy.groups_of
+        assert resource == Resource(
+            kind="inquiry",
+            id=str(target_id),
+            account="ada@example.com",
+        )
+        assert action == "write"
+        assert policy.sent[-1][-1] == "BEGIN"
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_reaches_the_caller(self) -> None:
+        request, _conn = _policed(
+            RecordingPolicy(deny_writes=True),
+            account="ada@example.com",
+        )
+
+        with pytest.raises(AccessDeniedError):
+            await require_row_write(request, make_caller("open"), uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_gone_is_not_asked_about(self) -> None:
+        policy = RecordingPolicy(deny_writes=True)
+        request, _conn = _policed(policy, account=None)
+
+        await require_row_write(request, make_caller("open"), uuid.uuid4())
+
+        assert policy.of("check") == []
+
+
+class TestRequireSessionRowWrite:
+    """A write by id to a session needs its audience; other rows pass."""
+
+    @pytest.mark.parametrize("row", [None, {"kind": "Issue", "account": "a@b.c"}])
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_no_session_passes_without_the_chat_rule(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        row: dict[str, object] | None,
+    ) -> None:
+        await require_session_row_write(_serving(row), make_caller(), uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_a_session_the_caller_neither_opened_nor_reads_is_hidden(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        request = _serving(
+            {"kind": "AgentSession", "account": "ada@example.com", "audience": "staff"},
+        )
+
+        with pytest.raises(HTTPException) as refused:
+            await require_session_row_write(request, make_caller("open"), uuid.uuid4())
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            {"code": "session_audience", "audience": "staff"},
+        )
+
+    @pytest.mark.parametrize(
+        ("caller", "audience"),
+        [(make_caller("open"), "open"), (make_caller(key=OPENER), "staff")],
+        ids=["reads it", "opened it"],
+    )
+    @pytest.mark.asyncio
+    async def test_a_session_it_reads_or_opened_goes_on_to_the_chat_rule(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caller: AuthIdentity,
+        audience: str,
+    ) -> None:
+        request = _serving(
+            {
+                "kind": "AgentSession",
+                "account": "ada@example.com",
+                "audience": audience,
+                "cli_session_id": "claude:abc",
+                "opener": OPENER,
+            },
+        )
+        target_id = uuid.uuid4()
+
+        await require_session_row_write(request, caller, target_id)
+
+
+@pytest.mark.asyncio
+async def test_purging_a_row_that_is_gone_is_left_to_the_route() -> None:
+    await require_row_purge(
+        _serving(None),
+        make_caller("open", email="bob@example.com"),
+        uuid.uuid4(),
+    )
+
+
 def _opener(pin: str | None, *opens: str) -> AuthIdentity:
     """Return a key pinned to ``pin`` whose owner opens into ``opens``."""
     return AuthIdentity(
@@ -800,6 +963,24 @@ def _serving(row: dict[str, object] | None) -> Request:
     store, _engine = make_store(conn)
     state = SimpleNamespace(store=store, config=Config())
     return cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
+
+
+def _policed(
+    policy: RecordingPolicy,
+    *,
+    account: str | None,
+) -> tuple[Request, MockConnection]:
+    """Return a request whose store asks ``policy`` and finds a row held by ``account``."""
+    conn = make_conn()
+    conn.fetchval.return_value = account
+    store = Store(
+        cast("DatabaseEngine", FakeEngine(conn)),
+        embed=StubEmbedder(),
+        access_policy=policy,
+    )
+    state = SimpleNamespace(store=store, config=Config())
+    request = SimpleNamespace(app=SimpleNamespace(state=state), state=SimpleNamespace())
+    return cast("Request", request), conn
 
 
 if __name__ == "__main__":

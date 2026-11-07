@@ -7,10 +7,13 @@ import uuid
 import pytest
 
 from trackinizer.server.auth import AudienceCeilingError, AuthIdentity
+from trackinizer.server.config import Assistant
 from trackinizer.server.service_accounts import (
+    require_assistant_grant,
     require_grantable,
     service_token_pin,
 )
+from trackinizer.wire.audience import AUDIENCES
 
 
 _OPEN = frozenset({"open"})
@@ -92,6 +95,34 @@ class TestServiceTokenPin:
         assert service_token_pin(_BOTH, minter=pinned, open_into=None) == "open"
         with pytest.raises(AudienceCeilingError):
             _ = service_token_pin(_BOTH, minter=pinned, open_into="staff")
+
+
+class TestRequireAssistantGrant:
+    _ASSISTANT = Assistant(actor="scout", email="scout@example.com")
+
+    def test_handing_on_the_assistant_needs_every_audience(self) -> None:
+        require_assistant_grant(
+            _caller(reads=AUDIENCES),
+            email="scout@example.com",
+            assistant=self._ASSISTANT,
+        )
+        with pytest.raises(AudienceCeilingError, match="reads"):
+            require_assistant_grant(
+                _caller(reads=_BOTH),
+                email="scout@example.com",
+                assistant=self._ASSISTANT,
+            )
+
+    @pytest.mark.parametrize("assistant", [None, _ASSISTANT])
+    def test_another_account_or_no_assistant_asks_nothing(
+        self,
+        assistant: Assistant | None,
+    ) -> None:
+        require_assistant_grant(
+            _caller(reads=frozenset()),
+            email="campaign@service.invalid" if assistant else "scout@example.com",
+            assistant=assistant,
+        )
 
 
 class TestRequireGrantable:

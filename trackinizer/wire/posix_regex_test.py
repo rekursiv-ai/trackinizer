@@ -16,11 +16,14 @@ from __future__ import annotations
 import pytest
 
 from trackinizer.wire.posix_regex import (
+    ParenExtension,
     escapes,
     has_posix_bracket_construct,
     has_python_named_group,
     live_indices,
     matchable_indices,
+    paren_extensions,
+    posix_pattern,
 )
 
 
@@ -269,6 +272,57 @@ class TestPosixBracketConstructs:
         # ``\[`` is a literal, so the ``[:digit:]`` that follows is outside any
         # bracket expression -- and live PG16 agrees, matching neither digit.
         assert has_posix_bracket_construct(r"\[[:digit:]]") is False
+
+
+class TestParenExtensions:
+    def test_each_group_carries_its_body_and_scope(self) -> None:
+        assert list(paren_extensions("(?i)a(?=b)(?x:c)")) == [
+            ParenExtension(body="i", scoped=False, start=0),
+            ParenExtension(body="=b", scoped=False, start=5),
+            ParenExtension(body="x", scoped=True, start=10),
+        ]
+
+    @pytest.mark.parametrize("pattern", ["[(?a)]", "(?#(?a)a", "(?n", "a(?"])
+    def test_inert_or_unterminated_openers_are_not_groups(self, pattern: str) -> None:
+        assert list(paren_extensions(pattern)) == []
+
+    def test_a_named_group_is_not_a_paren_extension(self) -> None:
+        # The scan reports ``(?P<`` as a NamedGroup and resumes after it, so the
+        # bracket that follows is still recognised.
+        assert list(paren_extensions("(?P<x>a)")) == []
+        assert live_indices("(?P<x>a)[b]") == frozenset(range(11)) - {8, 9}
+
+
+class TestPosixPattern:
+    r"""Rewrites POSIX-only spellings, and only where they are live syntax."""
+
+    @pytest.mark.parametrize(
+        ("pattern", "expected"),
+        [
+            pytest.param("abc", "(?s)abc", id="plain-gains-dotall"),
+            pytest.param("a$", r"(?s)a\Z", id="dollar-anchors-at-end"),
+            pytest.param("(?m)a$", "(?s)(?m)a$", id="multiline-keeps-dollar"),
+            pytest.param("(?=m)m$", r"(?s)(?=m)m\Z", id="lookahead-is-not-a-flag"),
+            pytest.param("[$]", "(?s)[$]", id="bracket-dollar-is-a-member"),
+            pytest.param(r"a\$", r"(?s)a\$", id="escaped-dollar-is-literal"),
+            pytest.param(r"\ya\Y", r"(?s)\ba\B", id="word-boundaries"),
+            pytest.param(
+                r"\mfoo\M",
+                r"(?s)(?<!\w)(?=\w)foo(?<=\w)(?!\w)",
+                id="word-start-and-end",
+            ),
+            pytest.param(r"\d+", "(?s)[0-9]+", id="digit-outside-bracket"),
+            pytest.param(r"[\dx]", "(?s)[0-9x]", id="digit-inside-bracket"),
+            pytest.param(r"[\D]", r"(?s)[\D]", id="negated-in-bracket-untouched"),
+            pytest.param(r"\\m", r"(?s)\\m", id="escaped-backslash-then-m"),
+            pytest.param(r"\w", r"(?s)\w", id="agreeing-escape-untouched"),
+        ],
+    )
+    def test_rewrites(self, pattern: str, expected: str) -> None:
+        assert posix_pattern(pattern) == expected
+
+    def test_dollar_and_escape_rewrites_apply_in_one_pass(self) -> None:
+        assert posix_pattern(r"\ya$") == r"(?s)\ba\Z"
 
 
 if __name__ == "__main__":

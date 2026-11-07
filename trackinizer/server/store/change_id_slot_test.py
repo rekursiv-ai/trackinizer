@@ -2,16 +2,25 @@
 
 from __future__ import annotations
 
+from contextvars import Context
+from typing import TYPE_CHECKING
+
 import asyncio
 
 import pytest
 
 from trackinizer.conftest import make_conn, make_store, new_uuid
 from trackinizer.server.store.change_id_slot import (
+    _CLIENT_CHANGE_ID,
+    _consume_client_change_id,
     _peek_client_change_id,
     set_client_change_id,
 )
 from trackinizer.types.cost import Cost
+
+
+if TYPE_CHECKING:
+    from uuid import UUID
 
 
 class TestClientChangeIdGather:
@@ -78,6 +87,30 @@ class TestClientChangeIdGather:
 
         _, seen = await asyncio.gather(clearer(), peeker())
         assert seen is None
+
+
+class TestSlotWithoutHolder:
+    """A context that never set a key has nothing to clear, peek, or consume."""
+
+    def test_clear_without_holder_leaves_slot_empty(self) -> None:
+        assert Context().run(_clear_then_peek) == (None, None)
+
+    def test_consume_without_holder_returns_none(self) -> None:
+        assert Context().run(_consume_client_change_id) is None
+
+    def test_consume_returns_key_once_then_none(self) -> None:
+        key = new_uuid()
+        assert Context().run(_set_then_consume_twice, key) == (key, None)
+
+
+def _clear_then_peek() -> tuple[object, object]:
+    set_client_change_id(None)
+    return _CLIENT_CHANGE_ID.get(), _peek_client_change_id()
+
+
+def _set_then_consume_twice(key: UUID) -> tuple[object, object]:
+    set_client_change_id(key)
+    return _consume_client_change_id(), _consume_client_change_id()
 
 
 if __name__ == "__main__":

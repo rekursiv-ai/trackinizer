@@ -5,6 +5,8 @@ from __future__ import annotations
 from trackinizer.server.values import (
     byline_strs,
     canonical_strs,
+    empty_optional_to_none,
+    list_or_none,
     manifest_bound,
     vec_to_text,
 )
@@ -49,6 +51,23 @@ class TestModels:
         )
         assert byline_strs([]) == ()
         assert byline_strs(["   "]) == ()
+
+    def test_an_empty_string_or_sequence_is_none_and_anything_else_passes(
+        self,
+    ) -> None:
+        assert [empty_optional_to_none(v) for v in ("", "  \n", (), list[str]())] == [
+            None,
+        ] * 4
+        assert empty_optional_to_none(" kept ") == " kept "
+        assert empty_optional_to_none(("a",)) == ("a",)
+        assert empty_optional_to_none(0) == 0
+        assert empty_optional_to_none(0.0) == 0.0
+        assert empty_optional_to_none(None) is None
+
+    def test_list_or_none_keeps_none_and_lists_any_other_sequence(self) -> None:
+        assert list_or_none(None) is None
+        assert list_or_none(("a", "b")) == ["a", "b"]
+        assert list_or_none(()) == []
 
 
 if __name__ == "__main__":

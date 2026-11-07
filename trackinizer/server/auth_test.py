@@ -111,6 +111,18 @@ class TestHashSecret:
         int(parts[2])
         int(parts[3])
 
+    def test_the_prefix_miss_hash_is_one_unguessable_scrypt_hash_per_process(
+        self,
+    ) -> None:
+        # Cached per process, so another file's miss may have filled it first.
+        auth._dummy_verify_hash.cache_clear()
+
+        sentinel = auth._dummy_verify_hash()
+
+        assert sentinel.startswith("scrypt$")
+        assert auth._dummy_verify_hash() is sentinel
+        assert not verify_secret("", sentinel)
+
     def test_verify_rejects_malformed_hash(self) -> None:
         # Corrupted rows should surface as ``False``, never as an
         # exception that would 500 the auth middleware.

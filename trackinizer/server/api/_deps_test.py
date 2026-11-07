@@ -28,15 +28,24 @@ import pytest
 from trackinizer.conftest import make_conn, make_store
 from trackinizer.server.api import _deps
 from trackinizer.server.api._deps import (
+    auth_is_disabled,
     get_assistant,
     get_chat_orgs,
+    get_exec_hub,
+    get_inbound,
     get_relay,
+    get_replays,
     get_secrets,
+    get_staff,
+    get_store,
+    get_terminal_hub,
     nudge_streams,
     tag_kind,
     tag_row,
+    terminal_hub,
 )
 from trackinizer.server.config import Assistant, Config
+from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.terminals import Terminal
 from trackinizer.types import inquiries
 from trackinizer.types.cost import Cost
@@ -255,6 +264,89 @@ def test_get_secrets_is_the_apps_backend_or_none() -> None:
     app = FastAPI()
     app.state.secrets = None
     assert get_secrets(_request(app)) is None
+
+
+def test_get_store_and_get_inbound_are_the_apps() -> None:
+    app = FastAPI()
+    store, _engine = make_store(make_conn())
+    inbound = InboundQueue()
+    app.state.store = store
+    app.state.inbound = inbound
+
+    assert get_store(_request(app)) is store
+    assert get_inbound(_request(app)) is inbound
+
+
+def test_get_replays_makes_one_and_replaces_a_stranger() -> None:
+    app = FastAPI()
+    app.state.replays = "not replays"
+
+    replays = get_replays(_request(app))
+
+    assert get_replays(_request(app)) is replays
+
+
+def test_get_exec_hub_makes_one_hub_and_keeps_it() -> None:
+    app = FastAPI()
+
+    hub = get_exec_hub(_request(app))
+
+    assert get_exec_hub(_request(app)) is hub
+
+
+class TestTerminalHub:
+    def test_one_hub_per_app_with_the_configs_stun(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store(make_conn())
+        app.state.config = Config(terminal_stun=("stun:stun.example.com:3478",))
+
+        hub = get_terminal_hub(_request(app))
+
+        assert hub.ice_servers == ("stun:stun.example.com:3478",)
+        assert terminal_hub(app) is hub
+
+    def test_no_stun_without_a_config(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store(make_conn())
+
+        assert terminal_hub(app).ice_servers == ()
+
+    @pytest.mark.asyncio
+    async def test_liveness_asks_the_apps_store(self) -> None:
+        conn = make_conn()
+        conn.fetchval.return_value = False
+        app = FastAPI()
+        app.state.store, _engine = make_store(conn)
+        term = Terminal(
+            id=uuid4(),
+            user="ada@example.com",
+            machine_id=uuid4(),
+            machine="gx10",
+            rows=24,
+            cols=80,
+            opened_at=0.0,
+        )
+
+        assert await terminal_hub(app)._still_alive(term) is False
+
+        assert conn.fetchval.await_args is not None
+        assert conn.fetchval.await_args.args[1] == term.machine_id
+
+
+def test_auth_is_disabled_only_when_the_config_says_so() -> None:
+    app = FastAPI()
+    assert auth_is_disabled(_request(app)) is False
+    app.state.config = Config()
+    assert auth_is_disabled(_request(app)) is False
+    app.state.config = Config(auth_disabled=True)
+    assert auth_is_disabled(_request(app)) is True
+
+
+def test_get_staff_is_the_configs_patterns_or_nobody() -> None:
+    app = FastAPI()
+    assert get_staff(_request(app)) == ()
+    app.state.config = Config(staff=("*@example.com",))
+    assert get_staff(_request(app)) == ("*@example.com",)
 
 
 @pytest.mark.asyncio

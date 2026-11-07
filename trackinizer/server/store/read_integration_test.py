@@ -8,7 +8,7 @@ import pytest
 
 from trackinizer.server.store.store_test_support import fetch_value
 from trackinizer.types.cost import Cost
-from trackinizer.types.inquiries import Paper
+from trackinizer.types.inquiries import Issue, Paper
 from trackinizer.wire.bodies import (
     Citation,
     SubmitBelief,
@@ -49,6 +49,30 @@ class TestAgainstPostgres:
         nxt2 = await integ_store.next_issue()
         assert nxt2 is not None
         assert nxt2.title == "dependent"
+
+    async def test_get_inquiry_materializes_the_row_with_both_edge_directions(
+        self,
+        integ_store: Store,
+    ) -> None:
+        blocker_id = await integ_store.submit_issue(
+            SubmitIssue(account="tester@example.com", title="blocker"),
+        )
+        dependent_id = await integ_store.submit_issue(
+            SubmitIssue(
+                account="tester@example.com",
+                title="dependent",
+                requires=[blocker_id],
+            ),
+        )
+
+        dependent = await integ_store.get_inquiry(dependent_id)
+        blocker = await integ_store.get_inquiry(blocker_id)
+
+        assert isinstance(dependent, Issue)
+        assert isinstance(blocker, Issue)
+        assert (dependent.id, dependent.title) == (dependent_id, "dependent")
+        assert [edge.id for edge in dependent.requires] == [blocker_id]
+        assert [edge.id for edge in blocker.required_by] == [dependent_id]
 
     async def test_filter_by_venue(
         self,

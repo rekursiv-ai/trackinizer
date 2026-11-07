@@ -10,9 +10,11 @@ records route reads.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, TypedDict
 from unittest.mock import (
     AsyncMock,
+    call,
 )
 
 import uuid
@@ -41,6 +43,7 @@ from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.store.session_ir import RecentSessionTurn, SessionManifest
 from trackinizer.types.inquiries import AgentSession, Issue
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_session_ir import (
     CLIENT_OUTDATED,
 )
@@ -246,6 +249,95 @@ class TestReadUsage:
         assert response.status_code == 200, response.text
         assert from_plain(response.json(), dict[str, object])["usd"] == 1.0
         assert [call.kwargs["part"] for call in read.await_args_list] == [0, 1]
+
+    def test_a_full_page_reads_on_after_its_last_record(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="sagent",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
+        )
+        monkeypatch.setattr(
+            store,
+            "read_session_manifests",
+            AsyncMock(
+                return_value=[
+                    SessionManifest(
+                        part=0,
+                        name="p0",
+                        metadata=immutable({}),
+                        ir_id=uuid.uuid4(),
+                        format="sagent",
+                        records=MAX_LIST_LIMIT + 1,
+                    ),
+                ],
+            ),
+        )
+        full = [_row(MAX_LIST_LIMIT - 1)] * MAX_LIST_LIMIT
+        spent = _row(MAX_LIST_LIMIT, TokenUsage(info=immutable({"spend_usd": 0.5})))
+        read = AsyncMock(side_effect=[full, [spent]])
+        monkeypatch.setattr(store, "read_session_records", read)
+
+        response = client.get(f"/api/sessions/{uuid.uuid4()}/usage")
+
+        assert response.status_code == 200, response.text
+        assert from_plain(response.json(), dict[str, object])["usd"] == 0.5
+        assert [call.kwargs["after_idx"] for call in read.await_args_list] == [
+            -1,
+            MAX_LIST_LIMIT - 1,
+        ]
+
+
+class TestAppendRevives:
+    @pytest.mark.parametrize("ended", [True, False])
+    def test_an_ended_session_that_uploads_again_is_reopened_first(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        *,
+        ended: bool,
+    ) -> None:
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                    ended=datetime(2026, 1, 2, tzinfo=UTC) if ended else None,
+                ),
+            ),
+        )
+        revive = AsyncMock(return_value=True)
+        monkeypatch.setattr(session_ir_routes, "revive_if_reaped", revive)
+        monkeypatch.setattr(
+            store,
+            "append_session_records",
+            AsyncMock(return_value=(0, 0, 0)),
+        )
+        session_id = uuid.uuid4()
+
+        response = client.post(
+            f"/api/sessions/{session_id}/records",
+            json={"records": []},
+        )
+
+        assert response.status_code == 200, response.text
+        assert revive.await_args_list == (
+            [call(store, session_id=session_id)] if ended else []
+        )
 
 
 class TestReadRecords:

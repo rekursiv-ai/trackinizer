@@ -139,6 +139,11 @@ def test_read_profile_ignores_comments_and_blank_lines() -> None:
     assert p.url == "http://x.example"
 
 
+def test_read_profile_of_an_unsaved_name_raises() -> None:
+    with pytest.raises(ClientError, match="profile 'ghost' not found"):
+        profile.read_profile("ghost")
+
+
 def test_read_profile_missing_url_raises() -> None:
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
         "author=bob\n",
