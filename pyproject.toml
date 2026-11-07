@@ -236,7 +236,7 @@ exclude = [
     "trackinizer/server/asks_test_support.py",
     "trackinizer/server/embedders/qwen_fakes.py",
 ]
-artifacts = ["trackinizer/web/dist/**"]
+artifacts = ["trackinizer/web/dist/**", "trackinizer/py.typed"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "trackinizer/web/hatch_build.py"

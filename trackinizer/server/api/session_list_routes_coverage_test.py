@@ -52,7 +52,6 @@ async def test_list_forwards_scoped_reader_policy_and_limits(
     listing.assert_awaited_once_with(
         engine,
         email=identity.email,
-        user_id=identity.user_id,
         reader=session_reader(request, identity),
         inbound=inbound,
         days=2,
