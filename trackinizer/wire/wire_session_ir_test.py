@@ -10,7 +10,7 @@ from treekle import immutable
 
 import pytest
 
-from trackinizer.sagent.session.types import UserMessage
+from trackinizer.sagent.session.types import Thinking, UserMessage
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsRequest,
@@ -42,18 +42,37 @@ def test_frozen_json_serializes_as_plain_json() -> None:
     assert part.model_dump(mode="json")["metadata"] == _PLAIN
 
 
-def test_a_stored_row_crosses_the_wire_and_back_unchanged() -> None:
+@pytest.mark.parametrize(
+    ("record", "kind"),
+    [
+        (UserMessage(content="hello"), "UserMessage"),
+        (
+            Thinking(
+                context_id=3,
+                timestamp="2026-11-07T12:00:00Z",
+                content="reasoning",
+                encrypted="c2VhbGVk",
+            ),
+            "Thinking",
+        ),
+    ],
+)
+def test_a_stored_row_crosses_the_wire_and_back_unchanged(
+    record: UserMessage | Thinking,
+    kind: str,
+) -> None:
     session_id = uuid4()
     row = SessionRecordRow.of(
         session_id=session_id,
         part=2,
         idx=5,
-        record=UserMessage(content="hello"),
+        record=record,
+        model="acme/reasoner",
     )
 
-    body = RecordBody.of(row)
+    body = RecordBody.model_validate_json(RecordBody.of(row).model_dump_json())
 
-    assert (body.idx, body.kind, body.text) == (5, "UserMessage", row.text)
+    assert (body.idx, body.kind, body.text) == (5, kind, row.text)
     assert body.row(session_id, 2) == row
 
 

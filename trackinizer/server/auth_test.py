@@ -36,6 +36,7 @@ from trackinizer.conftest import (
     make_conn,
 )
 from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
+from trackinizer.lib.userdirs import data_dir
 from trackinizer.server import auth
 from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.auth import (
@@ -91,6 +92,24 @@ class TestHashSecret:
         encoded = hash_secret("hunter2")
         assert not verify_secret("hunter3", encoded)
 
+    @pytest.mark.parametrize(
+        ("raw", "encoded"),
+        [
+            (b"", ""),
+            (b"\xfb", "-w"),
+            (b"\xfb\xef", "--8"),
+            (b"abc", "YWJj"),
+            (b"\x00\x00\x17", "AAAX"),
+        ],
+    )
+    def test_hash_fields_use_unpadded_urlsafe_base64(
+        self,
+        raw: bytes,
+        encoded: str,
+    ) -> None:
+        assert auth._b64encode(raw) == encoded
+        assert auth._b64decode(encoded) == raw
+
     @pytest.mark.compute_large_fixture
     def test_distinct_hashes_for_same_secret(self) -> None:
         # Salts must randomize per call; two hashes of the same input
@@ -140,6 +159,42 @@ class TestHashSecret:
         _prefix, _n, r, p, salt, key = encoded.split("$")
         bad_hash = "$".join(("scrypt", str(2**30), r, p, salt, key))
         assert not verify_secret("x", bad_hash)
+
+    @pytest.mark.parametrize(
+        ("n", "r", "p", "accepted"),
+        [
+            (2, 1, 1, True),
+            (2**20, 1, 1, True),
+            (2, 128, 1, True),
+            (2, 1, 128, True),
+            (0, 1, 1, False),
+            (1, 1, 1, False),
+            (3, 1, 1, False),
+            (2**21, 1, 1, False),
+            (2, 0, 1, False),
+            (2, 129, 1, False),
+            (2, 1, 0, False),
+            (2, 1, 129, False),
+        ],
+    )
+    def test_verifier_bounds_work_before_deriving_the_stored_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        n: int,
+        r: int,
+        p: int,
+        *,
+        accepted: bool,
+    ) -> None:
+        derive = MagicMock(return_value=b"k")
+        monkeypatch.setattr(auth, "hashlib", SimpleNamespace(scrypt=derive))
+
+        assert verify_secret("secret", f"scrypt${n}${r}${p}$cw$aw") is accepted
+
+        if accepted:
+            derive.assert_called_once_with(b"secret", salt=b"s", n=n, r=r, p=p, dklen=1)
+        else:
+            derive.assert_not_called()
 
     def test_generate_token_shape(self) -> None:
         secret, prefix = generate_token()
@@ -479,42 +534,38 @@ class TestCurrentUser:
         assert exc_info.value.status_code == 401
 
     @pytest.mark.asyncio
-    @pytest.mark.compute_large_fixture
-    async def test_prefix_collision_disabled_then_active_resolves_active(self) -> None:
-        # Two ``api_keys`` rows share the full secret (same prefix AND
-        # same plaintext) -- can arise when an operator disables a user
-        # via ``status='disabled'`` without revoking the credential and
-        # subsequently re-mints the same plaintext for an active user
-        # (or in any future scenario where prefix-scoped rows happen to
-        # both verify). The resolver iterates in DB order; a
-        # disabled-row short-circuit would deny the active user even
-        # though the active row's verify also succeeds. The resolver
-        # must exhaust every prefix-matching row that verifies and
-        # return the first ACTIVE match.
+    @pytest.mark.parametrize("rejected", ["wrong-secret", "disabled"])
+    async def test_prefix_collision_disabled_then_active_resolves_active(
+        self,
+        rejected: str,
+    ) -> None:
         secret, _ = generate_token()
-        shared_hash = hash_secret(secret)
-        active_user_id = uuid.uuid4()
-        active_key_id = uuid.uuid4()
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [
             _row(
-                secret_hash=shared_hash,
-                status="disabled",
+                secret_hash=hash_secret(
+                    "wrong" if rejected == "wrong-secret" else secret,
+                ),
+                status="disabled" if rejected == "disabled" else "active",
                 email="ghost@example.com",
             ),
             _row(
                 secret_hash=hash_secret(secret),
-                status="active",
-                user_id=active_user_id,
-                key_id=active_key_id,
+                key_id=key_id,
+                user_id=user_id,
                 email="alice@example.com",
-                role="writer",
             ),
         ]
+
         identity = await current_user(_request_with(engine, f"Bearer {secret}"))
-        assert identity.user_id == active_user_id
-        assert identity.api_key_id == active_key_id
+
+        assert identity.api_key_id == key_id
+        assert identity.user_id == user_id
         assert identity.email == "alice@example.com"
+        assert [call.args[1:] for call in engine.conn.execute.await_args_list] == [
+            (key_id,),
+        ]
 
     @pytest.mark.asyncio
     async def test_last_used_at_coalesces_repeat_hits(
@@ -638,8 +689,11 @@ class TestVerifiedBearerCache:
         # which is the opposite of what the column is for. The two clocks are
         # independent: a cache hit must still consult the bump throttle.
         secret, _ = generate_token()
+        key_id = uuid.uuid4()
         engine = FakeEngine()
-        engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
+        engine.conn.fetch.return_value = [
+            _row(secret_hash=hash_secret(secret), key_id=key_id),
+        ]
         store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
@@ -657,6 +711,7 @@ class TestVerifiedBearerCache:
             if "UPDATE api_keys SET last_used_at" in _sql(c)
         ]
         assert len(bump_sqls) == 2
+        assert [call.args[1:] for call in bump_sqls] == [(key_id,), (key_id,)]
 
     @pytest.mark.asyncio
     async def test_cache_hit_inside_the_interval_skips_the_bump(
@@ -1112,6 +1167,20 @@ _BOOTSTRAP_WINNER_ID: uuid.UUID = uuid.UUID("44444444-4444-4444-4444-44444444444
 class TestBootstrapAdmin:
     """``TRACKINIZER_BOOTSTRAP_ADMIN`` env-driven seed path."""
 
+    @pytest.mark.parametrize("override", [None, "", " \t"])
+    def test_token_path_without_an_override_uses_the_user_data_directory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        override: str | None,
+    ) -> None:
+        if override is None:
+            monkeypatch.delenv(BOOTSTRAP_TOKEN_FILE_ENV, raising=False)
+        else:
+            monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, override)
+        assert auth._bootstrap_token_path() == (
+            data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
+        )
+
     @pytest.mark.asyncio
     async def test_seeds_admin_when_users_empty(
         self,
@@ -1219,8 +1288,8 @@ class TestBootstrapAdmin:
         # ``_stage_bootstrap_token`` opens with ``O_CREAT, 0o600`` then
         # chmods to 0o600 explicitly; both steps must land before any
         # readable mode is observable on the file.
-        token_path = tmp_path / "bootstrap_token"
-        tmp_token_path = tmp_path / "bootstrap_token.tmp"
+        token_path = tmp_path / "nested" / "tokens" / "bootstrap_token"
+        tmp_token_path = token_path.with_name("bootstrap_token.tmp")
         original_chmod = Path.chmod
         observed_modes: list[int] = []
 
@@ -1278,8 +1347,20 @@ class TestBootstrapAdmin:
         monkeypatch.setenv(BOOTSTRAP_ADMIN_ENV, "admin@example.com")
         monkeypatch.setenv(BOOTSTRAP_TOKEN_FILE_ENV, str(tmp_path / "bootstrap_token"))
         conn = make_conn()
-        conn.fetchval = AsyncMock(side_effect=[None, _BOOTSTRAP_WINNER_ID, "admin"])
-        await bootstrap_admin(cast(Conn, conn), policy=DefaultPolicy())
+        conn.fetchval.side_effect = [None, _BOOTSTRAP_WINNER_ID, "admin"]
+        policy = _HeardUsers()
+        await bootstrap_admin(cast(Conn, conn), policy=policy)
+        user_insert = conn.fetchval.await_args_list[1]
+        user_id = user_insert.args[1]
+        assert isinstance(user_id, uuid.UUID)
+        assert user_insert.args[1:] == (user_id, "admin@example.com", "admin")
+        assert policy.heard == [(conn, "admin@example.com", "admin")]
+        key_insert = next(
+            call
+            for call in conn.execute.await_args_list
+            if "INSERT INTO api_keys" in _sql(call)
+        )
+        assert key_insert.args[2:4] == (user_id, "bootstrap")
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         # The users insert is a ``fetchval`` now (it reads back ``RETURNING id``
         # to tell the race winner from a loser), so it lands among the queries,
@@ -2539,14 +2620,19 @@ class TestSetApiKeyRole:
         # promoting to admin must fail on the ceiling, not the user's role.
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=["admin", 1])
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
         with pytest.raises(RoleCeilingError):
             await set_api_key_role(
                 cast(Conn, conn),
-                key_id=uuid.uuid4(),
-                user_id=uuid.uuid4(),
+                key_id=key_id,
+                user_id=user_id,
                 role="admin",
                 ceiling="viewer",
             )
+        assert [call.args[1:] for call in conn.fetchval.await_args_list] == [
+            (user_id,),
+            (key_id, user_id),
+        ]
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
 
@@ -2557,14 +2643,19 @@ class TestSetApiKeyRole:
         # A 403 here would tell a prober the key exists.
         conn = make_conn()
         conn.fetchval = AsyncMock(side_effect=["writer", None])
+        key_id, user_id = uuid.uuid4(), uuid.uuid4()
         updated = await set_api_key_role(
             cast(Conn, conn),
-            key_id=uuid.uuid4(),
-            user_id=uuid.uuid4(),
+            key_id=key_id,
+            user_id=user_id,
             role="admin",
             ceiling="admin",
         )
         assert updated is False
+        assert [call.args[1:] for call in conn.fetchval.await_args_list] == [
+            (user_id,),
+            (key_id, user_id),
+        ]
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
 
@@ -2617,23 +2708,28 @@ class TestSeedNoAuthUser:
         told: bool,
     ) -> None:
         conn = make_conn()
-        conn.fetchval = AsyncMock(return_value=inserted)
+        conn.fetchval.return_value = inserted
         policy = _HeardUsers()
         await seed_no_auth_user(cast(Conn, conn), policy=policy)
+        identity = await current_user(
+            _request_with(FakeEngine(), None, config=Config(auth_disabled=True)),
+        )
+        assert [call.args[1:] for call in conn.fetchval.await_args_list] == [
+            (identity.user_id, identity.email),
+        ]
         sql = executed_sql(conn)
         assert (sql[0], sql[-1]) == ("BEGIN", "COMMIT")
-        assert policy.heard == ([("no-auth@localhost", "admin")] if told else [])
+        assert policy.heard == ([(conn, "no-auth@localhost", "admin")] if told else [])
 
 
 class _HeardUsers:
     """An access policy that records each new user it is told of."""
 
     def __init__(self) -> None:
-        self.heard: list[tuple[str, str]] = []
+        self.heard: list[tuple[Conn, str, str]] = []
 
     async def on_user(self, conn: Conn, *, email: str, role: str) -> None:
-        del conn
-        self.heard.append((email, role))
+        self.heard.append((conn, email, role))
 
 
 class TestCredentialEdges:

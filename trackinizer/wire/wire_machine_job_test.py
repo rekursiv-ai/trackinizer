@@ -53,6 +53,8 @@ _SUBMIT = {
         ("-uhttps://x/y", None),
         ("https://github.com/o r", None),
         ("git@github.com::o/r", None),
+        ("-host:repo", None),
+        ("https://github.com/o/https://r", "https"),
     ],
 )
 def test_a_remote_is_reached_by_the_protocol_its_spelling_names(
@@ -68,6 +70,8 @@ def test_a_remote_is_reached_by_the_protocol_its_spelling_names(
         "https://github.com/example/repo.git",
         "ssh://git@github.com/o/r.git",
         "git@github.com:o/r.git",
+        "https://github.com/X",
+        "https://github.com/" + "r" * (2_048 - len("https://github.com/")),
     ],
 )
 def test_a_job_names_an_https_or_ssh_remote(url: str) -> None:
@@ -86,6 +90,10 @@ def test_a_job_names_an_https_or_ssh_remote(url: str) -> None:
         ("https://github.com/", "repository path"),
         ("https:///o/r", "host"),
         ("https://github.com/" + "o" * 2_048, "2048"),
+        (
+            "https://github.com/" + "r" * (2_049 - len("https://github.com/")),
+            "2048",
+        ),
     ],
 )
 def test_a_remote_that_is_not_a_plain_https_or_ssh_url_is_refused(

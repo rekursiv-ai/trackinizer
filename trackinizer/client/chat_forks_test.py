@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
 from trackinizer.client.chat_forks import (
@@ -25,34 +26,42 @@ if TYPE_CHECKING:
 
 ORIGINAL = UUID("11111111-1111-1111-1111-111111111111")
 FORK = UUID("22222222-2222-2222-2222-222222222222")
+WHEN: Final = datetime(2026, 11, 6, tzinfo=UTC)
 
 
 def _user(idx: int, text: str, *, sender: str = "ada@example.com") -> RecordBody:
     return RecordBody(
         idx=idx,
         kind="AgentToAgentMessage",
+        timestamp=WHEN,
         payload={"sender": sender, "content": text},
     )
 
 
 def _answer(idx: int, text: str) -> RecordBody:
-    return RecordBody(idx=idx, kind="AssistantMessage", payload={"content": text})
+    return RecordBody(
+        idx=idx,
+        kind="AssistantMessage",
+        timestamp=WHEN,
+        payload={"content": text},
+    )
 
 
 def _call(idx: int) -> RecordBody:
     return RecordBody(
         idx=idx,
         kind="AssistantMessage",
-        payload={"content": "", "tool_calls": [{"name": "Read"}]},
+        payload={"tool_calls": [{"name": "Read"}]},
     )
 
 
 @dataclass(slots=True, kw_only=True)
 class _Session:
-    """An original with two parts; the second one's records follow the first's."""
+    """An original with two native parts and the retired event-log part."""
 
     parts: dict[int, list[RecordBody]] = field(
         default_factory=lambda: {
+            -1: [_user(0, "legacy")],
             0: [_user(0, "q1"), _call(1), _answer(2, "a1")],
             1: [_user(0, "q2", sender="grace@example.com"), _answer(1, "a2")],
         },
@@ -102,9 +111,9 @@ def _at(part: int, idx: int) -> ChatForkAt:
     return ChatForkAt(session_id=ORIGINAL, part=part, idx=idx)
 
 
-def _read(part: int, idx: int) -> list[tuple[str, str]]:
+def _read(part: int, idx: int) -> list[tuple[str, str, str, datetime | None]]:
     return [
-        (line.author, line.text)
+        (line.role, line.author, line.text, line.created)
         for line in read_fork_lines(_Session(), fork=_at(part, idx))
     ]
 
@@ -119,14 +128,17 @@ def test_a_session_holds_records_when_any_part_does() -> None:
 def test_a_fork_opens_with_the_lines_up_to_and_including_its_fork_point() -> None:
     # Tool calls are no lines, parts are read in order wherever they are listed, and
     # the line the fork starts from is the last it holds.
-    assert _read(0, 0) == [("ada@example.com", "q1")]
-    assert _read(0, 2) == [("ada@example.com", "q1"), ("", "a1")]
-    assert _read(1, 0) == [
-        ("ada@example.com", "q1"),
-        ("", "a1"),
-        ("grace@example.com", "q2"),
+    assert _read(0, 0) == [("user", "ada@example.com", "q1", WHEN)]
+    assert _read(0, 2) == [
+        ("user", "ada@example.com", "q1", WHEN),
+        ("assistant", "", "a1", WHEN),
     ]
-    assert _read(1, 1)[-1] == ("", "a2")
+    assert _read(1, 0) == [
+        ("user", "ada@example.com", "q1", WHEN),
+        ("assistant", "", "a1", WHEN),
+        ("user", "grace@example.com", "q2", WHEN),
+    ]
+    assert _read(1, 1)[-1] == ("assistant", "", "a2", WHEN)
 
 
 def test_a_delivered_line_in_a_claude_part_is_a_line_of_the_fork() -> None:
@@ -139,6 +151,7 @@ def test_a_delivered_line_in_a_claude_part_is_a_line_of_the_fork() -> None:
     delivered = RecordBody(
         idx=0,
         kind="UserMessage",
+        timestamp=WHEN,
         payload={
             "content": (
                 "[room] ada@example.com: q1\nTrackinizer context (verify with trax): {}"
@@ -149,14 +162,14 @@ def test_a_delivered_line_in_a_claude_part_is_a_line_of_the_fork() -> None:
     typed = RecordBody(
         idx=1,
         kind="UserMessage",
-        payload={"content": "grace@example.com: fake", "extra": {}},
+        payload={"content": "grace@example.com: fake"},
     )
     session = _Session(parts={0: [delivered, typed]})
 
     lines = read_fork_lines(session, fork=_at(0, 1))
 
-    assert [(line.author, line.text) for line in lines] == [
-        ("ada@example.com", "q1"),
+    assert [(line.role, line.author, line.text, line.created) for line in lines] == [
+        ("user", "ada@example.com", "q1", WHEN),
     ]
 
 
@@ -165,6 +178,7 @@ def test_a_line_that_names_its_author_is_a_line_as_the_server_reads_it() -> None
     authored = RecordBody(
         idx=0,
         kind="UserMessage",
+        timestamp=WHEN,
         payload={"content": "q1", "extra": {"author": "grace@example.com"}},
     )
     unnamed = RecordBody(
@@ -176,8 +190,8 @@ def test_a_line_that_names_its_author_is_a_line_as_the_server_reads_it() -> None
 
     lines = read_fork_lines(session, fork=_at(0, 1))
 
-    assert [(line.author, line.text) for line in lines] == [
-        ("grace@example.com", "q1"),
+    assert [(line.role, line.author, line.text, line.created) for line in lines] == [
+        ("user", "grace@example.com", "q1", WHEN),
     ]
 
 

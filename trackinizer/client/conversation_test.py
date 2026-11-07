@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -414,9 +415,12 @@ def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
         ],
     )
 
-    assert _people(_neutral_conversation([segment])) == [
-        ("ada@example.com", "also check CI"),
-    ]
+    spoken = _neutral_conversation([segment])
+
+    assert _people(spoken) == [("ada@example.com", "also check CI")]
+    [person] = spoken
+    assert isinstance(person, AgentToAgentMessage)
+    assert (person.timestamp, person.extra) == (_at(1), {"provider": "claude"})
 
 
 def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
@@ -473,16 +477,61 @@ def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
     assert texts == ["cl1", "cl2", "early", "kb2"]
 
 
+def test_unstamped_parts_stay_ordered_before_a_stamped_part() -> None:
+    parts = [
+        _segment(1, "codex", [AssistantMessage(timestamp=_at(1), content="later")]),
+        _segment(
+            0,
+            "claude",
+            [UserMessage(content="first"), AssistantMessage(content="second")],
+        ),
+    ]
+
+    assert [(each.part, each.idx) for each in placed(parts)] == [(0, 0), (0, 1), (1, 0)]
+
+
+def test_offset_timestamps_are_compared_as_instants() -> None:
+    parts = [
+        _segment(
+            0,
+            "claude",
+            [UserMessage(timestamp="2026-10-20T11:00:00+02:00", content="first")],
+        ),
+        _segment(1, "codex", [AssistantMessage(timestamp=_at(1), content="second")]),
+    ]
+
+    assert [(each.part, each.idx) for each in placed(parts)] == [(0, 0), (1, 0)]
+
+
+def test_the_bots_answers_use_its_display_name() -> None:
+    spoken = [
+        AssistantMessage(content="first"),
+        AssistantMessage(content="second", extra=immutable({"provider": "bot"})),
+        AssistantMessage(content="third", extra=immutable({"provider": "codex"})),
+    ]
+
+    assert [
+        (line.role, line.author, line.text) for line in lines(spoken, bot="guide")
+    ] == [
+        ("assistant", "guide", "first"),
+        ("assistant", "guide", "second"),
+        ("assistant", "codex", "third"),
+    ]
+
+
 def test_a_window_with_no_summary_is_not_kept() -> None:
     segment = _segment(0, "claude", [ContextClear(timestamp=_at(1))])
 
     assert _neutral_conversation([segment]) == []
 
 
-def test_an_empty_answer_is_not_a_line() -> None:
-    segment = _segment(0, "claude", [AssistantMessage(timestamp=_at(1), content="  ")])
+@pytest.mark.parametrize("content", [None, "", "  "])
+def test_an_empty_answer_is_not_a_line(content: str | None) -> None:
+    answer = AssistantMessage(timestamp=_at(1), content=content)
+    segment = _segment(0, "claude", [answer])
 
     assert _neutral_conversation([segment]) == []
+    assert lines([answer], bot="guide") == []
 
 
 def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
@@ -519,27 +568,42 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
     ]
 
 
-def test_a_foreign_typed_tool_keeps_its_call_and_structured_result() -> None:
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "error"])
+def test_a_foreign_typed_tool_keeps_its_call_and_structured_result(
+    failed: bool,
+) -> None:
     call = ToolCall(
+        context_id=11,
         timestamp=_at(1),
         call_id="shell-1",
         name="exec",
         arguments=immutable({"cmd": "pwd"}),
     )
     result = BashResult(
+        context_id=12,
         timestamp=_at(2),
         call_id="shell-1",
         command=("pwd",),
         stdout="/workspace\n",
         stderr="permission denied\n",
         exit_code=1,
+        extra=immutable({"is_error": failed}),
     )
     segment = _segment(0, "codex", [call, result])
 
     written = projected(_neutral_conversation([segment]), "claude")
 
-    assert [record for record in written if isinstance(record, ToolCall)] == [call]
-    assert [record for record in written if isinstance(record, BashResult)] == [result]
+    assert [record for record in written if isinstance(record, ToolCall)] == [
+        replace(call, context_id=None),
+    ]
+    assert [record for record in written if isinstance(record, BashResult)] == [
+        replace(
+            result,
+            context_id=None,
+            extra=immutable({"is_error": True} if failed else {}),
+        ),
+    ]
+    assert (call.context_id, result.context_id) == (11, 12)
 
 
 @pytest.mark.parametrize("target", ["claude", "codex"])

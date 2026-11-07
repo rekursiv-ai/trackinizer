@@ -49,6 +49,8 @@ class _CanvasClient:
         self.preferences: list[dict[str, object]] = []
         self.reads: list[str] = []
         self.visuals: list[object] = []
+        self.focused: str | None = None
+        self.unlabeled = uuid.uuid4()
         self.canvas = uuid.uuid4()
 
     def get(self, path: str) -> dict[str, object]:
@@ -78,7 +80,10 @@ class _CanvasClient:
                     "id": "m1",
                     "author": "agent",
                     "page": "#/graph",
-                    "covers": {"records": [record], "instances": ["inst-1"]},
+                    "covers": {
+                        "records": [record, str(self.unlabeled)],
+                        "instances": ["inst-1"],
+                    },
                 },
                 {"id": "m2", "author": "jp", "covers": {}, "window": True},
             ],
@@ -128,7 +133,12 @@ class _CanvasClient:
         }
 
     def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
-        return {"id": str(self.canvas), "revision": revision, "visuals": visuals}
+        return {
+            "id": str(self.canvas),
+            "revision": revision,
+            "visuals": visuals,
+            "focused_instance": self.focused,
+        }
 
     def _at(self, canvas_id: uuid.UUID) -> None:
         """Refuse a call that names any canvas but this one."""
@@ -288,6 +298,7 @@ def test_canvas_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None
             "params": {"label": "left=right"},
         },
     ]
+    assert client.reads == ["/api/visuals"] * 3
 
 
 def test_canvas_show_without_params_does_not_read_the_catalog() -> None:
@@ -670,11 +681,12 @@ def test_canvas_prints_each_visual_with_its_placement_and_record(
         {"id": "i1", "type": "trax.subgraph", "placement": "side", "record_id": record},
         {"id": "i2", "type": "trax.browse"},
     ]
+    client.focused = "i1"
 
     _canvas(client)
 
     assert capsys.readouterr().out.splitlines() == [
-        f"canvas {client.canvas} revision 8 focused none",
+        f"canvas {client.canvas} revision 8 focused i1",
         f"  trax.subgraph i1 side record={record}",
         "  trax.browse i2 main",
     ]
@@ -689,7 +701,10 @@ def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_o
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[-2:] == [
-        "  box m1 by agent on #/graph covers: Experiment#12 Measured tails, inst-1",
+        (
+            "  box m1 by agent on #/graph covers: "
+            f"Experiment#12 Measured tails, {client.unlabeled}, inst-1"
+        ),
         "  box m2 by jp over the window on no page covers: nothing",
     ]
 

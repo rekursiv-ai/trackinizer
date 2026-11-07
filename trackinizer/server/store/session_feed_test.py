@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import itertools
@@ -27,6 +29,7 @@ from trackinizer.sagent.session.types import (
     UserMessage,
 )
 from trackinizer.server.audience import SessionReader
+from trackinizer.server.store import session_feed
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
@@ -1083,18 +1086,40 @@ async def test_facets_order_sessions_newest_first_and_kinds_by_count() -> None:
             for kind, count in (("ToolCall", 1), ("UserMessage", 2), ("Thinking", 2))
         ],
         [
-            {"id": session_id, "agentsession_ended": None}
+            {
+                "id": session_id,
+                "owner": None,
+                "account": None,
+                "agentsession_cli": None,
+                "agentsession_rooms": None,
+                "agentsession_ended": None,
+                "agentsession_audience": None,
+                "agentsession_cli_session_id": None,
+                "opener": None,
+            }
             for session_id, _last in sessions
         ],
     ]
 
     facets = await store.read_feed_facets(since=None, until=None, scope=_ALL_SESSIONS)
 
-    assert [actor.session_id for actor in facets.actors] == [
-        UUID(int=2),
-        UUID(int=1),
-        UUID(int=3),
+    assert facets.actors == [
+        FeedActorFacet(
+            actor="",
+            session_id=session_id,
+            cli=None,
+            rooms=[],
+            count=1,
+            conversation=0,
+            last=last,
+            ended=None,
+            account="",
+            audience=None,
+            hideable=False,
+        )
+        for session_id, last in (sessions[2], sessions[0], sessions[1])
     ]
+    assert facets.rooms == []
     assert facets.kinds == [
         FeedKindFacet(kind="Thinking", count=2),
         FeedKindFacet(kind="UserMessage", count=2),
@@ -1181,6 +1206,36 @@ async def test_explicit_histogram_start_is_clamped_without_reading_the_first_row
         earliest,
         _T0 + timedelta(seconds=2),
     )
+
+
+@pytest.mark.asyncio
+async def test_histogram_without_an_end_counts_through_the_current_instant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        session_feed,
+        "datetime",
+        SimpleNamespace(now=MagicMock(return_value=_T0 + timedelta(seconds=1))),
+    )
+    store, engine = make_store()
+    engine.conn.fetch.return_value = [{"bucket": _T0, "records": 2}]
+
+    histogram = await store.read_feed_histogram(
+        since=_T0,
+        until=None,
+        earliest=_T0,
+        buckets=2,
+        scope=_ALL_SESSIONS,
+    )
+
+    assert histogram.start == _T0
+    assert histogram.end == _T0 + timedelta(seconds=2)
+    assert histogram.bucket_seconds == 1
+    assert histogram.counts == [
+        FeedBucket(start=_T0, count=2),
+        FeedBucket(start=_T0 + timedelta(seconds=1), count=0),
+    ]
+    engine.conn.fetchval.assert_not_awaited()
 
 
 if __name__ == "__main__":

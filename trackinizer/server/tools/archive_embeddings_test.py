@@ -436,6 +436,10 @@ async def test_archive_copies_every_table_before_deleting_the_model(
     factory.assert_called_once_with(dsn="dsn", listen_channel=NOTIFY_CHANNEL)
     assert engine.entered
     assert engine.exited
+    assert [call.args[1:] for call in engine.conn.fetchval.await_args_list] == [
+        (_OLD,),
+        (_OLD,),
+    ]
     tables = archive_embeddings._archived_tables()
     assert tables == {
         "session_embeddings": (
@@ -524,12 +528,15 @@ async def test_restore_stages_explicit_columns_and_counts_only_inserted_rows(
         "INSERT 0 1",
         "COMMIT",
     ]
-    monkeypatch.setattr(archive_embeddings, "PostgresEngine", Mock(return_value=engine))
+    factory = Mock(return_value=engine)
+    monkeypatch.setattr(archive_embeddings, "PostgresEngine", factory)
 
     assert await archive_embeddings.restore("dsn", source=tmp_path) == {
         "session_embeddings": 2,
         "session_index_state": 1,
     }
+    assert factory.call_count == 1
+    assert factory.call_args.kwargs["dsn"] == "dsn"
 
     statements = (
         (
