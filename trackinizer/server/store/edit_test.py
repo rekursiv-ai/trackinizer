@@ -984,9 +984,19 @@ class TestNoOpAndRefusedEdits:
 
 class TestListFieldForwarding:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("given", [False, True])
     @pytest.mark.parametrize(
         ("method", "column", "include"),
         [
+            ("add_author", "paper_authors", True),
+            ("remove_author", "paper_authors", False),
+            ("add_subscriber", "subscribers", True),
+            ("remove_subscriber", "subscribers", False),
+            ("add_label", "labels", True),
+            ("remove_label", "labels", False),
+            ("add_issue_kind", "issue_kind", True),
+            ("remove_issue_kind", "issue_kind", False),
+            ("add_codechange", "experiment_codechanges", True),
             ("remove_codechange", "experiment_codechanges", False),
             ("add_room", "agentsession_rooms", True),
             ("remove_room", "agentsession_rooms", False),
@@ -997,22 +1007,34 @@ class TestListFieldForwarding:
         monkeypatch: pytest.MonkeyPatch,
         method: str,
         column: str,
+        *,
         include: bool,
+        given: bool,
     ) -> None:
         store, _engine = make_store()
         change = new_uuid()
         mutate = AsyncMock(return_value=change)
         monkeypatch.setattr(store, "_mutate_list_field", mutate)
-        target, item = new_uuid(), "lab"
+        target, key = new_uuid(), new_uuid()
+        item = new_uuid() if column == "experiment_codechanges" else "bug"
 
         edit = cast("Callable[..., Awaitable[UUID | None]]", getattr(store, method))
-        assert await edit(target, item, actor="alice", reason="r") == change
+        returned = (
+            await edit(target, item, api_key_id=key, actor="alice", reason="r")
+            if given
+            else await edit(target, item, actor="alice")
+        )
+        assert returned == change
 
         call = mutate.await_args
         assert call is not None
         assert call.args == (target, item)
         assert (call.kwargs["column"], call.kwargs["include"]) == (column, include)
-        assert (call.kwargs["actor"], call.kwargs["reason"]) == ("alice", "r")
+        assert (
+            call.kwargs["api_key_id"],
+            call.kwargs["actor"],
+            call.kwargs["reason"],
+        ) == (key if given else None, "alice", "r" if given else "")
 
 
 class TestSetCostAxis:
