@@ -23,4 +23,9 @@ from trackinizer.lib.testing.resources import cap_math_threads
 cap_math_threads()
 
 
-pytest_plugins: Final = ("trackinizer.lib.postgres.testing",)
+# The basetemp plugin claims one basetemp per invocation, so concurrent sessions
+# never clean up one another's directories.
+pytest_plugins: Final = (
+    "trackinizer.lib.postgres.testing",
+    "trackinizer.lib.testing.basetemp",
+)
