@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import AsyncMock
 
 import uuid
 
@@ -25,9 +26,11 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.server.access_policy import AccessDeniedError, Resource
+from trackinizer.server.api import session_access
 from trackinizer.server.api.conftest import (
     OPENER,
     SCOUT,
+    access_refusal,
     access_refused,
     make_asker,
     make_caller,
@@ -61,7 +64,6 @@ from trackinizer.wire.audience import AUDIENCES
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from unittest.mock import AsyncMock
 
     from fastapi import Request
 
@@ -224,6 +226,45 @@ async def test_the_transcript_check_names_the_target_session() -> None:
 
     assert conn.fetchval.await_args is not None
     assert conn.fetchval.await_args.args[1] == session.id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("readable", [True, False])
+async def test_a_delegated_read_keeps_the_asker_chat_and_caller(
+    monkeypatch: pytest.MonkeyPatch,
+    readable: bool,
+) -> None:
+    reads = AsyncMock(return_value=readable)
+    monkeypatch.setattr(session_access, "reads_session", reads)
+    caller = make_caller("open", email=SCOUT.email)
+    session = AgentSession(audience="open")
+    asker = make_asker("open")
+    chat = uuid.uuid4()
+
+    refusal = await access_refusal(
+        caller,
+        session,
+        "read",
+        assistant=SCOUT,
+        asker=asker,
+        chat=chat,
+    )
+
+    assert reads.await_args is not None
+    assert reads.await_args.args[0] is not None
+    assert reads.await_args.kwargs["session_id"] == session.id
+    assert reads.await_args.kwargs["reader"] == SessionReader(
+        email=asker.email,
+        audiences=asker.read_audiences,
+    )
+    if readable:
+        assert refusal is None
+    else:
+        assert refusal is not None
+        assert (refusal.status_code, refusal.detail) == (
+            403,
+            {"code": "session_audience", "audience": "open"},
+        )
 
 
 class TestTheAssistantsAsker:
@@ -798,7 +839,6 @@ class TestRequireSessionRowWrite:
     @pytest.mark.asyncio
     async def test_a_row_that_is_no_session_passes_without_the_chat_rule(
         self,
-        monkeypatch: pytest.MonkeyPatch,
         row: dict[str, object] | None,
     ) -> None:
         await require_session_row_write(_serving(row), make_caller(), uuid.uuid4())
@@ -806,7 +846,6 @@ class TestRequireSessionRowWrite:
     @pytest.mark.asyncio
     async def test_a_session_the_caller_neither_opened_nor_reads_is_hidden(
         self,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         request = _serving(
             {"kind": "AgentSession", "account": "ada@example.com", "audience": "staff"},
@@ -828,7 +867,6 @@ class TestRequireSessionRowWrite:
     @pytest.mark.asyncio
     async def test_a_session_it_reads_or_opened_goes_on_to_the_chat_rule(
         self,
-        monkeypatch: pytest.MonkeyPatch,
         caller: AuthIdentity,
         audience: str,
     ) -> None:

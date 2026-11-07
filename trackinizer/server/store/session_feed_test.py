@@ -30,6 +30,7 @@ from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
+    CanvasAgents,
     FeedScope,
     _room_facets,
 )
@@ -331,6 +332,22 @@ def test_each_field_of_a_scope_binds_one_array_in_the_order_the_sql_tests_it() -
         "e.kind = ANY($4::text[])",
     ]
     assert params == [["a"], ["r"], ["c"], ["k", "l"]]
+
+
+def test_a_canvas_scope_names_sessions_with_one_clause_after_the_fields() -> None:
+    params: list[object] = []
+    canvas = CanvasAgents(canvas_id=UUID(int=7), user_id=UUID(int=8))
+
+    scope = FeedScope(reader=_ANYONE, actors=("a",), canvas=canvas, account="Ann")
+    clauses = scope.clauses(params, kind="e.kind")
+
+    assert scope.names_sessions
+    assert clauses[0] == "i.owner = ANY($1::text[])"
+    assert clauses[-1] == f"lower(i.account) = ${len(params)}"
+    assert params[-1] == "ann"
+    # An app that keeps no canvases gives a canvas no agents.
+    assert clauses[1:-1] == ["FALSE"]
+    assert params == [["a"], "ann"]
 
 
 # ---- The facets -------------------------------------------------------------
