@@ -49,6 +49,8 @@ def test_parse_seq_range_enforces_min_seq() -> None:
     # The stop bound is checked too: stop 0 is below an inquiry min of 1.
     with pytest.raises(ValueError, match="stop must be >= 1"):
         parse_seq_range("..0", min_seq=1)
+    assert parse_seq_range("..1", min_seq=1) == SeqRange(stop=1)
+    assert parse_seq_range("0..0") == SeqRange(start=0, stop=0)
 
 
 def test_seq_range_rejects_both_bounds_open() -> None:

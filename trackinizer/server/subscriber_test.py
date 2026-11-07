@@ -16,6 +16,7 @@ from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast, override
+from unittest.mock import AsyncMock, Mock, call
 from uuid import UUID
 
 import asyncio
@@ -30,6 +31,7 @@ from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import (
     _change_payload,
     _delivery_key,
+    _drain_pending_changes,
     push_changes_to_live_subscribers,
 )
 from trackinizer.types.change_log import Change, Snapshot
@@ -314,6 +316,30 @@ class TestPushChanges:
         assert inbound.pending(session_id) == 5
 
     @pytest.mark.asyncio
+    async def test_a_full_page_keeps_draining_before_the_sweep_sleeps(self) -> None:
+        since = datetime(2026, 1, 1, tzinfo=UTC)
+        changes = [
+            _change(subscribers=(), created=since + timedelta(seconds=i))
+            for i in (1, 2)
+        ]
+        query = AsyncMock(side_effect=[[(change, None) for change in changes], []])
+        store = Mock(what_changed_for_anyone=query)
+
+        cursor = await _drain_pending_changes(
+            store,
+            InboundQueue(),
+            since,
+            None,
+            page_size=2,
+        )
+
+        assert cursor == (changes[-1].created, changes[-1].id, True)
+        assert query.await_args_list == [
+            call(since, after_id=None, limit=2),
+            call(changes[-1].created, after_id=changes[-1].id, limit=2),
+        ]
+
+    @pytest.mark.asyncio
     async def test_poison_change_is_skipped_not_blocking(self) -> None:
         """An undeliverable change is skipped; everything behind it flows.
 
@@ -457,32 +483,20 @@ async def _run_failing_sweep(
 ) -> list[float]:
     """Run the sweep against a failing store; return the delays it slept."""
     delays: list[float] = []
-    real_sleep = asyncio.sleep
 
     async def _record(delay: float) -> None:
         delays.append(delay)
-        await real_sleep(0)
+        if len(delays) == attempts:
+            raise asyncio.CancelledError
 
     monkeypatch.setattr(asyncio, "sleep", _record)
-    task = asyncio.create_task(
-        push_changes_to_live_subscribers(
+    with suppress(asyncio.CancelledError):
+        await push_changes_to_live_subscribers(
             cast(Store, store),
             InboundQueue(),
             sweep_interval_sec=0.5,
             max_backoff_sec=max_backoff_sec,
-        ),
-    )
-    try:
-        deadline = asyncio.get_running_loop().time() + 5.0
-        while len(delays) < attempts:
-            assert asyncio.get_running_loop().time() < deadline, (
-                f"sweep produced {len(delays)} delays, wanted {attempts}"
-            )
-            await real_sleep(0.001)
-    finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        )
     return delays
 
 
@@ -507,10 +521,30 @@ class TestFailureBackoff:
 
         delays = await _run_failing_sweep(store, monkeypatch, attempts=5)
 
-        assert delays == sorted(delays), f"backoff not monotonic: {delays}"
-        assert delays[-1] > delays[0], (
-            f"no backoff: every retry waited {delays[0]}s ({delays})"
+        assert delays == [1.0, 2.0, 4.0, 8.0, 16.0]
+
+    @pytest.mark.asyncio
+    async def test_a_successful_query_resets_the_next_outages_backoff(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store = _StubStore(changes=[], live_sessions={})
+        monkeypatch.setattr(
+            store,
+            "what_changed_for_anyone",
+            AsyncMock(
+                side_effect=[
+                    ConnectionRefusedError,
+                    ConnectionRefusedError,
+                    [],
+                    ConnectionRefusedError,
+                ],
+            ),
         )
+
+        delays = await _run_failing_sweep(store, monkeypatch, attempts=4)
+
+        assert delays == [1.0, 2.0, 0.5, 1.0]
 
     @pytest.mark.asyncio
     async def test_backoff_is_capped(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -520,11 +554,11 @@ class TestFailureBackoff:
         delays = await _run_failing_sweep(
             store,
             monkeypatch,
-            attempts=12,
-            max_backoff_sec=8.0,
+            attempts=4,
+            max_backoff_sec=3.0,
         )
 
-        assert max(delays) <= 8.0, f"backoff exceeded its cap: {max(delays)}"
+        assert delays == [1.0, 2.0, 3.0, 3.0]
 
     @pytest.mark.asyncio
     async def test_one_traceback_per_outage(

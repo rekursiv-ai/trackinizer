@@ -15,6 +15,7 @@ Three layers:
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Literal, NoReturn, cast
@@ -130,6 +131,9 @@ class TestHashSecret:
         assert not verify_secret("x", "scrypt$bad$8$1$AAAA$BBBB")
         assert not verify_secret("x", "scrypt$16384$8$1$AAAA$")
         assert not verify_secret("x", "")
+        encoded = hash_secret("x")
+        assert not verify_secret("x", encoded.replace("scrypt$", "unknown$", 1))
+        assert not verify_secret("x", encoded.rsplit("$", 1)[0])
 
     def test_verify_rejects_oversized_scrypt_params(self) -> None:
         encoded = hash_secret("x")
@@ -256,6 +260,7 @@ def _request_with(
     return cast(Request, request)
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestCurrentUser:
     """Bearer-token middleware behaviour."""
 
@@ -585,6 +590,7 @@ class TestCurrentUser:
         assert len(bump_sqls) == 2
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestVerifiedBearerCache:
     """The verified-bearer cache: scrypt runs once per key per TTL."""
 
@@ -851,8 +857,13 @@ class TestCurrentUserNoAuth:
 
 @pytest.fixture
 def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hash secrets at the smallest accepted cost so a test pays no scrypt round."""
-    monkeypatch.setattr("trackinizer.server.auth._SCRYPT_N", 2)
+    """Keep hashing real without production cost or a process-shared sentinel."""
+    monkeypatch.setattr(auth, "_SCRYPT_N", 2)
+    monkeypatch.setattr(
+        auth,
+        "_dummy_verify_hash",
+        cache(auth._dummy_verify_hash.__wrapped__),
+    )
 
 
 async def _bearer_identity(
@@ -1095,6 +1106,7 @@ class TestCurrentHuman:
 _BOOTSTRAP_WINNER_ID: uuid.UUID = uuid.UUID("44444444-4444-4444-4444-444444444444")
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestBootstrapAdmin:
     """``TRACKINIZER_BOOTSTRAP_ADMIN`` env-driven seed path."""
 
@@ -1673,6 +1685,7 @@ def _config_with_session_secret(secret: str) -> Config:
     return Config(session_secret=secret, session_max_age_seconds=600)
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestUserOf:
     """The resolver behind ``current_user``, which a WebSocket handshake also uses."""
 
@@ -1812,6 +1825,7 @@ class TestUserOf:
         assert logged == [""]
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestCurrentUserSession:
     """Session-cookie branch of :func:`current_user`."""
 
@@ -2040,6 +2054,7 @@ class TestAllowlistMatch:
         assert isinstance(sql, str)
         assert "lower(email_or_pattern) = lower($1)" in sql
         assert args == ["alice@example.com"]
+        conn.fetchval.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_literal_match_is_case_insensitive(self) -> None:
@@ -2056,16 +2071,18 @@ class TestAllowlistMatch:
         assert role == "admin"
 
     @pytest.mark.asyncio
-    async def test_pattern_match_returns_role(self) -> None:
+    @pytest.mark.parametrize("email", ["bob@example.com", "b@example.com"])
+    async def test_pattern_match_returns_role(self, email: str) -> None:
         # Literal probe misses (returns None), pattern probe wins.
         conn = make_conn()
         conn.fetchval.side_effect = [None, "writer"]
-        role = await allowlist_match(cast(Conn, conn), email="bob@example.com")
+        role = await allowlist_match(cast(Conn, conn), email=email)
         assert role == "writer"
         # Second probe queries the LIKE-anchored pattern table.
         second_sql = conn.fetchval.call_args_list[1].args[0]
         assert isinstance(second_sql, str)
         assert "LIKE '*@%'" in second_sql
+        assert conn.fetchval.call_args_list[1].args[1:] == ("example.com",)
 
     @pytest.mark.asyncio
     async def test_miss_returns_none(self) -> None:
@@ -2083,6 +2100,7 @@ class TestAllowlistMatch:
         conn.fetchval = AsyncMock(return_value=None)
         role = await allowlist_match(cast(Conn, conn), email="no-at-symbol")
         assert role is None
+        conn.fetchval.assert_awaited_once()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -2137,6 +2155,7 @@ class TestEffectiveRole:
 # ---- create_api_key + set_api_key_role tests ------------------------------
 
 
+@pytest.mark.usefixtures("cheap_scrypt")
 class TestCreateApiKey:
     """Unit-level ceiling enforcement for :func:`create_api_key`."""
 

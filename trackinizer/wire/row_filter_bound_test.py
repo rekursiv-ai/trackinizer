@@ -108,14 +108,35 @@ class TestOrderOpsAreRefusedWhereOrderIsUndefined:
         with pytest.raises(ValidationError):
             match_filter({"id": "0" * 8}, _BareFilter(field="id", op="gt", value="0"))
 
-    @pytest.mark.parametrize("op", ["lt", "le", "gt", "ge"])
-    def test_a_numeric_column_still_orders(self, op: FilterOp) -> None:
-        assert isinstance(
+    @pytest.mark.parametrize(
+        ("op", "row_value", "expected"),
+        [
+            ("lt", 3, True),
+            ("lt", 5, False),
+            ("lt", 12, False),
+            ("le", 3, True),
+            ("le", 5, True),
+            ("le", 12, False),
+            ("gt", 3, False),
+            ("gt", 5, False),
+            ("gt", 12, True),
+            ("ge", 3, False),
+            ("ge", 5, True),
+            ("ge", 12, True),
+        ],
+    )
+    def test_a_numeric_column_still_orders(
+        self,
+        op: FilterOp,
+        row_value: int,
+        expected: bool,
+    ) -> None:
+        assert (
             match_filter(
-                {"issue_priority": 5},
+                {"issue_priority": row_value},
                 Filter(field="issue_priority", op=op, value="5"),
-            ),
-            bool,
+            )
+            is expected
         )
 
 
@@ -732,12 +753,12 @@ class TestAnUnknownFilterFieldIsRefused:
     def test_a_cli_alias_is_not_an_unknown_field(self) -> None:
         # ``priority`` canonicalizes to ``issue_priority``; refusing it would
         # break every CLI filter.
-        assert isinstance(
+        assert (
             match_filter(
                 {"issue_priority": 5},
                 Filter(field="priority", op="is", value="5"),
-            ),
-            bool,
+            )
+            is True
         )
 
 
@@ -785,16 +806,29 @@ class TestAnOperandTheTemplateCannotTake:
                 _BareFilter(field="belief_confidence", op="lt", value=value),
             )
 
-    @pytest.mark.parametrize("value", ["5e-324", "1e-320", "1e308", "-1e308", "0"])
-    def test_a_representable_float_operand_is_allowed(self, value: str) -> None:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("5e-324", False),
+            ("1e-320", False),
+            ("1e308", True),
+            ("-1e308", False),
+            ("0", False),
+        ],
+    )
+    def test_a_representable_float_operand_is_allowed(
+        self,
+        value: str,
+        expected: bool,
+    ) -> None:
         # Each round-trips through float8, so live PG16 answers rather than
         # erroring; refusing them would remove capability the engine has.
-        assert isinstance(
+        assert (
             match_filter(
                 {"belief_confidence": 0.5},
                 _BareFilter(field="belief_confidence", op="lt", value=value),
-            ),
-            bool,
+            )
+            is expected
         )
 
     @pytest.mark.parametrize("value", ["1e400", "-1e400", "1e309"])
@@ -819,21 +853,18 @@ class TestAnOperandTheTemplateCannotTake:
         # ``seq`` is INTEGER, whose template compares as ``numeric`` -- which
         # has no such ceiling. Live PG16 answers ``5 < '1e400'::numeric`` true,
         # so refusing it here would remove capability the engine has.
-        assert isinstance(
-            match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value)),
-            bool,
-        )
+        assert match_filter(
+            {"seq": 5},
+            _BareFilter(field="seq", op="lt", value=value),
+        ) is (value == "1e400")
 
     @pytest.mark.parametrize("value", ["inf", "-inf"])
     def test_infinity_is_still_legal_on_a_float_column(self, value: str) -> None:
         # ``'inf'::float8`` is representable, so both engines answer.
-        assert isinstance(
-            match_filter(
-                {"belief_confidence": 0.5},
-                _BareFilter(field="belief_confidence", op="lt", value=value),
-            ),
-            bool,
-        )
+        assert match_filter(
+            {"belief_confidence": 0.5},
+            _BareFilter(field="belief_confidence", op="lt", value=value),
+        ) is (value == "inf")
 
     @pytest.mark.parametrize(
         ("row_value", "op", "operand", "postgres_says"),
@@ -875,30 +906,34 @@ class TestAnOperandTheTemplateCannotTake:
             match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value))
 
     @pytest.mark.parametrize(
-        "value",
+        ("value", "expected"),
         [
-            "  5  ",
-            "+5",
-            ".5",
-            "5.",
-            "1e5",
-            "1E+5",
-            "1_000",
-            "12_345.6_7",
+            ("  5  ", False),
+            ("+5", False),
+            (".5", False),
+            ("5.", False),
+            ("1e5", True),
+            ("1E+5", True),
+            ("1_000", True),
+            ("12_345.6_7", True),
             # Live PG16 takes every ASCII whitespace character as padding:
             # tab, newline, carriage return, vertical tab, form feed, space.
-            "\t5\n",
-            "\x0b5\x0c",
-            "\r5",
+            ("\t5\n", False),
+            ("\x0b5\x0c", False),
+            ("\r5", False),
         ],
     )
-    def test_an_operand_postgres_does_parse_is_allowed(self, value: str) -> None:
+    def test_an_operand_postgres_does_parse_is_allowed(
+        self,
+        value: str,
+        expected: bool,
+    ) -> None:
         # Each is valid ``numeric`` to live PG16 -- including the interior
         # digit separators -- so refusing them would remove capability for
         # nothing.
-        assert isinstance(
-            match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value)),
-            bool,
+        assert (
+            match_filter({"seq": 5}, _BareFilter(field="seq", op="lt", value=value))
+            is expected
         )
 
     @pytest.mark.parametrize(
@@ -964,11 +999,11 @@ class TestOpsThatStillEvaluate:
             is False
         )
 
-    @pytest.mark.parametrize("op", ["isnull", "notnull"])
-    def test_presence_ops_are_unaffected(self, op: FilterOp) -> None:
-        assert isinstance(
-            match_filter({"owner": None}, Filter(field="owner", op=op, value="")),
-            bool,
+    @pytest.mark.parametrize(("op", "expected"), [("isnull", True), ("notnull", False)])
+    def test_presence_ops_are_unaffected(self, op: FilterOp, expected: bool) -> None:
+        assert (
+            match_filter({"owner": None}, Filter(field="owner", op=op, value=""))
+            is expected
         )
 
 

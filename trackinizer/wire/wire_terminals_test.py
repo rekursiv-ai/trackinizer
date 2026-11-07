@@ -101,14 +101,15 @@ def test_a_signal_round_trips_and_an_abandon_needs_no_description() -> None:
     assert DirectSignal(gen=2, type="abandon").sdp == ""
 
 
-def test_a_route_payload_round_trips_and_refuses_the_wrong_shape() -> None:
-    payload = wire_terminals.encode_route(wire_terminals.ROUTE_DIRECT, 2**56 + 300)
+@pytest.mark.parametrize(
+    "route",
+    [wire_terminals.ROUTE_RELAY, wire_terminals.ROUTE_DIRECT],
+)
+def test_a_route_payload_round_trips_and_refuses_the_wrong_shape(route: int) -> None:
+    payload = wire_terminals.encode_route(route, 2**57 + 300)
 
-    assert payload == b"\x01" + (2**56 + 300).to_bytes(8)
-    assert wire_terminals.decode_route(payload) == (
-        wire_terminals.ROUTE_DIRECT,
-        2**56 + 300,
-    )
+    assert payload == bytes([route]) + (2**57 + 300).to_bytes(8)
+    assert wire_terminals.decode_route(payload) == (route, 2**57 + 300)
     for bad in (b"", payload[:-1], b"\x02" + (0).to_bytes(8)):
         with pytest.raises(ValueError, match="ROUTE"):
             wire_terminals.decode_route(bad)
