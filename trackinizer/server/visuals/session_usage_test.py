@@ -148,6 +148,36 @@ def test_a_model_the_tables_do_not_know_leaves_the_cost_unknown_not_low() -> Non
     assert (usage.input_tokens, usage.usd) == (10, None)
 
 
+def test_a_model_sagents_tables_do_not_know_leaves_the_cost_unknown() -> None:
+    """Priced by sagent's own tables, which name no such model."""
+    rows = _rows(
+        _answer("r1", model="claude-nonesuch"),
+        _claude(input_tokens=10, output_tokens=5),
+    )
+    usage = session_usage(rows, formats={0: "claude"}, today=_DAY)
+    assert (usage.input_tokens, usage.usd, usage.context_window) == (10, None, None)
+
+
+@pytest.mark.parametrize(
+    ("cli", "model"),
+    [("claude", ""), ("gemini", "claude-opus-5-5")],
+)
+def test_a_call_with_no_model_or_no_priced_cli_leaves_the_cost_unknown(
+    cli: str,
+    model: str,
+) -> None:
+    """No model named, or a format sagent's tables do not price: no guess."""
+    rows = _rows(
+        (
+            "AssistantMessage",
+            {"extra": {"requestId": "r1", "message": {"model": model}}},
+        ),
+        _claude(input_tokens=10, output_tokens=5),
+    )
+    usage = session_usage(rows, formats={0: cli}, today=_DAY)
+    assert (usage.input_tokens, usage.usd) == (10, None)
+
+
 def test_no_calls_cost_nothing_known() -> None:
     rows: Sequence[SessionRecordRow] = _rows(("UserMessage", {"content": "hi"}))
     usage = session_usage(rows, formats={0: "claude"}, today=_DAY)
