@@ -18,14 +18,23 @@ from fastapi import HTTPException
 import pytest
 
 from trackinizer.conftest import make_conn, make_store, set_field_row
-from trackinizer.server.api.conftest import make_test_identity
+from trackinizer.server.api.conftest import (
+    OPENER,
+    SCOUT,
+    access_refused,
+    make_asker,
+    make_caller,
+    make_test_identity,
+)
 from trackinizer.server.api.session_access import (
     SessionAccess,
     granted_audience,
     require_attributable,
+    require_readable,
     require_row_account,
     require_row_purge,
     require_session_access,
+    require_session_id_change,
     resolve_asker,
     session_reader,
 )
@@ -33,6 +42,7 @@ from trackinizer.server.api.session_identity import Asker
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, Role
 from trackinizer.server.config import Assistant, ChatOrgs, Config
+from trackinizer.types.errors import NotFoundError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import AUDIENCES
 
@@ -44,96 +54,8 @@ if TYPE_CHECKING:
     from fastapi import Request
 
 
-OPENER = uuid.uuid4()
 MODES: tuple[SessionAccess, ...] = ("read", "write", "drain", "input")
 CONTROLS: tuple[SessionAccess, ...] = ("write", "drain", "input")
-SCOUT: Final = Assistant(actor="scout", email="scout@example.com")
-
-
-def make_caller(
-    *read: str,
-    key: uuid.UUID | None = None,
-    email: str = "caller@example.com",
-    hosted_domain: str | None = None,
-) -> AuthIdentity:
-    return AuthIdentity(
-        user_id=uuid.uuid4(),
-        api_key_id=key,
-        email=email,
-        role="writer",
-        read_audiences=frozenset(read),
-        hosted_domain=hosted_domain,
-    )
-
-
-def make_asker(
-    *read: str,
-    role: Role = "writer",
-    email: str = "asker@example.com",
-) -> Asker:
-    """Return a user the assistant acts for, holding ``read`` as a person."""
-    return Asker(email=email, role=role, read_audiences=frozenset(read))
-
-
-# Each answer is one ``fetchval``'s, in order: whether a reader reads a session, and for
-# a read for an asker the chat's first session between them. The check must ask each,
-# and no more.
-async def access_refusal(
-    caller: AuthIdentity,
-    session: AgentSession,
-    mode: SessionAccess,
-    *,
-    assistant: Assistant | None = None,
-    asker: Asker | None = None,
-    chat: uuid.UUID | None = None,
-    answers: Sequence[object] = (),
-) -> HTTPException | None:
-    """Ask the check with ``assistant`` configured; the database answers ``answers``."""
-    conn = make_conn()
-    conn.fetchval.side_effect = list(answers)
-    store, _engine = make_store(conn)
-    state = SimpleNamespace(store=store, config=Config(assistant=assistant))
-    request = cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
-    refusal: HTTPException | None = None
-    try:
-        await require_session_access(
-            request,
-            caller,
-            session=session,
-            mode=mode,
-            asker=None if asker is None else replace(asker, chat=chat),
-        )
-    except HTTPException as error:
-        refusal = error
-    assert conn.fetchval.await_count == len(answers)
-    return refusal
-
-
-async def access_refused(
-    caller: AuthIdentity,
-    session: AgentSession,
-    mode: SessionAccess,
-    *,
-    assistant: Assistant | None = None,
-    asker: Asker | None = None,
-    answers: Sequence[object] = (),
-) -> bool:
-    """Say whether the check refuses; a refusal names the session's audience."""
-    refusal = await access_refusal(
-        caller,
-        session,
-        mode,
-        assistant=assistant,
-        asker=asker,
-        answers=answers,
-    )
-    if refusal is None:
-        return False
-    assert (refusal.status_code, refusal.detail) == (
-        403,
-        {"code": "session_audience", "audience": session.audience},
-    )
-    return True
 
 
 class TestRequireSessionAccess:
@@ -582,22 +504,13 @@ class TestResolveAsker:
 class TestRowHolder:
     """An admin may purge rows, but only a session's account may reassign it."""
 
-    @classmethod
-    def _serving(cls, row: dict[str, object] | None) -> Request:
-        """Return a request whose store reads ``row`` for any id."""
-        conn = make_conn()
-        set_field_row(conn, row)
-        store, _engine = make_store(conn)
-        state = SimpleNamespace(store=store, config=Config())
-        return cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
-
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("email", "role"),
         [("Ada@Example.com", "writer"), ("root@example.com", "admin")],
     )
     async def test_its_account_and_an_admin_pass(self, email: str, role: Role) -> None:
-        request = self._serving({"kind": "Issue", "account": "ada@example.com"})
+        request = _serving({"kind": "Issue", "account": "ada@example.com"})
         caller = replace(make_caller("open", email=email), role=role)
 
         await require_row_account(request, caller, uuid.uuid4())
@@ -605,7 +518,7 @@ class TestRowHolder:
 
     @pytest.mark.asyncio
     async def test_another_writer_neither_moves_nor_purges_it(self) -> None:
-        request = self._serving({"kind": "Issue", "account": "ada@example.com"})
+        request = _serving({"kind": "Issue", "account": "ada@example.com"})
         caller = make_caller("open", email="bob@example.com")
 
         with pytest.raises(HTTPException) as moved:
@@ -625,7 +538,7 @@ class TestRowHolder:
         self,
         audience: str | None,
     ) -> None:
-        request = self._serving(
+        request = _serving(
             {
                 "kind": "AgentSession",
                 "account": "ada@example.com",
@@ -644,7 +557,7 @@ class TestRowHolder:
 
     @pytest.mark.asyncio
     async def test_the_session_account_can_still_transfer_it(self) -> None:
-        request = self._serving(
+        request = _serving(
             {"kind": "AgentSession", "account": "Ada@Example.com", "audience": "open"},
         )
 
@@ -652,6 +565,23 @@ class TestRowHolder:
             request,
             make_caller("open", email="ada@example.com"),
             uuid.uuid4(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_session_the_purger_neither_opened_nor_reads_is_hidden(
+        self,
+    ) -> None:
+        request = _serving(
+            {"kind": "AgentSession", "account": "ada@example.com", "audience": "staff"},
+        )
+        admin = replace(make_caller("open", email="root@example.com"), role="admin")
+
+        with pytest.raises(HTTPException) as refused:
+            await require_row_purge(request, admin, uuid.uuid4())
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            {"code": "session_audience", "audience": "staff"},
         )
 
     @pytest.mark.asyncio
@@ -668,6 +598,98 @@ class TestRowHolder:
 
         assert conn.fetchrow.await_args is not None
         assert conn.fetchrow.await_args.args[1] == target_id
+
+
+class TestRequireSessionIdChange:
+    """Only a session's opening key, or an admin, renames its ``cli_session_id``."""
+
+    _SESSION: Final[dict[str, object]] = {
+        "kind": "AgentSession",
+        "account": "ada@example.com",
+        "audience": "open",
+        "cli_session_id": "claude:abc",
+        "opener": OPENER,
+    }
+
+    @pytest.mark.parametrize(
+        "caller",
+        [
+            make_caller("open", key=OPENER),
+            replace(make_caller("open"), role="admin"),
+        ],
+        ids=["opener", "admin"],
+    )
+    @pytest.mark.asyncio
+    async def test_the_opening_key_or_an_admin_renames_it(
+        self,
+        caller: AuthIdentity,
+    ) -> None:
+        await require_session_id_change(
+            _serving(self._SESSION),
+            caller,
+            uuid.uuid4(),
+        )
+
+    @pytest.mark.parametrize("key", [None, uuid.UUID(int=7)])
+    @pytest.mark.asyncio
+    async def test_another_key_or_none_is_refused(self, key: uuid.UUID | None) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await require_session_id_change(
+                _serving(self._SESSION),
+                make_caller("open", email="ada@example.com", key=key),
+                uuid.uuid4(),
+            )
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "A session's cli_session_id is changed by the key that opened it",
+        )
+
+    @pytest.mark.parametrize("row", [None, {"kind": "Issue", "account": "a@b.c"}])
+    @pytest.mark.asyncio
+    async def test_a_row_that_is_no_session_is_left_alone(
+        self,
+        row: dict[str, object] | None,
+    ) -> None:
+        await require_session_id_change(
+            _serving(row),
+            make_caller("open"),
+            uuid.uuid4(),
+        )
+
+
+class TestRequireReadable:
+    @pytest.mark.asyncio
+    async def test_a_row_the_caller_may_not_read_is_not_found(self) -> None:
+        hidden = uuid.uuid4()
+        conn = make_conn()
+        conn.fetchval.return_value = hidden
+        store, _engine = make_store(conn)
+        request = cast(
+            "Request",
+            SimpleNamespace(
+                app=SimpleNamespace(
+                    state=SimpleNamespace(store=store, config=Config()),
+                ),
+                state=SimpleNamespace(),
+            ),
+        )
+
+        with pytest.raises(NotFoundError, match=f"inquiry {hidden} not found"):
+            await require_readable(request, make_caller("open"), [hidden, uuid.uuid4()])
+
+    @pytest.mark.asyncio
+    async def test_naming_no_row_asks_nothing(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        request = cast(
+            "Request",
+            SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(store=store))),
+        )
+
+        await require_readable(request, make_caller("open"), [])
+
+        conn.fetchval.assert_not_awaited()
 
 
 def _opener(pin: str | None, *opens: str) -> AuthIdentity:
@@ -769,6 +791,15 @@ class TestRequireAttributable:
             403,
             "A row is attributed to a service account by that account or an admin",
         )
+
+
+def _serving(row: dict[str, object] | None) -> Request:
+    """Return a request whose store reads ``row`` for any id."""
+    conn = make_conn()
+    set_field_row(conn, row)
+    store, _engine = make_store(conn)
+    state = SimpleNamespace(store=store, config=Config())
+    return cast("Request", SimpleNamespace(app=SimpleNamespace(state=state)))
 
 
 if __name__ == "__main__":

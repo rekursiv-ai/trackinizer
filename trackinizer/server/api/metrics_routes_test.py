@@ -455,6 +455,79 @@ async def test_read_refuses_ids_that_are_not_experiments(
     assert (missing.status_code, not_run.status_code) == (404, 409)
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_logged_points_read_back_and_a_retry_logs_none(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    eid = await _experiment(store, [])
+    points = [
+        {"key": "loss", "step": 0, "value": 1.0},
+        {"key": "acc", "step": 0, "value": 0.5},
+    ]
+    path = experiment_metrics_path(eid)
+
+    first = await client.post(path, json={"points": points})
+    again = await client.post(path, json={"points": points})
+    read = await client.get(path, params={"key": "loss"})
+
+    assert first.status_code == 200, first.text
+    assert json_loads(first.content, dict[str, int]) == {"logged": 2, "skipped": 0}
+    assert json_loads(again.content, dict[str, int])["logged"] == 0
+    assert [
+        (p["key"], p["value"])
+        for p in from_plain(
+            json_loads(read.content, dict[str, object])["points"],
+            list[dict[str, object]],
+        )
+    ] == [("loss", 1.0)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_read_page_out_of_bounds_is_a_bad_request(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    path = experiment_metrics_path(await _experiment(store, []))
+
+    statuses = [
+        (await client.get(path, params=params)).status_code
+        for params in ({"limit": 0}, {"limit": MAX_LIST_LIMIT + 1}, {"offset": -1})
+    ]
+
+    assert statuses == [400, 400, 400]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_masked_write_assigns_every_selected_cell_and_needs_a_value(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    eid = await _experiment(
+        store,
+        [MetricPoint(key="loss", step=step, value=0.5) for step in range(3)],
+    )
+    path = experiment_metric_write_path(eid)
+    masks = [
+        {"axis": "key", "op": "is", "value": "loss"},
+        {"axis": "step", "op": "ge", "value": "1"},
+    ]
+
+    valueless = await client.post(path, json={"masks": masks})
+    written = await client.post(path, json={"masks": masks, "write": 9.0})
+
+    assert valueless.status_code == 400
+    assert from_plain(valueless.json(), dict[str, str])["detail"] == (
+        "write requires a 'to' value"
+    )
+    assert written.status_code == 200, written.text
+    assert json_loads(written.content, dict[str, int]) == {"written": 2}
+    assert [p.value for p in await store.read_metrics(eid)] == [0.5, 9.0, 9.0]
+
+
 async def _experiment(
     store: Store,
     points: list[MetricPoint],

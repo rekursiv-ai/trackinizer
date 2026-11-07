@@ -103,8 +103,6 @@ def _canonical_tuple(value: object) -> object:
     if not all(isinstance(item, str) for item in items):
         raise ValueError("Expected all(isinstance(item, str) for item in items).")
     strings = [item for item in items if isinstance(item, str)]
-    if len(strings) != len(items):
-        raise ValueError("Expected len(strings) == len(items).")
     return canonical_strs(strings)
 
 
@@ -197,9 +195,7 @@ def _column_specs(*classes: type[DataclassInstance]) -> dict[str, ColumnSpec]:
     for cls in classes:
         for field_name, spec in column_specs(cls).items():
             col = storage_name(field_name, spec)
-            if (
-                col in merged and merged[col] != spec
-            ):  # pragma: no cover -- defensive consistency check across the hierarchy.
+            if col in merged and merged[col] != spec:
                 raise AssertionError(
                     f"inconsistent ColumnSpec for {col!r}: {merged[col]!r} vs {spec!r}",
                 )

@@ -354,6 +354,29 @@ def test_an_asker_named_by_anyone_but_the_assistant_is_refused_unread(
     _assert_untouched(engine)
 
 
+def test_without_auth_no_asker_is_believed_and_none_is_read(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, engine = route_client
+    monkeypatch.setitem(
+        app.state._state,
+        "config",
+        Config(
+            auth_disabled=True,
+            assistant=Assistant(actor="kb", email=TEST_USER_EMAIL),
+        ),
+    )
+
+    response = client.post(
+        ENROLL_PATH,
+        json={"name": "box-1a2b3c4d", "asker": "ada@x.y"},
+    )
+
+    assert response.status_code == 403
+    _assert_untouched(engine)
+
+
 def test_a_writer_cannot_enroll_a_machine_that_belongs_to_someone_else(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:

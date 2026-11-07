@@ -264,6 +264,64 @@ async def test_read_artifact_content_returns_the_stored_revision_or_none() -> No
     assert await read_artifact_content(store, uuid.uuid4()) is None
 
 
+def test_an_evidence_citation_names_its_claim_and_edge_together() -> None:
+    claim = str(uuid.uuid4())
+    record = str(uuid.uuid4())
+    for half in ({"claim_id": claim}, {"edge_kind": "proves"}):
+        with pytest.raises(ValidationError, match="need a claim and edge kind"):
+            ArtifactCitationRef.model_validate({"record_id": record, **half})
+    both = ArtifactCitationRef.model_validate(
+        {"record_id": record, "claim_id": claim, "edge_kind": "favors"},
+    )
+    assert both.edge_kind == "favors"
+
+
+@pytest.mark.parametrize(
+    ("section", "message"),
+    [
+        ({"title": "  "}, "Section text must not be blank"),
+        (
+            {
+                "findings": [
+                    {
+                        **_finding(),
+                        "outcome": {"result": " ", "denominator": 1, "split": "x"},
+                    },
+                ],
+            },
+            "Outcome text must not be blank",
+        ),
+    ],
+)
+def test_invisible_section_or_outcome_text_is_rejected(
+    section: dict[str, object],
+    message: str,
+) -> None:
+    draft = _draft()
+    sections = from_plain(draft["sections"], list[dict[str, object]])
+    with pytest.raises(ValidationError, match=message):
+        PublishArtifactContent.model_validate(
+            {**draft, "sections": [{**sections[0], **section}]},
+        )
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ({"format": "html", "sections": []}, "HTML Artifacts need HTML"),
+        ({"format": "html", "html": "<p>x</p>"}, "HTML Artifacts need HTML"),
+        ({"html": "<p>x</p>"}, "Structured Artifacts need sections and no HTML"),
+        ({"sections": []}, "Structured Artifacts need sections and no HTML"),
+    ],
+)
+def test_a_format_carries_only_its_own_content(
+    body: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        PublishArtifactContent.model_validate({**_draft(), **body})
+
+
 def test_nested_citations_have_a_global_limit() -> None:
     """An otherwise small request cannot trigger thousands of graph reads."""
     finding = {**_finding(), "citations": [{"record_id": str(uuid.uuid4())}] * 16}

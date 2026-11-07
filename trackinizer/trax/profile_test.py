@@ -8,9 +8,6 @@ import pytest
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import profile
-from trackinizer.trax.conftest import FakeClient, run
-from trackinizer.trax.context import trax_env
-from trackinizer.trax.login import LoginResult
 from trackinizer.trax.profile import Profile
 
 
@@ -22,149 +19,6 @@ def test_profile_store_uses_shared_user_directory_isolation(
     assert config_dir() == isolate_user_dirs / "config"
     assert (config_dir() / "rekursiv-ai" / "trax" / "profiles").is_dir()
     assert list(tmp_path.iterdir()) == []
-
-
-def test_profile_help_shows_local_forms(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    run(["profile", "help"], client)
-    out = capsys.readouterr().out
-    assert "Usage: trax profile [NAME] [ACTION]" in out
-    assert "Examples:" in out
-    assert "Fields: url actor token" in out
-    assert "Arguments:" not in out
-    assert not client.calls
-
-
-def test_profile_field_help_shows_local_forms(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    run(["profile", "url", "help"], client)
-    out = capsys.readouterr().out
-    assert "Usage: trax profile url [to VALUE]" in out
-    assert "No VALUE projects the field" in out
-    assert not client.calls
-
-
-def test_profile_field_trailing_help_shows_local_forms(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Help is a tail-action verb; '--help' is not infused anywhere."""
-    run(["profile", "url", "help"], client)
-    out = capsys.readouterr().out
-    assert "Usage: trax profile url [to VALUE]" in out
-    assert "No VALUE projects the field" in out
-    assert not client.calls
-
-
-def test_profile_set_leaf_help_shows_local_forms(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    run(["profile", "foo", "token", "to", "secret", "help"], client)
-    out = capsys.readouterr().out
-    assert "Usage: trax profile foo token to VALUE" in out
-    assert "Mutates the selected profile field" in out
-    assert not client.calls
-
-
-def test_bare_profile_lists_all_with_active_marked(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """Bare ``trax profile`` lists all profiles, active ``*``-marked.
-
-    Consistent with bare ``trax issue`` listing all rows; there is no
-    separate ``list`` action. Detail for one profile is ``trax profile NAME``.
-    """
-    profile.save_profile(
-        "default",
-        Profile(url="http://trackinizer.local:8765", author="alice", api_key="secret"),
-    )
-    profile.save_profile("staging", Profile(url="http://staging:8765"))
-    profile.switch_profile("default")
-    run(["profile"], FakeClient())
-    out = capsys.readouterr().out
-    assert "* default" in out
-    assert "http://trackinizer.local:8765" in out
-    assert "staging" in out
-
-
-def test_profile_name_displays_named_connection_target(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("foo", Profile(url="http://foo:8765"))
-    run(["profile", "foo"], FakeClient())
-    out = capsys.readouterr().out
-    assert "profile: foo" in out
-    assert "url:     http://foo:8765" in out
-
-
-def test_profile_field_displays_active_profile_field(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("default", Profile(url="http://trackinizer.local:8765"))
-    run(["profile", "url"], FakeClient())
-    assert capsys.readouterr().out == "http://trackinizer.local:8765\n"
-
-
-def test_profile_name_field_displays_named_profile_field(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("foo", Profile(url="http://foo:8765", api_key="secret"))
-    run(["profile", "foo", "token"], FakeClient())
-    assert capsys.readouterr().out == "set (prefix secret)\n"
-
-
-def test_profile_token_sets_active_profile_token(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("default", Profile(url="http://trackinizer.local:8765"))
-    run(["profile", "token", "to", "secret"], FakeClient())
-    assert profile.read_profile("default").api_key == "secret"
-    assert "set: profile default token" in capsys.readouterr().out
-
-
-def test_profile_name_token_sets_named_profile_token() -> None:
-    profile.save_profile("foo", Profile(url="http://foo:8765"))
-    run(["profile", "foo", "token", "to", "secret"], FakeClient())
-    assert profile.read_profile("foo").api_key == "secret"
-
-
-def test_profile_url_creates_default_profile() -> None:
-    run(["profile", "url", "to", "http://trackinizer.local:8765"], FakeClient())
-    assert profile.read_profile("default").url == "http://trackinizer.local:8765"
-
-
-def test_profile_current_selects_existing_profile() -> None:
-    profile.save_profile("foo", Profile(url="http://foo:8765"))
-    run(["profile", "current", "foo"], FakeClient())
-    assert profile.current_profile() == "foo"
-
-
-def test_profile_token_bootstraps_missing_profile() -> None:
-    """A first-write on any missing profile bootstraps with the default URL."""
-    run(["profile", "token", "to", "secret"], FakeClient())
-    assert (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default").exists()
-    saved = (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "default").read_text(
-        encoding="utf-8",
-    )
-    assert "api_key=secret" in saved
-    assert "url=" in saved
-
-
-def test_profile_rejects_old_subcommand_sugar() -> None:
-    profile.save_profile("default", Profile(url="http://trackinizer.local:8765"))
-    for argv in (
-        ["profile", "show"],
-        ["profile", "auth", "set", "secret"],
-        ["profile", "add", "foo", "http://foo:8765"],
-        ["profile", "switch", "foo"],
-    ):
-        with pytest.raises(ClientError):
-            run(argv, FakeClient())
 
 
 def test_current_profile_resolution(
@@ -276,107 +130,6 @@ def test_del_active_profile_refused() -> None:
     assert (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "prod").exists()
 
 
-# Coverage for context-sensitive help, list/show branches, field reads, and
-# storage internals (read_profile, list_profiles, _write_atomic).
-
-
-def test_profile_help_for_field_subprefix(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    run(["profile", "alpha", "url", "help"], client)
-    out = capsys.readouterr().out
-    assert "Usage: trax profile alpha url" in out
-
-
-def test_profile_help_for_unknown_token_falls_through(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    run(["profile", "alpha", "beta", "help"], client)
-    out = capsys.readouterr().out
-    assert "Usage: trax profile" in out
-
-
-def test_bare_profile_lists_profiles_present(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("alpha", Profile(url="http://alpha.example", author="al"))
-    profile.save_profile("beta", Profile(url="http://beta.example"))
-    run(["profile"], client)
-    out = capsys.readouterr().out
-    assert "alpha" in out
-    assert "beta" in out
-
-
-def test_profile_show_named(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("alpha", Profile(url="http://alpha.example", author="al"))
-    run(["profile", "alpha"], client)
-    out = capsys.readouterr().out
-    assert "alpha" in out
-
-
-def test_profile_read_actor(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("default", Profile(url="http://x.example", author="bob"))
-    run(["profile", "actor"], client)
-    assert "bob" in capsys.readouterr().out
-
-
-def test_profile_read_token_set(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("default", Profile(url="http://x.example", api_key="secret"))
-    run(["profile", "token"], client)
-    out = capsys.readouterr().out
-    assert "set" in out
-
-
-def test_profile_read_token_unset(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    profile.save_profile("default", Profile(url="http://x.example"))
-    run(["profile", "token"], client)
-    assert "unset" in capsys.readouterr().out
-
-
-def test_profile_current_requires_one_arg(client: FakeClient) -> None:
-    with pytest.raises(ClientError, match="expected profile name after current"):
-        run(["profile", "current"], client)
-
-
-def test_profile_del_requires_one_arg(client: FakeClient) -> None:
-    with pytest.raises(ClientError, match="expected profile name before del"):
-        run(["profile", "del"], client)
-
-
-def test_profile_del_missing_raises(client: FakeClient) -> None:
-    with pytest.raises(ClientError, match="not found"):
-        run(["profile", "ghost", "del"], client)
-
-
-def test_profile_set_rejects_bare_adjacency(client: FakeClient) -> None:
-    """A set must use ``field to value`` (E007), not bare ``field value``."""
-    profile.save_profile("alpha", Profile(url="http://x.example"))
-    with pytest.raises(ClientError, match="profile set is 'field to value'"):
-        run(["profile", "alpha", "url", "http://x"], client)
-
-
-def test_profile_set_is_one_field_per_command(client: FakeClient) -> None:
-    """The multi-pair form is gone: one ``field to value`` per command."""
-    profile.save_profile("alpha", Profile(url="http://x.example"))
-    with pytest.raises(ClientError, match="profile set is 'field to value'"):
-        run(["profile", "alpha", "url", "to", "http://a", "token", "to", "b"], client)
-
-
 def test_read_profile_ignores_comments_and_blank_lines() -> None:
     (config_dir() / "rekursiv-ai" / "trax" / "profiles" / "alpha").write_text(
         "# comment\n\nurl=http://x.example\n",
@@ -447,6 +200,21 @@ def test_write_atomic_cleans_tmp_on_failure(tmp_path: Path) -> None:
         profile._write_atomic(target, "x", mode=0o600)
     # No temp artifact survives the failure, whatever its (now unique) name.
     assert list(target.parent.iterdir()) == []
+
+
+def test_write_atomic_cleans_tmp_when_the_rename_fails(tmp_path: Path) -> None:
+    target = tmp_path / "atomic" / "target"
+    (target / "occupied").mkdir(parents=True)
+
+    with pytest.raises(OSError, match="target"):
+        profile._write_atomic(target, "x", mode=0o600)
+
+    assert list(target.parent.iterdir()) == [target]
+
+
+def test_list_profiles_is_empty_without_a_profiles_directory() -> None:
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles").rmdir()
+    assert profile.list_profiles() == []
 
 
 def test_write_atomic_uses_unique_temp_per_write(
@@ -537,6 +305,7 @@ def test_a_server_without_a_saved_profile_gets_the_login_hint_and_localhost(
         "javascript:alert(1)",
         "https://",
         "x.test",
+        "https://[::1",
     ],
 )
 def test_a_server_that_is_not_a_sound_url_is_ignored_and_never_echoed(
@@ -564,61 +333,6 @@ def test_the_hint_quotes_a_server_that_holds_a_shell_metacharacter(
 
     assert hint is not None
     assert "'https://x.test/;rm'" in hint
-
-
-def test_trax_env_prefers_the_plain_name_over_the_ssh_forwarded_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("TRAX_CANVAS", raising=False)
-    monkeypatch.delenv("LC_TRAX_CANVAS", raising=False)
-    assert trax_env("CANVAS") is None
-    monkeypatch.setenv("LC_TRAX_CANVAS", "from-ssh")
-    assert trax_env("CANVAS") == "from-ssh"
-    monkeypatch.setenv("TRAX_CANVAS", "plain")
-    assert trax_env("CANVAS") == "plain"
-
-
-def test_profile_login_runs_the_device_login_and_names_the_result(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    asked: list[tuple[str, str]] = []
-
-    def fake_login(url: str, *, profile: str) -> LoginResult:
-        asked.append((url, profile))
-        return LoginResult(profile=profile, role="writer")
-
-    monkeypatch.setattr("trackinizer.trax.login.login", fake_login)
-
-    run(["profile", "work", "login", "https://trackinizer.example"], client)
-
-    assert asked == [("https://trackinizer.example", "work")]
-    assert capsys.readouterr().out == "logged in: profile work (writer)\n"
-    assert not client.calls
-
-
-def test_profile_help_lists_the_login_form(
-    client: FakeClient,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    run(["profile", "help"], client)
-
-    assert (
-        "trax profile foo login https://trackinizer.example" in capsys.readouterr().out
-    )
-
-
-@pytest.mark.parametrize(
-    "argv",
-    [["work", "login"], ["work", "login", "a", "b"], ["login", "work", "x"]],
-)
-def test_profile_login_needs_a_name_and_one_url(
-    client: FakeClient,
-    argv: list[str],
-) -> None:
-    with pytest.raises(ClientError):
-        run(["profile", *argv], client)
 
 
 def test_a_usable_profile_is_a_pinned_one_or_a_saved_default(

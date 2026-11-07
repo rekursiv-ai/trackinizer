@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+import argparse
 import contextlib
 import uuid
 
@@ -33,13 +34,16 @@ from trackinizer.trax.grammar import (
     MetricMask,
     ReadField,
     RelationAction,
+    RemoveList,
     SetField,
 )
 from trackinizer.trax.parser import (
     consume_edge_target,
     consume_ref,
     parse_actions,
+    parse_backfill_timestamp,
     parse_bulk_apply,
+    parse_export_selector,
     parse_list_query,
     parse_metric_action,
     parse_subject_list,
@@ -652,6 +656,11 @@ def test_edge_valence_default_is_marked_injected() -> None:
 def test_edge_priority_bad_value_raises_client_error() -> None:
     with pytest.raises(ClientError, match="priority must be an int"):
         parse_actions(["blocked_by", "issue", "5", "edge", "priority", "to", "oops"])
+
+
+def test_a_scalar_field_set_twice_in_one_edit_is_rejected() -> None:
+    with pytest.raises(ClientError, match=r"^scalar field 'title' set more than once$"):
+        parse_actions(["title", "to", "a", "title", "to", "b"])
 
 
 def test_inline_create_rejects_duplicate_scalar_field() -> None:
@@ -2161,6 +2170,125 @@ class TestParseMetricAction:
     def test_unknown_leading_token_errors(self) -> None:
         with pytest.raises(ClientError):
             parse_metric_action(["bogus"])
+
+
+class TestBackfillTimestamp:
+    def test_a_past_aware_timestamp_keeps_its_zone(self) -> None:
+        stamp = "2020-01-02T03:04:05-07:00"
+        assert parse_backfill_timestamp(stamp) == stamp
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("last tuesday", "expected an ISO 8601 timestamp"),
+            ("2020-01-02T03:04:05", "requires an explicit timezone"),
+            ("2999-01-01T00:00:00+00:00", "must be in the past"),
+        ],
+    )
+    def test_refuses_an_unusable_timestamp(self, value: str, message: str) -> None:
+        with pytest.raises(argparse.ArgumentTypeError, match=message):
+            parse_backfill_timestamp(value)
+
+
+class TestExportSelector:
+    def test_a_valueless_operator_takes_no_operand(self) -> None:
+        assert parse_export_selector(["owner", "isnull", "title", "re", "x"]) == (
+            Filter(field="owner", op="isnull", value=""),
+            Filter(field="title", op="re", value="x"),
+        )
+
+    def test_a_clause_the_filter_refuses_is_a_client_error(self) -> None:
+        with pytest.raises(ClientError, match="regex"):
+            parse_export_selector(["title", "re", "("])
+
+    @pytest.mark.parametrize(
+        ("tokens", "message"),
+        [
+            (["title"], "clause 'title' needs an operator"),
+            (["title", "about", "x"], "unknown filter operator 'about' after field"),
+            (["title", "re"], "clause 'title re' needs a value"),
+        ],
+    )
+    def test_refuses_an_incomplete_clause(
+        self,
+        tokens: list[str],
+        message: str,
+    ) -> None:
+        with pytest.raises(ClientError, match=message):
+            parse_export_selector(tokens)
+
+
+class TestListFieldActions:
+    def test_to_seeds_a_plain_list_with_one_value(self) -> None:
+        assert parse_actions(["label", "to", "x"]) == [
+            SetField(field="labels", value=("x",)),
+        ]
+
+    def test_del_removes_one_value_from_a_plain_list(self) -> None:
+        assert parse_actions(["label", "del", "x"]) == [
+            RemoveList(field="label", value="x"),
+        ]
+
+    def test_del_without_a_value_is_refused(self) -> None:
+        with pytest.raises(ClientError, match="del requires a value for list field"):
+            parse_actions(["label", "del"])
+
+    def test_a_ref_list_takes_a_typed_ref_on_to_and_del(self) -> None:
+        ref = SeqRef(kind="CodeChange", seq=7)
+        assert parse_actions(["codechange", "to", "codechange", "7"]) == [
+            SetField(field="codechanges", value=(ref,)),
+        ]
+        assert parse_actions(["codechange", "del", "7"]) == [
+            RemoveList(field="codechange", value="7", ref=ref),
+        ]
+
+    def test_an_inline_create_seeds_its_ref_list_with_a_typed_ref(self) -> None:
+        [action] = parse_actions(
+            ["produced", "issue", "title", "to", "x", "codechange", "to", "7"],
+        )
+        assert isinstance(action, EdgeAction)
+        assert isinstance(action.target, InlineCreate)
+        assert action.target.fields == (
+            SetField(field="title", value="x"),
+            SetField(field="codechanges", value=(SeqRef(kind="CodeChange", seq=7),)),
+        )
+
+
+def test_ref_text_spells_a_uuid_ref_as_its_uuid() -> None:
+    value = uuid.uuid4()
+    assert ref_text(UuidRef(uuid=value)) == str(value)
+
+
+@pytest.mark.parametrize(
+    ("tokens", "message"),
+    [
+        (["narrows", "issue", "3", "edge", "bogus"], "'edge' must be followed by"),
+        (
+            ["narrows", "begin", "issue", "title", "to", "x"],
+            "'begin' group must be closed by 'end'",
+        ),
+        (["narrows", "begin", "issue", "end"], "requires at least one field"),
+        (
+            ["produced", "issue", "title", "to", "x", "agent-cost"],
+            "inline create cost 'agent-cost' must use add VALUE",
+        ),
+        (
+            ["narrows", "note", "to", "x", "issue", "3", "del"],
+            "cannot combine edge metadata with 'del'",
+        ),
+    ],
+)
+def test_parse_actions_refuses_a_malformed_edge(
+    tokens: list[str],
+    message: str,
+) -> None:
+    with pytest.raises(ClientError, match=message):
+        parse_actions(tokens)
+
+
+def test_a_kindless_query_on_fields_no_one_kind_carries_is_refused() -> None:
+    with pytest.raises(ClientError, match="no kind carries every filtered field"):
+        parse_list_query(None, ["judgement", "is", "proven", "query", "is", "x"])
 
 
 if __name__ == "__main__":

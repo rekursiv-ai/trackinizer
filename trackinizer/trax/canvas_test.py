@@ -14,6 +14,7 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
+from trackinizer.trax.canvas import canvas_from_env
 
 
 if TYPE_CHECKING:
@@ -47,6 +48,7 @@ class _CanvasClient:
         self.chat_windows: list[bool] = []
         self.preferences: list[dict[str, object]] = []
         self.reads: list[str] = []
+        self.visuals: list[object] = []
         self.canvas = uuid.uuid4()
 
     def get(self, path: str) -> dict[str, object]:
@@ -55,7 +57,7 @@ class _CanvasClient:
 
     def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, object]:
         self.reads.append(f"/api/canvases/{canvas_id}")
-        return self._state(8, visuals=[])
+        return self._state(8, visuals=self.visuals)
 
     def apply_canvas_operation(
         self,
@@ -605,6 +607,63 @@ def test_canvas_mark_refuses_a_malformed_command(
         _canvas(client, *arguments)
 
     assert client.operations == []
+
+
+def test_a_malformed_placed_canvas_names_no_canvas() -> None:
+    """A garbled ``TRAX_CANVAS`` is not read past to its ``LC_`` twin."""
+    good = str(uuid.uuid4())
+
+    assert canvas_from_env({"TRAX_CANVAS": "garbled", "LC_TRAX_CANVAS": good}) is None
+    assert canvas_from_env({"TRAX_CANVAS": " ", "LC_TRAX_CANVAS": good}) == uuid.UUID(
+        good,
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["show"], "show requires one visual type"),
+        (["show", "trax.browse", "trax.subgraph"], "show requires one visual type"),
+        (["hide"], "hide requires one instance UUID"),
+        (["focus", str(uuid.uuid4()), "--placement", "main"], "focus requires one"),
+        (["hide", "not-a-uuid"], "instance is not a valid UUID"),
+        (["place", str(uuid.uuid4())], "place requires an instance UUID and placement"),
+        (["place", str(uuid.uuid4()), "nowhere"], "place requires an instance UUID"),
+        (
+            ["place", str(uuid.uuid4()), "left", "--record", str(uuid.uuid4())],
+            "place requires an instance UUID",
+        ),
+    ],
+)
+def test_canvas_refuses_a_malformed_operation(
+    arguments: list[str],
+    message: str,
+) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match=f"^{re.escape(message)}"):
+        _canvas(client, *arguments)
+
+    assert client.operations == []
+
+
+def test_canvas_prints_each_visual_with_its_placement_and_record(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    record = str(uuid.uuid4())
+    client.visuals = [
+        {"id": "i1", "type": "trax.subgraph", "placement": "side", "record_id": record},
+        {"id": "i2", "type": "trax.browse"},
+    ]
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"canvas {client.canvas} revision 8 focused none",
+        f"  trax.subgraph i1 side record={record}",
+        "  trax.browse i2 main",
+    ]
 
 
 def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_own(

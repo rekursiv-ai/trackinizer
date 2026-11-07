@@ -11,6 +11,7 @@ import pytest
 
 from trackinizer.runs.adapters.claude import ClaudeAdapter
 from trackinizer.runs.adapters.custom_types import Subagent
+from trackinizer.sagent.session.types import UserMessage
 
 
 adapter = ClaudeAdapter()
@@ -251,6 +252,62 @@ class TestClaudeSubagents:
         assert claude.subagent(session) is None
         assert not claude.matches_session_file(side)
         assert claude.subagent(side) is None
+
+    def test_a_file_that_is_not_jsonl_is_no_session(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+
+        assert not ClaudeAdapter().matches_session_file(
+            tmp_path / "projects" / "-w" / "s1.json",
+        )
+
+
+class TestClaudeScope:
+    def test_the_scope_is_the_resolved_cwd_with_each_odd_character_dashed(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Claude names the project after the cwd it RESOLVED at startup."""
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "config"))
+        real = tmp_path / "my repo.v2"
+        real.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(real)
+        monkeypatch.chdir(link)
+
+        scope = ClaudeAdapter().session_scope()
+
+        assert scope is not None
+        assert scope.parent == tmp_path / "config" / "projects"
+        resolved = str(real.resolve())
+        assert scope.name.endswith("-my-repo-v2")
+        assert len(scope.name) == len(resolved)
+        assert all(c.isascii() and (c.isalnum() or c == "-") for c in scope.name)
+        assert [i for i, c in enumerate(resolved) if c.isalnum()] == [
+            i for i, c in enumerate(scope.name) if c.isalnum()
+        ]
+
+
+class TestClaudeReader:
+    def test_each_file_gets_a_fresh_reader_of_claudes_lines(self) -> None:
+        line = json.dumps(
+            {
+                "type": "user",
+                "uuid": "u1",
+                "timestamp": "2026-11-06T12:00:00Z",
+                "message": {"role": "user", "content": "hello"},
+            },
+        )
+        reader = adapter.reader()
+
+        read = [*reader.feed(line + "\n"), *reader.close()]
+
+        assert [r.content for r in read if isinstance(r, UserMessage)] == ["hello"]
+        assert adapter.reader() is not reader
 
 
 if __name__ == "__main__":

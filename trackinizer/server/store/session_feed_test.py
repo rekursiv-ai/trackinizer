@@ -39,6 +39,7 @@ from trackinizer.wire.wire_sessions import (
     FeedBucket,
     FeedKindFacet,
     FeedRoomFacet,
+    campaign_asker_label,
 )
 
 
@@ -253,6 +254,62 @@ async def test_a_scope_keeps_any_value_of_a_field_and_every_named_field(
         ("b", k) for k in both
     }
     assert await kept() == {(a, k) for a in "abc" for k in both}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_account_and_an_asker_each_narrow_what_the_reader_reads(
+    integ_store: Store,
+) -> None:
+    """``asker`` keeps a campaign's sessions by its slug: a label or a room."""
+    labelled = await _session(integ_store, "lead")
+    roomed = await _session(integ_store, "worker", rooms=("tiles",))
+    other = await _session(integ_store, "stranger")
+    async with integ_store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET labels = ARRAY['lab'] WHERE id = $1",
+            labelled,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET account = 'ann@lab.example' WHERE id = ANY($1)",
+            [labelled, roomed],
+        )
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, labels) "
+            "VALUES ($1, 'Issue', nextval('seq_issue'), 'active', 'ann@lab.example', "
+            "'brief', $2)",
+            uuid4(),
+            [
+                campaign_asker_label("lab", "ann@lab.example"),
+                "tiles:asker:ann@lab.example",
+            ],
+        )
+    for session in (labelled, roomed, other):
+        await _records(integ_store, session, [("UserMessage", _T0, _HUMAN)])
+
+    async def actors(*, account: str = "", asker: str = "") -> set[str]:
+        scope = replace(_ALL_SESSIONS, account=account, asker=asker)
+        return {event.actor for event in await integ_store.read_feed(scope=scope)}
+
+    assert await actors(account="Ann@Lab.Example") == {"lead", "worker"}
+    assert await actors(asker="ANN@lab.example") == {"lead", "worker"}
+    assert await actors(asker="bob@lab.example") == set()
+    assert replace(_ALL_SESSIONS, asker="ann@lab.example").names_sessions
+
+
+def test_an_account_and_an_asker_bind_their_lowercased_values() -> None:
+    params: list[object] = []
+
+    clauses = FeedScope(
+        reader=_ANYONE,
+        account="Ann@Lab.Example",
+        asker="Ann@Lab.Example",
+    ).clauses(params, kind="e.kind")
+
+    assert clauses[0] == "lower(i.account) = $1"
+    assert clauses[1].startswith("(i.labels && ARRAY(SELECT left(tag, length(tag) - ")
+    assert clauses[1].count("$2::text") == 6
+    assert params == ["ann@lab.example", ":asker:ann@lab.example"]
 
 
 def test_each_field_of_a_scope_binds_one_array_in_the_order_the_sql_tests_it() -> None:

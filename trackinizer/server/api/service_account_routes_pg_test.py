@@ -26,8 +26,8 @@ from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    waited_on_locks,
 )
-from trackinizer.server.api.machine_host_routes_pg_test import waited_on_locks
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.inbound import InboundQueue
 

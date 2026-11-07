@@ -255,11 +255,8 @@ async def _run_patch(
             reason=body.reason,
         )
     method_name = route.add_method if body.op == "add" else route.sub_method
-    if method_name is None:
-        raise HTTPException(
-            status_code=405,
-            detail=f"PATCH op={body.op!r} is not valid for field {route.column!r}",
-        )
+    # Every non-cost PATCH route carries both methods (pinned by ``edit_test``).
+    assert isinstance(method_name, str)
     element = cast(_ElementMethod, getattr(store, method_name))
     return await element(
         target_id,

@@ -17,15 +17,9 @@ the writer identity installed by :func:`route_client` and inspects the
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock
 
-from fastapi.testclient import TestClient
 from treekle import from_plain
 
-import pytest
-
-from trackinizer.server.api import meta_routes
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -36,6 +30,8 @@ from trackinizer.server.api.conftest import (
 
 
 if TYPE_CHECKING:
+    from fastapi.testclient import TestClient
+
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
 
@@ -92,75 +88,6 @@ class TestUnauthenticatedReturns401:
         clear_identity_override()
         r = client.get("/api/inquiries?kind=Issue")
         assert r.status_code == 401
-
-
-class TestTheRouteMapNeedsASignIn:
-    @pytest.fixture(autouse=True)
-    def served_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Serve a stand-in schema; ``openapi_drift_test.py`` checks the real one."""
-
-        def small_schema() -> dict[str, object]:
-            return {"paths": {"/api/version": {}}}
-
-        monkeypatch.setattr(app, "openapi", small_schema)
-
-    def test_the_schema_is_refused_from_outside(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-    ) -> None:
-        client, _store, _engine = route_client
-        clear_identity_override()
-        assert client.get("/openapi.json").status_code == 401
-
-    @pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
-    def test_a_deploy_on_this_box_reads_the_schema_with_no_credential(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-        host: str,
-    ) -> None:
-        clear_identity_override()
-        del route_client
-        local = TestClient(app, client=(host, 50_000))
-        response = local.get("/openapi.json")
-        assert response.status_code == 200
-        paths = from_plain(response.json(), dict[str, object])["paths"]
-        assert "/api/version" in from_plain(paths, dict[str, object])
-
-    @pytest.mark.parametrize(
-        "header",
-        ["x-forwarded-for", "forwarded", "x-real-ip", "cf-connecting-ip", "via"],
-    )
-    def test_a_proxied_request_is_outside_though_it_comes_from_loopback(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-        header: str,
-    ) -> None:
-        clear_identity_override()
-        del route_client
-        local = TestClient(app, client=("127.0.0.1", 50_000))
-        response = local.get("/openapi.json", headers={header: "203.0.113.9"})
-        assert response.status_code == 401
-
-    def test_a_signed_in_caller_reads_the_schema(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        client, _store, _engine = route_client
-        monkeypatch.setattr(
-            meta_routes,
-            "request_user",
-            AsyncMock(return_value=make_test_identity(role="viewer")),
-        )
-        assert client.get("/openapi.json").status_code == 200
-
-    def test_there_are_no_doc_pages(
-        self,
-        route_client: tuple[TestClient, Store, FakeEngine],
-    ) -> None:
-        client, _store, _engine = route_client
-        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
-            assert client.get(path).status_code == 404
 
 
 class TestViewerHitsWriterRoute403:

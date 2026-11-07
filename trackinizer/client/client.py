@@ -26,11 +26,12 @@ replay; this is not a live hazard because that route catches per-item errors
 and returns partial-success (HTTP 200) rather than 500-ing mid-batch, so a
 retry is only triggered when nothing -- or everything -- has been applied.
 
-Connect and write failures (``ConnectError`` / ``ConnectTimeout`` /
-``WriteError`` / ``WriteTimeout``) are wrapped in ``ClientError`` but *not*
-retried: a write may already have reached the server, so a blind retry
-could duplicate the operation. Either way the raw httpx2 exception never
-escapes the ``ClientError`` contract.
+Every other transport failure -- connect and write failures (``ConnectError`` /
+``ConnectTimeout`` / ``WriteError`` / ``WriteTimeout``), a proxy or local
+protocol error -- is wrapped in ``ClientError`` but *not* retried: a write may
+already have reached the server, so a blind retry could duplicate the
+operation. Either way the raw httpx2 exception never escapes the
+``ClientError`` contract.
 """
 
 from __future__ import annotations
@@ -3026,25 +3027,6 @@ class Client:
                     if timeout is not None
                     else httpx2.USE_CLIENT_DEFAULT,
                 )
-            # Connect and write failures are wrapped but not retried: a write
-            # may already have reached the server, so a blind retry could
-            # duplicate the operation, and a connect failure won't recover
-            # within this loop. Either way the raw httpx2 error must not escape
-            # the ClientError contract.
-            except (
-                httpx2.ConnectError,
-                httpx2.ConnectTimeout,
-                httpx2.WriteError,
-                httpx2.WriteTimeout,
-            ) as err:
-                self._log_transport_failure(
-                    method,
-                    path,
-                    err,
-                    request_index=request_index,
-                    attempt=attempt + 1,
-                )
-                raise ClientError(f"{method} {path} failed: {err}") from err
             except (
                 httpx2.RemoteProtocolError,
                 httpx2.ReadError,
@@ -3062,6 +3044,21 @@ class Client:
                     raise ClientError(f"{method} {path} failed: {err}") from err
                 time.sleep(0.1 * (3.0 ** int(attempt)))  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
                 continue
+            # Every other transport failure -- connect and write failures, a proxy
+            # or protocol refusal -- is wrapped but not retried: a write may
+            # already have reached the server, so a blind retry could duplicate
+            # the operation, and a connect failure won't recover within this loop.
+            # Catching the base class keeps any raw httpx2 error from escaping the
+            # ClientError contract.
+            except httpx2.TransportError as err:
+                self._log_transport_failure(
+                    method,
+                    path,
+                    err,
+                    request_index=request_index,
+                    attempt=attempt + 1,
+                )
+                raise ClientError(f"{method} {path} failed: {err}") from err
             if (
                 response.status_code in (500, 502, 503, 504)
                 and attempt < retry_attempts - 1
@@ -3072,27 +3069,11 @@ class Client:
         else:
             raise AssertionError("unreachable: retry_attempts >= 1")
         if response.status_code >= 400:
-            error_code = ""
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = None
-            if isinstance(payload, dict):
-                payload_map = cast(Mapping[object, object], payload)
-                # A route that answers with a coded detail nests the code there.
-                detail = payload_map.get("detail")
-                code = payload_map.get("code") or (
-                    cast(Mapping[object, object], detail).get("code")
-                    if isinstance(detail, dict)
-                    else None
-                )
-                if isinstance(code, str):
-                    error_code = code
             raise ClientError(
                 f"{method} {path} -> {response.status_code}: "
                 f"{_truncate(response.text)}",
                 status_code=response.status_code,
-                code=error_code,
+                code=_error_code(response),
             )
         if not response.content:
             return None
@@ -3167,6 +3148,25 @@ def _truncate(text: str, limit: int = 2_048) -> str:
 
 # A server response of the wrong JSON type would otherwise leak a raw ``TypeError`` when
 # a caller subscripts it, past the ClientError contract.
+def _error_code(response: httpx2.Response) -> str:
+    """Return the structured code an error response names, or empty."""
+    try:
+        payload = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(payload, dict):
+        return ""
+    payload_map = cast(Mapping[object, object], payload)
+    # A route that answers with a coded detail nests the code there.
+    detail = payload_map.get("detail")
+    code = payload_map.get("code") or (
+        cast(Mapping[object, object], detail).get("code")
+        if isinstance(detail, dict)
+        else None
+    )
+    return code if isinstance(code, str) else ""
+
+
 def _require_mapping(payload: object, where: str) -> Mapping[str, PlainTree]:
     """Return ``payload`` as a mapping, or raise a wrapped ``ClientError``."""
     if not isinstance(payload, Mapping):

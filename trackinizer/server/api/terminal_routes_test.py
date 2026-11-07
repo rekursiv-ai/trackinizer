@@ -17,24 +17,35 @@ import uuid
 
 from fastapi import HTTPException
 from starlette.requests import Request
+from starlette.websockets import WebSocketDisconnect
 from treekle import from_plain
 
 import pytest
 
 from trackinizer.conftest import FakeEngine
+from trackinizer.lib.posix.host import Frame
 from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.api import terminal_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import make_test_identity, patch_state
+from trackinizer.server.config import Config
 from trackinizer.server.inbound import InboundQueue
-from trackinizer.server.terminals import Opening, Terminal, TerminalHub
+from trackinizer.server.terminals import (
+    Opening,
+    SocketClosedError,
+    Terminal,
+    TerminalHub,
+)
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
-from trackinizer.wire.wire_terminals import TerminalWait
+from trackinizer.wire.wire_terminals import OpenTerminal, TerminalWait
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
+
+    from fastapi import WebSocket
+    from starlette.types import Message
 
     from trackinizer.wire.wire_terminals import TerminalKind
 
@@ -278,6 +289,93 @@ async def test_a_host_that_waits_out_its_hold_is_offered_nothing() -> None:
         await terminal_routes._next_terminal(hub, machine_id=_MACHINE, wait_sec=0)
         is None
     )
+
+
+class _Socket:
+    """A WebSocket as a leg uses it: each call answers or raises as scripted."""
+
+    def __init__(self, *received: Message | BaseException) -> None:
+        self._received = list(received)
+        self.send_error: BaseException | None = None
+
+    async def send_bytes(self, data: bytes) -> None:
+        del data
+        if self.send_error is not None:
+            raise self.send_error
+
+    async def receive(self) -> Message:
+        if not self._received:
+            await asyncio.sleep(3600)
+        answer = self._received.pop(0)
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+
+
+def _leg(socket: _Socket) -> terminal_routes._Leg:
+    return terminal_routes._Leg(cast("WebSocket", socket))
+
+
+@pytest.mark.parametrize(
+    "error",
+    [WebSocketDisconnect(1006), RuntimeError("closed"), OSError("reset")],
+)
+async def test_a_send_to_a_peer_that_left_is_a_closed_socket(
+    error: BaseException,
+) -> None:
+    socket = _Socket()
+    socket.send_error = error
+
+    with pytest.raises(SocketClosedError):
+        await _leg(socket).send_bytes(b"x")
+
+
+@pytest.mark.parametrize(
+    "received",
+    [
+        WebSocketDisconnect(1000),
+        RuntimeError("not connected"),
+        {"type": "websocket.receive", "text": "hi"},
+        {"type": "websocket.receive", "bytes": b""},
+    ],
+    ids=["disconnect", "not-connected", "text", "no-frame"],
+)
+async def test_anything_but_a_frame_from_a_peer_reads_as_its_leaving(
+    received: Message | BaseException,
+) -> None:
+    assert await terminal_routes._read_frame(_leg(_Socket(received))) is None
+
+
+async def test_a_first_frame_that_never_comes_is_none() -> None:
+    assert await terminal_routes._first_frame(_leg(_Socket()), timeout_sec=0.01) is None
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [None, (Frame.INPUT, b"x"), (Frame.ATTACH, b"short")],
+    ids=["none", "not-attach", "bad-attach"],
+)
+async def test_only_a_well_formed_attach_frame_names_a_ticket(
+    frame: tuple[Frame, bytes] | None,
+) -> None:
+    assert terminal_routes._parse_attach(frame) is None
+
+
+async def test_with_authentication_off_no_one_opens_a_run_for_an_asker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every caller is a synthetic admin then, so none is trusted to name an asker."""
+    patch_state(monkeypatch, "config", Config(auth_disabled=True))
+
+    with pytest.raises(HTTPException) as refused:
+        await terminal_routes._terminal_owner(
+            Request({"type": "http", "app": app, "headers": []}),
+            _IDENTITY,
+            asker="ada@x.y",
+            body=OpenTerminal(machine="gx10", rows=24, cols=80),
+        )
+
+    assert refused.value.status_code == 403
 
 
 if __name__ == "__main__":

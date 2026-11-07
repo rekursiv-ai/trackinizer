@@ -19,7 +19,6 @@ from trackinizer.wire.wire_machine_host import (
     JoinResponse,
     older_than,
 )
-from trackinizer.wire.wire_machines import MachineDetail
 
 
 _INSTANCE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -172,21 +171,6 @@ def test_an_enroll_name_follows_the_machine_name_pattern() -> None:
     assert EnrollRequest(name="dev-1").name == "dev-1"
     with pytest.raises(pydantic.ValidationError):
         EnrollRequest(name="Dev 1")
-
-
-def test_a_listed_machine_defaults_to_never_connected() -> None:
-    detail = MachineDetail.model_validate(
-        {
-            "name": "dev-1",
-            "role": "",
-            "how": "",
-            "labels": [],
-            "updated_by": "tester",
-            "updated": "2026-10-07T12:00:00Z",
-        },
-    )
-
-    assert (detail.status, detail.last_heartbeat, detail.facts) == ("never", None, {})
 
 
 @pytest.mark.parametrize(

@@ -269,7 +269,8 @@ def inquiry_relation_fields() -> frozenset[str]:
 # element is one ``X``. Returns ``None`` when ``value_type`` is not a homogeneous tuple.
 def _element_type(value_type: object) -> object | None:
     """Return the element type of a ``tuple[X, ...] | None`` column."""
-    for member in get_args(value_type) or (value_type,):
+    members = (value_type,) if get_origin(value_type) is tuple else get_args(value_type)
+    for member in members:
         if get_origin(member) is tuple:
             args: tuple[object, ...] = get_args(member)
             if len(args) == 2 and args[1] is Ellipsis:

@@ -8,7 +8,12 @@ from typing import TYPE_CHECKING
 
 import fcntl
 import os
+import subprocess
 import threading
+
+from hatchling.builders.config import BuilderConfig
+from hatchling.builders.wheel import WheelBuilder
+from hatchling.metadata.core import ProjectMetadata
 
 import pytest
 
@@ -54,6 +59,52 @@ def test_a_wheel_build_builds_the_web_app_it_ships(
         [str(web), "ci", "--no-audit", "--no-fund"],
         [str(web), "run", "build"],
     ]
+
+
+def test_the_hatch_hook_builds_its_roots_web_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hatch calls ``initialize`` per target; it builds the app under ``root``."""
+    calls = _recorded(monkeypatch)
+    web = _web(tmp_path, built=False)
+    builder = WheelBuilder(str(tmp_path))
+    hook = hatch_build.WebAppHook(
+        str(tmp_path),
+        {},
+        BuilderConfig(builder, str(tmp_path), "wheel", {}, {}),
+        ProjectMetadata(str(tmp_path), None),
+        str(tmp_path / "dist"),
+        "wheel",
+    )
+
+    hook.initialize("standard", {})
+
+    assert calls == [
+        [str(web), "ci", "--no-audit", "--no-fund"],
+        [str(web), "run", "build"],
+    ]
+
+
+def test_npm_runs_the_web_apps_own_launcher_in_its_directory(tmp_path: Path) -> None:
+    web = _web(tmp_path, built=False)
+    launcher = web / "npm"
+    launcher.write_text('#!/bin/sh\necho "$PWD $*" > ran.txt\n', encoding="utf-8")
+    launcher.chmod(0o755)
+
+    hatch_build._npm(web, "run", "build")
+
+    assert (web / "ran.txt").read_text(encoding="utf-8") == f"{web} run build\n"
+
+
+def test_a_failing_npm_fails_the_build(tmp_path: Path) -> None:
+    web = _web(tmp_path, built=False)
+    launcher = web / "npm"
+    launcher.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
+    launcher.chmod(0o755)
+
+    with pytest.raises(subprocess.CalledProcessError):
+        hatch_build._npm(web, "ci")
 
 
 def test_an_editable_install_builds_nothing(

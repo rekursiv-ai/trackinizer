@@ -83,6 +83,17 @@ class _BlockedSocket(_Socket):
         await super().close(code)
 
 
+class _FailingSocket(_Socket):
+    """A host whose sends fail the way a closed ASGI socket's do: not as a close."""
+
+    @override
+    async def send_bytes(self, data: bytes) -> None:
+        if not self.sent and decode_frame(data)[0] is Frame.ROUTE:
+            await super().send_bytes(data)
+            return
+        raise RuntimeError("Cannot call send once a close message has been sent")
+
+
 class _ClosingSocket(_Socket):
     def __init__(self) -> None:
         super().__init__()
@@ -828,6 +839,70 @@ async def test_takeover_unblocks_the_old_replay_without_repeating_pending_output
         await attaching
         await output
     assert fresh.sent == [(Frame.ACK, (0).to_bytes(8)), (Frame.OUTPUT, b"pending")]
+
+
+@pytest.mark.asyncio
+async def test_output_held_behind_a_replay_is_dropped_when_the_terminal_ends() -> None:
+    world = _World()
+    term = world.open()
+    host = _Socket()
+    assert await world.hub.host_connected(term, host)
+    blocked = _BlockedSocket()
+    attaching = asyncio.create_task(world.hub.attach_browser(term, blocked, offset=0))
+    await blocked.sending.wait()
+    output = asyncio.create_task(world.hub.from_host(term, Frame.OUTPUT, b"late"))
+    await asyncio.sleep(0)
+    assert not output.done()
+
+    await world.hub.end(term, code=wire_terminals.CLOSE_ENDED)
+    await output
+    await attaching
+    # Ending twice closes nothing twice.
+    await world.hub.end(term, code=wire_terminals.CLOSE_HOST_LOST)
+
+    assert term.ring.end == 0
+    assert host.closed == [wire_terminals.CLOSE_ENDED]
+    assert blocked.closed == [wire_terminals.CLOSE_ENDED]
+
+
+@pytest.mark.asyncio
+async def test_a_host_send_that_fails_unexpectedly_spares_the_rest_of_a_sweep(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    world = _World()
+    first = world.open(machine_id=uuid.UUID(int=10))
+    assert await world.hub.host_connected(first, _FailingSocket())
+    second = world.open(machine_id=uuid.UUID(int=11))
+    world.dead.update({first.id, second.id})
+
+    await world.hub.sweep()
+
+    assert (first.ended, second.ended) == (False, True)
+    assert f"terminal {first.id}: sweep failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sweep_pass_is_logged_and_the_loop_goes_on(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    world = _World()
+    passes: list[int] = []
+
+    async def sweep() -> None:
+        passes.append(len(passes))
+        if len(passes) == 1:
+            raise RuntimeError("clock blip")
+        if len(passes) == 3:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(world.hub, "sweep", sweep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await sweep_loop(world.hub, interval_sec=0)
+
+    assert passes == [0, 1, 2]
+    assert "terminal sweep failed; retrying next cycle" in caplog.text
 
 
 @pytest.mark.asyncio

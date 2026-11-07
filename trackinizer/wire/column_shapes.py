@@ -22,10 +22,7 @@ from trackinizer.types.columns import (
     storage_name,
 )
 from trackinizer.types.inquiries import INQUIRY_CLASSES
-from trackinizer.wire.session_record_fields import (
-    SESSION_RECORD_FIELDS,
-    column_record_kind,
-)
+from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 __all__ = [
@@ -306,11 +303,9 @@ def sql_template(column: str, op: str) -> str | None:
     template = _SQL_BY_SHAPE[shape].get(op)
     if template is None or shape is not ColumnShape.SESSION_RECORD:
         return template
-    kind = column_record_kind(column)
-    if kind is None:
-        raise ValueError("a SESSION_RECORD shape is seeded only for a record field")
-    # ``{col}`` consumed here; ``{p}`` is left for the caller to bind.
-    return template.replace("{col}", kind)
+    # ``{col}`` consumed here; ``{p}`` is left for the caller to bind. The shape is
+    # seeded from ``SESSION_RECORD_FIELDS`` alone, so the lookup cannot miss.
+    return template.replace("{col}", SESSION_RECORD_FIELDS[column])
 
 
 def compares_as_float(column: str, op: str) -> bool:

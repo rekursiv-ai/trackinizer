@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+import io
 import json
+import sys
 import uuid
+
+from treekle import json_loads
 
 import pytest
 
 from trackinizer.client.errors import ClientError
+from trackinizer.web.scripts import writer
 from trackinizer.web.scripts.writer import Clock, answer
 
 
@@ -165,6 +171,37 @@ def test_a_burst_paced_beyond_any_count_answers_an_error_and_the_writer_carries_
         "id": str(_A),
         "at": 0,
     }
+
+
+def test_main_answers_each_command_line_and_skips_blank_ones(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _Client()
+    opened: list[tuple[str, str]] = []
+
+    def connect(url: str, *, author: str) -> nullcontext[_Client]:
+        opened.append((url, author))
+        return nullcontext(client)
+
+    monkeypatch.setattr(writer, "Client", connect)
+    monkeypatch.setattr(sys, "argv", ["writer", "--url", "http://127.0.0.1:8871"])
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        io.StringIO('{"op": "create", "title": "Hi", "labels": []}\n\n{"op": "x"}\n'),
+    )
+
+    assert writer.main() == 0
+
+    assert opened == [("http://127.0.0.1:8871", "e2e-writer")]
+    first, second = (
+        json_loads(line, dict[str, object])
+        for line in capsys.readouterr().out.splitlines()
+    )
+    assert (first["id"], isinstance(first["at"], int)) == (str(_A), True)
+    assert second == {"error": "ValueError: Unknown op 'x'."}
+    assert client.calls == [("submit", "Issue", {"title": "Hi", "labels": []})]
 
 
 def _ask(client: _Client, clock: _FakeClock, **command: object) -> Mapping[str, object]:

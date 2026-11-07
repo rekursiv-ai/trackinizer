@@ -662,12 +662,12 @@ class SubmitBatch(BaseModel):
         value: list[SubmitItem],
     ) -> list[SubmitItem]:
         """Reject items sharing one idempotency_key, naming the dup indexes."""
-        seen: dict[uuid.UUID, int] = {}
+        seen: dict[uuid.UUID | None, int] = {}
         duplicates: list[int] = []
+        # ``_require_idempotency_keys`` runs first and refuses a missing key, and
+        # pydantic stops a field's after-validators at the first error: every key is set.
         for i, item in enumerate(value):
             key = item.idempotency_key
-            if key is None:  # `missing` keys reported by _require_idempotency_keys.
-                continue
             if key in seen:
                 duplicates.append(i)
             else:

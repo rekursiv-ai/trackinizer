@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
-
 import asyncio
 import uuid
 
 from treekle import json_loads
 
-import httpx2
 import pytest
 
 from trackinizer.conftest import make_store
@@ -19,6 +15,8 @@ from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
     TEST_USER_ID,
+    RecordingServer,
+    run_on,
 )
 from trackinizer.server.api.session_test_support import (
     KB_EMAIL,
@@ -36,10 +34,6 @@ from trackinizer.server.api.session_test_support import (
     start_session,
 )
 from trackinizer.server.auth import AuthIdentity
-
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
 
 
 @pytest.fixture
@@ -211,34 +205,6 @@ def test_draining_reads_the_session_inbound_queue() -> None:
     assert [(each.method, each.url.path) for each in server.asked] == [
         ("GET", f"/api/sessions/{session_id}/inbound"),
     ]
-
-
-@dataclass(slots=True, kw_only=True)
-class RecordingServer:
-    """The app, as the helpers see it: canned answers by method and path."""
-
-    answers: dict[tuple[str, str], tuple[int, object]]
-    asked: list[httpx2.Request] = field(default_factory=list)
-
-    def __call__(self, request: httpx2.Request) -> httpx2.Response:
-        """Record ``request`` and answer it with its canned answer."""
-        self.asked.append(request)
-        status, body = self.answers[(request.method, request.url.path)]
-        return httpx2.Response(status, json=body)
-
-
-def run_on[T](
-    server: RecordingServer,
-    *,
-    call: Callable[[httpx2.AsyncClient], Awaitable[T]],
-) -> T:
-    """Run one helper against ``server``."""
-
-    async def run() -> T:
-        async with httpx2.AsyncClient(transport=httpx2.MockTransport(server)) as client:
-            return await call(client)
-
-    return asyncio.run(run())
 
 
 if __name__ == "__main__":

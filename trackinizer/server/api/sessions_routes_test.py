@@ -8,7 +8,7 @@ not drain the session's inbound queue).
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from functools import partial, partialmethod
 from typing import TYPE_CHECKING, cast
@@ -25,16 +25,26 @@ import httpx2
 import pytest
 
 from trackinizer.conftest import set_field_row
-from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api import sessions_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
+    REAP_WINDOW,
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
     TEST_USER_ID,
+    Holds,
+    attach_run,
     install_identity,
+    live_session,
     make_test_identity,
+    open_asks,
+    opens_a_part,
+    parked_wait,
     patch_state,
+    reap,
+    refusal_detail_code,
+    report_state,
+    session_row,
 )
 from trackinizer.server.api.session_test_support import (
     ASSISTANT_CONFIG,
@@ -51,18 +61,14 @@ from trackinizer.server.api.session_test_support import (
     seed_session,
     start_session,
 )
-from trackinizer.server.asks import open_ask_ids
 from trackinizer.server.asks_test_support import open_ask
 from trackinizer.server.auth import current_user
 from trackinizer.server.config import Config
 from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
 from trackinizer.server.session_reaper import (
     STALE_AFTER,
-    reap_silent_sessions,
 )
 from trackinizer.types.inquiries import AgentSession
-from trackinizer.types.session_records import SessionRecordRow
-from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 from trackinizer.wire.wire_sessions import (
     RUN_NAME_PATTERN,
     CanvasMessageContext,
@@ -75,22 +81,6 @@ if TYPE_CHECKING:
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.auth import AuthIdentity, Role
     from trackinizer.server.store.core import Store
-
-
-# A real instance, not a renamed stand-in: ``_require_session`` gates with
-# ``isinstance``, so the row must be the canonical class. Defaults its opening
-# credential to ``TEST_API_KEY_ID`` -- the key the default test identity presents -- so
-# a route's owner-scope check passes for a same-credential caller; foreign-credential
-# tests pass an explicit other id.
-def live_session(
-    opened_by_api_key_id: uuid.UUID | None = TEST_API_KEY_ID,
-) -> AgentSession:
-    """Return a minimal live ``AgentSession`` (``ended`` is ``None``)."""
-    return AgentSession(
-        owner="scientist",
-        cli="claude",
-        opened_by_api_key_id=opened_by_api_key_id,
-    )
 
 
 class TestSendMessageIdempotency:
@@ -625,6 +615,108 @@ def test_the_session_account_can_send_with_a_browser_or_another_key(
     ]
 
 
+@pytest.mark.parametrize(
+    ("ended", "polled", "detail"),
+    [
+        (True, True, "has ended; cannot enqueue"),
+        (False, False, "No active inbound poller"),
+    ],
+    ids=["ended", "unpolled"],
+)
+def test_a_line_no_run_will_drain_is_refused_unqueued(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    ended: bool,
+    polled: bool,
+    detail: str,
+) -> None:
+    client, store, _engine = route_client
+    session = replace(
+        live_session(),
+        account=TEST_USER_EMAIL,
+        ended=datetime.now(UTC) if ended else None,
+    )
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+    inbound = cast("InboundQueue", app.state.inbound)
+    if polled:
+        inbound.mark_poller(session.id)
+
+    sent = client.post(f"/api/sessions/{session.id}/inbound", json={"text": "hi"})
+
+    assert sent.status_code == 409
+    assert detail in from_plain(sent.json(), dict[str, str])["detail"]
+    assert inbound.pending(session.id) == 0
+
+
+def test_a_routed_send_skips_a_gone_an_ended_and_an_undrained_session(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, _engine = route_client
+    ended = replace(live_session(), account=TEST_USER_EMAIL, ended=datetime.now(UTC))
+    undrained = replace(live_session(), account=TEST_USER_EMAIL)
+    gone = uuid.uuid4()
+    monkeypatch.setattr(
+        store,
+        "get_inquiry",
+        AsyncMock(side_effect=[None, ended, undrained]),
+    )
+    monkeypatch.setattr(
+        store,
+        "resolve_live_sessions",
+        AsyncMock(return_value=[(gone, ()), (ended.id, ()), (undrained.id, ())]),
+    )
+    inbound = cast("InboundQueue", app.state.inbound)
+    inbound.mark_poller(ended.id)
+
+    sent = client.post("/api/messages", json={"actor": "scientist", "text": "hi"})
+
+    assert sent.status_code == 200, sent.text
+    assert from_plain(sent.json(), dict[str, object])["delivered"] == []
+    assert [inbound.pending(each) for each in (gone, ended.id, undrained.id)] == [0] * 3
+
+
+def test_a_drain_of_a_session_that_does_not_exist_is_404_and_remembers_nothing(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, _engine = route_client
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=None))
+    missing = uuid.uuid4()
+
+    drained = client.get(f"/api/sessions/{missing}/inbound")
+
+    assert drained.status_code == 404
+    assert cast("InboundQueue", app.state.inbound).refusal(missing) is None
+
+
+def test_a_viewer_drains_only_through_a_live_key_of_its_own(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The key that opened the session must still be the viewer's, and unrevoked."""
+    client, store, engine = route_client
+    session = replace(live_session(), account=TEST_USER_EMAIL)
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+    install_identity(make_test_identity(role="viewer"))
+    engine.conn.fetchval.side_effect = None
+    engine.conn.fetchval.return_value = None
+
+    drained = client.get(f"/api/sessions/{session.id}/inbound")
+
+    assert drained.status_code == 403
+    assert from_plain(drained.json(), dict[str, str])["detail"] == (
+        "Own session key required"
+    )
+    assert engine.conn.fetchval.await_args is not None
+    assert engine.conn.fetchval.await_args.args[1:] == (
+        session.id,
+        TEST_API_KEY_ID,
+        TEST_USER_ID,
+    )
+
+
 def test_the_assistant_seeds_its_owners_campaign_before_the_poller_starts(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
@@ -1132,16 +1224,6 @@ async def test_a_cleanly_ended_session_stays_ended(
     assert (await session_row(store, session_id=session_id)).status == "complete"
 
 
-REAP_WINDOW = STALE_AFTER + timedelta(minutes=1)
-"""Long enough from now that anything seen so far counts as silent."""
-
-
-async def reap(store: Store, *, inbound: InboundQueue, after: timedelta) -> int:
-    """Run one reaper pass as of ``after`` from now."""
-    now = datetime.now(UTC) + after
-    return await reap_silent_sessions(store, inbound=inbound, now=now)
-
-
 async def _last_seen(store: Store, *, session_id: uuid.UUID) -> datetime:
     """Return when ``session_id`` was last recorded as heard from."""
     async with store.engine.acquire() as conn:
@@ -1196,13 +1278,6 @@ async def _start(client: httpx2.AsyncClient) -> uuid.UUID:
     )
 
 
-async def session_row(store: Store, *, session_id: uuid.UUID) -> AgentSession:
-    """Return the session's row."""
-    row = await store.get_inquiry(session_id)
-    assert isinstance(row, AgentSession)
-    return row
-
-
 @pytest.fixture
 def assistant_served(monkeypatch: pytest.MonkeyPatch) -> None:
     """Serve with scout configured, and a fresh poller table."""
@@ -1225,24 +1300,6 @@ async def test_without_an_assistant_a_writer_still_drains_only_its_own(
     kb = await start_session(client, actor=KB_ACTOR)
     act_as_other_agent("writer")
     assert (await drain(client, session_id=kb)).status_code == 403
-
-
-def refusal_code(response: httpx2.Response) -> str:
-    """Return the ``code`` of a refusal's detail."""
-    detail = from_plain(
-        json_loads(response.content, dict[str, object])["detail"],
-        dict[str, object],
-    )
-    return from_plain(detail["code"], str)
-
-
-def refusal_message(response: httpx2.Response) -> str:
-    """Return the ``message`` of a refusal's detail."""
-    detail = from_plain(
-        json_loads(response.content, dict[str, object])["detail"],
-        dict[str, object],
-    )
-    return from_plain(detail["message"], str)
 
 
 @pytest.mark.db_pglite
@@ -1281,34 +1338,6 @@ def test_a_run_instance_is_32_lowercase_hex_digits(
     )
 
     assert r.status_code == 422, r.text
-
-
-AWAIT_MESSAGES = InboundQueue.await_messages
-"""The wait itself, as it is before a test wraps it."""
-
-
-@dataclass(slots=True, kw_only=True)
-class Holds:
-    """The requests that parked on the inbound queue to wait for a message."""
-
-    parked: asyncio.Event = field(default_factory=asyncio.Event)
-    """Set once a request has begun waiting."""
-
-    asked_sec: list[float] = field(default_factory=list)
-    """How long each request asked to wait."""
-
-
-async def parked_wait(
-    queue: InboundQueue,
-    holds: Holds,
-    session_id: uuid.UUID,
-    *,
-    timeout_sec: float,
-) -> list[Inbound]:
-    """Wait on ``queue`` as it does, noting that the wait began."""
-    holds.asked_sec.append(timeout_sec)
-    holds.parked.set()
-    return await AWAIT_MESSAGES(queue, session_id, timeout_sec=timeout_sec)
 
 
 @pytest.mark.db_pglite
@@ -1587,36 +1616,6 @@ def test_a_session_the_old_chat_helper_opened_takes_messages_like_any_other(
     assert inbound.pending(session_id) == 0
 
 
-def opens_a_part(name: str) -> dict[str, object]:
-    """Return the body that opens the part ``name`` with one line."""
-    record = RecordBody.of(
-        SessionRecordRow.of(
-            session_id=uuid.UUID(int=0),
-            part=0,
-            idx=0,
-            record=UserMessage(content="hi"),
-        ),
-    )
-    manifest = ManifestBody(name=name, ir_id=uuid.uuid4(), format="claude", records=1)
-    return {
-        "name": name,
-        "manifest": manifest.model_dump(mode="json"),
-        "records": [record.model_dump(mode="json")],
-    }
-
-
-async def attach_run(
-    client: httpx2.AsyncClient,
-    *,
-    session_id: uuid.UUID,
-) -> httpx2.Response:
-    """Start a claude run that re-opens ``session_id``."""
-    return await client.post(
-        "/api/sessions/start",
-        json={"cli": "claude", "attach": str(session_id)},
-    )
-
-
 @pytest.mark.db_pglite
 @pytest.mark.usefixtures("assistant_served")
 @pytest.mark.asyncio(loop_scope="session")
@@ -1665,20 +1664,6 @@ async def _unpolled_run(store: Store) -> uuid.UUID:
         actor="run-1",
         cli="claude",
         polled=False,
-    )
-
-
-async def report_state(
-    client: httpx2.AsyncClient,
-    *,
-    session_id: uuid.UUID,
-    state: str,
-    instance: str,
-) -> httpx2.Response:
-    """Report a run's state as the installed identity."""
-    return await client.post(
-        f"/api/sessions/{session_id}/run-state",
-        json={"state": state, "instance": instance},
     )
 
 
@@ -1798,14 +1783,11 @@ async def test_a_stopped_run_is_refused_with_a_403_and_a_new_run_is_not(
     turned_away = await drain(client, session_id=session_id, cli="claude", instance=old)
     taken = await drain(client, session_id=session_id, cli="claude", instance=new)
 
-    assert (turned_away.status_code, refusal_code(turned_away)) == (403, "run_stopped")
+    assert (turned_away.status_code, refusal_detail_code(turned_away)) == (
+        403,
+        "run_stopped",
+    )
     assert taken.status_code == 200
-
-
-async def open_asks(store: Store, session_id: uuid.UUID) -> list[str]:
-    """Return the asks open in a session."""
-    async with store.engine.acquire() as conn:
-        return await open_ask_ids(conn, session_id=session_id)
 
 
 @pytest.mark.db_pglite

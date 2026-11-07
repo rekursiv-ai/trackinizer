@@ -24,7 +24,9 @@ from trackinizer.wire.column_shapes import (
     _classify,
     _is_integer_sql,
     _is_real_sql,
+    compares_as_float,
     lowers_into_sql,
+    requires_numeric_operand,
     sql_template,
 )
 
@@ -34,6 +36,27 @@ if TYPE_CHECKING:
 
 
 class TestTheOracleIsPerColumnAndOp:
+    @pytest.mark.parametrize(
+        ("column", "op", "as_float", "numeric"),
+        [
+            ("belief_confidence", "gt", True, True),
+            ("issue_priority", "gt", False, True),
+            ("created", "gt", False, False),
+            ("labels", "gt", False, False),
+        ],
+        ids=["real", "integer", "timestamp", "no-template"],
+    )
+    def test_ordering_casts_are_read_off_the_template(
+        self,
+        column: str,
+        op: str,
+        as_float: bool,
+        numeric: bool,
+    ) -> None:
+        """A real casts to float8 and numeric; an integer to numeric; text, neither."""
+        assert compares_as_float(column, op) is as_float
+        assert requires_numeric_operand(column, op) is numeric
+
     def test_text_array_membership_uses_gin_containment(self) -> None:
         assert sql_template("labels", "is") == "{col} @> ARRAY[{p}]::text[]"
 

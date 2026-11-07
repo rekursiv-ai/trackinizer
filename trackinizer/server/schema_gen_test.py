@@ -349,6 +349,18 @@ def test_an_access_group_domain_is_lowercase_and_held_by_a_system_group() -> Non
     )
 
 
+def test_an_edge_column_without_a_value_check_is_checked_by_kind_alone() -> None:
+    spec = ColumnSpec(
+        sql_type="TEXT",
+        applies_to_edge_kinds=frozenset({"proves", "favors"}),
+    )
+    assert schema_gen._edge_column_check_body(
+        "new_edge_note",
+        spec,
+        edge_kind_col="edge_kind",
+    ) == ("edge_kind IN ('favors', 'proves')")
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

@@ -49,6 +49,9 @@ class TestWhere:
     def test_a_journal_outside_the_root_does_not_match(self, tmp_path: Path) -> None:
         assert not SagentAdapter().matches_session_file(tmp_path / "session.jsonl")
 
+    def test_no_scope_is_derived_since_the_runner_names_the_journal(self) -> None:
+        assert SagentAdapter().session_scope() is None
+
 
 class TestIds:
     """A session's id is its folder, below its project's."""

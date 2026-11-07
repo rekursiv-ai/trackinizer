@@ -81,6 +81,10 @@ class TestResumeCorrelation:
         """Unmeasured, so every gemini run is a new session to the runner."""
         assert GeminiAdapter().resumed_session(("--resume", "latest")) is None
 
+    def test_no_file_is_a_subagents_transcript(self, tmp_path: Path) -> None:
+        """Unmeasured too, so a gemini run records no sub-agent sessions."""
+        assert GeminiAdapter().subagent(tmp_path / "chats" / "session-x.json") is None
+
 
 class TestReader:
     def test_each_file_gets_its_own_reader(self) -> None:

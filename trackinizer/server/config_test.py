@@ -6,7 +6,9 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 import argparse
+import os
 import re
+import time
 
 import pytest
 
@@ -350,6 +352,67 @@ class TestParsers:
 
     def test_pruning_a_missing_root_is_a_no_op(self, tmp_path: Path) -> None:
         _prune_stale_ephemeral_dirs(tmp_path / "missing")
+
+    def test_pruning_reclaims_only_old_dirs_of_dead_owners(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Past any pid_max, so no process owns it; kill(2) answers ESRCH.
+        dead = 2**30
+        old = time.time() - 2 * 60 * 60
+        names = {
+            "dead_old": f"{dead}-a",
+            "dead_fresh": f"{dead}-b",
+            "alive_old": f"{os.getpid()}-c",
+            "no_pid_old": "scratch-d",
+        }
+        for key, name in names.items():
+            (tmp_path / name).mkdir()
+            if key != "dead_fresh":
+                os.utime(tmp_path / name, (old, old))
+        (tmp_path / "loose-file").write_text("")
+
+        _prune_stale_ephemeral_dirs(tmp_path)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [
+                names["dead_fresh"],
+                names["alive_old"],
+                names["no_pid_old"],
+                "loose-file",
+            ],
+        )
+
+    def test_a_dir_owned_by_another_users_process_is_kept(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def refuse(pid: int, signal: int) -> None:
+            del pid, signal
+            raise PermissionError
+
+        monkeypatch.setattr(os, "kill", refuse)
+        owned = tmp_path / "4242-e"
+        owned.mkdir()
+        old = time.time() - 2 * 60 * 60
+        os.utime(owned, (old, old))
+
+        _prune_stale_ephemeral_dirs(tmp_path)
+
+        assert owned.is_dir()
+
+
+class TestMaintainedEmbedders:
+    def test_an_explicit_list_wins_over_the_serving_embedder(self) -> None:
+        config = Config(session_embedder="a@1024", session_embedders=("b", "c"))
+        assert config.maintained_embedders() == ("b", "c")
+
+    def test_the_serving_embedder_alone_is_maintained_by_default(self) -> None:
+        assert Config(session_embedder="a@1024").maintained_embedders() == ("a@1024",)
+
+    def test_no_serving_embedder_maintains_nothing(self) -> None:
+        assert Config().maintained_embedders() == ()
 
 
 class TestChatOrgs:

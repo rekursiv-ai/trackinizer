@@ -5,11 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import asyncio
+import logging
 
 from treekle import from_plain
 
 import pytest
 
+from trackinizer.conftest import make_store
+from trackinizer.server import authority_sweep
 from trackinizer.server.authority_sweep import (
     authority_sweep_loop,
     edge_change_count,
@@ -73,6 +76,37 @@ async def test_loop_recomputes_on_startup_then_can_be_cancelled(store: Store) ->
         await task
 
     assert score is not None
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sweep_is_logged_and_the_loop_retries(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store, _engine = make_store()
+    outcomes: list[int | BaseException] = [
+        RuntimeError("database blip"),
+        3,
+        asyncio.CancelledError(),
+    ]
+
+    async def recompute_authority() -> int:
+        outcome = outcomes.pop(0)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(store, "recompute_authority", recompute_authority)
+    caplog.set_level(logging.INFO, logger=authority_sweep.__name__)
+
+    with pytest.raises(asyncio.CancelledError):
+        await authority_sweep_loop(store, min_interval_sec=0.0, max_interval_sec=0.0)
+
+    assert outcomes == []
+    assert [r.getMessage() for r in caplog.records] == [
+        "authority sweep failed; retrying next cycle",
+        "authority sweep wrote 3 scores",
+    ]
 
 
 if __name__ == "__main__":

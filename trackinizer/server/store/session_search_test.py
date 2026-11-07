@@ -274,6 +274,39 @@ async def test_empty_query_raises(store: Store) -> None:
         )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit", "dim", "vector", "message"),
+    [
+        (0, 4, None, r"limit must be in \[1, 200\]"),
+        (201, 4, None, r"limit must be in \[1, 200\]"),
+        (5, 0, None, "dim must be positive, got 0"),
+        (5, 4, [1.0, 0.0], "query_vector has 2 dims, expected 4"),
+    ],
+    ids=["limit-zero", "limit-over", "dim-zero", "vector-length"],
+)
+async def test_a_malformed_search_is_refused_before_any_read(
+    limit: int,
+    dim: int,
+    vector: list[float] | None,
+    message: str,
+) -> None:
+    engine = FakeEngine()
+
+    with pytest.raises(ValueError, match=message):
+        _ = await search_session_records(
+            cast("DatabaseEngine", engine),
+            query_vector=vector,
+            query_text="deadlock",
+            mapper=_MAPPER,
+            model=_MODEL,
+            dim=dim,
+            limit=limit,
+        )
+
+    assert engine.conn.mock_calls == []
+
+
 def _hit(idx: int, *, field: str = "content", chunk: int = 0) -> _ArmHit:
     """Make an ``_ArmHit`` at part 0, a fixed session, position ``idx``."""
     return _ArmHit(

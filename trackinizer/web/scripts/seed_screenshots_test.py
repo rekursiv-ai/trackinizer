@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 
 import itertools
+import json
 import re
+import sys
 import uuid
 
 from treekle import from_plain
 
+import pytest
+
+from trackinizer.sagent.session.types import UserMessage
 from trackinizer.types.edges import EDGE_POLICIES, kind_group_members
 from trackinizer.types.inquiries import Inquiry
-from trackinizer.web.scripts.graph_structure import Link, Node, Structure
+from trackinizer.web.scripts import seed_screenshots
+from trackinizer.web.scripts.graph_structure import Link, Node, Structure, dump
 from trackinizer.web.scripts.seed_screenshots import Shots, seed
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_session_ir import RecordBody
@@ -23,6 +30,8 @@ from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from treekle import PlainTree
 
     from trackinizer.wire.wire_session_ir import ManifestBody
@@ -205,6 +214,55 @@ def test_the_last_turn_is_stamped_when_the_seed_runs() -> None:
         for record in cast("Sequence[RecordBody]", call[4])
     ]
     assert max(stamp for stamp in stamps if stamp) == _NOW
+
+
+def test_main_seeds_the_server_at_url_and_prints_what_to_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _FakeClient()
+    opened: list[tuple[str, str, float]] = []
+
+    def connect(
+        url: str,
+        *,
+        author: str,
+        timeout_sec: float,
+    ) -> nullcontext[_FakeClient]:
+        opened.append((url, author, timeout_sec))
+        return nullcontext(client)
+
+    structure = tmp_path / "graph_structure.json"
+    structure.write_text(dump(_STRUCTURE))
+    monkeypatch.setattr(seed_screenshots, "GRAPH_STRUCTURE", structure)
+    monkeypatch.setattr(seed_screenshots, "Client", connect)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["seed_screenshots", "--url", "http://127.0.0.1:9"],
+    )
+
+    assert seed_screenshots.main() == 0
+
+    assert opened == [("http://127.0.0.1:9", "ada@example.com", 600.0)]
+    _, shots = _seeded()
+    assert json.loads(capsys.readouterr().out) == {
+        "belief": str(shots.belief),
+        "paper": str(shots.paper),
+        "experiment": str(shots.experiment),
+        "issue": str(shots.issue),
+        "artifact": str(shots.artifact),
+        "root": str(shots.root),
+        "cited": str(shots.cited),
+        "session": str(shots.session),
+        "agent": shots.agent,
+    }
+
+
+def test_an_unstamped_turn_is_a_bug_in_the_seed() -> None:
+    with pytest.raises(ValueError, match="every seeded turn is stamped"):
+        seed_screenshots._stamp(UserMessage(content="hi"))
 
 
 def test_two_seeds_write_the_same() -> None:

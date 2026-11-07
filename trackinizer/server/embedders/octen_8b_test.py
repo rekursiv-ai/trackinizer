@@ -10,9 +10,12 @@ from __future__ import annotations
 
 from typing import cast
 
+import huggingface_hub
 import pytest
 
+from trackinizer.server.embedders import octen_8b
 from trackinizer.server.embedders.octen_8b import (
+    OCTEN_MODEL_ID,
     OCTEN_TRUNCATED_DIM,
     OctenEmbedder,
 )
@@ -71,6 +74,37 @@ async def test_embed_returns_unit_vector_of_dim(
     vector = await OctenEmbedder().embed("anything")
     assert len(vector) == OCTEN_TRUNCATED_DIM
     assert abs(cast(float, sum(v * v for v in vector) ** 0.5) - 1.0) < 1e-4
+
+
+def test_weights_present_probes_its_own_models_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes: list[tuple[str, str]] = []
+
+    def probe(repo: str, filename: str) -> str | None:
+        probes.append((repo, filename))
+        return "/hf/config.json"
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", probe)
+
+    assert octen_8b.weights_present() is True
+    assert probes == [(OCTEN_MODEL_ID, "config.json")]
+
+
+def test_load_builds_its_own_model_on_the_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loads: list[tuple[str, str]] = []
+    built = (object(), object())
+
+    def hf_load(model_id: str, device: str) -> tuple[object, object]:
+        loads.append((model_id, device))
+        return built
+
+    monkeypatch.setattr(octen_8b, "hf_load", hf_load)
+
+    assert octen_8b._load("cuda:0") is built
+    assert loads == [(OCTEN_MODEL_ID, "cuda:0")]
 
 
 if __name__ == "__main__":

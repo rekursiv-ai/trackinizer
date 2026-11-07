@@ -103,7 +103,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import Final, Literal, Protocol, Self, cast, get_args
+from typing import Final, Literal, Protocol, Self, cast
 from uuid import UUID, uuid4
 
 import re
@@ -1398,14 +1398,6 @@ exported class (see :func:`_kind_to_class`).
 ``Inquiry`` itself is the abstract base (the common-parent ``from_row``
 target) and is intentionally absent: it is never a stored row ``kind``.
 """
-
-_MISSING_KINDS = set(get_args(cast(object, Inquiry.InquiryKind.__value__))) - set(
-    KIND_TO_CLASS,
-)
-if _MISSING_KINDS:
-    raise ValueError(
-        f"KIND_TO_CLASS missing concrete subclasses for {sorted(_MISSING_KINDS)}",
-    )
 
 
 INQUIRY_CLASSES: tuple[type[Inquiry], ...] = (Inquiry, *KIND_TO_CLASS.values())

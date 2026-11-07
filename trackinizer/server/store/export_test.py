@@ -50,6 +50,18 @@ async def test_query_budget_is_set_before_reading_a_selected_graph(
 
 
 @pytest.mark.asyncio
+async def test_a_selector_with_no_sql_is_refused_before_any_read() -> None:
+    """A Python-only clause would widen the subgraph to the whole graph."""
+    store, engine = make_store()
+    selector = (Filter(field="experiment_config", op="is", value="x"),)
+
+    with pytest.raises(ValueError, match="does not lower to SQL"):
+        await store.export_graph(selector=selector)
+
+    assert not [sql for sql in executed_sql(engine.conn) if sql.startswith("SELECT")]
+
+
+@pytest.mark.asyncio
 async def test_store_preserves_selected_rows_external_references() -> None:
     """Keep external IDs on the database's selected rows without extra lookups."""
     store, engine = make_store()

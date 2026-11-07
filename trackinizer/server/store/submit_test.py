@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from datetime import datetime
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -32,16 +32,20 @@ from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
 from trackinizer.server.store.core import Store
-from trackinizer.types.errors import NotFoundError
+from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.wire.bodies import (
     Citation,
+    SubmitAccessGroup,
     SubmitAgentSession,
     SubmitArtifact,
     SubmitBase,
     SubmitBelief,
+    SubmitCodeChange,
     SubmitExperiment,
     SubmitIssue,
     SubmitPaper,
+    SubmitWebResult,
+    SubmitWebSearch,
 )
 
 
@@ -160,6 +164,104 @@ class TestSubmit:
             ),
         )
         assert issue_id == winner_subject_id
+
+    @pytest.mark.asyncio
+    async def test_a_change_log_collision_with_no_row_behind_it_reraises(self) -> None:
+        """A collision whose winner the re-probe cannot find is no replay to return."""
+        conn = make_conn()
+        queue_field_rows(
+            conn,
+            None,
+            {
+                "actor": "system",
+                "subject_id": new_uuid(),
+                "kind": "created",
+                "subscribers_snapshot": None,
+            },
+            None,
+        )
+        conn.execute.side_effect = _collide_on_change_log
+        store, _engine = make_store(conn)
+
+        with pytest.raises(asyncpg.UniqueViolationError):
+            await store.submit_issue(
+                SubmitIssue(
+                    title="t",
+                    idempotency_key=new_uuid(),
+                    account="tester@example.com",
+                ),
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("found", "message"),
+        [
+            (
+                {
+                    "subject_id": UUID(int=1),
+                    "change_kind": "edited",
+                    "subject_kind": "Issue",
+                },
+                "already names a edited event, not a submit",
+            ),
+            (
+                {
+                    "subject_id": UUID(int=1),
+                    "change_kind": "created",
+                    "subject_kind": "Paper",
+                },
+                "already created a Paper, not Issue",
+            ),
+        ],
+        ids=["another-event", "another-kind"],
+    )
+    async def test_a_key_already_spent_on_something_else_is_a_conflict(
+        self,
+        found: dict[str, object],
+        message: str,
+    ) -> None:
+        conn = make_conn()
+        queue_field_rows(conn, found)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(ConflictError, match=message):
+            await store.submit_issue(
+                SubmitIssue(
+                    title="t",
+                    idempotency_key=new_uuid(),
+                    account="tester@example.com",
+                ),
+            )
+
+        assert not [s for s in executed_sql(conn) if "INSERT INTO inquiries" in s]
+
+    @pytest.mark.asyncio
+    async def test_a_backdated_row_is_restamped_after_its_audit(self) -> None:
+        """The created change bumps ``modified`` to now; the submit's time is set back."""
+        store, engine = make_store()
+        modified = datetime(2024, 3, 4, 5, 6, tzinfo=UTC)
+
+        issue_id = await store.submit_issue(
+            SubmitIssue(
+                title="t",
+                account="tester@example.com",
+                created=modified,
+                modified=modified,
+            ),
+        )
+
+        restamp = "UPDATE inquiries SET modified = $2 WHERE id = $1"
+        restamps = [
+            call.args[1:]
+            for call in engine.conn.execute.call_args_list
+            if call.args and call.args[0] == restamp
+        ]
+        assert restamps == [(issue_id, modified)]
+        statements = executed_sql(engine.conn)
+        audit = next(
+            i for i, s in enumerate(statements) if "INSERT INTO change_log" in s
+        )
+        assert statements.index(restamp) > audit
 
     @pytest.mark.asyncio
     async def test_live_owner_violation_reraises_not_replay(self) -> None:
@@ -608,6 +710,18 @@ class TestSubmitEmbedsBeforeTx:
 # Sourced from :func:`executed_sql`, which spans both ``execute`` and ``fetch``:
 # ``tx()`` issues the error-path ``ROLLBACK`` over the extended protocol (``fetch``) to
 # dodge a pglite 0.5 simple-query mis-frame.
+async def _collide_on_change_log(sql: str, *args: object) -> str:
+    """Fail the ``created`` audit as a concurrent winner's change_log row would."""
+    del args
+    if "INSERT INTO change_log" in sql:
+        exc = asyncpg.UniqueViolationError(
+            "duplicate key value violates unique constraint",
+        )
+        exc.constraint_name = "change_log_pkey"
+        raise exc
+    return "OK"
+
+
 def _tx_verbs(conn: AsyncMock) -> list[str]:
     """Return the BEGIN/COMMIT/ROLLBACK verbs issued on ``conn``, in order."""
     return [s for s in executed_sql(conn) if s in ("BEGIN", "COMMIT", "ROLLBACK")]
@@ -623,12 +737,44 @@ class TestSubmitDispatch:
             (SubmitIssue(title="i", account="a@example.com"), "submit_issue"),
             (SubmitArtifact(title="a", account="a@example.com"), "submit_artifact"),
             (SubmitPaper(title="p", account="a@example.com"), "submit_paper"),
+            (
+                SubmitExperiment(title="e", account="a@example.com"),
+                "submit_experiment",
+            ),
+            (SubmitBelief(title="b", account="a@example.com"), "submit_belief"),
+            (
+                SubmitCodeChange(title="c", account="a@example.com"),
+                "submit_codechange",
+            ),
+            (
+                SubmitWebResult(title="w", account="a@example.com"),
+                "submit_webresult",
+            ),
+            (
+                SubmitWebSearch(title="s", account="a@example.com"),
+                "submit_websearch",
+            ),
+            (
+                SubmitAccessGroup(title="g", account="a@example.com"),
+                "submit_accessgroup",
+            ),
+        ],
+        ids=[
+            "issue",
+            "artifact",
+            "paper",
+            "experiment",
+            "belief",
+            "codechange",
+            "webresult",
+            "websearch",
+            "accessgroup",
         ],
     )
     async def test_routes_each_body_to_its_kind(
         self,
         monkeypatch: pytest.MonkeyPatch,
-        body: SubmitIssue | SubmitArtifact | SubmitPaper,
+        body: SubmitBase,
         method: str,
     ) -> None:
         store, _engine = make_store()
@@ -723,6 +869,114 @@ class TestSubmitArtifact:
             principal=None,
             conn=None,
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("body", "method", "kind", "extras"),
+        [
+            (
+                SubmitWebResult(title="w", url="https://x", account="a@example.com"),
+                "submit_webresult",
+                "WebResult",
+                {"webresult_url": "https://x"},
+            ),
+            (
+                SubmitWebSearch(
+                    title="s",
+                    query="q",
+                    provider="exa",
+                    account="a@example.com",
+                ),
+                "submit_websearch",
+                "WebSearch",
+                {"websearch_query": "q", "websearch_provider": "exa"},
+            ),
+        ],
+        ids=["webresult", "websearch"],
+    )
+    async def test_a_web_row_stores_its_own_columns(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        body: SubmitBase,
+        method: str,
+        kind: str,
+        extras: dict[str, object],
+    ) -> None:
+        store, _engine = make_store()
+        generic = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_generic", generic)
+
+        await cast("Callable[..., Awaitable[UUID]]", getattr(store, method))(
+            body,
+            actor="alice",
+        )
+
+        generic.assert_awaited_once_with(
+            body,
+            kind=kind,
+            api_key_id=None,
+            actor="alice",
+            extras=extras,
+            principal=None,
+            conn=None,
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_issue_narrows_each_broader_issue_with_its_priority(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """``narrows`` is stored narrower -> broader: the new issue is the from-side."""
+        store, _engine = make_store()
+        edges = AsyncMock()
+        monkeypatch.setattr(store, "insert_edge_and_audit", edges)
+        broader, other = new_uuid(), new_uuid()
+
+        issue_id = await store.submit_issue(
+            SubmitIssue(
+                title="part",
+                narrows=[(broader, 2), (other, None)],
+                account="tester@example.com",
+            ),
+            actor="alice",
+        )
+
+        assert [
+            (
+                call.kwargs["subject_id"],
+                call.kwargs["to_id"],
+                call.kwargs["edge_kind"],
+                call.kwargs["priority"],
+                call.kwargs["actor"],
+            )
+            for call in edges.await_args_list
+        ] == [
+            (issue_id, broader, "narrows", 2, "alice"),
+            (issue_id, other, "narrows", None, "alice"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_new_access_group_reads_and_writes_itself(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        generic = AsyncMock(return_value=new_uuid())
+        monkeypatch.setattr(store, "_submit_generic", generic)
+        body = SubmitAccessGroup(title="g", account="a@example.com")
+
+        await store.submit_accessgroup(body, actor="alice")
+
+        call = generic.await_args
+        assert call is not None
+        row_id = cast(object, call.kwargs["row_id"])
+        assert isinstance(row_id, UUID)
+        assert call.kwargs["kind"] == "AccessGroup"
+        assert call.kwargs["extras"] == {
+            "accessgroup_read_group": row_id,
+            "accessgroup_write_group": row_id,
+            "accessgroup_system": False,
+        }
 
     @pytest.mark.asyncio
     async def test_a_submit_naming_no_actor_is_the_systems(
@@ -900,9 +1154,48 @@ class TestSubmitBatch:
         assert "COMMIT" not in verbs
 
     # Edge wiring (index/UUID resolution + atomicity with rows) is proven
-    # against real Postgres in integration_test.py
+    # against real Postgres in submit_integration_test.py
     # ``test_submit_batch_creates_rows_and_edge_atomically`` -- the mock conn
     # cannot faithfully drive insert_edge's cycle-check / ON CONFLICT path.
+
+    @pytest.mark.asyncio
+    async def test_a_backdated_item_is_restamped_unless_its_key_was_spent(self) -> None:
+        """A replayed row keeps the ``modified`` it has now; it may have been edited."""
+        conn = make_conn()
+        modified = datetime(2024, 3, 4, tzinfo=UTC)
+        fresh, spent = new_uuid(), new_uuid()
+        conn.fetch.return_value = [{"id": spent}]
+        store, _engine = make_store(conn)
+
+        ids = await store.submit_batch(
+            [
+                SubmitIssue(
+                    title=title,
+                    idempotency_key=key,
+                    account="tester@example.com",
+                    created=modified,
+                    modified=modified,
+                )
+                for title, key in (("fresh", fresh), ("spent", spent))
+            ],
+        )
+
+        probe = next(
+            call.args
+            for call in conn.fetch.call_args_list
+            if call.args
+            and call.args[0] == "SELECT id FROM change_log WHERE id = ANY($1)"
+        )
+        assert probe[1] == [fresh, spent]
+        restamped = [
+            call.args[1:]
+            for call in conn.execute.call_args_list
+            if call.args
+            and call.args[0] == "UPDATE inquiries SET modified = $2 WHERE id = $1"
+        ]
+        # Each submit stamps its own row; after the edges, the batch stamps again
+        # only the rows whose key no earlier submit spent.
+        assert restamped == [(ids[0], modified), (ids[1], modified), (ids[0], modified)]
 
     @pytest.mark.asyncio
     async def test_retried_item_short_circuits_without_reinsert(self) -> None:

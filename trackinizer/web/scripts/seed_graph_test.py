@@ -79,14 +79,17 @@ def test_the_showcase_is_the_island_most_argued_over_and_its_most_cited_belief()
     assert showcase(_STRUCTURE, islands(_STRUCTURE)).belief == 3
 
 
-@pytest.mark.parametrize("structure", ["small", "committed"])
+@pytest.mark.parametrize("structure", ["small", "two_carriers", "committed"])
 def test_nodes_are_created_in_order_and_every_edge_once_with_its_sign(
     structure: str,
     committed: Structure,
     committed_seed: tuple[_FakeClient, SeededGraph],
 ) -> None:
-    if structure == "small":
-        seeding, client = _STRUCTURE, _FakeClient()
+    if structure in {"small", "two_carriers"}:
+        seeding, client = (
+            (_STRUCTURE if structure == "small" else _TWO_CARRIERS),
+            _FakeClient(),
+        )
         seeded = seed_graph(client, seeding, actor="ada@example.com")
     else:
         seeding = committed
@@ -201,6 +204,12 @@ def test_a_kind_takes_its_built_titles_in_order() -> None:
     titles = _titles(from_plain(kinds.get("Experiment"), dict[str, object]))
     experiments = [body["title"] for kind, body in client.items if kind == "Experiment"]
     assert experiments == titles[:2]
+    # Past the list, the titles come round again in the same order.
+    many = _FakeClient()
+    seed_graph(many, _TWO_CARRIERS, actor="ada@example.com")
+    experiments = [body["title"] for kind, body in many.items if kind == "Experiment"]
+    assert len(experiments) > len(titles)
+    assert experiments == [titles[k % len(titles)] for k in range(len(experiments))]
 
 
 def test_no_kind_repeats_a_built_title_before_it_has_used_every_one(
@@ -328,6 +337,23 @@ def test_the_showcase_counts_only_evidence_on_a_belief() -> None:
     assert showcase(structure, islands(structure)) == Showcase(root=0, belief=3)
 
 
+def test_a_graph_with_no_evidence_against_a_belief_has_no_showcase() -> None:
+    structure = Structure(
+        nodes=_STRUCTURE.nodes,
+        edges=tuple(
+            Link(
+                from_index=link.from_index,
+                to_index=link.to_index,
+                kind=link.kind,
+                sign=abs(link.sign),
+            )
+            for link in _STRUCTURE.edges
+        ),
+    )
+    with pytest.raises(ValueError, match="no island has evidence against a Belief"):
+        showcase(structure, islands(structure))
+
+
 def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root(
     committed: Structure,
 ) -> None:
@@ -370,6 +396,28 @@ _STRUCTURE = Structure(
         Link(from_index=5, to_index=6, kind="produced_by", sign=0),
         Link(from_index=7, to_index=6, kind="produced_by", sign=0),
         Link(from_index=9, to_index=6, kind="produced_by", sign=0),
+    ),
+)
+
+
+# More edges than one batch holds, so two carriers each take a share. The chain hangs
+# off no root, so the islands and their showcase stay those of ``_STRUCTURE``.
+_TWO_CARRIERS = Structure(
+    nodes=(
+        *_STRUCTURE.nodes,
+        *[Node(kind="Experiment", status="complete")] * (BATCH_MAX_ITEMS + 1),
+    ),
+    edges=(
+        *_STRUCTURE.edges,
+        *(
+            Link(
+                from_index=len(_STRUCTURE.nodes) + k + 1,
+                to_index=len(_STRUCTURE.nodes) + k,
+                kind="produced_by",
+                sign=0,
+            )
+            for k in range(BATCH_MAX_ITEMS)
+        ),
     ),
 )
 

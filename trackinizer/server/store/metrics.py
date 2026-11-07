@@ -40,7 +40,6 @@ from trackinizer.wire.routes import (
 from trackinizer.wire.row_filter import reject_inadmissible
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_metrics_query import (
-    METRIC_COMPARE_OPS,
     MetricMaskClause,
     coerce_metric_operand,
 )
@@ -65,16 +64,8 @@ _OP_TO_SQL: Final[dict[str, str]] = {
     "gt": ">",
     "ge": ">=",
 }
-
-# The SQL map must cover exactly the wire's metric comparator set: a mismatch
-# (an op in one but not the other) is the drift class this asserts away at
-# import. ``METRIC_COMPARE_OPS`` is the single definition; if it gains an op,
-# this fails until the SQL symbol is added here too.
-if set(_OP_TO_SQL) != set(METRIC_COMPARE_OPS):
-    raise ValueError(
-        "metric SQL operator map drifted from METRIC_COMPARE_OPS: "
-        f"{set(_OP_TO_SQL) ^ set(METRIC_COMPARE_OPS)}",
-    )
+"""Must cover exactly ``METRIC_COMPARE_OPS``, the single definition of the wire's
+comparators; ``metrics_test`` fails on an op in one but not the other."""
 
 
 # Each grid axis and the SQL cast its bound operand takes: ``key`` compares as

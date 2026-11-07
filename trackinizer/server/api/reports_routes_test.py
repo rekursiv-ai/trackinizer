@@ -482,6 +482,21 @@ async def test_html_route_serves_the_revision_as_a_sandboxed_page(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_content_of_an_artifact_that_holds_none_is_404(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, _store = pglite_route_client
+
+    response = await client.get(f"/api/artifacts/{uuid.uuid4()}/content")
+
+    assert response.status_code == 404
+    assert from_plain(response.json(), dict[str, str])["detail"] == (
+        "Artifact content not found."
+    )
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_structured_report_freezes_signed_evidence(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:

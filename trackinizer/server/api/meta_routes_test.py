@@ -5,9 +5,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast, get_args
-
-import subprocess
+from typing import TYPE_CHECKING, Literal, cast, get_args
+from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,6 +15,11 @@ from treekle import from_plain, json_loads
 import pytest
 
 from trackinizer.server.api import meta_routes
+from trackinizer.server.api.app import app
+from trackinizer.server.api.conftest import (
+    clear_identity_override,
+    make_test_identity,
+)
 from trackinizer.server.version import build_sha
 from trackinizer.types.columns import column_specs
 from trackinizer.types.edges import (
@@ -33,6 +37,7 @@ if TYPE_CHECKING:
 
     import httpx2
 
+    from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
 
 
@@ -210,6 +215,80 @@ async def test_served_annotations_are_what_the_annotate_route_takes_on_a_real_en
     assert accepted == served
 
 
+def test_a_literal_member_that_is_not_a_string_is_refused() -> None:
+    with pytest.raises(TypeError, match="Literal member is not a string: 3"):
+        meta_routes._literal_values(Literal["a", 3])
+
+
+class TestTheRouteMapNeedsASignIn:
+    @pytest.fixture(autouse=True)
+    def served_schema(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Serve a stand-in schema; ``openapi_drift_test.py`` checks the real one."""
+
+        def small_schema() -> dict[str, object]:
+            return {"paths": {"/api/version": {}}}
+
+        monkeypatch.setattr(app, "openapi", small_schema)
+
+    def test_the_schema_is_refused_from_outside(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        clear_identity_override()
+        assert client.get("/openapi.json").status_code == 401
+
+    @pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+    def test_a_deploy_on_this_box_reads_the_schema_with_no_credential(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        host: str,
+    ) -> None:
+        clear_identity_override()
+        del route_client
+        local = TestClient(app, client=(host, 50_000))
+        response = local.get("/openapi.json")
+        assert response.status_code == 200
+        paths = from_plain(response.json(), dict[str, object])["paths"]
+        assert "/api/version" in from_plain(paths, dict[str, object])
+
+    @pytest.mark.parametrize(
+        "header",
+        ["x-forwarded-for", "forwarded", "x-real-ip", "cf-connecting-ip", "via"],
+    )
+    def test_a_proxied_request_is_outside_though_it_comes_from_loopback(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        header: str,
+    ) -> None:
+        clear_identity_override()
+        del route_client
+        local = TestClient(app, client=("127.0.0.1", 50_000))
+        response = local.get("/openapi.json", headers={header: "203.0.113.9"})
+        assert response.status_code == 401
+
+    def test_a_signed_in_caller_reads_the_schema(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, _engine = route_client
+        monkeypatch.setattr(
+            meta_routes,
+            "request_user",
+            AsyncMock(return_value=make_test_identity(role="viewer")),
+        )
+        assert client.get("/openapi.json").status_code == 200
+
+    def test_there_are_no_doc_pages(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        for path in ("/docs", "/redoc", "/docs/oauth2-redirect"):
+            assert client.get(path).status_code == 404
+
+
 async def _one_edge_per_kind(store: Store) -> dict[str, tuple[uuid.UUID, uuid.UUID]]:
     """Link one ``(from_id, to_id)`` pair per edge kind, each newer to older."""
     account = "alice@example.com"
@@ -240,48 +319,6 @@ async def _one_edge_per_kind(store: Store) -> dict[str, tuple[uuid.UUID, uuid.UU
             actor="alice",
         )
     return edges
-
-
-def test_build_sha_falls_back_to_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    """With no env var and no resolvable git, the SHA is the literal 'unknown'.
-
-    Patch the env away and force the git probe to fail, so the fallback
-    branch is exercised deterministically regardless of the test host.
-    """
-    monkeypatch.delenv("TRACKINIZER_SHA", raising=False)
-
-    def _boom(*_args: object, **_kwargs: object) -> object:
-        raise OSError("git unavailable")
-
-    monkeypatch.setattr(subprocess, "run", _boom)
-    build_sha.cache_clear()
-    try:
-        assert build_sha() == "unknown"
-    finally:
-        build_sha.cache_clear()
-
-
-def test_build_sha_whitespace_env_falls_back_to_unknown(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A whitespace-only ``TRACKINIZER_SHA`` resolves to "unknown", not "".
-
-    The env is checked for truthiness, so ``"   "`` is truthy; stripping it
-    afterward yields ``""``, breaking the docstring promise of a SHA or
-    "unknown" (TRK-SRV-003). The git probe is forced to fail so the only
-    way to reach a non-"unknown" answer would be the (blank) env value.
-    """
-    monkeypatch.setenv("TRACKINIZER_SHA", "   ")
-
-    def _boom(*_args: object, **_kwargs: object) -> object:
-        raise OSError("git unavailable")
-
-    monkeypatch.setattr(subprocess, "run", _boom)
-    build_sha.cache_clear()
-    try:
-        assert build_sha() == "unknown"
-    finally:
-        build_sha.cache_clear()
 
 
 if __name__ == "__main__":

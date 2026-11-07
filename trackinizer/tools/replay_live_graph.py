@@ -221,16 +221,12 @@ def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, object]]:
 # insert); ``_node_body`` drops it.
 def _node_from_row(row: Mapping[str, PlainTree], kind: str) -> dict[str, object]:
     """Trim a live inquiry row to the graph-relevant fields."""
-    node: dict[str, object] = {
+    return {
         "id": from_plain(row["id"], str),
         "kind": kind,
         "created": row.get("created"),
+        **_graph_fields(row, kind),
     }
-    for field in _KIND_FIELDS[kind]:
-        value = row.get(field)
-        if value is not None:
-            node[field] = value
-    return node
 
 
 # Only the outbound ``edges`` projection is read (the inbound ``backlinks`` would re-
@@ -455,13 +451,18 @@ def _detail_peers(detail: dict[str, object]) -> list[str]:
 
 def _node_from_detail(self_view: dict[str, object]) -> dict[str, object]:
     """Return a submit body from a ``web_get`` ``self`` view: graph-relevant fields."""
-    kind = from_plain(self_view["kind"], str)
-    body: dict[str, object] = {}
-    for field in _KIND_FIELDS.get(kind, ("title", "status")):
-        value = self_view.get(field)
-        if value is not None:
-            body[field] = value
-    return body
+    return _graph_fields(self_view, from_plain(self_view["kind"], str))
+
+
+# A kind without its own entry (``AccessGroup``, or one a newer server added) still
+# replays as a titled node; indexing ``_KIND_FIELDS`` directly aborted the whole pull.
+def _graph_fields(view: Mapping[str, object], kind: str) -> dict[str, object]:
+    """Return the fields of ``view`` the graph renders for ``kind``, unset ones left out."""
+    return {
+        field: view[field]
+        for field in _KIND_FIELDS.get(kind, ("title", "status"))
+        if view.get(field) is not None
+    }
 
 
 # Nodes are created first (in chunks) to learn their new target ids; edges then

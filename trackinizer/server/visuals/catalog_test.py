@@ -250,6 +250,33 @@ def test_parameter_bounds_that_do_not_apply_to_the_type_are_rejected(
         ParameterDescription.model_validate(kwargs)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"type": "string", "default": ""}, "need a default and max_length"),
+        ({"type": "string", "default": 3, "max_length": 5}, "need a default"),
+        ({"type": "string", "default": "toolong", "max_length": 3}, "exceeds maximum"),
+        ({"type": "integer", "default": "1", "minimum": 0, "maximum": 2}, "integer"),
+        ({"type": "integer", "default": True, "minimum": 0, "maximum": 2}, "integer"),
+        ({"type": "integer", "default": 1, "minimum": 0}, "need minimum and maximum"),
+        ({"type": "integer", "default": 1, "minimum": 3, "maximum": 2}, "exceeds max"),
+        ({"type": "boolean", "default": "yes"}, "need a boolean default"),
+    ],
+)
+def test_a_parameter_whose_default_its_type_cannot_hold_is_rejected(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        ParameterDescription.model_validate(kwargs)
+
+
+def test_two_visuals_of_one_type_are_rejected() -> None:
+    notes = StaticVisual.Config(type="x.notes", title="Notes")
+    with pytest.raises(ValueError, match="Visual types must be unique"):
+        Canvas.Config(visuals=[notes, notes], default_visual="x.notes").make()
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

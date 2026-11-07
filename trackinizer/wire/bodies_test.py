@@ -1,10 +1,4 @@
-"""Tests for Pydantic submit / field-mutation bodies.
-
-Also houses edge-create priority validation: :class:`CreateEdgeItem`
-shares the nonnegative-priority constraint with the inquiry bodies, so
-the single negative-priority case is colocated here rather than split
-across modules.
-"""
+"""Tests for Pydantic submit / field-mutation bodies."""
 
 from __future__ import annotations
 
@@ -20,6 +14,7 @@ from trackinizer.conftest import new_uuid
 from trackinizer.wire.bodies import (
     BATCH_MAX_ITEMS,
     BatchEdge,
+    ClaimNextIssue,
     FieldMutation,
     FieldOp,
     FieldSet,
@@ -34,7 +29,6 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
-from trackinizer.wire.edge_bodies import CreateEdge, CreateEdgeItem
 
 
 class TestSubmitModels:
@@ -219,13 +213,6 @@ class TestSubmitModels:
     def test_priority_pydantic_rejects_negative(self) -> None:
         with pytest.raises(ValueError, match="greater than or equal"):
             SubmitIssue(title="x", priority=-1)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
-        with pytest.raises(ValueError, match="greater than or equal"):
-            CreateEdgeItem(
-                from_id=new_uuid(),
-                to_id=new_uuid(),
-                edge_kind="narrows",
-                priority=-3,  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
-            )
 
     def test_narrows_rejects_negative_priority(self) -> None:
         """A negative contextual priority on a ``narrows`` parent is malformed.
@@ -382,16 +369,6 @@ class TestSubmitTimes:
                     "modified": "2024-03-02T12:00:00",
                 },
             )
-
-
-class TestEdgeBodies:
-    def test_create_edge_labels_default_none(self) -> None:
-        """Bare edge create leaves labels unset (NULL), not ``[]`` (F11).
-
-        ``Edge.labels`` defaults to ``None``; the wire body must agree so
-        a created edge's labels column matches a Store-created edge's.
-        """
-        assert CreateEdge().labels is None
 
 
 class TestSubmitAgentSessionBackfill:
@@ -614,6 +591,35 @@ class TestSubmitBatch:
             ],
         )
         assert len(batch.items) == 2
+
+    def test_a_blank_batch_actor_is_refused_not_defaulted(self) -> None:
+        """A blank actor would fall through ``item.actor or actor`` to the email."""
+        item = SubmitIssue(title="a", idempotency_key=new_uuid())
+
+        with pytest.raises(ValidationError, match="actor must be non-empty"):
+            SubmitBatch(items=[item], actor="  ")
+        assert SubmitBatch(items=[item], actor="ada").actor == "ada"
+
+
+class TestBlankIdentities:
+    def test_a_blank_account_is_refused_and_an_unset_one_defaults(self) -> None:
+        with pytest.raises(ValidationError, match="account must be non-empty"):
+            SubmitIssue(title="x", account=" ")
+        assert SubmitIssue(title="x").account is None
+
+    @pytest.mark.parametrize(
+        "body",
+        [{"owner": "  "}, {"owner": "ada", "actor": "\t"}],
+        ids=["owner", "actor"],
+    )
+    def test_a_claim_under_a_blank_name_is_refused(self, body: dict[str, str]) -> None:
+        with pytest.raises(ValidationError, match="must be non-empty"):
+            ClaimNextIssue.model_validate(body)
+
+    def test_a_claim_names_its_owner_and_defaults_its_actor(self) -> None:
+        claim = ClaimNextIssue(owner="ada")
+
+        assert (claim.owner, claim.actor, claim.reason) == ("ada", None, "")
 
 
 class TestBatchEdge:

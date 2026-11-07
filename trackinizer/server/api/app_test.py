@@ -829,6 +829,114 @@ def test_lifespan_refuses_secret_schemes_that_are_not_a_mapping(
         )
 
 
+@pytest.mark.asyncio
+async def test_a_non_http_scope_passes_through_unlogged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seen: list[str] = []
+
+    async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive, send
+        seen.append(from_plain(scope.get("type"), str))
+
+    with caplog.at_level(logging.INFO):
+        await RequestLoggingMiddleware(endpoint)(
+            {"type": "websocket"},
+            AsyncMock(),
+            AsyncMock(),
+        )
+
+    assert seen == ["websocket"]
+    assert not [r for r in caplog.records if getattr(r, "event", "")]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_request_is_logged_as_cancelled_and_reraised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive, send
+        raise asyncio.CancelledError
+
+    with caplog.at_level(logging.INFO), pytest.raises(asyncio.CancelledError):
+        await RequestLoggingMiddleware(endpoint)(
+            {"type": "http", "method": "GET", "path": "/api/x", "headers": []},
+            AsyncMock(),
+            AsyncMock(),
+        )
+
+    (record,) = (
+        r
+        for r in caplog.records
+        if getattr(r, "event", "") == "trackinizer_request_completed"
+    )
+    fields = from_plain(record.__dict__, dict[str, object])
+    assert from_plain(fields.get("outcome"), str) == "cancelled"
+    assert from_plain(fields.get("error_type"), str) == "CancelledError"
+
+
+def test_lifespan_reads_the_environment_when_the_app_holds_no_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fastapi_app = FastAPI()
+    config = Config(secrets="none")
+    from_env = Mock(return_value=config)
+    monkeypatch.setattr(Config, "from_env", from_env)
+
+    assert _lifespan_state(monkeypatch, fastapi_app, "config") is config
+    from_env.assert_called_once_with()
+
+
+def test_lifespan_cancels_the_embedder_warm_up_at_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warming: list[asyncio.Task[None]] = []
+
+    def resolve(fastapi_app: FastAPI, config: Config) -> asyncio.Task[None]:
+        del fastapi_app, config
+        warming.append(asyncio.create_task(asyncio.sleep(3600)))
+        return warming[0]
+
+    monkeypatch.setattr(app, "_resolve_session_embedder", resolve)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config()
+
+    _ = _lifespan_state(monkeypatch, fastapi_app, "config")
+
+    (task,) = warming
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_warming_the_session_embedder_embeds_one_query() -> None:
+    embed_query = AsyncMock(return_value=[0.0])
+
+    await app._warm_session_embedder(
+        cast("QueryEmbedder", Mock(embed_query=embed_query)),
+    )
+
+    embed_query.assert_awaited_once_with("warm")
+
+
+def _lifespan_state(
+    monkeypatch: pytest.MonkeyPatch,
+    fastapi_app: FastAPI,
+    name: str,
+) -> object:
+    """Drive the real ``lifespan`` with a stubbed engine; return ``state.<name>``."""
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+
+    async def _drive() -> object:
+        async with lifespan(fastapi_app):
+            return cast(object, getattr(fastapi_app.state, name))
+
+    return asyncio.run(_drive())
+
+
 async def _record_warm(embedder: object, sink: list[str]) -> None:
     """Stand-in warm coroutine: records that it ran, embeds nothing."""
     del embedder
@@ -842,19 +950,9 @@ def _lifespan_secrets(
     fastapi_app: FastAPI | None = None,
 ) -> object:
     """Drive the real ``lifespan`` with a stubbed engine; return ``state.secrets``."""
-    store, engine = make_store()
-    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
-    monkeypatch.setattr(app, "Store", Mock(return_value=store))
-    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     fastapi_app = fastapi_app or FastAPI()
     fastapi_app.state.config = Config(secrets=spec)
-
-    async def _drive() -> object:
-        async with lifespan(fastapi_app):
-            return cast(object, fastapi_app.state.secrets)
-
-    return asyncio.run(_drive())
+    return _lifespan_state(monkeypatch, fastapi_app, "secrets")
 
 
 if __name__ == "__main__":
