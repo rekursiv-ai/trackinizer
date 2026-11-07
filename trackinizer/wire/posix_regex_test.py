@@ -45,13 +45,15 @@ class TestBracketExpressions:
     def test_an_escape_outside_a_class_is_not(self) -> None:
         assert [(e.char, e.in_bracket) for e in escapes(r"\b")] == [("b", False)]
 
-    def test_a_leading_bracket_is_a_literal_member(self) -> None:
+    @pytest.mark.parametrize("pattern", [r"[]a\b]", r"a[]a\b]"])
+    def test_a_leading_bracket_is_a_literal_member(self, pattern: str) -> None:
         # POSIX: ``]`` first in a class is a literal, not the terminator.
         # Live: ``']' ~ '[]a]'`` is true. So ``\b`` after it is still inside.
-        assert [e.in_bracket for e in escapes(r"[]a\b]")] == [True]
+        assert [e.in_bracket for e in escapes(pattern)] == [True]
 
-    def test_a_negated_class_may_also_lead_with_a_bracket(self) -> None:
-        assert [e.in_bracket for e in escapes(r"[^]a\b]")] == [True]
+    @pytest.mark.parametrize("pattern", [r"[^]a\b]", r"a[^]a\b]"])
+    def test_a_negated_class_may_also_lead_with_a_bracket(self, pattern: str) -> None:
+        assert [e.in_bracket for e in escapes(pattern)] == [True]
 
     def test_a_character_class_name_does_not_close_the_bracket(self) -> None:
         # ``[[:alpha:]]``: the ``]`` ending ``[:alpha:]`` is not the class's.
@@ -70,7 +72,7 @@ class TestPositions:
         assert [(e.char, e.start) for e in found] == [("y", 2)]
 
 
-@pytest.mark.parametrize("pattern", ["", "plain", "[abc]", "a+b*"])
+@pytest.mark.parametrize("pattern", ["", "plain", "[abc]", "a+b*", "a\\"])
 def test_a_pattern_with_no_escapes_yields_none(pattern: str) -> None:
     assert list(escapes(pattern)) == []
 
@@ -87,7 +89,7 @@ class TestPythonNamedGroups:
 
     @pytest.mark.parametrize(
         "pattern",
-        ["(?P<x>a)", "a(?P<n>b)", "(?P=x)", "[a](?P<n>b)"],
+        ["(?P<x>a)", "a(?P<n>b)", "(?P=x)", "a(?P=x)", "[a](?P<n>b)"],
     )
     def test_a_real_named_group_is_detected(self, pattern: str) -> None:
         assert has_python_named_group(pattern) is True
@@ -109,6 +111,9 @@ class TestPythonNamedGroups:
         # Each of these is a class member, comment prose, or an escaped
         # paren -- never a group opener.
         assert has_python_named_group(pattern) is False
+
+    def test_an_empty_comment_after_a_group_preserves_following_escapes(self) -> None:
+        assert [(e.char, e.start) for e in escapes(r"(a)(?#)\y")] == [("y", 7)]
 
     def test_a_backslash_does_not_extend_a_comment(self) -> None:
         # A comment body ends at the FIRST ``)``, backslash or not -- neither
@@ -145,8 +150,12 @@ class TestLiveIndices:
         # ``[]*]`` is the class {']', '*'}; only the final ``]`` is syntax.
         assert live_indices("[]*]") == frozenset({3})
 
-    def test_an_empty_pattern_has_no_live_positions(self) -> None:
-        assert live_indices("") == frozenset()
+    @pytest.mark.parametrize("pattern", ["", "[", "[[", "[[:", "[[:digit:"])
+    def test_empty_or_unclosed_classes_have_no_live_positions(
+        self,
+        pattern: str,
+    ) -> None:
+        assert live_indices(pattern) == frozenset()
 
     def test_a_posix_class_close_is_not_the_outer_close(self) -> None:
         # ``[[:alpha:]]`` -- the ``]`` at index 9 belongs to ``[:alpha:]``, so
@@ -192,6 +201,12 @@ class TestExpandedModeComments:
     def test_a_hash_inside_a_bracket_is_a_member(self) -> None:
         # Live: ``'a#b' ~ '(?x)a[#]b'`` is true.
         assert 6 in matchable_indices("(?x)a[#]b")
+
+    def test_each_comment_stops_at_its_own_newline(self) -> None:
+        assert [(e.char, e.start) for e in escapes("(?x)#\\y\n\\y#\\Y\n\\Y")] == [
+            ("y", 8),
+            ("Y", 14),
+        ]
 
     def test_an_escaped_hash_is_a_literal(self) -> None:
         # Live: ``'a#b' ~ '(?x)a\#b'`` is true.
@@ -263,7 +278,7 @@ class TestPosixBracketConstructs:
 
     @pytest.mark.parametrize(
         "pattern",
-        ["[abc]", "[0-9]", "[^a]", "[]a]", r"[\[]", "[[]", "a[b]c", ""],
+        ["[abc]", "[0-9]", "[^a]", "[]a]", r"[\[]", "[[]", "[[", "[[x]", "a[b]c", ""],
     )
     def test_an_ordinary_bracket_is_not_one(self, pattern: str) -> None:
         assert has_posix_bracket_construct(pattern) is False
@@ -276,10 +291,12 @@ class TestPosixBracketConstructs:
 
 class TestParenExtensions:
     def test_each_group_carries_its_body_and_scope(self) -> None:
-        assert list(paren_extensions("(?i)a(?=b)(?x:c)")) == [
+        assert list(paren_extensions("(?i)a(?=b)(?x:c)(?:)(?)")) == [
             ParenExtension(body="i", scoped=False, start=0),
             ParenExtension(body="=b", scoped=False, start=5),
             ParenExtension(body="x", scoped=True, start=10),
+            ParenExtension(body="", scoped=True, start=16),
+            ParenExtension(body="", scoped=False, start=20),
         ]
 
     @pytest.mark.parametrize("pattern", ["[(?a)]", "(?#(?a)a", "(?n", "a(?"])
@@ -301,6 +318,7 @@ class TestPosixPattern:
         [
             pytest.param("abc", "(?s)abc", id="plain-gains-dotall"),
             pytest.param("a$", r"(?s)a\Z", id="dollar-anchors-at-end"),
+            pytest.param("a$b", r"(?s)a\Zb", id="dollar-preserves-following-atom"),
             pytest.param("(?m)a$", "(?s)(?m)a$", id="multiline-keeps-dollar"),
             pytest.param("(?=m)m$", r"(?s)(?=m)m\Z", id="lookahead-is-not-a-flag"),
             pytest.param("[$]", "(?s)[$]", id="bracket-dollar-is-a-member"),

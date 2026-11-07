@@ -697,7 +697,7 @@ class TestDelegate:
         )
         assert (
             Path(probe.stdout.strip()).resolve()
-            == Path(inspect.getfile(delegate)).resolve()
+            == Path(inspect.getfile(client)).resolve()
         )
 
 
