@@ -312,13 +312,16 @@ function drawLink(link: DrawLink, ctx: CanvasRenderingContext2D, scale: number):
   const { source, target, look } = link;
   // The layout swaps a link's ends for their nodes before the first frame.
   if (typeof source === "string" || typeof target === "string") return;
+  ctx.save();
+  ctx.globalAlpha = link.kind === "produced_by" ? 0.35 : 1;
   ctx.beginPath();
   ctx.moveTo(source.x!, source.y!);
   ctx.lineTo(target.x!, target.y!);
-  ctx.lineWidth = look.width / scale;
+  ctx.lineWidth = (look.width * 0.4) / scale;
   ctx.strokeStyle = look.color;
   ctx.setLineDash(look.dash ?? NO_DASH);
   ctx.stroke();
+  ctx.restore();
 }
 
 /** The node's disc in its hit colour, so pointing and dragging match what is drawn. */
