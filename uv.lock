@@ -188,7 +188,7 @@ wheels = [
 [[package]]
 name = "codedoctor"
 version = "0.1.2"
-source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#b3919c2ef5f110f71574dd0edc8704f29e7ef45a" }
+source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#fa31b64d8c7da256f3500e48b4925aebf506a8fe" }
 dependencies = [
     { name = "rignore" },
     { name = "treekle" },
