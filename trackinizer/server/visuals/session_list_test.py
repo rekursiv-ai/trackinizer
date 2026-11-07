@@ -32,12 +32,19 @@ from trackinizer.server.visuals.session_lines import (
     LastLine,
     SessionLines,
 )
-from trackinizer.server.visuals.session_list import SessionList, list_own_sessions
+from trackinizer.server.visuals.session_list import (
+    SessionList,
+    _placed,
+    _Places,
+    list_own_sessions,
+)
 from trackinizer.types.session_records import SessionRecordRow
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+
+    from asyncpg import Record
 
     from trackinizer.lib.postgres import DatabaseEngine
     from trackinizer.sagent.session.types import SessionRecord
@@ -348,6 +355,18 @@ async def test_the_last_line_is_the_last_said_on_one_line_by_whom_and_no_tool_ou
     assert sessions[shared] == LastLine(author="grace@example.com", text="Ship it")
     assert sessions[asked] == LastLine(author=_EMAIL, text="x" * LINE_CHARS)
     assert sessions[quiet] is None
+
+
+def test_a_placed_session_sits_on_the_first_of_the_callers_canvases_it_names() -> None:
+    mine, other = uuid.uuid4(), uuid.uuid4()
+    places = _Places(workspace={mine: None})
+
+    def placed(*labels: str) -> uuid.UUID | None:
+        return _placed(cast("Record", {"labels": list(labels)}), places=places)
+
+    assert placed("git:o@main", "canvas:not-a-uuid", f"canvas:{other}") is None
+    assert placed(f"canvas:{other}", "canvas:bad", f"canvas:{mine}") == mine
+    assert _placed(cast("Record", {"labels": None}), places=places) is None
 
 
 @pytest.mark.db_pglite
