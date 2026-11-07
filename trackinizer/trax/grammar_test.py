@@ -297,6 +297,29 @@ def test_field_value_wraps_coerce_value_error_as_client_error() -> None:
         field_value("status", "flummoxed")
 
 
+@pytest.mark.parametrize(
+    ("field", "raw", "message"),
+    [
+        ("priority", "urgentish", "priority must be an int"),
+        ("confidence", "sure", "confidence must be a number"),
+    ],
+)
+def test_field_value_names_the_expected_numeric_shape(
+    field: str,
+    raw: str,
+    message: str,
+) -> None:
+    with pytest.raises(ClientError, match=message) as caught:
+        field_value(field, raw)
+    assert "could not convert" not in str(caught.value)
+    assert "invalid literal" not in str(caught.value)
+
+
+def test_field_value_coerces_numeric_fields() -> None:
+    assert field_value("priority", " 7 ") == 7
+    assert field_value("confidence", "0.25") == 0.25
+
+
 @pytest.mark.parametrize("field", ["config", "app"])
 def test_field_value_json_object_parses_json_object(field: str) -> None:
     assert field_value(field, '{"lr": 0.1}') == {"lr": 0.1}

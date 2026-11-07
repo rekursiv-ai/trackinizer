@@ -117,6 +117,11 @@ def test_default_visual_requiring_a_record_is_rejected() -> None:
         Canvas.Config(default_visual="trax.subgraph").make()
 
 
+def test_default_visual_that_is_not_registered_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Default visual must be registered"):
+        Canvas.Config(default_visual="x.nowhere").make()
+
+
 def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
     """The window lights 1 to 3 hops, 2 unless asked, and marks ids it lists."""
     described = ContextGraphVisual.Config().make().describe()

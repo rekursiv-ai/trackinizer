@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast, override
 
 import asyncpg
 import pytest
 
-from trackinizer.conftest import make_conn, new_uuid
+from trackinizer.conftest import RecordingPolicy, make_conn, new_uuid
 from trackinizer.lib.postgres import Conn
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.projection import (
     fetch_edges,
+    fetch_edges_bulk,
+    materialize,
     project_relationships,
 )
 from trackinizer.types import inquiries
@@ -29,6 +33,7 @@ from trackinizer.types.inquiries import (
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from trackinizer.server.access_policy import ResourceKind
     from trackinizer.types.edges import Edge
 
 
@@ -276,6 +281,108 @@ class TestProjection:
         assert isinstance(inbound_sql, str)
         assert "priority" in inbound_sql
         assert "valence" in inbound_sql
+
+
+def _issue_row(row_id: UUID) -> asyncpg.Record:
+    """Return the base columns of one Issue row, as a list read selects them."""
+    at = datetime(2026, 8, 19, tzinfo=UTC)
+    row = {
+        "kind": "Issue",
+        "id": row_id,
+        "seq": 3,
+        "owner": "ada@example.com",
+        "account": "ada@example.com",
+        "status": "active",
+        "title": "a title",
+        "description": "",
+        "labels": None,
+        "subscribers": None,
+        "created": at,
+        "modified": at,
+    }
+    return cast(asyncpg.Record, row)
+
+
+class TestFetchEdgesBulk:
+    @pytest.mark.asyncio
+    async def test_no_subjects_asks_nothing(self) -> None:
+        conn = make_conn()
+
+        assert await fetch_edges_bulk(cast(Conn, conn), []) == ({}, {})
+        conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_each_edge_lands_in_its_subjects_bucket_and_every_subject_has_one(
+        self,
+    ) -> None:
+        one, two, quiet, peer = new_uuid(), new_uuid(), new_uuid(), new_uuid()
+        out_one = _edge("narrows", from_id=one, to_id=peer, to_kind="Issue")
+        out_two = _edge("requires", from_id=two, to_id=peer, to_kind="Issue")
+        in_one = _edge("narrows", from_id=peer, from_kind="Issue", to_id=one)
+        conn = make_conn()
+        conn.fetch.side_effect = [[out_one, out_two], [in_one]]
+
+        outbound, inbound = await fetch_edges_bulk(
+            cast(Conn, conn),
+            [one, two, quiet],
+        )
+
+        assert outbound == {one: [out_one], two: [out_two], quiet: []}
+        assert inbound == {one: [in_one], two: [], quiet: []}
+        out_call, in_call = conn.fetch.await_args_list
+        assert out_call.args[1:] == ([one, two, quiet],)
+        assert in_call.args[1:] == ([one, two, quiet],)
+        assert "from_id = ANY($1::uuid[])" in str(out_call.args[0])
+        assert "to_id = ANY($1::uuid[])" in str(in_call.args[0])
+        assert "AND (" not in str(out_call.args[0])
+
+    @pytest.mark.asyncio
+    async def test_a_reader_sees_only_peers_the_policy_lets_them_read(self) -> None:
+        conn = make_conn()
+        principal = Principal(email="ada@example.com", role="writer")
+
+        await fetch_edges_bulk(
+            cast(Conn, conn),
+            [new_uuid()],
+            policy=_Restricted(),
+            principal=principal,
+        )
+
+        out_sql, in_sql = (str(c.args[0]) for c in conn.fetch.await_args_list)
+        assert "readable_inquiry.id = edges.to_id AND (FALSE)" in out_sql
+        assert "readable_inquiry.id = edges.from_id AND (FALSE)" in in_sql
+
+
+def test_materialize_projects_the_rows_own_edges_onto_its_kind() -> None:
+    row_id, broader, other = new_uuid(), new_uuid(), new_uuid()
+    outbound = {
+        row_id: [_edge("narrows", to_id=broader, to_kind="Issue", priority=2)],
+        other: [_edge("requires", to_id=new_uuid(), to_kind="Issue")],
+    }
+
+    issue = materialize(_issue_row(row_id), outbound, {})
+
+    assert isinstance(issue, Issue)
+    assert (issue.id, issue.title) == (row_id, "a title")
+    assert issue.narrows == (IssueEdge(id=broader, kind="Issue", priority=2),)
+    assert issue.requires == ()
+    assert issue.narrowed_by == ()
+
+
+class _Restricted(RecordingPolicy):
+    """A policy whose read filter hides every row."""
+
+    @override
+    def read_filter(
+        self,
+        kind: ResourceKind,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal,
+    ) -> str:
+        del kind, alias, params, principal
+        return "FALSE"
 
 
 if __name__ == "__main__":

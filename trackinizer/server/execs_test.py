@@ -20,6 +20,7 @@ from trackinizer.server.execs import (
     ExecLostError,
     ExecRevokedError,
     ExecStaleError,
+    MayHaveRun,
     Submission,
 )
 from trackinizer.wire import wire_exec
@@ -607,6 +608,26 @@ async def test_revoking_a_machine_forgets_the_commands_its_callers_left_running(
 
     assert not world.hub.deliver(_MACHINE, offered.id, _result())
     assert not (await world.start()).done()
+
+
+@pytest.mark.parametrize(
+    ("revoked", "kind", "message"),
+    [
+        (True, ExecRevokedError, "the machine was revoked"),
+        (False, ExecLostError, "the host took the command but did not report"),
+    ],
+)
+async def test_a_kept_may_have_run_ends_as_a_taken_command(
+    *,
+    revoked: bool,
+    kind: type[ExecRevokedError | ExecLostError],
+    message: str,
+) -> None:
+    error = MayHaveRun(revoked=revoked).error()
+
+    assert type(error) is kind
+    assert error.taken is True
+    assert str(error) == message
 
 
 if __name__ == "__main__":

@@ -55,6 +55,30 @@ class TestModels:
         assert total.resource_usd == pytest.approx(2.0)
 
 
+class TestFromRow:
+    def test_reads_the_unprefixed_inquiry_columns(self) -> None:
+        row = {"marginal_cost_agent_usd": 1.25, "marginal_cost_resource_usd": 3.5}
+        assert Cost.from_row(row) == Cost(agent_usd=1.25, resource_usd=3.5)
+
+    def test_prefix_selects_one_side_of_a_change_row(self) -> None:
+        row = {
+            "old_marginal_cost_agent_usd": 1.0,
+            "old_marginal_cost_resource_usd": 2.0,
+            "new_marginal_cost_agent_usd": 4.0,
+            "new_marginal_cost_resource_usd": 8.0,
+        }
+        assert Cost.from_row(row, prefix="new_") == Cost(
+            agent_usd=4.0,
+            resource_usd=8.0,
+        )
+
+    def test_a_missing_column_reads_as_zero(self) -> None:
+        assert Cost.from_row({"marginal_cost_agent_usd": 2.0}) == Cost(agent_usd=2.0)
+        assert Cost.from_row({"marginal_cost_resource_usd": 3.0}) == Cost(
+            resource_usd=3.0,
+        )
+
+
 class TestTokenCount:
     def test_add_is_componentwise(self) -> None:
         total = TokenCount(input_tokens=1, output_tokens=2) + TokenCount(

@@ -2,22 +2,38 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING
+
 import hashlib
 import uuid
 
+from fastapi import FastAPI, HTTPException
+from starlette.requests import Request
+
 import pytest
 
+from trackinizer.conftest import FakeEngine, make_conn, set_field_row
+from trackinizer.server import auth
 from trackinizer.server.auth import LAST_USED_BUMP_INTERVAL_SEC
 from trackinizer.server.machine_auth import (
+    MachineIdentity,
+    MintedSecret,
+    current_machine,
     mint_secret,
     parse_credential,
     parse_enrollment,
     should_bump_last_used,
 )
+from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.wire_machine_host import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockConnection
 
 
 def test_a_minted_credential_parses_to_its_id_and_the_digest_of_its_secret() -> None:
@@ -118,6 +134,128 @@ def test_the_throttle_forgets_everything_rather_than_grow_without_bound() -> Non
         sizes.append(len(bumped))
 
     assert max(sizes) == 1_024
+
+
+_MACHINE = uuid.UUID(int=5)
+
+
+def _host(conn: MockConnection, *, bearer: str) -> Request:
+    """Return a host request presenting ``bearer`` to an app over ``conn``."""
+    app = FastAPI()
+    app.state.engine = FakeEngine(conn)
+    headers = [(b"authorization", f"Bearer {bearer}".encode())]
+    return Request({"type": "http", "app": app, "headers": headers})
+
+
+def _credential_row(
+    minted: MintedSecret,
+    *,
+    machine_id: uuid.UUID = _MACHINE,
+    revoked_at: datetime | None = None,
+) -> dict[str, object]:
+    """Return the row the credential lookup reads for ``minted``."""
+    return {
+        "secret_sha256": minted.digest,
+        "revoked_at": revoked_at,
+        "machine_id": machine_id,
+        "name": "gx10",
+    }
+
+
+class TestCurrentMachine:
+    @pytest.mark.asyncio
+    async def test_a_live_credential_names_its_machine_and_stamps_last_used_once(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: 100.0)
+        minted = mint_secret(CREDENTIAL_PREFIX)
+        conn = make_conn()
+        set_field_row(conn, _credential_row(minted))
+        request = _host(conn, bearer=minted.token)
+
+        first = await current_machine(request, _MACHINE)
+        again = await current_machine(request, _MACHINE)
+
+        assert (
+            first
+            == again
+            == MachineIdentity(
+                machine_id=_MACHINE,
+                name="gx10",
+                credential_id=minted.id,
+            )
+        )
+        assert conn.fetchrow.await_args is not None
+        assert conn.fetchrow.await_args.args[1] == minted.id
+        conn.execute.assert_awaited_once_with(
+            "UPDATE machine_credentials SET last_used = now() WHERE id = $1",
+            minted.id,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_bearer_is_401_before_any_lookup(self) -> None:
+        conn = make_conn()
+
+        with pytest.raises(HTTPException) as refused:
+            await current_machine(_host(conn, bearer="trax_nope"), _MACHINE)
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            401,
+            "invalid machine credential",
+        )
+        conn.fetchrow.assert_not_awaited()
+
+    @pytest.mark.parametrize("known", [False, True], ids=["unknown", "wrong secret"])
+    @pytest.mark.asyncio
+    async def test_an_unknown_or_wrong_secret_credential_is_the_same_401(
+        self,
+        *,
+        known: bool,
+    ) -> None:
+        minted = mint_secret(CREDENTIAL_PREFIX)
+        conn = make_conn()
+        set_field_row(
+            conn,
+            _credential_row(mint_secret(CREDENTIAL_PREFIX)) if known else None,
+        )
+
+        with pytest.raises(HTTPException) as refused:
+            await current_machine(_host(conn, bearer=minted.token), _MACHINE)
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            401,
+            "invalid machine credential",
+        )
+        conn.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_credential_is_410(self) -> None:
+        minted = mint_secret(CREDENTIAL_PREFIX)
+        conn = make_conn()
+        set_field_row(
+            conn,
+            _credential_row(minted, revoked_at=datetime(2026, 1, 1, tzinfo=UTC)),
+        )
+
+        with pytest.raises(HTTPException) as refused:
+            await current_machine(_host(conn, bearer=minted.token), _MACHINE)
+
+        assert (refused.value.status_code, refused.value.detail) == (
+            410,
+            "machine_revoked",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_credential_on_another_machines_path_is_not_found(self) -> None:
+        minted = mint_secret(CREDENTIAL_PREFIX)
+        conn = make_conn()
+        set_field_row(conn, _credential_row(minted, machine_id=uuid.UUID(int=6)))
+
+        with pytest.raises(NotFoundError, match="machine is not registered"):
+            await current_machine(_host(conn, bearer=minted.token), _MACHINE)
+
+        conn.execute.assert_not_awaited()
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ real capture path wrote.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, override
 
@@ -19,6 +20,7 @@ from trackinizer.sagent.session.types import AssistantMessage, SystemMessage
 from trackinizer.server.asks import (
     ASKS_PART,
     _released,
+    ask_asker,
     ask_release_loop,
     open_ask_ids,
     release_gone_runs,
@@ -45,6 +47,7 @@ if TYPE_CHECKING:
     from treekle import PlainTree
 
     from trackinizer.lib.postgres import PGliteEngine
+    from trackinizer.runs.asks import Ask
 
 
 _AT = datetime(2026, 10, 21, 9, 0, tzinfo=UTC)
@@ -183,6 +186,48 @@ class TestOpenAskIds:
         )
 
         assert await _open(store, session) == []
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+class TestAskAsker:
+    """A card names whom it asks; the newest live card of an id is the one read."""
+
+    async def test_the_asker_is_the_latest_live_card_of_that_id(
+        self,
+        store: Store,
+    ) -> None:
+        session, other = await _session(store), await _session(store)
+        await write_records(
+            store,
+            session,
+            [
+                opened_record(_asking("a", asker="old@x.y"), at=_AT),
+                opened_record(_asking("a", asker="ada@x.y"), at=_LATER),
+                opened_record(_asking("b", asker="bob@x.y"), at=_AT),
+                opened_record(command_ask("c"), at=_AT),
+            ],
+        )
+        await write_records(
+            store,
+            session,
+            [opened_record(_asking("a", asker="hidden@x.y"), at=_LATER)],
+            name="unbound.jsonl",
+            bound=0,
+        )
+        await write_records(
+            store,
+            other,
+            [opened_record(_asking("z", asker="zed@x.y"), at=_AT)],
+        )
+
+        async with store.engine.acquire() as conn:
+            askers = [
+                await ask_asker(conn, session_id=session, ask_id=ask_id)
+                for ask_id in ("a", "b", "c", "missing", "z")
+            ]
+
+        assert askers == ["ada@x.y", "bob@x.y", "", "", ""]
 
 
 @pytest.mark.db_pglite
@@ -593,6 +638,11 @@ async def _stored(store: Store, session_id: UUID, *, name: str) -> list[SystemMe
     records = [row.record() for row in rows]
     assert all(isinstance(record, SystemMessage) for record in records)
     return [record for record in records if isinstance(record, SystemMessage)]
+
+
+def _asking(ask_id: str, *, asker: str) -> Ask:
+    """Return a command ask whose card names the person it asks."""
+    return replace(command_ask(ask_id), input={"asker": asker})
 
 
 def _gone(ask_id: str) -> dict[str, str]:

@@ -421,6 +421,20 @@ def test_help_topic_unknown_verb_raises(
         )
 
 
+def test_help_topic_prints_that_verbs_help(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``trax help Recent`` prints what ``trax recent help`` prints."""
+    run(["recent", "help"], client)
+    direct = capsys.readouterr().out
+    run(["help", "Recent"], client)
+    out = capsys.readouterr().out
+    assert out == direct
+    assert "Usage: trax recent [OPTIONS]" in out
+    assert not client.calls
+
+
 def test_main_handles_client_error_with_exit_2(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,

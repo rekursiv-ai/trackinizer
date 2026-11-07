@@ -101,6 +101,13 @@ def test_the_catalog_is_empty_without_a_deployment(
     assert json_loads(response.content, dict[str, object]) == {"addons": []}
 
 
+def test_an_app_with_nothing_attached_runs_the_deployment_of_no_addons() -> None:
+    bare = FastAPI()
+    bare.state.deployment = "not a deployment"
+    assert app_deployment(bare).manifests == {}
+    assert app_deployment(bare).catalog().addons == []
+
+
 def test_the_module_app_always_has_a_visual_catalog() -> None:
     assert _visual_catalog(app.app).catalog().visuals
 

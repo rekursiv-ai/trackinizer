@@ -136,6 +136,31 @@ class TestRowConverters:
         assert Change.from_row(row).caused_by is None
 
 
+class TestSnapshot:
+    def test_an_empty_snapshot_is_falsy(self) -> None:
+        assert not Snapshot()
+
+    @pytest.mark.parametrize(
+        "populated",
+        [Snapshot(title=""), Snapshot(labels=()), Snapshot(belief_confidence=0.0)],
+    )
+    def test_any_populated_field_makes_it_truthy(self, populated: Snapshot) -> None:
+        # Falsy values still count: populated means "not None".
+        assert populated
+
+    def test_from_row_maps_an_empty_list_column_to_an_empty_tuple(self) -> None:
+        row = {"new_labels": list[str](), "new_subscribers": None, "old_labels": ["x"]}
+        snapshot = Snapshot.from_row(row, prefix="new_")
+        assert snapshot.labels == ()
+        assert snapshot.subscribers is None
+        assert snapshot.marginal_cost is None
+
+    def test_from_row_reads_only_its_own_side(self) -> None:
+        row = {"old_title": "before", "new_title": "after"}
+        assert Snapshot.from_row(row, prefix="old_") == Snapshot(title="before")
+        assert not Snapshot.from_row({"new_title": "after"}, prefix="old_")
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 
