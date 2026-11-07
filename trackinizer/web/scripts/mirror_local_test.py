@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING
 
 import sys
@@ -83,6 +84,20 @@ def test_token_goes_only_to_the_profile_server() -> None:
     assert source_token(f"{_SOURCE}/", profile) == "trax_secret"
     assert source_token("http://127.0.0.1:8765", profile) == ""
     assert source_token("https://tracker.example.evil", profile) == ""
+
+
+@pytest.mark.parametrize(("scheme", "port"), [("http", 80), ("https", 443)])
+def test_token_matches_default_ports_but_not_other_endpoints(
+    scheme: str,
+    port: int,
+) -> None:
+    profile = Profile(url=f"{scheme}://tracker.example/api", api_key="trax_secret")
+    assert (
+        source_token(f"{scheme}://tracker.example:{port}/api/", profile)
+        == "trax_secret"
+    )
+    assert source_token(f"{scheme}://tracker.example:{port + 1}/api", profile) == ""
+    assert source_token(f"{scheme}://tracker.example:{port}/other", profile) == ""
 
 
 def test_key_is_stable_and_distinct_per_source_row() -> None:
@@ -272,6 +287,26 @@ def test_mirror_reads_with_get_only_interleaves_and_reruns_add_nothing() -> None
     assert (second.ended, second.edges) == (0, 0)
     assert len(target.rows) == first.nodes
     assert (first.unfilled, second.unfilled) == ((), ())
+
+
+def test_mirror_excludes_records_that_arrived_after_the_part_listing() -> None:
+    source, target = _Source(), _Target()
+    with (
+        _Fake(partial(_growing_source, source=source)) as source_http,
+        _Fake(target.handle) as target_http,
+    ):
+        report = mirror(
+            ReadOnlySource(source_http),
+            target_http,
+            now=_T0,
+            hours=24,
+            sessions=2,
+            records=10,
+        )
+
+    beta = target.keys[mirror_key(_B)]
+    assert report.written == 6
+    assert {idx for session, _, idx in target.records if session == beta} == {0, 1}
 
 
 def test_a_rerun_finds_edges_older_than_any_window_of_the_target_graph() -> None:
@@ -511,6 +546,24 @@ class _Source:
         row = self.rows[session]
         rooms = from_plain(row["rooms"], list[str], default=[])
         return {"session_id": str(session), "cli": row["cli"], "rooms": rooms}
+
+
+def _growing_source(request: httpx2.Request, *, source: _Source) -> httpx2.Response:
+    if request.url.path == f"/api/sessions/{_B}/parts":
+        return _json(
+            200,
+            {
+                "parts": [
+                    {
+                        "part": 0,
+                        "name": f"{_B}.jsonl",
+                        "format": "claude",
+                        "records": 2,
+                    },
+                ],
+            },
+        )
+    return source.handle(request)
 
 
 def _row(

@@ -58,6 +58,11 @@ def test_every_kind_specific_bare_field_canonicalizes_to_its_storage_column() ->
     )
 
 
+@pytest.mark.parametrize("field", ["title", "issue_priority", "unknown_filter_column"])
+def test_canonical_and_unknown_filter_fields_pass_through(field: str) -> None:
+    assert canonical_filter_field(field) == field
+
+
 def test_agentsession_filter_aliases_resolve_to_storage_columns() -> None:
     """AgentSession's bare CLI field names canonicalize to their storage names.
 

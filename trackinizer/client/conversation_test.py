@@ -24,6 +24,7 @@ from trackinizer.client.conversation import (
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextState,
     IncompleteRecord,
@@ -516,6 +517,41 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
         ),
         "Understood; continuing as claude.",
     ]
+
+
+def test_a_foreign_typed_tool_keeps_its_call_and_structured_result() -> None:
+    call = ToolCall(
+        timestamp=_at(1),
+        call_id="shell-1",
+        name="exec",
+        arguments=immutable({"cmd": "pwd"}),
+    )
+    result = BashResult(
+        timestamp=_at(2),
+        call_id="shell-1",
+        command=("pwd",),
+        stdout="/workspace\n",
+        stderr="permission denied\n",
+        exit_code=1,
+    )
+    segment = _segment(0, "codex", [call, result])
+
+    written = projected(_neutral_conversation([segment]), "claude")
+
+    assert [record for record in written if isinstance(record, ToolCall)] == [call]
+    assert [record for record in written if isinstance(record, BashResult)] == [result]
+
+
+@pytest.mark.parametrize("target", ["claude", "codex"])
+def test_an_opening_without_conversation_is_preserved_without_a_switch(
+    target: str,
+) -> None:
+    opening = [
+        ContextClear(timestamp=_at(1), summary="The earlier request is resolved."),
+    ]
+
+    assert projected([], target, opening=opening) == opening
+    assert projected([], target) == []
 
 
 def test_consecutive_turns_of_one_role_are_one_turn_with_the_first_stamp() -> None:

@@ -302,6 +302,16 @@ def test_field_value_json_object_parses_json_object(field: str) -> None:
     assert field_value(field, '{"lr": 0.1}') == {"lr": 0.1}
 
 
+def test_field_value_json_object_preserves_stdin_sentinel() -> None:
+    assert field_value("config", "-") == "-"
+    assert field_value("app", "-") == "-"
+
+
+def test_field_value_json_object_preserves_file_sentinel() -> None:
+    assert field_value("config", "@nested/run.json") == "@nested/run.json"
+    assert field_value("app", "@nested/app.json") == "@nested/app.json"
+
+
 @pytest.mark.parametrize("field", ["config", "app"])
 def test_field_value_json_object_rejects_invalid_json(field: str) -> None:
     with pytest.raises(ClientError, match=f"{field} must be valid JSON"):
