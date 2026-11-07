@@ -26,21 +26,14 @@ from treekle import from_plain
 from trackinizer.sagent.model.capability import ModelCapability
 from trackinizer.sagent.model.cost import TokenCount
 from trackinizer.sagent.model.exceptions import UnknownModelError
-from trackinizer.sagent.providers.openai import sub
+from trackinizer.sagent.providers import anthropic, openai
+from trackinizer.sagent.providers.table import models
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from trackinizer.sagent.providers.anthropic import cli as anthropic_cli
     from trackinizer.types.session_records import SessionRecordRow
-else:
-    from wrapt import lazy_import
-
-    # The provider modules import their HTTP and CLI machinery, which a server that
-    # never prices a call need not load.
-    anthropic_cli = lazy_import("trackinizer.sagent.providers.anthropic.cli")
-    openai_sub = lazy_import("trackinizer.sagent.providers.openai.sub")
 
 
 __all__ = ["SessionUsage", "session_usage"]
@@ -98,9 +91,14 @@ def _capability(cli: str, model: str) -> ModelCapability | None:
     """Return the model ``cli`` names, from sagent's tables; None for one unknown."""
     if not model or cli not in {"claude", "codex"}:
         return None
-    table = anthropic_cli.AnthropicCLI if cli == "claude" else sub.OpenAISub
+    # The catalog sections the CLIs serve; their provider modules do not ship.
+    table = (
+        models(anthropic, section="anthropic-cli")
+        if cli == "claude"
+        else models(openai, section="openai-sub")
+    )
     try:
-        return table.models().resolve(model)[0]
+        return table.resolve(model)[0]
     except UnknownModelError:
         return None
 
