@@ -175,6 +175,19 @@ class TestPureFunctions:
 
         assert flags.session_max_age_seconds == 600
 
+    def test_session_ttl_flag_overrides_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "600")
+
+        flags, _ = _parse_args(
+            argparse.ArgumentParser(),
+            ["--session-max-age-seconds", "90"],
+        )
+
+        assert flags.session_max_age_seconds == 90
+
     @pytest.mark.parametrize(
         ("env", "argv", "auth_disabled"),
         [

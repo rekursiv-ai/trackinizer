@@ -27,11 +27,14 @@ from trackinizer.client.client import (
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import connection, profile
 from trackinizer.trax.conftest import FakeClient
-from trackinizer.trax.grammar import parse_kind, parse_ref
 from trackinizer.trax.profile import Profile
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import SeqRef, UuidRef
-from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
+from trackinizer.wire.routes import (
+    DEFAULT_LIST_LIMIT,
+    MAX_LIST_LIMIT,
+    inquiry_field_path,
+)
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_code import CODE_BLOBS_PATH, CODE_MISSING_PATH
 from trackinizer.wire.wire_export import EXPORT_API_PATH
@@ -75,6 +78,7 @@ from trackinizer.wire.wire_machines import (
     MACHINES_PATH,
     MAX_HOW_CHARS,
 )
+from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_metrics_query import MetricMaskClause
 from trackinizer.wire.wire_session_ir import (
     ManifestBody,
@@ -180,45 +184,6 @@ class _ClientSpy(Client):
         if method == "POST":
             self.post_calls.append((path, body))
         return self.post_result
-
-
-class TestParseRef:
-    def test_parse_seq_ref_case_insensitive(self) -> None:
-        ref = parse_ref(" issue#7 ")
-        assert ref == SeqRef(kind="Issue", seq=7)
-        assert str(ref) == "Issue#7"
-
-    def test_parse_uuid_ref(self) -> None:
-        value = uuid.uuid4()
-        ref = parse_ref(str(value))
-        assert ref == UuidRef(uuid=value)
-        assert str(ref) == str(value)
-
-    @pytest.mark.parametrize(
-        ("value", "message"),
-        [
-            ("", "empty reference"),
-            ("Nope#1", "unknown kind"),
-            ("Issue:not-a-seq", "cannot parse"),
-        ],
-    )
-    def test_rejects_empty_unknown_kind_and_bad_shape(
-        self,
-        value: str,
-        message: str,
-    ) -> None:
-        with pytest.raises(ValueError, match=message):
-            parse_ref(value)
-
-
-class TestParseKind:
-    def test_parse_kind_case_insensitive_and_plural(self) -> None:
-        assert parse_kind("belief") == "Belief"
-        assert parse_kind("Issues") == "Issue"
-
-    def test_parse_kind_rejects_unknown(self) -> None:
-        with pytest.raises(ValueError, match="unknown kind"):
-            parse_kind("widgets")
 
 
 class TestFlags:
@@ -4357,6 +4322,494 @@ def test_error_text_truncates_only_past_the_2048_character_boundary(
     expected = "x" * length if length <= 2_048 else "x" * 2_048 + "... (truncated)"
     assert str(raised.value) == f"GET {path} -> 400: {expected}"
     assert raised.value.status_code == 400
+
+
+def _recording(
+    sent: list[httpx2.Request],
+    *answers: httpx2.Response,
+) -> Client:
+    """Return a client that records each request and answers ``answers`` in order."""
+    queue = list(answers)
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return queue.pop(0)
+
+    return Client("https://server", transport=httpx2.MockTransport(handler))
+
+
+def test_server_url_rejects_a_url_it_cannot_parse() -> None:
+    with pytest.raises(ClientError, match=r"^test has invalid URL$"):
+        server_url("http://[::1", "test")
+
+
+def test_resolve_ids_refuses_a_uuid_ref_of_the_wrong_kind() -> None:
+    row = uuid.UUID(int=5)
+
+    with (
+        _answering({"found": {str(row): "Issue"}}) as client,
+        pytest.raises(ClientError, match=f"ref Belief {row} resolves to a Issue row"),
+    ):
+        _ = client.resolve_ids([UuidRef(uuid=row, expected_kind="Belief")])
+
+
+def test_next_issue_is_none_when_the_server_names_none() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, content=b"")) as client:
+        assert client.next_issue() is None
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("GET", "/api/inquiries/next_issue"),
+    ]
+
+
+def test_claim_next_issue_posts_owner_actor_and_reason_and_reads_the_claim() -> None:
+    sent: list[httpx2.Request] = []
+    claimed = {"id": str(uuid.UUID(int=3)), "owner": "ada"}
+    with _recording(
+        sent,
+        httpx2.Response(200, json=claimed),
+        httpx2.Response(200, content=b""),
+    ) as client:
+        first = client.claim_next_issue(owner="ada", actor="bot", reason="queue")
+        second = client.claim_next_issue(owner="ada")
+
+    assert (first, second) == (claimed, None)
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("POST", "/api/inquiries/next_issue"),
+    ] * 2
+    assert [json_loads(r.content, dict[str, object]) for r in sent] == [
+        {"owner": "ada", "actor": "bot", "reason": "queue"},
+        {"owner": "ada"},
+    ]
+
+
+class TestWaitUntilReady:
+    """Readiness is any non-5xx answer; a dead server or the deadline ends the wait."""
+
+    def test_a_server_without_the_version_route_is_up(self) -> None:
+        sent: list[httpx2.Request] = []
+        with _recording(sent, httpx2.Response(404, json={})) as client:
+            client.wait_until_ready(timeout_sec=0)
+        assert len(sent) == 1
+
+    def test_probes_past_a_refused_connection_until_the_server_answers(self) -> None:
+        answers = iter([httpx2.ConnectError("refused"), None])
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            error = next(answers)
+            if error is not None:
+                raise error
+            return httpx2.Response(200, json={"sha": "abc"})
+
+        with Client(
+            "https://server",
+            transport=httpx2.MockTransport(handler),
+        ) as client:
+            client.wait_until_ready(timeout_sec=60, probe_interval_sec=0)
+
+        assert next(answers, "drained") == "drained"
+
+    def test_a_dead_server_fails_at_once(self) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            raise httpx2.ConnectError("refused")
+
+        with (
+            Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+            pytest.raises(ClientError, match="died before becoming ready") as raised,
+        ):
+            client.wait_until_ready(timeout_sec=60, alive=lambda: False)
+
+        assert isinstance(raised.value.__cause__, ClientError)
+
+    def test_a_5xx_past_the_deadline_reraises_the_last_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def no_sleep(seconds: float) -> None:
+            del seconds
+
+        monkeypatch.setattr("trackinizer.client.client.time.sleep", no_sleep)
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            return httpx2.Response(503, text="booting")
+
+        with (
+            Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+            pytest.raises(ClientError, match="-> 503") as raised,
+        ):
+            client.wait_until_ready(timeout_sec=0, alive=lambda: True)
+
+        assert raised.value.status_code == 503
+
+
+def test_search_sessions_sends_the_query_arms_and_limit() -> None:
+    sent: list[httpx2.Request] = []
+    found: dict[str, PlainTree] = {"hits": [], "semantic": False, "degraded": True}
+    with _recording(
+        sent,
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=found),
+    ) as client:
+        assert client.search_sessions("loss spike", semantic=False, limit=3) == found
+        assert client.search_sessions("loss spike") == found
+
+    assert [r.url.path for r in sent] == ["/api/web/search_sessions"] * 2
+    assert [dict(r.url.params) for r in sent] == [
+        {"q": "loss spike", "semantic": "false", "limit": "3"},
+        {"q": "loss spike", "semantic": "true", "limit": "20"},
+    ]
+
+
+def test_derived_confidence_and_authority_read_their_routes() -> None:
+    row = uuid.UUID(int=8)
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(200, json={"confidence": 0.75}),
+        httpx2.Response(200, json={"proves": 0.25}),
+    ) as client:
+        confidence = client.derived_confidence(row)
+        authority = client.derived_authority(row)
+
+    assert (confidence, authority) == (0.75, {"proves": 0.25})
+    assert [r.url.path for r in sent] == [
+        f"/api/inquiries/{row}/confidence",
+        f"/api/inquiries/{row}/authority",
+    ]
+
+
+def test_add_edge_sends_its_audit_reason() -> None:
+    src, dst = uuid.UUID(int=1), uuid.UUID(int=2)
+    sent: list[httpx2.Request] = []
+    with _recording(
+        sent,
+        httpx2.Response(
+            200,
+            json={"change_id": str(uuid.UUID(int=9)), "created": True},
+        ),
+    ) as client:
+        write = client.add_edge(src, dst, "requires", actor="ada", reason="blocks it")
+
+    assert write == EdgeWrite(created=True, changed=True)
+    [request] = sent
+    assert request.url.path == f"/api/edges/{src}/requires/{dst}"
+    assert json_loads(request.content, dict[str, object]) == {
+        "actor": "ada",
+        "reason": "blocks it",
+    }
+
+
+def test_read_session_parts_returns_the_listed_parts() -> None:
+    session = uuid.UUID(int=4)
+    sent: list[httpx2.Request] = []
+    listed = {
+        "parts": [
+            {"part": 0, "name": "a.jsonl", "format": "claude", "records": 3},
+            {"part": 1, "name": "b.jsonl", "format": "", "records": 0},
+        ],
+    }
+    with _recording(sent, httpx2.Response(200, json=listed)) as client:
+        parts = client.read_session_parts(session)
+
+    assert [(p.part, p.name, p.format, p.records) for p in parts] == [
+        (0, "a.jsonl", "claude", 3),
+        (1, "b.jsonl", "", 0),
+    ]
+    assert [(r.method, r.url.path) for r in sent] == [
+        ("GET", f"/api/sessions/{session}/parts"),
+    ]
+
+
+def test_set_cli_session_id_overwrites_the_field_with_a_resume_reason() -> None:
+    session = uuid.UUID(int=6)
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, content=b"")) as client:
+        client.set_cli_session_id(session, "cli-123")
+
+    [request] = sent
+    assert (request.method, request.url.path) == (
+        "PUT",
+        inquiry_field_path("cli_session_id").format(target_id=session),
+    )
+    assert json_loads(request.content, dict[str, object]) == {
+        "value": "cli-123",
+        "actor": "agent",
+        "reason": "resume: minted a fresh CLI session id",
+    }
+
+
+class TestMetricPoints:
+    """Logging, reading and masked writes of one experiment's points."""
+
+    def test_log_metrics_posts_the_points_and_reads_the_counts(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        with _recording(
+            sent,
+            httpx2.Response(200, json={"logged": 1, "skipped": 1}),
+        ) as client:
+            logged = client.log_metrics(
+                experiment,
+                [
+                    MetricPoint(key="loss", step=1, value=0.5),
+                    MetricPoint(key="loss", step=2, value=0.25),
+                ],
+            )
+
+        assert (logged.logged, logged.skipped) == (1, 1)
+        [request] = sent
+        assert (request.method, request.url.path) == (
+            "POST",
+            f"/api/experiments/{experiment}/metrics",
+        )
+        assert json_loads(request.content, dict[str, object]) == {
+            "points": [
+                {
+                    "key": "loss",
+                    "step": step,
+                    "value": value,
+                    "kind": "scalar",
+                    "timestamp": None,
+                }
+                for step, value in ((1, 0.5), (2, 0.25))
+            ],
+        }
+
+    def test_read_metrics_pages_and_narrows_to_a_key_only_when_given(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        page = {"points": [{"key": "loss", "step": 3, "value": 0.125}]}
+        with _recording(
+            sent,
+            httpx2.Response(200, json=page),
+            httpx2.Response(200, json={"points": []}),
+        ) as client:
+            narrowed = client.read_metrics(experiment, key="loss", limit=5, offset=2)
+            every = client.read_metrics(experiment)
+
+        assert [(p.key, p.step, p.value) for p in narrowed] == [("loss", 3, 0.125)]
+        assert every == []
+        assert [dict(r.url.params) for r in sent] == [
+            {"limit": "5", "offset": "2", "key": "loss"},
+            {"limit": str(DEFAULT_LIST_LIMIT), "offset": "0"},
+        ]
+
+    def test_write_metrics_masked_posts_the_value_and_returns_the_count(self) -> None:
+        experiment = uuid.UUID(int=7)
+        sent: list[httpx2.Request] = []
+        with _recording(sent, httpx2.Response(200, json={"written": 4})) as client:
+            written = client.write_metrics_masked(
+                experiment,
+                masks=[MetricMaskClause(axis="key", op="is", value="loss")],
+                value=1.5,
+            )
+
+        assert written == 4
+        [request] = sent
+        assert request.url.path == f"/api/experiments/{experiment}/metrics/write"
+        body = json_loads(request.content, dict[str, object])
+        assert (body["write"], body["masks"]) == (
+            1.5,
+            [{"axis": "key", "op": "is", "value": "loss"}],
+        )
+
+
+def test_a_canvas_with_a_malformed_revision_is_refused_before_posting() -> None:
+    canvas = uuid.UUID(int=2)
+    sent: list[httpx2.Request] = []
+    with (
+        _recording(
+            sent,
+            httpx2.Response(200, json={"id": str(canvas), "revision": "3"}),
+        ) as client,
+        pytest.raises(ClientError, match="returned a malformed revision '3'"),
+    ):
+        _ = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
+
+    assert [r.method for r in sent] == ["GET"]
+
+
+def test_logout_machine_reads_what_it_stopped_and_revoked() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, json={"runs": [], "keys": 2})) as client:
+        logged_out = client.logout_machine("gpu box")
+
+    assert (logged_out.runs, logged_out.keys) == ([], 2)
+    assert [(r.method, str(r.url)) for r in sent] == [
+        ("POST", "https://server/api/machines/gpu%20box/logout"),
+    ]
+
+
+def test_a_request_allowed_no_attempts_sends_nothing() -> None:
+    sent: list[httpx2.Request] = []
+    with (
+        _recording(sent) as client,
+        pytest.raises(AssertionError, match=r"^unreachable: retry_attempts >= 1$"),
+    ):
+        client.post("/api/x", retry_attempts=0)
+    assert sent == []
+
+
+def _transport_records(
+    caplog: pytest.LogCaptureFixture,
+) -> list[dict[str, object]]:
+    return [
+        from_plain(record.__dict__, dict[str, object])
+        for record in caplog.records
+        if getattr(record, "event", "") == "trackinizer_transport_failure"
+    ]
+
+
+class TestRetryBackoff:
+    """A retried failure waits 0.1 s, then 0.3 s, and reports every attempt."""
+
+    @pytest.fixture
+    def slept(self, monkeypatch: pytest.MonkeyPatch) -> list[float]:
+        waits: list[float] = []
+        monkeypatch.setattr(
+            "trackinizer.client.client.time.sleep",
+            waits.append,
+        )
+        return waits
+
+    @pytest.mark.parametrize("status", [500, 502, 503, 504])
+    def test_each_retried_5xx_backs_off_geometrically(
+        self,
+        status: int,
+        slept: list[float],
+    ) -> None:
+        sent: list[httpx2.Request] = []
+        with (
+            _recording(
+                sent,
+                *(httpx2.Response(status, text="down") for _ in range(3)),
+            ) as client,
+            pytest.raises(ClientError) as raised,
+        ):
+            client.post("/api/x")
+
+        assert len(sent) == 3
+        assert slept == pytest.approx([0.1, 0.3])
+        assert (raised.value.status_code, raised.value.code) == (status, "")
+
+    def test_a_retried_read_timeout_logs_each_attempt_then_names_the_request(
+        self,
+        slept: list[float],
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            del request
+            raise httpx2.ReadTimeout("timed out")
+
+        with (
+            Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+            caplog.at_level(logging.WARNING),
+        ):
+            with pytest.raises(ClientError, match=r"^GET /api/a failed: timed out$"):
+                client.get("/api/a")
+            with pytest.raises(ClientError):
+                client.post("/api/b", retry_attempts=1)
+
+        assert slept == pytest.approx([0.1, 0.3])
+        assert [
+            (
+                fields.get("method"),
+                fields.get("path"),
+                fields.get("attempt"),
+                fields.get("client_request_index"),
+            )
+            for fields in _transport_records(caplog)
+        ] == [
+            ("GET", "/api/a", 1, 1),
+            ("GET", "/api/a", 2, 1),
+            ("GET", "/api/a", 3, 1),
+            ("POST", "/api/b", 1, 2),
+        ]
+
+
+def test_the_idempotency_key_is_sent_with_its_canonical_casing() -> None:
+    sent: list[httpx2.Request] = []
+    with _recording(sent, httpx2.Response(200, content=b"")) as client:
+        client.post("/api/x")
+
+    [request] = sent
+    assert [
+        name for name, _ in request.headers.raw if name.lower() == b"idempotency-key"
+    ] == [
+        b"Idempotency-Key",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("error", "classified"),
+    [
+        (
+            httpx2.ConnectError("[Errno 111] Connection refused"),
+            ("connect_error", "connection_refused"),
+        ),
+        (
+            httpx2.ConnectError("[Errno 104] Connection reset by peer"),
+            ("connect_error", "connection_reset"),
+        ),
+        (httpx2.ConnectError("Name or service not known"), ("connect_error",) * 2),
+        (httpx2.ReadTimeout("timed out"), ("read_timeout",) * 2),
+        (httpx2.ReadError("eof"), ("read_error",) * 2),
+        (httpx2.WriteTimeout("timed out"), ("write_timeout",) * 2),
+        (httpx2.WriteError("broken pipe"), ("write_error",) * 2),
+        (httpx2.PoolTimeout("pool full"), ("pool_timeout",) * 2),
+        (httpx2.RemoteProtocolError("closed"), ("remote_protocol_error",) * 2),
+        (httpx2.UnsupportedProtocol("ftp"), ("transport_error",) * 2),
+        (httpx2.ProxyError("407"), ("transport_error",) * 2),
+    ],
+)
+def test_a_transport_failure_is_logged_with_its_class_and_detail(
+    error: httpx2.TransportError,
+    classified: tuple[str, str],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        raise error
+
+    with (
+        Client("https://server", transport=httpx2.MockTransport(handler)) as client,
+        caplog.at_level(logging.WARNING),
+        pytest.raises(ClientError),
+    ):
+        client.post("/api/x", retry_attempts=1)
+
+    [fields] = _transport_records(caplog)
+    assert (fields.get("failure_class"), fields.get("failure_detail")) == classified
+
+
+@pytest.mark.parametrize(
+    ("body", "code"),
+    [
+        ({"code": "conflict", "detail": {"code": "inner"}}, "conflict"),
+        ({"detail": {"code": "chat_deleted"}}, "chat_deleted"),
+        ({"detail": "plain"}, ""),
+        ({"code": 7}, ""),
+        ([{"code": "listed"}], ""),
+        ("not json", ""),
+    ],
+    ids=["top", "nested", "uncoded", "non-string", "list", "text"],
+)
+def test_an_error_carries_only_a_string_code_the_body_names(
+    body: PlainTree,
+    code: str,
+) -> None:
+    answer = (
+        httpx2.Response(409, text=body)
+        if isinstance(body, str)
+        else httpx2.Response(409, json=body)
+    )
+    with _recording([], answer) as client, pytest.raises(ClientError) as raised:
+        client.get("/api/x")
+
+    assert raised.value.code == code
 
 
 if __name__ == "__main__":

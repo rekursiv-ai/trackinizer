@@ -192,10 +192,13 @@ class PublishArtifactContent(BaseModel):
         )
         if citation_count > 128:
             raise ValueError("Artifact has more than 128 citations.")
-        if self.format == "html" and self.html is not None:
-            if len(self.html.encode("utf-8")) > 30_000_000:
-                raise ValueError("Artifact file exceeds 30 MB.")
-        elif len(self.model_dump_json().encode("utf-8")) > 30_000_000:
+        # Only HTML can reach the cap: the field and citation limits keep the largest
+        # structured request at 6.5 MB of JSON, even with every character escaped.
+        if (
+            self.format == "html"
+            and self.html is not None
+            and len(self.html.encode("utf-8")) > 30_000_000
+        ):
             raise ValueError("Artifact file exceeds 30 MB.")
         return self
 

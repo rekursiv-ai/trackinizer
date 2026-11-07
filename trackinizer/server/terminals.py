@@ -671,10 +671,7 @@ class TerminalHub:
     async def close_machine(self, machine_id: UUID) -> None:
         """End every terminal on a revoked machine with 4410."""
         for term in [t for t in self._terminals.values() if t.machine_id == machine_id]:
-            try:
-                await self.end(term, code=wire_terminals.CLOSE_MACHINE_REVOKED)
-            except Exception:
-                _logger.warning("terminal %s: could not end", term.id, exc_info=True)
+            await self.end(term, code=wire_terminals.CLOSE_MACHINE_REVOKED)
 
     async def sweep(self) -> None:
         """End terminals past a limit: untaken, detached, idle, old, or orphaned.

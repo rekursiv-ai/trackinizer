@@ -24,12 +24,15 @@ from trackinizer.wire.wire_sessions import (
     SessionEnd,
     SessionRunState,
     SessionStart,
+    campaign_asker_label,
     inbound_read_timeout,
     session_audience_path,
     session_end_path,
     session_inbound_path,
+    session_place_path,
     session_reattach_path,
     session_records_path,
+    session_run_output_path,
     session_run_state_path,
 )
 
@@ -255,6 +258,9 @@ class TestRoomValidation:
         for bad in (["a,b"], ["ok", "x,y"], [","]):
             with pytest.raises(ValidationError):
                 SessionStart(cli="codex", rooms=bad)
+        for blank in ([""], ["ok", "  "]):
+            with pytest.raises(ValidationError, match="rooms must be non-empty"):
+                SessionStart(cli="codex", rooms=blank)
         # Comma-free rooms (single and several) still pass.
         assert SessionStart(cli="codex", rooms=["lab", "sear"]).rooms == ["lab", "sear"]
         assert SessionStart(cli="codex", rooms=None).rooms is None
@@ -426,6 +432,20 @@ class TestRunState:
 
         assert session_run_state_path(session) == f"/api/sessions/{session}/run-state"
         assert session_reattach_path(session) == f"/api/sessions/{session}/reattach"
+
+    def test_a_clicked_commands_output_and_a_placement_have_paths_of_the_session(
+        self,
+    ) -> None:
+        session = uuid.UUID(int=7)
+
+        assert session_run_output_path(session, "r1") == (
+            f"/api/sessions/{session}/runs/r1/output"
+        )
+        assert session_place_path(session) == f"/api/sessions/{session}/place"
+
+
+def test_a_campaigns_asker_label_joins_its_slug_and_lowercased_email() -> None:
+    assert campaign_asker_label("lab", "Ann@Lab.Example") == "lab:asker:ann@lab.example"
 
 
 if __name__ == "__main__":

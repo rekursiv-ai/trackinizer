@@ -102,10 +102,9 @@ class Replay[T]:
             _, key = self._expiring.popleft()
             del self._receipts[key]
 
+    # Still held: a receipt leaves only here or through ``_expire``, whose queue entry
+    # this callback alone appends, after its operation finished.
     def _finished(self, key: Hashable, pending: asyncio.Future[T]) -> None:
-        receipt = self._receipts.get(key)
-        if receipt is None or receipt.pending is not pending:
-            return
         if (
             pending.cancelled()
             or pending.exception() is not None

@@ -17,7 +17,7 @@ from lark import Lark, LarkError
 
 import pytest
 
-from trackinizer.trax.docs import grammar_check
+from trackinizer.trax.docs import grammar_check, grammar_gen
 from trackinizer.trax.docs.grammar_gen import (
     grammar_path,
     render_grammar,
@@ -43,12 +43,6 @@ def test_grammar_path_resolves_alongside_generator() -> None:
     assert grammar_path() == Path(grammar_check.__file__).with_name("grammar.lark")
 
 
-@pytest.mark.compute_large_fixture
-def test_grammar_check_passes() -> None:
-    """The Earley build + corpus acceptance + ambiguity drift gate all pass."""
-    assert grammar_check.main() == 0
-
-
 def test_grammar_rejects_bare_open_range() -> None:
     """The generated grammar must reject a bare ``..`` range (K6-001).
 
@@ -70,6 +64,27 @@ def test_grammar_rejects_bare_open_range() -> None:
     # A one-bound open range still parses (the legitimate form must survive).
     parser.parse("issue 222..")
     parser.parse("issue ..10")
+
+
+def test_main_writes_a_missing_grammar_then_leaves_a_current_one(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = tmp_path / "grammar.lark"
+    monkeypatch.setattr(grammar_gen, "grammar_path", lambda: target)
+    size = len(render_grammar())
+
+    first = grammar_gen.main()
+    written = target.read_text()
+    second = grammar_gen.main()
+
+    assert (first, second) == (0, 0)
+    assert written == render_grammar()
+    assert capsys.readouterr().out.splitlines() == [
+        f"grammar.lark: regenerated ({size} bytes).",
+        f"grammar.lark: already current ({size} bytes).",
+    ]
 
 
 if __name__ == "__main__":

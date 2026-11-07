@@ -432,6 +432,106 @@ class TestConnection:
         """A caller gone before the answer must not take the handler with it."""
         assert _exchange(tmp_path, make_request(["help"]), hang_up=True) is None
 
+    def test_answers_a_caller_on_another_protocol_rather_than_hanging_up(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A silent close reads as no daemon, and the mismatch would go unseen."""
+        request = make_request(["help"])
+        request.protocol_version = PROTOCOL_VERSION + 1
+
+        reply = _exchange(tmp_path, request, hang_up=False)
+
+        assert reply is not None
+        assert reply.exit_code == 70
+        assert reply.stdout == ""
+        assert reply.stderr.startswith("trax: unsupported protocol version")
+
+
+class TestExitStatus:
+    def test_a_bare_exit_is_success(self) -> None:
+        def done(argv: Sequence[str]) -> None:
+            del argv
+            raise SystemExit
+
+        response = handle(make_request(["x"]), run=done)
+
+        assert (response.exit_code, response.stderr) == (0, "")
+
+    def test_an_integer_exit_is_the_status(self) -> None:
+        def bail(argv: Sequence[str]) -> None:
+            del argv
+            raise SystemExit(4)
+
+        assert handle(make_request(["x"]), run=bail).exit_code == 4
+
+
+class TestBind:
+    """Of the daemons racing for one socket, the loser leaves the winner alone."""
+
+    def test_a_second_daemon_on_a_live_socket_exits_at_once(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        sock = socket_address(tmp_path / "s.sock")
+        winner = _Server(str(sock), version="v1")
+        try:
+            server.serve(tmp_path / "s.sock", version="v1")
+
+            assert _is_live(sock)
+            assert server._bind(sock, "v1") is None
+        finally:
+            winner.server_close()
+
+    def test_a_killed_daemons_socket_file_is_cleared_and_bound(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        sock = socket_address(tmp_path / "s.sock")
+        dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        dead.bind(str(sock))
+        dead.close()
+        assert sock.exists()
+        assert not _is_live(sock)
+
+        bound = server._bind(sock, "v1")
+
+        assert bound is not None
+        try:
+            assert _is_live(sock)
+        finally:
+            bound.server_close()
+
+    def test_a_path_that_cannot_be_cleared_binds_nothing(self, tmp_path: Path) -> None:
+        sock = socket_address(tmp_path / "s.sock")
+        sock.mkdir()
+
+        assert server._bind(sock, "v1") is None
+        assert sock.is_dir()
+
+
+def test_an_idle_daemon_begins_its_own_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stopping: list[_Server] = []
+
+    def begin_shutdown(server: _Server) -> None:
+        stopping.append(server)
+
+    monkeypatch.setattr(_Server, "begin_shutdown", begin_shutdown)
+    daemon = _Server(str(socket_address(tmp_path / "s.sock")), version="v1")
+    try:
+        daemon.service_actions()
+        assert stopping == []
+        monkeypatch.setattr(server, "_IDLE_TIMEOUT_SEC", -1)
+
+        daemon.service_actions()
+
+        assert stopping == [daemon]
+    finally:
+        daemon.server_close()
+
 
 class TestShutdown:
     """A daemon leaving must answer every caller it already has.

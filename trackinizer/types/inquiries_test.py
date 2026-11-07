@@ -300,6 +300,10 @@ class TestModels:
         with pytest.raises(ValueError, match="owner"):
             Inquiry.from_row(cast(Row, {"kind": "Issue", "id": new_uuid(), "seq": 0}))
 
+    def test_from_row_refuses_a_row_of_another_kind(self) -> None:
+        with pytest.raises(ValueError, match=r"Issue\.from_row called on a Belief row"):
+            Issue.from_row(cast(Row, {"kind": "Belief"}))
+
 
 class TestIsValidSource:
     """``is_valid_source`` requires a non-whitespace remainder after the scheme."""

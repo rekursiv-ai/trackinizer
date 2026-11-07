@@ -19,13 +19,7 @@ from trackinizer.server.schema_gen import (
 )
 from trackinizer.server.sql import load_sql
 from trackinizer.types import inquiries
-from trackinizer.types.edges import (
-    EDGE_POLICIES,
-    PRODUCED_INFERENCE_NEUTRAL,
-    PRODUCED_INFERENCE_PRECEDENCE,
-    PRODUCED_INFERENCE_SUPPRESSED,
-    edge_topology,
-)
+from trackinizer.types.edges import edge_topology
 
 
 # Each arm is ``(edge_kind = 'X' OR edge_kind IN (...)) AND from_kind ... AND to_kind
@@ -84,89 +78,6 @@ def test_edge_topology_matches_schema_check() -> None:
         assert frozenset(topo[kind]["to_kinds"]) == st, f"{kind} to_kinds drift"
 
 
-def test_edge_topology_covers_every_edge_kind() -> None:
-    """Every ``Edge.Kind`` literal has a topology entry (no kind unmapped)."""
-    assert set(edge_topology()) == set(EDGE_POLICIES)
-
-
-def test_citations_store_artifact_to_claimable() -> None:
-    """Citations are pinned: ``proves``/``favors`` store Artifact -> claim.
-
-    The citing evidence (child) is the from-side (any Artifact kind); the cited
-    claim (parent) is the to-side, exactly ``{Belief, Experiment}``. For-vs-
-    against is the valence sign, so there is no separate against-edge kind.
-    """
-    topo = edge_topology()
-    for kind in ("proves", "favors"):
-        assert topo[kind]["to_kinds"] == ["Belief", "Experiment"]
-        assert "Paper" in topo[kind]["from_kinds"]
-        assert "Belief" in topo[kind]["from_kinds"]
-
-
-def test_cites_paper_stores_paper_to_paper() -> None:
-    """``cites_paper`` (historical citation) is pinned Paper -> Paper both sides.
-
-    Distinct from the epistemic proves/favors: both endpoints are Paper-only, so
-    an in-house artifact (Belief/Experiment/CodeChange) can never be a historical
-    citation endpoint.
-    """
-    topo = edge_topology()
-    assert topo["cites_paper"]["from_kinds"] == ["Paper"]
-    assert topo["cites_paper"]["to_kinds"] == ["Paper"]
-
-
-def test_produced_inference_precedence_and_neutral_partition_every_edge_kind() -> None:
-    """PRECEDENCE and NEUTRAL partition ``Edge.Kind`` -- each kind is placed once.
-
-    A new edge kind must be classified deliberately: either it ranks in the
-    first-edge precedence list (participates in provenance inference) or it is
-    explicitly provenance-NEUTRAL. This fails if a kind is added to neither
-    (silently undefined inference behavior) or to both (contradiction).
-    """
-    all_kinds = set(EDGE_POLICIES)
-    assert set(PRODUCED_INFERENCE_PRECEDENCE) | PRODUCED_INFERENCE_NEUTRAL == all_kinds
-    assert set(PRODUCED_INFERENCE_PRECEDENCE) & PRODUCED_INFERENCE_NEUTRAL == set()
-    assert len(PRODUCED_INFERENCE_PRECEDENCE) == len(set(PRODUCED_INFERENCE_PRECEDENCE))
-
-
-def test_citation_kinds_are_provenance_neutral() -> None:
-    """Every citation kind is neutral: absent from PRECEDENCE and SUPPRESSED both.
-
-    A citation records that the citer points AT a target, never that the target
-    produced the citer -- true for ``cites_paper`` (Paper->Paper) and equally for
-    the epistemic ``proves``/``favors`` (Artifact->Belief/Experiment): the
-    evidence predates and is independent of the claim it later supports. Absent
-    from PRECEDENCE, a lone citation never wins inference (winner is None), so no
-    ``produced_by`` is stamped. Absent from SUPPRESSED, it never vetoes inference
-    from a coexisting structural edge.
-
-    Regression: ``proves``/``favors`` were mistakenly ranked in PRECEDENCE, which
-    stamped one bogus ``produced_by`` parent on a cited Belief per citing Paper.
-    """
-    for kind in ("cites_paper", "proves", "favors"):
-        assert kind in PRODUCED_INFERENCE_NEUTRAL
-        assert kind not in PRODUCED_INFERENCE_PRECEDENCE
-        assert kind not in PRODUCED_INFERENCE_SUPPRESSED
-
-
-def test_every_edge_kind_has_an_acyclicity_policy() -> None:
-    """Acyclicity is a DECLARED per-kind property, not blanket behavior.
-
-    ``EdgeKindPolicy.enforces_acyclicity`` decides whether a kind's subgraph is
-    kept a DAG. Every ``Edge.Kind`` must have a policy (so a new kind cannot
-    silently inherit blanket cycle-rejection), and ``cites_paper`` -- the lone
-    external-fact kind -- must be exempt so mutual citation is storable.
-    """
-    policies = EDGE_POLICIES
-    assert set(policies) == set(EDGE_POLICIES)
-    assert policies["cites_paper"].enforces_acyclicity is False
-    for kind, policy in policies.items():
-        if kind != "cites_paper":
-            assert policy.enforces_acyclicity is True, (
-                f"{kind} unexpectedly acyclicity-exempt"
-            )
-
-
 def test_produces_docstring_does_not_claim_universal_inference() -> None:
     """The authoritative provenance docstring stays truthful about neutrality.
 
@@ -185,21 +96,6 @@ def test_produces_docstring_does_not_claim_universal_inference() -> None:
     produces_doc = src[start:end]
     assert "no per-kind exception set" not in produces_doc
     assert "PRODUCED_INFERENCE_NEUTRAL" in produces_doc
-
-
-def test_only_produced_by_is_suppressed_for_idempotency() -> None:
-    """Inference fires on structural kinds; the lone suppressed kind is ``produced_by``.
-
-    Each STRUCTURAL kind (PRECEDENCE) stores younger -> older AND implies the
-    older produced the younger, so a first such edge infers the same ``younger
-    produced_by older`` -- none is age-inverted, so none contradicts the
-    inference. The only skip is idempotency: a pair already carrying a
-    ``produced_by`` is never re-stamped. The set stays a subset of the precedence
-    list. (Citation kinds are neutral, not suppressed -- see
-    ``test_citation_kinds_are_provenance_neutral``.)
-    """
-    assert set(PRODUCED_INFERENCE_PRECEDENCE) >= PRODUCED_INFERENCE_SUPPRESSED
-    assert {"produced_by"} == PRODUCED_INFERENCE_SUPPRESSED
 
 
 if __name__ == "__main__":

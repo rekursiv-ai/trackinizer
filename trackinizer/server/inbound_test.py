@@ -241,6 +241,26 @@ class TestAwaitMessages:
         assert queue.pending(session) == 0
         assert not queue._waiters
 
+    def test_releasing_a_waiter_of_an_unwatched_session_is_a_no_op(self) -> None:
+        queue = InboundQueue()
+        loop = asyncio.new_event_loop()
+        try:
+            queue._release(uuid.uuid4(), inbound._Waiter(loop=loop))
+        finally:
+            loop.close()
+        assert not queue._waiters
+
+    def test_an_enqueue_skips_a_waiter_whose_loop_has_closed(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        closed = asyncio.new_event_loop()
+        closed.close()
+        gone = inbound._Waiter(loop=closed)
+        queue._waiters[session].append(gone)
+
+        assert queue.enqueue(session, Inbound(text="nobody is listening")) == 1
+        assert not gone.event.is_set()
+
     def test_cancellation_releases_the_waiter(self) -> None:
         queue = InboundQueue()
         session = uuid.uuid4()

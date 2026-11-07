@@ -6,6 +6,7 @@ from typing import Protocol, cast, override
 from unittest.mock import AsyncMock
 
 import asyncio
+import uuid
 
 import asyncpg
 import pytest
@@ -18,52 +19,13 @@ from trackinizer.conftest import (
     new_uuid,
 )
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.server.embedders.stub import StubEmbedder, _xorshift_floats
+from trackinizer.server import auth
+from trackinizer.server.auth import AuthIdentity, generate_token
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
 from trackinizer.wire.bodies import SubmitIssue
-
-
-class TestPureFunctions:
-    def test_xorshift_floats_deterministic(self) -> None:
-        a = _xorshift_floats(42)
-        b = _xorshift_floats(42)
-        assert [next(a) for _ in range(5)] == [next(b) for _ in range(5)]
-
-    def test_xorshift_floats_in_range(self) -> None:
-        rng = _xorshift_floats(1)
-        for _ in range(50):
-            v = next(rng)
-            assert -1.0 <= v <= 1.0
-
-
-class TestStubEmbedder:
-    @pytest.mark.asyncio
-    async def test_embed_unit_norm_correct_dim(self) -> None:
-        emb = StubEmbedder()
-        v = await emb.embed("hello")
-        assert len(v) == StubEmbedder.dim
-        norm = cast(float, sum(x * x for x in v) ** 0.5)
-        assert abs(norm - 1.0) < 1e-9
-
-    @pytest.mark.asyncio
-    async def test_embed_deterministic(self) -> None:
-        emb = StubEmbedder()
-        assert await emb.embed("foo") == await emb.embed("foo")
-        assert await emb.embed("foo") != await emb.embed("bar")
-
-    def test_name_carries_non_default_dim(self) -> None:
-        """The stored name distinguishes a 384 stub from a 1024 stub.
-
-        384 MUST stay the literal ``"stub"`` (it keys existing
-        ``inquiry_embeddings`` rows); a non-default dim carries its width so
-        the config knob ``stub-1024`` and the DB identity agree, and a 384 and
-        1024 stub are never confused for one model.
-        """
-        assert StubEmbedder().name == "stub"
-        assert StubEmbedder(dim=384).name == "stub"
-        assert StubEmbedder(dim=1024).name == "stub-1024"
 
 
 class _NamedStub(StubEmbedder):
@@ -80,6 +42,116 @@ class _NamedStub(StubEmbedder):
     @override
     def name(self) -> str:
         return self._name
+
+
+def _identity(*, user_id: uuid.UUID | None = None) -> AuthIdentity:
+    return AuthIdentity(
+        user_id=user_id or uuid.uuid4(),
+        api_key_id=uuid.uuid4(),
+        email="u@example.com",
+        role="writer",
+    )
+
+
+class TestVerifiedBearerCache:
+    """The Store's cache of bearer secrets it already verified, and its bump throttle."""
+
+    def test_cache_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A flood of distinct keys must not pin unbounded memory.
+        engine = FakeEngine()
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 4)
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+
+        identity = _identity()
+        secrets_seen = [generate_token()[0] for _ in range(10)]
+        for secret in secrets_seen:
+            store.remember_bearer_identity(secret, identity)
+            clock[0] += 1.0
+        assert len(store._verified_bearers) == 4
+        # Eviction is soonest-expiring-first, so the newest survive.
+        assert store.cached_bearer_identity(secrets_seen[-1]) is not None
+        assert store.cached_bearer_identity(secrets_seen[0]) is None
+
+    def test_plaintext_secret_is_not_held_in_memory(self) -> None:
+        # The cache key is a digest: a heap dump of a live server must not
+        # yield replayable tokens.
+        engine = FakeEngine()
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        secret, _ = generate_token()
+        store.remember_bearer_identity(secret, _identity())
+        assert all(secret.encode("utf-8") not in key for key in store._verified_bearers)
+
+    def test_an_entry_expires_on_read_once_its_ttl_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The TTL is the revocation lag: an expired entry is gone, not served."""
+        store, _engine = make_store()
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        identity = _identity()
+        store.remember_bearer_identity("secret", identity)
+
+        assert store.cached_bearer_identity("secret") == identity
+        assert store.cached_bearer_identity("other") is None
+        clock[0] += auth.VERIFIED_BEARER_TTL_SEC
+
+        assert store.cached_bearer_identity("secret") is None
+        assert store._verified_bearers == {}
+
+    def test_forgetting_a_user_or_a_key_drops_only_its_entries(self) -> None:
+        store, _engine = make_store()
+        user = uuid.uuid4()
+        first, second, other = (
+            _identity(user_id=user),
+            _identity(user_id=user),
+            _identity(),
+        )
+        for secret, identity in (("a", first), ("b", second), ("c", other)):
+            store.remember_bearer_identity(secret, identity)
+
+        assert first.api_key_id is not None
+        store.forget_bearer_identity_for_key(first.api_key_id)
+        assert [store.cached_bearer_identity(s) for s in "abc"] == [None, second, other]
+        store.forget_bearer_identities(user)
+        assert [store.cached_bearer_identity(s) for s in "abc"] == [None, None, other]
+
+    def test_a_key_bumps_once_per_interval(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        key = uuid.uuid4()
+
+        first = store.should_bump_api_key_last_used(key)
+        again = store.should_bump_api_key_last_used(key)
+        clock[0] += auth.LAST_USED_BUMP_INTERVAL_SEC
+
+        assert (first, again, store.should_bump_api_key_last_used(key)) == (
+            True,
+            False,
+            True,
+        )
+
+    def test_the_bump_throttle_evicts_its_oldest_key_when_full(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        store, _engine = make_store()
+        clock = [1_000.0]
+        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
+        monkeypatch.setattr(auth, "LAST_USED_BUMPED_AT_MAX_ENTRIES", 2)
+        oldest, middle, newest = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+
+        for key in (oldest, middle, newest):
+            assert store.should_bump_api_key_last_used(key)
+            clock[0] += 1.0
+
+        assert set(store._last_used_bumped_at) == {middle, newest}
 
 
 class TestStoreEmbedders:
@@ -577,6 +649,34 @@ class TestStoreBootstrap:
             "CREATE TABLE IF NOT EXISTS inquiries" in s
             for s in executed_sql(engine.conn)
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "fault",
+        [
+            asyncpg.exceptions.ConnectionDoesNotExistError(
+                "connection was closed in the middle of operation",
+            ),
+            asyncpg.InterfaceError("connection is closed"),
+        ],
+        ids=["connection-death", "closed-interface"],
+    )
+    async def test_bootstrap_gives_up_after_its_last_attempt(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fault: Exception,
+    ) -> None:
+        """A database that never comes back raises its fault, after the waits between."""
+        slept = AsyncMock()
+        monkeypatch.setattr("trackinizer.server.store.core.asyncio.sleep", slept)
+        conn = make_conn()
+        conn.execute = AsyncMock(side_effect=fault)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(type(fault)):
+            await store.bootstrap(attempts=3)
+
+        assert [call.args for call in slept.await_args_list] == [(0.25,), (0.5,)]
 
     @pytest.mark.asyncio
     async def test_bootstrap_finally_unlock_preserves_original_cause(self) -> None:

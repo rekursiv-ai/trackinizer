@@ -11,6 +11,7 @@ import pytest
 
 from trackinizer.runs.adapters.codex import CodexAdapter
 from trackinizer.runs.adapters.custom_types import Subagent
+from trackinizer.sagent.session.types import UserMessage
 
 
 class TestCodexSessionsDir:
@@ -229,6 +230,30 @@ class TestCodexSubagents:
 
         assert codex.subagent(torn) is None
         assert codex.subagent(torn.with_name("rollout-gone.jsonl")) is None
+
+
+def test_the_scope_is_none_since_codex_shards_by_date() -> None:
+    """Concurrent runs share a day's folder; the runner claims the rollout's id instead."""
+    assert CodexAdapter().session_scope() is None
+
+
+def test_each_rollout_gets_a_fresh_reader_of_codexs_lines() -> None:
+    line = json.dumps(
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "hello"}],
+            },
+        },
+    )
+    reader = CodexAdapter().reader()
+
+    read = [*reader.feed(line + "\n"), *reader.close()]
+
+    assert [r.content for r in read if isinstance(r, UserMessage)] == ["hello"]
+    assert CodexAdapter().reader() is not reader
 
 
 if __name__ == "__main__":

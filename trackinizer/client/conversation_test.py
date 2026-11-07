@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from treekle import immutable
 
@@ -16,6 +18,8 @@ from trackinizer.client.conversation import (
     neutral,
     placed,
     projected,
+    read_part,
+    read_segments,
 )
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
@@ -32,10 +36,15 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
 )
+from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.types.streams import Stdout
+from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
+
+    from trackinizer.types.streams import TraxRecord
 
 
 def _at(second: int) -> str:
@@ -702,6 +711,139 @@ def test_delivered_text_is_the_words_with_or_without_a_sender_or_a_trailer(
 ) -> None:
     """The sender is named only when it says something, so the prefix may lack it."""
     assert delivered_text(content, Delivery(source="ada@x", room=room)) == words
+
+
+_SESSION = UUID(int=1)
+
+
+class _Parts:
+    """A server holding one session's parts, as ``Client`` reads them."""
+
+    def __init__(self, parts: Mapping[int, tuple[str, Sequence[TraxRecord]]]) -> None:
+        self._parts = parts
+        self.reads: list[tuple[int, bool]] = []
+
+    def read_session_parts(self, session_id: UUID) -> list[PartBody]:
+        assert session_id == _SESSION
+        # Listed newest first, so the reader's own ordering is what is tested.
+        return [
+            PartBody(part=part, name=f"{part}.jsonl", format=fmt, records=len(records))
+            for part, (fmt, records) in sorted(self._parts.items(), reverse=True)
+        ]
+
+    def read_session_records(
+        self,
+        session_id: UUID,
+        *,
+        part: int = 0,
+        plaintext_only: bool = False,
+    ) -> list[RecordBody]:
+        assert session_id == _SESSION
+        self.reads.append((part, plaintext_only))
+        return [
+            RecordBody.of(
+                SessionRecordRow.of(
+                    session_id=session_id,
+                    part=part,
+                    idx=idx,
+                    record=record,
+                ),
+            )
+            for idx, record in enumerate(self._parts[part][1])
+        ]
+
+
+def test_read_segments_reads_each_native_part_in_order_without_ciphertext() -> None:
+    """A formatless ``sh`` scrape is searchable, never a conversation."""
+    server = _Parts(
+        {
+            0: ("claude", [UserMessage(timestamp=_at(1), content="q1")]),
+            1: ("", [Stdout(text="$ ls")]),
+            2: ("codex", [AssistantMessage(timestamp=_at(2), content="a1")]),
+        },
+    )
+
+    segments = read_segments(server, _SESSION)
+
+    assert [(s.part, s.name, s.format) for s in segments] == [
+        (0, "0.jsonl", "claude"),
+        (2, "2.jsonl", "codex"),
+    ]
+    [[asked], [answered]] = [s.records for s in segments]
+    assert isinstance(asked, UserMessage)
+    assert isinstance(answered, AssistantMessage)
+    assert (asked.content, answered.content) == ("q1", "a1")
+    assert server.reads == [(0, True), (2, True)]
+
+
+def test_read_part_aligns_each_record_with_its_ciphertext() -> None:
+    sealed = Thinking(timestamp=_at(1), content="", encrypted="gAAAA-sealed")
+    server = _Parts({0: ("codex", [sealed, UserMessage(content="q")])})
+
+    records, ciphertexts = read_part(server, _SESSION, 0, plaintext_only=False)
+
+    assert [type(record).__name__ for record in records] == [
+        "Thinking",
+        "UserMessage",
+    ]
+    assert ciphertexts == ["gAAAA-sealed", None]
+    assert server.reads == [(0, False)]
+
+
+def test_a_native_part_holding_a_stream_record_fails_loudly() -> None:
+    server = _Parts({0: ("claude", [Stdout(text="$ ls")])})
+
+    with pytest.raises(TypeError, match="no stream records; Stdout came from one"):
+        read_part(server, _SESSION, 0, plaintext_only=True)
+
+
+def test_an_unreadable_stamp_takes_the_one_before_it() -> None:
+    segment = _segment(
+        0,
+        "claude",
+        [
+            UserMessage(timestamp=_at(5), content="first"),
+            UserMessage(timestamp="not a time", content="second"),
+        ],
+    )
+
+    order = placed([segment])
+
+    assert [each.moment for each in order] == [
+        datetime(2026, 10, 20, 10, 0, 5, tzinfo=UTC),
+    ] * 2
+
+
+def test_a_record_no_writer_states_projects_to_nothing() -> None:
+    """Only a switch marker is a SystemMessage a target is told about."""
+    written = projected(
+        [SystemMessage(timestamp=_at(1), subtype="note", content="internal")],
+        "claude",
+    )
+
+    assert written == []
+
+
+def test_an_unparsed_opening_line_is_kept_unstamped() -> None:
+    """An unparsed line carries no stamp to give; the line after it takes the last."""
+    torn = IncompleteRecord(text='{"type": "us')
+
+    written = projected(
+        [AssistantMessage(timestamp=_at(2), content="a1")],
+        "claude",
+        opening=[
+            UserMessage(timestamp=_at(1), content="note"),
+            torn,
+            UserMessage(content="after"),
+        ],
+    )
+
+    assert written == [
+        UserMessage(timestamp=_at(1), content="note"),
+        torn,
+        UserMessage(timestamp=_at(1), content="after"),
+        AssistantMessage(timestamp=_at(2), content="a1"),
+    ]
 
 
 if __name__ == "__main__":

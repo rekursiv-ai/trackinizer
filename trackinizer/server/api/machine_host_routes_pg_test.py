@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import asyncio
-import time
 import uuid
 
 from treekle import from_plain
@@ -27,6 +26,7 @@ from trackinizer.server.api.conftest import (
     clear_identity_override,
     install_identity,
     make_test_identity,
+    waited_on_locks,
 )
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.notify import tx
@@ -241,36 +241,6 @@ async def test_delete_racing_a_join_that_commits_first_is_409(
     async with integ_store.engine.acquire() as conn:
         kept = await conn.fetchval("SELECT id FROM machines WHERE id = $1", machine_id)
     assert kept == machine_id
-
-
-async def waited_on_locks(store: Store, *, count: int) -> bool:
-    """Return whether ``count`` other backends of the test database came to wait.
-
-    That is the moment a race is set: every racer has reached the row the test's
-    transaction holds and is queued on it. A fixed sleep only hoped it had, and a
-    racer still on its way would take another path and pass for the wrong reason.
-    It answers rather than raises, so the test still releases what it holds.
-
-    Args:
-      store: The store whose database the racers use.
-      count: How many backends must be waiting on a lock.
-
-    Returns:
-      waited: True once they are; False if ``_ANSWER_SEC`` passes first.
-
-    """
-    deadline = time.monotonic() + _ANSWER_SEC
-    async with store.engine.acquire() as conn:
-        while time.monotonic() < deadline:
-            waiting = await conn.fetchval(
-                "SELECT count(*) FROM pg_stat_activity "
-                "WHERE datname = current_database() "
-                "AND wait_event_type = 'Lock' AND pid <> pg_backend_pid()",
-            )
-            if from_plain(waiting, int) >= count:
-                return True
-            await asyncio.sleep(0.005)
-    return False
 
 
 async def _lock_machine(conn: Conn, name: str) -> uuid.UUID:

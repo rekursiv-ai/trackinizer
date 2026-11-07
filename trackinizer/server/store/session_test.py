@@ -15,6 +15,7 @@ import asyncpg
 import pytest
 
 from trackinizer.conftest import (
+    RecordingPolicy,
     executed_sql,
     make_conn,
     make_store,
@@ -31,7 +32,16 @@ from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
-from trackinizer.server.store.session import _LOCK_SESSION_SQL, PastRun
+from trackinizer.server.store.session import (
+    _LOCK_SESSION_SQL,
+    PastRun,
+    _optional_datetime,
+    _optional_str,
+)
+from trackinizer.server.store.store_test_support import (
+    EVERY_SESSION,
+    append_user_message,
+)
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import AgentSession
@@ -39,6 +49,8 @@ from trackinizer.wire.bodies import SubmitAgentSession
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from trackinizer.mock_test_support import MockConnection
     from trackinizer.server.store.core import Store
 
@@ -128,6 +140,28 @@ class TestStartSession:
         assert sid == existing_id
         assert owner == "alice"
         assert next_seq == 0
+
+    @pytest.mark.asyncio
+    async def test_another_unique_violation_is_raised_not_retried(self) -> None:
+        """Only the live-owner race retries; any other duplicate is a real error."""
+        store, engine = make_store()
+        engine.conn.fetch = AsyncMock(return_value=[])
+        exc = asyncpg.UniqueViolationError("dup")
+        exc.constraint_name = "inquiries_pkey"
+        submit = AsyncMock(side_effect=exc)
+
+        with (
+            patch.object(store, "submit_agentsession", new=submit),
+            pytest.raises(asyncpg.UniqueViolationError) as raised,
+        ):
+            _ = await store.start_session(
+                SubmitAgentSession(title="s", cli="codex", account="t@e"),
+                requested_actor="alice",
+                audience="open",
+            )
+
+        assert raised.value is exc
+        assert submit.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -800,14 +834,162 @@ async def test_an_attach_reopens_the_session_by_id_and_keeps_its_cli_id(
         )
 
 
-async def _open(store: Store) -> UUID:
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+class TestPrivateResume:
+    """A resume asked to be private hides the open session it re-attaches."""
+
+    async def test_an_open_session_is_hidden_audited_and_told_to_the_policy(
+        self,
+        store: Store,
+    ) -> None:
+        policy = RecordingPolicy()
+        store.access_policy = policy
+        session_id = await _open(store, cli_session_id="cli-1")
+        principal = Principal(email="t@e", role="writer")
+
+        resumed = await _resume(store, "cli-1", audience="private", principal=principal)
+
+        assert resumed == session_id
+        row = await store.get_inquiry(session_id)
+        assert isinstance(row, AgentSession)
+        assert row.audience == "private"
+        assert await _audits(store, session_id, "agentsession_audience") == [
+            "hidden by its owner on resume",
+        ]
+        assert policy.of("prepare_audience_change") == [None]
+        assert policy.of("on_audience") == [
+            (principal, Resource(kind="session", id=str(session_id), account="t@e")),
+        ]
+
+    async def test_a_private_session_is_left_as_it_is(self, store: Store) -> None:
+        policy = RecordingPolicy()
+        store.access_policy = policy
+        session_id = await _open(store, cli_session_id="cli-1")
+        _ = await _resume(store, "cli-1", audience="private")
+
+        assert await _resume(store, "cli-1", audience="private") == session_id
+
+        assert len(policy.of("on_audience")) == 1
+        assert len(await _audits(store, session_id, "agentsession_audience")) == 1
+
+    async def test_a_staff_session_is_refused_and_stays_ended(
+        self,
+        store: Store,
+    ) -> None:
+        session_id = await _open(store, cli_session_id="cli-1")
+        ended = datetime(2026, 1, 1, tzinfo=UTC)
+        _ = await store.end_session(session_id, ended=ended, actor="agent")
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE inquiries SET agentsession_audience = 'staff' WHERE id = $1",
+                session_id,
+            )
+
+        with pytest.raises(ConflictError, match="never hides"):
+            _ = await _resume(store, "cli-1", audience="private")
+
+        row = await store.get_inquiry(session_id)
+        assert isinstance(row, AgentSession)
+        assert (row.audience, row.ended) == ("staff", ended)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_room_resolves_only_the_sessions_joined_to_it(store: Store) -> None:
+    joined = await _open(store, rooms=["lab"])
+    _ = await _open(store, rooms=["other"])
+
+    assert await store.resolve_live_sessions("agent", room="lab") == [
+        (joined, ("lab",)),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_feed_keeps_a_window_and_its_conversation(store: Store) -> None:
+    session_id = await _open(store)
+    await append_user_message(store, session_id, idx=0, text="hi")
+    now = datetime.now(UTC)
+    before, after = now - timedelta(days=1), now + timedelta(days=1)
+
+    (event,) = await store.read_feed(
+        since=before,
+        until=after,
+        scope=EVERY_SESSION,
+        conversation=True,
+    )
+
+    assert (event.session_id, event.text) == (session_id, "hi")
+    assert await store.read_feed(since=after, scope=EVERY_SESSION) == []
+    assert await store.read_feed(until=before, scope=EVERY_SESSION) == []
+
+
+@pytest.mark.parametrize(
+    ("read", "message"),
+    [(_optional_datetime, "datetime"), (_optional_str, "str")],
+)
+def test_an_optional_column_of_another_type_is_refused(
+    read: Callable[[object], object],
+    message: str,
+) -> None:
+    assert read(None) is None
+    with pytest.raises(ValueError, match=f"isinstance\\(value, {message}\\)"):
+        _ = read(1)
+
+
+async def _open(
+    store: Store,
+    *,
+    cli_session_id: str | None = None,
+    rooms: list[str] | None = None,
+) -> UUID:
     """Open a live session."""
     session_id, _, _ = await store.start_session(
-        SubmitAgentSession(title="s", cli="claude", account="t@e"),
+        SubmitAgentSession(
+            title="s",
+            cli="claude",
+            account="t@e",
+            cli_session_id=cli_session_id,
+            rooms=rooms,
+        ),
         requested_actor="agent",
         audience="open",
     )
     return session_id
+
+
+async def _resume(
+    store: Store,
+    cli_session_id: str,
+    *,
+    audience: str,
+    principal: Principal | None = None,
+) -> UUID:
+    """Resume the session ``cli_session_id`` names, asking for ``audience``."""
+    session_id, _, _ = await store.start_session(
+        SubmitAgentSession(
+            title="s",
+            cli="claude",
+            account="t@e",
+            cli_session_id=cli_session_id,
+        ),
+        requested_actor="agent",
+        audience=audience,
+        principal=principal,
+    )
+    return session_id
+
+
+async def _audits(store: Store, session_id: UUID, kind: str) -> list[object]:
+    """Return the reason of each ``kind`` audit row of ``session_id``."""
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT reason FROM change_log WHERE subject_id = $1 AND kind = $2",
+            session_id,
+            kind,
+        )
+    return [row["reason"] for row in rows]
 
 
 async def _api_key(store: Store, *, email: str = "closer@example.com") -> UUID:

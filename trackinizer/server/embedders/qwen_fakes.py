@@ -4,7 +4,7 @@ Shared by the per-model test files (``qwen3_0p6b_test``, ``qwen3_8b_test``,
 ``octen_8b_test``) so each can patch its module ``_load`` seam with a tiny model
 and assert the model-specific contract (name, dim, Octen's ``"- "`` document
 prefix) without duplicating the fakes. The full recipe (truncate-before-
-normalize, lazy load, batch order) is exercised once in ``qwen3_4b_test``.
+normalize, lazy load, batch order) is exercised once in ``qwen_family_test``.
 
 Not a ``_test.py``: it is imported BY tests, so it carries no test collection.
 """

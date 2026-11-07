@@ -80,6 +80,22 @@ class _FragmentedSocket:
         return chunk
 
 
+def _request(
+    *,
+    argv: tuple[str, ...] = ("issue",),
+    env: dict[str, str] | None = None,
+) -> Request:
+    return Request(
+        argv=argv,
+        cwd="/home/agent",
+        env=env or {},
+        isatty=False,
+        columns=0,
+        protocol_version=PROTOCOL_VERSION,
+        source_version="v1",
+    )
+
+
 class TestFraming:
     """A frame must survive a stream that delivers it in arbitrary pieces."""
 
@@ -201,6 +217,54 @@ class TestRequestPayload:
             match=r"expected an object, got \['USER'\]",
         ):
             Request.from_json(raw.encode())
+
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("argv", "issue list", r"expected a list, got 'issue list'"),
+            ("argv", ["issue", 7], r"expected a string, got 7"),
+            ("cwd", None, r"expected a string, got None"),
+        ],
+    )
+    def test_rejects_a_field_of_the_wrong_type(
+        self,
+        field: str,
+        value: object,
+        message: str,
+    ) -> None:
+        payload: dict[str, object] = {
+            "protocol_version": PROTOCOL_VERSION,
+            "argv": [],
+            "cwd": "/",
+            "env": {},
+            "columns": 0,
+            "source_version": "",
+            field: value,
+        }
+        with pytest.raises(MalformedFrameError, match=message):
+            Request.from_json(json.dumps(payload).encode())
+
+
+class TestEquality:
+    def test_requests_equal_field_wise_and_hash_on_their_identity(self) -> None:
+        one, same = _request(env={"USER": "a"}), _request(env={"USER": "a"})
+        other_env = _request(env={"USER": "b"})
+
+        assert one == same
+        assert hash(one) == hash(same) == hash(other_env)
+        assert one != other_env
+        assert one != _request(argv=("issue", "list"))
+        assert one.__eq__("not a request") is NotImplemented
+
+    def test_responses_equal_field_wise_and_hash_on_every_field(self) -> None:
+        one = Response(stdout="o", stderr="e", exit_code=0)
+        same = Response(stdout="o", stderr="e", exit_code=0)
+
+        assert one == same
+        assert hash(one) == hash(same)
+        assert {one, same} == {one}
+        assert one != Response(stdout="o", stderr="e", exit_code=1)
+        assert one.__eq__(("o", "e", 0)) is NotImplemented
 
 
 class TestResponsePayload:

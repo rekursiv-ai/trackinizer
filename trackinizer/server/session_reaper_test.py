@@ -27,8 +27,11 @@ from trackinizer.server.session_reaper import (
     session_reaper_loop,
 )
 from trackinizer.server.store.core import Store
+from trackinizer.server.store.store_test_support import (
+    open_agent_session,
+    polled_session,
+)
 from trackinizer.types.inquiries import AgentSession, Inquiry
-from trackinizer.wire.bodies import SubmitAgentSession
 
 
 if TYPE_CHECKING:
@@ -104,7 +107,7 @@ class TestReap:
         store: Store,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        session = await _polled(store, at=_SEEN)
+        session = await polled_session(store, at=_SEEN)
         inbound = InboundQueue()
         inbound.mark_poller(session)
         inbound.enqueue(session, Inbound(text="undeliverable"))
@@ -126,8 +129,8 @@ class TestReap:
         self,
         store: Store,
     ) -> None:
-        silent = await _polled(store, at=_SEEN)
-        recent = await _polled(store, at=_SEEN + timedelta(seconds=1))
+        silent = await polled_session(store, at=_SEEN)
+        recent = await polled_session(store, at=_SEEN + timedelta(seconds=1))
 
         assert (
             await reap_silent_sessions(store, inbound=InboundQueue(), now=_SILENT) == 1
@@ -140,7 +143,7 @@ class TestReap:
         store: Store,
     ) -> None:
         """A capture-only producer has no poller whose silence could mean anything."""
-        session = await _session(store)
+        session = await open_agent_session(store)
         await store.record_session_seen(session, at=_SEEN, polled=False)
 
         later = _SILENT + timedelta(days=1)
@@ -149,7 +152,7 @@ class TestReap:
 
     async def test_an_upload_keeps_a_polling_session_open(self, store: Store) -> None:
         """A bridge polls only when its agent is ready; its uploads say it is alive."""
-        session = await _polled(store, at=_SEEN)
+        session = await polled_session(store, at=_SEEN)
         uploaded = _SEEN + timedelta(minutes=10)
         await store.record_session_seen(session, at=uploaded, polled=False)
 
@@ -165,8 +168,8 @@ class TestReap:
         store: Store,
     ) -> None:
         """Each close rechecks under lock, so the list a pass reads can go stale."""
-        returning = await _polled(store, at=_SEEN)
-        dead = await _polled(store, at=_SEEN + timedelta(seconds=1))
+        returning = await polled_session(store, at=_SEEN)
+        dead = await polled_session(store, at=_SEEN + timedelta(seconds=1))
         racing = _PollsMidPass(pglite_db, embed=StubEmbedder(), polls=returning)
 
         later = _SILENT + timedelta(seconds=1)
@@ -179,30 +182,6 @@ class TestReap:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-class TestSeen:
-    """How a sign of life is recorded."""
-
-    async def test_a_sighting_is_written_only_once_a_minute_has_passed(
-        self,
-        store: Store,
-    ) -> None:
-        """A run polls continuously; writing each poll would cost a row per cycle."""
-        session = await _polled(store, at=_SEEN)
-        minute = _SEEN + timedelta(minutes=1)
-
-        await store.record_session_seen(session, at=minute, polled=True)
-        await store.record_session_seen(session, at=minute, polled=False)
-        assert await _last_seen(store, session) == _SEEN
-        later = minute + timedelta(seconds=1)
-        await store.record_session_seen(session, at=later, polled=False)
-        assert await _last_seen(store, session) == later
-        latest = later + timedelta(minutes=2)
-        await store.record_session_seen(session, at=latest, polled=True)
-        assert await _last_seen(store, session) == latest
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
 class TestRevive:
     """A run closed for silence that comes back gets its session back."""
 
@@ -211,10 +190,10 @@ class TestRevive:
         store: Store,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        reaped = await _polled(store, at=_SEEN)
-        ended_by_its_run = await _polled(store, at=_SEEN)
+        reaped = await polled_session(store, at=_SEEN)
+        ended_by_its_run = await polled_session(store, at=_SEEN)
         _ = await store.end_session(ended_by_its_run, ended=_SEEN, actor="agent")
-        live = await _polled(store, at=_SILENT)
+        live = await polled_session(store, at=_SILENT)
         _ = await reap_silent_sessions(store, inbound=InboundQueue(), now=_SILENT)
 
         with caplog.at_level(logging.INFO):
@@ -233,7 +212,7 @@ class TestRevive:
         ]
 
     async def test_a_revived_session_can_be_closed_again(self, store: Store) -> None:
-        session = await _polled(store, at=_SEEN)
+        session = await polled_session(store, at=_SEEN)
         _ = await reap_silent_sessions(store, inbound=InboundQueue(), now=_SILENT)
         assert await revive_if_reaped(store, session_id=session)
 
@@ -248,9 +227,9 @@ class TestRevive:
         store: Store,
     ) -> None:
         """A resume reopens through ``start_session``, not a revival."""
-        session = await _polled(store, at=_SEEN, cli_session_id="resumable")
+        session = await polled_session(store, at=_SEEN, cli_session_id="resumable")
         _ = await reap_silent_sessions(store, inbound=InboundQueue(), now=_SILENT)
-        resumed = await _session(store, cli_session_id="resumable")
+        resumed = await open_agent_session(store, cli_session_id="resumable")
         assert resumed == session
 
         assert (
@@ -266,7 +245,7 @@ async def test_a_restarted_server_still_closes_and_reopens(
     store: Store,
 ) -> None:
     """Nothing the reaper needs is held in the process that saw the session."""
-    session = await _polled(store, at=_SEEN)
+    session = await polled_session(store, at=_SEEN)
 
     restarted = await _restart(pglite_db)
     assert (
@@ -280,7 +259,7 @@ async def test_a_restarted_server_still_closes_and_reopens(
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_the_loop_closes_a_silent_session(store: Store) -> None:
-    session = await _polled(store, at=datetime.now(UTC) - STALE_AFTER)
+    session = await polled_session(store, at=datetime.now(UTC) - STALE_AFTER)
 
     loop = asyncio.create_task(
         session_reaper_loop(store, inbound=InboundQueue(), interval_sec=0.01),
@@ -385,33 +364,6 @@ class _BrokenStore:
         raise RuntimeError("database blip")
 
 
-async def _session(store: Store, *, cli_session_id: str | None = None) -> UUID:
-    """Open a session, or resume the one ``cli_session_id`` names."""
-    session_id, _, _ = await store.start_session(
-        SubmitAgentSession(
-            title="reaper",
-            cli="claude",
-            account="t@e",
-            cli_session_id=cli_session_id,
-        ),
-        requested_actor="agent",
-        audience="open",
-    )
-    return session_id
-
-
-async def _polled(
-    store: Store,
-    *,
-    at: datetime,
-    cli_session_id: str | None = None,
-) -> UUID:
-    """Open a session that polled its inbound queue at ``at``."""
-    session_id = await _session(store, cli_session_id=cli_session_id)
-    await store.record_session_seen(session_id, at=at, polled=True)
-    return session_id
-
-
 async def _closed_once_silent(store: Store, session_id: UUID) -> int:
     """Run a pass once ``session_id`` has been silent for the window, from now."""
     row = await _row(store, session_id)
@@ -432,17 +384,6 @@ async def _row(store: Store, session_id: UUID) -> AgentSession:
     row = await store.get_inquiry(session_id)
     assert isinstance(row, AgentSession)
     return row
-
-
-async def _last_seen(store: Store, session_id: UUID) -> datetime:
-    """Return when ``session_id`` was last recorded as heard from."""
-    async with store.engine.acquire() as conn:
-        seen = await conn.fetchval(
-            "SELECT last_seen FROM session_liveness WHERE session_id = $1",
-            session_id,
-        )
-    assert isinstance(seen, datetime)
-    return seen
 
 
 def _reaper_messages(caplog: pytest.LogCaptureFixture) -> list[str]:

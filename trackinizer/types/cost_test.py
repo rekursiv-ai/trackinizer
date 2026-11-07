@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from trackinizer.types.cost import Cost
+from trackinizer.types.cost import Cost, TokenCount
 
 
 class TestModels:
@@ -43,10 +43,40 @@ class TestModels:
         delta = Cost(agent_usd=0.5) - Cost(agent_usd=2.0)
         assert delta.agent_usd == pytest.approx(-1.5)
 
+    def test_a_cost_is_truthy_when_either_axis_is_nonzero(self) -> None:
+        assert not Cost()
+        assert Cost(agent_usd=0.5)
+        assert Cost(resource_usd=-1.0)
+        assert Cost(agent_usd=1.0, resource_usd=2.5).total_usd == pytest.approx(3.5)
+
     def test_add_is_componentwise(self) -> None:
         total = Cost(agent_usd=1.0) + Cost(agent_usd=0.5, resource_usd=2.0)
         assert total.agent_usd == pytest.approx(1.5)
         assert total.resource_usd == pytest.approx(2.0)
+
+
+class TestTokenCount:
+    def test_add_is_componentwise(self) -> None:
+        total = TokenCount(input_tokens=1, output_tokens=2) + TokenCount(
+            input_tokens=10,
+            cache_creation_tokens=3,
+            cache_read_tokens=4,
+        )
+        assert total == TokenCount(
+            input_tokens=11,
+            output_tokens=2,
+            cache_creation_tokens=3,
+            cache_read_tokens=4,
+        )
+
+    def test_sub_clamps_each_axis_at_zero(self) -> None:
+        delta = TokenCount(
+            input_tokens=5,
+            output_tokens=1,
+            cache_creation_tokens=7,
+            cache_read_tokens=2,
+        ) - TokenCount(input_tokens=2, output_tokens=4, cache_read_tokens=9)
+        assert delta == TokenCount(input_tokens=3, cache_creation_tokens=7)
 
 
 if __name__ == "__main__":

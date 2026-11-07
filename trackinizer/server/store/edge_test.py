@@ -13,7 +13,11 @@ from trackinizer.conftest import (
     new_uuid,
     set_field_row,
 )
-from trackinizer.types.errors import ConflictError, NotFoundError
+from trackinizer.types.errors import (
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 
 
 if TYPE_CHECKING:
@@ -228,6 +232,104 @@ def _sql(call: MockCall) -> str:
     sql = call.args[0]
     assert isinstance(sql, str)
     return sql
+
+
+def _edge_row(**over: object) -> dict[str, object]:
+    """Return a locked ``edges`` row as the annotate and remove paths read it."""
+    return {
+        "from_kind": "Issue",
+        "to_kind": "Issue",
+        "priority": None,
+        "note": None,
+        "valence": None,
+        "labels": None,
+    } | over
+
+
+class TestEdgeAnnotationRefusals:
+    @pytest.mark.asyncio
+    async def test_a_label_delta_and_a_label_list_are_exclusive(self) -> None:
+        store, engine = make_store()
+
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            await store.set_edge_annotation(
+                from_id=new_uuid(),
+                to_id=new_uuid(),
+                edge_kind="requires",
+                labels=["a"],
+                labels_delta=("b", True),
+                actor="user",
+            )
+
+        assert not [s for s in executed_sql(engine.conn) if "edges" in s]
+
+    @pytest.mark.asyncio
+    async def test_a_blank_label_is_refused_not_ignored(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, _edge_row())
+        store, _engine = make_store(conn)
+
+        with pytest.raises(ValidationError, match="edge label cannot be empty"):
+            await store.add_edge_label(
+                from_id=new_uuid(),
+                to_id=new_uuid(),
+                edge_kind="requires",
+                label="   ",
+                actor="user",
+            )
+
+        assert not [s for s in executed_sql(conn) if "UPDATE edges" in s]
+
+    @pytest.mark.asyncio
+    async def test_an_absent_edge_is_none_when_one_need_not_exist(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, None)
+        store, _engine = make_store(conn)
+
+        async with store.engine.acquire() as acquired:
+            changed = await store._set_edge_annotation_on_conn(
+                acquired,
+                from_id=new_uuid(),
+                to_id=new_uuid(),
+                edge_kind="requires",
+                note="n",
+                require_existing=False,
+                actor="user",
+            )
+
+        assert changed is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("column", "value"),
+        [("note", 5), ("valence", "0.5")],
+    )
+    async def test_a_stored_annotation_of_the_wrong_type_is_refused(
+        self,
+        column: str,
+        value: object,
+    ) -> None:
+        annotated, removed = make_conn(), make_conn()
+        for conn in (annotated, removed):
+            set_field_row(conn, _edge_row(**{column: value}))
+        annotator, _ = make_store(annotated)
+        remover, _ = make_store(removed)
+
+        with pytest.raises(ValueError, match=f"Expected old_{column}"):
+            await annotator.set_edge_annotation(
+                from_id=new_uuid(),
+                to_id=new_uuid(),
+                edge_kind="requires",
+                note="n",
+                actor="user",
+            )
+        with pytest.raises(ValueError, match=f"Expected {column}"):
+            await remover.remove_edge(
+                from_id=new_uuid(),
+                to_id=new_uuid(),
+                edge_kind="requires",
+                actor="user",
+            )
 
 
 if __name__ == "__main__":

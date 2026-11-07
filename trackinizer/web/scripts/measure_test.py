@@ -504,6 +504,42 @@ def test_a_content_coding_is_read_in_any_case_and_as_a_list() -> None:
         assert (sample.json_bytes, sample.wire_bytes) == (len(body), len(raw)), coding
 
 
+def test_a_coding_it_cannot_undo_is_named_rather_than_mismeasured() -> None:
+    with (
+        httpx2.Client(
+            base_url="http://server",
+            transport=httpx2.MockTransport(
+                lambda _: httpx2.Response(
+                    200,
+                    content=iter([b"..."]),
+                    headers={"content-encoding": "gzip, br"},
+                ),
+            ),
+        ) as http,
+        pytest.raises(ValueError, match="unknown Content-Encoding 'br' in 'gzip, br'"),
+    ):
+        _get(http, "/api/version")
+
+
+def test_table_lists_each_distinct_error_message_under_its_row(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    refused = Sample(
+        seconds=1.0,
+        status=503,
+        json_bytes=10,
+        wire_bytes=10,
+        message="busy",
+    )
+    measurement._print_table(
+        [Row(name="read", samples=(refused, refused))],
+        Stream(seconds=1.0, frames=0, distinct_ids=0, status=200),
+    )
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[2] == f"{'':46}busy"
+    assert lines[3].startswith("stream: 0 frames")
+
+
 @pytest.mark.parametrize("hub", ["", "Paper#81"])
 @pytest.mark.parametrize("empty", [False, True])
 def test_measure_preserves_request_parameters_and_sample_identities(

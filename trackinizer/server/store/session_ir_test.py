@@ -17,6 +17,8 @@ from treekle import immutable, json_loads
 
 import pytest
 
+from trackinizer.conftest import executed_sql, make_store, set_field_row
+from trackinizer.lib import zstd_compat
 from trackinizer.sagent.session.types import (
     SessionRecord,
     Thinking,
@@ -25,6 +27,7 @@ from trackinizer.sagent.session.types import (
     UserMessage,
 )
 from trackinizer.server.store import session_ir
+from trackinizer.server.store.session_bodies import STUB_PAYLOAD
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
@@ -1005,6 +1008,131 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
     # Each copy keeps the moment its original was recorded at.
     moments = [row["created"] for row in created]
     assert moments[::2] == moments[1::2]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_row_of_another_session_is_not_found_not_a_leaked_constraint(
+    store: Store,
+) -> None:
+    session_id = await _session(store)
+
+    with pytest.raises(NotFoundError, match="not found"):
+        _ = await store.append_session_records(
+            session_id,
+            _rows(uuid4(), [UserMessage(content="stray")]),
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_append_touches_nothing() -> None:
+    store, engine = make_store()
+
+    assert await store.append_session_records(uuid4(), []) == (0, 0, 0)
+    assert engine.conn.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_records_attach_only_to_a_session() -> None:
+    store, engine = make_store()
+    set_field_row(
+        engine.conn,
+        {"kind": "Issue", "agentsession_ended": None, "agentsession_audience": "open"},
+    )
+    session_id = uuid4()
+
+    with pytest.raises(ConflictError, match="is not an AgentSession"):
+        _ = await store.append_session_records(
+            session_id,
+            _rows(session_id, [UserMessage(content="hi")]),
+        )
+
+    assert not [sql for sql in executed_sql(engine.conn) if "session_records" in sql]
+
+
+@pytest.mark.asyncio
+async def test_a_manifest_for_no_session_is_not_found() -> None:
+    store, engine = make_store()
+
+    with pytest.raises(NotFoundError, match="not found"):
+        _ = await store.upsert_session_manifest(
+            uuid4(),
+            name="s.jsonl",
+            metadata=immutable({}),
+            ir_id=uuid4(),
+            format="claude",
+            records=0,
+        )
+
+    assert not [sql for sql in executed_sql(engine.conn) if "session_manifests" in sql]
+
+
+def _stored(**over: object) -> dict[str, object]:
+    """Return one ``read_session_records`` result row, overridable per test."""
+    return {
+        "session_id": uuid4(),
+        "part": 0,
+        "idx": 0,
+        "kind": "UserMessage",
+        "context_id": None,
+        "timestamp": None,
+        "model": None,
+        "payload": '{"content": "hi"}',
+        "text": "hi",
+        "bytes": None,
+        "body_payload": None,
+        "body_text": None,
+    } | over
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        ("context_id", "0"),
+        ("timestamp", "2026-11-06"),
+        ("model", 7),
+        ("bytes", "not bytes"),
+        ("body_payload", "not bytes"),
+        ("body_text", "not bytes"),
+    ],
+)
+async def test_a_stored_row_of_the_wrong_type_is_refused(
+    column: str,
+    value: object,
+) -> None:
+    store, engine = make_store()
+    engine.conn.fetch.return_value = [_stored(**{column: value})]
+
+    with pytest.raises(ValueError, match=f"Expected {column}"):
+        _ = await store.read_session_records(uuid4(), part=0)
+
+
+@pytest.mark.asyncio
+async def test_a_replay_read_splices_an_offloaded_body_back_over_its_head() -> None:
+    store, engine = make_store()
+    whole = '{"content": "the whole body"}'
+    engine.conn.fetch.return_value = [
+        _stored(
+            payload=STUB_PAYLOAD,
+            text="the who",
+            body_payload=zstd_compat.compress(whole.encode()),
+            body_text=zstd_compat.compress(b"the whole body"),
+        ),
+    ]
+
+    (row,) = await store.read_session_records(uuid4(), part=0)
+
+    assert (row.payload, row.text) == ({"content": "the whole body"}, "the whole body")
+
+
+@pytest.mark.asyncio
+async def test_a_stored_payload_that_is_not_an_object_is_refused() -> None:
+    store, engine = make_store()
+    engine.conn.fetch.return_value = [_stored(payload="[1, 2]")]
+
+    with pytest.raises(TypeError, match="not a JSON object"):
+        _ = await store.read_session_records(uuid4(), part=0, plaintext_only=True)
 
 
 def test_a_payload_nul_is_replaced_in_keys_and_nested_strings() -> None:

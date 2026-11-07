@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from trackinizer.types.columns import (
     ColumnSpec,
     column_specs,
@@ -60,6 +62,13 @@ class TestColumnSpecAsMetadata:
     def test_it_is_the_one_entry_of_its_own_mapping(self) -> None:
         spec = ColumnSpec()
         assert dict(spec) == {"colspec": spec}
+        assert len(spec) == 1
+
+    def test_any_other_key_is_missing(self) -> None:
+        spec = ColumnSpec()
+        assert "sql_type" not in spec
+        with pytest.raises(KeyError, match="sql_type"):
+            spec["sql_type"]
 
     def test_equal_specs_compare_and_hash_equal(self) -> None:
         assert ColumnSpec() == ColumnSpec()

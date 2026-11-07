@@ -19,7 +19,9 @@ from trackinizer.wire.wire_science_chat import (
     ChatPartialState,
     ChatSend,
     chat_actor,
+    chat_conversation_id,
     chat_session_id,
+    fork_point_label,
     poster_label,
     run_refusal,
 )
@@ -43,6 +45,25 @@ def test_a_conversations_routing_name_is_short_and_never_the_assistants() -> Non
 
 def test_a_poster_label_names_the_attested_email() -> None:
     assert poster_label("ada@example.com") == "poster:ada@example.com"
+
+
+def test_a_chat_sessions_id_reads_back_as_its_conversation() -> None:
+    conversation = uuid.uuid4()
+
+    assert chat_conversation_id(chat_session_id(conversation)) == conversation
+
+
+@pytest.mark.parametrize(
+    "cli_session_id",
+    [None, "0b3c2f7e-1d4a-4f5e-9a1b-2c3d4e5f6a7b", "chat:not-a-uuid", "chat:"],
+    ids=["none", "another-cli", "malformed", "empty"],
+)
+def test_any_other_session_id_names_no_conversation(cli_session_id: str | None) -> None:
+    assert chat_conversation_id(cli_session_id) is None
+
+
+def test_a_fork_point_label_names_the_records_part_and_position() -> None:
+    assert fork_point_label(part=2, idx=17) == "fork-at:2:17"
 
 
 def test_a_post_is_a_persons_line_by_default() -> None:
@@ -193,6 +214,15 @@ def test_a_fork_starts_from_a_line_only() -> None:
                 "text": "/compact",
                 "kind": "command",
                 "fork": fork,
+            },
+        )
+    with pytest.raises(ValidationError, match="cannot name one"):
+        ChatSend.model_validate(
+            {
+                "canvas_id": str(_CANVAS),
+                "text": "hi",
+                "fork": fork,
+                "conversation_id": str(uuid.uuid4()),
             },
         )
 

@@ -279,7 +279,7 @@ async def validate_list_references(
     if not value:
         return
     permitted = COLUMN_SPECS[column].references
-    if not permitted:  # pragma: no cover -- defensive: callers gate on metadata.
+    if not permitted:
         raise AssertionError(
             f"validate_list_references called for {column!r} with no references",
         )

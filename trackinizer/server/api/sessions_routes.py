@@ -794,8 +794,7 @@ async def _require_attach(
 def _idempotency_key(request: Request) -> UUID | None:
     """Return the request's already-parsed ``Idempotency-Key``, or ``None``."""
     key = getattr(request.state, "idempotency_key", None)
-    if key is not None and not isinstance(key, UUID):
-        raise ValueError("Expected key is None or isinstance(key, UUID).")
+    assert isinstance(key, UUID | None)
     return key
 
 

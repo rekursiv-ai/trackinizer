@@ -18,6 +18,7 @@ from typing import Final, cast, get_args
 import functools
 import re
 import shlex
+import uuid
 
 import pytest
 
@@ -36,6 +37,8 @@ from trackinizer.trax.grammar import (
     cost_key,
     field_value,
     is_issue_kind,
+    parse_kind,
+    parse_ref,
     validate_writable_fields,
 )
 from trackinizer.trax.parser import parse_list_query
@@ -43,6 +46,7 @@ from trackinizer.types.columns import flat_column_specs
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.filters import FILTER_OPS
+from trackinizer.wire.refs import SeqRef, UuidRef
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -483,6 +487,91 @@ def test_taxonomy_edge_has_all_four_verb_forms() -> None:
         name="narrows",
         reverse=True,
     )
+
+
+class TestParseRef:
+    def test_parse_seq_ref_case_insensitive(self) -> None:
+        ref = parse_ref(" issue#7 ")
+        assert ref == SeqRef(kind="Issue", seq=7)
+        assert str(ref) == "Issue#7"
+
+    def test_parse_uuid_ref(self) -> None:
+        value = uuid.uuid4()
+        ref = parse_ref(str(value))
+        assert ref == UuidRef(uuid=value)
+        assert str(ref) == str(value)
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("", "empty reference"),
+            ("Nope#1", "unknown kind"),
+            ("Issue:not-a-seq", "cannot parse"),
+        ],
+    )
+    def test_rejects_empty_unknown_kind_and_bad_shape(
+        self,
+        value: str,
+        message: str,
+    ) -> None:
+        with pytest.raises(ValueError, match=message):
+            parse_ref(value)
+
+
+class TestParseKind:
+    def test_parse_kind_case_insensitive_and_plural(self) -> None:
+        assert parse_kind("belief") == "Belief"
+        assert parse_kind("Issues") == "Issue"
+
+    def test_parse_kind_rejects_unknown(self) -> None:
+        with pytest.raises(ValueError, match="unknown kind"):
+            parse_kind("widgets")
+
+
+def test_every_relation_alias_is_an_edge_alias_and_back() -> None:
+    """A relation word followed by a ref writes the edge it reads.
+
+    ``parse_actions`` dispatches every edge word through its relation reading, so an
+    edge-only spelling would be unreachable and a relation-only one would fail a ref.
+    """
+    assert set(grammar.RELATION_ALIASES) == set(grammar.EDGE_ALIASES)
+    for word, (name, reverse) in grammar.RELATION_ALIASES.items():
+        edge = grammar.EDGE_ALIASES[word]
+        assert (edge.name, edge.reverse) == (name, reverse), word
+
+
+def test_a_bulk_apply_must_change_something() -> None:
+    query = grammar.ListQuery(kinds=("Issue",), ranges={}, filters=())
+
+    with pytest.raises(ValueError, match="requires at least one mutation"):
+        grammar.BulkApply(query=query, actions=())
+
+
+def test_ref_list_aliases_sharing_a_wire_key_must_share_a_ref_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Aliases of one ref-list key resolve a bare seq alike, or the lookup is moot."""
+    monkeypatch.setattr(
+        grammar,
+        "_FIELDS",
+        (
+            grammar.Field(
+                cli_name="cc",
+                payload_key="codechanges",
+                shape="list",
+                ref_kind="CodeChange",
+            ),
+            grammar.Field(
+                cli_name="ccs",
+                payload_key="codechanges",
+                shape="list",
+                ref_kind="Issue",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="disagree on wire shape for 'codechanges'"):
+        grammar._ref_fields_by_payload()
 
 
 if __name__ == "__main__":

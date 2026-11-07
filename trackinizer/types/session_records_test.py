@@ -35,6 +35,7 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolResult,
     TurnContext,
     UncategorizedRecord,
     UncategorizedToolResult,
@@ -193,6 +194,10 @@ def test_metadata_records_index_nothing(record: object) -> None:
             AgentSpawnResult(call_id="c", prompt="p", content="hello"),
             id="AgentStatus",
         ),
+        pytest.param(
+            ToolResult(call_id="c", stub="pending", shown="hello"),
+            id="ToolResult",
+        ),
     ],
 )
 def test_prose_records_index_their_content(record: object) -> None:
@@ -311,6 +316,15 @@ def test_row_carries_the_records_context_and_timestamp() -> None:
 
     assert row.context_id == 2
     assert row.timestamp is not None
+
+
+def test_an_unparseable_timestamp_stores_null_and_keeps_the_string() -> None:
+    """A provider timestamp that is not ISO-8601 nulls the column, not the batch."""
+    record = UserMessage(content="hi", timestamp="yesterday")
+    row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
+
+    assert row.timestamp is None
+    assert row.record() == record
 
 
 def test_row_strips_ciphertext_from_its_payload() -> None:

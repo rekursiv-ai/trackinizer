@@ -35,8 +35,13 @@ from trackinizer.sagent.session.types import (
     BashResult,
     ContextClear,
     ContextCompaction,
+    EditResult,
+    Splice,
+    Thinking,
     ToolCall,
     UserMessage,
+    WebSearchHit,
+    WebSearchResult,
 )
 
 
@@ -387,25 +392,26 @@ class TestTheCut:
         assert window([_segment(0, "claude", part)]).opening is None
 
 
+def _sealed_codex_parts() -> list[Segment]:
+    return [
+        _segment(
+            0,
+            "codex",
+            _codex(
+                _codex_item("user", "F1 is apples", at=1),
+                _codex_item("assistant", "noted F1", at=2),
+                *_codex_compacted(at=3),
+                _codex_item("user", "F4 is figs", at=4),
+            ),
+        ),
+    ]
+
+
 class TestASealedCodexSummary:
     """Codex's summary is ciphertext: only codex reads it; the kept turns cross."""
 
-    def _parts(self) -> list[Segment]:
-        return [
-            _segment(
-                0,
-                "codex",
-                _codex(
-                    _codex_item("user", "F1 is apples", at=1),
-                    _codex_item("assistant", "noted F1", at=2),
-                    *_codex_compacted(at=3),
-                    _codex_item("user", "F4 is figs", at=4),
-                ),
-            ),
-        ]
-
     def test_codex_gets_its_compaction_back_natively(self) -> None:
-        loaded = cli_records(window(self._parts()), "codex", seq=_seven)
+        loaded = cli_records(window(_sealed_codex_parts()), "codex", seq=_seven)
 
         compaction, clear = loaded.records[:2]
         assert isinstance(compaction, ContextCompaction)
@@ -419,7 +425,7 @@ class TestASealedCodexSummary:
         assert not any("F1 is apples" in text for text in _users(loaded.records))
 
     def test_another_target_gets_the_kept_turns_and_never_the_ciphertext(self) -> None:
-        loaded = cli_records(window(self._parts()), "claude", seq=_seven)
+        loaded = cli_records(window(_sealed_codex_parts()), "claude", seq=_seven)
 
         said = [
             record.content or ""
@@ -635,6 +641,64 @@ class TestTheBudget:
 
 def test_a_text_at_the_cap_is_kept_whole() -> None:
     assert cut_text("x" * CUT_ABOVE) == "x" * CUT_ABOVE
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            EditResult(
+                call_id="e1",
+                edits=(Splice(before="ab", after="cde"), Splice(after="f")),
+            ),
+            6,
+        ),
+        (
+            WebSearchResult(
+                call_id="w1",
+                content=(
+                    WebSearchHit(url="https://a.b", title="AB", snippet="xyz"),
+                    WebSearchHit(title="C"),
+                ),
+            ),
+            17,
+        ),
+        (ContextClear(summary="four"), 4),
+        (ContextClear(), 0),
+        (Thinking(content="not read by a target"), 0),
+    ],
+    ids=["edit", "web-search", "clear", "clear-without-summary", "thinking"],
+)
+def test_weight_counts_the_text_a_target_reads(
+    record: SessionRecord,
+    expected: int,
+) -> None:
+    assert weight(record) == expected
+
+
+def test_past_max_the_newest_kept_turns_of_the_opening_fit_first() -> None:
+    """Room left after the summary goes to the opening's newest kept turns."""
+    seen = window(_sealed_codex_parts())
+    kept = [each.record for each in seen.history]
+    newest = weight(kept[-1])
+    assert newest > 0
+    assert all(weight(record) > 0 for record in kept[:-1])
+
+    loaded = cli_records(
+        seen,
+        "claude",
+        seq=_seven,
+        budget=Budget(fit_bytes=newest, max_bytes=newest),
+    )
+
+    said = [
+        record.content or ""
+        for record in loaded.records
+        if isinstance(record, UserMessage | AssistantMessage)
+    ]
+    assert any("kept: europe-west4" in text for text in said)
+    assert not any("kept: which bucket?" in text for text in said)
+    assert loaded.compact_after_load
 
 
 def test_a_claude_target_reads_the_summary_as_claude_flags_its_own() -> None:

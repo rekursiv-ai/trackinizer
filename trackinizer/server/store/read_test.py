@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, override
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -19,16 +19,21 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.lib.postgres import Conn
+from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.audience import SessionReader, hidden_exists_sql
 from trackinizer.server.store import read
 from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import NotFoundError, ValidationError
 from trackinizer.wire.filters import Filter
+from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 
 
 if TYPE_CHECKING:
+    from trackinizer.mock_test_support import MockConnection, MockControl
+    from trackinizer.server.access_policy import ResourceKind
+    from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
 
 
@@ -606,6 +611,170 @@ class TestUnboundableRegexRefusal:
             [],
             lowering=lowering,
         )
+
+
+class _Granted(DefaultPolicy):
+    """Reads only the rows a grant names."""
+
+    @override
+    def read_filter(
+        self,
+        kind: ResourceKind,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal,
+    ) -> str:
+        del kind, params, principal
+        return f"{alias}.granted"
+
+
+_READER: Final = Principal(email="bea@example.com", role="viewer")
+
+
+def _restricted() -> tuple[Store, MockConnection]:
+    """Return a store whose policy restricts reads, and its connection."""
+    conn = make_conn()
+    store, _engine = make_store(conn)
+    store.access_policy = _Granted()
+    return store, conn
+
+
+def _last_sql(mock: MockControl) -> str:
+    """Return the SQL of ``mock``'s last call."""
+    call = mock.call_args
+    assert call is not None
+    sql = call.args[0]
+    assert isinstance(sql, str)
+    return sql
+
+
+class TestPolicyGatedReads:
+    """A policy that restricts reads gates every read by the rows it may see."""
+
+    @pytest.mark.asyncio
+    async def test_a_list_keeps_only_granted_rows(self) -> None:
+        store, conn = _restricted()
+
+        assert await store.list_kind("Issue", principal=_READER) == []
+
+        assert "(inquiries.granted)" in _last_sql(conn.fetch)
+
+    @pytest.mark.asyncio
+    async def test_history_is_gated_by_its_subject_and_each_present_peer(self) -> None:
+        store, conn = _restricted()
+        params: list[object] = []
+
+        predicate = store.change_read_filter("c", params=params, principal=_READER)
+        assert await store.get_change(new_uuid(), principal=_READER) is None
+        assert await store.list_changes(actor="alice", principal=_READER) == []
+
+        assert predicate.count("readable_inquiry.granted") == 3
+        assert "(c.old_peer_id IS NULL OR (EXISTS" in predicate
+        assert "(c.new_peer_id IS NULL OR (EXISTS" in predicate
+        # ``get_change`` wraps the filter, whose first clause is itself parenthesized.
+        assert "WHERE id = $1 AND ((EXISTS" in _last_sql(conn.fetchrow)
+        listed = _last_sql(conn.fetch)
+        assert "(created" not in listed
+        assert "actor = $1" in listed
+
+
+class TestUngatedReads:
+    @pytest.mark.asyncio
+    async def test_a_change_absent_from_the_log_is_none(self) -> None:
+        store, _engine = make_store()
+
+        assert await store.get_change(new_uuid()) is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, MAX_LIST_LIMIT + 1])
+    async def test_a_change_page_outside_the_cap_is_refused(self, limit: int) -> None:
+        store, engine = make_store()
+
+        with pytest.raises(ValueError, match="limit must be in"):
+            await store.list_changes(limit=limit)
+
+        assert engine.conn.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_no_unowned_active_issue_means_none_to_claim(self) -> None:
+        store, _engine = make_store()
+
+        assert await store.next_issue() is None
+
+    @pytest.mark.asyncio
+    async def test_a_row_whose_totals_vanished_costs_nothing(self) -> None:
+        """Present at the probe, gone at the read: a zero cost, not a missing row."""
+        conn = make_conn()
+        conn.fetchval.return_value = 1
+        store, _engine = make_store(conn)
+
+        assert await store.inquiry_cost(new_uuid()) == Cost()
+
+    @pytest.mark.asyncio
+    async def test_authority_keeps_only_the_relations_that_reach_the_row(self) -> None:
+        conn = make_conn()
+        queue_field_rows(
+            conn,
+            {
+                "proves_authority": 0.25,
+                "favors_authority": None,
+                "cited_by_authority": 0.5,
+                "issue_authority": None,
+            },
+            None,
+        )
+        store, _engine = make_store(conn)
+
+        assert await store.derived_authority(new_uuid()) == {
+            "proves_authority": 0.25,
+            "cited_by_authority": 0.5,
+        }
+        assert await store.derived_authority(new_uuid()) is None
+
+
+class TestNarrowsAncestors:
+    @pytest.mark.asyncio
+    async def test_no_rows_ask_nothing(self) -> None:
+        store, engine = make_store()
+
+        assert await store.narrows_ancestors([]) == {}
+        assert engine.conn.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_ancestors_come_nearest_first_each_once_and_never_the_row(
+        self,
+    ) -> None:
+        """A diamond's top is listed once; a cycle back to the row is dropped."""
+        row, left, right, top = (uuid.UUID(int=n) for n in range(1, 5))
+        conn = make_conn()
+        conn.fetch.return_value = [
+            _ancestor_row(left, child=row),
+            _ancestor_row(right, child=row),
+            _ancestor_row(top, child=left),
+            _ancestor_row(top, child=right),
+            _ancestor_row(row, child=top),
+        ]
+        store, _engine = make_store(conn)
+
+        (ancestry,) = (await store.narrows_ancestors([row])).values()
+
+        assert [(a.id, a.child_ids) for a in ancestry] == [
+            (left, (row,)),
+            (right, (row,)),
+            (top, (left, right)),
+        ]
+
+
+def _ancestor_row(parent: uuid.UUID, *, child: uuid.UUID) -> dict[str, object]:
+    return {
+        "id": parent,
+        "kind": "Issue",
+        "seq": parent.int,
+        "title": f"issue {parent.int}",
+        "status": "active",
+        "child": child,
+    }
 
 
 if __name__ == "__main__":

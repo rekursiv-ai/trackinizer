@@ -692,6 +692,10 @@ class TestDetailFormats:
         assert _relation_title("cites_paper", inbound=False) == "cites"
         assert _relation_title("cites_paper", inbound=True) == "cited_by"
 
+    def test_relation_title_titles_a_kind_this_client_does_not_know(self) -> None:
+        # A newer server may send an edge kind this client predates.
+        assert _relation_title("future_kind", inbound=True) == "Future Kind"
+
     def test_format_show_uses_belief_facing_citation_names(self) -> None:
         text = render.format_show(
             {
@@ -1563,6 +1567,15 @@ def test_nothing_echoed_can_drive_a_terminal_or_hide_from_a_reader() -> None:
 def test_what_a_reader_needs_is_left_as_it_was() -> None:
     plain = "Issue#1\tZoë 蛋白质 🧬 -- a\u200db\nnext line\n"
     assert render.terminal_safe(plain) == plain
+
+
+def test_ids_show_only_where_the_flag_set_them() -> None:
+    assert not render.show_ids()
+    token = render.SHOW_IDS.set(True)
+    try:
+        assert render.show_ids()
+    finally:
+        render.SHOW_IDS.reset(token)
 
 
 if __name__ == "__main__":

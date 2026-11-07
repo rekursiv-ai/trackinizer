@@ -46,6 +46,7 @@ from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import (
     iter_routes,
@@ -295,6 +296,24 @@ class TestQueryHelpers:
             web._parse_query("title:")
         with pytest.raises(ValueError, match="empty"):
             web._parse_query("description:")
+
+    def test_parse_query_skips_an_empty_quoted_token(self) -> None:
+        assert web._parse_query('"" hello') == [(None, "hello")]
+
+    def test_a_snapshot_reads_only_the_columns_its_row_carries(self) -> None:
+        row = {
+            "new_marginal_cost_agent_usd": 1.5,
+            "new_marginal_cost_resource_usd": 0.0,
+            "new_title": "Kept",
+            "new_owner": None,
+        }
+        assert web._snapshot_to_dict(
+            cast("asyncpg.Record", row),
+            prefix="new_",
+        ) == {
+            "marginal_cost": {"agent_usd": 1.5, "resource_usd": 0.0},
+            "title": "Kept",
+        }
 
     def test_build_term_clause(self) -> None:
         clause, params = web._build_term_clause(
@@ -1441,6 +1460,35 @@ class TestFeedReads:
             list[uuid.UUID],
         )
         assert set(asked) == {taken, waiting}
+
+    def test_facets_with_no_polled_agent_ask_no_run_its_state(self) -> None:
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[
+                FeedActorFacet(
+                    actor="quiet",
+                    session_id=new_uuid(),
+                    cli="claude",
+                    rooms=[],
+                    count=1,
+                    conversation=1,
+                    last=datetime(2026, 10, 1, tzinfo=UTC),
+                    ended=None,
+                ),
+            ],
+            rooms=[],
+            kinds=[],
+        )
+        client = self._client(store)
+        cast("FastAPI", client.app).state.inbound = InboundQueue()
+
+        response = client.get("/api/web/feed/facets")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == store.read_feed_facets.return_value.model_dump(
+            mode="json",
+        )
+        store.engine.conn.fetch.assert_not_awaited()
 
     def test_a_histogram_has_2_to_1000_buckets_and_120_unless_asked(self) -> None:
         store = self._histogram_store()
@@ -3026,6 +3074,40 @@ class TestSearchEmbedder:
         )
         assert found is default
         assert calls == [("default", request)]
+
+    @pytest.mark.parametrize("cached", [StubEmbedder(dim=1024), None])
+    def test_the_default_embedder_is_built_once_per_process(
+        self,
+        cached: StubEmbedder | None,
+    ) -> None:
+        app = FastAPI()
+        app.state.session_embedder = cached
+        request = Request({"type": "http", "app": app})
+        assert web._session_embedder(request) is cached
+
+
+class TestOptionalIdentity:
+    @pytest.mark.asyncio
+    async def test_an_app_without_its_lifespan_has_no_identity(self) -> None:
+        request = Request({"type": "http", "app": FastAPI(), "headers": []})
+        assert await web.optional_identity(request) is None
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_other_than_401_is_not_swallowed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def forbidden(request: Request) -> AuthIdentity:
+            del request
+            raise HTTPException(status_code=403, detail="not yours")
+
+        monkeypatch.setattr(web, "current_user", forbidden)
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        request = Request({"type": "http", "app": app, "headers": []})
+        with pytest.raises(HTTPException) as caught:
+            await web.optional_identity(request)
+        assert caught.value.status_code == 403
 
 
 def test_the_install_icons_served_signed_out_are_192_and_512_pixel_pngs() -> None:

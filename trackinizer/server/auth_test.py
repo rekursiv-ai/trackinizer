@@ -47,6 +47,7 @@ from trackinizer.server.auth import (
     _publish_bootstrap_token,
     _stage_bootstrap_token,
     allowlist_match,
+    assert_account_active,
     bootstrap_admin,
     create_api_key,
     current_human,
@@ -55,10 +56,12 @@ from trackinizer.server.auth import (
     generate_token,
     hash_secret,
     key_within_caller,
+    list_api_keys,
     lookup_user_by_id,
     request_user,
     require_role,
     revoke_api_key,
+    seed_no_auth_user,
     set_api_key_role,
     verify_secret,
 )
@@ -783,46 +786,6 @@ class TestVerifiedBearerCache:
         await current_user(_request_with(engine, f"Bearer {kept_secret}", store=store))
         store.forget_bearer_identities(uuid.uuid4())
         assert store.cached_bearer_identity(kept_secret) is not None
-
-    def test_cache_is_bounded(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # A flood of distinct keys must not pin unbounded memory.
-        engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-        monkeypatch.setattr(auth, "VERIFIED_BEARER_MAX_ENTRIES", 4)
-        clock = [1_000.0]
-        monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
-
-        identity = AuthIdentity(
-            user_id=uuid.uuid4(),
-            api_key_id=uuid.uuid4(),
-            email="u@example.com",
-            role="writer",
-        )
-        secrets_seen = [generate_token()[0] for _ in range(10)]
-        for secret in secrets_seen:
-            store.remember_bearer_identity(secret, identity)
-            clock[0] += 1.0
-        assert len(store._verified_bearers) == 4
-        # Eviction is soonest-expiring-first, so the newest survive.
-        assert store.cached_bearer_identity(secrets_seen[-1]) is not None
-        assert store.cached_bearer_identity(secrets_seen[0]) is None
-
-    def test_plaintext_secret_is_not_held_in_memory(self) -> None:
-        # The cache key is a digest: a heap dump of a live server must not
-        # yield replayable tokens.
-        engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-        secret, _ = generate_token()
-        store.remember_bearer_identity(
-            secret,
-            AuthIdentity(
-                user_id=uuid.uuid4(),
-                api_key_id=uuid.uuid4(),
-                email="u@example.com",
-                role="writer",
-            ),
-        )
-        assert all(secret.encode("utf-8") not in key for key in store._verified_bearers)
 
 
 class TestCurrentUserNoAuth:
@@ -2522,6 +2485,121 @@ class TestSetApiKeyRole:
             )
         sqls = [_sql(c) for c in conn.execute.call_args_list]
         assert not any("UPDATE api_keys SET role" in s for s in sqls)
+
+    @pytest.mark.asyncio
+    async def test_above_ceiling_on_an_absent_key_is_not_found_not_forbidden(
+        self,
+    ) -> None:
+        # A 403 here would tell a prober the key exists.
+        conn = make_conn()
+        conn.fetchval = AsyncMock(side_effect=["writer", None])
+        updated = await set_api_key_role(
+            cast(Conn, conn),
+            key_id=uuid.uuid4(),
+            user_id=uuid.uuid4(),
+            role="admin",
+            ceiling="admin",
+        )
+        assert updated is False
+        sqls = [_sql(c) for c in conn.execute.call_args_list]
+        assert not any("UPDATE api_keys SET role" in s for s in sqls)
+
+
+class TestApiKeyListing:
+    @pytest.mark.asyncio
+    async def test_lists_only_the_users_keys_without_their_hash(self) -> None:
+        conn = make_conn()
+        user_id, key_id = uuid.uuid4(), uuid.uuid4()
+        conn.fetch = AsyncMock(return_value=[{"id": key_id, "name": "laptop"}])
+        assert await list_api_keys(cast(Conn, conn), user_id=user_id) == [
+            {"id": key_id, "name": "laptop"},
+        ]
+        call = conn.fetch.call_args
+        assert call is not None
+        sql = _sql(call)
+        assert "WHERE user_id = $1" in sql
+        assert "secret_hash" not in sql
+        assert call.args[1:] == (user_id,)
+
+
+class TestAssertAccountActive:
+    @pytest.mark.asyncio
+    async def test_an_active_user_passes(self) -> None:
+        engine = FakeEngine()
+        engine.conn.fetchval = AsyncMock(return_value=1)
+        await assert_account_active(cast(DatabaseEngine, engine), "ada@example.com")
+        assert engine.conn.fetchval.call_args is not None
+        assert engine.conn.fetchval.call_args.args[1:] == ("ada@example.com",)
+
+    @pytest.mark.asyncio
+    async def test_an_inactive_or_unknown_account_is_422(self) -> None:
+        engine = FakeEngine()
+        engine.conn.fetchval = AsyncMock(return_value=None)
+        with pytest.raises(HTTPException) as caught:
+            await assert_account_active(cast(DatabaseEngine, engine), "x@example.com")
+        assert caught.value.status_code == 422
+        assert "'x@example.com' is not an active user" in caught.value.detail
+
+
+class TestSeedNoAuthUser:
+    @pytest.mark.parametrize(
+        ("inserted", "told"),
+        [(uuid.uuid4(), True), (None, False)],
+    )
+    @pytest.mark.asyncio
+    async def test_the_policy_hears_of_the_user_only_when_it_is_new(
+        self,
+        inserted: uuid.UUID | None,
+        told: bool,
+    ) -> None:
+        conn = make_conn()
+        conn.fetchval = AsyncMock(return_value=inserted)
+        policy = _HeardUsers()
+        await seed_no_auth_user(cast(Conn, conn), policy=policy)
+        sql = executed_sql(conn)
+        assert (sql[0], sql[-1]) == ("BEGIN", "COMMIT")
+        assert policy.heard == ([("no-auth@localhost", "admin")] if told else [])
+
+
+class _HeardUsers:
+    """An access policy that records each new user it is told of."""
+
+    def __init__(self) -> None:
+        self.heard: list[tuple[str, str]] = []
+
+    async def on_user(self, conn: Conn, *, email: str, role: str) -> None:
+        del conn
+        self.heard.append((email, role))
+
+
+class TestCredentialEdges:
+    def test_a_bare_bearer_scheme_offers_a_blank_secret(self) -> None:
+        request = _request_with(FakeEngine(), "Bearer")
+        assert auth.extract_bearer(request) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_session_cookie_naming_no_uuid_is_no_session(self) -> None:
+        secret = "session-secret-x"  # noqa: S105 -- test fixture.
+        response = _FakeResponse()
+        set_session_cookie(
+            response,
+            user_id="not-a-uuid",
+            secret=secret,
+            max_age_seconds=600,
+        )
+        request = _request_with(
+            FakeEngine(),
+            authorization=None,
+            cookies={SESSION_COOKIE_NAME: response.cookies[SESSION_COOKIE_NAME]},
+            config=_config_with_session_secret(secret),
+        )
+        assert auth._try_read_session_user_id(request) is None
+
+    @pytest.mark.asyncio
+    async def test_a_cache_hit_without_a_key_is_refused(self) -> None:
+        store = Store(cast(DatabaseEngine, FakeEngine()), embed=StubEmbedder())
+        with pytest.raises(ValueError, match="key_id is not None"):
+            await auth._bump_last_used(store, None)
 
 
 def _sql(call: MockCall) -> str:

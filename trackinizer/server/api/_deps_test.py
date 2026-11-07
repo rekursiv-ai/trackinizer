@@ -25,13 +25,19 @@ from starlette.requests import Request
 
 import pytest
 
+from trackinizer.conftest import make_conn, make_store
+from trackinizer.server.api import _deps
 from trackinizer.server.api._deps import (
     get_assistant,
     get_chat_orgs,
+    get_relay,
+    get_secrets,
+    nudge_streams,
     tag_kind,
     tag_row,
 )
 from trackinizer.server.config import Assistant, Config
+from trackinizer.server.terminals import Terminal
 from trackinizer.types import inquiries
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
@@ -217,6 +223,67 @@ class TestGetChatOrgs:
         assert get_chat_orgs(_request(app)) == "individual"
         app.state.config = Config(chat_orgs="single")
         assert get_chat_orgs(_request(app)) == "single"
+
+
+class _CountedStreams:
+    def __init__(self) -> None:
+        self.nudges = 0
+
+    def nudge(self) -> None:
+        self.nudges += 1
+
+
+def test_nudge_streams_wakes_the_hub_and_skips_a_missing_one() -> None:
+    app = FastAPI()
+    nudge_streams(_request(app))
+    app.state.hub = streams = _CountedStreams()
+
+    nudge_streams(_request(app))
+
+    assert streams.nudges == 1
+
+
+def test_get_relay_makes_one_relay_and_keeps_it() -> None:
+    app = FastAPI()
+
+    relay = get_relay(_request(app))
+
+    assert get_relay(_request(app)) is relay
+
+
+def test_get_secrets_is_the_apps_backend_or_none() -> None:
+    app = FastAPI()
+    app.state.secrets = None
+    assert get_secrets(_request(app)) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("live", [True, False])
+async def test_a_terminal_is_alive_while_its_machine_and_owner_are(
+    *,
+    live: bool,
+) -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = live
+    store, _engine = make_store(conn)
+    term = Terminal(
+        id=uuid4(),
+        user="ada@example.com",
+        machine_id=uuid4(),
+        machine="gx10",
+        rows=24,
+        cols=80,
+        opened_at=0.0,
+    )
+
+    assert await _deps._alive(term, store=store) is live
+
+    assert conn.fetchval.await_args is not None
+    sql, machine_id = conn.fetchval.await_args.args
+    assert machine_id == term.machine_id
+    assert isinstance(sql, str)
+    assert "c.revoked_at IS NULL" in sql
+    assert "u.status = 'active'" in sql
 
 
 class TestTagRow:

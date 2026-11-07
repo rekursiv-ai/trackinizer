@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
+import sys
 import uuid
 
 from treekle import from_plain, json_loads
@@ -17,11 +18,14 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.profile import Profile
+from trackinizer.web.scripts import mirror_local
 from trackinizer.web.scripts.mirror_local import (
     Activity,
     ReadOnlySource,
+    Report,
     SourceEdge,
     Transcript,
+    _summary,
     interleave,
     local_target,
     mirror,
@@ -296,6 +300,140 @@ def test_rerun_names_a_picked_session_that_ended_here_without_records() -> None:
     assert second.written == 0
 
 
+def test_a_refused_edge_is_reported_and_the_rest_still_land() -> None:
+    edges: list[dict[str, object]] = [
+        *_EDGES,
+        {
+            "from_id": str(_BELIEF),
+            "to_id": str(_ISSUE),
+            "edge_kind": "produced_by",
+        },
+        {
+            "from_id": str(_CHILD),
+            "to_id": str(_BELIEF),
+            "edge_kind": "favors",
+            "valence": -0.25,
+        },
+    ]
+    source = _Source(edges=edges)
+    target = _Target(refused_kinds=frozenset({"narrows"}))
+    with _Fake(source.handle) as source_http, _Fake(target.handle) as target_http:
+        report = mirror(
+            ReadOnlySource(source_http),
+            target_http,
+            now=_T0,
+            hours=24,
+            sessions=2,
+            records=10,
+        )
+    assert report.edges == 3
+    (failure,) = report.edge_failures
+    assert "'edge_kind': 'narrows'" in failure
+    assert failure.endswith(": narrows refused")
+    favors = [item for item in target.edge_items if item["edge_kind"] == "favors"]
+    assert [item["valence"] for item in favors] == [-0.25]
+    assert all(
+        "valence" not in item for item in target.edge_items if item not in favors
+    )
+
+
+def test_a_target_that_refuses_the_lookup_stops_the_mirror() -> None:
+    source, target = _Source(), _Target(refuse_change_log=True)
+    with (
+        _Fake(source.handle) as source_http,
+        _Fake(target.handle) as target_http,
+        pytest.raises(ClientError) as raised,
+    ):
+        mirror(
+            ReadOnlySource(source_http),
+            target_http,
+            now=_T0,
+            hours=24,
+            sessions=2,
+            records=10,
+        )
+    assert raised.value.status_code == 403
+
+
+def test_main_mirrors_the_profiles_server_into_the_local_one(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    source, target = _Source(), _Target()
+    servers = {_SOURCE: source.handle, "http://127.0.0.1:8809": target.handle}
+    made: list[tuple[str, str, str]] = []
+
+    def client(
+        url: str,
+        *,
+        api_key: str = "",
+        author: str = "",
+        timeout_sec: float,
+    ) -> Client:
+        made.append((url, api_key, author))
+        return Client(
+            url,
+            api_key=api_key,
+            author=author,
+            timeout_sec=timeout_sec,
+            transport=httpx2.MockTransport(servers[url]),
+        )
+
+    monkeypatch.setattr(mirror_local, "Client", client)
+    monkeypatch.setattr(
+        mirror_local,
+        "load_profile",
+        lambda: Profile(url=_SOURCE, api_key="trax_secret"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["mirror_local", "--to", "http://127.0.0.1:8809", "--sessions", "2"],
+    )
+
+    assert mirror_local.main() == 0
+
+    assert made == [
+        (_SOURCE, "trax_secret", ""),
+        ("http://127.0.0.1:8809", "", "mirror"),
+    ]
+    assert source.methods == {"GET"}
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == f"{_SOURCE} -> http://127.0.0.1:8809"
+    assert (
+        lines[1]
+        == "sessions: 2 ({'claude': 1, 'codex': 1}, 2 rooms), 2 opened, 1 ended"
+    )
+    assert lines[3] == "rows: 5; edges: 2 added, 0 refused"
+    assert lines[-1].startswith("time: read sessions ")
+
+
+def test_the_summary_names_each_refused_edge_and_unfilled_session() -> None:
+    session = uuid.uuid4()
+    report = Report(
+        sessions=(Activity(session_id=session, cli="codex", rooms=("r",), events=3),),
+        nodes=4,
+        opened=0,
+        written=0,
+        skipped=5,
+        ended=0,
+        edges=1,
+        edge_failures=("{'edge_kind': 'narrows'}: refused",),
+        unfilled=(session,),
+        seconds={"read sessions": 0.25},
+    )
+    assert _summary(report, source=_SOURCE, target="http://127.0.0.1:8809") == (
+        f"{_SOURCE} -> http://127.0.0.1:8809\n"
+        "sessions: 1 ({'codex': 1}, 1 rooms), 0 opened, 0 ended\n"
+        "records: 0 written, 5 already there\n"
+        "rows: 4; edges: 1 added, 1 refused\n"
+        "  refused {'edge_kind': 'narrows'}: refused\n"
+        f"not copied: session {session} ended here before it was picked; "
+        "its records need a fresh --to database\n"
+        "time: read sessions 0.2s"
+    )
+
+
 _A, _B, _ISSUE, _CHILD, _BELIEF = (uuid.uuid4() for _ in range(5))
 
 
@@ -327,6 +465,7 @@ class _Source:
         default_factory=lambda: _ROWS,
     )
     graph_nodes: tuple[uuid.UUID, ...] = (_ISSUE, _CHILD, _BELIEF, _A)
+    edges: list[dict[str, object]] = field(default_factory=lambda: _EDGES)
     methods: set[str] = field(default_factory=set)
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:
@@ -340,7 +479,7 @@ class _Source:
         if path == "/api/web/graph":
             light = ("id", "kind", "seq", "title", "status", "created")
             nodes = [{k: self.rows[n][k] for k in light} for n in self.graph_nodes]
-            return _json(200, {"nodes": nodes, "edges": _EDGES})
+            return _json(200, {"nodes": nodes, "edges": self.edges})
         if path == "/api/inquiries":
             bounds = (r.split("..") for r in params.get_list("seq_range"))
             seqs = {seq for a, b in bounds for seq in range(int(a), int(b) + 1)}
@@ -451,6 +590,13 @@ class _Target:
     """
 
     windowed: bool = False
+    refused_kinds: frozenset[str] = frozenset()
+    """Edge kinds the batch route refuses, stopping at the first as the server does."""
+
+    refuse_change_log: bool = False
+    """Whether a change lookup is forbidden rather than found or missing."""
+
+    edge_items: list[dict[str, object]] = field(default_factory=list)
     keys: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
     rows: dict[uuid.UUID, dict[str, object]] = field(default_factory=dict)
     records: set[tuple[uuid.UUID, str, int]] = field(default_factory=set)
@@ -476,13 +622,19 @@ class _Target:
         if path == "/api/edges/batch":
             self.edge_posts += 1
             items = from_plain(body["items"], list[dict[str, object]])
+            results: list[dict[str, object]] = []
             for item in items:
                 from_id, to_id, kind = (
                     from_plain(item[key], str)
                     for key in ("from_id", "to_id", "edge_kind")
                 )
+                if kind in self.refused_kinds:
+                    results.append({"ok": False, "error": f"{kind} refused"})
+                    break
                 self.edges.add((from_id, to_id, kind))
-            return _json(200, {"ok": True, "items": [{"ok": True}] * len(items)})
+                self.edge_items.append(item)
+                results.append({"ok": True})
+            return _json(200, {"ok": len(results) == len(items), "items": results})
         _, _, _, raw, verb = path.split("/")
         row = self.rows[uuid.UUID(raw)]
         if row["ended"] is not None:
@@ -519,6 +671,8 @@ class _Target:
             return _json(200, {"parts": parts})
         _, _, kind, raw = path.split("/")
         if kind == "change_log":
+            if self.refuse_change_log:
+                return _json(403, {"detail": "forbidden"})
             local = self.keys.get(uuid.UUID(raw))
             if local is None:
                 return _json(404, {"detail": "change not found"})

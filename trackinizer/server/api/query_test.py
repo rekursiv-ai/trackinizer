@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
+import asyncio
 import json
 import logging
 import time
@@ -1042,6 +1043,110 @@ class TestMissingResourceIs404:
         r = client.get(f"/api/inquiries/{new_uuid()}/authority")
         assert r.status_code == 200
         assert from_plain(r.json(), dict[str, object]) == {"proves_authority": 0.42}
+
+    def test_change_unknown_or_hidden_is_404(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        change_id = new_uuid()
+        with patch.object(store, "get_change", AsyncMock(return_value=None)) as get:
+            r = client.get(f"/api/change_log/{change_id}")
+        assert r.status_code == 404
+        assert from_plain(r.json(), dict[str, str])["detail"] == "change not found"
+        assert get.await_args is not None
+        assert get.await_args.args == (change_id,)
+
+    def test_a_visible_change_is_returned(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        change = Change(
+            kind="description",
+            subject_id=new_uuid(),
+            subject_kind="Issue",
+            old=Snapshot(description="d"),
+            new=Snapshot(description="e"),
+        )
+        with patch.object(store, "get_change", AsyncMock(return_value=change)):
+            r = client.get(f"/api/change_log/{change.id}")
+        assert r.status_code == 200, r.text
+        body = from_plain(r.json(), dict[str, object])
+        assert body["id"] == str(change.id)
+        assert body["subject_id"] == str(change.subject_id)
+
+
+class TestClaimNextIssue:
+    def test_a_claim_without_an_idempotency_key_is_refused_unclaimed(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        with patch.object(store, "claim_next_issue", AsyncMock()) as claim:
+            r = client.post("/api/inquiries/next_issue", json={"owner": "worker"})
+        assert r.status_code == 400
+        assert "Idempotency-Key" in from_plain(r.json(), dict[str, str])["detail"]
+        claim.assert_not_awaited()
+
+    def test_a_keyed_claim_names_the_owner_and_the_caller_as_actor(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        with patch.object(
+            store,
+            "claim_next_issue",
+            AsyncMock(return_value=None),
+        ) as claim:
+            r = client.post(
+                "/api/inquiries/next_issue",
+                json={"owner": "worker"},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+        assert r.status_code == 200, r.text
+        assert r.json() is None
+        assert claim.await_args is not None
+        assert claim.await_args.kwargs["owner"] == "worker"
+        assert claim.await_args.kwargs["actor"] == TEST_USER_EMAIL
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_list_query_is_logged_cancelled_and_reraised(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _client, store, engine = route_client
+    # Without the app's ``BaseHTTPMiddleware``, which turns a cancelled body into
+    # "No response returned".
+    bare = FastAPI()
+    bare.include_router(query.router)
+    bare.state.store, bare.state.engine = store, engine
+    bare.dependency_overrides.update(app.dependency_overrides)
+    transport = httpx2.ASGITransport(app=bare)
+    with (
+        patch.object(
+            store,
+            "list_kind",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+        caplog.at_level(logging.INFO),
+    ):
+        async with httpx2.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as http:
+            with pytest.raises(asyncio.CancelledError):
+                await http.get("/api/inquiries", params={"kind": "Issue"})
+
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "trackinizer_query_completed"
+    )
+    fields = from_plain(record.__dict__, dict[str, object])
+    assert from_plain(fields.get("outcome"), str) == "cancelled"
+    assert from_plain(fields.get("error_type"), str) == "CancelledError"
 
 
 # -- Property: the list endpoint never 500s on malformed query params ----------

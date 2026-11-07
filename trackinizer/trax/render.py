@@ -534,8 +534,6 @@ def _table_widths(
             for index, natural_width in enumerate(natural)
             if widths[index] < natural_width
         ]
-        if not candidates:
-            break
         index = max(
             candidates,
             key=lambda candidate: natural[candidate] - widths[candidate],

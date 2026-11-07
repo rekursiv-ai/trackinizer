@@ -507,8 +507,6 @@ def knee(points: list[SweepPoint]) -> int:
     dk = last.k - first.k
     dc = last.cost - first.cost
     norm = cast(float, (dk * dk + dc * dc) ** 0.5)
-    if norm == 0:
-        return first.k
     best = max(
         points,
         key=lambda p: abs(dk * (first.cost - p.cost) - dc * (first.k - p.k)) / norm,

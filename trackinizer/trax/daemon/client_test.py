@@ -20,6 +20,7 @@ import threading
 import pytest
 
 from trackinizer.lib.posix.sockets import socket_address
+from trackinizer.trax.daemon import client
 from trackinizer.trax.daemon.client import (
     DaemonRequestLostError,
     _request,
@@ -120,6 +121,10 @@ class TestShouldDelegate:
 
     def test_refuses_the_serve_flag(self) -> None:
         assert not should_delegate(["--__serve"])
+
+    def test_delegates_global_flags_with_no_verb(self) -> None:
+        """No verb is none of the local-only ones; the CLI answers it with help."""
+        assert should_delegate(["--profile", "admin"])
 
     def test_delegates_a_row_whose_value_is_the_word_run(self) -> None:
         """``run`` is the PTY verb only in verb position, never as a value.
@@ -514,6 +519,47 @@ class TestDelegate:
 
         assert received, "the daemon received the request before the connection died"
 
+    def test_falls_back_when_the_request_could_not_be_written(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A write that failed delivered nothing, so running locally is safe."""
+        sock = tmp_path / "traxd.sock"
+        monkeypatch.setattr(client, "write_frame", _broken_pipe)
+        with serving(sock) as seen:
+            response = delegate(
+                ["issue"],
+                socket_override=sock,
+                source_version="v1",
+                spawn=False,
+            )
+
+        assert response is None
+        assert seen == []
+
+    def test_falls_back_when_a_spawned_daemon_never_accepts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        spawned: list[object] = []
+        monkeypatch.setattr(
+            subprocess,
+            "Popen",
+            functools.partial(_spawn_nothing, spawned),
+        )
+        monkeypatch.setattr(client, "_SPAWN_TIMEOUT_SEC", 0.05)
+
+        response = delegate(
+            ["issue"],
+            socket_override=tmp_path / "never.sock",
+            source_version="v1",
+        )
+
+        assert response is None
+        assert len(spawned) == 1
+
     def test_falls_back_when_the_connection_never_opened(self, tmp_path: Path) -> None:
         """Nothing was delivered, so re-running locally cannot duplicate work."""
         assert (
@@ -653,6 +699,18 @@ class TestDelegate:
             Path(probe.stdout.strip()).resolve()
             == Path(inspect.getfile(delegate)).resolve()
         )
+
+
+def _broken_pipe(conn: socket.socket, payload: bytes) -> None:
+    """Fail a write as a peer that hung up would."""
+    del conn, payload
+    raise BrokenPipeError("peer hung up")
+
+
+def _spawn_nothing(spawned: list[object], *args: object, **kwargs: object) -> None:
+    """Record a spawn that succeeds but starts no daemon."""
+    del kwargs
+    spawned.append(args[0])
 
 
 def _refuse_spawn(

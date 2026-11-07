@@ -2,31 +2,40 @@
 
 from __future__ import annotations
 
-from typing import cast
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
 import asyncio
 
 import pytest
 
-from trackinizer.conftest import make_conn, new_uuid
+from trackinizer.conftest import executed_sql, make_conn, new_uuid
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.primitives import (
     _reject_edge_cycle,
+    infer_produced_endpoints,
     insert_edge,
     insert_inquiry,
     lookup_kind,
     lookup_kinds,
+    upsert_embedding,
     validate_edge_priority,
     validate_edge_valence,
     validate_list_references,
 )
+from trackinizer.server.setter_dispatch import COLUMN_SPECS, RUNTIME_HOOKS
+from trackinizer.types.columns import ColumnSpec
 from trackinizer.types.errors import (
     ConflictError,
     NotFoundError,
     ValidationError,
 )
 from trackinizer.types.inquiries import CITATION_VALENCE_DEFAULT
+
+
+if TYPE_CHECKING:
+    from trackinizer.types.edges import Edge
 
 
 class TestInsertInquiryGuards:
@@ -85,6 +94,59 @@ class TestInsertInquiryGuards:
         await insert_inquiry(cast(Conn, conn), new_uuid(), "Issue", values=values)
         conn.execute.assert_called_once()
 
+    @pytest.mark.asyncio
+    async def test_a_backfilled_creation_time_is_written_last(self) -> None:
+        conn = make_conn()
+        created = datetime(2020, 1, 2, tzinfo=UTC)
+        await insert_inquiry(
+            cast(Conn, conn),
+            new_uuid(),
+            "Issue",
+            values={"title": "x", "account": "a@b.c", "created": created},
+        )
+        call = conn.execute.call_args
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        assert sql.partition(") VALUES")[0].endswith(", created")
+        assert call.args[-1] == created
+
+    @pytest.mark.asyncio
+    async def test_an_empty_optional_value_is_stored_as_null(self) -> None:
+        """An empty description is absence: NULL, never an empty-string sentinel."""
+        conn = make_conn()
+        await insert_inquiry(
+            cast(Conn, conn),
+            new_uuid(),
+            "Issue",
+            values={"title": "x", "account": "a@b.c", "description": "  "},
+        )
+        call = conn.execute.call_args
+        assert call is not None
+        sql = call.args[0]
+        assert isinstance(sql, str)
+        columns = [
+            column.strip()
+            for column in sql.partition("(")[2].partition(")")[0].split(",")
+        ]
+        assert call.args[1 + columns.index("description")] is None
+
+
+class TestEmbeddings:
+    @pytest.mark.asyncio
+    async def test_an_embedding_is_upserted_as_pgvector_text(self) -> None:
+        conn = make_conn()
+        inquiry = new_uuid()
+
+        await upsert_embedding(cast(Conn, conn), inquiry, "stub", [0.5, 1.0])
+
+        call = conn.execute.call_args
+        assert call is not None
+        sql, *args = call.args
+        assert isinstance(sql, str)
+        assert "ON CONFLICT (inquiry_id, model) DO UPDATE" in sql
+        assert args == [inquiry, "stub", "[0.5,1.0]"]
+
 
 class TestPureFunctions:
     @pytest.mark.asyncio
@@ -100,6 +162,82 @@ class TestPureFunctions:
         kinds = await lookup_kinds(cast(Conn, conn), [a, b])
         assert kinds == {a: "WebResult", b: "Paper"}
         assert conn.fetch.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_lookup_kinds_of_no_ids_reads_nothing(self) -> None:
+        conn = make_conn()
+        assert await lookup_kinds(cast(Conn, conn), []) == {}
+        conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_declared_kind_must_match_the_row(self) -> None:
+        rid = new_uuid()
+        conn = make_conn()
+        conn.fetch = AsyncMock(return_value=[{"id": rid, "kind": "CodeChange"}])
+        await validate_list_references(
+            cast(Conn, conn),
+            [(rid, "CodeChange")],
+            column="experiment_codechanges",
+        )
+        with pytest.raises(
+            ConflictError,
+            match="declared as Paper but is a CodeChange",
+        ):
+            await validate_list_references(
+                cast(Conn, conn),
+                [(rid, "Paper")],
+                column="experiment_codechanges",
+            )
+        assert [call.args[1] for call in conn.fetch.call_args_list] == [[rid], [rid]]
+
+    @pytest.mark.asyncio
+    async def test_no_references_reads_nothing(self) -> None:
+        conn = make_conn()
+        await validate_list_references(
+            cast(Conn, conn),
+            [],
+            column="experiment_codechanges",
+        )
+        conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_wrong_kind_names_every_permitted_kind(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setitem(
+            COLUMN_SPECS,
+            "cites",
+            ColumnSpec(sql_type="UUID[]", references=frozenset({"Paper", "WebResult"})),
+        )
+        rid = new_uuid()
+        conn = make_conn()
+        conn.fetch = AsyncMock(return_value=[{"id": rid, "kind": "Issue"}])
+        with pytest.raises(
+            ConflictError,
+            match=f"^cites target {rid} is a Issue; entries must be Paper or WebResult$",
+        ):
+            await validate_list_references(cast(Conn, conn), [rid], column="cites")
+
+    @pytest.mark.asyncio
+    async def test_a_reference_column_validates_through_its_runtime_hook(self) -> None:
+        conn = make_conn()
+        conn.fetch = AsyncMock(return_value=[])
+        validate = RUNTIME_HOOKS["experiment_codechanges"].validate
+        assert validate is not None
+        with pytest.raises(NotFoundError, match="experiment_codechanges target"):
+            await validate(cast(Conn, conn), (new_uuid(),))
+
+    @pytest.mark.asyncio
+    async def test_a_column_without_references_is_a_caller_bug(self) -> None:
+        conn = make_conn()
+        with pytest.raises(AssertionError, match="'title' with no references"):
+            await validate_list_references(
+                cast(Conn, conn),
+                [new_uuid()],
+                column="title",
+            )
+        conn.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_validate_codechanges_rejects_missing_target(self) -> None:
@@ -269,6 +407,73 @@ class TestCLIHelpers:
                     edge_kind="narrows",
                 ),
             )
+
+    @pytest.mark.asyncio
+    async def test_reject_edge_cycle_refuses_an_unknown_kind(self) -> None:
+        conn = make_conn()
+        # Read from a list so the checkers see a plain ``str``, not a literal.
+        unknown = ["likes"]
+        with pytest.raises(ValidationError, match="unknown edge_kind 'likes'"):
+            await _reject_edge_cycle(
+                cast(Conn, conn),
+                from_id=new_uuid(),
+                to_id=new_uuid(),
+                edge_kind=cast("Edge.Kind", unknown[0]),
+            )
+        assert executed_sql(conn) == []
+
+    @pytest.mark.asyncio
+    async def test_a_bibliography_may_cite_in_a_circle(self) -> None:
+        conn = make_conn()
+        await _reject_edge_cycle(
+            cast(Conn, conn),
+            from_id=new_uuid(),
+            to_id=new_uuid(),
+            edge_kind="cites_paper",
+        )
+        assert executed_sql(conn) == []
+
+
+class TestInferProducedEndpoints:
+    @pytest.mark.parametrize(
+        "present",
+        [[], ["cites_paper"], ["produced_by", "narrows"]],
+    )
+    @pytest.mark.asyncio
+    async def test_no_inference_without_a_structural_edge_or_with_provenance(
+        self,
+        present: list[str],
+    ) -> None:
+        conn = make_conn()
+        conn.fetch = AsyncMock(return_value=[{"edge_kind": k} for k in present])
+        assert (
+            await infer_produced_endpoints(
+                cast(Conn, conn),
+                from_id=new_uuid(),
+                to_id=new_uuid(),
+            )
+            is None
+        )
+        assert conn.fetch.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_older_end_produced_the_younger(self) -> None:
+        older, younger = new_uuid(), new_uuid()
+        conn = make_conn()
+        conn.fetch = AsyncMock(
+            side_effect=[
+                [{"edge_kind": "requires"}, {"edge_kind": "narrows"}],
+                [
+                    {"id": younger, "created": datetime(2026, 2, 1, tzinfo=UTC)},
+                    {"id": older, "created": datetime(2026, 1, 1, tzinfo=UTC)},
+                ],
+            ],
+        )
+        assert await infer_produced_endpoints(
+            cast(Conn, conn),
+            from_id=younger,
+            to_id=older,
+        ) == (older, younger, "narrows")
 
 
 class TestCoverageStoreReadsAndEdits:

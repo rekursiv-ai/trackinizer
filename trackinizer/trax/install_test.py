@@ -477,6 +477,7 @@ def test_check_distinguishes_existing_ownership(
         "ancestor",
         "file-path",
         "hash",
+        "receipt-file",
         "json",
         "symlink",
     ],
@@ -507,6 +508,8 @@ def test_invalid_receipt_cannot_authorize_removal(
         fields["files"] = {"../outside/sentinel": "0" * 64}
     elif damage == "hash":
         fields["files"] = {"SKILL.md": "invalid"}
+    elif damage == "receipt-file":
+        fields["files"] = {".trax-install.json": "0" * 64}
     if damage == "json":
         receipt.write_text("{")
     elif damage == "symlink":
@@ -765,6 +768,163 @@ def test_custom_skill_with_a_missing_extra_preserves_the_install(
     with pytest.raises(InstallError, match="could not install"):
         install(TARGETS["claude"], skill=custom)
     assert (destination / "EXTRA.md").read_text() == "loose file"
+
+
+def test_a_bundled_manual_that_is_not_a_file_is_missing(bundle: Path) -> None:
+    manual = bundle.parent.parent / "grammar.lark"
+    manual.unlink()
+    manual.mkdir()
+
+    with pytest.raises(InstallError, match="bundled skills missing at"):
+        install(TARGETS["claude"])
+
+
+def test_a_bundle_holding_a_symlink_is_refused(fake_home: Path, bundle: Path) -> None:
+    (bundle / "alias.md").symlink_to(bundle / "SKILL.md")
+
+    with pytest.raises(InstallError, match="bundled skills contain unsupported"):
+        install(TARGETS["claude"])
+
+    assert list(fake_home.iterdir()) == []
+
+
+def test_a_project_only_target_refuses_a_user_wide_install(bundle: Path) -> None:
+    del bundle
+    target = install_module.Target(
+        name="ide",
+        label="Some IDE",
+        user=None,
+        project=".ide/skills",
+    )
+
+    with pytest.raises(InstallError, match="Some IDE reads project-local skills only"):
+        install(target)
+
+
+def test_a_failed_install_reports_a_parent_it_could_not_clean(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    monkeypatch.setattr(shutil, "copytree", _copy_failed)
+    monkeypatch.setattr(
+        Path,
+        "rmdir",
+        _rmdir_failed(Path.rmdir, parent=fake_home / ".claude/skills"),
+    )
+
+    with pytest.raises(InstallError, match="copy failed; parent cleanup failed"):
+        install(TARGETS["claude"])
+
+
+def test_parents_removed_during_a_failed_install_are_reported_not_fatal(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    """Someone deleted ``~/.claude`` mid-install: staging and parents are gone."""
+    del bundle
+
+    def removed_mid_copy(*_args: object, **_kwargs: object) -> None:
+        shutil.rmtree(fake_home / ".claude")
+        raise OSError("copy failed")
+
+    monkeypatch.setattr(shutil, "copytree", removed_mid_copy)
+
+    with pytest.raises(InstallError, match="copy failed; cleanup failed") as error:
+        install(TARGETS["claude"])
+
+    assert "retained cleanup at" in str(error.value)
+    assert list(fake_home.iterdir()) == []
+
+
+def test_a_bundle_changed_while_copying_is_not_published(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    copy2 = shutil.copy2
+
+    def copy_then_change(source: Path, target: Path) -> None:
+        copy2(source, target)
+        (target.parent / "late.md").write_text("added during the copy")
+
+    monkeypatch.setattr(shutil, "copy2", copy_then_change)
+
+    with pytest.raises(InstallError, match="bundled skills changed while copying"):
+        install(TARGETS["claude"])
+
+    assert not (fake_home / ".claude/skills/trax").exists()
+
+
+def test_a_destination_created_after_inspection_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    destination = fake_home / ".claude/skills/trax"
+    inspect = install_module._inspect
+
+    def appear_after_inspection(path: Path, *, boundary: Path) -> object:
+        result = inspect(path, boundary=boundary)
+        destination.mkdir(parents=True)
+        return result
+
+    monkeypatch.setattr(install_module, "_inspect", appear_after_inspection)
+
+    with pytest.raises(InstallError, match="destination changed while installing"):
+        install(TARGETS["claude"])
+
+    assert list(destination.iterdir()) == []
+    assert [path.name for path in destination.parent.iterdir()] == ["trax"]
+
+
+def test_a_destination_created_before_publication_is_preserved(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    destination = fake_home / ".claude/skills/trax"
+    quarantine = install_module._quarantine
+
+    def appear_after_quarantine(
+        path: Path,
+        *,
+        previous: Path,
+        receipt: install_module._Receipt | None,
+        boundary: Path,
+    ) -> None:
+        quarantine(path, previous=previous, receipt=receipt, boundary=boundary)
+        destination.mkdir()
+
+    monkeypatch.setattr(install_module, "_quarantine", appear_after_quarantine)
+
+    with pytest.raises(InstallError, match="destination changed while installing"):
+        install(TARGETS["claude"])
+
+    assert list(destination.iterdir()) == []
+    assert [path.name for path in destination.parent.iterdir()] == ["trax"]
+
+
+def test_uninstall_leaves_a_created_parent_since_replaced_by_a_link(
+    tmp_path: Path,
+    fake_home: Path,
+    bundle: Path,
+) -> None:
+    del bundle
+    destination, _ = install(TARGETS["claude"])
+    shared = tmp_path / "shared"
+    (fake_home / ".claude").rename(shared)
+    (fake_home / ".claude").symlink_to(shared, target_is_directory=True)
+
+    assert uninstall(TARGETS["claude"]) == destination
+
+    assert (fake_home / ".claude").is_symlink()
+    assert list(shared.iterdir()) == []
 
 
 @pytest.mark.parametrize("name", ["", ".", "..", "a/b", "/abs", "../x"])
