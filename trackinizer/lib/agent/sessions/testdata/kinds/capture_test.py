@@ -25,7 +25,7 @@ from trackinizer.lib.testing.resources import ascii_locale
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
 
 
 def test_record_lines_keeps_only_order_and_payload_witnesses(tmp_path: Path) -> None:
@@ -116,25 +116,21 @@ def test_record_lines_rejects_a_non_object_record(tmp_path: Path) -> None:
         _record_lines(source)
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def claude_kinds_capture(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> Iterator[
-    tuple[
-        Path,
-        Path,
-        Path,
-        list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]],
-        list[str],
-        list[Path],
-    ]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    Path,
+    Path,
+    Path,
+    list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]],
+    list[str],
 ]:
-    tmp_path = tmp_path_factory.mktemp("claude-kinds")
     user = tmp_path / "user"
     real_claude_home = user / ".claude"
     real_claude_home.mkdir(parents=True)
     (real_claude_home / "auth.json").write_text("auth", encoding="utf-8")
-    monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setenv("HOME", str(user))
     calls: list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]] = []
     skills: list[str] = []
@@ -169,12 +165,7 @@ def claude_kinds_capture(
     monkeypatch.setattr(capture, "_drive", fake_drive)
     out = tmp_path / "out" / "kinds"
     root = tmp_path / "root"
-
-    written = capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
-    try:
-        yield tmp_path, root, out, calls, skills, written
-    finally:
-        monkeypatch.undo()
+    return tmp_path, root, out, calls, skills
 
 
 def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
@@ -184,10 +175,12 @@ def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
         Path,
         list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]],
         list[str],
-        list[Path],
     ],
 ) -> None:
-    _, root, out, calls, skills, written = claude_kinds_capture
+    _, root, out, calls, skills = claude_kinds_capture
+
+    written = capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
+
     assert written == [out / "claude_main.jsonl"]
     assert (out / "claude_main.jsonl").read_text(encoding="utf-8") == (
         f'{{"type":"user","cwd":"/workspace","home":"/config"}}\n'
@@ -264,10 +257,11 @@ def test_capture_claude_kinds_reuses_existing_output(
         Path,
         list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]],
         list[str],
-        list[Path],
     ],
 ) -> None:
-    tmp_path, _, out, _, _, written = claude_kinds_capture
+    tmp_path, root, out, _, _ = claude_kinds_capture
+    written = capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
+
     assert (
         capture_claude_kinds(
             tmp_path / "second-root",
