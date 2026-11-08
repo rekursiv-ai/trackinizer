@@ -4725,6 +4725,18 @@
       "title": "Cli",
       "type": "string"
      },
+     "conversation_id": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Conversation Id"
+     },
      "cwd": {
       "anyOf": [
        {
@@ -4770,6 +4782,17 @@
        }
       ],
       "title": "Run"
+     },
+     "seq": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Seq"
      },
      "session_id": {
       "format": "uuid",

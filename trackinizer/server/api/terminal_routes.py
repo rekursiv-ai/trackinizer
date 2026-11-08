@@ -34,6 +34,7 @@ from trackinizer.server.api._deps import (
     get_inbound,
     get_machine_changes,
     get_replays,
+    get_store,
     get_terminal_hub,
     machines_changed,
 )
@@ -44,11 +45,12 @@ from trackinizer.server.api._routes_shared import (
     request_engine,
     require_instance,
 )
-from trackinizer.server.api.machine_runs_routes import live_runs
+from trackinizer.server.api.machine_runs_routes import live_runs, named_runs
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
 from trackinizer.server.api.session_access import (
     resolve_asker,
 )
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.api.tool_access import serves_tools
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.machine_auth import current_machine, request_machine
@@ -250,6 +252,7 @@ async def list_terminal_machines_route(
     """
     email = await _machines_owner(request, identity, owner=owner)
     hub = get_terminal_hub(request)
+    principal = await request_principal(request, identity)
     async with request_engine(request).acquire() as conn:
         # Read as the owner: a personal machine is listed to its owner alone.
         rows = await fetch_machines(
@@ -257,6 +260,21 @@ async def list_terminal_machines_route(
             name=None,
             viewer=replace(identity, email=email),
         )
+        mine = sorted(
+            (row for row in rows if from_plain(row["owner"], str | None) == email),
+            key=lambda row: from_plain(row["created"], datetime),
+            reverse=True,
+        )
+        runs = {
+            name: await named_runs(
+                conn,
+                live_runs(request, machine=name, owner=email),
+                owner=email,
+                policy=get_store(request).access_policy,
+                principal=principal,
+            )
+            for name in (from_plain(row["name"], str) for row in mine)
+        }
     machines = [
         TerminalMachine.model_validate(
             {
@@ -267,11 +285,7 @@ async def list_terminal_machines_route(
                 "confirmed": row["confirmed_at"] is not None,
                 "clis": _machine_clis(row["facts"]),
                 "cwd": row["last_run_cwd"],
-                "runs": live_runs(
-                    request,
-                    machine=from_plain(row["name"], str),
-                    owner=email,
-                ),
+                "runs": runs[from_plain(row["name"], str)],
                 "host_outdated": older_than(
                     from_plain(row["host_version"], str),
                     oldest=MIN_HOST_VERSION,
@@ -280,11 +294,7 @@ async def list_terminal_machines_route(
                 "tools": serves_tools(row["facts"]),
             },
         )
-        for row in sorted(
-            (row for row in rows if from_plain(row["owner"], str | None) == email),
-            key=lambda row: from_plain(row["created"], datetime),
-            reverse=True,
-        )
+        for row in mine
     ]
     live: list[Terminal] = [] if canvas is None else hub.live_in(email, canvas=canvas)
     return TerminalMachines(

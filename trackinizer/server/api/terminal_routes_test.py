@@ -24,7 +24,7 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.conftest import FakeEngine, make_conn
+from trackinizer.conftest import FakeEngine, make_conn, make_store
 from trackinizer.lib.posix.host import Frame, encode_frame
 from trackinizer.mock_test_support import MockConnection
 from trackinizer.server import auth
@@ -491,7 +491,9 @@ async def test_machine_listing_filters_owner_sorts_and_includes_canvas_terminals
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     request = _browser_request(monkeypatch)
-    patch_state(monkeypatch, "engine", FakeEngine(make_conn()))
+    store, engine = make_store()
+    patch_state(monkeypatch, "engine", engine)
+    patch_state(monkeypatch, "store", store)
     hub = TerminalHub(alive=_alive)
     patch_state(monkeypatch, "terminals", hub)
     await hub.wait(_MACHINE, wait_sec=0)

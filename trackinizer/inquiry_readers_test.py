@@ -25,6 +25,10 @@ _CWD: Final = Path(__file__).resolve().parent
 _READERS: Final[dict[str, tuple[Class, str]]] = {
     "server/access_policy.py": ("policy", "inquiry_read_filter: the filter itself"),
     "server/api/locks.py": ("trusted", "lock authorization lookups"),
+    "server/api/machine_runs_routes.py": (
+        "policy",
+        "the seq and chat of the owner's own sessions its machine's runs drain",
+    ),
     "server/api/query.py": ("policy", "by-seq lookup"),
     "server/api/session_access.py": ("audience", "session authorization"),
     "server/api/sessions_routes.py": ("audience", "session rows by audience"),
