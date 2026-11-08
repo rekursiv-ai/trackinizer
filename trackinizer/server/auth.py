@@ -39,6 +39,7 @@ import uuid
 from fastapi import Depends, HTTPException, Request
 
 from trackinizer.lib.userdirs import data_dir
+from trackinizer.server.api._origin import require_own_page_write
 from trackinizer.server.audience import key_audiences, person_audiences
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
@@ -332,6 +333,13 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
     curl wrapper sees the token's identity; the audit row records the
     credential actually presented.
 
+    A session cookie on a request that changes state (any method but ``GET``,
+    ``HEAD`` and ``OPTIONS``) must come from this server's own pages
+    (:func:`~trackinizer.server.api._origin.require_own_page_write`), else 403:
+    the browser sends the cookie with any same-site page's form, so every write
+    a cookie authenticates is guarded here, once, whatever its route. A bearer
+    is never sent by a browser on its own, so it needs no such check.
+
     ``request.app.state.store`` must hold the live :class:`Store` (it owns the
     engine and the ``last_used_at`` throttle). Raises 401 when no credential
     is present, or the credential is unknown, revoked, or owned by a disabled
@@ -381,6 +389,7 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
         return identity
     session_user_id = _try_read_session_user_id(request)
     if session_user_id is not None:
+        require_own_page_write(request)
         identity = await _resolve_session_identity(
             store.engine,
             session_user_id,
