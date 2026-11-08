@@ -586,6 +586,7 @@ class TestProfile:
             "cli_folder": "",
             "chat_tool_calls": True,
             "autofix": True,
+            "hide_closed_pulls": True,
             **_EMPTY_USER_DATA,
         }
 
@@ -767,6 +768,7 @@ class TestPreferences:
             "cli_folder": "",
             "chat_tool_calls": True,
             "autofix": True,
+            "hide_closed_pulls": True,
             **_EMPTY_USER_DATA,
         }
         call = engine.conn.fetchrow.call_args

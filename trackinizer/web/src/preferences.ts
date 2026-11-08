@@ -38,6 +38,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   cli_folder: "",
   chat_tool_calls: false,
   autofix: true,
+  hide_closed_pulls: true,
   stars: [],
   views: [],
   console_views: [],

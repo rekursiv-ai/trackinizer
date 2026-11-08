@@ -474,6 +474,13 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
+    hide_closed_pulls: bool = Field(
+        default=True,
+        description=(
+            "The Pull requests page and the command bar's PRs tab leave out the pull "
+            "requests that are merged or closed."
+        ),
+    )
     stars: Annotated[list[_Id], Field(max_length=2_000)] = Field(
         default=list[_Id](),
         description="The inquiries you starred, by id: your bookmarks, never a label.",

@@ -5536,6 +5536,12 @@
       "title": "Drafts",
       "type": "object"
      },
+     "hide_closed_pulls": {
+      "default": true,
+      "description": "The Pull requests page and the command bar's PRs tab leave out the pull requests that are merged or closed.",
+      "title": "Hide Closed Pulls",
+      "type": "boolean"
+     },
      "highlight_mentions": {
       "default": true,
       "description": "Light up the rows the assistant's answers mention.",
