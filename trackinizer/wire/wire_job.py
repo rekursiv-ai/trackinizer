@@ -50,6 +50,7 @@ __all__ = [
     "JOB_USER_PREFIX",
     "MAX_ARGV_CHARS",
     "MAX_GPUS",
+    "MAX_LABEL_CHARS",
     "MAX_MINUTES",
     "NODE_PATTERN",
     "SECRET_NAMES",
@@ -117,6 +118,9 @@ GATE_RO_VERBS: Final = ("status", "logs", "manifest", "download")
 
 MAX_ARGV_CHARS: Final = 4_096
 """Longest job command line, all arguments together."""
+
+MAX_LABEL_CHARS: Final = 80
+"""Longest job label."""
 
 MAX_GPUS: Final = 8
 """The most GPUs one job may ask for: one whole node, since a job cannot span nodes."""
@@ -221,7 +225,11 @@ class SubmitBody(BaseModel):
     minutes: int = Field(ge=1, le=MAX_MINUTES)
     """Wall-clock limit; the job is stopped when it runs out."""
 
-    label: str = Field(default="", max_length=80, pattern=r"^[A-Za-z0-9._ -]*$")
+    label: str = Field(
+        default="",
+        max_length=MAX_LABEL_CHARS,
+        pattern=r"^[A-Za-z0-9._ -]*$",
+    )
     argv: list[Annotated[str, StringConstraints(pattern=r"^[^\x00]*$")]] = Field(
         min_length=1,
     )
