@@ -2511,7 +2511,7 @@ def _read_tool_result(
         shape["$text"] = True
     else:
         shape["text"] = content
-    return _typed_result(
+    typed = _typed_result(
         name,
         result,
         record,
@@ -2523,6 +2523,17 @@ def _read_tool_result(
         extra=extra,
         shape=shape,
     )
+    # Measured on 2.1.318: ``claude -p`` writes a sub-agent's results with no
+    # ``toolUseResult`` at all (none of 588 in one transcript), so the fields render
+    # nothing, and the block's text is all the model read: a ``gh pr create`` a
+    # sub-agent ran printed its link only there.
+    if (
+        "toolUseResult" not in record
+        and isinstance(content, str)
+        and content != typed.text()
+    ):
+        return replace(typed, shown=content)
+    return typed
 
 
 # Two tools render from fields the record already holds, so storing the block's text

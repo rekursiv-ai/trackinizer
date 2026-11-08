@@ -766,6 +766,202 @@ def test_a_structured_bash_result_without_success_flags_stays_shell() -> None:
     assert isinstance(result, BashResult)
 
 
+def test_a_bash_result_without_its_payload_shows_what_the_model_read() -> None:
+    """``claude -p`` writes a sub-agent's results with no ``toolUseResult`` at all."""
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"tool_use","id":"c1",'
+            '"name":"Bash","input":{"command":"gh pr create --fill"}}]}'
+        ),
+    ) + _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"c1","content":"https://github.com/o/r/pull/7",'
+            '"is_error":false}]}'
+        ),
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+
+    result = _last_act(records)
+    assert isinstance(result, BashResult)
+    assert result.text() == "https://github.com/o/r/pull/7"
+    output = StringIO()
+    claude.denormalize(records, output)
+    assert output.getvalue() == native
+
+
+def _call_and_result(
+    tool: str,
+    block: str,
+    *,
+    command: str = "/bin/cat a.txt",
+    **fields: str,
+) -> str:
+    """Return a ``tool`` call of ``command`` and the line answering it with ``block``."""
+    return _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"tool_use","id":"c1",'
+            f'"name":"{tool}","input":{{"command":"{command}"}}}}]}}'
+        ),
+    ) + _line(
+        type='"user"',
+        message='{"role":"user","content":[' + block + "]}",
+        **fields,
+    )
+
+
+def test_a_failed_call_with_its_payload_reads_as_its_fields_say() -> None:
+    """The stored form shows nothing but what ``toolUseResult`` held."""
+    native = _call_and_result(
+        "Bash",
+        '{"type":"tool_result","tool_use_id":"c1","content":"Error: boom",'
+        '"is_error":true}',
+        toolUseResult='"Error: boom"',
+    )
+
+    result = _last_act(list(claude.normalize(StringIO(native))))
+
+    assert isinstance(result, BashResult)
+    assert result.shown is None
+
+
+@pytest.mark.parametrize(
+    ("is_error", "expected"),
+    [("false", ReadResult), ("true", BashResult)],
+)
+def test_a_call_lifts_to_what_it_did_only_when_it_did_not_fail(
+    is_error: str,
+    expected: type[SessionRecord],
+) -> None:
+    native = _call_and_result(
+        "Bash",
+        '{"type":"tool_result","tool_use_id":"c1","content":"body\\n",'
+        f'"is_error":{is_error}}}',
+        toolUseResult='{"stdout":"body\\n","stderr":"","interrupted":false}',
+    )
+
+    assert type(_last_act(list(claude.normalize(StringIO(native))))) is expected
+
+
+def test_a_results_text_parts_are_read_in_order_and_the_rest_kept() -> None:
+    """Each text part joins the text; any other member stays in the stored blocks."""
+    native = _call_and_result(
+        "mcp__docs__search",
+        '{"type":"tool_result","tool_use_id":"c1","content":["note",'
+        '{"type":"reference","id":"r1"},{"type":"text","text":"a"},'
+        '{"type":"text"},{"type":"text","text":"b"}]}',
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+
+    result = _last_act(records)
+    assert isinstance(result, McpResult)
+    assert result.text() == "a\n\nb"
+    output = StringIO()
+    claude.denormalize(records, output)
+    assert output.getvalue() == native
+
+
+def test_a_result_naming_no_call_is_read_and_stored_as_untyped() -> None:
+    native = _line(
+        type='"user"',
+        message='{"role":"user","content":[{"type":"tool_result","content":"ok"}]}',
+    )
+
+    result = _last_act(list(claude.normalize(StringIO(native))))
+
+    assert isinstance(result, UncategorizedToolResult)
+    assert result.call_id == ""
+    # Stored form, frozen as normalized_golden_test.py freezes it: a call never seen
+    # names no tool.
+    assert from_plain(result.extra["$result"], dict[str, object])["tool_name"] == ""
+
+
+def test_a_result_is_written_from_its_fields_once_they_change() -> None:
+    """A redaction writes the result as it now stands, its old text nowhere."""
+    native = _call_and_result(
+        "Bash",
+        '{"type":"tool_result","tool_use_id":"c1","content":"secret\\n",'
+        '"is_error":false}',
+        command="printenv TOKEN",
+        toolUseResult='{"stdout":"secret\\n","stderr":"","interrupted":false}',
+    )
+    records = list(claude.normalize(StringIO(native)))
+    result = _last_act(records)
+    assert isinstance(result, BashResult)
+    changed = [
+        replace(record, stdout="[redacted]\n") if record is result else record
+        for record in records
+    ]
+
+    output = StringIO()
+    claude.denormalize(changed, output)
+
+    assert output.getvalue() == native.replace("secret", "[redacted]")
+
+
+def test_a_result_stores_only_what_its_fields_do_not_hold() -> None:
+    """Stored form, frozen as normalized_golden_test.py freezes it, for one result.
+
+    Its type, call and text are the record's own, so the block keeps only the rest,
+    and a text the fields spell is a marker, not a second copy.
+    """
+    native = _call_and_result(
+        "Bash",
+        '{"type":"tool_result","tool_use_id":"c1","content":"body\\n",'
+        '"is_error":false}',
+        toolUseResult='{"stdout":"body\\n","stderr":""}',
+    )
+
+    result = _last_act(list(claude.normalize(StringIO(native))))
+
+    assert isinstance(result, BashResult)
+    assert from_plain(result.extra["$result"], dict[str, object]) == {
+        "block": {"is_error": False},
+        "keys": ("type", "tool_use_id", "content", "is_error"),
+        "tool_name": "Bash",
+        "$text": True,
+    }
+
+
+def test_a_line_answering_two_calls_round_trips_and_each_keeps_the_line() -> None:
+    """Stored form, frozen as normalized_golden_test.py freezes it: each result of a
+    line of several keeps the line's blocks, which the first also keeps as its shape.
+    """
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":['
+            '{"type":"tool_use","id":"c1","name":"Bash","input":{"command":"ls"}},'
+            '{"type":"tool_use","id":"c2","name":"Bash","input":{"command":"pwd"}}]}'
+        ),
+    ) + _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":['
+            '{"type":"tool_result","tool_use_id":"c1","content":"a"},'
+            '{"type":"tool_result","tool_use_id":"c2","content":"/w"}]}'
+        ),
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+
+    results = [record for record in records if isinstance(record, BashResult)]
+    assert [result.text() for result in results] == ["a", "/w"]
+    line = json_loads(native.splitlines()[1], dict[str, object])
+    blocks = from_plain(line["message"], dict[str, object])["content"]
+    for result in results:
+        shape = from_plain(result.extra["$result"], dict[str, object])
+        assert from_plain(shape["message_blocks"], list[dict[str, object]]) == blocks
+    output = StringIO()
+    claude.denormalize(records, output)
+    assert output.getvalue() == native
+
+
 def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
     first_call = _line(
         type='"assistant"',

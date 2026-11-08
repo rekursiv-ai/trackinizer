@@ -59,6 +59,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "cli_folder",
         "chat_tool_calls",
         "autofix",
+        "automerge",
     },
 )
 """The preferences a canvas's assistant may read and change for its owner: the
@@ -471,6 +472,16 @@ class Preferences(_Strict):
             "Auto-fix the pull requests your agents open or push: when one's checks "
             "fail, its run tells the agent to fix them and push. Chat switches it for "
             "each pull request."
+        ),
+        json_schema_extra=SETTING,
+    )
+    automerge: bool = Field(
+        default=False,
+        description=(
+            "Turn on GitHub's auto-merge for each pull request your agents open or "
+            "push: GitHub merges it once its required checks pass and its reviews "
+            "allow, a draft once it is marked ready. Chat switches it for each pull "
+            "request."
         ),
         json_schema_extra=SETTING,
     )

@@ -5447,6 +5447,13 @@
       "type": "boolean",
       "x-setting": true
      },
+     "automerge": {
+      "default": false,
+      "description": "Turn on GitHub's auto-merge for each pull request your agents open or push: GitHub merges it once its required checks pass and its reviews allow, a draft once it is marked ready. Chat switches it for each pull request.",
+      "title": "Automerge",
+      "type": "boolean",
+      "x-setting": true
+     },
      "chat_provider": {
       "$ref": "#/components/schemas/ChatProvider",
       "default": "assistant",

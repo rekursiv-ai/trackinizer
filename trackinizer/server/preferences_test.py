@@ -68,6 +68,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "cli_folder": "",
     "chat_tool_calls": True,
     "autofix": True,
+    "automerge": False,
     "hide_closed_pulls": True,
     "stars": [],
     "views": [],
@@ -343,6 +344,14 @@ def test_autofix_is_on_until_the_user_or_their_agent_turns_it_off() -> None:
     # A canvas's agent sets it when the person asks it to.
     assert "autofix" in ASSISTANT_KEYS
     assert Preferences.model_json_schema()["properties"]["autofix"]["x-setting"]
+
+
+def test_automerge_is_off_until_the_user_or_their_agent_turns_it_on() -> None:
+    assert stored_preferences(None).automerge is False
+    assert stored_preferences({"automerge": True}).automerge is True
+    # A canvas's agent sets it when the person asks it to, as it sets ``autofix``.
+    assert "automerge" in ASSISTANT_KEYS
+    assert Preferences.model_json_schema()["properties"]["automerge"]["x-setting"]
 
 
 @pytest.mark.asyncio
