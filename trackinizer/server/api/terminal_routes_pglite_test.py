@@ -19,7 +19,7 @@ import pytest
 
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode_winsize
 from trackinizer.server.api import terminal_routes
-from trackinizer.server.api._deps import terminal_hub
+from trackinizer.server.api._deps import machine_changes, terminal_hub
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TERMINAL_HOST,
@@ -37,6 +37,7 @@ from trackinizer.wire.wire_machine_host import (
     REVOKE_PATH,
 )
 from trackinizer.wire.wire_machines import MACHINES_PATH
+from trackinizer.wire.wire_terminals import MachinesVersion
 
 
 if TYPE_CHECKING:
@@ -404,6 +405,7 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
             "runs": [],
             "host_outdated": False,
             "files": False,
+            "tools": False,
         },
     ]
     not_asked = await world.open(cookie, canvas=canvas)
@@ -494,6 +496,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "runs": [],
                 "host_outdated": False,
                 "files": False,
+                "tools": False,
             },
             {
                 "name": "laptop",
@@ -504,6 +507,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "runs": [],
                 "host_outdated": False,
                 "files": False,
+                "tools": False,
             },
         ],
         "terminals": [],
@@ -512,6 +516,67 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
     refused = (for_viewer, as_itself, ada_names_herself, bob_names_ada)
     assert [each.status_code for each in refused] == [403] * 4
     assert {refusal_detail_code(each) for each in refused} == {"terminal_forbidden"}
+
+
+async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
+    world: TerminalWorld,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setitem(
+        app.state._state,
+        "config",
+        Config(
+            session_secret=TERMINAL_SESSION_KEY,
+            session_max_age_seconds=600,
+            assistant=Assistant(actor="kb", email="kb@x.y"),
+        ),
+    )
+    ada = await world.person("ada@x.y")
+    bob = await world.person("bob@x.y")
+    _ = await world.person("vic@x.y", role="viewer")
+    assistant = {
+        "Authorization": f"Bearer {await world.key(await world.person('kb@x.y'))}",
+    }
+    path = wire_terminals.TERMINAL_MACHINES_CHANGES_PATH
+
+    async def version(owner: str, query: str = "") -> int:
+        answer = await world.call(
+            "GET",
+            f"{path}?owner={owner}{query}",
+            headers=assistant,
+        )
+        assert answer.status_code == 200, answer.text
+        return MachinesVersion.model_validate(answer.json()).version
+
+    now = await version("ada@x.y")
+    bob_now = await version("bob@x.y")
+    held = asyncio.ensure_future(version("ada@x.y", f"&since={now}"))
+    await asyncio.sleep(0.05)
+    assert not held.done()
+    await world.join(world.cookie(ada), name="laptop")
+    async with asyncio.timeout(5):
+        woken = await held
+    # A join writes the machine more than once; the first write woke the wait.
+    joined = await version("ada@x.y")
+    unchanged = await version("ada@x.y", f"&since={joined}&wait_sec=0.01")
+    for_bob = await version("bob@x.y", f"&since={bob_now}&wait_sec=0.01")
+    refused = [
+        await world.call("GET", f"{path}?owner=vic@x.y", headers=assistant),
+        await world.call("GET", path, headers=assistant),
+        await world.call(
+            "GET",
+            f"{path}?owner=ada@x.y",
+            headers=world.browser(world.cookie(bob)),
+        ),
+    ]
+    own = await world.call("GET", path, headers=world.browser(world.cookie(ada)))
+
+    assert woken != now
+    assert unchanged == joined
+    assert for_bob == bob_now
+    assert [each.status_code for each in refused] == [403] * 3
+    assert {refusal_detail_code(each) for each in refused} == {"terminal_forbidden"}
+    assert MachinesVersion.model_validate(own.json()).version == joined
 
 
 async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_that_person_alone(
@@ -614,6 +679,7 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
         "cwd": "~/work",
     }
     headers = {"Authorization": f"Bearer {await world.key(assistant)}"}
+    before = machine_changes(app).version("ada@x.y")
 
     opened = await world.call(
         "POST",
@@ -623,6 +689,8 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
     )
 
     _opened(opened)
+    # The folder a run names is the listing's ``cwd``.
+    assert machine_changes(app).version("ada@x.y") == before + 1
     waiting = from_plain((await world.wait()).json(), dict[str, object])
     assert (
         waiting["command"],
@@ -836,10 +904,12 @@ async def test_a_machine_an_agent_enrolled_opens_no_terminal_until_its_owner_con
         ("older", False),
     ]
 
+    before = machine_changes(app).version("ada@x.y")
     mine = await world.call("POST", confirm, headers=world.browser(cookie))
     opened = await world.open(cookie, machine="evilbox")
 
     assert (mine.status_code, opened.status_code) == (204, 201)
+    assert machine_changes(app).version("ada@x.y") == before + 1
 
 
 async def test_every_terminal_route_and_both_sockets_refuse_a_server_without_auth(
@@ -865,6 +935,7 @@ async def test_every_terminal_route_and_both_sockets_refuse_a_server_without_aut
             {"machine": "gx10", "rows": 24, "cols": 80},
         ),
         ("GET", machine, None),
+        ("GET", wire_terminals.TERMINAL_MACHINES_CHANGES_PATH, None),
         ("POST", wire_terminals.TERMINAL_CONFIRM_PATH.format(name="gx10"), None),
         (
             "POST",
@@ -892,7 +963,7 @@ async def test_every_terminal_route_and_both_sockets_refuse_a_server_without_aut
     host = _host_peer(world, terminal_id)
     await _run_host(host, world, terminal_id)
 
-    assert answers == [403] * 5
+    assert answers == [403] * 6
     assert waited.status_code == 403
     assert await browser.close_code() == wire_terminals.CLOSE_REFUSED
     assert await host.close_code() == wire_terminals.CLOSE_REFUSED
@@ -1211,6 +1282,29 @@ async def test_files_open_only_where_the_facts_say_files_and_the_host_is_told(
     # A shell's wait names no kind, so a host on an older wire, which refuses a key it
     # does not know, still opens it.
     assert "kind" not in shell
+
+
+async def test_the_listing_says_which_machines_serve_tools(
+    world: TerminalWorld,
+) -> None:
+    ada = await world.person("ada@x.y")
+    cookie = world.cookie(ada)
+    await world.join(cookie, name="served", facts={"tools": True})
+    await world.join(cookie, name="bare")
+
+    listed = from_plain(
+        (
+            await world.call(
+                "GET",
+                wire_terminals.TERMINAL_MACHINES_PATH,
+                headers=world.browser(cookie),
+            )
+        ).json(),
+        dict[str, object],
+    )
+
+    machines = from_plain(listed["machines"], list[dict[str, object]])
+    assert {m["name"]: m["tools"] for m in machines} == {"served": True, "bare": False}
 
 
 async def test_files_open_from_no_canvas_and_never_for_a_key(

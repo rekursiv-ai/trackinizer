@@ -12,10 +12,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import cast
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+import asyncio
 import dataclasses
 import decimal
+import logging
 import types
 import typing
 
@@ -31,22 +34,29 @@ from trackinizer.server.api._deps import (
     auth_is_disabled,
     get_assistant,
     get_chat_orgs,
-    get_exec_hub,
     get_inbound,
+    get_machine_changes,
+    get_pipe_hub,
     get_relay,
     get_replays,
     get_secrets,
     get_staff,
     get_store,
     get_terminal_hub,
+    get_tool_line_bytes,
+    machine_changes,
+    machines_changed,
     nudge_streams,
+    pipe_hub,
     tag_kind,
     tag_row,
     terminal_hub,
 )
+from trackinizer.server.api.tool_access import ToolAccess
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.terminals import Terminal
+from trackinizer.server.tool_pipes import Pipe, PipeBusyError, PipeHub
 from trackinizer.types import inquiries
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
@@ -62,6 +72,11 @@ from trackinizer.types.inquiries import (
     WebResult,
     WebSearch,
 )
+
+
+if typing.TYPE_CHECKING:
+    from trackinizer.server.api.tool_access import Check
+    from trackinizer.server.tool_pipes import PipeSocket
 
 
 _INQUIRIES_NS: dict[str, object] = dict(vars(inquiries))
@@ -286,14 +301,6 @@ def test_get_replays_makes_one_and_replaces_a_stranger() -> None:
     assert get_replays(_request(app)) is replays
 
 
-def test_get_exec_hub_makes_one_hub_and_keeps_it() -> None:
-    app = FastAPI()
-
-    hub = get_exec_hub(_request(app))
-
-    assert get_exec_hub(_request(app)) is hub
-
-
 class TestTerminalHub:
     def test_one_hub_per_app_with_the_configs_stun(self) -> None:
         app = FastAPI()
@@ -342,6 +349,14 @@ def test_auth_is_disabled_only_when_the_config_says_so() -> None:
     assert auth_is_disabled(_request(app)) is True
 
 
+def test_the_tool_line_cap_is_the_configs_or_its_default() -> None:
+    """An agent's ``Write`` of 8 MiB fits the default, as JSON."""
+    app = FastAPI()
+    assert get_tool_line_bytes(_request(app)) == 16 << 20
+    app.state.config = Config(tool_line_bytes=1024)
+    assert get_tool_line_bytes(_request(app)) == 1024
+
+
 def test_get_staff_is_the_configs_patterns_or_nobody() -> None:
     app = FastAPI()
     assert get_staff(_request(app)) == ()
@@ -376,6 +391,229 @@ async def test_a_terminal_is_alive_while_its_machine_and_owner_are(
     assert isinstance(sql, str)
     assert "c.revoked_at IS NULL" in sql
     assert "u.status = 'active'" in sql
+
+
+def test_the_store_and_the_inbound_queue_are_the_apps() -> None:
+    app = FastAPI()
+    store, _engine = make_store()
+    app.state.store = store
+    app.state.inbound = inbound = object()
+
+    assert get_store(_request(app)) is store
+    assert get_inbound(_request(app)) is inbound
+
+
+def test_replays_are_made_once_and_kept() -> None:
+    app = FastAPI()
+
+    replays = get_replays(_request(app))
+
+    assert get_replays(_request(app)) is replays
+    app.state.replays = "not replays"
+    assert get_replays(_request(app)) is not replays
+
+
+def test_machine_changes_are_made_once_and_a_write_bumps_its_owner() -> None:
+    app = FastAPI()
+    changes = machine_changes(app)
+    assert machine_changes(app) is changes
+    assert get_machine_changes(_request(app)) is changes
+    before = changes.version("ada@example.com")
+
+    machines_changed(_request(app), owner="ada@example.com")
+    machines_changed(_request(app), owner=None)
+
+    assert changes.version("ada@example.com") == before + 1
+
+
+class TestTheTerminalHub:
+    def test_it_is_made_once_and_kept(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store()
+
+        hub = terminal_hub(app)
+
+        assert terminal_hub(app) is hub
+        assert get_terminal_hub(_request(app)) is hub
+
+    def test_it_hands_out_the_configured_stun_servers_or_none(self) -> None:
+        app = FastAPI()
+        app.state.store, _engine = make_store()
+        assert terminal_hub(app).ice_servers == ()
+
+        other = FastAPI()
+        other.state.store, _engine = make_store()
+        other.state.config = Config(terminal_stun=("stun:stun.example.org:3478",))
+        assert terminal_hub(other).ice_servers == ("stun:stun.example.org:3478",)
+
+
+async def _pass_through(pipe: Pipe, frame: bytes) -> tuple[bytes, bytes]:
+    """Let every frame through to the host, and answer the agent nothing."""
+    del pipe
+    return frame, b""
+
+
+def _pipe(*, instance: UUID | None = None) -> Pipe:
+    return Pipe(
+        id=uuid4(),
+        machine_id=uuid4(),
+        agent=cast("PipeSocket", AsyncMock()),
+        asker="ada@example.com",
+        api_key_id=uuid4(),
+        inbound=_pass_through,
+        opened=0.0,
+        instance=instance,
+    )
+
+
+_KB = Assistant(actor="scout", email="kb@example.com")
+
+
+def _app_with_assistant(
+    monkeypatch: pytest.MonkeyPatch,
+    failed: Check | None = None,
+) -> tuple[FastAPI, AsyncMock]:
+    """Return an app whose rule fails ``failed``, and the rule as asked."""
+    app = FastAPI()
+    app.state.store, _engine = make_store()
+    app.state.config = Config(assistant=_KB)
+    rule = AsyncMock(return_value=ToolAccess(machine_id=uuid4(), failed=failed))
+    monkeypatch.setattr(_deps, "tool_access", rule)
+    return app, rule
+
+
+@pytest.mark.asyncio
+async def test_the_pipe_hub_is_made_once_and_asks_if_a_pipe_still_qualifies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, rule = _app_with_assistant(monkeypatch)
+
+    hub = pipe_hub(app)
+
+    assert pipe_hub(app) is hub
+    assert get_pipe_hub(_request(app)) is hub
+    assert await hub._alive(_pipe()) is True
+    rule.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_pipe_hub_holds_the_configs_pipes_and_dial_back() -> None:
+    app = FastAPI()
+    app.state.store, _engine = make_store()
+    app.state.config = Config(tool_pipes_per_machine=1, tool_dial_back_sec=0.01)
+    hub = pipe_hub(app)
+    machine_id = uuid4()
+    pipe = _join(hub, machine_id)
+
+    with pytest.raises(PipeBusyError) as busy:
+        _ = _join(hub, machine_id)
+    never = asyncio.Future[bytes | None]()
+    async with asyncio.timeout(5):
+        await hub.serve_agent(pipe, lambda: never)
+
+    assert busy.value.limit == 1
+    assert pipe.ended.result()[1] == "the host did not dial back in time"
+
+
+@pytest.mark.asyncio
+async def test_the_pipe_hub_holds_the_default_pipes_without_a_config() -> None:
+    app = FastAPI()
+    app.state.store, _engine = make_store()
+    hub = pipe_hub(app)
+    machine_id = uuid4()
+    for _ in range(Config().tool_pipes_per_machine):
+        _ = _join(hub, machine_id)
+
+    with pytest.raises(PipeBusyError):
+        _ = _join(hub, machine_id)
+
+
+def _join(hub: PipeHub, machine_id: UUID) -> Pipe:
+    """Queue an agent that nothing will serve, to fill a slot."""
+    return hub.join(
+        machine_id,
+        agent=cast("PipeSocket", AsyncMock()),
+        asker="ada@example.com",
+        api_key_id=uuid4(),
+        inbound=_pass_through,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_pipe_does_not_qualify_without_an_assistant() -> None:
+    app = FastAPI()
+    conn = make_conn()
+    app.state.store, _engine = make_store(conn)
+    assert await _deps._pipe_alive(_pipe(), app=app) is False
+    app.state.config = Config()
+    assert await _deps._pipe_alive(_pipe(), app=app) is False
+
+    conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_asks_the_rule_of_a_pipes_key_asker_machine_and_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, rule = _app_with_assistant(monkeypatch)
+    pipe = _pipe(instance=uuid4())
+
+    assert await _deps._pipe_alive(pipe, app=app) is True
+
+    assert rule.await_args is not None
+    assert rule.await_args.kwargs == {
+        "assistant": _KB,
+        "api_key_id": pipe.api_key_id,
+        "asker": pipe.asker,
+        "machine": pipe.machine_id,
+        "instance": pipe.instance,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [None, "key", "instance"])
+async def test_a_pipe_no_longer_allowed_warns_once_naming_the_check_it_failed(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    failed: Check | None,
+) -> None:
+    app, _ = _app_with_assistant(monkeypatch, failed)
+    pipe = _pipe()
+
+    assert await _deps._pipe_alive(pipe, app=app) is (failed is None)
+
+    warned = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert warned == (
+        []
+        if failed is None
+        else [
+            (
+                f"tool pipe no longer allowed: pipe={pipe.id} "
+                f"machine_id={pipe.machine_id} check={failed}"
+            ),
+        ]
+    )
+
+
+class TestAuthIsDisabled:
+    def test_only_a_config_that_says_so_disables_auth(self) -> None:
+        app = FastAPI()
+        assert auth_is_disabled(_request(app)) is False
+        app.state.config = "not a config"
+        assert auth_is_disabled(_request(app)) is False
+        app.state.config = Config()
+        assert auth_is_disabled(_request(app)) is False
+        app.state.config = Config(auth_disabled=True)
+        assert auth_is_disabled(_request(app)) is True
+
+
+def test_the_staff_are_the_configs_patterns_or_nobody() -> None:
+    app = FastAPI()
+    assert get_staff(_request(app)) == ()
+    app.state.config = "not a config"
+    assert get_staff(_request(app)) == ()
+    app.state.config = Config(staff=("*@example.com",))
+    assert get_staff(_request(app)) == ("*@example.com",)
 
 
 class TestTagRow:
@@ -525,18 +763,18 @@ def test_state_dependencies_return_the_apps_store_and_inbound_queue() -> None:
     assert _deps.get_inbound(request) is inbound
 
 
-def test_replay_and_exec_dependencies_replace_invalid_state_then_reuse_it() -> None:
+def test_replay_and_pipe_dependencies_replace_invalid_state_then_reuse_it() -> None:
     app = FastAPI()
     request = _request(app)
     app.state.replays = "invalid"
-    app.state.execs = "invalid"
+    app.state.tool_pipes = "invalid"
     replays = _deps.get_replays(request)
-    execs = _deps.get_exec_hub(request)
+    pipes = _deps.get_pipe_hub(request)
     assert _deps.get_replays(request) is replays
-    assert _deps.get_exec_hub(request) is execs
+    assert _deps.get_pipe_hub(request) is pipes
     other = _request(FastAPI())
     assert _deps.get_replays(other) is not replays
-    assert _deps.get_exec_hub(other) is not execs
+    assert _deps.get_pipe_hub(other) is not pipes
 
 
 @pytest.mark.parametrize("configured", [False, True])

@@ -397,7 +397,8 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     enrollment = mint_secret(ENROLLMENT_PREFIX)
     parsed_enrollment = parse_enrollment(enrollment.token)
     assert parsed_enrollment is not None
-    engine.conn.fetchval.side_effect = [enrollment.digest, _MACHINE_ID, _MACHINE_ID]
+    engine.conn.fetchval.side_effect = [enrollment.digest, _MACHINE_ID]
+    engine.conn.fetchrow.side_effect = [{"id": _MACHINE_ID, "owner": TEST_USER_EMAIL}]
 
     response = _join(client, enrollment.token, facts={"os": "linux"})
 
@@ -406,7 +407,9 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     assert body["machine_id"] == str(_MACHINE_ID)
     credential = parse_credential(body["credential"])
     assert credential is not None
-    check, lock, claim = engine.conn.fetchval.call_args_list
+    check, claim = engine.conn.fetchval.call_args_list
+    lock = engine.conn.fetchrow.call_args
+    assert lock is not None
     # A plain read first: join has no authentication, so a token that cannot succeed
     # must be refused before it queues for the machine row.
     sql = check.args[0]
@@ -467,17 +470,19 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
 
 
 @pytest.mark.parametrize(
-    "answers",
-    [[None], [_MACHINE_ID, None]],
+    ("machine", "claimed"),
+    [(None, []), ({"id": _MACHINE_ID, "owner": None}, [None])],
     ids=["unknown-machine", "unclaimable-token"],
 )
 def test_join_that_finds_no_machine_or_no_claimable_token_is_401_and_writes_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
-    answers: list[uuid.UUID | None],
+    machine: dict[str, object] | None,
+    claimed: list[None],
 ) -> None:
     client, _, engine = route_client
     enrollment = mint_secret(ENROLLMENT_PREFIX)
-    engine.conn.fetchval.side_effect = [enrollment.digest, *answers]
+    engine.conn.fetchval.side_effect = [enrollment.digest, *claimed]
+    engine.conn.fetchrow.side_effect = [machine]
 
     response = _join(client, enrollment.token)
 
@@ -539,7 +544,7 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
     client, _, engine = route_client
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(engine.conn, _credential_row(credential))
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, True, _BEAT]
+    engine.conn.fetchval.side_effect = [TEST_USER_EMAIL, True, _BEAT]
 
     response = _heartbeat(client, credential.token, facts={"cpus": 4})
 
@@ -597,7 +602,7 @@ def test_a_heartbeat_tells_an_outdated_host_only_when_it_can_read_that(
     monkeypatch.setattr(machine_host_routes, "MIN_HOST_VERSION", "0.2")
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(engine.conn, _credential_row(credential))
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, True, _BEAT]
+    engine.conn.fetchval.side_effect = [TEST_USER_EMAIL, True, _BEAT]
 
     response = _heartbeat(client, credential.token, host_version=host_version)
 
@@ -614,7 +619,7 @@ def test_a_heartbeat_the_instance_rule_refuses_is_409(
     client, _, engine = route_client
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(engine.conn, _credential_row(credential))
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, True, None]
+    engine.conn.fetchval.side_effect = [TEST_USER_EMAIL, True, None]
 
     response = _heartbeat(client, credential.token)
 
@@ -630,7 +635,7 @@ def test_a_take_passes_the_instance_rule_by_and_a_release_only_lets_go(
     client, _, engine = route_client
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(engine.conn, _credential_row(credential))
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, True, _BEAT] * 2
+    engine.conn.fetchval.side_effect = [TEST_USER_EMAIL, True, _BEAT] * 2
 
     take = _heartbeat(client, credential.token, claim="take")
     release = _heartbeat(client, credential.token, claim="release")
@@ -651,7 +656,7 @@ def test_a_heartbeat_whose_credential_was_revoked_meanwhile_is_410_and_writes_no
     client, _, engine = route_client
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(engine.conn, _credential_row(credential))
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, False]
+    engine.conn.fetchval.side_effect = [TEST_USER_EMAIL, False]
 
     response = _heartbeat(client, credential.token)
 
@@ -667,7 +672,7 @@ def test_last_used_is_written_by_the_first_authenticated_request_only(
     client, _, engine = route_client
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(engine.conn, _credential_row(credential))
-    engine.conn.fetchval.return_value = _BEAT
+    engine.conn.fetchval.side_effect = [TEST_USER_EMAIL, True, _BEAT] * 2
 
     _heartbeat(client, credential.token)
     _heartbeat(client, credential.token)

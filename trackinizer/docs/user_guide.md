@@ -215,9 +215,9 @@ the direct link is on (see [below](#typing-feels-slow-the-direct-link)),
 `joined: machine laptop` the first time, and `terminal opened by` with your address
 for each terminal.
 
-The machine host also runs the commands the server's assistant sends to this computer,
-as you, and writes each one to `laptop.exec.log` beside the machine credential, with
-who asked for it. With its `--no-exec` flag it serves terminals only.
+The machine host also serves sagent's tools (the shell and your files) to the server's
+assistant, which runs them on this computer, as you; the server logs each call. With
+its `--no-exec` flag it serves terminals only.
 
 If the computer is one you can afford to lose, such as a disposable cloud box or
 a virtual machine, say so when you connect it, with the host's `--sandbox` flag.

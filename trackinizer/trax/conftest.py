@@ -1048,9 +1048,13 @@ class FakeClient:
         self,
         *,
         canvas: uuid.UUID | None = None,
+        owner: str | None = None,
     ) -> TerminalMachines:
         """Terminal machines."""
-        self.calls.append(("terminal_machines", (), {"canvas": canvas}))
+        asked: dict[str, object] = {"canvas": canvas}
+        if owner is not None:
+            asked["owner"] = owner
+        self.calls.append(("terminal_machines", (), asked))
         return TerminalMachines(machines=[])
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:

@@ -318,8 +318,8 @@ class _Socket:
         return answer
 
 
-def _leg(socket: _Socket) -> terminal_routes._Leg:
-    return terminal_routes._Leg(cast("WebSocket", socket))
+def _leg(socket: _Socket) -> terminal_routes.Leg:
+    return terminal_routes.Leg(cast("WebSocket", socket))
 
 
 @pytest.mark.parametrize(
@@ -608,7 +608,7 @@ async def test_host_wait_checks_authentication_and_clamps_the_hold(
     instance = AsyncMock()
     wait = AsyncMock(return_value=None)
     monkeypatch.setattr(terminal_routes, "current_machine", current)
-    monkeypatch.setattr(terminal_routes, "_require_instance", instance)
+    monkeypatch.setattr(terminal_routes, "require_instance", instance)
     monkeypatch.setattr(hub, "wait", wait)
     host_instance = uuid.uuid4()
     if disabled:
@@ -758,37 +758,6 @@ async def test_machine_owner_refuses_unattested_names_and_viewers(
         assert refused.value.status_code == 403
 
 
-@pytest.mark.parametrize("current", [True, False, None])
-async def test_host_instance_requires_an_explicit_match(
-    monkeypatch: pytest.MonkeyPatch,
-    current: bool | None,
-) -> None:
-    request = _browser_request(monkeypatch)
-    conn = make_conn()
-    conn.fetchval.return_value = current
-    patch_state(monkeypatch, "engine", FakeEngine(conn))
-    instance = uuid.uuid4()
-    if current is True:
-        assert (
-            await terminal_routes._require_instance(
-                request,
-                _MACHINE,
-                instance=instance,
-            )
-            is None
-        )
-    else:
-        with pytest.raises(HTTPException) as refused:
-            await terminal_routes._require_instance(
-                request,
-                _MACHINE,
-                instance=instance,
-            )
-        assert refused.value.status_code == 403
-    assert conn.fetchval.call_args is not None
-    assert conn.fetchval.call_args.args[1:] == (_MACHINE, instance)
-
-
 class _WebPeer:
     """Script an ASGI peer without a server or a network socket."""
 
@@ -926,7 +895,7 @@ async def test_host_socket_authenticates_claims_relays_and_releases(
         "request_machine",
         AsyncMock(side_effect=HTTPException(status) if status else None),
     )
-    monkeypatch.setattr(terminal_routes, "_require_instance", AsyncMock())
+    monkeypatch.setattr(terminal_routes, "require_instance", AsyncMock())
     if mode == "disabled":
         patch_state(monkeypatch, "config", Config(auth_disabled=True))
     if mode == "machine":
@@ -968,8 +937,8 @@ async def test_leg_close_absorbs_a_peer_that_already_left(
 ) -> None:
     close: AsyncMockProtocol[None] = AsyncMock(side_effect=error)
     socket = AsyncMock(spec=WebSocket, close=close)
-    await terminal_routes._Leg(socket).close(wire_terminals.CLOSE_REFUSED)
-    close.assert_awaited_once_with(wire_terminals.CLOSE_REFUSED)
+    await terminal_routes.Leg(socket).close(wire_terminals.CLOSE_REFUSED)
+    close.assert_awaited_once_with(wire_terminals.CLOSE_REFUSED, "")
 
 
 if __name__ == "__main__":

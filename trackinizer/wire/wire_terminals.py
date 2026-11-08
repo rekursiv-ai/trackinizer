@@ -93,6 +93,8 @@ __all__ = [
     "TERMINAL_ATTACH_PATH",
     "TERMINAL_CLOSE_PATH",
     "TERMINAL_CONFIRM_PATH",
+    "TERMINAL_FORBIDDEN",
+    "TERMINAL_MACHINES_CHANGES_PATH",
     "TERMINAL_MACHINES_PATH",
     "TERMINAL_WS_PATH",
     "TICKET_CHARS",
@@ -101,6 +103,7 @@ __all__ = [
     "WAIT_MAX_SEC",
     "DirectSignal",
     "LiveTerminal",
+    "MachinesVersion",
     "OpenTerminal",
     "TerminalCommand",
     "TerminalKind",
@@ -118,9 +121,18 @@ __all__ = [
 TERMINALS_PATH: Final = "/api/terminals"
 """``POST``: open a terminal (the owner's browser, cookie only)."""
 
+TERMINAL_FORBIDDEN: Final = "terminal_forbidden"
+"""The code of the server's own refusal of a caller who may not reach terminals here,
+nor list machines: a 403 without it came from something in front of the server."""
+
 TERMINAL_MACHINES_PATH: Final = "/api/terminals/machines"
 """``GET``: the caller's own machines; ``?canvas=ID`` also lists its live terminals.
 The configured assistant passes ``?owner=EMAIL`` to list the person it answers."""
+
+TERMINAL_MACHINES_CHANGES_PATH: Final = "/api/terminals/machines/changes"
+"""``GET ?owner=EMAIL&since=N``, held up to :data:`WAIT_MAX_SEC`: the
+:class:`MachinesVersion` of the listing, the moment it is not ``since``; ``since`` left
+out answers at once. Who may name ``owner`` is as for the listing."""
 
 TERMINAL_CONFIRM_PATH: Final = "/api/terminals/machines/{name}/confirm"
 """``POST``: the owner confirms a machine enrolled with a key, so terminals may open."""
@@ -349,6 +361,9 @@ class TerminalMachine(BaseModel):
     files: bool = False
     """Its facts say its host answers a ``files`` terminal."""
 
+    tools: bool = False
+    """Its facts say its host serves tools to an agent's ``RemoteTool``."""
+
 
 class LiveTerminal(BaseModel):
     """A terminal that is open now."""
@@ -374,6 +389,15 @@ class TerminalMachines(BaseModel):
 
     terminals: list[LiveTerminal] = Field(default_factory=list)
     """The caller's live terminals opened from ``?canvas=``, oldest first."""
+
+
+class MachinesVersion(BaseModel):
+    """The version of a person's machine list, which moves when a machine changes."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    version: int
+    """Opaque: only whether it equals the one a caller holds means anything."""
 
 
 class TerminalWait(BaseModel):

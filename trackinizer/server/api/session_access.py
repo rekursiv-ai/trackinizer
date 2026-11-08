@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from fastapi import FastAPI, Request
+    from starlette.requests import HTTPConnection
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.access_policy import AccessPolicy
@@ -129,7 +130,7 @@ inbound queue, or send it input."""
 
 
 async def resolve_asker(
-    request: Request,
+    request: HTTPConnection,
     identity: AuthIdentity,
     *,
     email: str | None,

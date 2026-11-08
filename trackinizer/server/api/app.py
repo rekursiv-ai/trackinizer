@@ -36,7 +36,6 @@ from trackinizer.server.api import (
     device_routes,
     edge,
     edit,
-    exec_routes,
     export_routes,
     locks,
     logout_routes,
@@ -54,9 +53,10 @@ from trackinizer.server.api import (
     sessions_routes,
     submit,
     terminal_routes,
+    tool_routes,
     variables_routes,
 )
-from trackinizer.server.api._deps import terminal_hub
+from trackinizer.server.api._deps import pipe_hub, terminal_hub
 from trackinizer.server.api.addons_routes import app_deployment
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.asks import ask_release_loop
@@ -241,6 +241,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                 ),
             )
             tasks.append(asyncio.create_task(sweep_loop(terminal_hub(app))))
+            tasks.append(
+                asyncio.create_task(
+                    sweep_loop(pipe_hub(app), interval_sec=config.tool_sweep_sec),
+                ),
+            )
             tasks.extend(
                 _start_addon_services(
                     app_deployment(app),
@@ -344,7 +349,6 @@ ROUTERS: Final = (
     session_list_routes.router,
     edge.router,
     edit.router,
-    exec_routes.router,
     export_routes.router,
     locks.router,
     logout_routes.router,
@@ -361,6 +365,7 @@ ROUTERS: Final = (
     sessions_routes.router,
     submit.router,
     terminal_routes.router,
+    tool_routes.router,
     variables_routes.router,
 )
 

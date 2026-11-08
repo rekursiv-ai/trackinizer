@@ -22,8 +22,9 @@ from treekle import from_plain
 
 from trackinizer.server.api._deps import (
     auth_is_disabled,
-    get_exec_hub,
+    get_pipe_hub,
     get_terminal_hub,
+    machines_changed,
 )
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.machines_routes import (
@@ -151,6 +152,7 @@ async def enroll_machine_route(
             machine_id=machine_id,
             created_by=who,
         )
+    machines_changed(request, owner=who)
     response.headers["Cache-Control"] = "no-store"
     return EnrollResponse(
         token=minted.token,
@@ -201,12 +203,13 @@ async def join_machine_route(
             # The machine row first, as in every other route that writes a machine: a
             # join that claimed the enrollment first would deadlock with an enroll,
             # revoke or delete holding the machine and wanting the enrollment.
-            machine_id = await conn.fetchval(
-                "SELECT id FROM machines WHERE name = $1 FOR UPDATE",
+            machine = await conn.fetchrow(
+                "SELECT id, owner FROM machines WHERE name = $1 FOR UPDATE",
                 body.name,
             )
-            if machine_id is None:
+            if machine is None:
                 raise _refused()
+            machine_id = machine["id"]
             # The claim checks everything again, because the read above held no lock:
             # a concurrent join or revoke may have used the token since, and two joins
             # that both passed the read would otherwise each get a credential.
@@ -243,7 +246,9 @@ async def join_machine_route(
                 body.instance,
                 body.host_version,
             )
-    get_exec_hub(request).close_machine(from_plain(machine_id, UUID))
+    # First, as nothing after the commit may keep a follower from hearing of it.
+    machines_changed(request, owner=from_plain(machine["owner"], str, default=None))
+    get_pipe_hub(request).close_machine(from_plain(machine_id, UUID))
     await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
     response.headers["Cache-Control"] = "no-store"
     return JoinResponse(
@@ -292,9 +297,13 @@ async def heartbeat_machine_route(
         # holds this row until it commits, and only a statement that starts after the
         # lock sees its commit. The write then cannot land after the revoke cleared
         # the host.
-        await conn.fetchval(
-            "SELECT id FROM machines WHERE id = $1 FOR UPDATE",
-            machine.machine_id,
+        owner = from_plain(
+            await conn.fetchval(
+                "SELECT owner FROM machines WHERE id = $1 FOR UPDATE",
+                machine.machine_id,
+            ),
+            str,
+            default=None,
         )
         live = await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM machine_credentials "
@@ -311,24 +320,31 @@ async def heartbeat_machine_route(
                 machine.machine_id,
                 body.instance,
             )
-            return HeartbeatResponse(server_time=from_plain(beat, datetime))
-        beat = await conn.fetchval(
-            "UPDATE machines SET host_instance = $2, last_heartbeat = now(), "
-            "host_version = $3, facts = COALESCE($4, facts) "
-            "WHERE id = $1 AND ($6::boolean OR host_instance IS NULL "
-            "OR host_instance = $2 "
-            "OR last_heartbeat IS NULL "
-            "OR last_heartbeat < now() - make_interval(secs => $5)) "
-            "RETURNING last_heartbeat",
-            machine.machine_id,
-            body.instance,
-            body.host_version,
-            body.facts,
-            OFFLINE_AFTER_SEC,
-            body.claim == "take",
-        )
+        else:
+            beat = await conn.fetchval(
+                "UPDATE machines SET host_instance = $2, last_heartbeat = now(), "
+                "host_version = $3, facts = COALESCE($4, facts) "
+                "WHERE id = $1 AND ($6::boolean OR host_instance IS NULL "
+                "OR host_instance = $2 "
+                "OR last_heartbeat IS NULL "
+                "OR last_heartbeat < now() - make_interval(secs => $5)) "
+                "RETURNING last_heartbeat",
+                machine.machine_id,
+                body.instance,
+                body.host_version,
+                body.facts,
+                OFFLINE_AFTER_SEC,
+                body.claim == "take",
+            )
+    if body.claim == "release":
+        machines_changed(request, owner=owner)
+        return HeartbeatResponse(server_time=from_plain(beat, datetime))
     if beat is None:
         raise AnotherHostConnectedError("another host is connected")
+    # A heartbeat says its facts only when they changed; the rest of it moves only
+    # whether the machine reads online, which is its link's to find, not the listing's.
+    if body.facts is not None:
+        machines_changed(request, owner=owner)
     return HeartbeatResponse(
         server_time=from_plain(beat, datetime),
         host_outdated=older_than(body.host_version, oldest=MIN_HOST_VERSION)
@@ -412,7 +428,9 @@ async def revoke_machine(
             "UPDATE machines SET host_instance = NULL WHERE id = $1",
             machine_id,
         )
-    get_exec_hub(request).close_machine(from_plain(machine_id, UUID))
+    # First, as nothing after the commit may keep a follower from hearing of it.
+    machines_changed(request, owner=owner)
+    get_pipe_hub(request).close_machine(from_plain(machine_id, UUID))
     await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
     return owner
 

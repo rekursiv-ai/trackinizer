@@ -122,6 +122,51 @@ def idempotency_key(request: Request) -> UUID | None:
     return key
 
 
+def refusal(status_code: int, *, code: str, message: str) -> HTTPException:
+    """Return a refusal whose ``detail`` is ``{code, message}``.
+
+    Args:
+      status_code: The HTTP status.
+      code: What a client tells refusals apart by.
+      message: What a person reads.
+
+    Returns:
+      error: The exception to raise.
+
+    """
+    return HTTPException(
+        status_code=status_code,
+        detail={"code": code, "message": message},
+    )
+
+
+async def require_instance(
+    connection: HTTPConnection,
+    machine_id: UUID,
+    *,
+    instance: UUID,
+) -> None:
+    """Refuse a host that is not the machine's current instance.
+
+    Args:
+      connection: The request or websocket, carrying the database engine.
+      machine_id: The machine.
+      instance: The host instance asking.
+
+    Raises:
+      HTTPException: 403 when another instance holds the machine, or none does.
+
+    """
+    async with request_engine(connection).acquire() as conn:
+        current = await conn.fetchval(
+            "SELECT host_instance = $2 FROM machines WHERE id = $1",
+            machine_id,
+            instance,
+        )
+    if current is not True:
+        raise HTTPException(status_code=403, detail="stale host instance")
+
+
 def require_browser(identity: AuthIdentity) -> None:
     """Refuse an API key on a route that is the signed-in browser's alone.
 

@@ -7,13 +7,16 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 import dataclasses
 import datetime as dt
 import functools
+import logging
 import uuid
 
 from trackinizer.server.api.replays import Replays
+from trackinizer.server.api.tool_access import tool_access
 from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.config import Config
-from trackinizer.server.execs import ExecHub
+from trackinizer.server.machine_changes import MachineChanges
 from trackinizer.server.terminals import Terminal, TerminalHub
+from trackinizer.server.tool_pipes import Pipe, PipeHub
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
@@ -28,13 +31,16 @@ if TYPE_CHECKING:
     from trackinizer.types.inquiries import Inquiry
 
 
+_logger = logging.getLogger(__name__)
+
+
 class _State(Protocol):
     store: Store
     inbound: InboundQueue
     secrets: SecretBackend | None
 
 
-def get_store(request: Request) -> Store:
+def get_store(request: HTTPConnection) -> Store:
     """Return the Store held on the FastAPI app state.
 
     Args:
@@ -104,10 +110,9 @@ def terminal_hub(app: FastAPI) -> TerminalHub:
     held: object = getattr(app.state, "terminals", None)
     if isinstance(held, TerminalHub):
         return held
-    config: object = getattr(app.state, "config", None)
     hub = TerminalHub(
         alive=functools.partial(_alive, store=cast("_State", app.state).store),
-        ice_servers=config.terminal_stun if isinstance(config, Config) else (),
+        ice_servers=_config(app).terminal_stun,
     )
     app.state.terminals = hub
     return hub
@@ -126,8 +131,31 @@ def get_terminal_hub(request: HTTPConnection) -> TerminalHub:
     return terminal_hub(cast("FastAPI", request.app))
 
 
-def get_exec_hub(request: HTTPConnection) -> ExecHub:
-    """Return the exec hub held on the app state, made on first use.
+def pipe_hub(app: FastAPI) -> PipeHub:
+    """Return the app's tool pipe hub, made on first use.
+
+    Args:
+      app: The application, whose state holds the store and the configuration.
+
+    Returns:
+      result: The hub.
+
+    """
+    held: object = getattr(app.state, "tool_pipes", None)
+    if isinstance(held, PipeHub):
+        return held
+    config = _config(app)
+    hub = PipeHub(
+        alive=functools.partial(_pipe_alive, app=app),
+        pipes_per_machine=config.tool_pipes_per_machine,
+        dial_back_sec=config.tool_dial_back_sec,
+    )
+    app.state.tool_pipes = hub
+    return hub
+
+
+def get_pipe_hub(request: HTTPConnection) -> PipeHub:
+    """Return the tool pipe hub held on the app state.
 
     Args:
       request: Request.
@@ -136,11 +164,50 @@ def get_exec_hub(request: HTTPConnection) -> ExecHub:
       result: The hub.
 
     """
-    app = cast("FastAPI", request.app)
-    hub: object = getattr(app.state, "execs", None)
-    if not isinstance(hub, ExecHub):
-        hub = app.state.execs = ExecHub()
-    return hub
+    return pipe_hub(cast("FastAPI", request.app))
+
+
+def machine_changes(app: FastAPI) -> MachineChanges:
+    """Return the app's machine-list versions, made on first use.
+
+    Args:
+      app: The application.
+
+    Returns:
+      changes: The version of each owner's machine list in this process.
+
+    """
+    held: object = getattr(app.state, "machine_changes", None)
+    if not isinstance(held, MachineChanges):
+        held = app.state.machine_changes = MachineChanges()
+    return held
+
+
+def get_machine_changes(request: HTTPConnection) -> MachineChanges:
+    """Return the machine-list versions held on the app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      changes: The version of each owner's machine list in this process.
+
+    """
+    return machine_changes(cast("FastAPI", request.app))
+
+
+# Called once the write has committed: a follower woken before it would list the
+# machines as they were, and wait again with the change unseen.
+def machines_changed(request: HTTPConnection, *, owner: str | None) -> None:
+    """Bump ``owner``'s machine-list version after a write; a machine none owns has none.
+
+    Args:
+      request: The request whose committed write changed a machine.
+      owner: The machine's owner, whose listing it is in.
+
+    """
+    if owner is not None:
+        get_machine_changes(request).bump(owner)
 
 
 def get_relay(request: Request) -> CaptureRelay:
@@ -160,7 +227,7 @@ def get_relay(request: Request) -> CaptureRelay:
     return relay
 
 
-def get_assistant(request: Request) -> Assistant | None:
+def get_assistant(request: HTTPConnection) -> Assistant | None:
     """Return the configured assistant; none without a Config.
 
     Args:
@@ -170,8 +237,7 @@ def get_assistant(request: Request) -> Assistant | None:
       result: The configured assistant, if any.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.assistant if isinstance(config, Config) else None
+    return _assistant(cast("FastAPI", request.app))
 
 
 def auth_is_disabled(request: HTTPConnection) -> bool:
@@ -184,11 +250,23 @@ def auth_is_disabled(request: HTTPConnection) -> bool:
       disabled: True when every caller resolves to a synthetic admin.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return isinstance(config, Config) and config.auth_disabled
+    return _config(cast("FastAPI", request.app)).auth_disabled
 
 
-def get_staff(request: Request) -> tuple[str, ...]:
+def get_tool_line_bytes(request: HTTPConnection) -> int:
+    """Return the longest line the server reads from an agent's tool pipe.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The Config's cap, or its default without a Config.
+
+    """
+    return _config(cast("FastAPI", request.app)).tool_line_bytes
+
+
+def get_staff(request: HTTPConnection) -> tuple[str, ...]:
     """Return the configured staff patterns; none without a Config.
 
     Args:
@@ -198,8 +276,7 @@ def get_staff(request: Request) -> tuple[str, ...]:
       result: The staff patterns, empty when nobody is staff.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.staff if isinstance(config, Config) else ()
+    return _config(cast("FastAPI", request.app)).staff
 
 
 def get_chat_orgs(request: Request) -> ChatOrgs:
@@ -212,8 +289,7 @@ def get_chat_orgs(request: Request) -> ChatOrgs:
       result: ``single``, ``domain`` or ``individual``.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.chat_orgs if isinstance(config, Config) else "individual"
+    return _config(cast("FastAPI", request.app)).chat_orgs
 
 
 def get_secrets(request: Request) -> SecretBackend | None:
@@ -342,8 +418,20 @@ class _App(Protocol):
     state: _State
 
 
+def _assistant(app: FastAPI) -> Assistant | None:
+    """Return the app's configured assistant; none without a Config."""
+    return _config(app).assistant
+
+
+# An app the lifespan has not started, as in a route test, has no Config of its own.
+def _config(app: FastAPI) -> Config:
+    """Return the app's Config, or the default one when it holds none."""
+    config: object = getattr(app.state, "config", None)
+    return config if isinstance(config, Config) else Config()
+
+
 async def _alive(term: Terminal, *, store: Store) -> bool:
-    """Whether the machine's credential is live and its owner an active user."""
+    """Whether the machine's credential is live and its owner an active writer or admin."""
     async with store.engine.acquire() as conn:
         return bool(
             await conn.fetchval(
@@ -355,6 +443,30 @@ async def _alive(term: Terminal, *, store: Store) -> bool:
                 term.machine_id,
             ),
         )
+
+
+# The rule ``tool_routes`` opens a pipe under, asked again of a pipe that may outlive it.
+# A pipe no host has dialed back for has no instance to compare yet, and its timer is short.
+# One that does not is logged, naming the check it failed, before the sweep ends it.
+async def _pipe_alive(pipe: Pipe, *, app: FastAPI) -> bool:
+    """Whether the assistant's key, its asker and the attached machine still qualify."""
+    async with cast("_State", app.state).store.engine.acquire() as conn:
+        access = await tool_access(
+            conn,
+            assistant=_assistant(app),
+            api_key_id=pipe.api_key_id,
+            asker=pipe.asker,
+            machine=pipe.machine_id,
+            instance=pipe.instance,
+        )
+    if access.failed is not None:
+        _logger.warning(
+            "tool pipe no longer allowed: pipe=%s machine_id=%s check=%s",
+            pipe.id,
+            pipe.machine_id,
+            access.failed,
+        )
+    return access.failed is None
 
 
 @runtime_checkable

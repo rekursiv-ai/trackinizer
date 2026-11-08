@@ -1,4 +1,4 @@
-"""The client's three exec calls: the assistant's, and the host's wait and result."""
+"""The host's calls: its wait for a tool pipe, and the old exec wait and result."""
 
 from __future__ import annotations
 
@@ -8,15 +8,13 @@ from uuid import UUID, uuid4
 
 import time
 
-from treekle import from_plain, json_loads
-
 import httpx2
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.wire import wire_exec
-from trackinizer.wire.wire_exec import ExecRequest, ExecResult, ExecWait
+from trackinizer.wire.wire_exec import ExecResult, ExecWait
+from trackinizer.wire.wire_tools import ToolOffer
 
 
 if TYPE_CHECKING:
@@ -64,99 +62,48 @@ class _Recorder:
         return reply
 
 
-def test_a_command_goes_to_the_machines_exec_route_for_the_asker() -> None:
-    recorder = _Recorder(httpx2.Response(200, json=_RESULT.model_dump(mode="json")))
-    key = uuid4()
-
-    with _client(recorder) as found:
-        result = found.exec_command(
-            "gx10",
-            ExecRequest(command="ls", cwd="~", timeout_sec=9),
-            asker="ada@x.y",
-            change_id=key,
-        )
-
-    assert result == _RESULT
-    (sent,) = recorder.requests
-    assert (sent.method, sent.url.path, dict(parse_qsl(sent.url.query.decode()))) == (
-        "POST",
-        "/api/machines/gx10/exec",
-        {"asker": "ada@x.y"},
+def test_the_hosts_tool_wait_returns_the_next_offer_or_none() -> None:
+    offer = ToolOffer(pipe_id=uuid4())
+    recorder = _Recorder(
+        httpx2.Response(200, json=offer.model_dump(mode="json")),
+        httpx2.Response(200, json=None),
     )
-    assert json_loads(sent.content, dict[str, object]) == {
-        "command": "ls",
-        "cwd": "~",
-        "timeout_sec": 9,
-    }
-    assert sent.headers["Idempotency-Key"] == str(key)
-
-
-def test_a_command_gets_a_key_of_its_own_when_the_caller_names_none() -> None:
-    recorder = _Recorder(httpx2.Response(200, json=_RESULT.model_dump(mode="json")))
 
     with _client(recorder) as found:
-        _ = found.exec_command(
-            "gx10",
-            ExecRequest(command="ls", cwd="~", timeout_sec=1),
-            asker="ada@x.y",
-        )
+        first = found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=25)
+        second = found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=0)
 
-    assert UUID(recorder.requests[0].headers["Idempotency-Key"])
-
-
-def test_the_read_timeout_outlasts_the_command_its_offer_window_and_the_grace() -> None:
-    recorder = _Recorder(httpx2.Response(200, json=_RESULT.model_dump(mode="json")))
-
-    with _client(recorder) as found:
-        _ = found.exec_command(
-            "gx10",
-            ExecRequest(command="ls", cwd="~", timeout_sec=600),
-            asker="ada@x.y",
-        )
-
-    read = from_plain(recorder.requests[0].extensions["timeout"], dict[str, float])[
-        "read"
-    ]
-    assert read >= 600 + wire_exec.OFFER_TTL_SEC + wire_exec.RESULT_GRACE_SEC
+    assert (first, second) == (offer, None)
+    sent = recorder.requests[0]
+    assert (sent.method, sent.url.path, dict(parse_qsl(sent.url.query.decode()))) == (
+        "GET",
+        f"/api/machines/{_MACHINE}/tools/wait",
+        {"instance": str(_INSTANCE), "wait_sec": "25"},
+    )
 
 
-@pytest.mark.parametrize(
-    "failure",
-    [
-        httpx2.Response(
-            504,
-            json={"detail": {"code": "exec_lost", "message": "the host did not take"}},
-        ),
-        httpx2.ReadError("response lost"),
-    ],
-    ids=["gateway-timeout", "lost-response"],
-)
-def test_a_command_that_may_have_run_is_not_sent_again_on_its_own(
-    failure: httpx2.Response | Exception,
+def test_a_tool_wait_whose_response_was_lost_is_asked_again_with_no_key(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorder = _Recorder(failure)
+    """The server keeps no receipt of a wait: an offer lost on its way is lost."""
+    monkeypatch.setattr(time, "sleep", _no_sleep)
+    recorder = _Recorder(
+        httpx2.ReadError("response lost"),
+        httpx2.Response(200, json=None),
+    )
 
-    with _client(recorder) as found, pytest.raises(ClientError) as refused:
-        _ = found.exec_command(
-            "gx10",
-            ExecRequest(command="rm -rf build", cwd="~", timeout_sec=5),
-            asker="ada@x.y",
-        )
+    with _client(recorder) as found:
+        assert found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=0) is None
 
-    assert len(recorder.requests) == 1
-    if isinstance(failure, httpx2.Response):
-        assert (refused.value.status_code, refused.value.code) == (504, "exec_lost")
+    assert len(recorder.requests) == 2
+    assert not any("Idempotency-Key" in each.headers for each in recorder.requests)
 
 
-def test_a_malformed_result_is_a_client_error() -> None:
-    recorder = _Recorder(httpx2.Response(200, json={"exit_code": "zero"}))
+def test_a_malformed_offer_is_a_client_error() -> None:
+    recorder = _Recorder(httpx2.Response(200, json={"pipe_id": "not a uuid"}))
 
     with _client(recorder) as found, pytest.raises(ClientError, match="malformed"):
-        _ = found.exec_command(
-            "gx10",
-            ExecRequest(command="ls", cwd="~", timeout_sec=5),
-            asker="ada@x.y",
-        )
+        _ = found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=0)
 
 
 def test_the_hosts_wait_returns_the_next_command_or_none() -> None:

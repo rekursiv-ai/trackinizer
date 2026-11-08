@@ -760,6 +760,16 @@ class TestCompute:
             Config.from_env()
 
 
+def test_a_machine_holds_16_tool_pipes_each_dialed_back_in_20_seconds() -> None:
+    config = Config()
+
+    assert (
+        config.tool_pipes_per_machine,
+        config.tool_dial_back_sec,
+        config.tool_sweep_sec,
+    ) == (16, 20.0, 60.0)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

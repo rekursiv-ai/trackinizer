@@ -3,6 +3,40 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Changed
+
+- The exec channel is now a pipe for sagent's tools. The assistant's key opens
+  `WS /api/machines/{name}/tools/ws?asker=EMAIL` under the same rule as before, except
+  that the machine must report `tools: true` (it was `exec: true`) and need not have
+  been heard from lately, as its host's dial-back says whether it is up. The
+  host takes the offer from `GET /api/machines/{id}/tools/wait` (`Client.wait_tools`),
+  and dials back on `WS /api/machines/{id}/tools/{pipe}/ws`. The server keeps no buffer
+  and either leg dropping ends the pipe. Every 60 seconds the server asks the rule
+  again, and closes a pipe it no longer holds for with 4403. Every refusal closes with
+  4403 and a reason saying which, save a revoked machine's 4410; a leg that left closes
+  with 4000 or 4004.
+- Each tool call the gate judges is logged, one line with fixed `key=value` fields and
+  its arguments by their size alone; its `session` and `call_id` join it to what the
+  session recorded the tool doing. A pipe's opening and end, each refusal, a line that
+  ends a pipe, and the sweep ending one log a line too. No table keeps the calls.
+- `GET /api/terminals/machines/changes?since=N` (`Client.machines_version`) holds until
+  the version of the caller's machine list, or the assistant's `owner`'s, is not
+  `since`, and answers `MachinesVersion`. Each write to a person's machines moves it, so
+  a follower waits here and lists again, instead of listing on a timer.
+- The pipe cap, the dial-back and the tool pipe sweep are the server's `Config`
+  (`tool_pipes_per_machine`, `tool_dial_back_sec`, `tool_sweep_sec`), no longer
+  `wire_tools.MAX_PIPES_PER_MACHINE` and `wire_tools.DIAL_BACK_SEC`.
+- `GET /api/machines/{id}/exec/wait` answers `null` after its hold, for one release, so
+  a host from before the pipe gets no error and no offer. `wire_exec`, `Client.wait_exec`
+  and `Client.post_exec_result` stay for that release too.
+
+### Removed
+
+- `Client.exec_command`, `POST /api/machines/{name}/exec` and
+  `POST /api/machines/{id}/exec/{exec_id}/result`, with no replacement.
+
 ## 0.1.13 - 2026-11-05
 
 ### Changed

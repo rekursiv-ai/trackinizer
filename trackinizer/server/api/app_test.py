@@ -38,6 +38,8 @@ from trackinizer.server.config import Config, ConfigError
 from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.secrets import FileSecrets, SecretRef
+from trackinizer.server.terminals import TerminalHub
+from trackinizer.server.tool_pipes import PipeHub
 from trackinizer.types.errors import (
     ChatDeletedError,
     ConflictError,
@@ -675,6 +677,32 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
             await asyncio.sleep(0)
     assert asyncio.all_tasks() <= before
     assert engine.exited
+
+
+@pytest.mark.asyncio
+async def test_lifespan_sweeps_the_terminals_and_the_tool_pipes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+    sweeping = AsyncMock()
+    monkeypatch.setattr(app, "sweep_loop", sweeping)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(tool_sweep_sec=7.0)
+
+    async with lifespan(fastapi_app):
+        await asyncio.sleep(0)
+
+    hubs: list[object] = [call.args[0] for call in sweeping.call_args_list]
+    assert [type(hub) for hub in hubs] == [TerminalHub, PipeHub]
+    # The tool pipes are swept as the configuration says; the terminals as they were.
+    assert [call.kwargs for call in sweeping.call_args_list] == [
+        {},
+        {"interval_sec": 7.0},
+    ]
 
 
 @pytest.fixture

@@ -1,13 +1,10 @@
-"""Wire contract for the exec channel: run one command on a connected computer.
+"""What a published machine host still imports of the old exec channel, for one release.
 
-The configured assistant runs a command on a computer its asker connected, and gets
-the command's result back in the same request:
-
-- The assistant ``POST``s :data:`EXEC_PATH` with an :class:`ExecRequest` and holds the
-  request until the host reports.
-- The machine's host holds a ``GET`` on :data:`MACHINE_EXEC_WAIT_PATH`; a queued command
-  returns at once as an :class:`ExecWait`, and the host runs it as the machine's user.
-- The host ``POST``s an :class:`ExecResult` to :data:`MACHINE_EXEC_RESULT_PATH`.
+That host allows any newer version of this package, so without this module it crashes on
+start after an upgrade. It holds a ``GET`` on :data:`MACHINE_EXEC_WAIT_PATH`, which
+answers ``null``, so it never runs a command. Tools reach a machine over a pipe now
+(``wire_tools``). This module goes once a host without it is out, but for
+:data:`MAX_STREAM_BYTES` and :data:`Base64`, which ``wire_machine_job`` reads.
 
 A command that passes its ``timeout_sec`` is killed by the host, which reports exit code
 :data:`TIMEOUT_EXIT_CODE`. Output is bytes, so both streams travel as base64.
@@ -28,15 +25,10 @@ from trackinizer.wire.wire_terminals import RunFolder
 
 
 __all__ = [
-    "EXEC_PATH",
     "MACHINE_EXEC_RESULT_PATH",
     "MACHINE_EXEC_WAIT_PATH",
     "MAX_ENV_VARS",
-    "MAX_EXECS_PER_MIN_PER_USER",
-    "MAX_RUNNING_PER_MACHINE",
     "MAX_STREAM_BYTES",
-    "OFFER_TTL_SEC",
-    "RESULT_GRACE_SEC",
     "TIMEOUT_EXIT_CODE",
     "WAIT_MAX_SEC",
     "ExecRequest",
@@ -44,31 +36,14 @@ __all__ = [
     "ExecWait",
 ]
 
-EXEC_PATH: Final = "/api/machines/{name}/exec"
-"""``POST ?asker=EMAIL``: run a command on the asker's machine; the configured
-assistant's alone. The request is held until the host reports."""
-
 MACHINE_EXEC_WAIT_PATH: Final = "/api/machines/{machine_id}/exec/wait"
-"""``GET ?instance=ID``, held up to :data:`WAIT_MAX_SEC`: the host's next command, or
-``null`` when none came."""
+"""``GET ?instance=ID``, held up to :data:`WAIT_MAX_SEC`: always ``null`` now."""
 
 MACHINE_EXEC_RESULT_PATH: Final = "/api/machines/{machine_id}/exec/{exec_id}/result"
-"""``POST``: the host's :class:`ExecResult` for a command it was handed."""
-
-MAX_RUNNING_PER_MACHINE: Final = 4
-"""Commands one machine holds at once, queued or running (409 ``exec_busy``)."""
-
-MAX_EXECS_PER_MIN_PER_USER: Final = 60
-"""Commands one asker may start in a minute (429 ``exec_limit``)."""
+"""``POST``: no route answers this now, and no host is handed a command to report."""
 
 WAIT_MAX_SEC: Final = 25
 """The longest the server holds a host's wait."""
-
-OFFER_TTL_SEC: Final = 30
-"""How long a queued command waits for its host to take it (504 ``exec_lost``)."""
-
-RESULT_GRACE_SEC: Final = 15
-"""How long past ``timeout_sec`` the server waits for the host's result."""
 
 TIMEOUT_EXIT_CODE: Final = 124
 """The exit code of a command killed at its timeout, as ``timeout(1)`` reports it."""

@@ -1,8 +1,9 @@
-"""The exec wire contract: what a command, its offer and its result may carry."""
+"""The exec wire contract, kept one release for the old client that imports it."""
 
 from __future__ import annotations
 
 import base64
+import importlib
 import uuid
 
 import pydantic
@@ -120,6 +121,27 @@ def test_a_result_outside_the_limits_is_refused(change: dict[str, object]) -> No
 
 def test_a_timeout_reports_the_exit_code_timeout_gives() -> None:
     assert wire_exec.TIMEOUT_EXIT_CODE == 124
+
+
+# A published machine host allows any newer version of this package and reads these as
+# it starts, so a name gone from here crashes a host that upgraded only this package.
+@pytest.mark.parametrize(
+    "name",
+    [
+        "MACHINE_EXEC_RESULT_PATH",
+        "MACHINE_EXEC_WAIT_PATH",
+        "MAX_ENV_VARS",
+        "MAX_STREAM_BYTES",
+        "TIMEOUT_EXIT_CODE",
+        "WAIT_MAX_SEC",
+        "Base64",
+        "ExecRequest",
+        "ExecResult",
+        "ExecWait",
+    ],
+)
+def test_wire_exec_still_imports_for_old_clients(name: str) -> None:
+    assert hasattr(importlib.import_module("trackinizer.wire.wire_exec"), name)
 
 
 if __name__ == "__main__":

@@ -181,6 +181,16 @@ class Config:
         Machines menu shows beside the person's own machines. Empty (the default)
         shows none. Environment only (``TRACKINIZER_COMPUTE``, a JSON list of
         ``{"name", "about"}`` objects).
+      tool_pipes_per_machine: The most tool pipes one machine holds at once; the
+        next agent is refused.
+      tool_dial_back_sec: How long an offered tool pipe waits for its host to dial
+        back before it ends.
+      tool_sweep_sec: How often each tool pipe's rule is asked again, so a revoked
+        key or a demoted asker loses the machine within it.
+      tool_line_bytes: The longest line the server reads from an agent's tool pipe;
+        a longer one ends the pipe. The default fits a ``Write`` of 8 MiB. Each line
+        is parsed inline, on the one process, so a line this long stalls it for a
+        moment; only the configured assistant's key can send one.
 
     """
 
@@ -223,6 +233,10 @@ class Config:
     chat_streaming: bool = True
     terminal_stun: tuple[str, ...] = ()
     compute: tuple[ComputeNote, ...] = ()
+    tool_pipes_per_machine: int = 16
+    tool_dial_back_sec: float = 20.0
+    tool_sweep_sec: float = 60.0
+    tool_line_bytes: int = 16 << 20
 
     @classmethod
     def from_env(cls) -> Self:

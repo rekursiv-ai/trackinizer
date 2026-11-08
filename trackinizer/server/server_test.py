@@ -440,6 +440,25 @@ class TestLogLevelReachesUvicorn:
         main()
         assert called["log_level"] == logging.ERROR
 
+    @pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+    def test_a_level_below_warning_keeps_uvicorn_at_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        level: str,
+    ) -> None:
+        """Uvicorn's per-request access log stays off when the package logs below WARNING."""
+        called: dict[str, object] = {}
+
+        def fake_run(app: object, **kwargs: object) -> None:
+            del app
+            called.update(kwargs)
+
+        monkeypatch.delenv("TRACKINIZER_LOG_LEVEL", raising=False)
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+        monkeypatch.setattr("sys.argv", ["trackinizer", "--log-level", level])
+        main()
+        assert called["log_level"] == logging.WARNING
+
     def test_unset_leaves_uvicorn_default(
         self,
         monkeypatch: pytest.MonkeyPatch,
