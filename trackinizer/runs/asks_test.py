@@ -23,12 +23,15 @@ from trackinizer.runs.asks import (
     Answer,
     Ask,
     AskKind,
+    Compaction,
     Driver,
+    DriverEvent,
     Option,
     Resolved,
     Resolver,
     StateChanged,
     answer_from_payload,
+    compaction_record,
     opened_record,
     resolved_record,
 )
@@ -253,10 +256,41 @@ def test_unknown_option_kind_is_refused_on_a_read() -> None:
         _ = from_plain({"id": "a", "label": "b", "kind": "maybe"}, Option)
 
 
-@pytest.mark.parametrize("record", [Option, Ask, Answer, Resolved, StateChanged])
+@pytest.mark.parametrize(
+    "record",
+    [Option, Ask, Answer, Resolved, StateChanged, Compaction],
+)
 def test_records_are_keyword_only(record: type) -> None:
     kinds = {each.kind for each in inspect.signature(record).parameters.values()}
     assert kinds == {inspect.Parameter.KEYWORD_ONLY}
+
+
+@pytest.mark.parametrize(
+    ("compaction", "words"),
+    [
+        (Compaction(state="started", trigger="auto"), "Compacting context"),
+        (Compaction(state="ended", trigger="manual"), "Compaction ended"),
+        (
+            Compaction(state="ended", error="aborted"),
+            "Compaction failed: aborted",
+        ),
+    ],
+)
+def test_a_compaction_record_says_which_end_it_marks(
+    compaction: Compaction,
+    words: str,
+) -> None:
+    record = compaction_record(compaction, at=_AT)
+    assert (record.subtype, record.timestamp, record.content) == (
+        "compaction",
+        _AT.isoformat(),
+        words,
+    )
+    assert from_plain(record.extra["$compaction"], dict[str, PlainTree]) == {
+        "state": compaction.state,
+        "trigger": compaction.trigger,
+        "error": compaction.error,
+    }
 
 
 def test_resolved_record_carries_the_option_and_who() -> None:
@@ -503,16 +537,16 @@ class _Fake:
     async def stop(self) -> None:
         await self._events.put(None)
 
-    async def events(self) -> AsyncIterator[Ask | Resolved | StateChanged]:
+    async def events(self) -> AsyncIterator[DriverEvent]:
         while (event := await self._events.get()) is not None:
             yield event
 
 
-async def _drive(driver: Driver) -> list[Ask | Resolved | StateChanged]:
+async def _drive(driver: Driver) -> list[DriverEvent]:
     session = await driver.start(cwd=Path("/work"), resume="", model="m", effort="low")
     assert session == "thread-1"
     await driver.send_line("hi")
-    seen: list[Ask | Resolved | StateChanged] = []
+    seen: list[DriverEvent] = []
     async for event in driver.events():
         seen.append(event)
         if isinstance(event, Ask):

@@ -2601,6 +2601,38 @@ def test_a_compact_summary_line_opens_a_window_carrying_it() -> None:
     assert _round_trip(native) == native
 
 
+def test_an_automatic_compaction_reads_as_its_boundary_then_the_window_it_opened() -> (
+    None
+):
+    """Claude 2.1.283's lines for an automatic compaction, anonymised: the boundary
+    names how it began and how long it took, the summary opens the next window.
+    """
+    native = (_CWD / "testdata" / "compaction" / "claude_auto.jsonl").read_text()
+
+    records = list(claude.normalize(StringIO(native)))
+
+    [boundary] = [r for r in records if isinstance(r, SystemMessage)]
+    assert (boundary.subtype, boundary.content) == (
+        "compact_boundary",
+        "Conversation compacted",
+    )
+    metadata = from_plain(boundary.extra["compactMetadata"], dict[str, object])
+    assert (metadata["trigger"], metadata["durationMs"]) == ("auto", 100_076)
+    acts = [r for r in records if not isinstance(r, TurnContext | ContextState)]
+    assert [type(r).__name__ for r in acts] == [
+        "ContextClear",
+        "SystemMessage",
+        "ContextCompaction",
+        "ContextClear",
+        "UserMessage",
+    ]
+    clear = acts[3]
+    assert isinstance(clear, ContextClear)
+    assert clear.summary is not None
+    assert clear.summary.endswith("1. Primary Request: fix the flaky test.")
+    assert _round_trip(native) == native
+
+
 @pytest.mark.parametrize("native", ["\n", "[1]\n"], ids=["blank", "non-object"])
 def test_a_line_holding_no_record_survives_verbatim(native: str) -> None:
     records = list(claude.normalize(StringIO(native)))
