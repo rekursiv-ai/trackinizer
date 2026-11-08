@@ -243,7 +243,7 @@ class _World:
         enrolled = await self.call(
             "POST",
             ENROLL_PATH,
-            headers={"Cookie": cookie},
+            headers=self.browser(cookie),
             body={"name": name},
         )
         assert enrolled.status_code == 201

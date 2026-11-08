@@ -323,7 +323,7 @@ class TerminalWorld:
         enrolled = await self.call(
             "POST",
             ENROLL_PATH,
-            headers={"Cookie": cookie},
+            headers=self.browser(cookie),
             body={"name": name},
         )
         if enrolled.status_code != 201:

@@ -789,11 +789,8 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
     await world.wait()
     assert (await world.open(world.cookie(bob))).status_code == 404
     assert (await world.open(cookie, machine="nope")).status_code == 404
-    foreign = await world.open(cookie, origin=None)
-    assert (foreign.status_code, refusal_detail_code(foreign)) == (
-        403,
-        "terminal_forbidden",
-    )
+    # A cookie's write without this site's Origin is refused before the route runs.
+    assert (await world.open(cookie, origin=None)).status_code == 403
     assert (await world.open(cookie, origin="https://evil.test")).status_code == 403
     bad = await world.open(cookie, surface="has space")
     assert bad.status_code == 422
@@ -1200,13 +1197,13 @@ async def test_a_writer_enrolls_a_personal_machine_only_its_owner_sees(
     revoked = await world.call(
         "POST",
         REVOKE_PATH.format(name="laptop"),
-        headers={"Cookie": world.cookie(boss)},
+        headers=world.browser(world.cookie(boss)),
     )
     assert revoked.status_code == 204
     taken = await world.call(
         "POST",
         ENROLL_PATH,
-        headers={"Cookie": world.cookie(bob)},
+        headers=world.browser(world.cookie(bob)),
         body={"name": "laptop"},
     )
     assert taken.status_code == 403
@@ -1220,7 +1217,7 @@ async def test_a_token_joins_while_its_owner_is_active_and_not_after(
     enrolled = await world.call(
         "POST",
         ENROLL_PATH,
-        headers={"Cookie": cookie},
+        headers=world.browser(cookie),
         body={"name": "laptop"},
     )
     token = from_plain(enrolled.json(), dict[str, str])["token"]

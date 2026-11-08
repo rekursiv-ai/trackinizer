@@ -294,6 +294,8 @@ def _request_with(
     cookies: dict[str, str] | None = None,
     config: Config | None = None,
     store: Store | None = None,
+    method: str = "GET",
+    origin: str | None = None,
 ) -> Request:
     """Build a fake :class:`fastapi.Request` carrying one header + the engine."""
     request = MagicMock()
@@ -307,9 +309,12 @@ def _request_with(
         ),
     )
     request.state = SimpleNamespace(request_id="")
-    headers: dict[str, str] = {}
+    request.scope = {"type": "http", "method": method}
+    headers: dict[str, str] = {"host": "trax.test"}
     if authorization is not None:
         headers["Authorization"] = authorization
+    if origin is not None:
+        headers["origin"] = origin
     request.headers = headers
     request.cookies = cookies or {}
     return cast(Request, request)
@@ -1937,6 +1942,69 @@ class TestCurrentUserSession:
         assert identity.api_key_id is None
         assert identity.email == "u@example.com"
         assert identity.role == "writer"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "origin", "refused"),
+        [
+            ("POST", "http://trax.test", False),
+            ("DELETE", "http://trax.test", False),
+            ("POST", "http://evil.trax.test", True),
+            ("PUT", None, True),
+            ("GET", "http://evil.trax.test", False),
+            ("HEAD", None, False),
+        ],
+    )
+    async def test_a_session_write_from_another_page_is_refused_before_any_lookup(
+        self,
+        method: str,
+        origin: str | None,
+        refused: bool,
+    ) -> None:
+        user_id = uuid.uuid4()
+        secret = "session-secret-x"  # noqa: S105 -- test fixture.
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(
+            return_value={
+                "id": user_id,
+                "email": "u@example.com",
+                "role": "admin",
+                "status": "active",
+                "hosted_domain": None,
+            },
+        )
+        request = _request_with(
+            engine,
+            authorization=None,
+            cookies={SESSION_COOKIE_NAME: _session_cookie_value(user_id, secret)},
+            config=_config_with_session_secret(secret),
+            method=method,
+            origin=origin,
+        )
+        if refused:
+            with pytest.raises(HTTPException) as caught:
+                await current_user(request)
+            assert caught.value.status_code == 403
+            engine.conn.fetchrow.assert_not_awaited()
+        else:
+            assert (await current_user(request)).user_id == user_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_bearer_write_needs_no_origin(self) -> None:
+        engine = FakeEngine()
+        request = _request_with(
+            engine,
+            authorization="Bearer trax_unknown",
+            method="POST",
+        )
+        with pytest.raises(HTTPException) as caught:
+            await current_user(request)
+        # Refused for the key, which matches nothing, never for the missing Origin.
+        assert (caught.value.status_code, caught.value.detail) == (
+            401,
+            "invalid bearer token",
+        )
 
     @pytest.mark.asyncio
     async def test_session_rejected_when_user_disabled(self) -> None:

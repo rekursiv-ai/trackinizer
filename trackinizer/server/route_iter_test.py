@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, FastAPI, WebSocket
+from fastapi import APIRouter, Depends, FastAPI, WebSocket
 from starlette.routing import Host, Mount
 
 from trackinizer.server.route_iter import (
+    iter_api_routes,
     iter_routes,
     registered_path_methods,
     registered_paths,
@@ -63,6 +64,26 @@ def test_a_router_included_twice_yields_its_routes_twice() -> None:
     routes = list(iter_routes(_app()))
 
     assert routes.count(("/api/inner/leaf", frozenset({"GET"}))) == 2
+
+
+def test_api_routes_are_the_http_leaves_with_what_their_includes_add() -> None:
+    guarded = APIRouter()
+    _ = guarded.get("/guarded")(_ok)
+    app = _app()
+    app.include_router(guarded, prefix="/api", dependencies=[Depends(_ok)])
+
+    leaves = {leaf.path: leaf for leaf in iter_api_routes(app)}
+
+    assert {"/health", "/api/items", "/api/inner/leaf", "/api/guarded"} <= set(leaves)
+    assert "/ws" not in leaves
+    assert "/static" not in leaves
+    assert leaves["/api/guarded"].route.endpoint is _ok
+    assert [
+        each.dependency for each in leaves["/api/guarded"].include_dependencies
+    ] == [
+        _ok,
+    ]
+    assert leaves["/health"].include_dependencies == ()
 
 
 def test_registered_paths_are_the_distinct_templates() -> None:
