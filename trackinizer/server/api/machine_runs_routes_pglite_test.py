@@ -40,6 +40,7 @@ from trackinizer.wire.wire_machines import (
     MachineRun,
     MachineRuns,
 )
+from trackinizer.wire.wire_science_chat import chat_session_id
 from trackinizer.wire.wire_terminals import (
     TERMINAL_MACHINES_PATH,
     TerminalMachines,
@@ -100,6 +101,63 @@ async def test_a_machine_lists_its_owners_live_runs_alone(
     assert MachineRuns.model_validate_json(listed.text).runs == [_MY_RUN]
     (machine,) = TerminalMachines.model_validate_json(machines.text).machines
     assert (machine.status, machine.runs) == ("never", [_MY_RUN])
+
+
+async def test_each_run_names_its_agentsession_and_the_chat_it_is_a_session_of(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    await _enroll(client, "box")
+    act_as_user_agent("writer")
+    chat = await start_session(client, cli="claude")
+    alone = await start_session(client, cli="codex")
+    theirs = await start_session(client, cli="claude")
+    conversation = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_cli_session_id = $1 WHERE id = $2",
+            chat_session_id(conversation),
+            chat,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET account = 'eve@example.com' WHERE id = $1",
+            theirs,
+        )
+        seqs = {
+            row["id"]: row["seq"]
+            for row in await conn.fetch(
+                "SELECT id, seq FROM inquiries WHERE id = ANY($1)",
+                [chat, alone],
+            )
+        }
+    install_identity(make_test_identity(role="admin", api_key_id=None))
+    for session, cli in ((chat, "claude"), (alone, "codex"), (theirs, "claude")):
+        _inbound().mark_poller(
+            session,
+            machine="box",
+            cli=cli,
+            instance=session.hex,
+            account=TEST_USER_EMAIL,
+        )
+
+    listed = await client.get(MACHINE_RUNS_PATH.format(name="box"))
+    machines = await client.get(TERMINAL_MACHINES_PATH)
+
+    assert listed.status_code == 200, listed.text
+    named = {
+        run.session_id: (run.seq, run.conversation_id)
+        for run in MachineRuns.model_validate_json(listed.text).runs
+    }
+    assert named == {
+        chat: (seqs[chat], conversation),
+        alone: (seqs[alone], None),
+        # Drained with the owner's key, but another person's session: not named.
+        theirs: (None, None),
+    }
+    (machine,) = TerminalMachines.model_validate_json(machines.text).machines
+    assert {
+        run.session_id: (run.seq, run.conversation_id) for run in machine.runs
+    } == named
 
 
 async def test_stopping_a_run_ends_its_lease_and_refuses_its_drains(

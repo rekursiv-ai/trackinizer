@@ -234,6 +234,14 @@ class MachineRun(BaseModel):
     ended: datetime | None = None
     """A past run's: when its session ended; ``None`` while it is open."""
 
+    seq: int | None = None
+    """Its AgentSession's number; ``None`` for a session that is not the owner's, and
+    where the route stops runs rather than lists them."""
+
+    conversation_id: uuid.UUID | None = None
+    """The chat its session is a session of; ``None`` for a session that is no
+    chat's."""
+
 
 class MachineRuns(BaseModel):
     """The live runs of one of the caller's machines, and the ones it had before."""

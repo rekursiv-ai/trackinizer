@@ -9,22 +9,26 @@ Disconnecting a machine revokes its host, as the revoke route does, and stops ev
 run that names it. Logging it out also revokes the owner's keys a device login made for
 it, so nothing on the computer acts as them until a person approves a login again.
 Where each session's run last said it ran is kept (``session_liveness``), so a machine's
-past runs are listed too.
+past runs are listed too, each with its AgentSession's number and the chat it is a
+session of.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from treekle import from_plain
 
+from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import get_inbound, get_store, nudge_streams
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.machine_host_routes import revoke_machine
 from trackinizer.server.api.machines_routes import MachineName, refuse_reserved
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire.wire_machines import (
     MACHINE_DISCONNECT_PATH,
@@ -35,6 +39,14 @@ from trackinizer.wire.wire_machines import (
     MachineRun,
     MachineRuns,
 )
+from trackinizer.wire.wire_science_chat import chat_conversation_id
+
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
+    from trackinizer.lib.postgres import Conn
+    from trackinizer.server.access_policy import AccessPolicy, Principal
 
 
 __all__ = [
@@ -42,6 +54,7 @@ __all__ = [
     "list_machine_runs_route",
     "live_runs",
     "logout_machine_route",
+    "named_runs",
     "router",
     "stop_machine_run_route",
 ]
@@ -81,21 +94,28 @@ async def list_machine_runs_route(
         account=owner,
         limit=past + len(shown),
     )
-    return MachineRuns(
-        runs=live,
-        past=[
-            MachineRun(
-                session_id=run.session_id,
-                cli=run.cli,
-                run=run.run,
-                cwd=run.cwd,
-                last_seen=run.last_seen,
-                ended=run.ended,
-            )
-            for run in before
-            if run.session_id not in shown
-        ][:past],
-    )
+    earlier = [
+        MachineRun(
+            session_id=run.session_id,
+            cli=run.cli,
+            run=run.run,
+            cwd=run.cwd,
+            last_seen=run.last_seen,
+            ended=run.ended,
+        )
+        for run in before
+        if run.session_id not in shown
+    ][:past]
+    principal = await request_principal(request, identity)
+    async with request_engine(request).acquire() as conn:
+        named = await named_runs(
+            conn,
+            [*live, *earlier],
+            owner=owner,
+            policy=get_store(request).access_policy,
+            principal=principal,
+        )
+    return MachineRuns(runs=named[: len(live)], past=named[len(live) :])
 
 
 @router.post(MACHINE_RUN_STOP_PATH, status_code=204)
@@ -236,6 +256,66 @@ def live_runs(request: Request, *, machine: str, owner: str) -> list[MachineRun]
         .items()
     ]
     return sorted(runs, key=lambda run: (run.cli, run.run or "", str(run.session_id)))
+
+
+async def named_runs(
+    conn: Conn,
+    runs: Sequence[MachineRun],
+    *,
+    owner: str,
+    policy: AccessPolicy | None,
+    principal: Principal | None,
+) -> list[MachineRun]:
+    """Name each run's AgentSession and the chat it is a session of, in ``runs``' order.
+
+    A run names its machine on its own word, and drains with its owner's key, so only
+    a session of the owner's account that the caller may read is named; any other run
+    is returned as it came, naming no session and no chat.
+
+    Args:
+      conn: Database connection.
+      runs: The runs, live or past, of ``owner``'s machine.
+      owner: The machine owner's email.
+      policy: Deployment policy; None preserves trusted reads.
+      principal: The caller, as the access policy reads them; None preserves
+        trusted reads.
+
+    Returns:
+      runs: Each run, with its session's ``seq`` and ``conversation_id``.
+
+    """
+    if not runs:
+        return []
+    params: list[object] = [[run.session_id for run in runs], owner]
+    readable = inquiry_read_filter(
+        "inquiries.id",
+        policy=policy,
+        principal=principal,
+        params=params,
+    )
+    rows = await conn.fetch(
+        vetted_sql(
+            "SELECT id, seq, agentsession_cli_session_id AS chat FROM inquiries "
+            "WHERE id = ANY($1::uuid[]) AND kind = 'AgentSession' "
+            "AND lower(account) = lower($2)",
+            "" if readable == "TRUE" else f" AND ({readable})",
+        ),
+        *params,
+    )
+    found = {from_plain(row["id"], UUID): row for row in rows}
+    return [
+        run
+        if (row := found.get(run.session_id)) is None
+        else run.model_copy(
+            update={
+                "seq": from_plain(row["seq"], int),
+                "conversation_id": chat_conversation_id(
+                    from_plain(row["chat"], str, default=None),
+                ),
+            },
+        )
+        for run in runs
+    ]
 
 
 async def _owner(request: Request, identity: AuthIdentity, *, name: str) -> str:
