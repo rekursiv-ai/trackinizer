@@ -66,7 +66,7 @@ Content-Type: application/json
     "kind": "show",
     "visual_type": "trax.subgraph",
     "record_id": "<record-id>",
-    "placement": "side"
+    "target": {"kind": "split", "of": "<panel-id>", "edge": "right"}
   }
 }
 ```
@@ -77,9 +77,13 @@ or agent changed the canvas,
 the server returns 409 and the current state; read it before retrying with a
 new revision and key. Reusing a key with different content also returns 409
 and the current state. An ended session or revoked key loses control,
-including idempotent replay. `hide`, `focus`, and `place` take an `instance_id` from
-the canvas response. A `show` can also include `record_id` and bounded
-`params`. Showing an existing visual type focuses and updates that instance.
+including idempotent replay. `hide`, `focus` and `move` take tab ids from the
+canvas response's `panels`; one the canvas no longer holds changes nothing. A
+`show` with no `target` opens in the focused panel, and can also include
+`record_id` and bounded `params`. Showing a visual already open, of the same
+type, record and params, switches to its tab. An old client's `placement`
+(`main`, `left`, `side`, `floating`) still validates and is mapped onto the
+panels (`server/private/canvas_old_clients.py`).
 
 ## Chat with the assistant
 
