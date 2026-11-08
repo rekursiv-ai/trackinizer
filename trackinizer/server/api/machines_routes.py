@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import APIRouter, Depends, Path, Request, Response
 from treekle import from_plain
 
+from trackinizer.server.api._deps import machines_changed
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import tx
@@ -237,21 +238,22 @@ async def delete_machine_route(
         # cannot appear between the check and the delete. The check is a separate
         # statement: one sharing the lock's would read the snapshot taken before the
         # lock was granted, and miss a join that committed meanwhile.
-        machine_id = await conn.fetchval(
-            "SELECT id FROM machines WHERE name = $1 FOR UPDATE",
+        machine = await conn.fetchrow(
+            "SELECT id, owner FROM machines WHERE name = $1 FOR UPDATE",
             name,
         )
-        if machine_id is None:
+        if machine is None:
             raise absent_machine(name)
         if await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM machine_credentials "
             "WHERE machine_id = $1 AND revoked_at IS NULL)",
-            machine_id,
+            machine["id"],
         ):
             raise MachineInServiceError(
                 f"machine {name!r} has a live credential; revoke it first",
             )
         await conn.execute("DELETE FROM machines WHERE name = $1", name)
+    machines_changed(request, owner=from_plain(machine["owner"], str, default=None))
     return Response(status_code=204)
 
 

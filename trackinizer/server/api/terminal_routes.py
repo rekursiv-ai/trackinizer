@@ -32,16 +32,24 @@ from trackinizer.server import auth
 from trackinizer.server.api._deps import (
     auth_is_disabled,
     get_inbound,
+    get_machine_changes,
     get_replays,
     get_terminal_hub,
+    machines_changed,
 )
 from trackinizer.server.api._origin import is_strictly_same_origin
-from trackinizer.server.api._routes_shared import idempotency_key, request_engine
+from trackinizer.server.api._routes_shared import (
+    idempotency_key,
+    refusal,
+    request_engine,
+    require_instance,
+)
 from trackinizer.server.api.machine_runs_routes import live_runs
 from trackinizer.server.api.machines_routes import MachineName, fetch_machines
 from trackinizer.server.api.session_access import (
     resolve_asker,
 )
+from trackinizer.server.api.tool_access import serves_tools
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.machine_auth import current_machine, request_machine
 from trackinizer.server.terminals import (
@@ -69,10 +77,12 @@ from trackinizer.wire.wire_terminals import (
     TERMINAL_ATTACH_PATH,
     TERMINAL_CLOSE_PATH,
     TERMINAL_CONFIRM_PATH,
+    TERMINAL_MACHINES_CHANGES_PATH,
     TERMINAL_MACHINES_PATH,
     TERMINAL_WS_PATH,
     TERMINALS_PATH,
     LiveTerminal,
+    MachinesVersion,
     OpenTerminal,
     TerminalMachine,
     TerminalMachines,
@@ -88,10 +98,12 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "Leg",
     "attach_terminal_route",
     "close_terminal_route",
     "confirm_terminal_machine_route",
     "list_terminal_machines_route",
+    "machines_version_route",
     "open_terminal_route",
     "router",
     "terminal_host_socket",
@@ -145,13 +157,13 @@ async def open_terminal_route(
         name=body.machine,
     )
     if body.command is not None and body.command not in _machine_clis(facts):
-        raise _refused(
+        raise refusal(
             409,
             code="cli_not_installed",
             message=f"the host reports no {body.command} on its PATH",
         )
     if body.kind == "files" and not _serves_files(facts):
-        raise _refused(
+        raise refusal(
             409,
             code="files_not_enabled",
             message=f"the host on {body.machine} is too old to serve files; update it",
@@ -159,7 +171,7 @@ async def open_terminal_route(
     workspace: UUID | None = None
     hub = get_terminal_hub(request)
     if not hub.ready(machine_id):
-        raise _refused(
+        raise refusal(
             409,
             code="terminal_not_enabled",
             message="start this machine's host first",
@@ -191,7 +203,7 @@ async def open_terminal_route(
             ),
         )
     except TerminalLimitError as error:
-        raise _refused(
+        raise refusal(
             429,
             code="terminal_limit",
             message="too many terminals opened just now; wait a minute",
@@ -265,6 +277,7 @@ async def list_terminal_machines_route(
                     oldest=MIN_HOST_VERSION,
                 ),
                 "files": _serves_files(row["facts"]),
+                "tools": serves_tools(row["facts"]),
             },
         )
         for row in sorted(
@@ -284,6 +297,45 @@ async def list_terminal_machines_route(
             )
             for term in live
         ],
+    )
+
+
+# Declared before any route whose path could take ``changes`` as a parameter.
+@router.get(TERMINAL_MACHINES_CHANGES_PATH, include_in_schema=False)
+async def machines_version_route(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
+    owner: str | None = None,
+    since: int | None = None,
+    wait_sec: Annotated[float, Query(ge=0)] = wire_terminals.WAIT_MAX_SEC,
+) -> MachinesVersion:
+    """Hold until the listing's version is not ``since``, then return it.
+
+    Whoever may read the listing may wait on it, ``owner`` as for the listing. A
+    follower lists the machines, waits here, and lists them again when it answers
+    another version; the version moves with each write to the owner's machines.
+
+    Args:
+      request: Request carrying the machine-list versions.
+      identity: The signed-in owner, or the assistant's agent key.
+      owner: The person the assistant waits for; only the assistant may name one.
+      since: The version the caller holds; left out, the answer comes at once.
+      wait_sec: How long to hold, clamped to 25 seconds.
+
+    Returns:
+      version: The listing's version now; ``since`` only when the hold ran out.
+
+    Raises:
+      HTTPException: 403 ``terminal_forbidden`` as for the listing.
+
+    """
+    email = await _machines_owner(request, identity, owner=owner)
+    return MachinesVersion(
+        version=await get_machine_changes(request).wait(
+            email,
+            since=since,
+            wait_sec=min(wait_sec, wire_terminals.WAIT_MAX_SEC),
+        ),
     )
 
 
@@ -318,6 +370,7 @@ async def confirm_terminal_machine_route(
         )
     if confirmed is None:
         raise NotFoundError(f"no machine {name} of yours")
+    machines_changed(request, owner=identity.email)
 
 
 @router.post(TERMINAL_ATTACH_PATH)
@@ -390,7 +443,7 @@ async def terminal_wait_route(
     if auth_is_disabled(request):
         raise _forbidden()
     await current_machine(request, machine_id)
-    await _require_instance(request, machine_id, instance=instance)
+    await require_instance(request, machine_id, instance=instance)
     hub = get_terminal_hub(request)
     key = idempotency_key(request)
     return await get_replays(request).terminal_waits.run(
@@ -415,7 +468,7 @@ async def terminal_web_socket(websocket: WebSocket, terminal_id: UUID) -> None:
 
     """
     await websocket.accept()
-    leg = _Leg(websocket)
+    leg = Leg(websocket)
     if auth_is_disabled(websocket) or not is_strictly_same_origin(websocket):
         await leg.close(wire_terminals.CLOSE_REFUSED)
         return
@@ -466,13 +519,13 @@ async def terminal_host_socket(
 
     """
     await websocket.accept()
-    leg = _Leg(websocket)
+    leg = Leg(websocket)
     if auth_is_disabled(websocket):
         await leg.close(wire_terminals.CLOSE_REFUSED)
         return
     try:
         await request_machine(websocket, machine_id)
-        await _require_instance(websocket, machine_id, instance=instance)
+        await require_instance(websocket, machine_id, instance=instance)
     except HTTPException as error:
         await leg.close(
             wire_terminals.CLOSE_MACHINE_REVOKED
@@ -503,7 +556,7 @@ async def terminal_host_socket(
         await hub.host_lost(term, socket=leg)
 
 
-class _Leg:
+class Leg:
     """A Starlette WebSocket, as the hub's :class:`Socket`."""
 
     def __init__(self, websocket: WebSocket) -> None:
@@ -516,11 +569,11 @@ class _Leg:
         except (WebSocketDisconnect, RuntimeError, OSError) as error:
             raise SocketClosedError from error
 
-    async def close(self, code: int) -> None:
-        """Close with ``code``; a socket already closed is left alone."""
+    async def close(self, code: int, reason: str = "") -> None:
+        """Close with ``code`` and ``reason``; a socket already closed is left alone."""
         # Uvicorn raises WebSocketDisconnect from a close on a peer that has dropped.
         try:
-            await self._websocket.close(code)
+            await self._websocket.close(code, reason)
         except (WebSocketDisconnect, RuntimeError, OSError):
             return
 
@@ -529,7 +582,7 @@ class _Leg:
         return await self._websocket.receive()
 
 
-async def _read_frame(leg: _Leg) -> tuple[Frame, bytes] | None:
+async def _read_frame(leg: Leg) -> tuple[Frame, bytes] | None:
     """Read one frame; ``None`` when the peer left or sent anything but a frame."""
     try:
         message = await leg.receive()
@@ -545,7 +598,7 @@ async def _read_frame(leg: _Leg) -> tuple[Frame, bytes] | None:
 
 
 async def _first_frame(
-    leg: _Leg,
+    leg: Leg,
     *,
     timeout_sec: float = 10.0,
 ) -> tuple[Frame, bytes] | None:
@@ -645,9 +698,9 @@ def _require_origin(request: Request) -> None:
 
 def _forbidden() -> HTTPException:
     """Return the one refusal of a caller that may not reach terminals here."""
-    return _refused(
+    return refusal(
         403,
-        code="terminal_forbidden",
+        code=wire_terminals.TERMINAL_FORBIDDEN,
         message="terminals are not available here",
     )
 
@@ -689,7 +742,7 @@ async def _owned_machine(
     if machine is None:
         raise NotFoundError(f"no terminal-capable machine {name}")
     if not machine["confirmed"]:
-        raise _refused(
+        raise refusal(
             409,
             code="terminal_unconfirmed",
             message="confirm this machine first",
@@ -732,31 +785,6 @@ def _is_attached_to_a_live_run(request: Request, *, session_id: UUID | None) -> 
     )
 
 
-def _refused(status_code: int, *, code: str, message: str) -> HTTPException:
-    """Return a refusal whose ``detail`` is ``{code, message}``."""
-    return HTTPException(
-        status_code=status_code,
-        detail={"code": code, "message": message},
-    )
-
-
-async def _require_instance(
-    connection: HTTPConnection,
-    machine_id: UUID,
-    *,
-    instance: UUID,
-) -> None:
-    """Refuse a host that is not the machine's current instance."""
-    async with request_engine(connection).acquire() as conn:
-        current = await conn.fetchval(
-            "SELECT host_instance = $2 FROM machines WHERE id = $1",
-            machine_id,
-            instance,
-        )
-    if current is not True:
-        raise HTTPException(status_code=403, detail="stale host instance")
-
-
 # The check and the replacement run here, behind the receipt, for the reason
 # ``_open_terminal``'s check does: a retry of the same reattach finds the run its first
 # try queued, and must get that back, not retire it.
@@ -773,10 +801,11 @@ async def _open_terminal(request: Request, *, opening: Opening) -> UUID:
                 opening.machine_id,
                 opening.user,
             )
+        machines_changed(request, owner=opening.user)
         # Checking and reserving must share one event-loop turn: another open
         # can pass the check while this request is awaiting its database update.
         if _is_attached_to_a_live_run(request, session_id=opening.attach):
-            raise _refused(
+            raise refusal(
                 409,
                 code=CHAT_RUN_LIVE,
                 message="another run is attached to this session; stop it first",

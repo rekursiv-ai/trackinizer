@@ -18,6 +18,9 @@ from treekle import from_plain
 import pytest
 import pytest_asyncio
 
+from trackinizer.server.api import machine_host_routes
+from trackinizer.server.api._deps import machine_changes
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
@@ -231,6 +234,35 @@ async def test_join_returns_a_credential_once_and_the_machine_shows_online(
     )
     assert one.last_heartbeat is not None
     assert _bearer_secret(joined.credential) not in await _everything_stored(store)
+
+
+async def test_each_host_write_that_changes_a_listing_moves_its_owners_version(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, _ = pglite_route_client
+    changes = machine_changes(app)
+    seen = [changes.version(TEST_USER_EMAIL)]
+
+    def moved() -> int:
+        seen.append(changes.version(TEST_USER_EMAIL))
+        return seen[-1] - seen[-2]
+
+    token = await _enroll(client, "dev-1")
+    assert moved() == 1
+    joined = JoinResponse.model_validate_json(
+        (await _join(client, "dev-1", token)).text,
+    )
+    assert moved() == 1
+    beat = _Joined(machine_id=joined.machine_id, credential=joined.credential)
+    assert (await _heartbeat(client, beat)).status_code == 200
+    assert moved() == 0
+    assert (await _heartbeat(client, beat, facts={"tools": True})).status_code == 200
+    assert moved() == 1
+    assert (await _heartbeat(client, beat, claim="release")).status_code == 200
+    assert moved() == 1
+    _as("admin")
+    assert (await client.post(REVOKE_PATH.format(name="dev-1"))).status_code == 204
+    assert moved() == 1
 
 
 async def test_join_wrong_token_is_401(
@@ -484,6 +516,32 @@ async def test_revoke_effective_on_next_request(
 
     assert (revoked.status_code, revoked.content) == (204, b"")
     assert (after.status_code, _detail_text(after)) == (410, "machine_revoked")
+    assert (await _detail(client, "dev-1")).status == "revoked"
+
+
+async def test_a_revoke_moves_its_owners_version_though_ending_its_pipes_fails(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The write committed, so a follower must hear of it, whatever fails after."""
+    client, store = pglite_route_client
+    _ = await _joined(client, "dev-1")
+    async with store.engine.acquire() as conn:
+        owner = from_plain(
+            await conn.fetchval("SELECT owner FROM machines WHERE name = 'dev-1'"),
+            str,
+        )
+    before = machine_changes(app).version(owner)
+
+    def failing(request: object) -> None:
+        del request
+        raise RuntimeError("the hub failed")
+
+    monkeypatch.setattr(machine_host_routes, "get_pipe_hub", failing)
+    failed = await client.post(REVOKE_PATH.format(name="dev-1"))
+
+    assert failed.status_code == 500
+    assert machine_changes(app).version(owner) == before + 1
     assert (await _detail(client, "dev-1")).status == "revoked"
 
 

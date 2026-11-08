@@ -87,8 +87,10 @@ from trackinizer.wire.wire_session_ir import (
 )
 from trackinizer.wire.wire_sessions import SessionStart
 from trackinizer.wire.wire_terminals import (
+    TERMINAL_MACHINES_CHANGES_PATH,
     TERMINAL_MACHINES_PATH,
     TERMINALS_PATH,
+    MachinesVersion,
     OpenTerminal,
 )
 from trackinizer.wire.wire_variables import VARIABLES_PATH
@@ -1546,8 +1548,8 @@ class TestClientMethods:
 # ``trax/variables_test.py``, and no ``trax`` command reads machines or jobs, so the
 # shared fake carries none of them. No ``trax`` command files code, so it holds no
 # code-store method either. The canvas capture is an agent's alone, and no command takes one.
-# The exec calls are the assistant's and a machine host's, which no ``trax`` command is,
-# and ``client/client_exec_test.py`` drives them.
+# The tool and exec waits are a machine host's, which no ``trax`` command is, and
+# ``client/client_exec_test.py`` drives them.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
     {"flags", "from_args", "get", "post", "put", "patch", "delete"}
     | {"list_variables", "put_variable", "delete_variable"}
@@ -1555,8 +1557,8 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"change_machine_labels", "delete_machine"}
     | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
     | {"machine_runs", "stop_machine_run", "disconnect_machine", "logout_machine"}
-    | {"wait_terminals"}
-    | {"exec_command", "wait_exec", "post_exec_result"}
+    | {"wait_terminals", "machines_version"}
+    | {"wait_tools", "wait_exec", "post_exec_result"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
     | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
     | {"job_put_secret", "job_delete_secret"}
@@ -3529,16 +3531,42 @@ class TestTerminalMethods:
             _install_mock_transport(client, handler)
             named = client.terminal_machines(canvas=canvas)
             bare = client.terminal_machines()
+            asked = client.terminal_machines(owner="ada@x.y")
 
         assert [(r.method, r.url.path) for r in seen] == [
             ("GET", TERMINAL_MACHINES_PATH),
-        ] * 2
+        ] * 3
         assert seen[0].url.params["canvas"] == str(canvas)
         assert "canvas" not in seen[1].url.params
+        assert "owner" not in seen[1].url.params
+        assert seen[2].url.params["owner"] == "ada@x.y"
+        assert asked.machines[0].tools is False
         assert [(m.name, m.terminal_ready, m.clis) for m in named.machines] == [
             ("gx10", True, ["claude", "codex"]),
         ]
         assert bare.terminals == []
+
+    def test_machines_version_holds_past_its_wait_and_names_what_it_holds(
+        self,
+    ) -> None:
+        seen: list[httpx2.Request] = []
+
+        def handler(request: httpx2.Request) -> httpx2.Response:
+            seen.append(request)
+            return httpx2.Response(200, json={"version": 8})
+
+        with Client("https://server", api_key=_CREDENTIAL) as client:
+            _install_mock_transport(client, handler)
+            first = client.machines_version(owner="ada@x.y", since=None, wait_sec=25)
+            held = client.machines_version(since=7, wait_sec=25)
+
+        assert [(r.method, r.url.path) for r in seen] == [
+            ("GET", TERMINAL_MACHINES_CHANGES_PATH),
+        ] * 2
+        assert dict(seen[0].url.params) == {"owner": "ada@x.y", "wait_sec": "25"}
+        assert dict(seen[1].url.params) == {"since": "7", "wait_sec": "25"}
+        assert (_read_timeout(seen[1]) or 0) > 25
+        assert (first, held) == (MachinesVersion(version=8), MachinesVersion(version=8))
 
     def test_terminal_machines_wraps_a_malformed_payload(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:

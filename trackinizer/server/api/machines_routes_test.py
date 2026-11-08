@@ -405,12 +405,15 @@ def test_deleting_removes_the_row_by_name_when_no_credential_is_live(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, False]
+    engine.conn.fetchrow.side_effect = [{"id": _MACHINE_ID, "owner": None}]
+    engine.conn.fetchval.side_effect = [False]
 
     response = client.delete(_path("dev-1"))
 
     assert (response.status_code, response.content) == (204, b"")
-    lock, check = engine.conn.fetchval.call_args_list
+    lock = engine.conn.fetchrow.call_args
+    assert lock is not None
+    (check,) = engine.conn.fetchval.call_args_list
     # The credential check is its own statement: one that shared the lock's would
     # read the snapshot taken before the lock was granted, and miss a join that
     # committed while it waited.
@@ -429,7 +432,8 @@ def test_deleting_a_machine_in_service_is_refused_and_deletes_nothing(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchval.side_effect = [_MACHINE_ID, True]
+    engine.conn.fetchrow.side_effect = [{"id": _MACHINE_ID, "owner": None}]
+    engine.conn.fetchval.side_effect = [True]
 
     response = client.delete(_path("dev-1"))
 
@@ -445,7 +449,7 @@ def test_deleting_an_absent_machine_is_not_found(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchval.return_value = None
+    engine.conn.fetchrow.side_effect = [None]
 
     response = client.delete(_path("nope"))
 

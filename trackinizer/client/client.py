@@ -85,11 +85,12 @@ if TYPE_CHECKING:
         wire_session_ir,
         wire_sessions,
         wire_terminals,
+        wire_tools,
         wire_variables,
     )
     from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
-    from trackinizer.wire.wire_exec import ExecRequest, ExecResult, ExecWait
+    from trackinizer.wire.wire_exec import ExecResult, ExecWait
     from trackinizer.wire.wire_job import (
         GrantStatus,
         GrantTicket,
@@ -144,11 +145,13 @@ if TYPE_CHECKING:
         SessionStartResponse,
     )
     from trackinizer.wire.wire_terminals import (
+        MachinesVersion,
         OpenTerminal,
         TerminalMachines,
         TerminalOpened,
         TerminalWait,
     )
+    from trackinizer.wire.wire_tools import ToolOffer
     from trackinizer.wire.wire_variables import Variable
 else:
     from wrapt import lazy_import
@@ -171,6 +174,7 @@ else:
     wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
     # Same lazy-bind for ``wire_exec``: only the exec methods touch it.
     wire_exec = lazy_import("trackinizer.wire.wire_exec")
+    wire_tools = lazy_import("trackinizer.wire.wire_tools")
     # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
     # Same lazy-bind for ``wire_code``: only the code-store methods touch it.
@@ -2344,13 +2348,17 @@ class Client:
         self,
         *,
         canvas: uuid.UUID | None = None,
+        owner: str | None = None,
     ) -> TerminalMachines:
         """List the caller's machines, and the live terminals of one canvas.
 
-        The server answers for the signed-in owner only: an API key is refused.
+        The server answers for the signed-in owner only: an API key is refused,
+        unless it is the configured assistant's, which names the ``owner``.
 
         Args:
           canvas: The canvas whose live terminals to list; ``None`` lists none.
+          owner: The person whose machines the assistant lists; ``None`` for the
+            caller's own.
 
         Returns:
           machines: The caller's machines, each with whether it can take a terminal
@@ -2361,9 +2369,39 @@ class Client:
         response = self._request(
             "GET",
             where,
-            params=None if canvas is None else {"canvas": str(canvas)},
+            params={"canvas": canvas, "owner": owner},
         )
         return _validate_model(wire_terminals.TerminalMachines, response, where)
+
+    def machines_version(
+        self,
+        *,
+        since: int | None,
+        wait_sec: float,
+        owner: str | None = None,
+    ) -> MachinesVersion:
+        """Hold up to ``wait_sec`` for the version of the machine list to move.
+
+        Args:
+          since: The version held; ``None`` answers at once.
+          wait_sec: How long the server may hold the request; the read timeout
+            exceeds it, or the client would abort the very wait it asked for.
+          owner: The person whose machines the assistant follows; ``None`` for the
+            caller's own.
+
+        Returns:
+          version: The version now; ``since`` only when the hold ran out.
+
+        """
+        where = wire_terminals.TERMINAL_MACHINES_CHANGES_PATH
+        response = self._request(
+            "GET",
+            where,
+            params={"owner": owner, "since": since, "wait_sec": wait_sec},
+            retry_attempts=1,
+            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+        )
+        return _validate_model(wire_terminals.MachinesVersion, response, where)
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
         """Queue a terminal, or a detached agent run, on a caller's machine.
@@ -2388,48 +2426,39 @@ class Client:
         )
         return _validate_model(wire_terminals.TerminalOpened, response, where)
 
-    def exec_command(
+    def wait_tools(
         self,
-        name: str,
-        request: ExecRequest,
+        machine_id: uuid.UUID,
         *,
-        asker: str,
-        change_id: uuid.UUID | None = None,
-    ) -> ExecResult:
-        """Run a command on the asker's machine, as the configured assistant.
-
-        The call holds until the machine's host reports, so its read timeout exceeds
-        the command's own. It is never retried on its own. The same ``change_id`` sent
-        again within a minute returns the first try's result, or its 504 or 410 once the
-        host was handed the command, and runs nothing twice; after a refusal, or a 504
-        because no host took the command, it runs the command anew.
+        instance: uuid.UUID,
+        wait_sec: float,
+    ) -> ToolOffer | None:
+        """Hold up to ``wait_sec`` for an agent to ask for tools, as the machine's host.
 
         Args:
-          name: The machine's name.
-          request: The command, its folder and timeout, and optionally stdin and
-            variables.
-          asker: The person the command runs for, who owns the machine.
-          change_id: The idempotency key of this command; new when omitted.
+          machine_id: The machine's id, from joining.
+          instance: The host's id, which must be the machine's current one.
+          wait_sec: How long the server may hold the request; the read timeout
+            exceeds it, or the client would abort the very wait it asked for.
 
         Returns:
-          result: The exit code, both streams, the folder it ended in, and whether
-            output was cut.
+          offer: The pipe to dial back for, or ``None`` when none came in time.
 
         """
-        where = wire_exec.EXEC_PATH.format(name=quote(name, safe=""))
+        # A plain read: the server keeps no receipt of a wait, so a key would buy
+        # nothing; an offer whose response is lost is lost, and its dial-back says so.
+        where = wire_tools.MACHINE_TOOLS_WAIT_PATH.format(machine_id=machine_id)
         response = self._request(
-            "POST",
+            "GET",
             where,
-            body=request.model_dump(mode="json", exclude_none=True),
-            params={"asker": asker},
-            change_id=change_id,
-            retry_attempts=1,
-            timeout=request.timeout_sec
-            + wire_exec.OFFER_TTL_SEC
-            + wire_exec.RESULT_GRACE_SEC
-            + 5,
+            params={"instance": str(instance), "wait_sec": wait_sec},
+            timeout=wire_sessions.inbound_read_timeout(wait_sec),
         )
-        return _validate_model(wire_exec.ExecResult, response, where)
+        return (
+            None
+            if response is None
+            else _validate_model(wire_tools.ToolOffer, response, where)
+        )
 
     def wait_exec(
         self,

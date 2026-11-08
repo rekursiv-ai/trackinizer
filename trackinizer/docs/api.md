@@ -1595,6 +1595,7 @@ credential; revoke it first.
 ```
 POST   /api/terminals
 GET    /api/terminals/machines?canvas=<uuid>
+GET    /api/terminals/machines/changes?since=<n>&wait_sec=25
 POST   /api/terminals/<uuid>/attach
 POST   /api/terminals/<uuid>/close
 WS     /api/terminals/<uuid>/ws
@@ -1632,6 +1633,17 @@ and a folder that is not there ends the terminal with one line saying so. The ho
 an older wire still opens a login shell. Each machine in
 `GET /api/terminals/machines` carries `clis`, the CLIs its facts name, so a picker
 offers only what is installed, and `files`, whether its facts say `files`.
+
+`GET /api/terminals/machines/changes` answers `{version}`, the version of that listing,
+the moment it is not `since`, else when it moves, else after `wait_sec` (at most 25)
+with `since` again; without `since` it answers at once. Who may call it, and name an
+`owner`, is as for the listing. A follower lists, waits here, and lists again when the
+version moves. It moves when a write to the owner's machines commits: an enroll, a
+join, a heartbeat that reports new facts or releases the machine, a confirm, a run's
+folder, a revoke, a delete, and a device approval that enrolls one. Whether a machine
+reads online changes by time, and moves nothing. The versions are this server
+process's own and a restart forgets them; each process starts them at a random
+number, so a version kept from before answers at once.
 
 `kind` is `shell` (the default) or `files`. A `files` terminal starts no shell: the
 host answers file requests the browser sends as `INPUT` with `OUTPUT`, over the same
@@ -1683,6 +1695,70 @@ even when such a job still holds the terminal open.
 Nothing a terminal shows or receives is stored: the server keeps the last 256 KiB
 in memory for a re-attach and drops it when the terminal ends. An agent run started
 inside the shell records its own session, placed in the canvas, as it does anywhere.
+
+#### Tool pipes
+
+```
+WS     /api/machines/<name>/tools/ws?asker=<email>
+GET    /api/machines/<uuid>/tools/wait?instance=<uuid>&wait_sec=25
+WS     /api/machines/<uuid>/tools/<uuid>/ws?instance=<uuid>
+```
+
+How an agent reaches the tools of a connected machine. Only the configured assistant's
+key opens the first socket, naming an active writer or admin who owns the machine, which
+must not be revoked, be confirmed and report `tools: true`; how lately it was heard from
+is not asked, as its host's dial-back says whether it is up. The machine's host holds the wait,
+which returns `{pipe_id}` the moment an agent arrives, and dials back with its machine
+credential within 20 seconds. A machine holds 16 pipes at once. The server relays binary
+frames of at most 64 KiB and keeps no buffer, so either leg dropping ends the pipe, and
+the agent reconnects with a new one. The server asks the whole rule again every 60
+seconds, with whether the attached host is still the machine's current instance, and
+ends a pipe it no longer holds for: a revoked key or a disabled or demoted asker loses
+the machine within that time. The dial-back, the pipes a machine holds and the sweep's
+interval are the server's settings (`Config.tool_dial_back_sec`,
+`tool_pipes_per_machine`, `tool_sweep_sec`); the numbers here are their defaults.
+
+The server keeps no table of calls: what an agent ran is in its session's record. It
+logs each call as it relays it (see below); the session and the call's id join a log
+line to what the session recorded the tool doing.
+
+Both sockets accept, then refuse with a close code and a reason saying what happened,
+at most 123 bytes. Each leg closes with one of:
+
+| Code | Meaning |
+|---|---|
+| 4000 | The pipe ended: the agent left, or the server is stopping |
+| 4004 | The host left, or did not dial back in time |
+| 4403 | Refused, or no longer allowed; the reason says which: not this caller, not its machine, unconfirmed or serving no tools, all its pipes held, a stale instance, no such pipe, a line the server will not relay, or a server that could not go on |
+| 4410 | The machine was revoked or joined again |
+
+Nothing acts on which refusal it was, so they share one code; an agent reads the reason
+as its endpoint's error.
+
+##### What is logged
+
+Each event is one line of the server's log, with fixed `key=value` fields; a field an
+agent's line chose (`agent`, `session`, `tool`, `call_id`) and a reason are quoted. No
+line holds a call's arguments, a file, a tool's output, a key or a token: a call's
+arguments are logged by their size alone, and a line the server would not relay by
+the type of its failure and its size.
+
+| Level | Line | Fields |
+|---|---|---|
+| INFO | `tool pipe opened:` | `pipe machine machine_id asker key assistant` |
+| INFO | `tool call:` | `at pipe asker agent session machine tool call_id argument_bytes verdict` |
+| INFO | `tool pipe ended:` | `pipe machine_id by code reason cause duration_sec` |
+| WARNING | `tool pipe refused:` | `leg machine code reason`: a leg refused as it opened, its pipes all held included |
+| WARNING | `tool pipe line refused:` | `pipe failure bytes`: a line that ends the pipe |
+| WARNING | `tool pipe line dropped:` | `pipe failure bytes`: a line of a kind not offered |
+| WARNING | `tool pipe no longer allowed:` | `pipe machine_id check`: the sweep's check that failed |
+| WARNING | `tool pipe dial-back timed out:` | `pipe machine_id wait_sec` |
+
+`by` is what ended the pipe: `agent`, `host`, `dial-back`, `sweep`, `revoke` or
+`server`; `cause` is the type of an error that ended it, or `-`. `verdict` is the gate's
+(`allow` or `deny`): what was let through, not that the tool ran. A machine's host says
+in its own log when it adopts a pipe, and how the pipe ended, failed (by the error's
+type alone) or was dropped past the host's own cap, each line naming the pipe.
 
 ### 1.27 Code store
 

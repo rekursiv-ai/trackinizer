@@ -20,6 +20,7 @@ from treekle import from_plain
 import pytest
 import pytest_asyncio
 
+from trackinizer.server.api._deps import machine_changes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
@@ -788,9 +789,11 @@ async def test_a_named_machine_becomes_the_approvers_confirmed_personal_machine(
     client, store = pglite_route_client
     await _approver(store)
     code = await _code(client, machine="dev-box")
+    before = machine_changes(app).version(TEST_USER_EMAIL)
 
     token = await _approved_key(client, store, code)
 
+    assert machine_changes(app).version(TEST_USER_EMAIL) == before + 1
     assert token.issued is not None
     assert token.issued.machine_token.startswith(ENROLLMENT_PREFIX)
     async with store.engine.acquire() as conn:

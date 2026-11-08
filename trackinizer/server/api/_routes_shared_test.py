@@ -12,14 +12,16 @@ from fastapi import HTTPException
 
 import pytest
 
-from trackinizer.conftest import FakeEngine
+from trackinizer.conftest import FakeEngine, make_conn
 from trackinizer.server.api._routes_shared import (
     idempotency_key,
     iso_format,
     parse_fields,
     parse_seq_ranges,
+    refusal,
     request_engine,
     require_browser,
+    require_instance,
 )
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.wire.seq_ranges import SeqRange
@@ -27,6 +29,41 @@ from trackinizer.wire.seq_ranges import SeqRange
 
 if TYPE_CHECKING:
     from fastapi import Request
+
+
+def test_a_refusal_carries_its_code_and_message() -> None:
+    refused = refusal(409, code="tools_not_enabled", message="it is off")
+
+    assert (refused.status_code, refused.detail) == (
+        409,
+        {"code": "tools_not_enabled", "message": "it is off"},
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("current", [True, False, None])
+async def test_host_instance_requires_an_explicit_match(current: bool | None) -> None:
+    conn = make_conn()
+    conn.fetchval.return_value = current
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(engine=FakeEngine(conn))),
+    )
+    machine, instance = uuid.uuid4(), uuid.uuid4()
+    if current is True:
+        await require_instance(cast("Request", request), machine, instance=instance)
+    else:
+        with pytest.raises(HTTPException) as refused:
+            await require_instance(cast("Request", request), machine, instance=instance)
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "stale host instance",
+        )
+    assert conn.fetchval.call_args is not None
+    assert conn.fetchval.call_args.args == (
+        "SELECT host_instance = $2 FROM machines WHERE id = $1",
+        machine,
+        instance,
+    )
 
 
 def test_request_engine_is_the_engine_on_app_state() -> None:

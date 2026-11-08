@@ -184,13 +184,6 @@ class Opening:
     kind: wire_terminals.TerminalKind = "shell"
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _Ticket:
-    user: str
-    terminal_id: UUID
-    expires: float
-
-
 def decode_attach(payload: bytes) -> tuple[str, int]:
     """Return the ticket and the offset an ``ATTACH`` payload carries.
 
@@ -812,8 +805,16 @@ class TerminalHub:
             self.detach_browser(term, socket)
 
 
+class _Swept(Protocol):
+    """A hub with limits to enforce on a timer."""
+
+    async def sweep(self) -> None:
+        """End what has passed a limit."""
+        ...
+
+
 async def sweep_loop(
-    hub: TerminalHub,
+    hub: _Swept,
     *,
     interval_sec: float = wire_terminals.SWEEP_SEC,
 ) -> None:
@@ -829,4 +830,11 @@ async def sweep_loop(
         try:
             await hub.sweep()
         except Exception:
-            _logger.exception("terminal sweep failed; retrying next cycle")
+            _logger.exception("hub sweep failed; retrying next cycle")
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Ticket:
+    user: str
+    terminal_id: UUID
+    expires: float

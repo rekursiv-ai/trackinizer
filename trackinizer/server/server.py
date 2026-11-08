@@ -87,8 +87,10 @@ def main() -> int:
         # logger and uvicorn keeps its own INFO default, so an operator who
         # asked for WARNING still gets an access line per request -- behind a
         # proxy that is a duplicate of the proxy's log, with the proxy's IP
-        # instead of the caller's, and it fills the log partition.
-        log_level=log_level,
+        # instead of the caller's, and it fills the log partition. So uvicorn
+        # never logs below WARNING once a level is given: the package's INFO
+        # lines (the tool relay's among them) do not bring the access log back.
+        log_level=None if log_level is None else max(log_level, logging.WARNING),
         timeout_keep_alive=flags.timeout_keep_alive,
         # Force-close connections immediately on shutdown instead of waiting for
         # them to drain. Without this, uvicorn's default (wait indefinitely) made

@@ -14,6 +14,8 @@ from treekle import from_plain
 
 import pytest
 
+from trackinizer.server.api._deps import machine_changes
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
@@ -290,6 +292,24 @@ async def test_a_machine_is_not_found_until_registered_and_after_delete(
     assert (deleted.status_code, deleted.content) == (204, b"")
     assert (after.status_code, deleted_again.status_code) == (404, 404)
     assert (await _listed(client)).machines == []
+
+
+async def test_deleting_an_owned_machine_moves_its_owners_version(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    _as("admin")
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO machines (name, updated_by, owner, role) "
+            "VALUES ('laptop', 'ada@x.y', 'ada@x.y', 'personal')",
+        )
+    before = machine_changes(app).version("ada@x.y")
+
+    deleted = await client.delete(_path("laptop"))
+
+    assert deleted.status_code == 204
+    assert machine_changes(app).version("ada@x.y") == before + 1
 
 
 async def test_a_machine_can_be_registered_again_after_delete(

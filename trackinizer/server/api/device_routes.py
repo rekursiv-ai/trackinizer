@@ -32,7 +32,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._deps import auth_is_disabled
+from trackinizer.server.api._deps import auth_is_disabled, machines_changed
 from trackinizer.server.api._origin import is_strictly_same_origin
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.device_limits import (
@@ -313,6 +313,8 @@ async def device_approve_route(
                 confirmed=True,
             )
         await _decide(conn, login=login, status="approved", identity=identity)
+    if login.machine is not None:
+        machines_changed(request, owner=identity.email)
 
 
 @router.post(DEVICE_DENY_PATH, status_code=204)

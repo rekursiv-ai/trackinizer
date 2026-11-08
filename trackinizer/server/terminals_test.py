@@ -910,7 +910,7 @@ async def test_a_failed_sweep_pass_is_logged_and_the_loop_goes_on(
         await sweep_loop(world.hub, interval_sec=0)
 
     assert passes == [0, 1, 2]
-    assert "terminal sweep failed; retrying next cycle" in caplog.text
+    assert "hub sweep failed; retrying next cycle" in caplog.text
 
 
 @pytest.mark.asyncio
