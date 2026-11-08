@@ -68,6 +68,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "cli_folder": "",
     "chat_tool_calls": True,
     "autofix": True,
+    "hide_closed_pulls": True,
     "stars": [],
     "views": [],
     "console_views": [],

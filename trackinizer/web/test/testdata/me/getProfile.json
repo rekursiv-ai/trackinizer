@@ -32,6 +32,7 @@
         "create_draft": null,
         "dismissed": [],
         "drafts": {},
+        "hide_closed_pulls": true,
         "highlight_mentions": true,
         "home": "graph",
         "lens": null,
