@@ -376,7 +376,7 @@ do_not_mutate_patterns = [
 select = "ALL"
 fix = "ALL"
 # Each export sets its own package and directory policy.
-set = ["import-alias.first-party=trackinizer", "test-footer.runner=trackinizer.lib.testing.runner"]
+set = ["import-alias.first-party=trackinizer", "test-footer.runner=trackinizer.lib.testing.runner", "xdg-literal.helper=trackinizer.lib.userdirs", "userdirs-namespace.namespace=rekursiv-ai"]
 exclude = [
     "**/third_party/** typings/** **/.export/typings/** **/torch-types/shed/**",
     """*_test.py **/tests/test*.py =
