@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 import argparse
 
@@ -12,6 +12,10 @@ from trackinizer.client.errors import ClientError
 from trackinizer.trax import connection, profile
 from trackinizer.trax.client_cache import Target, close_clients
 from trackinizer.trax.profile import Profile
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_profile_flag_overrides_trackinizer_url(
@@ -37,6 +41,7 @@ _KEY: Final = "tok-SENTINEL-93f1c7"
 def no_ambient_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Scrub an exported ``TRACKINIZER_TOKEN`` so it cannot bleed into these tests."""
     monkeypatch.delenv("TRACKINIZER_TOKEN", raising=False)
+    monkeypatch.delenv("TRACKINIZER_TOKEN_FILE", raising=False)
 
 
 def _resolve(*, profile_name: str | None = None, port: int | None = None) -> Target:
@@ -181,7 +186,9 @@ class TestTokenEnvironment:
         with pytest.raises(ClientError, match="printable ASCII") as caught:
             _ = _resolve()
 
-        assert _KEY not in str(caught.value)
+        assert str(caught.value) == (
+            "TRACKINIZER_TOKEN must be printable ASCII with no whitespace"
+        )
 
     def test_profile_flag_needs_no_url_for_an_unused_token(
         self,
@@ -191,6 +198,68 @@ class TestTokenEnvironment:
         monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
 
         assert _resolve(profile_name="prod").url == "http://prod:9000"
+
+
+class TestTokenFile:
+    """``TRACKINIZER_TOKEN_FILE`` names the key's file, as systemd's ``LoadCredential`` hands it."""
+
+    def test_the_key_is_read_from_the_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        (tmp_path / "key").write_text(f"{_KEY}\n")
+        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(tmp_path / "key"))
+
+        assert _resolve() == Target(url="http://env:1", author="", api_key=_KEY)
+
+    def test_the_token_wins_over_the_file(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        (tmp_path / "key").write_text("from-the-file\n")
+        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
+        monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(tmp_path / "key"))
+
+        assert _resolve().api_key == _KEY
+
+    def test_a_file_that_cannot_be_read_is_one_line(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        missing = tmp_path / "missing"
+        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(missing))
+
+        with pytest.raises(ClientError) as caught:
+            _ = _resolve()
+
+        assert (
+            str(caught.value)
+            == f"TRACKINIZER_TOKEN_FILE {missing}: No such file or directory"
+        )
+        assert caught.value.__cause__ is None
+
+    def test_a_malformed_key_in_the_file_is_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        (tmp_path / "key").write_text(f"{_KEY} trailing\n")
+        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(tmp_path / "key"))
+
+        with pytest.raises(ClientError) as caught:
+            _ = _resolve()
+
+        assert str(caught.value) == (
+            f"TRACKINIZER_TOKEN_FILE {tmp_path / 'key'} must hold printable ASCII "
+            "with no whitespace"
+        )
 
 
 class TestClientSharing:

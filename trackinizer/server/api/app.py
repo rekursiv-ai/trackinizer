@@ -71,6 +71,7 @@ from trackinizer.server.config import (
 from trackinizer.server.embedders import registry
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.secrets import parse_secrets
+from trackinizer.server.service_keys import ensure_service_keys
 from trackinizer.server.session_reaper import session_reaper_loop
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
@@ -203,6 +204,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             # the schema is in place.
             async with engine.acquire() as conn:
                 await seed_no_auth_user(conn, policy=app.state.access_policy)
+        if config.service_keys is not None:
+            # The service accounts the deployment names, and their one live key each.
+            async with engine.acquire() as conn:
+                await ensure_service_keys(
+                    conn,
+                    keys=config.service_keys,
+                    policy=app.state.access_policy,
+                )
         # Resolve the session-search embedder ONCE at startup and cache it on
         # app.state (web.py reads it there). A real model is degraded to None
         # when its weights are absent -- never downloaded in-band -- and warmed

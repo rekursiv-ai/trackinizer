@@ -34,7 +34,7 @@ from trackinizer.server.api.app import (
     unique_violation_handler,
     validation_handler,
 )
-from trackinizer.server.config import Config, ConfigError
+from trackinizer.server.config import Config, ConfigError, ServiceKeys
 from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.secrets import FileSecrets, SecretRef
@@ -913,6 +913,31 @@ def test_lifespan_reads_the_environment_when_the_app_holds_no_config(
 
     assert _lifespan_state(monkeypatch, fastapi_app, "config") is config
     from_env.assert_called_once_with()
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_lifespan_keeps_the_service_keys_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    named: bool,
+) -> None:
+    told: list[tuple[object, object]] = []
+
+    async def ensure(conn: object, *, keys: object, policy: object) -> None:
+        del conn
+        told.append((keys, policy))
+
+    monkeypatch.setattr(app, "ensure_service_keys", ensure)
+    keys = ServiceKeys(accounts=(("chat", "writer"),), directory=tmp_path)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(
+        secrets="none",
+        service_keys=keys if named else None,
+    )
+
+    policy = _lifespan_state(monkeypatch, fastapi_app, "access_policy")
+
+    assert told == ([(keys, policy)] if named else [])
 
 
 def test_lifespan_cancels_the_embedder_warm_up_at_shutdown(

@@ -299,6 +299,23 @@ class TestTokenIsNeverTheDaemons:
 
         assert targets == [Target(url="http://caller:1", author="", api_key="")]
 
+    def test_the_daemons_key_file_is_never_read(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        key_file = tmp_path / "key"
+        key_file.write_text("daemon-file-token\n")
+        monkeypatch.delenv("TRACKINIZER_TOKEN", raising=False)
+        monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(key_file))
+        targets: list[Target] = []
+        handle(
+            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            run=lambda _argv: targets.append(connection.resolve_target(Namespace())),
+        )
+
+        assert targets == [Target(url="http://caller:1", author="", api_key="")]
+
 
 class TestConcurrentRequests:
     """The daemon is threaded, so per-request state must be per-THREAD.

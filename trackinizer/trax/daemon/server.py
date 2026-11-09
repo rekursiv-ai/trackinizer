@@ -34,6 +34,7 @@ from trackinizer.trax.daemon.client import STALE_EXIT_CODE
 from trackinizer.trax.daemon.protocol import (
     FORWARDED_ENV,
     KEY_ENV,
+    KEY_FILE_ENV,
     ProtocolVersionError,
     Request,
     Response,
@@ -297,10 +298,10 @@ def _run_isolated(
     ENV.set(
         {name: value for name, value in request.env.items() if name in FORWARDED_ENV},
     )
-    # ``TRACKINIZER_TOKEN`` is claimed but never forwarded: without the claim, a
+    # ``TRACKINIZER_TOKEN`` and its file are claimed but never forwarded: without the claim, a
     # name the caller did not send falls through to the daemon's own environment
     # and its key would authenticate this caller against the caller's server.
-    OVERLAID_NAMES.set(frozenset((*FORWARDED_ENV, KEY_ENV)))
+    OVERLAID_NAMES.set(frozenset((*FORWARDED_ENV, KEY_ENV, KEY_FILE_ENV)))
     CWD.set(request.cwd)
     # The daemon's stdout is a socket, so ``isatty()`` there is always False
     # and autodetection would size every table as if piped.
