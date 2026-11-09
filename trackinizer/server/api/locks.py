@@ -8,9 +8,11 @@ endpoints, so an edge write is refused when either end is locked, and a purge wh
 the row is linked to a locked one (the purge deletes that edge). A row the caller
 may not read answers 404 first, to an admin too, as a read of it does.
 
-Setting the lock records no change: it adds no change kind, and leaves ``modified``
-alone so that locking the rules Issue does not move the rules version. Who set or
-cleared it, and when, goes to ``inquiry_lock_log``.
+Setting the lock leaves ``modified`` alone, so that locking the rules Issue does not
+move the rules version, and runs no cascade, cost roll-up or notification. Who set or
+cleared it, and when, goes to ``change_log`` as a ``locked`` or ``unlocked`` event in
+the same transaction. Those kinds are protected history
+(``Change.PROTECTED_KINDS``): an admin reads them and no one else.
 """
 
 from __future__ import annotations
@@ -176,12 +178,15 @@ async def set_lock_route(
         )
         locked = await conn.fetchval(
             "WITH changed AS (UPDATE inquiries SET locked = $2 WHERE id = $1 "
-            "RETURNING locked), logged AS (INSERT INTO inquiry_lock_log "
-            "(inquiry_id, locked, actor) SELECT $1, locked, $3 FROM changed) "
+            "RETURNING kind, locked), logged AS (INSERT INTO change_log "
+            "(id, actor, api_key_id, subject_id, subject_kind, kind) "
+            "SELECT gen_random_uuid(), $3, $4, $1, kind, "
+            "CASE WHEN locked THEN 'locked' ELSE 'unlocked' END FROM changed) "
             "SELECT locked FROM changed",
             target_id,
             body.locked,
             identity.email,
+            identity.api_key_id,
         )
     if locked is None:
         raise HTTPException(status_code=404, detail="inquiry not found")

@@ -17,6 +17,7 @@ from treekle import from_plain, json_loads
 
 import pytest
 
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.export import _SCOPE_COLUMNS
@@ -200,6 +201,34 @@ async def test_the_export_carries_every_seeded_row(store: Store) -> None:
     assert "search" not in record
     (command,) = _rows(graph, "session_slash_commands")
     assert command["command"] == "compact"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_the_export_leaves_out_lock_events_for_every_reader(store: Store) -> None:
+    """Lock history is protected: not even an admin's export carries it."""
+    ids = await _seed(store)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind) "
+            "SELECT gen_random_uuid(), 'admin@example.com', $1, 'Issue', kind "
+            "FROM unnest(ARRAY['locked', 'unlocked']) AS kind",
+            ids["broad"],
+        )
+
+    exported = [
+        {row["kind"] for row in _rows(graph, "change_log")}
+        for graph in [
+            await store.export_graph(reader=_ANYONE),
+            await store.export_graph(
+                reader=_ANYONE,
+                principal=Principal(email="admin@example.com", role="admin"),
+            ),
+        ]
+    ]
+
+    assert all("created" in kinds for kinds in exported)
+    assert not any(kinds & {"locked", "unlocked"} for kinds in exported)
 
 
 @pytest.mark.db_pglite

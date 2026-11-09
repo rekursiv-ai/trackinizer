@@ -228,6 +228,7 @@ class TestSetLock:
             _A,
             True,
             make_test_identity().email,
+            make_test_identity().api_key_id,
         )
 
     def test_a_writer_is_refused(

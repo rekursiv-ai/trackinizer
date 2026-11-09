@@ -997,8 +997,14 @@ a locked Artifact (`POST /api/artifacts/content`); any other writer gets 403 nam
 the row. The lock covers fields, edges and delete only: a session's lifecycle
 (`/api/sessions/<id>/end`), its metrics and its records are not edits of the row and
 stay open to the session's owner. `POST /api/inquiries/next_issue` skips a locked
-Issue. Locking records no change and leaves `modified` alone; `inquiry_lock_log`
-holds who set or cleared each lock and when. Migration `schema.038.sql` locks nothing;
+Issue. Locking leaves `modified` alone and fires no cascade or notification; it
+writes a `locked` or `unlocked` change to the change log, in the lock's transaction,
+saying who set or cleared the lock and when. Those two kinds are protected history:
+`GET /api/change_log` and `/api/change_log/<id>` return them to an admin alone (to
+anyone else they are neither listed nor counted, and an `after_id` naming one is a
+404), and no export or subscriber push carries them. They outlive a purge of the
+row. `inquiry_lock_log`, which held this history before `schema.074.sql` moved it
+into the change log, is no longer read or written. Migration `schema.038.sql` locks nothing;
 an admin locks Issue#1 so that no writer rewrites the rules, and unlocks it to
 edit them.
 `GET /api/web/get/<uuid>` carries `locked` beside

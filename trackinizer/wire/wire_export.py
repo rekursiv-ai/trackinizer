@@ -114,7 +114,9 @@ Left out on purpose, and why:
   blobs, which retention exists to drop.
 * ``users``, ``api_keys``, ``allowlist``, ``inquiry_lock_log`` -- credentials
   and access control, not the graph. A row's ``locked`` flag is a column of
-  ``inquiries`` and is exported; who set it is not.
+  ``inquiries`` and is exported; who set it is not. That history is ``change_log``
+  rows of the protected kinds ``locked`` and ``unlocked``, which ``change_log``'s
+  export leaves out. ``inquiry_lock_log`` itself is retired and unwritten.
 * ``variables`` -- launch configuration, not graph records; a secret row names
   a value that lives outside the database, so a restored export could not
   carry it.
