@@ -307,7 +307,6 @@ async def test_the_lock_is_admin_only_and_clears(
         ("unlocked", admin),
     ]
     assert await _lock_log(store, missing_id) == []
-    assert await _old_lock_log_rows(store) == 0
     assert refused.status_code == 403
     assert set_.json() == {"id": str(rows.other), "locked": True}
     assert cleared.json() == {"id": str(rows.other), "locked": False}
@@ -543,15 +542,6 @@ async def _lock_log(store: Store, target: uuid.UUID) -> list[tuple[str, str]]:
             target,
         )
     return [(from_plain(r["kind"], str), from_plain(r["actor"], str)) for r in found]
-
-
-async def _old_lock_log_rows(store: Store) -> int:
-    """Count the rows the retired ``inquiry_lock_log`` table holds."""
-    async with store.engine.acquire() as conn:
-        return from_plain(
-            await conn.fetchval("SELECT count(*) FROM inquiry_lock_log"),
-            int,
-        )
 
 
 async def _changes(store: Store) -> set[uuid.UUID]:

@@ -631,17 +631,6 @@ CREATE TABLE IF NOT EXISTS users (
     preferences JSONB CHECK (jsonb_typeof(preferences) = 'object')
 );
 
--- Who set or cleared an inquiry's ``locked`` flag, and when (``api/locks.py``).
--- ``inquiry_id`` is FK-free like ``change_log.subject_id``, so a purged row keeps its
--- history.
-CREATE TABLE IF NOT EXISTS inquiry_lock_log (
-    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    inquiry_id UUID NOT NULL,
-    locked     BOOLEAN NOT NULL,
-    actor      TEXT NOT NULL,
-    created    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-);
-
 CREATE TABLE IF NOT EXISTS api_keys (
     id            UUID PRIMARY KEY,
     user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1174,16 +1163,6 @@ CREATE TABLE IF NOT EXISTS code_snapshots (
 
 -- Direct GPU jobs and the certificates and tokens issued for them: see
 -- ``schema.054.sql`` for what each table keeps. Added in 054.
-CREATE TABLE IF NOT EXISTS gpu_allowance_resets (
-    id BIGSERIAL PRIMARY KEY,
-    email TEXT NOT NULL,
-    reset_by UUID REFERENCES users(id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    job_ids BIGINT[] NOT NULL
-);
-CREATE INDEX IF NOT EXISTS gpu_allowance_resets_email
-    ON gpu_allowance_resets (email);
-
 CREATE TABLE IF NOT EXISTS gpu_owners (
     id         BIGSERIAL PRIMARY KEY,
     email      TEXT NOT NULL UNIQUE,

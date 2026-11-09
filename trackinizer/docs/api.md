@@ -1003,8 +1003,8 @@ saying who set or cleared the lock and when. Those two kinds are protected histo
 `GET /api/change_log` and `/api/change_log/<id>` return them to an admin alone (to
 anyone else they are neither listed nor counted, and an `after_id` naming one is a
 404), and no export or subscriber push carries them. They outlive a purge of the
-row. `inquiry_lock_log`, which held this history before `schema.074.sql` moved it
-into the change log, is no longer read or written. Migration `schema.038.sql` locks nothing;
+row. `inquiry_lock_log` held this history until `schema.074.sql` moved it into the
+change log; `schema.075.sql` drops it. Migration `schema.038.sql` locks nothing;
 an admin locks Issue#1 so that no writer rewrites the rules, and unlocks it to
 edit them.
 `GET /api/web/get/<uuid>` carries `locked` beside

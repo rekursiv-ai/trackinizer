@@ -1369,14 +1369,19 @@ _MIGRATION_074: Final = substitute_schema_placeholders(load_sql("schema.074"))
 """The 074 migration as the runner applies it."""
 
 
+# Lock history has no change kind, and ``inquiry_lock_log``, which 075 drops from a
+# fresh install, is back as 038 built it.
 async def _make_lock_history_old(conn: Conn) -> None:
-    """Turn a fresh database back into 073's shape: lock history has no change kind."""
+    """Turn a fresh database back into 073's shape."""
     await conn.execute(
         "ALTER TABLE change_log DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
         f"{_change_kinds(*_LOCK_CHANGES)}))",
     )
-    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.074.sql'")
+    await conn.execute(load_sql("schema.038"))
+    await conn.execute(
+        "DELETE FROM applied_migrations WHERE name IN ('schema.074.sql', 'schema.075.sql')",
+    )
 
 
 # Return ``(id, subject, kind, actor)``.
@@ -1490,6 +1495,39 @@ async def test_migration_074_admits_the_lock_kinds_an_older_database_refuses(
     await conn.execute(event, "unlocked")
 
     assert len(await _lock_events(conn)) == 2
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_075_drops_the_retired_tables_a_fresh_install_lacks(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """075 drops the tables 038 and 061 built, rows and all, and runs again as a no-op.
+
+    Bootstrap builds the baseline, which has neither table. This builds them as an
+    upgraded database still holds them, with a row each, then replays ``schema.075``;
+    the lock events 074 moved stay in the change log.
+    """
+    conn = pglite_rollback_conn
+    gone = (
+        "SELECT to_regclass('gpu_allowance_resets') IS NULL "
+        "AND to_regclass('inquiry_lock_log') IS NULL"
+    )
+    assert await conn.fetchval(gone), "the baseline still builds a retired table"
+
+    await _make_lock_history_old(conn)
+    await conn.execute(load_sql("schema.061"))
+    await conn.execute(
+        "INSERT INTO gpu_allowance_resets (email, job_ids) "
+        "VALUES ('jan@example.com', '{1}')",
+    )
+    logged = await _seed_lock_log(conn)
+    await conn.execute(_MIGRATION_074)
+    await conn.execute(load_sql("schema.075"))
+    await conn.execute(load_sql("schema.075"))
+
+    assert await conn.fetchval(gone)
+    assert len(await _lock_events(conn)) == len(logged)
 
 
 _GPU_TABLES = ("gpu_owners", "gpu_jobs", "gpu_issuances")
@@ -1963,11 +2001,14 @@ async def _old_issue(conn: Conn) -> uuid.UUID:
 
 
 async def _migrate(conn: Conn, *steps: str) -> None:
-    """Run ``steps`` in order, then 066 and 074, as the runner applies them."""
+    """Run ``steps`` in order, then 066, 074 and 075, as the runner applies them."""
     for step in steps:
         await conn.execute(load_sql(step))
     await conn.execute(_MIGRATION_066)
+    # Every database older than 075 has 038's lock log, which a fresh install lacks.
+    await conn.execute(load_sql("schema.038"))
     await conn.execute(_MIGRATION_074)
+    await conn.execute(load_sql("schema.075"))
 
 
 @pytest.mark.db_pglite
