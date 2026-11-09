@@ -28,6 +28,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    computed_field,
     field_validator,
 )
 
@@ -282,6 +283,18 @@ class JobView(BaseModel):
 
     upload_serial: int | None
     """The serial of the upload certificate, once the job is placed."""
+
+    @computed_field
+    @property
+    def gpu_minutes(self) -> int | None:
+        """``gpu_seconds`` rounded up to the minute; ``None`` when that is.
+
+        Exact for the whole intervals charged while a job runs and for jobs billed in
+        minutes before ``gpu_seconds``; a sealed job's last part minute rounds up.
+        Sent for clients through trackinizer 0.1.13, which require it and only show
+        it; drop it once they are gone.
+        """
+        return None if self.gpu_seconds is None else -(-self.gpu_seconds // 60)
 
 
 class JobList(BaseModel):
