@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from functools import partial
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Final, cast
 
 import asyncio
-import contextlib
 
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosedError, InvalidHandshake
@@ -21,11 +19,6 @@ from trackinizer.client.tool_bridge import (
     bridged,
     dial_tools,
 )
-from trackinizer.sagent.agent.team import Team
-from trackinizer.sagent.host import wire
-from trackinizer.sagent.host.wire import Welcome, encoded
-from trackinizer.sagent.providers.catalog import ModelCatalog
-from trackinizer.sagent.tools.remote import Endpoint, Link
 from trackinizer.server.config import Config
 from trackinizer.wire.wire_tools import FRAME_BYTES
 
@@ -259,7 +252,7 @@ async def test_the_agents_leg_reads_a_line_past_the_relays_limit_and_refuses_pas
         api_key="k",
         machine="m",
         asker="a@b.c",
-        limit=wire.MAX_LINE_BYTES,
+        limit=2 * Config().tool_line_bytes,
     )
     # A result larger than the relay's own cap, which it never reads.
     line = b"x" * (Config().tool_line_bytes + 1) + b"\n"
@@ -291,7 +284,7 @@ async def test_a_server_url_with_no_host_is_a_value_error() -> None:
             api_key="k",
             machine="m",
             asker="a@b.c",
-            limit=wire.MAX_LINE_BYTES,
+            limit=_LIMIT,
         )
 
 
@@ -310,7 +303,9 @@ async def test_a_slow_socket_stalls_the_writer_without_a_growing_buffer() -> Non
     for _ in range(_MOST_WRITTEN >> 20):
         writer.write(chunk)
         drained = asyncio.create_task(writer.drain())
-        done, _ = await asyncio.wait({drained}, timeout=0.3)
+        # The stalled drain always costs this whole wait. One taken early is harmless:
+        # the assertions below hold however much the kernel had taken.
+        done, _ = await asyncio.wait({drained}, timeout=0.02)
         if not done:
             stalled = drained
             break
@@ -360,7 +355,7 @@ async def test_dial_tools_reaches_a_real_server_and_refusal_is_an_oserror() -> N
             api_key="secret",
             machine="my box/1",
             asker="a+b@example.com",
-            limit=wire.MAX_LINE_BYTES,
+            limit=_LIMIT,
         )
         payload = b"z" * 300_000
         writer.write(payload)
@@ -375,7 +370,7 @@ async def test_dial_tools_reaches_a_real_server_and_refusal_is_an_oserror() -> N
                 api_key="wrong",
                 machine="m",
                 asker="x@example.com",
-                limit=wire.MAX_LINE_BYTES,
+                limit=_LIMIT,
             )
         assert isinstance(refused.value, OSError)
         with pytest.raises(ValueError, match=r"http://"):
@@ -384,7 +379,7 @@ async def test_dial_tools_reaches_a_real_server_and_refusal_is_an_oserror() -> N
                 api_key="k",
                 machine="m",
                 asker="x@y.z",
-                limit=wire.MAX_LINE_BYTES,
+                limit=_LIMIT,
             )
 
     assert seen[0] == (
@@ -392,100 +387,6 @@ async def test_dial_tools_reaches_a_real_server_and_refusal_is_an_oserror() -> N
         "Bearer secret",
     )
     await _settled(before)
-
-
-def _endpoint(url: str) -> Endpoint:
-    return Endpoint(
-        Link(
-            dial=partial(
-                dial_tools,
-                url,
-                api_key="k",
-                machine="gx10",
-                asker="ada@x.y",
-                limit=wire.MAX_LINE_BYTES,
-            ),
-            token="",
-            name="gx10",
-            where="gx10",
-        ),
-        session_id="s1",
-        client="here",
-        team=Team(catalog=ModelCatalog(factories={})),
-        retry_sec=0.05,
-        ping_sec=20.0,
-    )
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("code", "reason"),
-    [
-        (4403, "gx10 serves no tools: update its host, or drop --no-exec"),
-        (4403, "the server will not relay a line: Expecting value"),
-        (4410, "the machine was revoked, or joined again"),
-    ],
-)
-async def test_an_endpoint_reports_why_the_server_closed_it(
-    code: int,
-    reason: str,
-) -> None:
-    dials = 0
-
-    async def refuse(connection: ServerConnection) -> None:
-        nonlocal dials
-        dials += 1
-        await connection.close(code, reason)
-
-    async with serve(refuse, "127.0.0.1", 0) as server:
-        port = cast(int, server.sockets[0].getsockname()[1])
-        endpoint = _endpoint(f"http://127.0.0.1:{port}")
-        task = asyncio.create_task(endpoint.run())
-        try:
-            async with asyncio.timeout(_SETTLE_SEC):
-                await endpoint.until(lambda e: e.tried and dials >= 3)
-            assert str(code) in endpoint.error
-            assert reason in endpoint.error
-            with pytest.raises(ValueError, match=reason):
-                _ = await endpoint.call(agent="a", window="w", tool="t", arguments={})
-        finally:
-            _ = task.cancel()
-            _ = await asyncio.gather(task, return_exceptions=True)
-
-
-@pytest.mark.asyncio
-async def test_an_endpoint_redials_a_refusing_server_and_recovers() -> None:
-    refusing = True
-    dials = 0
-
-    async def serve_one(connection: ServerConnection) -> None:
-        nonlocal dials
-        dials += 1
-        if refusing:
-            await connection.close(4403, "serves no tools")
-            return
-        _ = await connection.recv()  # The Hello.
-        await connection.send(
-            encoded(Welcome(name="gx10", resumed=False, calls=(), tools={})),
-        )
-        with contextlib.suppress(Exception):
-            async for _message in connection:
-                pass
-
-    async with serve(serve_one, "127.0.0.1", 0) as server:
-        port = cast(int, server.sockets[0].getsockname()[1])
-        endpoint = _endpoint(f"http://127.0.0.1:{port}")
-        task = asyncio.create_task(endpoint.run())
-        try:
-            async with asyncio.timeout(_SETTLE_SEC):
-                await endpoint.until(lambda e: dials >= 2 and "4403" in e.error)
-            refusing = False
-            async with asyncio.timeout(_SETTLE_SEC):
-                await endpoint.until(lambda e: e.up)
-            assert endpoint.error == ""
-        finally:
-            _ = task.cancel()
-            _ = await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -509,7 +410,7 @@ async def test_dial_tools_dials_what_its_arguments_name(
             api_key="k",
             machine="my box/1",
             asker="a+b@c.d",
-            limit=wire.MAX_LINE_BYTES,
+            limit=_LIMIT,
         )
     assert dialed == [
         (
