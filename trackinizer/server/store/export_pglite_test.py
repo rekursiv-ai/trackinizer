@@ -52,8 +52,6 @@ _LEFT_OUT: Final = frozenset(
         "applied_migrations",
         "code_blobs",
         "code_snapshots",
-        "credit_entries",
-        "credit_grace",
         "device_logins",
         "gpu_box_credentials",
         "gpu_allowance_resets",
