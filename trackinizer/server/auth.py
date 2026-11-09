@@ -14,7 +14,8 @@ The pieces:
   hash carries its own parameters: ``scrypt$n$r$p$saltB64$keyB64``.
 * :func:`current_user` -- the FastAPI dependency. Bearer header wins;
   otherwise the signed session cookie. 401 on no/bad credential or
-  disabled user.
+  disabled user; 409 when a browser page's ``X-Page-Account`` names another
+  account than its session's (:data:`PAGE_ACCOUNT_HEADER`).
 * :func:`allowlist_match` -- matches an email against the allowlist for
   the OAuth callback; literal match wins over a ``*@domain`` wildcard.
 * :func:`bootstrap_admin` -- seeds the first admin when ``users`` is empty.
@@ -66,6 +67,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BOOTSTRAP_ADMIN_ENV",
     "BOOTSTRAP_TOKEN_FILE_ENV",
+    "PAGE_ACCOUNT_HEADER",
     "ROLE_ORDER",
     "TOKEN_PREFIX_LEN",
     "AudienceCeilingError",
@@ -111,6 +113,9 @@ _TOKEN_BYTES: int = 32  # house-ignore[globals] -- Token entropy size (security 
 # Visible prefix stored per api_keys row. Drives UI display and scopes
 # scrypt-verify to the rows sharing that prefix.
 TOKEN_PREFIX_LEN: Final[int] = 12
+
+PAGE_ACCOUNT_HEADER: Final[str] = "X-Page-Account"
+"""The header a browser page sends with the email of the account it was read as."""
 
 BOOTSTRAP_ADMIN_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_ADMIN"
 BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.
@@ -399,6 +404,7 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
             staff=staff,
         )
         if identity is not None:
+            _refuse_another_page(request, identity)
             return identity
     raise HTTPException(status_code=401, detail="not authenticated")
 
@@ -1053,6 +1059,25 @@ def _try_read_session_user_id(request: HTTPConnection) -> uuid.UUID | None:
         return uuid.UUID(raw)
     except ValueError:
         return None
+
+
+# One browser shares one session cookie across its tabs. A tab left open while another
+# tab signs in as someone else would otherwise show the first account and act as the
+# second: its ``X-Page-Account`` names whom it shows. A request without the header, a
+# WebSocket or another client's, is the session's own.
+def _refuse_another_page(request: HTTPConnection, identity: AuthIdentity) -> None:
+    """Refuse a request from a page read as another account than the session's."""
+    page = request.headers.get(PAGE_ACCOUNT_HEADER)
+    if page is None or page.casefold() == identity.email.casefold():
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "other_account",
+            "message": f"Nothing was sent: this page was read as {page}, and you are "
+            f"signed in as {identity.email} now. Reload it to see {identity.email}'s.",
+        },
+    )
 
 
 async def _resolve_session_identity(
