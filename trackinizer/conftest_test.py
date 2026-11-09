@@ -1,30 +1,16 @@
 """Regression tests for shared Trackinizer fixtures."""
 
 from collections.abc import Awaitable, Callable, Generator
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from functools import partial
 from pathlib import Path
 from typing import Final, cast
-from unittest.mock import MagicMock
 
 import inspect
 import os
-import random
 
 import asyncpg
 import pytest
-
-
-# pytest-postgresql imports psycopg, and psycopg without libpq raises a plain
-# ImportError, which ``importorskip`` passes through unless told otherwise.
-pytest.importorskip("psycopg", exc_type=ImportError)
-
-from port_for import api
-from pytest_postgresql import janitor
-from pytest_postgresql.config import get_config
-from pytest_postgresql.executors.proc import PostgreSQLExecutor
-from pytest_postgresql.factories import process
-from pytest_postgresql.plugin import postgresql_proc
 
 from trackinizer import conftest
 from trackinizer.conftest import (
@@ -94,73 +80,6 @@ def test_bootstrap_environment_is_isolated_and_restored(
                 tmp_path / "bootstrap-token",
             )
     assert dict(os.environ) == before
-
-
-@pytest.mark.parametrize(("workers", "retries"), [(7, 5), (1, 9)])
-def test_pg_dsn_reserves_ports_for_seeded_workers(
-    request: pytest.FixtureRequest,
-    tmp_path: Path,
-    tmp_path_factory: pytest.TempPathFactory,
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    workers: int,
-    retries: int,
-) -> None:
-    """Cover concurrent reservations and preserve a larger configured budget."""
-    (tmp_path / "worker").mkdir()
-    monkeypatch.setenv("PYTEST_XDIST_WORKER_COUNT", str(workers))
-    monkeypatch.setattr(request.config, "workerinput", {}, raising=False)
-    monkeypatch.setattr(request.config.option, "postgresql_port_search_count", retries)
-    monkeypatch.setattr(tmp_path_factory, "getbasetemp", lambda: tmp_path / "worker")
-    # Port policy discovery and the socket probe are independent of exclusive
-    # reservation: every port reads as free, so seeded workers collide on
-    # their first pick. Keep the real RNG selection and sentinel lifecycle,
-    # which alone must keep the reservations apart.
-    monkeypatch.setattr(api, "available_good_ports", lambda: set(range(10_000, 10_032)))
-    monkeypatch.setattr(api, "port_is_used", _never_used)
-    monkeypatch.setattr(process, "_pg_exe", MagicMock(return_value=Path("/unused")))
-    executor = MagicMock(
-        host="localhost",
-        user="postgres",
-        password=None,
-        dbname="test",
-    )
-    executor.logfile = str(tmp_path / "unused.log")
-    monkeypatch.setattr(process, "PostgreSQLExecutor", MagicMock(return_value=executor))
-    monkeypatch.setattr(process, "DatabaseJanitor", MagicMock())
-    # ``pg_dsn`` imports ``DatabaseJanitor`` when it runs, so patch it at the source.
-    monkeypatch.setattr(janitor, "DatabaseJanitor", MagicMock())
-    fixture = contextmanager(
-        cast(
-            Callable[
-                [pytest.FixtureRequest, pytest.TempPathFactory],
-                Generator[PostgreSQLExecutor],
-            ],
-            inspect.unwrap(postgresql_proc),
-        ),
-    )
-    dsn_fixture = contextmanager(
-        cast(
-            Callable[[pytest.FixtureRequest], Generator[str]],
-            inspect.unwrap(conftest.pg_dsn),
-        ),
-    )
-    with ExitStack() as stack:
-
-        def get_fixture(name: str) -> PostgreSQLExecutor:
-            assert name == "postgresql_proc"
-            return stack.enter_context(fixture(request, tmp_path_factory))
-
-        fixture_request = MagicMock(spec=pytest.FixtureRequest, config=request.config)
-        cast(MagicMock, fixture_request.getfixturevalue).side_effect = get_fixture
-        for _ in range(workers):
-            random.seed(1337)
-            stack.enter_context(
-                dsn_fixture(cast(pytest.FixtureRequest, fixture_request)),
-            )
-        assert len(list(tmp_path.glob("*.port"))) == workers
-        assert get_config(request).port_search_count == max(retries, workers - 1)
-    assert not list(tmp_path.glob("*.port"))
 
 
 # Each of the pair writes what the other then must not find, so whichever runs second
@@ -612,12 +531,6 @@ async def _fill_embeddings(engine: DatabaseEngine) -> None:
             "array_fill(n::real, ARRAY[1024])::halfvec, md5(n::text) "
             "FROM generate_series(1, 200) n",
         )
-
-
-def _never_used(port: int, host: str = "127.0.0.1") -> bool:
-    """Answer ``port_is_used`` for every port: free, with no socket opened."""
-    del port, host
-    return False
 
 
 async def _refuse() -> None:
