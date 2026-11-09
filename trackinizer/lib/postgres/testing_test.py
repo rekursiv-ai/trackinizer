@@ -2,23 +2,26 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from functools import partial
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import ModuleType
 from typing import TYPE_CHECKING, Protocol, Self, cast, override, runtime_checkable
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
+import os
+import subprocess
 import sys
 
-from pytest_postgresql.exceptions import ExecutableMissingException
-
+import asyncpg
 import pytest
 
 from trackinizer.lib.postgres import PGliteEngine, testing
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Callable, Coroutine
+    from collections.abc import AsyncGenerator, Callable, Coroutine, Generator
 
 
 @runtime_checkable
@@ -39,9 +42,19 @@ class _CacheFixture(Protocol):
     _fixture_function: Callable[[Path], AsyncGenerator[testing._EngineCache, None]]
 
 
+class _ServerFixture(Protocol):
+    _fixture_function: Callable[[pytest.TempPathFactory], Generator[Path]]
+
+
 def _workdir_function(
     fixture: WorkdirFixture,
 ) -> Callable[[pytest.TempPathFactory], Path]:
+    return fixture._fixture_function
+
+
+def _server_function(
+    fixture: _ServerFixture,
+) -> Callable[[pytest.TempPathFactory], Generator[Path]]:
     return fixture._fixture_function
 
 
@@ -197,29 +210,28 @@ async def test_pglite_engine_cache_uses_bare_slot_name(
 
 
 class _Janitor:
-    """Records the database a janitor was asked for, and whether it dropped it."""
+    """Records each database a janitor creates, where, and its drop."""
 
     def __init__(
         self,
-        made: list[tuple[str, bool]],
+        made: list[tuple[object, ...]],
         *,
         user: str,
         host: str,
         port: int,
         dbname: str,
-        password: str,
     ) -> None:
-        del user, host, port, password
         self.made = made
+        self._create = ("create", user, host, port, dbname)
         self._dbname = dbname
 
     def __enter__(self) -> Self:
-        self.made.append((self._dbname, False))
+        self.made.append(self._create)
         return self
 
     def __exit__(self, *exc: object) -> None:
         del exc
-        self.made.append((self._dbname, True))
+        self.made.append(("drop", self._dbname))
 
 
 def test_postgres_database_names_its_own_database_and_drops_it(
@@ -230,40 +242,171 @@ def test_postgres_database_names_its_own_database_and_drops_it(
         ModuleType,
         pytest.importorskip("pytest_postgresql.janitor", exc_type=ImportError),
     )
-    made = list[tuple[str, bool]]()
+    made = list[tuple[object, ...]]()
     monkeypatch.setattr(janitor, "DatabaseJanitor", partial(_Janitor, made))
-    server = MagicMock(user="u", password="", host="localhost", port=5433)
-
-    def started(name: str) -> object:
-        assert name == "postgresql_proc"
-        return server
-
-    monkeypatch.setattr(request, "getfixturevalue", started)
+    monkeypatch.setattr(request, "getfixturevalue", _started)
 
     with testing.postgres_database(request, dbname="gpu_jobs_tests") as dsn:
         held = list(made)
 
-    assert dsn == "postgresql://u@localhost:5433/gpu_jobs_tests"
-    assert held == [("gpu_jobs_tests", False)]
-    assert made == [("gpu_jobs_tests", False), ("gpu_jobs_tests", True)]
+    created = ("create", "postgres", "/run/pg", 5432, "gpu_jobs_tests")
+    assert dsn == "postgresql://postgres@/gpu_jobs_tests?host=/run/pg&port=5432"
+    assert held == [created]
+    assert made == [created, ("drop", "gpu_jobs_tests")]
 
 
-def test_postgres_database_skips_without_a_postgresql_install(
+def test_postgres_server_listens_on_a_socket_of_its_own_and_no_tcp_port(
     monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    pytest.importorskip("pytest_postgresql.janitor", exc_type=ImportError)
+    calls = list[tuple[str, ...]]()
+    monkeypatch.setattr(testing, "_pg_ctl", MagicMock(return_value="pg_ctl"))
+    monkeypatch.setattr(testing, "_run_pg_ctl", partial(_record, calls))
+    server = _server_function(testing.postgres_server)(tmp_path_factory)
 
-    def missing(name: str) -> object:
-        raise ExecutableMissingException(name)
+    sockets = next(server)
+    assert sockets.is_dir()
+    assert sockets.name.startswith("pg-")
+    with pytest.raises(StopIteration):
+        next(server)
 
-    monkeypatch.setattr(request, "getfixturevalue", missing)
+    root = Path(calls[0][3]).parent
+    assert root.name.startswith("postgres")
+    data, log = str(root / "pgdata"), str(root / "server.log")
+    options = f"-F -p 5432 -k {sockets} -c listen_addresses=''"
+    assert calls == [
+        (
+            "pg_ctl",
+            "initdb",
+            "-D",
+            data,
+            "-o",
+            "--username=postgres --auth=trust --no-sync",
+            log,
+        ),
+        ("pg_ctl", "start", "-w", "-D", data, "-l", log, "-o", options, log),
+        ("pg_ctl", "stop", "-D", data, "-m", "fast", log),
+    ]
+    assert not sockets.exists()
 
-    with (
-        pytest.raises(pytest.skip.Exception, match="toolchain unavailable"),
-        testing.postgres_database(request, dbname="gpu_jobs_tests"),
-    ):
-        pass
+
+def test_postgres_server_skips_without_a_postgresql_install(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    monkeypatch.setattr(testing, "_pg_ctl", MagicMock(return_value=None))
+    server = _server_function(testing.postgres_server)(tmp_path_factory)
+
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        next(server)
+
+    assert str(skipped.value) == (
+        "PostgreSQL toolchain unavailable: no pg_ctl beside pg_config or on PATH"
+    )
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio
+async def test_two_servers_on_one_host_run_at_once(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    start = contextmanager(_server_function(testing.postgres_server))
+
+    with ExitStack() as servers:
+        for _ in range(2):
+            sockets = servers.enter_context(start(tmp_path_factory))
+            conn = await asyncpg.connect(
+                f"postgresql://postgres@/postgres?host={sockets}&port=5432",
+            )
+            try:
+                assert await conn.fetchval("SHOW listen_addresses") == ""
+            finally:
+                await conn.close()
+
+
+@pytest.mark.parametrize(
+    ("on_path", "in_bindir", "found"),
+    [
+        (("pg_config", "pg_ctl"), ("pg_ctl",), "pgdg/pg_ctl"),
+        (("pg_config", "pg_ctl"), (), "bin/pg_ctl"),
+        (("pg_ctl",), ("pg_ctl",), "bin/pg_ctl"),
+        ((), ("pg_ctl",), None),
+    ],
+)
+def test_pg_ctl_is_found_beside_pg_configs_binaries_then_on_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    on_path: tuple[str, ...],
+    in_bindir: tuple[str, ...],
+    found: str | None,
+) -> None:
+    bindir = _executables(tmp_path / "pgdg", in_bindir)
+    path = _executables(tmp_path / "bin", on_path)
+    monkeypatch.setenv("PATH", str(path))
+    # Answers as ``pg_config --bindir`` does; the fake on PATH is never run.
+    answer = CompletedProcess(args=(), returncode=0, stdout=f"{bindir}\n")
+    run = MagicMock(return_value=answer)
+    monkeypatch.setattr(subprocess, "run", run)
+
+    assert testing._pg_ctl() == (None if found is None else str(tmp_path / found))
+    asked = call(
+        [str(path / "pg_config"), "--bindir"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert run.call_args_list == ([asked] if "pg_config" in on_path else [])
+
+
+@pytest.mark.parametrize(
+    ("logged", "reported"),
+    [(True, "out err FATAL"), (False, "out err ")],
+)
+def test_a_failed_pg_ctl_raises_with_its_output_and_the_servers_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    logged: bool,
+    reported: str,
+) -> None:
+    log = tmp_path / "server.log"
+    if logged:
+        log.write_text("FATAL")
+    answer = CompletedProcess(args=(), returncode=1, stdout="out ", stderr="err ")
+    monkeypatch.setattr(subprocess, "run", MagicMock(return_value=answer))
+
+    with pytest.raises(RuntimeError) as raised:
+        testing._run_pg_ctl("pg_ctl", "start", log=log)
+
+    assert str(raised.value) == reported
+
+
+@pytest.mark.parametrize(
+    ("platform", "locale"),
+    [("darwin", "en_US.UTF-8"), ("linux", "C.UTF-8")],
+)
+def test_pg_ctl_runs_under_a_pinned_utf8_locale(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    platform: str,
+    locale: str,
+) -> None:
+    answer = CompletedProcess(args=(), returncode=0, stdout="", stderr="")
+    run = MagicMock(return_value=answer)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(sys, "platform", platform)
+
+    testing._run_pg_ctl("pg_ctl", "stop", "-D", tmp_path, log=tmp_path / "log")
+
+    run.assert_called_once_with(
+        ["pg_ctl", "stop", "-D", str(tmp_path)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "LC_ALL": locale},
+    )
 
 
 def test_postgres_database_skips_without_libpq(
@@ -275,10 +418,12 @@ def test_postgres_database_skips_without_libpq(
     monkeypatch.setitem(sys.modules, "pytest_postgresql.janitor", None)
 
     with (
-        pytest.raises(pytest.skip.Exception, match="client library unavailable"),
+        pytest.raises(pytest.skip.Exception) as skipped,
         testing.postgres_database(request, dbname="gpu_jobs_tests"),
     ):
         pass
+
+    assert str(skipped.value).startswith("PostgreSQL client library unavailable: ")
 
 
 @pytest.mark.asyncio
@@ -289,6 +434,30 @@ async def test_pglite_engine_cache_fixture_closes_cache(tmp_path: Path) -> None:
     await anext(generator)
 
     await generator.aclose()
+
+
+def _started(name: str) -> Path:
+    """Answer ``getfixturevalue`` with a server's socket directory."""
+    assert name == "postgres_server"
+    return Path("/run/pg")
+
+
+def _record(
+    calls: list[tuple[str, ...]],
+    pg_ctl: str,
+    *argv: str | Path,
+    log: Path,
+) -> None:
+    """Record a ``pg_ctl`` run, its log last, in place of running it."""
+    calls.append((pg_ctl, *map(str, argv), str(log)))
+
+
+def _executables(where: Path, names: tuple[str, ...]) -> Path:
+    """Make ``where`` holding an executable file per name, never run; return it."""
+    where.mkdir()
+    for name in names:
+        (where / name).touch(mode=0o755)
+    return where
 
 
 if __name__ == "__main__":

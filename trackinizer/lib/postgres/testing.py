@@ -29,13 +29,15 @@ common case where the engine is incidental scaffolding.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import contextlib
 import os
-
-from pytest_postgresql.config import get_config
-from pytest_postgresql.exceptions import ExecutableMissingException
+import shutil
+import subprocess
+import sys
+import tempfile
 
 import pytest
 import pytest_asyncio
@@ -45,7 +47,6 @@ from trackinizer.lib.postgres import PGliteEngine
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Generator
-    from pathlib import Path
 
     from trackinizer.lib.postgres import DatabaseEngine
 
@@ -117,7 +118,7 @@ def postgres_database(request: pytest.FixtureRequest, *, dbname: str) -> Generat
     that worker. Without libpq or a PostgreSQL install, the calling test skips.
 
     Args:
-      request: The calling fixture's request, which resolves ``postgresql_proc``.
+      request: The calling fixture's request, which resolves ``postgres_server``.
       dbname: The database, named for the package that owns it.
 
     Yields:
@@ -125,36 +126,68 @@ def postgres_database(request: pytest.FixtureRequest, *, dbname: str) -> Generat
 
     """
     try:
-        # Both import psycopg, which cannot load without libpq.
-        from pytest_postgresql.executors.proc import (  # noqa: PLC0415 -- Imports psycopg, which needs libpq.
-            PostgreSQLExecutor,
-        )
         from pytest_postgresql.janitor import (  # noqa: PLC0415 -- Imports psycopg, which needs libpq.
             DatabaseJanitor,
         )
     except ImportError as exc:
         pytest.skip(f"PostgreSQL client library unavailable: {exc}")
-    # Seeded workers can choose the same ports while their peers are between
-    # reservation and server startup. The plugin's five retries cannot cover
-    # six such peers; allow a collision for every other worker's reservation.
-    request.config.option.postgresql_port_search_count = max(
-        get_config(request).port_search_count,
-        int(os.environ.get("PYTEST_XDIST_WORKER_COUNT", "1")) - 1,
-    )
-    try:
-        server = cast(PostgreSQLExecutor, request.getfixturevalue("postgresql_proc"))
-    except ExecutableMissingException as exc:
-        pytest.skip(f"PostgreSQL toolchain unavailable: {exc}")
-    password = server.password or ""
-    userinfo = f"{server.user}:{password}" if password else server.user
-    with DatabaseJanitor(
-        user=server.user,
-        host=server.host,
-        port=server.port,
-        dbname=dbname,
-        password=server.password,
-    ):
-        yield f"postgresql://{userinfo}@{server.host}:{server.port}/{dbname}"
+    sockets = cast(Path, request.getfixturevalue("postgres_server"))
+    with DatabaseJanitor(user="postgres", host=str(sockets), port=5432, dbname=dbname):
+        yield f"postgresql://postgres@/{dbname}?host={sockets}&port=5432"
+
+
+@pytest.fixture(scope="session")
+def postgres_server(tmp_path_factory: pytest.TempPathFactory) -> Generator[Path]:
+    """Start the session's PostgreSQL server; yield the directory holding its socket.
+
+    The server listens on no TCP port, only on a Unix socket in a directory of its
+    own, so nothing else on the host can take its address. A TCP port is one
+    namespace for the whole host: pytest runs starting together drew the same ports
+    and failed each other's servers. Without a PostgreSQL install, the calling test
+    skips. Consumed by :func:`postgres_database`, which is what a fixture should call.
+
+    Args:
+      tmp_path_factory: pytest fixture for the server's data directory.
+
+    Yields:
+      sockets: Directory of the server's socket, a DSN's ``host``.
+
+    """
+    pg_ctl = _pg_ctl()
+    if pg_ctl is None:
+        pytest.skip(
+            "PostgreSQL toolchain unavailable: no pg_ctl beside pg_config or on PATH",
+        )
+    data = tmp_path_factory.mktemp("postgres")
+    log = data / "server.log"
+    # A socket path must fit in about 104 bytes, which a tmp_path under macOS's
+    # $TMPDIR does not leave room for.
+    with tempfile.TemporaryDirectory(prefix="pg-") as sockets:
+        _run_pg_ctl(
+            pg_ctl,
+            "initdb",
+            "-D",
+            data / "pgdata",
+            "-o",
+            "--username=postgres --auth=trust --no-sync",
+            log=log,
+        )
+        _run_pg_ctl(
+            pg_ctl,
+            "start",
+            "-w",
+            "-D",
+            data / "pgdata",
+            "-l",
+            log,
+            "-o",
+            f"-F -p 5432 -k {sockets} -c listen_addresses=''",
+            log=log,
+        )
+        try:
+            yield Path(sockets)
+        finally:
+            _run_pg_ctl(pg_ctl, "stop", "-D", data / "pgdata", "-m", "fast", log=log)
 
 
 async def reset_schema(engine: DatabaseEngine) -> None:
@@ -241,3 +274,39 @@ class _EngineCache:
         for engine in self._engines.values():
             await engine.__aexit__()
         self._engines.clear()
+
+
+# pytest-postgresql's order: a PGDG install keeps its binaries off ``PATH``
+# (``/usr/lib/postgresql/<major>/bin``) and exposes them only through ``pg_config``.
+def _pg_ctl() -> str | None:
+    """Find ``pg_ctl`` beside the binaries ``pg_config`` names, else on ``PATH``."""
+    pg_config = shutil.which("pg_config")
+    if pg_config is not None:
+        bindir = subprocess.run(  # noqa: S603 -- The install's pg_config, fixed arguments.
+            [pg_config, "--bindir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        if (found := shutil.which("pg_ctl", path=bindir)) is not None:
+            return found
+    return shutil.which("pg_ctl")
+
+
+def _run_pg_ctl(pg_ctl: str, *argv: str | Path, log: Path) -> None:
+    """Run ``pg_ctl``; on failure raise with its output and the server's log."""
+    # Pinned, as pytest-postgresql pinned it: initdb takes its locale from the
+    # environment, where a bare C one makes a SQL_ASCII database, and on macOS a
+    # server without a valid LC_ALL exits "multithreaded during startup". macOS has
+    # lacked C.UTF-8.
+    locale = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
+    done = subprocess.run(  # noqa: S603 -- The install's pg_ctl, fixed arguments.
+        [pg_ctl, *map(str, argv)],
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "LC_ALL": locale},
+    )
+    if done.returncode != 0:
+        server = log.read_text() if log.exists() else ""
+        raise RuntimeError(done.stdout + done.stderr + server)

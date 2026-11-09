@@ -444,8 +444,9 @@ See `example.sh` for a worked end-to-end submit/edit/query session.
 
 ## System dependencies
 
-Integration tests (`@pytest.mark.integration`) use a Postgres server backend
-via `pytest-postgresql` and also requires `pgvector`.
+Integration tests (`@pytest.mark.integration`) start a private Postgres server
+with the install's `pg_ctl`, found beside `pg_config --bindir` or on `PATH`,
+and also require `pgvector`.
 
 PGlite bundles its own `vector` extension, so the default `pglite` engine has
 no system deps.
