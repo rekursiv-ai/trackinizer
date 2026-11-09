@@ -7,14 +7,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from fastapi import Response
 from treekle import from_plain
 
 import pytest
 
 from trackinizer.server.api.conftest import (
+    TEST_USER_EMAIL,
     TEST_USER_ID,
+    clear_identity_override,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.api.session_test_support import (
     OTHER_EMAIL,
@@ -22,6 +26,9 @@ from trackinizer.server.api.session_test_support import (
     OTHER_USER_ID,
     seed_accounts,
 )
+from trackinizer.server.auth import PAGE_ACCOUNT_HEADER
+from trackinizer.server.config import Config
+from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
 
 
 if TYPE_CHECKING:
@@ -38,6 +45,10 @@ pytestmark = [
     pytest.mark.db_pglite,
     pytest.mark.asyncio(loop_scope="session"),
 ]
+
+_SESSION_SECRET = "session-signing-secret"  # noqa: S105 -- test fixture.
+# A browser sends its page's origin with every write; a session write without it is refused.
+_ORIGIN = "http://testserver"
 
 
 _DEFAULTS: dict[str, object] = {
@@ -315,6 +326,50 @@ async def test_an_admin_resets_a_users_preferences_and_never_sees_them(
     assert "preferences" not in listed.text
     assert "terminal" not in listed.text
     assert (reset.status_code, reset.content) == (204, b"")
+    assert await _stored_preferences(store, TEST_USER_ID) is None
+
+
+async def test_a_change_from_a_page_read_as_another_account_writes_nothing(
+    pglite_route_client: _Client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tab left open as one account sends the change once another signs in."""
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    clear_identity_override()
+    patch_state(
+        monkeypatch,
+        "config",
+        Config(session_secret=_SESSION_SECRET, session_max_age_seconds=600),
+    )
+    signed = Response()
+    set_session_cookie(
+        signed,
+        user_id=str(OTHER_USER_ID),
+        secret=_SESSION_SECRET,
+        max_age_seconds=600,
+    )
+    client.cookies.set(
+        SESSION_COOKIE_NAME,
+        signed.headers["set-cookie"].split(";", 1)[0].split("=", 1)[1],
+    )
+
+    stale = await client.patch(
+        "/api/me/preferences",
+        json={"theme": "light"},
+        headers={PAGE_ACCOUNT_HEADER: TEST_USER_EMAIL, "Origin": _ORIGIN},
+    )
+    own = await client.patch(
+        "/api/me/preferences",
+        json={"skin": "dos"},
+        headers={PAGE_ACCOUNT_HEADER: OTHER_EMAIL, "Origin": _ORIGIN},
+    )
+
+    assert stale.status_code == 409, stale.text
+    refusal = from_plain(stale.json(), dict[str, dict[str, str]])["detail"]
+    assert refusal["code"] == "other_account"
+    assert own.status_code == 200, own.text
+    assert await _stored_preferences(store, OTHER_USER_ID) == {"skin": "dos"}
     assert await _stored_preferences(store, TEST_USER_ID) is None
 
 
