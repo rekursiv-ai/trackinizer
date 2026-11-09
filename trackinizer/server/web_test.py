@@ -506,6 +506,7 @@ class TestSerialization:
             "peer_judgement": "proven",
             "peer_created": created,
             "peer_priority": None,
+            "peer_cli_session_id": None,
         }
         assert web._peer_ref(cast("asyncpg.Record", row), peer_id) == {
             "id": str(peer_id),
@@ -525,6 +526,17 @@ class TestSerialization:
         # Priority 0 is the most urgent, not an absent one.
         assert (
             web._peer_ref(cast("asyncpg.Record", issue), peer_id)["peer_priority"] == 0
+        )
+        # A session names the agent it holds as its parent's records do.
+        session = {
+            **row,
+            "peer_kind": "AgentSession",
+            "peer_judgement": None,
+            "peer_cli_session_id": "agent-a4e92ea6a0f453a03",
+        }
+        assert (
+            web._peer_ref(cast("asyncpg.Record", session), peer_id)["cli_session_id"]
+            == "agent-a4e92ea6a0f453a03"
         )
         assert web._isoformat(datetime(2026, 5, 18, tzinfo=UTC)).startswith("2026")
         assert web._isoformat("x") == "x"
@@ -553,6 +565,7 @@ class TestEdgeHelpers:
                         "peer_judgement": None,
                         "peer_created": datetime(2026, 5, 18, tzinfo=UTC),
                         "peer_priority": 20,
+                        "peer_cli_session_id": None,
                     },
                 ],
                 [
@@ -570,6 +583,7 @@ class TestEdgeHelpers:
                         "peer_judgement": None,
                         "peer_created": datetime(2026, 5, 19, tzinfo=UTC),
                         "peer_priority": None,
+                        "peer_cli_session_id": None,
                     },
                 ],
             ],
