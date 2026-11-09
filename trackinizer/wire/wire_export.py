@@ -112,11 +112,10 @@ Left out on purpose, and why:
   ``session_embeddings``.
 * ``session_ciphertext``, ``session_bodies`` -- encrypted / cold replay-only
   blobs, which retention exists to drop.
-* ``users``, ``api_keys``, ``allowlist``, ``inquiry_lock_log`` -- credentials
-  and access control, not the graph. A row's ``locked`` flag is a column of
-  ``inquiries`` and is exported; who set it is not. That history is ``change_log``
-  rows of the protected kinds ``locked`` and ``unlocked``, which ``change_log``'s
-  export leaves out. ``inquiry_lock_log`` itself is retired and unwritten.
+* ``users``, ``api_keys``, ``allowlist`` -- credentials and access control, not
+  the graph. A row's ``locked`` flag is a column of ``inquiries`` and is exported;
+  who set it is not. That history is ``change_log`` rows of the protected kinds
+  ``locked`` and ``unlocked``, which ``change_log``'s export leaves out.
 * ``variables`` -- launch configuration, not graph records; a secret row names
   a value that lives outside the database, so a restored export could not
   carry it.
@@ -139,8 +138,7 @@ Left out on purpose, and why:
 * ``code_blobs``, ``code_snapshots`` -- each record's code, kept per owner, a
   private snapshot read by its owner alone, which a graph export would show to
   everyone who can read it.
-* ``gpu_owners``, ``gpu_jobs``, ``gpu_issuances``, ``gpu_box_credentials``,
-  ``gpu_allowance_resets`` --
+* ``gpu_owners``, ``gpu_jobs``, ``gpu_issuances``, ``gpu_box_credentials`` --
   direct GPU jobs, the audit of every certificate and job token issued for
   them, and the hashes of the campaign-box credentials that submit them: what
   each person ran and was charged, and hashes that open a node, which the database's own

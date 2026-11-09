@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import fields
+from dataclasses import fields, replace
 from typing import Literal
 
 import re
@@ -275,6 +275,7 @@ class TestSchema:
             "schema.072.sql",
             "schema.073.sql",
             "schema.074.sql",
+            "schema.075.sql",
         ]
 
     def test_the_pin_check_spells_the_wire_shape(self) -> None:
@@ -362,6 +363,11 @@ def test_an_edge_column_without_a_value_check_is_checked_by_kind_alone() -> None
         spec,
         edge_kind_col="edge_kind",
     ) == ("edge_kind IN ('favors', 'proves')")
+    assert schema_gen._edge_column_check_body(
+        "new_edge_notes",
+        replace(spec, sql_type="TEXT[]", min_items=1),
+        edge_kind_col="edge_kind",
+    ) == ("cardinality(new_edge_notes) >= 1 AND edge_kind IN ('favors', 'proves')")
 
 
 if __name__ == "__main__":
