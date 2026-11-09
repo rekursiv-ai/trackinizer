@@ -1334,60 +1334,32 @@ async def test_migration_044_matches_the_baseline_users_table(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_045_matches_the_baseline_credit_entries_table(
+async def test_migration_073_drops_the_old_credit_books_a_fresh_install_lacks(
     pglite_rollback_conn: Conn,
 ) -> None:
-    """The credit table 045 builds equals the fresh-install one.
+    """073 drops the tables 045 and 053 built, rows and all, and runs again as a no-op.
 
-    Bootstrap builds the baseline shape. This drops the table (as a pre-045 database
-    lacks it), replays ``schema.045`` alone, and compares every column, constraint and
-    index against what the baseline produced.
+    Bootstrap builds the baseline, which has neither table. This builds them as an
+    upgraded database still holds them, with a row, then replays ``schema.073``.
     """
     conn = pglite_rollback_conn
-    baseline = await _table_shape(conn, "credit_entries")
-    assert baseline[0], "the baseline lacks the table"
+    gone = "SELECT to_regclass('credit_entries') IS NULL AND to_regclass('credit_grace') IS NULL"
+    assert await conn.fetchval(gone), "the baseline still builds an old book"
 
-    await conn.execute("DROP TABLE credit_entries")
     await conn.execute(load_sql("schema.045"))
-    migrated = await _table_shape(conn, "credit_entries")
-    # Replaying it over the existing table is a no-op, not an error.
-    await conn.execute(load_sql("schema.045"))
-    with pytest.raises(asyncpg.CheckViolationError):
-        await conn.execute(
-            "INSERT INTO credit_entries (kind, usd, ref, idem) "
-            "VALUES ('purchase', 1, 'pi_1', 'evt_1')",
-        )
-
-    assert migrated == baseline
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_migration_053_matches_the_baseline_credit_grace_table(
-    pglite_rollback_conn: Conn,
-) -> None:
-    """The grace table 053 builds equals the fresh-install one.
-
-    Bootstrap builds the baseline shape. This drops the table (as a pre-053 database
-    lacks it), replays ``schema.053`` alone, and compares every column, constraint and
-    index against what the baseline produced.
-    """
-    conn = pglite_rollback_conn
-    baseline = await _table_shape(conn, "credit_grace")
-    assert baseline[0], "the baseline lacks the table"
-
-    await conn.execute("DROP TABLE credit_grace")
     await conn.execute(load_sql("schema.053"))
-    migrated = await _table_shape(conn, "credit_grace")
-    # Replaying it over the existing table is a no-op, not an error.
-    await conn.execute(load_sql("schema.053"))
-    with pytest.raises(asyncpg.CheckViolationError):
-        await conn.execute(
-            "INSERT INTO credit_grace (email, until, set_by) "
-            "VALUES ('Jan@Example.com', '2026-12-31', 'admin@example.com')",
-        )
+    await conn.execute(
+        "INSERT INTO credit_entries (email, kind, usd, ref, idem) "
+        "VALUES ('jan@example.com', 'grant', 500, 'grant', 'grant:jan@example.com')",
+    )
+    await conn.execute(
+        "INSERT INTO credit_grace (email, until, set_by) "
+        "VALUES ('jan@example.com', '2026-12-31', 'admin@example.com')",
+    )
+    await conn.execute(load_sql("schema.073"))
+    await conn.execute(load_sql("schema.073"))
 
-    assert migrated == baseline
+    assert await conn.fetchval(gone)
 
 
 _GPU_TABLES = ("gpu_owners", "gpu_jobs", "gpu_issuances")
