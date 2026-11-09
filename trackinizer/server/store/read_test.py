@@ -650,6 +650,13 @@ def _last_sql(mock: MockControl) -> str:
     return sql
 
 
+def _last_binds(mock: MockControl) -> tuple[object, ...]:
+    """Return the values ``mock``'s last call bound to its SQL."""
+    call = mock.call_args
+    assert call is not None
+    return tuple(call.args[1:])
+
+
 class TestPolicyGatedReads:
     """A policy that restricts reads gates every read by the rows it may see."""
 
@@ -674,10 +681,147 @@ class TestPolicyGatedReads:
         assert "(c.old_peer_id IS NULL OR (EXISTS" in predicate
         assert "(c.new_peer_id IS NULL OR (EXISTS" in predicate
         # ``get_change`` wraps the filter, whose first clause is itself parenthesized.
-        assert "WHERE id = $1 AND ((EXISTS" in _last_sql(conn.fetchrow)
+        assert (
+            "WHERE id = $1 AND (change_log.kind NOT IN ('locked', 'unlocked') AND (EXISTS"
+            in _last_sql(conn.fetchrow)
+        )
         listed = _last_sql(conn.fetch)
         assert "(created" not in listed
         assert "actor = $1" in listed
+
+
+class _Binding(DefaultPolicy):
+    """Reads only the rows the reader owns, bound as a parameter."""
+
+    @override
+    def read_filter(
+        self,
+        kind: ResourceKind,
+        alias: str,
+        *,
+        params: list[object],
+        principal: Principal,
+    ) -> str:
+        del kind
+        params.append(principal.email)
+        return f"{alias}.owner = ${len(params)}"
+
+
+class TestProtectedHistory:
+    """Lock events are for an admin; the policy's own gate is separate."""
+
+    def test_the_policys_own_gate_follows_the_protected_clause_with_its_bindings(
+        self,
+    ) -> None:
+        store, _engine = make_store()
+        store.access_policy = _Binding()
+        params: list[object] = []
+
+        predicate = store.change_read_filter("c", params=params, principal=_READER)
+
+        assert params == [_READER.email] * 3
+        assert predicate.startswith("c.kind NOT IN ('locked', 'unlocked') AND (EXISTS")
+        assert [f"readable_inquiry.owner = ${n}" in predicate for n in (1, 2, 3)] == [
+            True,
+            True,
+            True,
+        ]
+
+    def test_only_an_admin_reads_a_protected_kind(self) -> None:
+        store, _engine = make_store()
+        admin = Principal(email="root@example.com", role="admin")
+
+        assert store.change_read_filter("c", params=[], principal=admin) == "TRUE"
+        assert store.change_read_filter("c", params=[], principal=None) == "TRUE"
+        assert (
+            store.change_read_filter("c", params=[], principal=_READER)
+            == "c.kind NOT IN ('locked', 'unlocked')"
+        )
+
+
+_SINCE: Final = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _change_row(change_id: uuid.UUID, **extra: object) -> dict[str, object]:
+    """Return the columns of one ``created`` change, as the sweeps select them."""
+    return {
+        "id": change_id,
+        "created": _SINCE,
+        "actor": "alice",
+        "subject_id": K1,
+        "subject_kind": "Issue",
+        "kind": "created",
+        "reason": "",
+        **extra,
+    }
+
+
+class TestChangeSweeps:
+    """The two cursor reads that feed subscriptions."""
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_starts_at_the_least_id_and_takes_a_page_of_200(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+
+        await store.what_changed_for_me("watcher", _SINCE)
+        mine = _last_binds(conn.fetch)
+        await store.what_changed_for_anyone(_SINCE)
+        anyone = _last_binds(conn.fetch)
+
+        assert mine == (_SINCE, uuid.UUID(int=0), "watcher", 200)
+        assert anyone == (_SINCE, uuid.UUID(int=0), 200)
+
+    @pytest.mark.asyncio
+    async def test_a_sweep_resumes_after_the_id_it_is_given(self) -> None:
+        conn = make_conn()
+        store, _engine = make_store(conn)
+        last = new_uuid()
+
+        await store.what_changed_for_me("watcher", _SINCE, after_id=last, limit=7)
+        mine = _last_binds(conn.fetch)
+        await store.what_changed_for_anyone(_SINCE, after_id=last, limit=7)
+        anyone = _last_binds(conn.fetch)
+
+        assert mine == (_SINCE, last, "watcher", 7)
+        assert anyone == (_SINCE, last, 7)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [1, MAX_LIST_LIMIT])
+    async def test_a_page_at_either_bound_is_read(self, limit: int) -> None:
+        store, _engine = make_store()
+
+        assert await store.what_changed_for_me("w", _SINCE, limit=limit) == []
+        assert await store.what_changed_for_anyone(_SINCE, limit=limit) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, MAX_LIST_LIMIT + 1])
+    async def test_a_page_outside_the_bounds_is_refused(self, limit: int) -> None:
+        store, engine = make_store()
+
+        with pytest.raises(ValueError, match="limit must be in"):
+            await store.what_changed_for_me("w", _SINCE, limit=limit)
+        with pytest.raises(ValueError, match="limit must be in"):
+            await store.what_changed_for_anyone(_SINCE, limit=limit)
+
+        assert engine.conn.fetch.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_each_row_comes_back_as_its_change_with_the_subjects_seq(
+        self,
+    ) -> None:
+        change_id = new_uuid()
+        conn = make_conn()
+        conn.fetch.return_value = [_change_row(change_id, subject_seq=42)]
+        store, _engine = make_store(conn)
+
+        mine = await store.what_changed_for_me("watcher", _SINCE)
+        anyone = await store.what_changed_for_anyone(_SINCE)
+
+        assert [(c.id, c.kind, c.subject_id) for c in mine] == [
+            (change_id, "created", K1),
+        ]
+        assert [(c.id, seq) for c, seq in anyone] == [(change_id, 42)]
 
 
 class TestUngatedReads:

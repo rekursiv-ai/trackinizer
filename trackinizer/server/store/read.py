@@ -66,6 +66,7 @@ __all__ = [
     "Ancestor",
     "_ReadMixin",
     "seq_range_clause",
+    "unprotected_history",
 ]
 
 
@@ -86,6 +87,24 @@ class Ancestor:
 # ``derived_confidence`` recurses into. Every other Artifact kind can cite but
 # never be cited, so it is a recursion leaf counted at full weight.
 _CLAIMABLE_KINDS: frozenset[str] = frozenset({"Belief", "Experiment"})
+
+
+def unprotected_history(alias: str) -> str:
+    """Render the clause keeping a change-log row only if its kind is not protected.
+
+    The one spelling of that test: every read of ``change_log`` that is not an admin's
+    carries it (:meth:`_ReadMixin.change_read_filter`, the subscription sweeps, the
+    export), so a kind added to :attr:`Change.PROTECTED_KINDS` is hidden from all.
+
+    Args:
+      alias: Trusted SQL alias of the change-log row.
+
+    Returns:
+      predicate: A SQL boolean over ``alias.kind``, binding nothing.
+
+    """
+    kinds = ", ".join(f"'{kind}'" for kind in Change.PROTECTED_KINDS)
+    return f"{alias}.kind NOT IN ({kinds})"
 
 
 def seq_range_clause(
@@ -765,17 +784,22 @@ class _ReadMixin(_StoreShared):
         # comparison with a min-UUID sentinel on page one mirrors the
         # next-page semantics exactly minus the tie.
         cursor_id = after_id if after_id is not None else UUID(int=0)
+        # pragma: no mutate start -- SQL is judged by a database: locks_pglite_test.
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT c.* FROM change_log c "
-                "WHERE (c.created, c.id) > ($1, $2) "
-                "AND $3 = ANY(c.subscribers_snapshot) "
-                "ORDER BY c.created, c.id LIMIT $4",
+                vetted_sql(
+                    "SELECT c.* FROM change_log c "
+                    "WHERE (c.created, c.id) > ($1, $2) "
+                    "AND $3 = ANY(c.subscribers_snapshot) AND ",
+                    unprotected_history("c"),
+                    " ORDER BY c.created, c.id LIMIT $4",
+                ),
                 since,
                 cursor_id,
                 agent,
                 limit,
             )
+        # pragma: no mutate end
         return [Change.from_row(r) for r in rows]
 
     async def what_changed_for_anyone(
@@ -813,17 +837,22 @@ class _ReadMixin(_StoreShared):
         if limit < 1 or limit > MAX_LIST_LIMIT:
             raise ValueError(f"limit must be in [1, {MAX_LIST_LIMIT}]")
         cursor_id = after_id if after_id is not None else UUID(int=0)
+        # pragma: no mutate start -- SQL is judged by a database: locks_pglite_test.
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT c.*, i.seq AS subject_seq FROM change_log c "
-                "LEFT JOIN inquiries i ON i.id = c.subject_id "
-                "WHERE (c.created, c.id) > ($1, $2) "
-                "AND c.subscribers_snapshot != '{}' "
-                "ORDER BY c.created, c.id LIMIT $3",
+                vetted_sql(
+                    "SELECT c.*, i.seq AS subject_seq FROM change_log c "
+                    "LEFT JOIN inquiries i ON i.id = c.subject_id "
+                    "WHERE (c.created, c.id) > ($1, $2) "
+                    "AND c.subscribers_snapshot != '{}' AND ",
+                    unprotected_history("c"),
+                    " ORDER BY c.created, c.id LIMIT $3",
+                ),
                 since,
                 cursor_id,
                 limit,
             )
+        # pragma: no mutate end
         return [(Change.from_row(r), cast(int | None, r["subject_seq"])) for r in rows]
 
     def change_read_filter(
@@ -833,7 +862,11 @@ class _ReadMixin(_StoreShared):
         params: list[object],
         principal: Principal | None = None,
     ) -> str:
-        """Gate history by its current subject and both snapshot peers.
+        """Gate history by its kind, its current subject and both snapshot peers.
+
+        A protected kind (:attr:`Change.PROTECTED_KINDS`) is for an admin alone, whatever the
+        policy says of its subject, so a filter, a cursor or a page can neither return
+        nor skip one for anyone else.
 
         Args:
           alias: Trusted SQL alias of the change-log row.
@@ -845,6 +878,8 @@ class _ReadMixin(_StoreShared):
 
         """
         clauses: list[str] = []
+        if principal is not None and principal.role != "admin":
+            clauses.append(unprotected_history(alias))
         for column in ("subject_id", "old_peer_id", "new_peer_id"):
             reference = f"{alias}.{column}"
             predicate = inquiry_read_filter(

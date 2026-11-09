@@ -1362,6 +1362,136 @@ async def test_migration_073_drops_the_old_credit_books_a_fresh_install_lacks(
     assert await conn.fetchval(gone)
 
 
+_LOCK_CHANGES: Final = ("locked", "unlocked")
+"""The change kinds 074 adds."""
+
+_MIGRATION_074: Final = substitute_schema_placeholders(load_sql("schema.074"))
+"""The 074 migration as the runner applies it."""
+
+
+async def _make_lock_history_old(conn: Conn) -> None:
+    """Turn a fresh database back into 073's shape: lock history has no change kind."""
+    await conn.execute(
+        "ALTER TABLE change_log DROP CONSTRAINT change_log_kind_check, "
+        "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
+        f"{_change_kinds(*_LOCK_CHANGES)}))",
+    )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.074.sql'")
+
+
+# Return ``(id, subject, kind, actor)``.
+#
+# One subject is a live Issue, one is purged (only its ``created`` change remains), and
+# one is known to nothing but the lock log.
+async def _seed_lock_log(conn: Conn) -> list[tuple[int, uuid.UUID, str, str]]:
+    """Fill ``inquiry_lock_log`` as 038's writer did."""
+    issue = await _old_issue(conn)
+    purged, orphan = uuid.uuid4(), uuid.uuid4()
+    await conn.execute(
+        "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind) "
+        "VALUES (gen_random_uuid(), 'tester', $1, 'Artifact', 'created')",
+        purged,
+    )
+    events = (
+        (issue, True, "a@example.com", datetime(2026, 1, 2, 3, 4, 5, 678_000, UTC)),
+        (issue, False, "b@example.com", datetime(2026, 2, 3, 4, 5, 6, tzinfo=UTC)),
+        (purged, True, "c@example.com", datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)),
+        (orphan, True, "d@example.com", datetime(2026, 4, 5, 6, 7, 8, tzinfo=UTC)),
+    )
+    logged: list[tuple[int, uuid.UUID, str, str]] = []
+    for subject, locked, actor, created in events:
+        log_id = from_plain(
+            await conn.fetchval(
+                "INSERT INTO inquiry_lock_log (inquiry_id, locked, actor, created) "
+                "VALUES ($1, $2, $3, $4) RETURNING id",
+                subject,
+                locked,
+                actor,
+                created,
+            ),
+            int,
+        )
+        logged.append((log_id, subject, "locked" if locked else "unlocked", actor))
+    return logged
+
+
+async def _lock_events(conn: Conn) -> list[tuple[object, ...]]:
+    """Read every lock event in ``change_log``, oldest first."""
+    return [
+        tuple(row)
+        for row in await conn.fetch(
+            "SELECT id, created, actor, subject_id, subject_kind, kind, api_key_id, "
+            "caused_by, reason, subscribers_snapshot FROM change_log "
+            "WHERE kind IN ('locked', 'unlocked') ORDER BY created, id",
+        )
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_074_moves_each_lock_log_row_into_the_change_log_once(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """Every row keeps its time and actor under a deterministic id; a rerun adds none.
+
+    The id is a name-based UUID of the log row's number, which SQL can compute without
+    an extension: MD5 (version 3), as ``uuid.uuid3`` does.
+    """
+    conn = pglite_rollback_conn
+    await _make_lock_history_old(conn)
+    logged = await _seed_lock_log(conn)
+    times = await conn.fetch("SELECT created FROM inquiry_lock_log ORDER BY id")
+
+    await conn.execute(_MIGRATION_074)
+    first = await _lock_events(conn)
+    await conn.execute(_MIGRATION_074)
+
+    assert await _lock_events(conn) == first
+    assert first == [
+        (
+            uuid.uuid3(uuid.NAMESPACE_URL, f"inquiry_lock_log:{log_id}"),
+            stamp["created"],
+            actor,
+            subject,
+            subject_kind,
+            kind,
+            None,
+            None,
+            "",
+            [],
+        )
+        for (log_id, subject, kind, actor), stamp, subject_kind in zip(
+            logged,
+            times,
+            ("Issue", "Issue", "Artifact", "Issue"),
+            strict=True,
+        )
+    ]
+    assert await conn.fetchval("SELECT count(*) FROM inquiry_lock_log") == 4
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_074_admits_the_lock_kinds_an_older_database_refuses(
+    pglite_rollback_conn: Conn,
+) -> None:
+    conn = pglite_rollback_conn
+    await _make_lock_history_old(conn)
+    event = (
+        "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind) "
+        "VALUES (gen_random_uuid(), 'a', gen_random_uuid(), 'Issue', $1)"
+    )
+    with pytest.raises(asyncpg.CheckViolationError):
+        async with savepoint(conn):
+            await conn.execute(event, "locked")
+
+    await conn.execute(_MIGRATION_074)
+    await conn.execute(event, "locked")
+    await conn.execute(event, "unlocked")
+
+    assert len(await _lock_events(conn)) == 2
+
+
 _GPU_TABLES = ("gpu_owners", "gpu_jobs", "gpu_issuances")
 
 
@@ -1780,7 +1910,7 @@ async def _make_app_old(conn: Conn) -> None:
         "DROP COLUMN old_app, DROP COLUMN new_app, "
         "DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
-        f"{_change_kinds('app', 'agentsession_audience', *_ACCESS_GROUP_CHANGES)}))",
+        f"{_change_kinds('app', 'agentsession_audience', *_LATER_CHANGES)}))",
     )
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.046.sql'")
 
@@ -1833,10 +1963,11 @@ async def _old_issue(conn: Conn) -> uuid.UUID:
 
 
 async def _migrate(conn: Conn, *steps: str) -> None:
-    """Run ``steps`` in order, then 066, as the runner applies them."""
+    """Run ``steps`` in order, then 066 and 074, as the runner applies them."""
     for step in steps:
         await conn.execute(load_sql(step))
     await conn.execute(_MIGRATION_066)
+    await conn.execute(_MIGRATION_074)
 
 
 @pytest.mark.db_pglite
@@ -1900,7 +2031,7 @@ async def _make_audience_old(conn: Conn) -> None:
         f'DROP CONSTRAINT "{subject}", '
         "DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
-        f"{_change_kinds('agentsession_audience', *_ACCESS_GROUP_CHANGES)}))",
+        f"{_change_kinds('agentsession_audience', *_LATER_CHANGES)}))",
     )
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.047.sql'")
 
@@ -1993,6 +2124,7 @@ async def _make_code_store_old(conn: Conn) -> None:
 # name no AccessGroup column, so they are found by what they say.
 async def _make_access_group_old(conn: Conn) -> None:
     """Turn a fresh database back into 065's shape: AccessGroup is no kind."""
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.074.sql'")
     await conn.execute(
         "ALTER TABLE inquiries DROP COLUMN accessgroup_read_group, "
         "DROP COLUMN accessgroup_write_group, DROP COLUMN accessgroup_system, "
@@ -2005,7 +2137,7 @@ async def _make_access_group_old(conn: Conn) -> None:
         "DROP COLUMN new_accessgroup_write_group, "
         "DROP CONSTRAINT change_log_kind_check, "
         "ADD CONSTRAINT change_log_kind_check CHECK (kind IN ("
-        f"{_change_kinds(*_ACCESS_GROUP_CHANGES)}))",
+        f"{_change_kinds(*_LATER_CHANGES)}))",
     )
     for row in await conn.fetch(
         "SELECT conrelid::regclass::text AS relation, conname, "
@@ -2028,6 +2160,9 @@ async def _make_access_group_old(conn: Conn) -> None:
 
 _ACCESS_GROUP_CHANGES: Final = ("accessgroup_read_group", "accessgroup_write_group")
 """The change kinds 066 adds."""
+
+_LATER_CHANGES: Final = (*_ACCESS_GROUP_CHANGES, *_LOCK_CHANGES)
+"""The change kinds 066 and 074 add: an older shape has neither."""
 
 _MIGRATION_066: Final = substitute_schema_placeholders(load_sql("schema.066"))
 """The 066 migration as the runner applies it."""

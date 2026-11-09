@@ -1448,7 +1448,10 @@ def test_brief_changes_drop_unset_keys_and_cut_text_through_the_real_store(
         if row["kind"] == "edge_added"
     } == {str(child), str(parent)}
     assert engine.conn.fetch.call_args_list[0].args == (
-        "SELECT * FROM change_log ORDER BY created DESC, id DESC LIMIT $1",
+        (
+            "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+            "ORDER BY created DESC, id DESC LIMIT $1"
+        ),
         200,
     )
 
@@ -1494,12 +1497,18 @@ def test_change_log_takes_several_kinds_before_its_limit_through_the_real_store(
     ] == ["status"]
     assert [call.args for call in engine.conn.fetch.call_args_list] == [
         (
-            "SELECT * FROM change_log WHERE kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2",
+            (
+                "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+                "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
+            ),
             ["status", "title"],
             2,
         ),
         (
-            "SELECT * FROM change_log WHERE kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2",
+            (
+                "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+                "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
+            ),
             ["status"],
             200,
         ),

@@ -313,8 +313,10 @@ storage name: bare for base fields (`status`, `title`, `owner`,
 kind-specific ones (`belief_judgement`, `paper_source`,
 `experiment_codechanges`, ...). Non-field events keep verbs: `created`,
 `purged`, `edge_added`, `edge_removed`, `edge_annotation_changed`,
-`dependency_changed`, `implicit_subs_opened`/`closed`. There is no separate
-`change_kind` metadata -- it is derived from the storage name.
+`dependency_changed`, `implicit_subs_opened`/`closed`, and the protected
+`locked`/`unlocked` (`Change.PROTECTED_KINDS`: admin-only to read, never exported or
+pushed). There is no separate `change_kind` metadata -- it is derived from the
+storage name.
 
 `change_log` also splits **principal** (`api_key_id`, server-stamped) from
 **actor** (`actor TEXT`, free-form provenance); see Auth.

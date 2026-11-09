@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, ClassVar, Literal, Self, cast
 from typing_extensions import TypedDict
 from uuid import UUID, uuid4
 
@@ -264,9 +264,23 @@ class Change:
         # Foreman hooks for implicit subscription bundles.
         "implicit_subs_opened",
         "implicit_subs_closed",
+        # Protected history (:attr:`Change.PROTECTED_KINDS`): an admin set or cleared a
+        # row's ``locked`` flag. No delta; the kind is the new state.
+        "locked",
+        "unlocked",
     ]
     """Closed set; the schema CHECK enforces which columns each kind may
     populate."""
+
+    PROTECTED_KINDS: ClassVar[tuple[Kind, ...]] = ("locked", "unlocked")
+    """History kinds with their own visibility and retention.
+
+    Only an admin reads them, through the change-log routes, and no export, push or
+    other subscription carries them. They name no subject text, so the redaction of a
+    deleted chat leaves them, and, the subject being FK-free, they outlive its purge.
+    Every reader of ``change_log`` takes this one list: a new protected kind joins it
+    here and nowhere else.
+    """
 
     id: UUID = field(default_factory=uuid4)
     """Row identifier."""
