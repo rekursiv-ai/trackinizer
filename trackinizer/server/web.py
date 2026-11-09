@@ -1015,7 +1015,8 @@ _CHANGE_SELECT: Final = (
 _PEER_COLUMNS: Final = (
     "t.kind AS peer_kind, t.seq AS peer_seq, t.title AS peer_title, "
     "t.status AS peer_status, t.belief_judgement AS peer_judgement, "
-    "t.created AS peer_created, t.issue_priority AS peer_priority"
+    "t.created AS peer_created, t.issue_priority AS peer_priority, "
+    "t.agentsession_cli_session_id AS peer_cli_session_id"
 )
 """SELECT fragment for the joined inquiry on the far end of an edge."""
 
@@ -1571,7 +1572,9 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
 
 
 # ``peer_priority`` is the peer's own priority; ``priority`` on the same ref is the
-# edge's (``_add_edge_annotation``), which overrides it in that parent's list.
+# edge's (``_add_edge_annotation``), which overrides it in that parent's list. A
+# session's ``cli_session_id`` names a sub-agent as its parent's records do
+# (``agent-<id>``), so a client can match a child session to the call that ran it.
 def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
     """Build a UI ref ``{id, kind, seq, title, status, peer_created, ...}``."""
     out: WebView = {
@@ -1586,6 +1589,8 @@ def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
         out["judgement"] = row["peer_judgement"]
     if row["peer_priority"] is not None:
         out["peer_priority"] = row["peer_priority"]
+    if row["peer_cli_session_id"] is not None:
+        out["cli_session_id"] = row["peer_cli_session_id"]
     return out
 
 
