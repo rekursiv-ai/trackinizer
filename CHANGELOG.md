@@ -31,6 +31,9 @@ All notable trackinizer changes are documented here. This project follows
 - `GET /api/machines/{id}/exec/wait` answers `null` after its hold, for one release, so
   a host from before the pipe gets no error and no offer. `wire_exec`, `Client.wait_exec`
   and `Client.post_exec_result` stay for that release too.
+- `JobView` carries a GPU job's charge as `gpu_seconds`. The server still sends
+  `gpu_minutes`, the seconds rounded up to the minute, because 0.1.13 and
+  earlier refuse a job answer without it.
 
 ### Removed
 

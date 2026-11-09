@@ -19,6 +19,7 @@ from trackinizer.wire.wire_job import (
     TERMINAL_STATES,
     Grant,
     GrantStatus,
+    JobView,
     NodeAddress,
     ReadGrantBody,
     SubmitBody,
@@ -274,6 +275,39 @@ def test_a_read_grant_body_validates_the_key_like_a_submit() -> None:
     assert ReadGrantBody(public_key=f"{_KEY} c").public_key == _KEY
     with pytest.raises(pydantic.ValidationError):
         ReadGrantBody(public_key=_RSA)
+
+
+@pytest.mark.parametrize(
+    ("gpu_seconds", "gpu_minutes"),
+    [(None, None), (0, 0), (1, 1), (60, 1), (61, 2), (480, 8)],
+)
+def test_a_job_view_sends_its_gpu_seconds_rounded_up_to_the_minute(
+    gpu_seconds: int | None,
+    gpu_minutes: int | None,
+) -> None:
+    view = JobView.model_validate(
+        {
+            "id": 7,
+            "state": "completed",
+            "node": None,
+            "gpus": 1,
+            "minutes": 5,
+            "label": "",
+            "argv": ["python", "x.py"],
+            "commit": _COMMIT,
+            "bundle_sha256": None,
+            "created_at": "2026-10-21T12:00:00Z",
+            "started_at": None,
+            "ended_at": None,
+            "gpu_seconds": gpu_seconds,
+            "gpu_minutes": 999,
+            "usd": None,
+            "reason": "",
+            "upload_serial": None,
+        },
+    )
+
+    assert view.model_dump(mode="json")["gpu_minutes"] == gpu_minutes
 
 
 def test_the_read_verbs_are_a_subset_of_the_upload_verbs() -> None:
