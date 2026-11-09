@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING, Literal, Protocol, Self
 
 import os
 import re
+import secrets
 import shutil
+import tempfile
 import time
 import uuid
 
@@ -54,6 +56,8 @@ __all__ = [
     "parse_service_keys",
     "parse_staff",
     "parse_terminal_stun",
+    "session_secret_from_env",
+    "session_secret_from_file",
 ]
 
 
@@ -162,7 +166,9 @@ class Config:
         ``--app-dir``, the web app.
       session_secret: HMAC key for the session and OAuth-state cookies.
         Empty disables session login. Must be stable across processes
-        sharing the cookie -- rotating it logs everyone out.
+        sharing the cookie -- rotating it logs everyone out. Environment only:
+        ``TRACKINIZER_SESSION_SECRET``, or the file
+        ``TRACKINIZER_SESSION_SECRET_FILE`` names, which the first start makes.
       secrets: Secret-variable backend: ``file`` (under the user data
         directory), ``file:/abs/path``, or ``none`` to refuse secret
         variables. Environment only (``TRACKINIZER_SECRETS``).
@@ -289,7 +295,7 @@ class Config:
                 os.environ.get("TRACKINIZER_SESSION_EMBEDDERS", ""),
             ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            session_secret=session_secret_from_env(),
             secrets=secrets_from_env(),
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
@@ -333,7 +339,7 @@ class Config:
             session_embedders=_parse_session_embedders(flags.session_embedders),
             web=flags.web,
             # Secrets come from the environment only, never CLI flags.
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            session_secret=session_secret_from_env(),
             secrets=secrets_from_env(),
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
@@ -400,6 +406,66 @@ def session_max_age_from_env() -> int:
             f"TRACKINIZER_SESSION_MAX_AGE_SECONDS must be >= 1, got {seconds}",
         )
     return seconds
+
+
+def session_secret_from_env() -> str:
+    """Read the session secret from its variable, or from the file another names.
+
+    ``TRACKINIZER_SESSION_SECRET`` holds the secret itself, and
+    ``TRACKINIZER_SESSION_SECRET_FILE`` names a file :func:`session_secret_from_file`
+    keeps it in.
+
+    Returns:
+      secret: The session secret; empty when neither is set.
+
+    Raises:
+      ConfigError: Both are set.
+
+    """
+    secret = os.environ.get(
+        "TRACKINIZER_SESSION_SECRET",
+        "",  # pragma: no mutate -- unset and "" are both falsy.
+    )
+    path = os.environ.get("TRACKINIZER_SESSION_SECRET_FILE", "")
+    if secret and path.strip():
+        raise ConfigError(
+            "set TRACKINIZER_SESSION_SECRET or TRACKINIZER_SESSION_SECRET_FILE, not both",
+        )
+    return secret or session_secret_from_file(path)
+
+
+# A box's server makes its own: the first start writes a random key, and each later one, a
+# restart or a deploy, reads it, so sessions outlive both. The key is staged beside the file
+# and linked into place, which fails when another start linked first, so two starts at once
+# keep one key.
+def session_secret_from_file(path: str) -> str:
+    """Return the session secret kept at ``path``, made at the first start.
+
+    Args:
+      path: The file; blank names none.
+
+    Returns:
+      secret: The key in the file, or empty when no file is named.
+
+    """
+    if not path.strip():
+        return ""
+    target = Path(path.strip())
+    if not target.exists():
+        # Staged under a name no other start shares, as write_private stages, then linked
+        # into place, so two first starts keep one secret and a crash leaves no name taken.
+        fd, staged = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        secret = secrets.token_hex(32)  # pragma: no mutate -- None is 32 bytes too.
+        try:
+            with os.fdopen(fd, "w") as staged_file:
+                staged_file.write(secret + "\n")
+            with suppress(FileExistsError):
+                os.link(staged, target)
+        finally:
+            Path(staged).unlink()
+    return target.read_text(
+        encoding="utf-8",  # pragma: no mutate -- the secret is ASCII, read alike by any.
+    ).strip()
 
 
 def secrets_from_env() -> str:

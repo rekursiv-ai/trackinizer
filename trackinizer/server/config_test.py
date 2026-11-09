@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import cast
 
 import argparse
 import os
@@ -32,14 +33,11 @@ from trackinizer.server.config import (
     parse_service_keys,
     parse_staff,
     parse_terminal_stun,
+    session_secret_from_file,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.wire.wire_terminals import MAX_ICE_SERVERS
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestPureFunctions:
@@ -858,6 +856,95 @@ class TestServiceKeys:
             Config.from_env()
         with pytest.raises(ConfigError, match=r"set TRACKINIZER_SERVICE_KEY_DIR$"):
             Config.from_args(_server_args())
+
+
+class TestSessionSecretFile:
+    """``$TRACKINIZER_SESSION_SECRET_FILE``: a key the first start makes and later ones keep."""
+
+    def test_the_first_start_makes_it_and_a_later_one_reads_it(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+
+        made = session_secret_from_file(str(path))
+
+        assert re.fullmatch(r"[0-9a-f]{64}", made)
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert list(tmp_path.iterdir()) == [path]
+        assert session_secret_from_file(str(path)) == made
+
+    def test_a_stage_a_crashed_start_left_does_not_stop_the_next(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+        left = tmp_path / f".session-secret.{os.getpid()}"
+        left.write_text("partial\n")
+
+        made = session_secret_from_file(str(path))
+
+        assert re.fullmatch(r"[0-9a-f]{64}", made)
+        assert sorted(tmp_path.iterdir()) == [left, path]
+
+    def test_a_start_that_loses_the_race_keeps_the_winners(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+        staged: list[Path] = []
+
+        def link(source: str, target: Path) -> None:
+            # Another first start links its own secret in between.
+            staged.append(Path(source))
+            target.write_text("won\n")
+            raise FileExistsError(target)
+
+        monkeypatch.setattr(os, "link", link)
+
+        assert session_secret_from_file(str(path)) == "won"
+        assert [(s.parent, s.name.startswith(".session-secret.")) for s in staged] == [
+            (tmp_path, True),
+        ]
+        assert list(tmp_path.iterdir()) == [path]
+
+    def test_a_kept_one_is_read_as_written(self, tmp_path: Path) -> None:
+        path = tmp_path / "session-secret"
+        path.write_text(" kept \n")
+
+        assert session_secret_from_file(f" {path} ") == "kept"
+
+    def test_none_named_is_none(self) -> None:
+        assert session_secret_from_file("  ") == ""
+
+    def test_both_ways_to_build_a_config_read_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_SESSION_SECRET", raising=False)
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET_FILE", str(tmp_path / "s"))
+
+        made = Config.from_env().session_secret
+
+        assert made == (tmp_path / "s").read_text().strip()
+        assert Config.from_args(_server_args()).session_secret == made
+
+    def test_the_secret_and_its_file_together_are_a_config_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET", "typed")
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET_FILE", str(tmp_path / "s"))
+        expected = "set TRACKINIZER_SESSION_SECRET or TRACKINIZER_SESSION_SECRET_FILE, not both"
+
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            Config.from_env()
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            Config.from_args(_server_args())
+        assert not (tmp_path / "s").exists()
 
 
 def test_a_machine_holds_16_tool_pipes_each_dialed_back_in_20_seconds() -> None:
