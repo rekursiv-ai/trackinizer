@@ -46,8 +46,6 @@ from trackinizer.server.auth import (
     AudienceCeilingError,
     AuthIdentity,
     RoleCeilingError,
-    _publish_bootstrap_token,
-    _stage_bootstrap_token,
     allowlist_match,
     assert_account_active,
     bootstrap_admin,
@@ -60,11 +58,13 @@ from trackinizer.server.auth import (
     key_within_caller,
     list_api_keys,
     lookup_user_by_id,
+    publish_token_file,
     request_user,
     require_role,
     revoke_api_key,
     seed_no_auth_user,
     set_api_key_role,
+    stage_token_file,
     verify_secret,
 )
 from trackinizer.server.config import Config
@@ -1290,7 +1290,7 @@ class TestBootstrapAdmin:
     ) -> None:
         # The staged ``.tmp`` carries the same mode-0600 invariant as the
         # final path: a wide-open umask must not race a permission bump.
-        # ``_stage_bootstrap_token`` opens with ``O_CREAT, 0o600`` then
+        # ``stage_token_file`` opens with ``O_CREAT, 0o600`` then
         # chmods to 0o600 explicitly; both steps must land before any
         # readable mode is observable on the file.
         token_path = tmp_path / "nested" / "tokens" / "bootstrap_token"
@@ -1306,8 +1306,8 @@ class TestBootstrapAdmin:
         monkeypatch.setattr(Path, "chmod", spy_chmod)
         old_umask = os.umask(0o022)
         try:
-            _stage_bootstrap_token(token_path, "secret")
-            _publish_bootstrap_token(token_path)
+            stage_token_file(token_path, "secret")
+            publish_token_file(token_path)
         finally:
             os.umask(old_umask)
         assert observed_modes == [0o600]

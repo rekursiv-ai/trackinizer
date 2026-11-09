@@ -72,6 +72,7 @@ __all__ = [
     "AuthIdentity",
     "Role",
     "RoleCeilingError",
+    "UserObserver",
     "UserStatus",
     "allowlist_match",
     "bootstrap_admin",
@@ -86,11 +87,13 @@ __all__ = [
     "list_api_keys",
     "lookup_user_by_id",
     "mint_open_into",
+    "publish_token_file",
     "request_user",
     "require_role",
     "revoke_api_key",
     "seed_no_auth_user",
     "set_api_key_role",
+    "stage_token_file",
     "verify_secret",
 ]
 
@@ -871,7 +874,7 @@ async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
         )
 
 
-async def bootstrap_admin(conn: Conn, *, policy: _UserObserver) -> None:
+async def bootstrap_admin(conn: Conn, *, policy: UserObserver) -> None:
     """Seed the first admin (allowlist + user + api_key) when ``users`` is empty.
 
     Takes a fresh deployment to "operator can call the API immediately":
@@ -951,12 +954,16 @@ async def bootstrap_admin(conn: Conn, *, policy: _UserObserver) -> None:
                 name="bootstrap",
                 ceiling="admin",
             )
-            _stage_bootstrap_token(token_path, secret)
+            stage_token_file(token_path, secret)
     if seeded:
-        _publish_bootstrap_token(token_path)
+        publish_token_file(token_path)
+        logger.warning(
+            "bootstrap admin token written to %s (read once, then rotate)",
+            token_path,
+        )
 
 
-async def seed_no_auth_user(conn: Conn, *, policy: _UserObserver) -> None:
+async def seed_no_auth_user(conn: Conn, *, policy: UserObserver) -> None:
     """Seed the synthetic ``--no-auth`` principal as an active admin user.
 
     ``--no-auth`` collapses every request to a synthetic admin identity
@@ -984,20 +991,16 @@ async def seed_no_auth_user(conn: Conn, *, policy: _UserObserver) -> None:
             await policy.on_user(conn, email=_NO_AUTH_EMAIL, role="admin")
 
 
-def _bootstrap_token_path() -> Path:
-    """Resolve the final bootstrap-token path from env override or default."""
-    override = os.environ.get(BOOTSTRAP_TOKEN_FILE_ENV, "").strip()
-    return (
-        Path(override)
-        if override
-        else data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
-    )
-
-
 # An ``OSError`` here propagates so ``tx(conn)`` rolls back. ``O_TRUNC`` overwrites any
 # ``.tmp`` orphan from a prior crash so re-bootstrap can't inherit a stale plaintext.
-def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
-    """Stage the secret: fsync it to ``<final>.tmp`` inside the DB transaction."""
+def stage_token_file(token_path: Path, secret: str) -> None:
+    """Stage the secret: fsync it to ``<final>.tmp`` inside the DB transaction.
+
+    Args:
+      token_path: Where the secret is published once the transaction commits.
+      secret: The plaintext key, written with a trailing newline, mode 0600.
+
+    """
     token_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = token_path.with_name(token_path.name + ".tmp")
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1015,8 +1018,13 @@ def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
 # visible) and the dir fsync makes it crash-durable. A failure here is a real outage --
 # the commit landed but the secret never materialized -- so the ``.tmp`` is left for
 # manual recovery.
-def _publish_bootstrap_token(token_path: Path) -> None:
-    """Publish the staged secret: rename ``.tmp`` to final and fsync the dir."""
+def publish_token_file(token_path: Path) -> None:
+    """Publish the staged secret: rename ``.tmp`` to final and fsync the dir.
+
+    Args:
+      token_path: The path :func:`stage_token_file` staged it for.
+
+    """
     tmp_path = token_path.with_name(token_path.name + ".tmp")
     tmp_path.replace(token_path)
     dir_fd = os.open(token_path.parent, os.O_RDONLY)
@@ -1024,10 +1032,6 @@ def _publish_bootstrap_token(token_path: Path) -> None:
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
-    logger.warning(
-        "bootstrap admin token written to %s (read once, then rotate)",
-        token_path,
-    )
 
 
 # The session path is off when ``app.state.config`` is absent (tests that skip the
@@ -1268,8 +1272,12 @@ class _ConfigLike(Protocol):
 # The part of ``access_policy.AccessPolicy`` the seeds call, named here instead of
 # imported: a service that imports this module and not the policy is redeployed only
 # when a file it imports changes, so that import would leave it on a stale copy.
-class _UserObserver(Protocol):
-    async def on_user(self, conn: Conn, *, email: str, role: Role) -> None: ...
+class UserObserver(Protocol):
+    """What is told of each account a seed makes: the access policy, or a stand-in."""
+
+    async def on_user(self, conn: Conn, *, email: str, role: Role) -> None:
+        """Hear of ``email``, made at ``role`` on ``conn``, inside its transaction."""
+        ...
 
 
 class _StoreLike(Protocol):
@@ -1324,3 +1332,13 @@ async def _fetch_user_role(conn: Conn, user_id: uuid.UUID) -> Role:
     if user_role_raw is None:
         raise LookupError(f"unknown user {user_id}")
     return user_role_raw
+
+
+def _bootstrap_token_path() -> Path:
+    """Resolve the final bootstrap-token path from env override or default."""
+    override = os.environ.get(BOOTSTRAP_TOKEN_FILE_ENV, "").strip()
+    return (
+        Path(override)
+        if override
+        else data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
+    )

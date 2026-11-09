@@ -19,6 +19,7 @@ from trackinizer.server.config import (
     Config,
     ConfigError,
     ConfigFlags,
+    ServiceKeys,
     _prune_stale_ephemeral_dirs,
     auth_disabled_from_env,
     build_embedder,
@@ -28,6 +29,7 @@ from trackinizer.server.config import (
     parse_chat_streaming,
     parse_compute,
     parse_engine,
+    parse_service_keys,
     parse_staff,
     parse_terminal_stun,
 )
@@ -309,6 +311,50 @@ class TestFromEnv:
             auth_disabled=True,
             assistant=Assistant(actor="kb", email="kb@service.invalid"),
             chat_streaming=False,
+        )
+
+    def test_every_flag_reaches_its_field(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        for name in self._VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        assert Config.from_args(_server_args()).session_secret == ""
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET", "s3cret")
+        flags = _server_args(
+            engine="pg",
+            datadir=tmp_path,
+            ephemeral=True,
+            pglite_tcp=True,
+            dsn="postgresql://h/db",
+            embedder="other",
+            session_embedder="m@1024",
+            session_embedder_dim=7,
+            session_embedders="a, b ,,c",
+            web=True,
+            session_max_age_seconds=99,
+            auth=False,
+            assistant="kb=KB@Service.Invalid",
+            staff="a@x.y",
+        )
+        config = Config.from_args(flags)
+        assert config.session_secret == os.environ["TRACKINIZER_SESSION_SECRET"]
+        assert replace(config, session_secret="") == Config(
+            engine="pg",
+            datadir=tmp_path,
+            ephemeral=True,
+            pglite_tcp=True,
+            dsn="postgresql://h/db",
+            embedder="other",
+            session_embedder="m@1024",
+            session_embedder_dim=7,
+            session_embedders=("a", "b", "c"),
+            web=True,
+            session_max_age_seconds=99,
+            auth_disabled=True,
+            assistant=Assistant(actor="kb", email="kb@service.invalid"),
+            staff=("a@x.y",),
         )
 
 
@@ -758,6 +804,60 @@ class TestCompute:
         monkeypatch.setenv("TRACKINIZER_COMPUTE", "not json")
         with pytest.raises(ConfigError, match="TRACKINIZER_COMPUTE"):
             Config.from_env()
+
+
+class TestServiceKeys:
+    """``$TRACKINIZER_SERVICE_KEYS`` names the service accounts the server keys."""
+
+    def test_pairs_are_read_in_order_with_their_directory(self, tmp_path: Path) -> None:
+        assert parse_service_keys(
+            " chat:writer, ,gpu-broker:viewer ",
+            f" {tmp_path} ",
+        ) == ServiceKeys(
+            accounts=(("chat", "writer"), ("gpu-broker", "viewer")),
+            directory=tmp_path,
+        )
+
+    def test_none_named_needs_no_directory(self) -> None:
+        assert parse_service_keys(" , ", "") is None
+        assert Config().service_keys is None
+
+    @pytest.mark.parametrize(
+        ("accounts", "says"),
+        [
+            ("chat", "'chat' is not NAME:viewer or NAME:writer"),
+            ("chat:admin", "'chat:admin' is not NAME:viewer or NAME:writer"),
+            ("Chat:writer", "'Chat:writer' is not NAME:viewer or NAME:writer"),
+            ("chat:writer,chat:viewer", "'chat' is named twice"),
+        ],
+    )
+    def test_a_malformed_pair_is_a_config_error(self, accounts: str, says: str) -> None:
+        expected = f"TRACKINIZER_SERVICE_KEYS: {says}"
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            parse_service_keys(accounts, "/srv/keys")
+
+    def test_accounts_without_a_directory_are_a_config_error(self) -> None:
+        expected = (
+            "TRACKINIZER_SERVICE_KEYS names accounts; set TRACKINIZER_SERVICE_KEY_DIR"
+        )
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            parse_service_keys("chat:writer", "  ")
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SERVICE_KEYS", "chat:writer")
+        monkeypatch.setenv("TRACKINIZER_SERVICE_KEY_DIR", str(tmp_path))
+        keys = ServiceKeys(accounts=(("chat", "writer"),), directory=tmp_path)
+        assert Config.from_env().service_keys == keys
+        assert Config.from_args(_server_args()).service_keys == keys
+        monkeypatch.delenv("TRACKINIZER_SERVICE_KEY_DIR")
+        with pytest.raises(ConfigError, match=r"set TRACKINIZER_SERVICE_KEY_DIR$"):
+            Config.from_env()
+        with pytest.raises(ConfigError, match=r"set TRACKINIZER_SERVICE_KEY_DIR$"):
+            Config.from_args(_server_args())
 
 
 def test_a_machine_holds_16_tool_pipes_each_dialed_back_in_20_seconds() -> None:

@@ -8,6 +8,7 @@ imports the chain without importing every ``trax`` verb.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlparse, urlsplit
 
@@ -47,7 +48,8 @@ def connect(args: argparse.Namespace) -> Client:
          chosen below.
       2. ``--profile <name>`` (a saved profile, key included; missing on disk
          is an error). ``$TRACKINIZER_TOKEN`` is ignored.
-      3. ``$TRACKINIZER_URL`` with ``$TRACKINIZER_TOKEN`` (a raw URL and its
+      3. ``$TRACKINIZER_URL`` with ``$TRACKINIZER_TOKEN``, or the key in
+         ``$TRACKINIZER_TOKEN_FILE`` (a raw URL and its
          key). A token without a URL is ignored, never sent to a profile's
          server.
       4. ``$TRACKINIZER_URL`` alone (a raw URL, no key).
@@ -82,7 +84,7 @@ def resolve_target(args: argparse.Namespace) -> Target:
       target: The server URL, audit actor and key the flags and environment name.
 
     Raises:
-      ClientError: ``$TRACKINIZER_TOKEN`` is malformed, or a named profile or
+      ClientError: ``$TRACKINIZER_TOKEN`` (or its file) is malformed, or a named profile or
         ``$TRACKINIZER_URL`` is unusable.
 
     """
@@ -138,11 +140,27 @@ def server_dir(url: str) -> str:
 # The value must be refused here, with no text of it in the message: httpx2 rejects a
 # header value holding a newline or non-ASCII character with an error that quotes it,
 # and an uncaught traceback would print the key into the caller's log.
+# The file is how a systemd unit hands a service its key (``LoadCredential=``), so the
+# key is never in the environment. Empty when neither is set; a malformed key is refused
+# either way.
 def _env_key() -> str:
-    """Return ``$TRACKINIZER_TOKEN``, empty when unset, refusing a malformed one."""
+    """Return ``$TRACKINIZER_TOKEN``, else the key in ``$TRACKINIZER_TOKEN_FILE``."""
     key = env("TRACKINIZER_TOKEN") or ""
-    if key and re.fullmatch(r"[\x21-\x7e]+", key) is None:
-        raise ClientError(
-            "TRACKINIZER_TOKEN must be printable ASCII with no whitespace",
+    refusal = "TRACKINIZER_TOKEN must be printable ASCII with no whitespace"
+    if not key and (path := env("TRACKINIZER_TOKEN_FILE") or ""):
+        try:
+            # pragma: no mutate start -- a key is ASCII; every encoding reads it.
+            text = Path(path).read_text(encoding="utf-8")
+            # pragma: no mutate end
+        except OSError as error:
+            raise ClientError(
+                f"TRACKINIZER_TOKEN_FILE {path}: {error.strerror}",
+            ) from None
+        key = text.strip()
+        refusal = (
+            f"TRACKINIZER_TOKEN_FILE {path} must hold printable ASCII "
+            "with no whitespace"
         )
+    if key and re.fullmatch(r"[!-~]+", key) is None:
+        raise ClientError(refusal)
     return key

@@ -43,6 +43,7 @@ __all__ = [
     "Config",
     "ConfigError",
     "ConfigFlags",
+    "ServiceKeys",
     "build_embedder",
     "build_engine",
     "parse_assistant",
@@ -50,6 +51,7 @@ __all__ = [
     "parse_chat_streaming",
     "parse_compute",
     "parse_engine",
+    "parse_service_keys",
     "parse_staff",
     "parse_terminal_stun",
 ]
@@ -104,6 +106,20 @@ class ComputeNote:
 
     name: str
     about: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ServiceKeys:
+    """The service accounts a deployment names, and where their keys are kept.
+
+    Attributes:
+      accounts: Each account's name and role, in the order named.
+      directory: Where each account's key lives, in a file named for it.
+
+    """
+
+    accounts: tuple[tuple[str, wire_service_accounts.ServiceRole], ...]
+    directory: Path
 
 
 class ConfigFlags(Protocol):
@@ -181,6 +197,10 @@ class Config:
         Machines menu shows beside the person's own machines. Empty (the default)
         shows none. Environment only (``TRACKINIZER_COMPUTE``, a JSON list of
         ``{"name", "about"}`` objects).
+      service_keys: The service accounts this server keeps one live key each for,
+        at every start, and where the key files live; none when unset.
+        Environment only (``TRACKINIZER_SERVICE_KEYS``, comma separated
+        ``NAME:ROLE`` pairs, and ``TRACKINIZER_SERVICE_KEY_DIR``).
       tool_pipes_per_machine: The most tool pipes one machine holds at once; the
         next agent is refused.
       tool_dial_back_sec: How long an offered tool pipe waits for its host to dial
@@ -233,6 +253,7 @@ class Config:
     chat_streaming: bool = True
     terminal_stun: tuple[str, ...] = ()
     compute: tuple[ComputeNote, ...] = ()
+    service_keys: ServiceKeys | None = None
     tool_pipes_per_machine: int = 16
     tool_dial_back_sec: float = 20.0
     tool_sweep_sec: float = 60.0
@@ -249,7 +270,12 @@ class Config:
         return cls(
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
-            if (env_datadir := os.environ.get("TRACKINIZER_DATADIR", ""))
+            if (
+                env_datadir := os.environ.get(
+                    "TRACKINIZER_DATADIR",
+                    "",  # pragma: no mutate -- unset and "" are both falsy.
+                )
+            )
             else None,
             ephemeral=os.environ.get("TRACKINIZER_EPHEMERAL") == "1",
             pglite_tcp=os.environ.get("TRACKINIZER_PGLITE_TCP") == "1",
@@ -277,6 +303,10 @@ class Config:
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
             compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
+            service_keys=parse_service_keys(
+                os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
+                os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
         )
 
     @classmethod
@@ -318,6 +348,10 @@ class Config:
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
             compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
+            service_keys=parse_service_keys(
+                os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
+                os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -521,6 +555,45 @@ def parse_compute(value: str) -> tuple[ComputeNote, ...]:
     ]:
         raise ConfigError(f"{shape}, each with text in both: entry {blank[0]} has none")
     return notes
+
+
+def parse_service_keys(accounts: str, directory: str) -> ServiceKeys | None:
+    """Parse ``$TRACKINIZER_SERVICE_KEYS`` and ``$TRACKINIZER_SERVICE_KEY_DIR``.
+
+    Args:
+      accounts: ``NAME:ROLE`` pairs, comma separated; blank names none.
+      directory: Where the key files live; needed once an account is named.
+
+    Returns:
+      service_keys: The accounts and their directory, or None when none is named.
+
+    Raises:
+      ConfigError: A pair is malformed, its role is not ``viewer`` or ``writer``, a
+        name is given twice, or accounts are named with no directory.
+
+    """
+    named: dict[str, wire_service_accounts.ServiceRole] = {}
+    for pair in filter(None, (part.strip() for part in accounts.split(","))):
+        # pragma: no mutate start -- a name holds no colon, so rpartition refuses alike.
+        name, _, role = pair.partition(":")
+        # pragma: no mutate end
+        if not re.fullmatch(wire_service_accounts.NAME_PATTERN, name) or role not in (
+            "viewer",
+            "writer",
+        ):
+            raise ConfigError(
+                f"TRACKINIZER_SERVICE_KEYS: {pair!r} is not NAME:viewer or NAME:writer",
+            )
+        if name in named:
+            raise ConfigError(f"TRACKINIZER_SERVICE_KEYS: {name!r} is named twice")
+        named[name] = role
+    if not named:
+        return None
+    if not directory.strip():
+        raise ConfigError(
+            "TRACKINIZER_SERVICE_KEYS names accounts; set TRACKINIZER_SERVICE_KEY_DIR",
+        )
+    return ServiceKeys(accounts=tuple(named.items()), directory=Path(directory.strip()))
 
 
 def parse_chat_streaming(value: str) -> bool:

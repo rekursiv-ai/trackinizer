@@ -66,6 +66,9 @@ cross the socket, so the client runs in-process only when it is set with
 ``TRACKINIZER_URL``, the one case that reads it, and the daemon claims the name
 without a value."""
 
+KEY_FILE_ENV: Final = "TRACKINIZER_TOKEN_FILE"
+"""The file a key is read from when ``KEY_ENV`` is unset; held to ``KEY_ENV``'s rule."""
+
 
 class Request:
     """One CLI invocation, with the ambient state the daemon cannot observe.

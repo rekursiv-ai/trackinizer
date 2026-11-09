@@ -18,6 +18,7 @@ from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax.daemon.protocol import (
     FORWARDED_ENV,
     KEY_ENV,
+    KEY_FILE_ENV,
     PROTOCOL_VERSION,
     Request,
     Response,
@@ -97,8 +98,8 @@ def should_delegate(argv: Sequence[str]) -> bool:
     any command whose value is the ``-`` stdin sentinel, ``machine`` and ``job``,
     ``profile NAME login URL``, and ``export``, whose output outgrows a frame. Each is judged by POSITION rather than
     by presence, so a row whose title happens to be "run" still gets the
-    daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
-    ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
+    daemon. An invocation with ``TRACKINIZER_URL`` and ``TRACKINIZER_TOKEN`` or
+    ``TRACKINIZER_TOKEN_FILE`` non-empty runs in this process: the key must not cross
     the socket.
 
     Args:
@@ -113,7 +114,8 @@ def should_delegate(argv: Sequence[str]) -> bool:
     # ``connection.resolve_target`` reads the key only beside a URL, and ops shells export a
     # lone token, so refusing on the token alone would forfeit the daemon on every
     # call there for nothing.
-    if os.getenv(KEY_ENV, default="") and os.getenv("TRACKINIZER_URL", default=""):
+    keyed = os.getenv(KEY_ENV, default="") or os.getenv(KEY_FILE_ENV, default="")
+    if keyed and os.getenv("TRACKINIZER_URL", default=""):
         return False
     if _spawns_a_terminal(argv) or _logs_in(argv):
         return False

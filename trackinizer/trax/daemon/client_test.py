@@ -58,6 +58,7 @@ def no_ambient_token(monkeypatch: pytest.MonkeyPatch) -> None:
     delegation off.
     """
     monkeypatch.delenv("TRACKINIZER_TOKEN", raising=False)
+    monkeypatch.delenv("TRACKINIZER_TOKEN_FILE", raising=False)
 
 
 @contextlib.contextmanager
@@ -211,6 +212,19 @@ class TestTokenNeverCrossesTheSocket:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setenv("TRACKINIZER_URL", "https://trackinizer.example")
+
+        assert not should_delegate(["issue", "status", "is", "active"])
+
+    def test_runs_in_process_when_a_key_file_comes_with_a_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_TOKEN")
+        monkeypatch.setenv(
+            "TRACKINIZER_TOKEN_FILE",
+            "/run/credentials/chat.service/key",
+        )
         monkeypatch.setenv("TRACKINIZER_URL", "https://trackinizer.example")
 
         assert not should_delegate(["issue", "status", "is", "active"])
