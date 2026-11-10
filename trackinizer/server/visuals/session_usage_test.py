@@ -108,6 +108,24 @@ def test_a_claude_call_whose_lines_repeat_its_usage_counts_once() -> None:
     assert usage.usd > 0
 
 
+def test_a_claude_call_on_fable_5_2_is_priced_at_its_list_prices() -> None:
+    """Per MTok: $8 in, $10 a 5m and $16 a 1h cache write, $0.20 a cache read, $40 out."""
+    usage_info: Mapping[str, PlainTree] = {
+        "input_tokens": 1_000_000,
+        "cache_creation_input_tokens": 3_000_000,
+        "cache_creation": {"ephemeral_1h_input_tokens": 1_000_000},
+        "cache_read_input_tokens": 10_000_000,
+        "output_tokens": 1_000_000,
+    }
+    rows = _rows(
+        _answer("r1", model="claude-fable-5-2"),
+        ("TokenUsage", {"info": usage_info}),
+    )
+    usage = session_usage(rows, formats={0: "claude"}, today=_DAY)
+    assert usage.usd == pytest.approx(8 + 2 * 10 + 16 + 10 * 0.2 + 40)
+    assert usage.context_window == 1_000_000
+
+
 def test_codex_counts_what_its_running_totals_grew_by() -> None:
     rows = _rows(
         ("TurnContext", {"model": "gpt-5.6-sol"}),

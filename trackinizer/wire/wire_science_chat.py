@@ -253,7 +253,7 @@ class ChatModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str
-    """What ``/model`` takes: claude's family alias, codex's wire id."""
+    """What ``/model`` takes: the model's wire id, as ``claude-fable-5-2``."""
 
     label: str
     """Its name on a person's screen, as ``Opus 5.5``."""
