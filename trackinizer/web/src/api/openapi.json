@@ -1168,6 +1168,66 @@
     ],
     "type": "string"
    },
+   "ChatView": {
+    "additionalProperties": false,
+    "description": "How Chat draws a chat: which view, and what each view shows of it.\n\nA write replaces the whole object, as it does any top-level key.",
+    "properties": {
+     "density": {
+      "default": "auto",
+      "enum": [
+       "auto",
+       "verbose",
+       "compact",
+       "minimal"
+      ],
+      "title": "Density",
+      "type": "string"
+     },
+     "output_lines": {
+      "anyOf": [
+       {
+        "enum": [
+         "tool",
+         "all"
+        ],
+        "type": "string"
+       },
+       {
+        "items": {
+         "minimum": 0.0,
+         "type": "integer"
+        },
+        "maxItems": 2,
+        "minItems": 2,
+        "type": "array"
+       }
+      ],
+      "default": "tool",
+      "title": "Output Lines"
+     },
+     "thinking": {
+      "default": false,
+      "title": "Thinking",
+      "type": "boolean"
+     },
+     "times": {
+      "default": false,
+      "title": "Times",
+      "type": "boolean"
+     },
+     "view": {
+      "default": "chat",
+      "enum": [
+       "chat",
+       "terminal"
+      ],
+      "title": "View",
+      "type": "string"
+     }
+    },
+    "title": "ChatView",
+    "type": "object"
+   },
    "Citation": {
     "description": "One inline citation on a :class:`SubmitBelief`: which artifact, how strong.\n\nThe signed ``valence`` is bounded to the same ``[-1, 1]`` the edges column\nenforces, so a malformed-weight citation is rejected at the wire boundary\nrather than surfacing as a mid-transaction CHECK violation. The polarity is\nalready resolved here (the trax ``dis*`` aliases negate before the wire), so\nthis is the final stored sign.",
     "properties": {
@@ -5494,11 +5554,16 @@
       "type": "string",
       "x-setting": true
      },
-     "chat_tool_calls": {
-      "default": true,
-      "description": "Show the tool calls an agent makes in Chat between the lines, each run of them folded into one line that opens on what it ran and what came back.",
-      "title": "Chat Tool Calls",
-      "type": "boolean",
+     "chat_view": {
+      "$ref": "#/components/schemas/ChatView",
+      "default": {
+       "density": "auto",
+       "output_lines": "tool",
+       "thinking": false,
+       "times": false,
+       "view": "chat"
+      },
+      "description": "How Chat draws a chat: its own lines or the terminal's rows (view), how much of the tool calls shows (density), whether reasoning shows (thinking), how much of a tool's output shows (output_lines), and when each line was written (times).",
       "x-setting": true
      },
      "cli_folder": {

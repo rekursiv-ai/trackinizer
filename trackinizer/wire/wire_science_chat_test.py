@@ -287,6 +287,33 @@ def test_a_partials_turn_is_a_short_word_that_fits_a_path(turn: str) -> None:
         ChatPartial(turn=turn, text="")
 
 
+def test_a_partial_from_a_writer_that_sends_only_text_has_no_frame_beside_it() -> None:
+    partial = ChatPartial.model_validate({"turn": "t1", "text": "so far"})
+    assert (partial.thinking, partial.calls, partial.status) == ("", [], "")
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"thinking": "x" * 16_385},
+        {"calls": ["Bash"] * 51},
+        {"calls": ["x" * 1_001]},
+        {"status": "x" * 201},
+    ],
+)
+def test_a_partials_frame_is_bounded(field: dict[str, object]) -> None:
+    """Each part of the frame the server holds in memory is bounded, as its text is."""
+    assert ChatPartial(
+        turn="t1",
+        text="",
+        thinking="x" * 16_384,
+        calls=["x" * 1_000] * 50,
+        status="x" * 200,
+    ).calls
+    with pytest.raises(ValidationError):
+        ChatPartial.model_validate({"turn": "t1", "text": "", **field})
+
+
 def test_a_partial_and_its_state_name_no_unknown_field() -> None:
     with pytest.raises(ValidationError):
         ChatPartial.model_validate({"turn": "t1", "text": "", "poster": "mallory"})

@@ -91,7 +91,13 @@ _DEFAULTS: dict[str, object] = {
     "chat_provider": "assistant",
     "assistant_prompt": "sagent",
     "cli_folder": "",
-    "chat_tool_calls": True,
+    "chat_view": {
+        "view": "chat",
+        "density": "auto",
+        "thinking": False,
+        "output_lines": "tool",
+        "times": False,
+    },
     "autofix": True,
     "automerge": False,
     "hide_closed_pulls": True,
@@ -155,7 +161,8 @@ async def test_a_retired_key_a_user_still_has_stored_is_ignored_then_dropped(
     await seed_accounts(store)
     async with store.engine.acquire() as conn:
         await conn.execute(
-            'UPDATE users SET preferences = \'{"chat_style": "terminal"}\'::jsonb '
+            "UPDATE users SET preferences = "
+            '\'{"chat_style": "terminal", "chat_tool_calls": false}\'::jsonb '
             "WHERE id = $1",
             TEST_USER_ID,
         )
@@ -164,7 +171,9 @@ async def test_a_retired_key_a_user_still_has_stored_is_ignored_then_dropped(
     changed = await client.patch("/api/me/preferences", json={"theme": "light"})
 
     assert changed.status_code == 200, changed.text
-    assert "chat_style" not in from_plain(changed.json(), dict[str, object])
+    answered = from_plain(changed.json(), dict[str, object])
+    assert "chat_style" not in answered
+    assert "chat_tool_calls" not in answered
     assert await _stored_preferences(store, TEST_USER_ID) == {"theme": "light"}
 
 

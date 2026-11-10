@@ -26,7 +26,13 @@
         "automerge": false,
         "chat_provider": "assistant",
         "chat_side": "left",
-        "chat_tool_calls": true,
+        "chat_view": {
+          "density": "auto",
+          "output_lines": "tool",
+          "thinking": false,
+          "times": false,
+          "view": "chat"
+        },
         "cli_folder": "",
         "collapsed": [],
         "console_views": [],

@@ -57,7 +57,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "chat_provider",
         "assistant_prompt",
         "cli_folder",
-        "chat_tool_calls",
+        "chat_view",
         "autofix",
         "automerge",
     },
@@ -314,6 +314,40 @@ _GREEN_ON_BLACK: Final = TerminalColors(
 """GNOME Terminal's "Green on black" over its GNOME palette, bold drawn bright."""
 
 
+class ChatView(_Strict):
+    """How Chat draws a chat: which view, and what each view shows of it.
+
+    A write replaces the whole object, as it does any top-level key.
+    """
+
+    view: Literal["chat", "terminal"] = "chat"
+    """Chat's own lines, or the rows sagent's terminal UI prints."""
+
+    density: Literal["auto", "verbose", "compact", "minimal"] = "auto"
+    """How much of the tool calls shows: each one whole, folded, or none; ``auto``
+    is the view's own, folded in Chat and whole in the terminal."""
+
+    thinking: bool = False
+    """Whether the reasoning an agent stored shows."""
+
+    output_lines: (
+        Literal["tool", "all"]
+        | Annotated[
+            list[Annotated[int, Field(ge=0)]],
+            Field(min_length=2, max_length=2),
+        ]
+    ) = "tool"
+    """How much of a tool's output shows: as its tool says, all of it, or the lines
+    kept from its head and its tail."""
+
+    times: bool = False
+    """Whether each line shows when it was written."""
+
+
+_CHAT_VIEW: Final = ChatView()
+"""Chat's own lines, with each option at its default."""
+
+
 class CreateDraft(_Strict):
     """The create form's unsent inquiry."""
 
@@ -458,11 +492,13 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
-    chat_tool_calls: bool = Field(
-        default=True,
+    chat_view: ChatView = Field(
+        default=_CHAT_VIEW,
         description=(
-            "Show the tool calls an agent makes in Chat between the lines, each run of "
-            "them folded into one line that opens on what it ran and what came back."
+            "How Chat draws a chat: its own lines or the terminal's rows (view), how "
+            "much of the tool calls shows (density), whether reasoning shows "
+            "(thinking), how much of a tool's output shows (output_lines), and when "
+            "each line was written (times)."
         ),
         json_schema_extra=SETTING,
     )
@@ -618,6 +654,7 @@ async def write_preferences(
         [
             *sorted(key for key, value in change.items() if value is None),
             "chat_style",
+            "chat_tool_calls",
         ],
         user_id,
     )
