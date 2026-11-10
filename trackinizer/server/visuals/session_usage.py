@@ -93,7 +93,7 @@ def _capability(cli: str, model: str) -> ModelCapability | None:
         return None
     # The catalog sections the CLIs serve; their provider modules do not ship.
     table = (
-        models(anthropic, section="anthropic-cli")
+        models(anthropic, section="claude-code")
         if cli == "claude"
         else models(openai, section="openai-sub")
     )
