@@ -26,8 +26,10 @@ The server never reads either; the host defines them.
 A direct link (a WebRTC data channel between the browser and the host) is set up
 over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`)
 and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The host
-sends ``KEEPALIVE`` (u32 milliseconds since it last saw input) every
-:data:`KEEPALIVE_SEC` while output goes direct, so the idle limit still holds. A
+sends ``KEEPALIVE`` (u32 milliseconds since it last saw input, then u32 milliseconds
+since the shell last wrote output) every :data:`KEEPALIVE_SEC` while output goes
+direct, so the idle limit still holds and the server knows the machine is in use. A
+host from before output idle time sends the first u32 alone. A
 host that returns to the relay answers with ``ACK`` (the offset it resumes at)
 then ``OUTPUT``; the server restarts its ring there.
 
@@ -476,12 +478,12 @@ def decode_route(payload: bytes) -> tuple[int, int]:
     return payload[0], int.from_bytes(payload[1:])
 
 
-def encode_keepalive(idle_ms: int) -> bytes:
-    """Return the ``KEEPALIVE`` payload: milliseconds since the host last saw input."""
-    return min(idle_ms, 2**32 - 1).to_bytes(4)
+def encode_keepalive(idle_ms: int, *, output_idle_ms: int) -> bytes:
+    """Return the ``KEEPALIVE`` payload: milliseconds since input, then since output."""
+    return b"".join(min(ms, 2**32 - 1).to_bytes(4) for ms in (idle_ms, output_idle_ms))
 
 
-def decode_keepalive(payload: bytes) -> int:
+def decode_keepalive(payload: bytes) -> tuple[int, int | None]:
     """Return the idle milliseconds a ``KEEPALIVE`` payload carries.
 
     Args:
@@ -489,11 +491,15 @@ def decode_keepalive(payload: bytes) -> int:
 
     Returns:
       idle_ms: Milliseconds since the host last saw input.
+      output_idle_ms: Milliseconds since the shell last wrote output; ``None`` from a
+        host before output idle time, which sends ``idle_ms`` alone.
 
     Raises:
-      ValueError: The payload is not a u32.
+      ValueError: The payload is neither one u32 nor two.
 
     """
-    if len(payload) != 4:
+    if len(payload) == 4:
+        return int.from_bytes(payload), None
+    if len(payload) != 8:
         raise ValueError(f"KEEPALIVE payload of {len(payload)} bytes")
-    return int.from_bytes(payload)
+    return int.from_bytes(payload[:4]), int.from_bytes(payload[4:])

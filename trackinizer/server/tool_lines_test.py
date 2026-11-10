@@ -12,6 +12,7 @@ import pytest
 from trackinizer.server.tool_lines import (
     Authorize,
     GatedCall,
+    ResultIds,
     Routed,
     ToolLines,
     Verdict,
@@ -323,7 +324,8 @@ def test_each_line_dropped_in_a_frame_is_sized_and_the_rest_go_on() -> None:
 )
 def test_the_other_kinds_are_forwarded_unlogged(line: dict[str, object]) -> None:
     raw = (json.dumps(line) + "\n").encode()
-    assert _lines().feed(raw) == (Routed(to_host=raw), [])
+    acks = ("c1",) if line == {"py/object": "Ack", "id": "c1"} else ()
+    assert _lines().feed(raw) == (Routed(to_host=raw, acks=acks), [])
 
 
 def _padded(size: int) -> bytes:
@@ -479,6 +481,38 @@ def test_refused_line_is_one_json_line() -> None:
         },
     }
     assert refused_line("c1", "no").endswith(b"\n")
+
+
+def test_the_hosts_results_name_their_calls_however_the_frames_cut_them() -> None:
+    results = ResultIds(line_bytes=64)
+    first = b'{"py/object": "Result", "id": "c1", "record": {}}\n'
+    second = b'{"py/object": "Result", "id": "c2"}\n'
+
+    assert results.feed(first[:10]) == []
+    assert results.feed(first[10:] + second[:5]) == ["c1"]
+    assert results.feed(second[5:]) == ["c2"]
+
+
+def test_a_host_line_that_is_no_result_unreadable_or_too_long_is_passed_over() -> None:
+    results = ResultIds(line_bytes=64)
+    long = b'{"py/object": "Result", "id": "c3", "pad": "' + b"x" * 64 + b'"}\n'
+
+    assert (
+        results.feed(b'{"py/object": "Ping"}\n{"py/object": "Result", "id": 7}\n') == []
+    )
+    assert results.feed(b"not json\n[1]\n" + b"\xff\n" + b"[" * 100_000 + b"\n") == []
+    assert results.feed(long[:40]) == []
+    assert results.feed(long[40:80]) == []
+    assert results.feed(long[80:]) == []
+    assert results.feed(b'{"py/object": "Result", "id": "c4"}\n') == ["c4"]
+
+
+def test_an_ack_names_the_result_the_agent_holds() -> None:
+    lines = _lines()
+
+    routed, _ = lines.feed(b'{"py/object": "Ack", "id": "c1"}\n{"py/object": "Ack"}\n')
+
+    assert routed.acks == ("c1",)
 
 
 if __name__ == "__main__":

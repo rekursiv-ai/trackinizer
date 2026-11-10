@@ -57,6 +57,7 @@ from trackinizer.server.tool_pipes import (
     Pipe,
     PipeBusyError,
     PipeEndError,
+    PipeHub,
     PipeRevokedError,
     close_reason,
 )
@@ -164,6 +165,7 @@ async def tools_agent_socket(
                 asker=owner,
                 machine=name,
                 line_bytes=get_tool_line_bytes(websocket),
+                hub=hub,
             ),
         )
     except PipeBusyError as busy:
@@ -326,7 +328,15 @@ _REFUSED: Final[Mapping[Check, str]] = {
 
 # Never a line's text: an argument may hold a secret, and a log is read more widely
 # than the session. A field the agent chose is quoted, so no line it sends can forge one.
-def _gated(*, asker: str, machine: str, line_bytes: int) -> Inbound:
+# A call let through runs on the machine until its result or the agent's ack of it; a
+# denied one never reaches it.
+def _gated(
+    *,
+    asker: str,
+    machine: str,
+    line_bytes: int,
+    hub: PipeHub,
+) -> Inbound:
     """Return the check of one pipe's agent leg: read, log each call, then let through."""
     lines = ToolLines(
         asker=asker,
@@ -354,6 +364,11 @@ def _gated(*, asker: str, machine: str, line_bytes: int) -> Inbound:
             )
         for call in calls:
             _log_call(pipe, call)
+        for call in calls:
+            if call.outcome == "allow":
+                hub.called(pipe, call.call_id)
+        for call_id in routed.acks:
+            hub.acked(pipe, call_id)
         return routed.to_host, routed.to_agent
 
     return inbound

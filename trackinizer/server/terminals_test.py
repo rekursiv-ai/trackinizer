@@ -26,6 +26,11 @@ from trackinizer.wire import wire_terminals
 
 _MACHINE = uuid.UUID(int=1)
 _CANVAS = uuid.UUID(int=2)
+_START = 1_000.0
+"""Where every test's clock starts, and so when its hub started."""
+
+_KEEPALIVE = wire_terminals.encode_keepalive(0, output_idle_ms=0)
+"""A keepalive saying input and output came just now."""
 
 
 @dataclass(slots=True, kw_only=True)
@@ -58,7 +63,7 @@ class _Socket:
 
 class _Clock:
     def __init__(self) -> None:
-        self.now = 1_000.0
+        self.now = _START
 
     def __call__(self) -> float:
         return self.now
@@ -1030,7 +1035,7 @@ async def test_a_keepalive_keeps_a_direct_terminal_from_idling_out() -> None:
     await world.hub.from_host(
         term,
         Frame.KEEPALIVE,
-        wire_terminals.encode_keepalive(1_000),
+        wire_terminals.encode_keepalive(1_000, output_idle_ms=0),
     )
     await world.hub.sweep()
 
@@ -1038,6 +1043,60 @@ async def test_a_keepalive_keeps_a_direct_terminal_from_idling_out() -> None:
     world.clock.now += wire_terminals.IDLE_SEC
     await world.hub.sweep()
     assert term.ended
+
+
+@pytest.mark.asyncio
+async def test_a_machine_is_idle_from_the_hub_start_until_input_or_output() -> None:
+    world = _World()
+    term, _, _ = await world.live()
+    other = uuid.uuid4()
+    world.clock.now += 50
+    assert world.hub.idle_sec(other) == world.clock.now - _START
+
+    await world.hub.from_browser(term, Frame.INPUT, b"ls\n")
+    world.clock.now += 7
+    assert world.hub.idle_sec(term.machine_id) == 7
+
+    await world.hub.from_host(term, Frame.OUTPUT, b"a")
+    assert world.hub.idle_sec(term.machine_id) == 0
+    # Neither a resize nor a signal is use.
+    world.clock.now += 3
+    assert await world.hub.from_browser(term, Frame.RESIZE, b"\x00\x10\x00\x20")
+    assert world.hub.idle_sec(term.machine_id) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_direct_keepalive_dates_use_by_the_later_of_input_and_output() -> None:
+    world = _World()
+    term, _, _ = await world.live()
+    world.clock.now += 100
+
+    await world.hub.from_host(
+        term,
+        Frame.KEEPALIVE,
+        wire_terminals.encode_keepalive(90_000, output_idle_ms=4_000),
+    )
+    assert world.hub.idle_sec(term.machine_id) == 4
+
+    # An older report than one already taken moves nothing back.
+    await world.hub.from_host(
+        term,
+        Frame.KEEPALIVE,
+        wire_terminals.encode_keepalive(90_000, output_idle_ms=60_000),
+    )
+    assert world.hub.idle_sec(term.machine_id) == 4
+
+
+@pytest.mark.asyncio
+async def test_a_keepalive_from_an_older_host_dates_use_by_input_alone() -> None:
+    world = _World()
+    term, _, _ = await world.live()
+    world.clock.now += 100
+
+    await world.hub.from_host(term, Frame.KEEPALIVE, (30_000).to_bytes(4))
+
+    assert world.hub.idle_sec(term.machine_id) == 30
+    assert term.last_input_at == world.clock.now - 30
 
 
 @pytest.mark.asyncio
@@ -1074,7 +1133,7 @@ async def test_a_browser_attaching_to_a_direct_terminal_asks_the_host_back_to_th
     world = _World()
     term, host, first = await world.live()
     await world.hub.from_host(term, Frame.OUTPUT, b"abc")
-    await world.hub.from_host(term, Frame.KEEPALIVE, wire_terminals.encode_keepalive(0))
+    await world.hub.from_host(term, Frame.KEEPALIVE, _KEEPALIVE)
     world.hub.detach_browser(term, first)
     del host.sent[:]
 
@@ -1090,7 +1149,7 @@ async def test_a_browser_attaching_to_a_direct_terminal_asks_the_host_back_to_th
 async def test_a_browser_attaching_to_a_relayed_terminal_resets_negotiation() -> None:
     world = _World()
     term, host, first = await world.live()
-    await world.hub.from_host(term, Frame.KEEPALIVE, wire_terminals.encode_keepalive(0))
+    await world.hub.from_host(term, Frame.KEEPALIVE, _KEEPALIVE)
     world.clock.now += 3 * wire_terminals.KEEPALIVE_SEC + 1
     world.hub.detach_browser(term, first)
     del host.sent[:]
@@ -1132,7 +1191,7 @@ async def test_a_keepalive_dates_the_last_input_and_holds_the_direct_mark_for_th
     await world.hub.from_host(
         term,
         Frame.KEEPALIVE,
-        wire_terminals.encode_keepalive(2_500),
+        wire_terminals.encode_keepalive(2_500, output_idle_ms=0),
     )
     world.hub.detach_browser(term, first)
 
@@ -1141,7 +1200,7 @@ async def test_a_keepalive_dates_the_last_input_and_holds_the_direct_mark_for_th
     await world.hub.attach_browser(term, _Socket(), offset=0)
     assert [kind for kind, _ in host.sent] == [Frame.ROUTE]
 
-    await world.hub.from_host(term, Frame.KEEPALIVE, wire_terminals.encode_keepalive(0))
+    await world.hub.from_host(term, Frame.KEEPALIVE, _KEEPALIVE)
     del host.sent[:]
     world.clock.now += 3 * wire_terminals.KEEPALIVE_SEC
     await world.hub.attach_browser(term, _Socket(), offset=0)

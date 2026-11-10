@@ -12,6 +12,9 @@ does not import sagent), only what the relay needs to decide and to log:
   string ``id``, ``agent`` and ``tool`` and an object of ``arguments``: what is
   logged, the arguments by their size alone. Each is gated by an :data:`Authorize`; a
   denied one is answered to the agent and never forwarded.
+- An ``Ack`` names, by its ``id``, a result the agent holds, and :class:`ResultIds`
+  reads the ``id`` of each ``Result`` the host sends: between a call and either, the
+  call is running, which the relay's idle rule needs.
 - What is forwarded is this module's own ``json.dumps`` of the parsed line, never the
   bytes received, so what is logged is what the machine reads, whatever a duplicate
   or escaped key made of the original.
@@ -43,6 +46,7 @@ __all__ = [
     "Authorize",
     "GatedCall",
     "Outcome",
+    "ResultIds",
     "Routed",
     "ToolLines",
     "Verdict",
@@ -68,6 +72,9 @@ class Routed:
 
     dropped: tuple[int, ...] = ()
     """The size of each line dropped, of a kind not offered."""
+
+    acks: tuple[str, ...] = ()
+    """The ``id`` of each ``Ack``: a result the agent holds."""
 
 
 type Outcome = Literal["allow", "deny"]
@@ -200,18 +207,20 @@ class ToolLines:
         to_agent = bytearray()
         calls: list[GatedCall] = []
         dropped: list[int] = []
+        acks: list[str] = []
         *ended, rest = payload.split(b"\n")
         for piece in ended:
             self._hold(piece)
             line = bytes(self._pending)
             self._pending.clear()
-            if not self._route(line, to_host, to_agent, calls):
+            if not self._route(line, to_host, to_agent, calls, acks):
                 dropped.append(len(line))
         self._hold(rest)
         routed = Routed(
             to_host=bytes(to_host),
             to_agent=bytes(to_agent),
             dropped=tuple(dropped),
+            acks=tuple(acks),
         )
         return routed, calls
 
@@ -228,6 +237,7 @@ class ToolLines:
         to_host: bytearray,
         to_agent: bytearray,
         calls: list[GatedCall],
+        acks: list[str],
     ) -> bool:
         """Route one line; return whether its kind is offered."""
         line = _parsed(raw)
@@ -239,6 +249,8 @@ class ToolLines:
             return False
         if kind == "Hello":
             self._hello(line)
+        elif kind == "Ack" and isinstance(acked := line.get("id"), str):
+            acks.append(acked)
         elif kind == "Call":
             call, verdict = self._call(line)
             calls.append(call)
@@ -293,6 +305,69 @@ class ToolLines:
             call,
             outcome="allow" if verdict.outcome == "allow" else "deny",
         ), verdict
+
+
+class ResultIds:
+    """Reads which calls the ``Result`` lines a machine's host sends answer.
+
+    The host's frames are relayed as they came; this reads a copy, by JSON alone, as
+    :class:`ToolLines` reads the agent's. A line it cannot read, or one longer than
+    ``line_bytes``, is passed over and never ends the pipe: what the host sends is the
+    agent's to judge, and the agent's ``Ack`` of a result passed over still says it
+    came.
+    """
+
+    def __init__(self, *, line_bytes: int) -> None:
+        """Hold the longest line read; a longer one is passed over, not kept."""
+        self._line_bytes = line_bytes
+        self._pending = bytearray()
+        self._over = False
+
+    def feed(self, payload: bytes) -> list[str]:
+        """Return the call ids of the ``Result`` lines ``payload`` completes.
+
+        Args:
+          payload: Bytes the host sent, cut anywhere.
+
+        Returns:
+          call_ids: Each completed ``Result``'s ``id``, in order.
+
+        """
+        call_ids: list[str] = []
+        *ended, rest = payload.split(b"\n")
+        for piece in ended:
+            self._hold(piece)
+            line, over = bytes(self._pending), self._over
+            self._pending.clear()
+            self._over = False
+            if not over and (call_id := _result_id(line)) is not None:
+                call_ids.append(call_id)
+        self._hold(rest)
+        return call_ids
+
+    def _hold(self, piece: bytes) -> None:
+        """Add ``piece`` to the line being read; past the cap, drop it to its end."""
+        if self._over:
+            return
+        if len(self._pending) + len(piece) > self._line_bytes:
+            self._over = True
+            self._pending.clear()
+            return
+        self._pending += piece
+
+
+def _result_id(raw: bytes) -> str | None:
+    """Return the ``id`` of the ``Result`` line ``raw`` is; ``None`` for any other."""
+    try:
+        line = _parsed(raw)
+    except (ValueError, RecursionError):
+        return None
+    call_id = line.get("id")
+    return (
+        call_id
+        if line.get("py/object") == "Result" and isinstance(call_id, str)
+        else None
+    )
 
 
 def _dumped(line: dict[str, object]) -> bytes:

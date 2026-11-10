@@ -9,11 +9,19 @@ host holds :meth:`PipeHub.wait`, is handed the offer at once, and dials back to
 :meth:`PipeHub.attach` within the hub's ``dial_back_sec``. Each leg's route then runs its ``serve``
 method until the pipe ends. A frame is read from a leg only once the frame before it was
 sent on, so a slow reader slows its sender and nothing piles up here. The host's frames
-are not read, save for whether the last ended a line: a line ``Inbound`` answers the agent
-with must not land inside one of the host's.
+are relayed as they came. A copy is read for whether the last ended a line, as a line
+``Inbound`` answers the agent with must not land inside one of the host's, and for the
+calls its results answer.
 
 A pipe can last as long as sagent keeps it, so what let it open is asked again: each
 :meth:`PipeHub.sweep` ends a pipe whose rule no longer holds.
+
+The hub keeps whether each machine has a call running, and when it last had a call or a
+result (:meth:`PipeHub.idle_sec`). A call is running from when the route lets it
+through (:meth:`PipeHub.called`) until the host's ``Result`` for it passes, which the
+hub reads with :class:`~trackinizer.server.tool_lines.ResultIds`, or the agent
+acks it (:meth:`PipeHub.acked`), or its pipe ends, or ``call_sec`` has gone by. A ping
+or a pipe held open with no call marks nothing.
 
 A pipe ends with one close code and a reason saying what happened, sent on both legs,
 and logs one line saying so: which leg or rule ended it, the code, the reason, the host
@@ -35,6 +43,7 @@ import logging
 import time
 
 from trackinizer.server.terminals import Socket, SocketClosedError
+from trackinizer.server.tool_lines import ResultIds
 from trackinizer.wire import wire_terminals, wire_tools
 from trackinizer.wire.wire_tools import ToolOffer
 
@@ -114,6 +123,12 @@ class Pipe:
     opened: float
     """When it opened, on the hub's clock."""
 
+    results: ResultIds
+    """Reads which calls the host's results answer."""
+
+    running: dict[str, float] = field(default_factory=dict[str, float])
+    """The calls let through whose result has not passed yet: when each was, by id."""
+
     instance: UUID | None = None
     """The host instance that dialed back; ``None`` until one has."""
 
@@ -141,6 +156,10 @@ class PipeHub:
       alive: Whether the whole rule that let a pipe open still holds; asked by the sweep.
       pipes_per_machine: The most pipes one machine holds at once.
       dial_back_sec: How long an offered pipe waits for its host to dial back.
+      line_bytes: The longest host line read for which call it answers; a longer
+        result is known by the agent's ack of it.
+      call_sec: The longest one call keeps its machine in use, as one never answered
+        would forever: an hour, six times sagent's longest ``Bash`` timeout.
       clock: Monotonic seconds.
       sleep: Waits the given seconds; every deadline in the hub runs on it.
 
@@ -152,17 +171,70 @@ class PipeHub:
         alive: Callable[[Pipe], Awaitable[bool]],
         pipes_per_machine: int,
         dial_back_sec: float,
+        line_bytes: int,
+        call_sec: float = 3_600.0,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self._alive = alive
         self._pipes_per_machine = pipes_per_machine
         self._dial_back_sec = dial_back_sec
+        self._line_bytes = line_bytes
+        self._call_sec = call_sec
         self._clock = clock
         self._sleep = sleep
         self._pipes: dict[UUID, Pipe] = {}
         self._pending: dict[UUID, deque[Pipe]] = {}
         self._waiters: dict[UUID, list[asyncio.Future[bool]]] = {}
+        self._started = clock()
+        self._used: dict[UUID, float] = {}
+
+    def called(self, pipe: Pipe, call_id: str) -> None:
+        """Record a call let through to the pipe's machine: it runs until answered.
+
+        Args:
+          pipe: The pipe it came on.
+          call_id: The call's ``id``.
+
+        """
+        pipe.running[call_id] = self._clock()
+        self._touch(pipe.machine_id)
+
+    def acked(self, pipe: Pipe, call_id: str) -> None:
+        """Record that the agent holds call ``call_id``'s result: it no longer runs.
+
+        Args:
+          pipe: The pipe the ack came on.
+          call_id: The call's ``id``.
+
+        """
+        if pipe.running.pop(call_id, None) is not None:
+            self._touch(pipe.machine_id)
+
+    # Held in memory only, as every pipe is: after a restart a machine's clock starts at
+    # the restart, so an idle rule built on it acts at most that much late.
+    def idle_sec(self, machine_id: UUID) -> float:
+        """Return how long the machine has had no call running, no call and no result.
+
+        Args:
+          machine_id: The machine.
+
+        Returns:
+          idle_sec: Zero while a call runs on it, for ``call_sec`` at most; else
+            seconds on the hub's clock since its last call or result, or a call's
+            ``call_sec`` ran out, or since the hub started for a machine with none.
+
+        """
+        now = self._clock()
+        last = self._used.get(machine_id, self._started)
+        for pipe in self._pipes.values():
+            if pipe.machine_id != machine_id:
+                continue
+            for since in pipe.running.values():
+                if now - since < self._call_sec:
+                    return 0.0
+                last = max(last, since + self._call_sec)
+        return now - last
 
     def join(
         self,
@@ -205,6 +277,7 @@ class PipeHub:
             api_key_id=api_key_id,
             inbound=inbound,
             opened=self._clock(),
+            results=ResultIds(line_bytes=self._line_bytes),
         )
         self._pipes[pipe.id] = pipe
         self._pending.setdefault(machine_id, deque()).append(pipe)
@@ -429,6 +502,10 @@ class PipeHub:
     async def _from_host(self, pipe: Pipe, read: _Read) -> None:
         """Send the host's frames on to the agent unread, until it leaves."""
         while (frame := await read()) is not None:
+            if answered := pipe.results.feed(frame):
+                for call_id in answered:
+                    _ = pipe.running.pop(call_id, None)
+                self._touch(pipe.machine_id)
             if frame:
                 async with pipe.agent_turn:
                     await _send(pipe.agent, frame, lost=_AGENT_LEFT)
@@ -481,11 +558,19 @@ class PipeHub:
             self._clock() - pipe.opened,
         )
         del self._pipes[pipe.id]
+        # Its running calls end with it, so the machine's idle time starts now.
+        if pipe.running:
+            pipe.running.clear()
+            self._touch(pipe.machine_id)
         if (queue := self._pending.get(pipe.machine_id)) is not None:
             with contextlib.suppress(ValueError):
                 queue.remove(pipe)
             if not queue:
                 del self._pending[pipe.machine_id]
+
+    def _touch(self, machine_id: UUID) -> None:
+        """Record that the machine had a call or a result just now."""
+        self._used[machine_id] = self._clock()
 
     async def _park(self, machine_id: UUID, *, seconds: float) -> bool:
         """Hold until the machine has news or the time is up; return if it has news."""

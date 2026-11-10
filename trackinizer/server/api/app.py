@@ -56,7 +56,13 @@ from trackinizer.server.api import (
     tool_routes,
     variables_routes,
 )
-from trackinizer.server.api._deps import pipe_hub, terminal_hub
+from trackinizer.server.api._deps import (
+    machine_changes,
+    machine_closed,
+    machine_idle_sec,
+    pipe_hub,
+    terminal_hub,
+)
 from trackinizer.server.api.addons_routes import app_deployment
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.asks import ask_release_loop
@@ -261,6 +267,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     context=ServerContext(
                         store=app.state.store,
                         inbound=app.state.inbound,
+                        machine_idle_sec=partial(machine_idle_sec, app),
+                        machines_changed=machine_changes(app).bump,
+                        machine_closed=partial(machine_closed, app),
                     ),
                 ),
             )

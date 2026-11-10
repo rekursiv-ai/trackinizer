@@ -82,6 +82,7 @@ __all__ = [
     "revoke_machine",
     "revoke_machine_route",
     "router",
+    "unregister_machine",
 ]
 
 
@@ -417,22 +418,40 @@ async def revoke_machine(
                 status_code=403,
                 detail="machine belongs to another user",
             )
-        machine_id = machine["id"]
-        await _revoke_credentials(conn, from_plain(machine_id, UUID))
-        await conn.execute(
-            "UPDATE machine_enrollments SET used_at = now() "
-            "WHERE machine_id = $1 AND used_at IS NULL",
-            machine_id,
-        )
-        await conn.execute(
-            "UPDATE machines SET host_instance = NULL WHERE id = $1",
-            machine_id,
-        )
-    # First, as nothing after the commit may keep a follower from hearing of it.
-    machines_changed(request, owner=owner)
-    get_pipe_hub(request).close_machine(from_plain(machine_id, UUID))
-    await get_terminal_hub(request).close_machine(from_plain(machine_id, UUID))
+        machine_id = from_plain(machine["id"], UUID)
+        await _out_of_service(conn, machine_id)
+    await _closed(request, machine_id=machine_id, owner=owner)
     return owner
+
+
+async def unregister_machine(conn: Conn, *, name: str, owner: str) -> UUID | None:
+    """Revoke and delete ``owner``'s machine ``name`` in the caller's transaction.
+
+    For the server's own caller that made the machine for its owner and has ended the
+    host it served, such as a KnowHost deleted: the name is free again and no
+    listing shows it. The caller tells the listing and closes the machine's pipes once
+    the transaction commits.
+
+    Args:
+      conn: A connection inside a transaction.
+      name: The machine's name.
+      owner: Whose machine it must be.
+
+    Returns:
+      machine_id: The machine's id; ``None`` when it is gone or another person's.
+
+    """
+    machine = await conn.fetchrow(
+        "SELECT id FROM machines WHERE name = $1 AND owner = $2 FOR UPDATE",
+        name,
+        owner,
+    )
+    if machine is None:
+        return None
+    machine_id = from_plain(machine["id"], UUID)
+    await _out_of_service(conn, machine_id)
+    await conn.execute("DELETE FROM machines WHERE id = $1", machine_id)
+    return machine_id
 
 
 async def claim_machine(
@@ -587,6 +606,30 @@ async def _token_is_usable(conn: Conn, *, parsed: ParsedSecret, name: str) -> bo
         from_plain(stored, bytes),
         parsed.digest,
     )
+
+
+# An enrollment token not yet used is closed too, so the revoke is not undone by a host
+# that joins with it.
+async def _out_of_service(conn: Conn, machine_id: UUID) -> None:
+    """Revoke the machine's credential, close its open enrollment, and free its host."""
+    await _revoke_credentials(conn, machine_id)
+    await conn.execute(
+        "UPDATE machine_enrollments SET used_at = now() "
+        "WHERE machine_id = $1 AND used_at IS NULL",
+        machine_id,
+    )
+    await conn.execute(
+        "UPDATE machines SET host_instance = NULL WHERE id = $1",
+        machine_id,
+    )
+
+
+# First, as nothing after the commit may keep a follower from hearing of it.
+async def _closed(request: Request, *, machine_id: UUID, owner: str | None) -> None:
+    """Tell the owner's listing, then end the pipes and terminals of a revoked machine."""
+    machines_changed(request, owner=owner)
+    get_pipe_hub(request).close_machine(machine_id)
+    await get_terminal_hub(request).close_machine(machine_id)
 
 
 async def _revoke_credentials(conn: Conn, machine_id: UUID) -> None:

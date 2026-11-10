@@ -149,6 +149,7 @@ def pipe_hub(app: FastAPI) -> PipeHub:
         alive=functools.partial(_pipe_alive, app=app),
         pipes_per_machine=config.tool_pipes_per_machine,
         dial_back_sec=config.tool_dial_back_sec,
+        line_bytes=config.tool_line_bytes,
     )
     app.state.tool_pipes = hub
     return hub
@@ -165,6 +166,39 @@ def get_pipe_hub(request: HTTPConnection) -> PipeHub:
 
     """
     return pipe_hub(cast("FastAPI", request.app))
+
+
+def machine_idle_sec(app: FastAPI, machine_id: uuid.UUID) -> float:
+    """Return how long the machine has had no tool call or result, nor terminal use.
+
+    The tool pipe hub sees each call and result; the terminal hub each terminal's input
+    and output, relayed or reported by a direct link's keepalive. Both keep it in memory
+    alone, so after a restart a machine is counted from the restart.
+
+    Args:
+      app: The application, whose state holds both hubs.
+      machine_id: The machine.
+
+    Returns:
+      idle_sec: Seconds since the later of the two hubs' last sight of use.
+
+    """
+    return min(
+        pipe_hub(app).idle_sec(machine_id),
+        terminal_hub(app).idle_sec(machine_id),
+    )
+
+
+async def machine_closed(app: FastAPI, machine_id: uuid.UUID) -> None:
+    """End the tool pipes and terminals of a machine taken out of service.
+
+    Args:
+      app: The application, whose state holds both hubs.
+      machine_id: The machine.
+
+    """
+    pipe_hub(app).close_machine(machine_id)
+    await terminal_hub(app).close_machine(machine_id)
 
 
 def machine_changes(app: FastAPI) -> MachineChanges:

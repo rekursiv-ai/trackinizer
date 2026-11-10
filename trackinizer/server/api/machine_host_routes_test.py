@@ -30,6 +30,7 @@ from trackinizer.server.api.machine_host_routes import (
     MachineOwnedError,
     claim_machine,
     issue_enrollment,
+    unregister_machine,
 )
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.machine_auth import (
@@ -844,6 +845,50 @@ def test_a_writer_revokes_their_own_machine_and_not_another_users(
     allowed = client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert allowed.status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_unregister_takes_the_owners_machine_out_of_service_then_deletes_it(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    _, _, engine = route_client
+    # The row's id as text, as a driver may hand it: the machine is named by its UUID.
+    set_field_row(engine.conn, {"id": str(_MACHINE_ID)})
+
+    machine_id = await unregister_machine(engine.conn, name="box-1", owner="ada@x.y")
+
+    assert machine_id == _MACHINE_ID
+    assert [call.args[1:] for call in engine.conn.execute.call_args_list] == [
+        (_MACHINE_ID,),
+    ] * 4
+    assert all(
+        isinstance(call.args[1], uuid.UUID)
+        for call in engine.conn.execute.call_args_list
+    )
+    select = engine.conn.fetchrow.call_args
+    assert select is not None
+    assert select.args == (
+        "SELECT id FROM machines WHERE name = $1 AND owner = $2 FOR UPDATE",
+        "box-1",
+        "ada@x.y",
+    )
+    assert [sql.split(" SET")[0] for sql in executed_sql(engine.conn)] == [
+        "UPDATE machine_credentials",
+        "UPDATE machine_enrollments",
+        "UPDATE machines",
+        "DELETE FROM machines WHERE id = $1",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_unregister_leaves_a_machine_that_is_gone_or_another_persons(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    _, _, engine = route_client
+    set_field_row(engine.conn, None)
+
+    assert await unregister_machine(engine.conn, name="box-1", owner="ada@x.y") is None
+    assert executed_sql(engine.conn) == []
 
 
 def _as(role: Role) -> None:

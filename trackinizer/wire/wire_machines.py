@@ -30,6 +30,7 @@ from trackinizer.wire.wire_sessions import RunState
 
 
 __all__ = [
+    "KNOWHOST_LABEL",
     "MACHINES_PATH",
     "MACHINE_DISCONNECT_PATH",
     "MACHINE_LABELS_PATH",
@@ -41,6 +42,7 @@ __all__ = [
     "MAX_HOW_CHARS",
     "NAME_PATTERN",
     "PERSONAL_ROLE",
+    "RESERVED_LABELS",
     "RESERVED_NAMES",
     "ROLE_PATTERN",
     "Facts",
@@ -68,6 +70,14 @@ RESERVED_NAMES: Final = frozenset(
     {"enroll", "join", "init", "import", "check", "connect", "leave", "top"},
 )
 """Names no machine may take: they are, or will be, route segments and CLI words."""
+
+KNOWHOST_LABEL: Final = "knowhost"
+"""The label of a KnowHost's machine, which the server writes as it enrolls one."""
+
+RESERVED_LABELS: Final = frozenset({KNOWHOST_LABEL})
+"""Labels the server alone writes, which no label edit adds or removes: KnowHost's sweep
+reads its own label as which machines are KnowHosts, so an edit would end a real
+machine, or a KnowHost's sandbox."""
 
 PERSONAL_ROLE: Final = "personal"
 """The role of a machine a writer enrolled for themselves: only its owner (and an admin)
