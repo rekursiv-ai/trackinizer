@@ -237,6 +237,8 @@ class TerminalHub:
         self._waited: dict[UUID, float] = {}
         self._tickets: dict[str, _Ticket] = {}
         self._opens: dict[str, deque[float]] = {}
+        self._started = clock()
+        self._active: dict[UUID, float] = {}
 
     def ready(self, machine_id: UUID) -> bool:
         """Return whether the machine's host waited for an open recently enough."""
@@ -245,6 +247,24 @@ class TerminalHub:
             waited is not None
             and self._clock() - waited <= wire_terminals.WAIT_LEASE_SEC
         )
+
+    # Held in memory only, as every terminal is: after a restart a machine's clock starts
+    # at the restart, so an idle rule built on it acts at most that much late.
+    def idle_sec(self, machine_id: UUID) -> float:
+        """Return how long the machine's terminals have had no input or output.
+
+        Input the browser sent, output the host relayed, and what a direct link's
+        keepalive reports of either count. A machine with none since this hub
+        started is counted from its start.
+
+        Args:
+          machine_id: The machine.
+
+        Returns:
+          idle_sec: Seconds on the hub's clock.
+
+        """
+        return self._clock() - self._active.get(machine_id, self._started)
 
     def terminal(self, terminal_id: UUID) -> Terminal | None:
         """Return the live terminal with this id, or ``None``."""
@@ -569,6 +589,7 @@ class TerminalHub:
         if term.ended:
             return
         if kind is Frame.OUTPUT:
+            self._touch(term.machine_id, at=self._clock())
             term.ring.append(payload)
             await self._live(term, Frame.OUTPUT, payload)
         elif kind is Frame.EXIT:
@@ -603,6 +624,7 @@ class TerminalHub:
             if delay:
                 await self._sleep(delay)
             term.last_input_at = self._clock()
+            self._touch(term.machine_id, at=term.last_input_at)
             await self._to_host(term, Frame.INPUT, payload)
         elif kind is Frame.RESIZE:
             try:
@@ -697,15 +719,22 @@ class TerminalHub:
         term.signals.append(now)
         return True
 
+    # A host before output idle time reports input alone.
     def _keepalive(self, term: Terminal, payload: bytes) -> None:
-        """Take the host's report that output goes direct and input was last seen so long ago."""
+        """Take a direct link's report of how long ago input and output last were."""
         try:
-            idle_ms = wire_terminals.decode_keepalive(payload)
+            idle_ms, output_idle_ms = wire_terminals.decode_keepalive(payload)
         except ValueError:
             return
         now = self._clock()
         term.last_input_at = now - idle_ms / 1_000
         term.direct_until = now + 3 * wire_terminals.KEEPALIVE_SEC
+        quiet_ms = idle_ms if output_idle_ms is None else min(idle_ms, output_idle_ms)
+        self._touch(term.machine_id, at=now - quiet_ms / 1_000)
+
+    def _touch(self, machine_id: UUID, *, at: float) -> None:
+        """Record activity on the machine at ``at``; an older report moves nothing."""
+        self._active[machine_id] = max(at, self._active.get(machine_id, at))
 
     async def _still_alive(self, term: Terminal) -> bool:
         """Ask whether the credential and owner stand; a failed question says yes."""

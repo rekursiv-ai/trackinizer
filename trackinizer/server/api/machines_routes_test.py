@@ -400,6 +400,25 @@ def test_a_blank_or_nul_label_is_refused_with_its_reason(
     assert _detail(response) == "a label is blank or contains a NUL character"
 
 
+@pytest.mark.parametrize(
+    "body",
+    [{"add": ["knowhost"]}, {"remove": ["knowhost"]}, {"add": [" knowhost "]}],
+    ids=["add", "remove", "padded"],
+)
+def test_a_reserved_label_is_neither_added_nor_removed(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    body: dict[str, object],
+) -> None:
+    client, _, engine = route_client
+    _as("admin")
+
+    response = client.patch(_labels_path("dev-1"), json=body)
+
+    assert response.status_code == 422
+    assert _detail(response) == "label knowhost is the server's own, and is not edited"
+    engine.conn.fetchval.assert_not_called()
+
+
 def test_deleting_removes_the_row_by_name_when_no_credential_is_live(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:

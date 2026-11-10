@@ -45,6 +45,8 @@ from trackinizer.server.api._deps import (
     get_terminal_hub,
     get_tool_line_bytes,
     machine_changes,
+    machine_closed,
+    machine_idle_sec,
     machines_changed,
     nudge_streams,
     pipe_hub,
@@ -55,7 +57,8 @@ from trackinizer.server.api._deps import (
 from trackinizer.server.api.tool_access import ToolAccess
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.inbound import InboundQueue
-from trackinizer.server.terminals import Terminal
+from trackinizer.server.terminals import Terminal, TerminalHub
+from trackinizer.server.tool_lines import ResultIds
 from trackinizer.server.tool_pipes import Pipe, PipeBusyError, PipeHub
 from trackinizer.types import inquiries
 from trackinizer.types.cost import Cost
@@ -463,6 +466,7 @@ def _pipe(*, instance: UUID | None = None) -> Pipe:
         inbound=_pass_through,
         opened=0.0,
         instance=instance,
+        results=ResultIds(line_bytes=1 << 10),
     )
 
 
@@ -526,6 +530,66 @@ async def test_the_pipe_hub_holds_the_default_pipes_without_a_config() -> None:
 
     with pytest.raises(PipeBusyError):
         _ = _join(hub, machine_id)
+
+
+@pytest.mark.asyncio
+async def test_a_machines_idle_time_is_the_shorter_of_its_pipes_and_its_terminals() -> (
+    None
+):
+    app = FastAPI()
+    now = [100.0]
+    pipes = app.state.tool_pipes = PipeHub(
+        alive=AsyncMock(),
+        pipes_per_machine=1,
+        dial_back_sec=1,
+        line_bytes=1 << 10,
+        clock=lambda: now[0],
+    )
+    app.state.terminals = TerminalHub(alive=AsyncMock(), clock=lambda: now[0])
+    machine_id = uuid4()
+    now[0] += 40
+    assert machine_idle_sec(app, machine_id) == 40
+
+    pipe = _join(pipes, machine_id)
+    pipes.called(pipe, "c1")
+    now[0] += 3_600
+    assert machine_idle_sec(app, machine_id) == 0
+    pipes.acked(pipe, "c1")
+    now[0] += 9
+
+    assert machine_idle_sec(app, machine_id) == 9
+    assert machine_idle_sec(app, uuid4()) == 3_649
+
+
+@pytest.mark.asyncio
+async def test_a_machine_closed_ends_its_pipes_then_its_terminals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = FastAPI()
+    closed: list[tuple[str, UUID]] = []
+
+    def pipes_closed(hub: PipeHub, machine_id: UUID) -> None:
+        del hub
+        closed.append(("pipes", machine_id))
+
+    async def terminals_closed(hub: TerminalHub, machine_id: UUID) -> None:
+        del hub
+        closed.append(("terminals", machine_id))
+
+    monkeypatch.setattr(PipeHub, "close_machine", pipes_closed)
+    monkeypatch.setattr(TerminalHub, "close_machine", terminals_closed)
+    app.state.tool_pipes = PipeHub(
+        alive=AsyncMock(),
+        pipes_per_machine=1,
+        dial_back_sec=1,
+        line_bytes=1 << 10,
+    )
+    app.state.terminals = TerminalHub(alive=AsyncMock())
+    machine_id = uuid4()
+
+    await machine_closed(app, machine_id)
+
+    assert closed == [("pipes", machine_id), ("terminals", machine_id)]
 
 
 def _join(hub: PipeHub, machine_id: UUID) -> Pipe:

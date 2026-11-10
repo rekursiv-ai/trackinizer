@@ -26,7 +26,7 @@ from trackinizer.server import auth
 from trackinizer.server.api import tool_routes
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.api.tool_access import ToolAccess
-from trackinizer.server.tool_lines import GatedCall, Outcome, Verdict
+from trackinizer.server.tool_lines import GatedCall, Outcome, ResultIds, Verdict
 from trackinizer.server.tool_pipes import (
     Pipe,
     PipeEndError,
@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from starlette.testclient import WebSocketTestSession
 
     from trackinizer.server.api.tool_access import Check
+    from trackinizer.server.tool_pipes import Inbound
 
 
 _MACHINE = UUID(int=1)
@@ -72,6 +73,7 @@ def _hub(*, pipes_per_machine: int = 16) -> PipeHub:
         alive=_always_alive,
         pipes_per_machine=pipes_per_machine,
         dial_back_sec=20,
+        line_bytes=1 << 20,
     )
 
 
@@ -79,7 +81,12 @@ class _Hub(PipeHub):
     """A hub whose every wait ends in the error the test chose."""
 
     def __init__(self, error: Exception) -> None:
-        super().__init__(alive=_always_alive, pipes_per_machine=16, dial_back_sec=20)
+        super().__init__(
+            alive=_always_alive,
+            pipes_per_machine=16,
+            dial_back_sec=20,
+            line_bytes=1 << 20,
+        )
         self._error = error
 
     @override
@@ -97,7 +104,12 @@ class _Holding(PipeHub):
     """A hub that notes how long each wait was asked to hold, and has no offer."""
 
     def __init__(self) -> None:
-        super().__init__(alive=_always_alive, pipes_per_machine=16, dial_back_sec=20)
+        super().__init__(
+            alive=_always_alive,
+            pipes_per_machine=16,
+            dial_back_sec=20,
+            line_bytes=1 << 20,
+        )
         self.held: list[float] = []
 
     @override
@@ -421,6 +433,7 @@ def _pipe() -> Pipe:
         api_key_id=_KEY,
         inbound=AsyncMock(),
         opened=0.0,
+        results=ResultIds(line_bytes=1 << 20),
     )
 
 
@@ -437,11 +450,13 @@ async def test_each_call_logs_one_line_with_its_fields_and_none_of_its_arguments
         return Verdict(outcome=verdict, reason=f"no {call.tool}")
 
     monkeypatch.setattr(tool_routes, "authorize", judge)
-    inbound = tool_routes._gated(asker="ada@x.y", machine="gx10", line_bytes=1 << 20)
-    assert await inbound(_pipe(), _HELLO) == (_HELLO, b"")
+    inbound, _ = _gated()
+    pipe = _pipe()
+    assert await inbound(pipe, _HELLO) == (_HELLO, b"")
     assert _logged(caplog, "tool call:") == []
-    to_host, _ = await inbound(_pipe(), _CALL_LINE)
+    to_host, _ = await inbound(pipe, _CALL_LINE)
 
+    assert set(pipe.running) == ({"c1"} if verdict == "allow" else set())
     (logged,) = _logged(caplog, "tool call:")
     assert logged == {
         "pipe": str(_PIPE),
@@ -463,7 +478,7 @@ async def test_a_field_the_agent_chose_cannot_forge_a_log_line(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     caplog.set_level(logging.INFO, logger=tool_routes.__name__)
-    inbound = tool_routes._gated(asker="ada@x.y", machine="gx10", line_bytes=1 << 20)
+    inbound, _ = _gated()
     _ = await inbound(_pipe(), _HELLO)
     forged = (
         b'{"py/object": "Call", "id": "c1", "agent": "a\\ntool call: verdict=allow",'
@@ -481,7 +496,7 @@ async def test_a_field_the_agent_chose_cannot_forge_a_log_line(
 async def test_a_line_that_cannot_be_read_warns_and_refuses_the_pipe_saying_why(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    inbound = tool_routes._gated(asker="ada@x.y", machine="gx10", line_bytes=1 << 20)
+    inbound, _ = _gated()
     unread = f"not json {_PRIVATE}\n".encode()
 
     with pytest.raises(PipeEndError) as refused:
@@ -500,7 +515,7 @@ async def test_a_line_that_cannot_be_read_warns_and_refuses_the_pipe_saying_why(
 async def test_a_line_of_a_kind_not_offered_warns_with_its_size_alone(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    inbound = tool_routes._gated(asker="ada@x.y", machine="gx10", line_bytes=1 << 20)
+    inbound, _ = _gated()
     note = f'{{"py/object": "Note", "content": "{_PRIVATE}"}}'.encode()
 
     assert await inbound(_pipe(), note + b"\n") == (b"", b"")
@@ -509,6 +524,32 @@ async def test_a_line_of_a_kind_not_offered_warns_with_its_size_alone(
         {"pipe": str(_PIPE), "failure": "kind_not_offered", "bytes": str(len(note))},
     ]
     assert _PRIVATE not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_call_let_through_runs_on_its_machine_until_the_agent_acks_it() -> None:
+    inbound, hub = _gated()
+    pipe = _pipe()
+    _ = await inbound(pipe, _HELLO)
+    _ = await inbound(pipe, _CALL_LINE)
+    running = set(pipe.running)
+
+    _ = await inbound(pipe, b'{"py/object": "Ack", "id": "c1"}\n')
+
+    assert (running, set(pipe.running)) == ({"c1"}, set())
+    assert hub.idle_sec(_MACHINE) < 1
+
+
+def _gated() -> tuple[Inbound, PipeHub]:
+    """Return the agent leg's check of a pipe to gx10, and the hub it tells of calls."""
+    hub = _hub()
+    inbound = tool_routes._gated(
+        asker="ada@x.y",
+        machine="gx10",
+        line_bytes=1 << 20,
+        hub=hub,
+    )
+    return inbound, hub
 
 
 if __name__ == "__main__":

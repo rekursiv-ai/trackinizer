@@ -30,6 +30,7 @@ from trackinizer.wire.wire_machines import (
     MACHINES_PATH,
     NAME_PATTERN,
     PERSONAL_ROLE,
+    RESERVED_LABELS,
     RESERVED_NAMES,
     Machine,
     MachineDetail,
@@ -352,4 +353,10 @@ def _labels(raw: Sequence[str]) -> list[str]:
     """Canonicalise labels as an Issue's are, refusing a blank or NUL one."""
     if any(not label.strip() or "\x00" in label for label in raw):
         raise ValidationError("a label is blank or contains a NUL character")
-    return list(canonical_strs(raw))
+    labels = list(canonical_strs(raw))
+    for label in labels:
+        if label in RESERVED_LABELS:
+            raise ValidationError(
+                f"label {label} is the server's own, and is not edited",
+            )
+    return labels

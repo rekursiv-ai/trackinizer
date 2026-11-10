@@ -38,6 +38,8 @@ _OTHER = uuid.UUID(int=2)
 _ASKER = "ada@x.y"
 _KEY = uuid.UUID(int=3)
 _INSTANCE = uuid.UUID(int=4)
+_LINE_BYTES = 256
+"""The longest host line a test hub reads for the call it answers."""
 
 
 async def _pass_through(pipe: Pipe, frame: bytes) -> tuple[bytes, bytes]:
@@ -127,6 +129,7 @@ class _World:
             alive=self._alive,
             pipes_per_machine=pipes_per_machine,
             dial_back_sec=dial_back_sec,
+            line_bytes=_LINE_BYTES,
             clock=self.time,
             sleep=self.time.sleep,
         )
@@ -415,6 +418,107 @@ async def test_bytes_cross_both_ways_unread(world: _World) -> None:
 
     assert host.sent == [b"not json \xff\n", b"half a li"]
     assert agent.sent == [b"\x00\xfe anything", b"ne\n"]
+
+
+async def test_a_machine_is_idle_from_the_hub_start_until_a_call(
+    world: _World,
+) -> None:
+    pipe, _, _ = await _live(world)
+    await world.time.advance(30)
+    assert world.hub.idle_sec(_MACHINE) == 30
+    assert world.hub.idle_sec(_OTHER) == 30
+
+    world.hub.called(pipe, "c1")
+
+    assert world.hub.idle_sec(_MACHINE) == 0
+    assert world.hub.idle_sec(_OTHER) == 30
+
+
+async def test_a_call_held_open_past_any_idle_time_keeps_its_machine_in_use(
+    world: _World,
+) -> None:
+    pipe, _, host = await _live(world)
+    world.hub.called(pipe, "c1")
+    world.hub.called(pipe, "c2")
+    await world.time.advance(3_000)
+    assert world.hub.idle_sec(_MACHINE) == 0
+
+    # The result of c1 comes split across frames, behind a ping; c2 still runs.
+    host.push(b'{"py/object": "Ping"}\n{"py/object": "Res', b'ult", "id": "c1"}\n')
+    await _settle()
+    assert (set(pipe.running), world.hub.idle_sec(_MACHINE)) == ({"c2"}, 0)
+
+    host.push(b'{"py/object": "Result", "id": "c2", "record": {}}\n')
+    await _settle()
+    await world.time.advance(7)
+    assert (set(pipe.running), world.hub.idle_sec(_MACHINE)) == (set(), 7)
+
+
+async def test_a_call_never_answered_keeps_its_machine_in_use_an_hour_no_longer(
+    world: _World,
+) -> None:
+    pipe, _, _ = await _live(world)
+    world.hub.called(pipe, "hung")
+    await world.time.advance(3_599)
+    in_use = world.hub.idle_sec(_MACHINE)
+
+    await world.time.advance(1_801)
+
+    assert (in_use, world.hub.idle_sec(_MACHINE)) == (0, 1_800)
+    assert set(pipe.running) == {"hung"}
+
+
+async def test_an_ack_ends_a_call_whose_result_the_hub_could_not_read(
+    world: _World,
+) -> None:
+    pipe, agent, host = await _live(world)
+    world.hub.called(pipe, "c1")
+
+    long = b'{"py/object": "Result", "id": "c1", "record": "' + b"x" * _LINE_BYTES
+    host.push(long, b'"}\n', b"not json\n")
+    await _settle()
+    running = set(pipe.running)
+    world.hub.acked(pipe, "c1")
+    world.hub.acked(pipe, "c9")
+
+    assert (running, set(pipe.running)) == ({"c1"}, set())
+    assert len(agent.sent) == 3
+
+
+async def test_a_pipe_that_drops_mid_call_leaves_its_machine_idle_from_the_drop(
+    world: _World,
+) -> None:
+    pipe, agent, _ = await _live(world)
+    world.hub.called(pipe, "c1")
+    await world.time.advance(600)
+
+    agent.drop()
+    await _settle()
+    await world.time.advance(5)
+
+    assert pipe.ended.done()
+    assert (set(pipe.running), world.hub.idle_sec(_MACHINE)) == (set(), 5)
+
+
+async def test_a_quiet_pipe_that_only_pings_keeps_no_machine_in_use(
+    world: _World,
+) -> None:
+    agent, host = await world.paired()
+    await world.time.advance(60)
+
+    host.push(b'{"py/object": "Ping"}\n')
+    agent.push(b'{"py/object": "Ack", "id": "c1"}\n')
+    await _settle()
+
+    assert world.hub.idle_sec(_MACHINE) == 60
+    assert (len(agent.sent), len(host.sent)) == (1, 1)
+
+
+async def _live(world: _World) -> tuple[Pipe, _Leg, _Leg]:
+    """Bring up a whole pipe; return it, its agent's leg and its host's."""
+    pipe, agent = await world.agent()
+    assert await world.take() == ToolOffer(pipe_id=pipe.id)
+    return pipe, agent, await world.host(pipe)
 
 
 async def test_what_an_agent_sends_before_its_host_dials_back_waits_for_it(

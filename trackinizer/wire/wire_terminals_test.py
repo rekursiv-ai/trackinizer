@@ -115,14 +115,26 @@ def test_a_route_payload_round_trips_and_refuses_the_wrong_shape(route: int) -> 
             wire_terminals.decode_route(bad)
 
 
-def test_a_keepalive_payload_is_the_idle_milliseconds() -> None:
-    assert wire_terminals.encode_keepalive(1_500) == (1_500).to_bytes(4)
-    assert wire_terminals.encode_keepalive(2**32 - 2) == b"\xff\xff\xff\xfe"
-    assert wire_terminals.encode_keepalive(2**32 - 1) == b"\xff\xff\xff\xff"
-    assert wire_terminals.encode_keepalive(2**40) == b"\xff\xff\xff\xff"
-    assert wire_terminals.decode_keepalive((1_500).to_bytes(4)) == 1_500
-    with pytest.raises(ValueError, match="KEEPALIVE"):
-        wire_terminals.decode_keepalive(b"\x00")
+def test_a_keepalive_payload_is_the_input_then_the_output_idle_milliseconds() -> None:
+    payload = wire_terminals.encode_keepalive(1_500, output_idle_ms=7)
+    assert payload == (1_500).to_bytes(4) + (7).to_bytes(4)
+    assert wire_terminals.decode_keepalive(payload) == (1_500, 7)
+    assert wire_terminals.encode_keepalive(2**32 - 2, output_idle_ms=0)[:4] == (
+        b"\xff\xff\xff\xfe"
+    )
+    assert wire_terminals.encode_keepalive(2**32 - 1, output_idle_ms=2**40) == (
+        b"\xff\xff\xff\xff" * 2
+    )
+    assert wire_terminals.encode_keepalive(2**40, output_idle_ms=0)[:4] == (
+        b"\xff\xff\xff\xff"
+    )
+
+
+def test_a_keepalive_from_a_host_before_output_idle_time_names_input_alone() -> None:
+    assert wire_terminals.decode_keepalive((1_500).to_bytes(4)) == (1_500, None)
+    for bad in (b"\x00", b"\x00" * 5, b"\x00" * 9):
+        with pytest.raises(ValueError, match="KEEPALIVE"):
+            wire_terminals.decode_keepalive(bad)
 
 
 def test_the_ice_servers_default_to_none_and_are_stun_only() -> None:
