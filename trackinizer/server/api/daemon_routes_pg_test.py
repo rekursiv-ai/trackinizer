@@ -1,8 +1,8 @@
-"""Machine host routes racing one another on real PostgreSQL.
+"""Daemon routes racing one another on real PostgreSQL.
 
 PGlite has one connection, so it cannot show a lock-order deadlock or a write that
 lands after a concurrent commit. Each test here holds or races a transaction on a
-second backend, and every route that writes a machine must take the machine row
+second backend, and every route that writes a host must take the host row
 first.
 """
 
@@ -30,7 +30,7 @@ from trackinizer.server.api.conftest import (
 )
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.notify import tx
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     ENROLL_PATH,
     ENROLLMENT_PREFIX,
     HEARTBEAT_PATH,
@@ -39,7 +39,7 @@ from trackinizer.wire.wire_machine_host import (
     EnrollResponse,
     JoinResponse,
 )
-from trackinizer.wire.wire_machines import MACHINE_PATH
+from trackinizer.wire.wire_hosts import HOST_PATH
 
 
 if TYPE_CHECKING:
@@ -57,7 +57,7 @@ pytestmark = [
 
 _INSTANCE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 
-# Long enough for a request that never waits on a lock to answer on a loaded host.
+# Long enough for a request that never waits on a lock to answer on a loaded daemon.
 _ANSWER_SEC = 5
 
 _ROUNDS = 8
@@ -67,7 +67,7 @@ _ROUNDS = 8
 async def served(integ_store: Store) -> AsyncIterator[httpx2.AsyncClient]:
     """Serve the whole app on the real engine, as an admin who has an account."""
     async with integ_store.engine.acquire() as conn:
-        await conn.execute("TRUNCATE machines CASCADE")
+        await conn.execute("TRUNCATE hosts CASCADE")
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
             "VALUES ($1, $2, 'admin', 'admin', 'active')",
@@ -88,30 +88,30 @@ async def served(integ_store: Store) -> AsyncIterator[httpx2.AsyncClient]:
     finally:
         clear_identity_override()
         async with integ_store.engine.acquire() as conn:
-            await conn.execute("TRUNCATE machines CASCADE")
+            await conn.execute("TRUNCATE hosts CASCADE")
         del app.state.engine, app.state.store, app.state.inbound
 
 
-async def test_join_waits_for_a_route_holding_the_machine_row_instead_of_deadlocking(
+async def test_join_waits_for_a_route_holding_the_host_row_instead_of_deadlocking(
     served: httpx2.AsyncClient,
     integ_store: Store,
 ) -> None:
     token = await _enroll(served, "dev-1")
 
     async with integ_store.engine.acquire() as holder, tx(holder):
-        machine_id = await _lock_machine(holder, "dev-1")
+        host_id = await _lock_host(holder, "dev-1")
         joining = asyncio.create_task(_join(served, "dev-1", token))
         waited = await waited_on_locks(integ_store, count=1)
         # What revoke does next: close the open enrollment.
         await holder.execute(
-            "UPDATE machine_enrollments SET used_at = now() WHERE machine_id = $1",
-            machine_id,
+            "UPDATE host_enrollments SET used_at = now() WHERE host_id = $1",
+            host_id,
         )
 
     assert ((await joining).status_code, waited) == (401, True)
 
 
-async def test_join_with_a_junk_token_is_401_without_waiting_for_the_machine_row(
+async def test_join_with_a_junk_token_is_401_without_waiting_for_the_host_row(
     served: httpx2.AsyncClient,
     integ_store: Store,
 ) -> None:
@@ -123,7 +123,7 @@ async def test_join_with_a_junk_token_is_401_without_waiting_for_the_machine_row
     ]
 
     async with integ_store.engine.acquire() as holder, tx(holder):
-        await _lock_machine(holder, "dev-1")
+        await _lock_host(holder, "dev-1")
         joining = [asyncio.create_task(_join(served, "dev-1", bad)) for bad in junk]
         # Judged while the lock is still held: a join queued behind it never answers.
         answered, _ = await asyncio.wait(joining, timeout=_ANSWER_SEC)
@@ -139,14 +139,14 @@ async def test_two_joins_with_one_token_that_both_passed_the_check_make_one_cred
     token = await _enroll(served, "dev-1")
 
     async with integ_store.engine.acquire() as holder, tx(holder):
-        await _lock_machine(holder, "dev-1")
+        await _lock_host(holder, "dev-1")
         joining = [asyncio.create_task(_join(served, "dev-1", token)) for _ in range(2)]
         # Both read the token as open, and now queue for the row.
         waited = await waited_on_locks(integ_store, count=2)
     responses = await asyncio.gather(*joining)
 
     async with integ_store.engine.acquire() as conn:
-        credentials = await conn.fetchval("SELECT count(*) FROM machine_credentials")
+        credentials = await conn.fetchval("SELECT count(*) FROM host_credentials")
     assert (sorted(r.status_code for r in responses), credentials, waited) == (
         [201, 401],
         1,
@@ -155,7 +155,7 @@ async def test_two_joins_with_one_token_that_both_passed_the_check_make_one_cred
 
 
 @pytest.mark.parametrize("other", ["enroll", "revoke", "delete"])
-async def test_join_racing_another_route_on_the_machine_is_never_a_500(
+async def test_join_racing_another_route_on_the_host_is_never_a_500(
     served: httpx2.AsyncClient,
     other: str,
 ) -> None:
@@ -172,7 +172,7 @@ async def test_join_racing_another_route_on_the_machine_is_never_a_500(
         assert raced.status_code in {201, 204, 409}, (other, raced.text)
 
 
-async def test_enroll_racing_a_delete_of_its_machine_is_never_a_500(
+async def test_enroll_racing_a_delete_of_its_host_is_never_a_500(
     served: httpx2.AsyncClient,
 ) -> None:
     for round_number in range(_ROUNDS):
@@ -197,26 +197,26 @@ async def test_heartbeat_in_flight_during_a_revoke_is_410_and_writes_nothing(
     joined = await _joined(served, "dev-1")
 
     async with integ_store.engine.acquire() as holder, tx(holder):
-        machine_id = await _lock_machine(holder, "dev-1")
-        # The credential row is revoked and the host cleared, and not yet committed.
+        host_id = await _lock_host(holder, "dev-1")
+        # The credential row is revoked and the daemon cleared, and not yet committed.
         await holder.execute(
-            "UPDATE machine_credentials SET revoked_at = now() WHERE machine_id = $1",
-            machine_id,
+            "UPDATE host_credentials SET revoked_at = now() WHERE host_id = $1",
+            host_id,
         )
         await holder.execute(
-            "UPDATE machines SET host_instance = NULL WHERE id = $1",
-            machine_id,
+            "UPDATE hosts SET daemon_instance = NULL WHERE id = $1",
+            host_id,
         )
         beating = asyncio.create_task(_heartbeat(served, joined))
         waited = await waited_on_locks(integ_store, count=1)
 
     response = await beating
     async with integ_store.engine.acquire() as conn:
-        host_instance = await conn.fetchval(
-            "SELECT host_instance FROM machines WHERE id = $1",
-            machine_id,
+        daemon_instance = await conn.fetchval(
+            "SELECT daemon_instance FROM hosts WHERE id = $1",
+            host_id,
         )
-    assert (response.status_code, host_instance, waited) == (410, None, True)
+    assert (response.status_code, daemon_instance, waited) == (410, None, True)
 
 
 async def test_delete_racing_a_join_that_commits_first_is_409(
@@ -226,28 +226,27 @@ async def test_delete_racing_a_join_that_commits_first_is_409(
     await _enroll(served, "dev-1")
 
     async with integ_store.engine.acquire() as holder, tx(holder):
-        machine_id = await _lock_machine(holder, "dev-1")
+        host_id = await _lock_host(holder, "dev-1")
         deleting = asyncio.create_task(_delete(served, "dev-1"))
         waited = await waited_on_locks(integ_store, count=1)
-        # What a join commits: a live credential for the machine.
+        # What a join commits: a live credential for the host.
         await holder.execute(
-            "INSERT INTO machine_credentials (machine_id, secret_sha256) "
-            "VALUES ($1, $2)",
-            machine_id,
+            "INSERT INTO host_credentials (host_id, secret_sha256) VALUES ($1, $2)",
+            host_id,
             bytes(32),
         )
 
     assert ((await deleting).status_code, waited) == (409, True)
     async with integ_store.engine.acquire() as conn:
-        kept = await conn.fetchval("SELECT id FROM machines WHERE id = $1", machine_id)
-    assert kept == machine_id
+        kept = await conn.fetchval("SELECT id FROM hosts WHERE id = $1", host_id)
+    assert kept == host_id
 
 
-async def _lock_machine(conn: Conn, name: str) -> uuid.UUID:
-    """Take the machine row's lock in the open transaction, as each writer does."""
+async def _lock_host(conn: Conn, name: str) -> uuid.UUID:
+    """Take the host row's lock in the open transaction, as each writer does."""
     return from_plain(
         await conn.fetchval(
-            "SELECT id FROM machines WHERE name = $1 FOR UPDATE",
+            "SELECT id FROM hosts WHERE name = $1 FOR UPDATE",
             name,
         ),
         uuid.UUID,
@@ -255,7 +254,7 @@ async def _lock_machine(conn: Conn, name: str) -> uuid.UUID:
 
 
 async def _race(http: httpx2.AsyncClient, route: str, name: str) -> httpx2.Response:
-    """Send the named route's request for one machine."""
+    """Send the named route's request for one host."""
     if route == "enroll":
         return await http.post(ENROLL_PATH, json={"name": name})
     if route == "revoke":
@@ -264,7 +263,7 @@ async def _race(http: httpx2.AsyncClient, route: str, name: str) -> httpx2.Respo
 
 
 async def _delete(http: httpx2.AsyncClient, name: str) -> httpx2.Response:
-    return await http.delete(MACHINE_PATH.format(name=name))
+    return await http.delete(HOST_PATH.format(name=name))
 
 
 async def _enroll(http: httpx2.AsyncClient, name: str) -> str:
@@ -280,7 +279,7 @@ async def _join(http: httpx2.AsyncClient, name: str, token: str) -> httpx2.Respo
             "name": name,
             "token": token,
             "instance": _INSTANCE,
-            "host_version": "0.1",
+            "daemon_version": "0.1",
             "facts": {},
         },
     )
@@ -294,8 +293,8 @@ async def _joined(http: httpx2.AsyncClient, name: str) -> JoinResponse:
 
 async def _heartbeat(http: httpx2.AsyncClient, joined: JoinResponse) -> httpx2.Response:
     return await http.post(
-        HEARTBEAT_PATH.format(machine_id=joined.machine_id),
-        json={"instance": _INSTANCE, "host_version": "0.1"},
+        HEARTBEAT_PATH.format(host_id=joined.host_id),
+        json={"instance": _INSTANCE, "daemon_version": "0.1"},
         headers={"Authorization": f"Bearer {joined.credential}"},
     )
 

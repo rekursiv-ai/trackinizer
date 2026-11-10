@@ -497,13 +497,13 @@ def test_standalone_command_help_shows_local_forms(
         (["run", "claude", "--", "hi"], "run"),
         (["run", "attach", "chat-1"], "run"),
         (["--profile", "p", "--host", "h", "--port", "9", "RUN", "codex"], "run"),
-        (["machine"], "machine"),
-        (["MACHINE", "gx10", "connect", "--sandbox"], "machine"),
-        (["machine", "gx10", "role", "to", "dev"], "machine"),
+        (["host"], "host"),
+        (["HOST", "gx10", "connect", "--sandbox"], "host"),
+        (["host", "gx10", "role", "to", "dev"], "host"),
         (["job", "submit", "--", "python", "x.py", "--help"], "job"),
         (["job", "status"], "job"),
         (["job", "secret", "HF_TOKEN", "set"], "job"),
-        (["help", "Machine"], "machine"),
+        (["help", "Host"], "host"),
         (["help", "job"], "job"),
     ],
 )
@@ -532,11 +532,11 @@ def test_help_says_what_moved_out_of_trax(
 
     out = capsys.readouterr().out
     commands = out.split("Commands:")[1].splitlines()[0].split()
-    assert not {"run", "machine", "job"} & set(commands)
-    assert "Moved out of trax: job machine run" in out
+    assert not {"run", "host", "job"} & set(commands)
+    assert "Moved out of trax: host job run" in out
 
 
-@pytest.mark.parametrize("verb", ["RUN", "machine", "job"])
+@pytest.mark.parametrize("verb", ["RUN", "host", "job"])
 def test_a_moved_verb_prints_no_hint_about_traxs_profiles(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

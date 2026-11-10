@@ -10,7 +10,7 @@ import { errorDetails, keepRefused } from "./details";
  * An icon, named by its label, so the failure's line keeps its width and text;
  * `labelled` shows the label too, where there is room (the crash screen). It
  * needs no provider, so the crash screen can show it. A browser that refuses the
- * clipboard (a page served over plain http from another machine) keeps the text
+ * clipboard (a page served over plain http from another host) keeps the text
  * for `trackinizer.details()`, and the console says so; the text is not logged,
  * since the message can hold what a user wrote.
  */

@@ -278,34 +278,34 @@ class TestTokenNeverCrossesTheSocket:
         assert b"tok-SENTINEL-93f1c7" not in seen[0].to_json()
 
 
-class TestMachineCommands:
-    """Every ``machine`` form says it moved out of trax, in-process."""
+class TestHostCommands:
+    """Every ``host`` form says it moved out of trax, in-process."""
 
     @pytest.mark.parametrize(
         "argv",
         [
-            ["machine"],
-            ["machine", "gpu-box"],
-            ["machine", "gpu-box", "role", "to", "dev"],
-            ["machine", "gpu-box", "connect"],
-            ["machine", "gpu-box", "CONNECT"],
-            ["--profile", "origin", "machine", "gpu-box", "connect"],
-            ["--port=9", "machine", "connect", "--sandbox"],
-            ["MACHINE", "gpu-box", "label", "add", "gpu"],
+            ["host"],
+            ["host", "gpu-box"],
+            ["host", "gpu-box", "role", "to", "dev"],
+            ["host", "gpu-box", "connect"],
+            ["host", "gpu-box", "CONNECT"],
+            ["--profile", "origin", "host", "gpu-box", "connect"],
+            ["--port=9", "host", "connect", "--sandbox"],
+            ["HOST", "gpu-box", "label", "add", "gpu"],
         ],
     )
-    def test_refuses_every_machine_form(self, argv: list[str]) -> None:
+    def test_refuses_every_host_form(self, argv: list[str]) -> None:
         assert not should_delegate(argv)
 
     @pytest.mark.parametrize(
         "argv",
         [
-            ["issue", "7", "title", "to", "machine"],
-            ["issue", "7", "label", "add", "machine"],
-            ["issue", "machine", "connect"],
+            ["issue", "7", "title", "to", "host"],
+            ["issue", "7", "label", "add", "host"],
+            ["issue", "host", "connect"],
         ],
     )
-    def test_delegates_a_value_that_is_the_word_machine(
+    def test_delegates_a_value_that_is_the_word_host(
         self,
         argv: list[str],
     ) -> None:

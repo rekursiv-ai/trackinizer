@@ -145,19 +145,17 @@ def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
     )
 
 
-def test_terminal_needs_no_record_and_bounds_its_machine_and_has_no_terminal_id() -> (
-    None
-):
-    """The tile starts nothing itself, caps its machine and keeps no terminal id."""
+def test_terminal_needs_no_record_and_bounds_its_host_and_has_no_terminal_id() -> None:
+    """The tile starts nothing itself, caps its host and keeps no terminal id."""
     described = TerminalVisual.Config().make().describe()
     assert (described.type, described.requires, described.default_size) == (
         "trax.terminal",
         [],
         "wide",
     )
-    machine = described.parameter_schema["machine"]
-    assert (machine.type, machine.default, machine.max_length) == ("string", "", 63)
-    assert set(described.parameter_schema) == {"machine", "start"}
+    host = described.parameter_schema["host"]
+    assert (host.type, host.default, host.max_length) == ("string", "", 63)
+    assert set(described.parameter_schema) == {"host", "start"}
     start = described.parameter_schema["start"]
     assert (start.type, start.default) == ("boolean", False)
 

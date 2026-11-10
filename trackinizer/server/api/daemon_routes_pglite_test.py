@@ -1,7 +1,7 @@
-"""Machine host routes, end to end over PGlite.
+"""Daemon routes, end to end over PGlite.
 
 The whole app answers each request, so the exception handlers, the request logger
-and the real machine-credential dependency are on the path. A test that needs the
+and the real host-credential dependency are on the path. A test that needs the
 real user resolver calls ``clear_identity_override``; the rest act as the admin the
 fixture installs.
 """
@@ -18,8 +18,8 @@ from treekle import from_plain
 import pytest
 import pytest_asyncio
 
-from trackinizer.server.api import machine_host_routes
-from trackinizer.server.api._deps import machine_changes
+from trackinizer.server.api import daemon_routes
+from trackinizer.server.api._deps import host_changes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
@@ -29,8 +29,8 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.auth import create_api_key
-from trackinizer.server.machine_auth import mint_secret
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.server.host_auth import mint_secret
+from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLL_PATH,
     ENROLL_TTL_SEC,
@@ -43,11 +43,11 @@ from trackinizer.wire.wire_machine_host import (
     HeartbeatResponse,
     JoinResponse,
 )
-from trackinizer.wire.wire_machines import (
-    MACHINE_PATH,
-    MACHINES_PATH,
-    MachineDetail,
-    MachineList,
+from trackinizer.wire.wire_hosts import (
+    HOST_PATH,
+    HOSTS_PATH,
+    HostDetail,
+    HostList,
 )
 
 
@@ -69,7 +69,7 @@ _OTHER_INSTANCE = uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
 
 
 class _Joined(NamedTuple):
-    machine_id: uuid.UUID
+    host_id: uuid.UUID
     credential: str
 
 
@@ -98,10 +98,10 @@ async def test_enroll_needs_the_writer_role(
 
     assert refused.status_code == 403
     _as("admin")
-    assert (await _listed(client)).machines == []
+    assert (await _listed(client)).hosts == []
 
 
-async def test_enroll_registers_the_machine_and_returns_a_fifteen_minute_token(
+async def test_enroll_registers_the_host_and_returns_a_fifteen_minute_token(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
@@ -123,17 +123,17 @@ async def test_enroll_registers_the_machine_and_returns_a_fifteen_minute_token(
     assert _bearer_secret(enrolled.token) not in await _everything_stored(store)
     async with store.engine.acquire() as conn:
         confirmed = await conn.fetchval(
-            "SELECT confirmed_at IS NOT NULL FROM machines WHERE name = 'dev-1'",
+            "SELECT confirmed_at IS NOT NULL FROM hosts WHERE name = 'dev-1'",
         )
     assert confirmed is True
 
 
-async def test_enroll_of_an_existing_machine_keeps_its_fields(
+async def test_enroll_of_an_existing_host_keeps_its_fields(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
     _as("admin")
-    await client.put(MACHINE_PATH.format(name="dev-1"), json={"role": "dev"})
+    await client.put(HOST_PATH.format(name="dev-1"), json={"role": "dev"})
 
     response = await client.post(ENROLL_PATH, json={"name": "dev-1"})
 
@@ -142,10 +142,10 @@ async def test_enroll_of_an_existing_machine_keeps_its_fields(
 
 
 async def _squatted(store: Store, name: str = "colossus2") -> None:
-    """Register ``name`` as a personal machine a writer, ``mal``, enrolled."""
+    """Register ``name`` as a personal host a writer, ``mal``, enrolled."""
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO machines (name, updated_by, owner, role) "
+            "INSERT INTO hosts (name, updated_by, owner, role) "
             "VALUES ($1, 'mal@x.y', 'mal@x.y', 'personal')",
             name,
         )
@@ -165,14 +165,14 @@ async def test_an_admin_cannot_enroll_a_name_another_person_owns(
     async with store.engine.acquire() as conn:
         row = await conn.fetchrow(
             "SELECT owner, role, "
-            "(SELECT count(*) FROM machine_enrollments) AS enrollments "
-            "FROM machines WHERE name = 'colossus2'",
+            "(SELECT count(*) FROM host_enrollments) AS enrollments "
+            "FROM hosts WHERE name = 'colossus2'",
         )
     assert row is not None
     assert (row["owner"], row["role"], row["enrollments"]) == ("mal@x.y", "personal", 0)
 
 
-async def test_an_admin_token_does_not_join_a_machine_someone_else_owns(
+async def test_an_admin_token_does_not_join_a_host_someone_else_owns(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
@@ -180,9 +180,9 @@ async def test_an_admin_token_does_not_join_a_machine_someone_else_owns(
     minted = mint_secret(ENROLLMENT_PREFIX)
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO machine_enrollments "
-            "(id, machine_id, secret_sha256, created_by, expires_at) "
-            "SELECT $1, id, $2, $3, now() + interval '5 minutes' FROM machines "
+            "INSERT INTO host_enrollments "
+            "(id, host_id, secret_sha256, created_by, expires_at) "
+            "SELECT $1, id, $2, $3, now() + interval '5 minutes' FROM hosts "
             "WHERE name = 'colossus2'",
             minted.id,
             minted.digest,
@@ -205,10 +205,10 @@ async def test_enroll_refuses_a_bad_or_reserved_name(
     response = await client.post(ENROLL_PATH, json={"name": name})
 
     assert response.status_code == 422
-    assert (await _listed(client)).machines == []
+    assert (await _listed(client)).hosts == []
 
 
-async def test_join_returns_a_credential_once_and_the_machine_shows_online(
+async def test_join_returns_a_credential_once_and_the_host_shows_online(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
@@ -227,7 +227,7 @@ async def test_join_returns_a_credential_once_and_the_machine_shows_online(
     assert joined.credential.startswith(CREDENTIAL_PREFIX)
     assert len(joined.credential) == len(CREDENTIAL_PREFIX) + 32 + 1 + 43
     one = await _detail(client, "dev-1")
-    assert (one.status, one.host_version, one.facts) == (
+    assert (one.status, one.daemon_version, one.facts) == (
         "online",
         "0.1",
         {"os": "linux", "cpus": 8, "clis": ["claude"]},
@@ -236,11 +236,11 @@ async def test_join_returns_a_credential_once_and_the_machine_shows_online(
     assert _bearer_secret(joined.credential) not in await _everything_stored(store)
 
 
-async def test_each_host_write_that_changes_a_listing_moves_its_owners_version(
+async def test_each_daemon_write_that_changes_a_listing_moves_its_owners_version(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
-    changes = machine_changes(app)
+    changes = host_changes(app)
     seen = [changes.version(TEST_USER_EMAIL)]
 
     def moved() -> int:
@@ -253,7 +253,7 @@ async def test_each_host_write_that_changes_a_listing_moves_its_owners_version(
         (await _join(client, "dev-1", token)).text,
     )
     assert moved() == 1
-    beat = _Joined(machine_id=joined.machine_id, credential=joined.credential)
+    beat = _Joined(host_id=joined.host_id, credential=joined.credential)
     assert (await _heartbeat(client, beat)).status_code == 200
     assert moved() == 0
     assert (await _heartbeat(client, beat, facts={"tools": True})).status_code == 200
@@ -294,7 +294,7 @@ async def test_join_after_expiry_is_401(
     token = await _enroll(client, "dev-1")
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE machine_enrollments SET expires_at = now() - interval '1 second'",
+            "UPDATE host_enrollments SET expires_at = now() - interval '1 second'",
         )
 
     assert (await _join(client, "dev-1", token)).status_code == 401
@@ -313,7 +313,7 @@ async def test_replayed_enrollment_is_401(
     assert (first.status_code, replay.status_code) == (201, 401)
 
 
-async def test_token_for_another_machine_name_is_401(
+async def test_token_for_another_host_name_is_401(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -352,15 +352,15 @@ async def test_join_replaces_live_credential_and_old_is_410(
         (await _join(client, "dev-1", token, instance=_OTHER_INSTANCE)).text,
     )
 
-    assert second.machine_id == first.machine_id
+    assert second.host_id == first.host_id
     assert (await _heartbeat(client, first)).status_code == 410
-    new = _Joined(second.machine_id, second.credential)
+    new = _Joined(second.host_id, second.credential)
     assert (await _heartbeat(client, new, instance=_OTHER_INSTANCE)).status_code == 200
     async with store.engine.acquire() as conn:
         live = await conn.fetchval(
-            "SELECT count(*) FROM machine_credentials WHERE revoked_at IS NULL",
+            "SELECT count(*) FROM host_credentials WHERE revoked_at IS NULL",
         )
-        total = await conn.fetchval("SELECT count(*) FROM machine_credentials")
+        total = await conn.fetchval("SELECT count(*) FROM host_credentials")
     assert (live, total) == (1, 2)
 
 
@@ -370,15 +370,15 @@ async def test_heartbeat_answers_the_server_clock_and_replaces_facts_only_when_s
     client, _ = pglite_route_client
     joined = await _joined(client, "dev-1", facts={"os": "linux"})
 
-    kept = await _heartbeat(client, joined, host_version="0.2")
+    kept = await _heartbeat(client, joined, daemon_version="0.2")
     replaced = await _heartbeat(client, joined, facts={"cpus": 4})
 
     assert (kept.status_code, replaced.status_code) == (200, 200)
     server_time = HeartbeatResponse.model_validate_json(kept.text).server_time
     assert abs(server_time - datetime.now(UTC)) < timedelta(seconds=30)
     one = await _detail(client, "dev-1")
-    assert (one.facts, one.host_version) == ({"cpus": 4}, "")
-    await _heartbeat(client, joined, host_version="0.3")
+    assert (one.facts, one.daemon_version) == ({"cpus": 4}, "")
+    await _heartbeat(client, joined, daemon_version="0.3")
     assert (await _detail(client, "dev-1")).facts == {"cpus": 4}
 
 
@@ -409,15 +409,15 @@ async def test_facts_the_table_cannot_hold_are_refused_with_422(
     assert (join.status_code, beat.status_code) == (422, 422)
 
 
-async def test_a_host_version_with_a_nul_is_422_and_the_token_is_kept(
+async def test_a_daemon_version_with_a_nul_is_422_and_the_token_is_kept(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
     token = await _enroll(client, "dev-1")
     joined = await _joined(client, "box-2")
 
-    join = await _join(client, "dev-1", token, host_version="a\x00b")
-    beat = await _heartbeat(client, joined, host_version="a\x00b")
+    join = await _join(client, "dev-1", token, daemon_version="a\x00b")
+    beat = await _heartbeat(client, joined, daemon_version="a\x00b")
 
     assert (join.status_code, beat.status_code) == (422, 422)
     assert (await _join(client, "dev-1", token)).status_code == 201
@@ -447,7 +447,7 @@ async def test_a_token_whose_issuer_is_neither_an_active_admin_nor_the_owner_is_
     assert (await _detail(client, "dev-1")).status == "never"
 
 
-async def test_machine_credential_401_on_user_routes_and_api_key_401_on_host_routes(
+async def test_host_credential_401_on_user_routes_and_api_key_401_on_daemon_routes(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
@@ -469,32 +469,34 @@ async def test_machine_credential_401_on_user_routes_and_api_key_401_on_host_rou
     clear_identity_override()
 
     with_credential = await client.get(
-        MACHINES_PATH,
+        HOSTS_PATH,
         headers=_bearer(joined.credential),
     )
-    with_token = await client.get(MACHINES_PATH, headers=_bearer(token))
-    with_key = await client.get(MACHINES_PATH, headers=_bearer(api_key))
-    key_on_host = await _heartbeat(client, joined, bearer=api_key)
-    nothing_on_host = await _heartbeat(client, joined, bearer="")
-    token_on_host = await _heartbeat(client, joined, bearer=token)
+    with_token = await client.get(HOSTS_PATH, headers=_bearer(token))
+    with_key = await client.get(HOSTS_PATH, headers=_bearer(api_key))
+    key_on_daemon = await _heartbeat(client, joined, bearer=api_key)
+    nothing_on_daemon = await _heartbeat(client, joined, bearer="")
+    token_on_daemon = await _heartbeat(client, joined, bearer=token)
 
     assert (with_credential.status_code, with_token.status_code) == (401, 401)
     assert with_key.status_code == 200
-    assert [r.status_code for r in (key_on_host, nothing_on_host, token_on_host)] == [
+    assert [
+        r.status_code for r in (key_on_daemon, nothing_on_daemon, token_on_daemon)
+    ] == [
         401,
         401,
         401,
     ]
 
 
-async def test_credential_of_machine_a_gets_404_on_machine_b_paths(
+async def test_credential_of_host_a_gets_404_on_host_b_paths(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
     a = await _joined(client, "box-a")
     b = await _joined(client, "box-b")
 
-    crossed = await _heartbeat(client, _Joined(b.machine_id, a.credential))
+    crossed = await _heartbeat(client, _Joined(b.host_id, a.credential))
     absent = await _heartbeat(client, _Joined(uuid.uuid4(), a.credential))
 
     assert (crossed.status_code, absent.status_code) == (404, 404)
@@ -515,11 +517,11 @@ async def test_revoke_effective_on_next_request(
     after = await _heartbeat(client, joined)
 
     assert (revoked.status_code, revoked.content) == (204, b"")
-    assert (after.status_code, _detail_text(after)) == (410, "machine_revoked")
+    assert (after.status_code, _detail_text(after)) == (410, "host_revoked")
     assert (await _detail(client, "dev-1")).status == "revoked"
 
 
-async def test_a_revoke_moves_its_owners_version_though_ending_its_pipes_fails(
+async def test_a_revoke_moves_its_owners_version_though_ending_its_connections_fails(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -528,24 +530,24 @@ async def test_a_revoke_moves_its_owners_version_though_ending_its_pipes_fails(
     _ = await _joined(client, "dev-1")
     async with store.engine.acquire() as conn:
         owner = from_plain(
-            await conn.fetchval("SELECT owner FROM machines WHERE name = 'dev-1'"),
+            await conn.fetchval("SELECT owner FROM hosts WHERE name = 'dev-1'"),
             str,
         )
-    before = machine_changes(app).version(owner)
+    before = host_changes(app).version(owner)
 
     def failing(request: object) -> None:
         del request
-        raise RuntimeError("the hub failed")
+        raise RuntimeError("the relay failed")
 
-    monkeypatch.setattr(machine_host_routes, "get_pipe_hub", failing)
+    monkeypatch.setattr(daemon_routes, "get_tool_relay", failing)
     failed = await client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert failed.status_code == 500
-    assert machine_changes(app).version(owner) == before + 1
+    assert host_changes(app).version(owner) == before + 1
     assert (await _detail(client, "dev-1")).status == "revoked"
 
 
-async def test_revoked_is_410_on_every_host_route_unknown_is_401(
+async def test_revoked_is_410_on_every_daemon_route_unknown_is_401(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -553,7 +555,7 @@ async def test_revoked_is_410_on_every_host_route_unknown_is_401(
     await client.post(REVOKE_PATH.format(name="dev-1"))
     unknown = f"{CREDENTIAL_PREFIX}{uuid.uuid4().hex}_{'A' * 43}"
 
-    # Every host route; each later PR that adds one lists it here.
+    # Every daemon route; each later PR that adds one lists it here.
     on_revoked = [await _heartbeat(client, joined)]
     on_unknown = [await _heartbeat(client, joined, bearer=unknown)]
 
@@ -606,7 +608,7 @@ async def test_revoke_closes_an_open_enrollment_and_is_idempotent(
     assert (await _join(client, "dev-1", token)).status_code == 401
 
 
-async def test_revoke_needs_the_admin_or_owner_and_a_registered_machine(
+async def test_revoke_needs_the_admin_or_owner_and_a_registered_host(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -633,7 +635,7 @@ async def test_revoke_needs_the_admin_or_owner_and_a_registered_machine(
     [("", False), ("personal", True)],
     ids=["shared", "personal"],
 )
-async def test_a_demoted_issuer_who_owns_the_machine_joins_only_a_personal_one(
+async def test_a_demoted_issuer_who_owns_the_host_joins_only_a_personal_one(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
     role: str,
     joins: bool,
@@ -641,7 +643,7 @@ async def test_a_demoted_issuer_who_owns_the_machine_joins_only_a_personal_one(
     client, store = pglite_route_client
     token = await _enroll(client, "dev-1")
     async with store.engine.acquire() as conn:
-        await conn.execute("UPDATE machines SET role = $1", role)
+        await conn.execute("UPDATE hosts SET role = $1", role)
         await conn.execute("UPDATE users SET role = 'writer'")
 
     response = await _join(client, "dev-1", token)
@@ -649,7 +651,7 @@ async def test_a_demoted_issuer_who_owns_the_machine_joins_only_a_personal_one(
     assert response.status_code == (201 if joins else 401)
 
 
-async def test_a_machine_enrolls_again_after_revoke(
+async def test_a_host_enrolls_again_after_revoke(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -662,30 +664,30 @@ async def test_a_machine_enrolls_again_after_revoke(
 
     assert (await _detail(client, "dev-1")).status == "online"
     assert (await _heartbeat(client, old)).status_code == 410
-    assert new.machine_id == old.machine_id
+    assert new.host_id == old.host_id
 
 
-async def test_delete_machine_with_live_credential_is_409(
+async def test_delete_host_with_live_credential_is_409(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
     joined = await _joined(client, "dev-1")
-    await client.put(MACHINE_PATH.format(name="bare"), json={})
+    await client.put(HOST_PATH.format(name="bare"), json={})
 
-    refused = await client.delete(MACHINE_PATH.format(name="dev-1"))
+    refused = await client.delete(HOST_PATH.format(name="dev-1"))
     await client.post(REVOKE_PATH.format(name="dev-1"))
-    deleted = await client.delete(MACHINE_PATH.format(name="dev-1"))
-    bare = await client.delete(MACHINE_PATH.format(name="bare"))
+    deleted = await client.delete(HOST_PATH.format(name="dev-1"))
+    bare = await client.delete(HOST_PATH.format(name="bare"))
 
     assert (refused.status_code, deleted.status_code, bare.status_code) == (
         409,
         204,
         204,
     )
-    assert from_plain(refused.json(), dict[str, str])["code"] == "machine_in_service"
-    # A deleted machine's credential is unknown, not revoked.
+    assert from_plain(refused.json(), dict[str, str])["code"] == "host_in_service"
+    # A deleted host's credential is unknown, not revoked.
     assert (await _heartbeat(client, joined)).status_code == 401
-    assert (await _listed(client)).machines == []
+    assert (await _listed(client)).hosts == []
 
 
 async def test_offline_after_180_s_online_after_heartbeat(
@@ -700,7 +702,7 @@ async def test_offline_after_180_s_online_after_heartbeat(
     statuses["just_inside"] = (await _detail(client, "dev-1")).status
     await _silence(store, OFFLINE_AFTER_SEC + 5)
     statuses["silent"] = (await _detail(client, "dev-1")).status
-    listed = {m.name: m.status for m in (await _listed(client)).machines}
+    listed = {m.name: m.status for m in (await _listed(client)).hosts}
     await _heartbeat(client, joined)
     statuses["beat"] = (await _detail(client, "dev-1")).status
 
@@ -726,7 +728,9 @@ async def test_second_instance_is_409_until_first_is_stale(
         200,
         409,
     ]
-    assert from_plain(rival.json(), dict[str, str])["code"] == "another_host_connected"
+    assert (
+        from_plain(rival.json(), dict[str, str])["code"] == "another_daemon_connected"
+    )
 
 
 async def test_a_take_displaces_a_live_instance_at_once_and_it_cannot_keep(
@@ -743,7 +747,7 @@ async def test_a_take_displaces_a_live_instance_at_once_and_it_cannot_keep(
     assert (await _detail(client, "dev-1")).status == "online"
 
 
-async def test_a_release_by_the_holder_reads_offline_at_once_and_frees_the_machine(
+async def test_a_release_by_the_holder_reads_offline_at_once_and_frees_the_host(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -759,7 +763,7 @@ async def test_a_release_by_the_holder_reads_offline_at_once_and_frees_the_machi
     statuses.append((await _detail(client, "dev-1")).status)
     release = await _heartbeat(client, joined, instance=_INSTANCE, claim="release")
     statuses.append((await _detail(client, "dev-1")).status)
-    listed = {m.name: m.status for m in (await _listed(client)).machines}
+    listed = {m.name: m.status for m in (await _listed(client)).hosts}
     successor = await _heartbeat(client, joined, instance=_OTHER_INSTANCE)
     statuses.append((await _detail(client, "dev-1")).status)
 
@@ -784,7 +788,7 @@ async def test_last_used_is_set_by_the_first_request_and_kept_within_a_minute(
 ) -> None:
     client, store = pglite_route_client
     joined = await _joined(client, "dev-1")
-    sql = "SELECT last_used FROM machine_credentials WHERE revoked_at IS NULL"
+    sql = "SELECT last_used FROM host_credentials WHERE revoked_at IS NULL"
     async with store.engine.acquire() as conn:
         before = await conn.fetchval(sql)
 
@@ -800,14 +804,14 @@ async def test_last_used_is_set_by_the_first_request_and_kept_within_a_minute(
     assert second == first
 
 
-async def test_a_malformed_machine_id_is_422_and_stores_nothing(
+async def test_a_malformed_host_id_is_422_and_stores_nothing(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
     joined = await _joined(client, "dev-1")
 
     response = await client.post(
-        HEARTBEAT_PATH.format(machine_id="not-a-uuid"),
+        HEARTBEAT_PATH.format(host_id="not-a-uuid"),
         json={"instance": str(_INSTANCE)},
         headers=_bearer(joined.credential),
     )
@@ -845,7 +849,7 @@ async def _join(
     token: str,
     *,
     instance: uuid.UUID = _INSTANCE,
-    host_version: str = "0.1",
+    daemon_version: str = "0.1",
     facts: dict[str, object] | None = None,
 ) -> httpx2.Response:
     return await client.post(
@@ -854,7 +858,7 @@ async def _join(
             "name": name,
             "token": token,
             "instance": str(instance),
-            "host_version": host_version,
+            "daemon_version": daemon_version,
             "facts": facts or {},
         },
     )
@@ -876,7 +880,7 @@ async def _joined(
     )
     assert response.status_code == 201, response.text
     joined = JoinResponse.model_validate_json(response.text)
-    return _Joined(joined.machine_id, joined.credential)
+    return _Joined(joined.host_id, joined.credential)
 
 
 async def _heartbeat(
@@ -884,21 +888,21 @@ async def _heartbeat(
     joined: _Joined,
     *,
     instance: uuid.UUID = _INSTANCE,
-    host_version: str = "",
+    daemon_version: str = "",
     facts: dict[str, object] | None = None,
     bearer: str | None = None,
     claim: str | None = None,
 ) -> httpx2.Response:
     body: dict[str, object] = {
         "instance": str(instance),
-        "host_version": host_version,
+        "daemon_version": daemon_version,
     }
     if facts is not None:
         body["facts"] = facts
     if claim is not None:
         body["claim"] = claim
     return await client.post(
-        HEARTBEAT_PATH.format(machine_id=joined.machine_id),
+        HEARTBEAT_PATH.format(host_id=joined.host_id),
         json=body,
         headers=_bearer(joined.credential if bearer is None else bearer),
     )
@@ -907,38 +911,38 @@ async def _heartbeat(
 async def _silence(store: Store, seconds: int) -> None:
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE machines SET last_heartbeat = now() - make_interval(secs => $1) "
+            "UPDATE hosts SET last_heartbeat = now() - make_interval(secs => $1) "
             "WHERE last_heartbeat IS NOT NULL",
             seconds,
         )
 
 
 async def _everything_stored(store: Store) -> str:
-    """Return every machine-host table as one text, to search for a secret."""
+    """Return every host-daemon table as one text, to search for a secret."""
     async with store.engine.acquire() as conn:
         rows = [
             str(dict(row))
             for table_query in (
-                "SELECT * FROM machines",
-                "SELECT * FROM machine_enrollments",
-                "SELECT * FROM machine_credentials",
+                "SELECT * FROM hosts",
+                "SELECT * FROM host_enrollments",
+                "SELECT * FROM host_credentials",
             )
             for row in await conn.fetch(table_query)
         ]
     return "\n".join(rows)
 
 
-async def _listed(client: httpx2.AsyncClient) -> MachineList:
-    response = await client.get(MACHINES_PATH)
+async def _listed(client: httpx2.AsyncClient) -> HostList:
+    response = await client.get(HOSTS_PATH)
     assert response.status_code == 200
-    return MachineList.model_validate_json(response.text)
+    return HostList.model_validate_json(response.text)
 
 
-async def _detail(client: httpx2.AsyncClient, name: str) -> MachineDetail:
+async def _detail(client: httpx2.AsyncClient, name: str) -> HostDetail:
     _as("admin")
-    response = await client.get(MACHINE_PATH.format(name=name))
+    response = await client.get(HOST_PATH.format(name=name))
     assert response.status_code == 200, response.text
-    return MachineDetail.model_validate_json(response.text)
+    return HostDetail.model_validate_json(response.text)
 
 
 if __name__ == "__main__":

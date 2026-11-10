@@ -5,7 +5,7 @@ import pytest
 from trackinizer.trax import forward
 
 
-@pytest.mark.parametrize("form", ["run", "machine", "job", "agentsession run"])
+@pytest.mark.parametrize("form", ["run", "host", "job", "agentsession run"])
 def test_a_moved_form_exits_2_with_one_line_saying_it_moved(
     capsys: pytest.CaptureFixture[str],
     form: str,
@@ -20,8 +20,8 @@ def test_a_moved_form_exits_2_with_one_line_saying_it_moved(
     assert err.count("\n") == 1
 
 
-def test_the_moved_verbs_are_run_machine_and_job() -> None:
-    assert {"run", "machine", "job"} == forward.MOVED_VERBS
+def test_the_moved_verbs_are_run_host_and_job() -> None:
+    assert {"run", "host", "job"} == forward.MOVED_VERBS
 
 
 def test_the_resumable_clis_are_claude_codex_and_sagent() -> None:

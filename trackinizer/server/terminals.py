@@ -1,17 +1,17 @@
-"""The hub that pairs a browser with a host and relays a terminal's bytes.
+"""The relay that pairs a browser with a host's daemon and relays a terminal's bytes.
 
 A terminal lives only while its sockets do, so its state is in memory, in this one
-process, like the inbound queue's (``server/inbound.py``). The hub never touches the
+process, like the inbound queue's (``server/inbound.py``). The relay never touches the
 database or a real socket: the routes hand it :class:`Socket` adapters and an
 :class:`Observer`, and the clock and sleep are injected, so every limit is tested
 without waiting for it.
 
-A terminal is ``pending`` from the open until its host dials in. The host learns of
-it from :meth:`TerminalHub.wait`, a held request that returns the moment an open is
-queued. Output the host sends goes to a ring (so a browser that drops can re-attach
+A terminal is ``pending`` from the open until its daemon dials in. The daemon learns of
+it from :meth:`TerminalRelay.wait`, a held request that returns the moment an open is
+queued. Output the daemon sends goes to a ring (so a browser that drops can re-attach
 from its last offset) and to the attached browser. Nothing is stored: a terminal's
 bytes live in the ring only as long as the terminal does. Every send is awaited, so a
-slow browser slows the host's reads rather than growing memory.
+slow browser slows the daemon's reads rather than growing memory.
 """
 
 from __future__ import annotations
@@ -45,8 +45,8 @@ __all__ = [
     "Socket",
     "SocketClosedError",
     "Terminal",
-    "TerminalHub",
     "TerminalLimitError",
+    "TerminalRelay",
     "decode_attach",
     "sweep_loop",
 ]
@@ -55,7 +55,7 @@ _logger = logging.getLogger(__name__)
 
 
 class SocketClosedError(Exception):
-    """A send found its peer gone; the hub treats that peer as detached."""
+    """A send found its peer gone; the relay treats that peer as detached."""
 
 
 class TerminalLimitError(Exception):
@@ -63,7 +63,7 @@ class TerminalLimitError(Exception):
 
 
 class Socket(Protocol):
-    """One WebSocket leg, as the hub uses it."""
+    """One WebSocket socket, as the relay uses it."""
 
     async def send_bytes(self, data: bytes) -> None:
         """Send one binary message; raise :class:`SocketClosedError` if the peer left."""
@@ -93,12 +93,12 @@ class _Rate:
 
 @dataclass(slots=True, kw_only=True, eq=False)
 class Terminal:
-    """One terminal: who opened it, where it runs, and its two legs."""
+    """One terminal: who opened it, where it runs, and its two sockets."""
 
     id: UUID
     user: str
-    machine_id: UUID
-    machine: str
+    host_id: UUID
+    host: str
     rows: int
     cols: int
     opened_at: float
@@ -119,18 +119,20 @@ class Terminal:
     """The folder the run starts in, as the browser named it; the host resolves it."""
 
     kind: wire_terminals.TerminalKind = "shell"
-    """A shell, or the host's answers to file requests."""
+    """A shell, or the daemon's answers to file requests."""
 
     detached_at: float | None = None
     """When no browser was attached since; ``None`` while one is."""
 
     last_input_at: float = 0.0
     offered: bool = False
-    """Whether a host's wait already returned this open."""
+    """Whether a daemon's wait already returned this open."""
 
-    host: Socket | None = None
+    daemon: Socket | None = None
+    """The daemon's socket, once it dialled in."""
+
     starting: bool = False
-    """The host has not yet confirmed receiving its startup acknowledgement."""
+    """The daemon has not yet confirmed receiving its startup acknowledgement."""
 
     browser: Socket | None = None
     ended: bool = False
@@ -138,20 +140,20 @@ class Terminal:
     """Whether the shell was told to stop; the canvas no longer lists it."""
 
     replaying: asyncio.Event | None = None
-    """Set when the current replay finishes; the host waits rather than buffering."""
+    """Set when the current replay finishes; the daemon waits rather than buffering."""
 
     pre_input: bytearray = field(default_factory=bytearray)
-    """Keystrokes typed before the host dialled in, up to one frame's worth."""
+    """Keystrokes typed before the daemon dialled in, up to one frame's worth."""
 
     pre_resize: bytes | None = None
-    """The latest geometry sent before the host dialled in."""
+    """The latest geometry sent before the daemon dialled in."""
 
-    host_sending: asyncio.Lock = field(default_factory=asyncio.Lock)
+    daemon_sending: asyncio.Lock = field(default_factory=asyncio.Lock)
     """Serialize buffered input with typing that arrives while startup flushes it."""
 
     ring: Ring = field(default_factory=lambda: Ring(capacity=wire_terminals.RING_BYTES))
     direct_until: float = 0.0
-    """Until when the host's last ``KEEPALIVE`` says output goes to the browser direct."""
+    """Until when the daemon's last ``KEEPALIVE`` says output goes to the browser direct."""
 
     signals: deque[float] = field(default_factory=deque)
     """When the browser's recent ``SIGNAL`` frames came, for the rate limit."""
@@ -166,11 +168,11 @@ class Terminal:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Opening:
-    """What a terminal is opened with; the hub adds its id, clock and legs."""
+    """What a terminal is opened with; the relay adds its id, clock and sockets."""
 
     user: str
-    machine_id: UUID
-    machine: str
+    host_id: UUID
+    host: str
     rows: int
     cols: int
     canvas: UUID | None = None
@@ -206,15 +208,15 @@ def decode_attach(payload: bytes) -> tuple[str, int]:
     )
 
 
-class TerminalHub:
+class TerminalRelay:
     """Every live terminal in this process, and the rules that bound them.
 
     Args:
-      alive: Whether a terminal's machine credential is live and its owner active;
+      alive: Whether a terminal's host credential is live and its owner active;
         asked by the sweep.
       clock: Monotonic seconds.
       sleep: Waits the given seconds; only the rate limits use it.
-      ice_servers: STUN URLs handed to the browser and the host for a direct link.
+      ice_servers: STUN URLs handed to the browser and the daemon for a direct link.
 
     """
 
@@ -230,7 +232,7 @@ class TerminalHub:
         self._clock = clock
         self._sleep = sleep
         self.ice_servers = ice_servers
-        """The STUN URLs the open, the attach and the host's wait return."""
+        """The STUN URLs the open, the attach and the daemon's wait return."""
         self._terminals: dict[UUID, Terminal] = {}
         self._pending: dict[UUID, deque[Terminal]] = {}
         self._waiters: dict[UUID, list[asyncio.Future[None]]] = {}
@@ -240,31 +242,31 @@ class TerminalHub:
         self._started = clock()
         self._active: dict[UUID, float] = {}
 
-    def ready(self, machine_id: UUID) -> bool:
-        """Return whether the machine's host waited for an open recently enough."""
-        waited = self._waited.get(machine_id)
+    def ready(self, host_id: UUID) -> bool:
+        """Return whether the daemon waited for an open recently enough."""
+        waited = self._waited.get(host_id)
         return (
             waited is not None
             and self._clock() - waited <= wire_terminals.WAIT_LEASE_SEC
         )
 
-    # Held in memory only, as every terminal is: after a restart a machine's clock starts
+    # Held in memory only, as every terminal is: after a restart a host's clock starts
     # at the restart, so an idle rule built on it acts at most that much late.
-    def idle_sec(self, machine_id: UUID) -> float:
-        """Return how long the machine's terminals have had no input or output.
+    def idle_sec(self, host_id: UUID) -> float:
+        """Return how long the host's terminals have had no input or output.
 
-        Input the browser sent, output the host relayed, and what a direct link's
-        keepalive reports of either count. A machine with none since this hub
+        Input the browser sent, output the daemon relayed, and what a direct link's
+        keepalive reports of either count. A host with none since this relay
         started is counted from its start.
 
         Args:
-          machine_id: The machine.
+          host_id: The host.
 
         Returns:
-          idle_sec: Seconds on the hub's clock.
+          idle_sec: Seconds on the relay's clock.
 
         """
-        return self._clock() - self._active.get(machine_id, self._started)
+        return self._clock() - self._active.get(host_id, self._started)
 
     def terminal(self, terminal_id: UUID) -> Terminal | None:
         """Return the live terminal with this id, or ``None``."""
@@ -288,7 +290,7 @@ class TerminalHub:
         ]
 
     def attached_to(self, session_id: UUID) -> list[Terminal]:
-        """Return the live runs that re-attach this session, oldest first.
+        """Return the live sessions that re-attach this session, oldest first.
 
         Args:
           session_id: The AgentSession a detached run re-opens.
@@ -322,7 +324,7 @@ class TerminalHub:
             raise TerminalLimitError
 
     def open(self, opening: Opening) -> Terminal:
-        """Queue a terminal for the machine's host, which a held wait returns at once.
+        """Queue a terminal for the daemon, which a held wait returns at once.
 
         Args:
           opening: What the terminal is opened with.
@@ -337,7 +339,7 @@ class TerminalHub:
         self.check(user=opening.user)
         now = self._clock()
         user = opening.user
-        machine_id = opening.machine_id
+        host_id = opening.host_id
         term_id = uuid4()
         run_name = opening.run_name
         if opening.command is not None and run_name is None:
@@ -349,8 +351,8 @@ class TerminalHub:
         term = Terminal(
             id=term_id,
             user=user,
-            machine_id=machine_id,
-            machine=opening.machine,
+            host_id=host_id,
+            host=opening.host,
             rows=opening.rows,
             cols=opening.cols,
             opened_at=now,
@@ -367,12 +369,12 @@ class TerminalHub:
             last_input_at=now,
         )
         self._terminals[term.id] = term
-        self._pending.setdefault(machine_id, deque()).append(term)
+        self._pending.setdefault(host_id, deque()).append(term)
         opens = self._opens.setdefault(user, deque())
         while opens and now - opens[0] >= 60.0:
             opens.popleft()
         opens.append(now)
-        for waiter in self._waiters.get(machine_id, []):
+        for waiter in self._waiters.get(host_id, []):
             if not waiter.done():
                 waiter.set_result(None)
                 break
@@ -420,11 +422,11 @@ class TerminalHub:
             and ticket.terminal_id == terminal_id
         )
 
-    async def wait(self, machine_id: UUID, *, wait_sec: float) -> Terminal | None:
-        """Return the machine's next open, holding up to ``wait_sec`` for one.
+    async def wait(self, host_id: UUID, *, wait_sec: float) -> Terminal | None:
+        """Return the host's next open, holding up to ``wait_sec`` for one.
 
         Args:
-          machine_id: The machine whose host is asking.
+          host_id: The host whose daemon is asking.
           wait_sec: How long to hold.
 
         Returns:
@@ -433,24 +435,24 @@ class TerminalHub:
         """
         loop = asyncio.get_running_loop()
         deadline = self._clock() + wait_sec
-        self._waited[machine_id] = self._clock()
+        self._waited[host_id] = self._clock()
         try:
             while True:
-                if (term := self._take(machine_id)) is not None:
+                if (term := self._take(host_id)) is not None:
                     return term
                 remaining = deadline - self._clock()
                 if remaining <= 0:
                     return None
                 waiter = loop.create_future()
-                self._waiters.setdefault(machine_id, []).append(waiter)
+                self._waiters.setdefault(host_id, []).append(waiter)
                 try:
                     await asyncio.wait_for(waiter, timeout=remaining)
                 except TimeoutError:
                     return None
                 finally:
-                    self._waiters[machine_id].remove(waiter)
+                    self._waiters[host_id].remove(waiter)
         finally:
-            self._waited[machine_id] = self._clock()
+            self._waited[host_id] = self._clock()
 
     async def attach_browser(
         self,
@@ -471,12 +473,12 @@ class TerminalHub:
           offset: The stream offset the browser has reached.
 
         """
-        # Publish the replay gate before yielding: the host must not append to the
+        # Publish the replay gate before yielding: the daemon must not append to the
         # ring or send live frames until this snapshot has reached the browser.
         previous, term.browser = term.browser, socket
         term.detached_at = None
         data, resume, lost = term.ring.since(offset)
-        # Each browser starts its offer generations at one. Reset the host's
+        # Each browser starts its offer generations at one. Reset the daemon's
         # negotiation even when its previous browser never reached direct mode.
         relay_from = term.ring.end
         term.direct_until = 0.0
@@ -485,7 +487,7 @@ class TerminalHub:
         try:
             if previous is not None:
                 await self._close(previous, wire_terminals.CLOSE_TAKEN_OVER)
-            await self._to_host(
+            await self._to_daemon(
                 term,
                 Frame.ROUTE,
                 wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, relay_from),
@@ -511,28 +513,28 @@ class TerminalHub:
             term.browser = None
             term.detached_at = self._clock()
 
-    async def host_connected(
+    async def daemon_connected(
         self,
         term: Terminal,
         socket: Socket,
         *,
         ready: bool = False,
     ) -> bool:
-        """Claim the terminal for its host, handing it what was typed before it came.
+        """Claim the terminal for its daemon, handing it what was typed before it came.
 
         Args:
           term: The terminal.
-          socket: The host's socket.
+          socket: The daemon's socket.
           ready: Acknowledge startup before handing over buffered input.
 
         Returns:
-          claimed: False when another host already holds the terminal or it ended.
+          claimed: False when another daemon already holds the terminal or it ended.
 
         """
-        if term.ended or (term.host is not None and not term.starting):
+        if term.ended or (term.daemon is not None and not term.starting):
             return False
-        previous = term.host
-        term.host = socket
+        previous = term.daemon
+        term.daemon = socket
         term.starting = ready
         if previous is not None:
             await self._close(previous, wire_terminals.CLOSE_TAKEN_OVER)
@@ -540,31 +542,31 @@ class TerminalHub:
             try:
                 await socket.send_bytes(encode_frame(Frame.ACK))
             except SocketClosedError:
-                if term.host is socket:
-                    term.host = None
+                if term.daemon is socket:
+                    term.daemon = None
                     term.starting = False
                 return False
             return True
-        await self._start_host(term)
+        await self._start_daemon(term)
         return True
 
-    async def host_lost(self, term: Terminal, socket: Socket) -> None:
-        """End the terminal when its host's socket dropped.
+    async def daemon_lost(self, term: Terminal, socket: Socket) -> None:
+        """End the terminal when its daemon's socket dropped.
 
         Args:
           term: The terminal.
-          socket: The host socket that dropped.
+          socket: The daemon socket that dropped.
 
         """
-        if term.host is socket and not term.ended:
+        if term.daemon is socket and not term.ended:
             if term.starting:
-                term.host = None
+                term.daemon = None
                 term.starting = False
             else:
-                await self.end(term, code=wire_terminals.CLOSE_HOST_LOST)
+                await self.end(term, code=wire_terminals.CLOSE_DAEMON_LOST)
 
-    async def from_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
-        """Take one frame from the host: output, the shell's exit, or a link frame.
+    async def from_daemon(self, term: Terminal, kind: Frame, payload: bytes) -> None:
+        """Take one frame from the daemon: output, the shell's exit, or a link frame.
 
         Args:
           term: The terminal.
@@ -575,7 +577,7 @@ class TerminalHub:
         if term.id not in self._terminals:
             return
         if kind is Frame.ACK and payload == b"" and term.starting:
-            await self._start_host(term)
+            await self._start_daemon(term)
             return
         if kind is Frame.KEEPALIVE:
             self._keepalive(term, payload)
@@ -589,7 +591,7 @@ class TerminalHub:
         if term.ended:
             return
         if kind is Frame.OUTPUT:
-            self._touch(term.machine_id, at=self._clock())
+            self._touch(term.host_id, at=self._clock())
             term.ring.append(payload)
             await self._live(term, Frame.OUTPUT, payload)
         elif kind is Frame.EXIT:
@@ -598,7 +600,7 @@ class TerminalHub:
         elif kind is Frame.SIGNAL:
             await self._live(term, Frame.SIGNAL, payload)
         elif kind is Frame.ACK and len(payload) == 8:
-            # The host resumes on the relay at an offset the ring never saw: output went
+            # The daemon resumes on the relay at an offset the ring never saw: output went
             # direct meanwhile. Later offsets stay contiguous from here.
             term.ring.reset(int.from_bytes(payload))
             await self._live(term, Frame.ACK, payload)
@@ -624,14 +626,14 @@ class TerminalHub:
             if delay:
                 await self._sleep(delay)
             term.last_input_at = self._clock()
-            self._touch(term.machine_id, at=term.last_input_at)
-            await self._to_host(term, Frame.INPUT, payload)
+            self._touch(term.host_id, at=term.last_input_at)
+            await self._to_daemon(term, Frame.INPUT, payload)
         elif kind is Frame.RESIZE:
             try:
                 rows, cols = decode_winsize(payload)
             except ValueError:
                 return False
-            await self._to_host(
+            await self._to_daemon(
                 term,
                 Frame.RESIZE,
                 encode_winsize(
@@ -642,13 +644,13 @@ class TerminalHub:
         elif kind is Frame.SIGNAL:
             if not self._signal_allowed(term, size=len(payload)):
                 return False
-            await self._to_host(term, Frame.SIGNAL, payload)
+            await self._to_daemon(term, Frame.SIGNAL, payload)
         elif kind is Frame.ROUTE:
             try:
                 _ = wire_terminals.decode_route(payload)
             except ValueError:
                 return False
-            await self._to_host(term, Frame.ROUTE, payload)
+            await self._to_daemon(term, Frame.ROUTE, payload)
         elif kind is Frame.STOP:
             await self.stop(term)
         else:
@@ -656,19 +658,19 @@ class TerminalHub:
         return True
 
     async def stop(self, term: Terminal) -> None:
-        """Tell the shell to stop; the host's ``EXIT`` then ends the terminal."""
+        """Tell the shell to stop; the daemon's ``EXIT`` then ends the terminal."""
         term.stopping = True
-        if term.host is None or term.starting:
+        if term.daemon is None or term.starting:
             await self.end(term, code=wire_terminals.CLOSE_ENDED)
         else:
-            await self._to_host(term, Frame.STOP, b"")
+            await self._to_daemon(term, Frame.STOP, b"")
 
     async def end(self, term: Terminal, *, code: int) -> None:
-        """End the terminal once: close both legs with ``code``.
+        """End the terminal once: close both sockets with ``code``.
 
         Args:
           term: The terminal.
-          code: The close code both legs receive.
+          code: The close code both sockets receive.
 
         """
         if term.ended:
@@ -678,15 +680,15 @@ class TerminalHub:
             term.replaying.set()
         self._terminals.pop(term.id, None)
         # A peer that vanished makes its close raise, which `_close` absorbs, so the
-        # other leg is still closed.
-        for socket in (term.host, term.browser):
+        # other socket is still closed.
+        for socket in (term.daemon, term.browser):
             if socket is not None:
                 await self._close(socket, code)
 
-    async def close_machine(self, machine_id: UUID) -> None:
-        """End every terminal on a revoked machine with 4410."""
-        for term in [t for t in self._terminals.values() if t.machine_id == machine_id]:
-            await self.end(term, code=wire_terminals.CLOSE_MACHINE_REVOKED)
+    async def close_host(self, host_id: UUID) -> None:
+        """End every terminal on a revoked host with 4410."""
+        for term in [t for t in self._terminals.values() if t.host_id == host_id]:
+            await self.end(term, code=wire_terminals.CLOSE_HOST_REVOKED)
 
     async def sweep(self) -> None:
         """End terminals past a limit: untaken, detached, idle, old, or orphaned.
@@ -699,9 +701,9 @@ class TerminalHub:
             try:
                 code = self._expired(term, now=now)
                 if code is None and not await self._still_alive(term):
-                    code = wire_terminals.CLOSE_MACHINE_REVOKED
+                    code = wire_terminals.CLOSE_HOST_REVOKED
                 if code is not None:
-                    await self._to_host(term, Frame.STOP, b"")
+                    await self._to_daemon(term, Frame.STOP, b"")
                     await self.end(term, code=code)
             except Exception:
                 _logger.warning("terminal %s: sweep failed", term.id, exc_info=True)
@@ -719,7 +721,7 @@ class TerminalHub:
         term.signals.append(now)
         return True
 
-    # A host before output idle time reports input alone.
+    # A daemon from before output idle time reports input alone.
     def _keepalive(self, term: Terminal, payload: bytes) -> None:
         """Take a direct link's report of how long ago input and output last were."""
         try:
@@ -730,11 +732,11 @@ class TerminalHub:
         term.last_input_at = now - idle_ms / 1_000
         term.direct_until = now + 3 * wire_terminals.KEEPALIVE_SEC
         quiet_ms = idle_ms if output_idle_ms is None else min(idle_ms, output_idle_ms)
-        self._touch(term.machine_id, at=now - quiet_ms / 1_000)
+        self._touch(term.host_id, at=now - quiet_ms / 1_000)
 
-    def _touch(self, machine_id: UUID, *, at: float) -> None:
-        """Record activity on the machine at ``at``; an older report moves nothing."""
-        self._active[machine_id] = max(at, self._active.get(machine_id, at))
+    def _touch(self, host_id: UUID, *, at: float) -> None:
+        """Record activity on the host at ``at``; an older report moves nothing."""
+        self._active[host_id] = max(at, self._active.get(host_id, at))
 
     async def _still_alive(self, term: Terminal) -> bool:
         """Ask whether the credential and owner stand; a failed question says yes."""
@@ -745,23 +747,23 @@ class TerminalHub:
             return True
 
     async def _close(self, socket: Socket, code: int) -> None:
-        """Close a leg; a peer that is already gone is not an error."""
+        """Close a socket; a peer that is already gone is not an error."""
         try:
             await socket.close(code)
         except Exception:
             _logger.debug("close of a vanished peer", exc_info=True)
 
     async def _live(self, term: Terminal, kind: Frame, payload: bytes) -> None:
-        """Send a live frame once the host has waited for any replay."""
+        """Send a live frame once the daemon has waited for any replay."""
         if term.browser is not None:
             await self._to_browser(term, term.browser, kind, payload)
 
     def _expired(self, term: Terminal, *, now: float) -> int | None:
         """Return the close code for a terminal past a time limit, else ``None``."""
         if (
-            term.host is None or term.starting
+            term.daemon is None or term.starting
         ) and now - term.opened_at > wire_terminals.OPEN_TTL_SEC:
-            return wire_terminals.CLOSE_HOST_LOST
+            return wire_terminals.CLOSE_DAEMON_LOST
         if now - term.opened_at > wire_terminals.LIFETIME_SEC:
             return wire_terminals.CLOSE_LIFETIME
         if now - term.last_input_at > wire_terminals.IDLE_SEC:
@@ -773,9 +775,9 @@ class TerminalHub:
             return wire_terminals.CLOSE_ENDED
         return None
 
-    def _take(self, machine_id: UUID) -> Terminal | None:
-        """Pop the machine's oldest open that is still pending and unoffered."""
-        queue = self._pending.get(machine_id)
+    def _take(self, host_id: UUID) -> Terminal | None:
+        """Pop the host's oldest open that is still pending and unoffered."""
+        queue = self._pending.get(host_id)
         if queue is None:
             return None
         while queue:
@@ -785,10 +787,10 @@ class TerminalHub:
                 return term
         return None
 
-    async def _to_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
-        """Send a frame to the host; a vanished host ends the terminal."""
-        async with term.host_sending:
-            if term.host is None or term.starting:
+    async def _to_daemon(self, term: Terminal, kind: Frame, payload: bytes) -> None:
+        """Send a frame to the daemon; a vanished daemon ends the terminal."""
+        async with term.daemon_sending:
+            if term.daemon is None or term.starting:
                 if kind is Frame.RESIZE:
                     term.pre_resize = payload
                 elif (
@@ -798,27 +800,32 @@ class TerminalHub:
                 ):
                     term.pre_input.extend(payload)
                 return
-            await self._send_to_host(term, kind, payload)
+            await self._send_to_daemon(term, kind, payload)
 
-    async def _start_host(self, term: Terminal) -> None:
-        """Flush startup input before allowing subsequent frames to reach the host."""
-        async with term.host_sending:
+    async def _start_daemon(self, term: Terminal) -> None:
+        """Flush startup input before allowing subsequent frames to reach the daemon."""
+        async with term.daemon_sending:
             term.starting = False
             resize, term.pre_resize = term.pre_resize, None
             typed = bytes(term.pre_input)
             term.pre_input.clear()
             if resize is not None:
-                await self._send_to_host(term, Frame.RESIZE, resize)
+                await self._send_to_daemon(term, Frame.RESIZE, resize)
             if typed:
-                await self._send_to_host(term, Frame.INPUT, typed)
+                await self._send_to_daemon(term, Frame.INPUT, typed)
 
-    async def _send_to_host(self, term: Terminal, kind: Frame, payload: bytes) -> None:
-        if term.host is None or term.ended:
+    async def _send_to_daemon(
+        self,
+        term: Terminal,
+        kind: Frame,
+        payload: bytes,
+    ) -> None:
+        if term.daemon is None or term.ended:
             return
         try:
-            await term.host.send_bytes(encode_frame(kind, payload))
+            await term.daemon.send_bytes(encode_frame(kind, payload))
         except SocketClosedError:
-            await self.end(term, code=wire_terminals.CLOSE_HOST_LOST)
+            await self.end(term, code=wire_terminals.CLOSE_DAEMON_LOST)
 
     async def _to_browser(
         self,
@@ -835,7 +842,7 @@ class TerminalHub:
 
 
 class _Swept(Protocol):
-    """A hub with limits to enforce on a timer."""
+    """A relay with limits to enforce on a timer."""
 
     async def sweep(self) -> None:
         """End what has passed a limit."""
@@ -843,23 +850,23 @@ class _Swept(Protocol):
 
 
 async def sweep_loop(
-    hub: _Swept,
+    relay: _Swept,
     *,
     interval_sec: float = wire_terminals.SWEEP_SEC,
 ) -> None:
-    """Sweep the hub, one pass per interval.
+    """Sweep the relay, one pass per interval.
 
     Args:
-      hub: The hub to sweep.
+      relay: The relay to sweep.
       interval_sec: Seconds between passes.
 
     """
     while True:
         await asyncio.sleep(interval_sec)
         try:
-            await hub.sweep()
+            await relay.sweep()
         except Exception:
-            _logger.exception("hub sweep failed; retrying next cycle")
+            _logger.exception("relay sweep failed; retrying next cycle")
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

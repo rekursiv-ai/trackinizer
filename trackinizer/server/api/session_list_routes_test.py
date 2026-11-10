@@ -60,7 +60,7 @@ async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
     mine = await seed_session(store, USER_AGENT, actor="Agent", cli="claude")
     _ = await seed_session(store, OTHER_AGENT, actor="Other", cli="codex")
     inbound = cast(InboundQueue, app.state.inbound)
-    inbound.mark_poller(mine, machine="workstation", cli="claude")
+    inbound.mark_poller(mine, host="workstation", cli="claude")
     browser()
 
     answer = await client.get("/api/sessions")
@@ -68,7 +68,7 @@ async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
     assert answer.status_code == 200, answer.text
     listed = json_loads(answer.content, _Listing)
     assert [
-        (each["id"], each["live"], each["machine"]) for each in listed["sessions"]
+        (each["id"], each["live"], each["host"]) for each in listed["sessions"]
     ] == [
         (str(mine), True, "workstation"),
     ]
@@ -78,7 +78,7 @@ async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
 class _Session(TypedDict):
     id: str
     live: bool
-    machine: str | None
+    host: str | None
 
 
 class _Listing(TypedDict):

@@ -1,4 +1,4 @@
-"""Machine host wire models: what a host may report, and what a rejection shows."""
+"""Daemon wire models: what a daemon may report, and what a rejection shows."""
 
 from __future__ import annotations
 
@@ -9,8 +9,8 @@ import uuid
 import pydantic
 import pytest
 
-from trackinizer.wire.wire_machine_host import (
-    MIN_HOST_VERSION,
+from trackinizer.wire.wire_daemon import (
+    MIN_DAEMON_VERSION,
     EnrollRequest,
     EnrollResponse,
     HeartbeatRequest,
@@ -31,13 +31,13 @@ def _join(**fields: object) -> JoinRequest:
             "name": "dev-1",
             "token": _TOKEN,
             "instance": _INSTANCE,
-            "host_version": "0.1",
+            "daemon_version": "0.1",
             **fields,
         },
     )
 
 
-def test_a_host_reports_strings_ints_bools_and_lists_of_strings() -> None:
+def test_a_daemon_reports_strings_ints_bools_and_lists_of_strings() -> None:
     facts = {
         "os": "linux",
         "cpus": 8,
@@ -47,14 +47,14 @@ def test_a_host_reports_strings_ints_bools_and_lists_of_strings() -> None:
     }
 
     joined = _join(facts=facts)
-    beat = HeartbeatRequest(instance=_INSTANCE, host_version="0.1", facts=facts)
+    beat = HeartbeatRequest(instance=_INSTANCE, daemon_version="0.1", facts=facts)
 
     assert joined.facts == facts
     assert beat.facts == facts
 
 
 def test_facts_default_to_none_on_a_heartbeat_and_empty_on_a_join() -> None:
-    assert HeartbeatRequest(instance=_INSTANCE, host_version="").facts is None
+    assert HeartbeatRequest(instance=_INSTANCE, daemon_version="").facts is None
     assert _join().facts == {}
 
 
@@ -98,7 +98,7 @@ def test_facts_the_table_cannot_hold_are_refused(facts: dict[str, object]) -> No
         _join(facts=facts)
     with pytest.raises(pydantic.ValidationError):
         HeartbeatRequest.model_validate(
-            {"instance": _INSTANCE, "host_version": "", "facts": facts},
+            {"instance": _INSTANCE, "daemon_version": "", "facts": facts},
         )
 
 
@@ -112,8 +112,8 @@ def test_a_bool_is_not_an_int_and_the_largest_int_is_allowed() -> None:
     [
         {"unexpected": "x"},
         {"name": "Upper"},
-        {"host_version": "v" * 65},
-        {"host_version": "a\x00b"},
+        {"daemon_version": "v" * 65},
+        {"daemon_version": "a\x00b"},
         {"token": "t" * 129},
     ],
     ids=["extra", "name", "version", "nul-version", "token"],
@@ -123,13 +123,13 @@ def test_a_bad_join_field_is_refused(fields: dict[str, object]) -> None:
         _join(**fields)
 
 
-@pytest.mark.parametrize("host_version", ["v" * 65, "a\x00b"], ids=["long", "nul"])
-def test_a_host_version_the_table_cannot_hold_is_refused_in_a_heartbeat(
-    host_version: str,
+@pytest.mark.parametrize("daemon_version", ["v" * 65, "a\x00b"], ids=["long", "nul"])
+def test_a_daemon_version_the_table_cannot_hold_is_refused_in_a_heartbeat(
+    daemon_version: str,
 ) -> None:
     with pytest.raises(pydantic.ValidationError):
         HeartbeatRequest.model_validate(
-            {"instance": _INSTANCE, "host_version": host_version},
+            {"instance": _INSTANCE, "daemon_version": daemon_version},
         )
 
 
@@ -152,7 +152,7 @@ def test_no_secret_appears_in_a_repr() -> None:
                 owner="ada@x.y",
             ),
         ),
-        repr(JoinResponse(machine_id=uuid.uuid4(), credential=credential)),
+        repr(JoinResponse(host_id=uuid.uuid4(), credential=credential)),
     ]
 
     assert not any(
@@ -167,7 +167,7 @@ def test_a_refused_join_does_not_quote_its_token() -> None:
     assert "SECRETMARKER" not in str(refused.value)
 
 
-def test_an_enroll_name_follows_the_machine_name_pattern() -> None:
+def test_an_enroll_name_follows_the_host_name_pattern() -> None:
     assert EnrollRequest(name="dev-1").name == "dev-1"
     with pytest.raises(pydantic.ValidationError):
         EnrollRequest(name="Dev 1")
@@ -192,14 +192,14 @@ def test_only_a_release_before_the_oldest_supported_is_outdated(
     version: str,
     older: bool,
 ) -> None:
-    assert older_than(version, oldest=MIN_HOST_VERSION) is older
+    assert older_than(version, oldest=MIN_DAEMON_VERSION) is older
 
 
-def test_a_heartbeat_names_an_outdated_host_only_when_it_is_one() -> None:
+def test_a_heartbeat_names_an_outdated_daemon_only_when_it_is_one() -> None:
     beat = {"server_time": "2026-10-07T12:00:00Z"}
-    assert HeartbeatResponse.model_validate(beat).host_outdated is False
-    told = HeartbeatResponse.model_validate({**beat, "host_outdated": True})
-    assert told.host_outdated is True
+    assert HeartbeatResponse.model_validate(beat).daemon_outdated is False
+    told = HeartbeatResponse.model_validate({**beat, "daemon_outdated": True})
+    assert told.daemon_outdated is True
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""Machine secrets: the shape they mint, what parses, and the ``last_used`` throttle."""
+"""Host secrets: the shape they mint, what parses, and the ``last_used`` throttle."""
 
 from __future__ import annotations
 
@@ -14,19 +14,19 @@ from starlette.requests import Request
 import pytest
 
 from trackinizer.conftest import FakeEngine, make_conn, set_field_row
-from trackinizer.server import auth, machine_auth
+from trackinizer.server import auth, host_auth
 from trackinizer.server.auth import LAST_USED_BUMP_INTERVAL_SEC
-from trackinizer.server.machine_auth import (
-    MachineIdentity,
+from trackinizer.server.host_auth import (
+    HostIdentity,
     MintedSecret,
-    current_machine,
+    current_host,
     mint_secret,
     parse_credential,
     parse_enrollment,
     should_bump_last_used,
 )
 from trackinizer.types.errors import NotFoundError
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
@@ -136,7 +136,7 @@ def test_the_throttle_forgets_everything_rather_than_grow_without_bound() -> Non
     assert max(sizes) == 1_024
 
 
-_MACHINE = uuid.UUID(int=5)
+_HOST = uuid.UUID(int=5)
 
 
 def _host(conn: MockConnection, *, bearer: str) -> Request:
@@ -150,21 +150,21 @@ def _host(conn: MockConnection, *, bearer: str) -> Request:
 def _credential_row(
     minted: MintedSecret,
     *,
-    machine_id: uuid.UUID = _MACHINE,
+    host_id: uuid.UUID = _HOST,
     revoked_at: datetime | None = None,
 ) -> dict[str, object]:
     """Return the row the credential lookup reads for ``minted``."""
     return {
         "secret_sha256": minted.digest,
         "revoked_at": revoked_at,
-        "machine_id": machine_id,
+        "host_id": host_id,
         "name": "gx10",
     }
 
 
-class TestCurrentMachine:
+class TestCurrentHost:
     @pytest.mark.asyncio
-    async def test_a_live_credential_names_its_machine_and_stamps_last_used_once(
+    async def test_a_live_credential_names_its_host_and_stamps_last_used_once(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -174,14 +174,14 @@ class TestCurrentMachine:
         set_field_row(conn, _credential_row(minted))
         request = _host(conn, bearer=minted.token)
 
-        first = await current_machine(request, _MACHINE)
-        again = await current_machine(request, _MACHINE)
+        first = await current_host(request, _HOST)
+        again = await current_host(request, _HOST)
 
         assert (
             first
             == again
-            == MachineIdentity(
-                machine_id=_MACHINE,
+            == HostIdentity(
+                host_id=_HOST,
                 name="gx10",
                 credential_id=minted.id,
             )
@@ -189,7 +189,7 @@ class TestCurrentMachine:
         assert conn.fetchrow.await_args is not None
         assert conn.fetchrow.await_args.args[1] == minted.id
         conn.execute.assert_awaited_once_with(
-            "UPDATE machine_credentials SET last_used = now() WHERE id = $1",
+            "UPDATE host_credentials SET last_used = now() WHERE id = $1",
             minted.id,
         )
 
@@ -198,11 +198,11 @@ class TestCurrentMachine:
         conn = make_conn()
 
         with pytest.raises(HTTPException) as refused:
-            await current_machine(_host(conn, bearer="trax_nope"), _MACHINE)
+            await current_host(_host(conn, bearer="trax_nope"), _HOST)
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
-            "invalid machine credential",
+            "invalid host credential",
         )
         conn.fetchrow.assert_not_awaited()
 
@@ -221,11 +221,11 @@ class TestCurrentMachine:
         )
 
         with pytest.raises(HTTPException) as refused:
-            await current_machine(_host(conn, bearer=minted.token), _MACHINE)
+            await current_host(_host(conn, bearer=minted.token), _HOST)
 
         assert (refused.value.status_code, refused.value.detail) == (
             401,
-            "invalid machine credential",
+            "invalid host credential",
         )
         conn.execute.assert_not_awaited()
 
@@ -239,38 +239,38 @@ class TestCurrentMachine:
         )
 
         with pytest.raises(HTTPException) as refused:
-            await current_machine(_host(conn, bearer=minted.token), _MACHINE)
+            await current_host(_host(conn, bearer=minted.token), _HOST)
 
         assert (refused.value.status_code, refused.value.detail) == (
             410,
-            "machine_revoked",
+            "host_revoked",
         )
 
     @pytest.mark.asyncio
-    async def test_a_credential_on_another_machines_path_is_not_found(self) -> None:
+    async def test_a_credential_on_another_hosts_path_is_not_found(self) -> None:
         minted = mint_secret(CREDENTIAL_PREFIX)
         conn = make_conn()
-        set_field_row(conn, _credential_row(minted, machine_id=uuid.UUID(int=6)))
+        set_field_row(conn, _credential_row(minted, host_id=uuid.UUID(int=6)))
 
-        with pytest.raises(NotFoundError, match="machine is not registered"):
-            await current_machine(_host(conn, bearer=minted.token), _MACHINE)
+        with pytest.raises(NotFoundError, match="host is not registered"):
+            await current_host(_host(conn, bearer=minted.token), _HOST)
 
         conn.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_machine_identity_is_looked_up_each_time_but_last_used_is_throttled(
+async def test_host_identity_is_looked_up_each_time_but_last_used_is_throttled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     minted = mint_secret(CREDENTIAL_PREFIX)
-    machine_id = uuid.uuid4()
+    host_id = uuid.uuid4()
     engine = FakeEngine()
     set_field_row(
         engine.conn,
         {
             "secret_sha256": minted.digest,
             "revoked_at": None,
-            "machine_id": machine_id,
+            "host_id": host_id,
             "name": "build-box",
         },
     )
@@ -279,21 +279,21 @@ async def test_machine_identity_is_looked_up_each_time_but_last_used_is_throttle
     request = _host_request(app, token=minted.token)
     monkeypatch.setattr(auth, "monotonic_clock", lambda: 100.0)
 
-    first = await machine_auth.current_machine(request, machine_id)
-    second = await machine_auth.request_machine(request, machine_id)
+    first = await host_auth.current_host(request, host_id)
+    second = await host_auth.request_host(request, host_id)
 
     assert (
         first
         == second
-        == machine_auth.MachineIdentity(
-            machine_id=machine_id,
+        == host_auth.HostIdentity(
+            host_id=host_id,
             name="build-box",
             credential_id=minted.id,
         )
     )
     assert engine.conn.fetchrow.await_count == 2
     engine.conn.execute.assert_awaited_once_with(
-        "UPDATE machine_credentials SET last_used = now() WHERE id = $1",
+        "UPDATE host_credentials SET last_used = now() WHERE id = $1",
         minted.id,
     )
     monkeypatch.setattr(
@@ -301,7 +301,7 @@ async def test_machine_identity_is_looked_up_each_time_but_last_used_is_throttle
         "monotonic_clock",
         lambda: 100.0 + LAST_USED_BUMP_INTERVAL_SEC,
     )
-    assert await machine_auth.request_machine(request, machine_id) == first
+    assert await host_auth.request_host(request, host_id) == first
     assert engine.conn.execute.await_count == 2
 
 
@@ -310,11 +310,11 @@ async def test_machine_identity_is_looked_up_each_time_but_last_used_is_throttle
     "case",
     ["malformed", "absent", "wrong_secret", "revoked", "foreign"],
 )
-async def test_machine_authentication_refuses_without_touching_last_used(
+async def test_host_authentication_refuses_without_touching_last_used(
     case: str,
 ) -> None:
     minted = mint_secret(CREDENTIAL_PREFIX)
-    machine_id = uuid.uuid4()
+    host_id = uuid.uuid4()
     engine = FakeEngine()
     if case != "absent":
         set_field_row(
@@ -324,7 +324,7 @@ async def test_machine_authentication_refuses_without_touching_last_used(
                 "revoked_at": "revoked"
                 if case in {"wrong_secret", "revoked"}
                 else None,
-                "machine_id": uuid.uuid4() if case == "foreign" else machine_id,
+                "host_id": uuid.uuid4() if case == "foreign" else host_id,
                 "name": "build-box",
             },
         )
@@ -335,15 +335,15 @@ async def test_machine_authentication_refuses_without_touching_last_used(
         token="malformed" if case == "malformed" else minted.token,
     )
     if case == "foreign":
-        with pytest.raises(NotFoundError, match="machine is not registered"):
-            await machine_auth.request_machine(request, machine_id)
+        with pytest.raises(NotFoundError, match="host is not registered"):
+            await host_auth.request_host(request, host_id)
     else:
         with pytest.raises(HTTPException) as caught:
-            await machine_auth.request_machine(request, machine_id)
+            await host_auth.request_host(request, host_id)
         assert (caught.value.status_code, caught.value.detail) == (
-            (410, "machine_revoked")
+            (410, "host_revoked")
             if case == "revoked"
-            else (401, "invalid machine credential")
+            else (401, "invalid host credential")
         )
     engine.conn.execute.assert_not_awaited()
     if case == "malformed":

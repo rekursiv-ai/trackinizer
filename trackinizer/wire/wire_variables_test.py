@@ -96,10 +96,10 @@ def test_a_variable_refuses_an_unknown_layer() -> None:
     [
         {},
         {"secret": True, "value": None},
-        {"layer": "machine", "owner": "gpu-box"},
+        {"layer": "host", "owner": "gpu-box"},
         {"layer": "user", "owner": "scout@example.com"},
     ],
-    ids=["plain", "secret", "machine", "user"],
+    ids=["plain", "secret", "host", "user"],
 )
 def test_a_variable_round_trips_through_json(fields: dict[str, object]) -> None:
     variable = Variable.model_validate(_variable(**fields))

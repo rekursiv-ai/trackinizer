@@ -108,7 +108,7 @@ class SessionManifest:
     """Which file, assigned server-side by basename."""
 
     name: str
-    """The file's basename. Not its path -- that differs across machines, and
+    """The file's basename. Not its path -- that differs across hosts, and
     the same session resumed elsewhere must resolve to the same part."""
 
     metadata: Mapping[str, PlainTree]

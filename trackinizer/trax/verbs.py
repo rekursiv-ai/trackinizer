@@ -2812,7 +2812,7 @@ Usage: trax export [labels <op> <value> ...]
 Examples:
   trax export > graph.jsonl                     back up the whole graph
   trax export labels is org:rekursiv            one org's subgraph
-  trax export labels is org:rekursiv labels nre '^machine:'
+  trax export labels is org:rekursiv labels nre '^host:'
                                                 that org, minus device rows
 
 Notes:

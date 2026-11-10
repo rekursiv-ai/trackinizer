@@ -19,7 +19,7 @@ import pytest
 
 from trackinizer.lib.posix.host import Frame, decode_frame, encode_frame, encode_winsize
 from trackinizer.server.api import terminal_routes
-from trackinizer.server.api._deps import machine_changes, terminal_hub
+from trackinizer.server.api._deps import host_changes, terminal_relay
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TERMINAL_HOST,
@@ -31,13 +31,13 @@ from trackinizer.server.api.conftest import (
 )
 from trackinizer.server.config import Assistant, Config
 from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     ENROLL_PATH,
     JOIN_PATH,
     REVOKE_PATH,
 )
-from trackinizer.wire.wire_machines import MACHINES_PATH
-from trackinizer.wire.wire_terminals import MachinesVersion
+from trackinizer.wire.wire_hosts import HOSTS_PATH
+from trackinizer.wire.wire_terminals import HostsVersion
 
 
 if TYPE_CHECKING:
@@ -121,15 +121,15 @@ def _browser_peer(world: TerminalWorld, cookie: str, terminal_id: uuid.UUID) -> 
     )
 
 
-def _host_peer(
+def _daemon_peer(
     world: TerminalWorld,
     terminal_id: uuid.UUID,
     *,
     credential: str | None = None,
 ) -> _Peer:
     return _Peer(
-        wire_terminals.MACHINE_TERMINAL_WS_PATH.format(
-            machine_id=world.machine_id,
+        wire_terminals.HOST_TERMINAL_WS_PATH.format(
+            host_id=world.host_id,
             terminal_id=terminal_id,
         ),
         {"Authorization": f"Bearer {credential or world.credential}"},
@@ -154,9 +154,9 @@ async def _run_browser(peer: _Peer, terminal_id: uuid.UUID) -> None:
 
 
 async def _run_host(peer: _Peer, world: TerminalWorld, terminal_id: uuid.UUID) -> None:
-    await terminal_routes.terminal_host_socket(
+    await terminal_routes.terminal_daemon_socket(
         peer.websocket,
-        world.machine_id,
+        world.host_id,
         terminal_id,
         TERMINAL_INSTANCE,
     )
@@ -180,31 +180,31 @@ async def test_an_owner_opens_a_terminal_and_bytes_flow_both_ways_until_exit(
     assert (offered["opener"], offered["rows"], offered["cols"]) == ("ada@x.y", 24, 80)
     assert offered["canvas"] == str(placed[0])
     browser = _browser_peer(world, cookie, terminal_id)
-    host = _host_peer(world, terminal_id)
+    daemon = _daemon_peer(world, terminal_id)
     tasks = [
         asyncio.create_task(_run_browser(browser, terminal_id)),
-        asyncio.create_task(_run_host(host, world, terminal_id)),
+        asyncio.create_task(_run_host(daemon, world, terminal_id)),
     ]
     browser.push(Frame.ATTACH, _attach(ticket))
     assert await browser.frame() == (Frame.ACK, (0).to_bytes(8))
 
-    host.push(Frame.OUTPUT, b"$ ")
+    daemon.push(Frame.OUTPUT, b"$ ")
     assert await browser.frame() == (Frame.OUTPUT, b"$ ")
     browser.push(Frame.INPUT, b"ls\n")
-    assert await host.frame() == (Frame.INPUT, b"ls\n")
+    assert await daemon.frame() == (Frame.INPUT, b"ls\n")
     browser.push(Frame.RESIZE, encode_winsize(40, 120))
-    assert await host.frame() == (Frame.RESIZE, encode_winsize(40, 120))
+    assert await daemon.frame() == (Frame.RESIZE, encode_winsize(40, 120))
 
-    host.push(Frame.EXIT, (0).to_bytes(4))
+    daemon.push(Frame.EXIT, (0).to_bytes(4))
     assert await browser.frame() == (Frame.EXIT, (0).to_bytes(4))
     assert await browser.close_code() == wire_terminals.CLOSE_ENDED
-    host.leave()
+    daemon.leave()
     browser.leave()
     await asyncio.gather(*tasks)
 
     listed = await world.call(
         "GET",
-        wire_terminals.TERMINAL_MACHINES_PATH,
+        wire_terminals.TERMINAL_HOSTS_PATH,
         headers=world.browser(cookie),
     )
     assert from_plain(listed.json(), dict[str, object])["terminals"] == []
@@ -238,14 +238,14 @@ async def test_opening_and_using_a_terminal_stores_no_session_and_no_record(
 
     opened = await world.open(cookie)
     terminal_id, ticket = _opened(opened)
-    browser, host, tasks = await _connected(world, cookie, terminal_id, ticket)
-    host.push(Frame.OUTPUT, b"echo hi\r\nhi\r\n")
+    browser, daemon, tasks = await _connected(world, cookie, terminal_id, ticket)
+    daemon.push(Frame.OUTPUT, b"echo hi\r\nhi\r\n")
     assert await browser.frame() == (Frame.OUTPUT, b"echo hi\r\nhi\r\n")
     browser.push(Frame.INPUT, b"ls\n")
-    assert await host.frame() == (Frame.INPUT, b"ls\n")
-    host.push(Frame.EXIT, (0).to_bytes(4))
+    assert await daemon.frame() == (Frame.INPUT, b"ls\n")
+    daemon.push(Frame.EXIT, (0).to_bytes(4))
     assert await browser.frame() == (Frame.EXIT, (0).to_bytes(4))
-    host.leave()
+    daemon.leave()
     browser.leave()
     await asyncio.gather(*tasks)
     await asyncio.sleep(0)
@@ -266,14 +266,14 @@ async def _connected(
 ) -> tuple[_Peer, _Peer, list[asyncio.Task[None]]]:
     """Run a browser and a host on one terminal; return them once the browser is attached."""
     browser = _browser_peer(world, cookie, terminal_id)
-    host = _host_peer(world, terminal_id)
+    daemon = _daemon_peer(world, terminal_id)
     tasks: list[asyncio.Task[None]] = [
         asyncio.create_task(_run_browser(browser, terminal_id)),
-        asyncio.create_task(_run_host(host, world, terminal_id)),
+        asyncio.create_task(_run_host(daemon, world, terminal_id)),
     ]
     browser.push(Frame.ATTACH, _attach(ticket))
     assert (await browser.frame())[0] is Frame.ACK
-    return browser, host, tasks
+    return browser, daemon, tasks
 
 
 async def test_an_abrupt_host_drop_closes_the_browser_and_raises_nothing(
@@ -284,17 +284,17 @@ async def test_an_abrupt_host_drop_closes_the_browser_and_raises_nothing(
     await world.join(cookie)
     await world.wait()
     terminal_id, ticket = _opened(await world.open(cookie))
-    browser, host, tasks = await _connected(world, cookie, terminal_id, ticket)
-    host.push(Frame.OUTPUT, b"last words")
+    browser, daemon, tasks = await _connected(world, cookie, terminal_id, ticket)
+    daemon.push(Frame.OUTPUT, b"last words")
     assert (await browser.frame())[0] is Frame.OUTPUT
 
-    host.leave(code=1006)
+    daemon.leave(code=1006)
     closed = await browser.close_code()
     browser.leave()
     await asyncio.gather(*tasks)
 
-    assert closed == wire_terminals.CLOSE_HOST_LOST
-    assert terminal_hub(app).terminal(terminal_id) is None
+    assert closed == wire_terminals.CLOSE_DAEMON_LOST
+    assert terminal_relay(app).terminal(terminal_id) is None
 
 
 async def test_startup_negotiation_retries_without_losing_browser_input(
@@ -312,23 +312,23 @@ async def test_startup_negotiation_retries_without_losing_browser_input(
     browser.push(Frame.INPUT, b"continue\n")
 
     async def connect(peer: _Peer) -> None:
-        await terminal_routes.terminal_host_socket(
+        await terminal_routes.terminal_daemon_socket(
             peer.websocket,
-            world.machine_id,
+            world.host_id,
             terminal_id,
             TERMINAL_INSTANCE,
             ready=True,
         )
 
-    first = _host_peer(world, terminal_id)
+    first = _daemon_peer(world, terminal_id)
     first_task = asyncio.create_task(connect(first))
     first.push(Frame.ACK)
     assert await first.frame() == (Frame.ACK, b"")
     first.leave()
     await first_task
-    assert terminal_hub(app).terminal(terminal_id) is not None
+    assert terminal_relay(app).terminal(terminal_id) is not None
 
-    second = _host_peer(world, terminal_id)
+    second = _daemon_peer(world, terminal_id)
     second_task = asyncio.create_task(connect(second))
     try:
         second.push(Frame.ACK)
@@ -351,8 +351,8 @@ async def test_a_browser_that_reconnects_with_an_offset_gets_only_what_it_missed
     await world.join(cookie)
     await world.wait()
     terminal_id, ticket = _opened(await world.open(cookie))
-    first, host, tasks = await _connected(world, cookie, terminal_id, ticket)
-    host.push(Frame.OUTPUT, b"abcdef")
+    first, daemon, tasks = await _connected(world, cookie, terminal_id, ticket)
+    daemon.push(Frame.OUTPUT, b"abcdef")
     assert await first.frame() == (Frame.OUTPUT, b"abcdef")
     first.leave()
     await tasks[0]
@@ -374,10 +374,10 @@ async def test_a_browser_that_reconnects_with_an_offset_gets_only_what_it_missed
 
     assert await second.frame() == (Frame.ACK, (2).to_bytes(8))
     assert await second.frame() == (Frame.OUTPUT, b"cdef")
-    host.push(Frame.OUTPUT, b"g")
+    daemon.push(Frame.OUTPUT, b"g")
     assert await second.frame() == (Frame.OUTPUT, b"g")
     second.leave()
-    host.leave()
+    daemon.leave()
     await asyncio.gather(task, tasks[1])
 
 
@@ -389,13 +389,13 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
     cookie = world.cookie(ada)
     await world.join(cookie)
     canvas, _ = await world.canvas(ada)
-    path = f"{wire_terminals.TERMINAL_MACHINES_PATH}?canvas={canvas}"
+    path = f"{wire_terminals.TERMINAL_HOSTS_PATH}?canvas={canvas}"
 
     before = from_plain(
         (await world.call("GET", path, headers=world.browser(cookie))).json(),
         dict[str, object],
     )
-    assert before["machines"] == [
+    assert before["hosts"] == [
         {
             "name": "gx10",
             "status": "online",
@@ -403,7 +403,7 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
             "confirmed": True,
             "clis": [],
             "runs": [],
-            "host_outdated": False,
+            "daemon_outdated": False,
             "files": False,
             "tools": False,
         },
@@ -432,15 +432,15 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
         dict[str, object],
     )
 
-    assert from_plain(after["machines"], list[dict[str, object]])[0]["terminal_ready"]
+    assert from_plain(after["hosts"], list[dict[str, object]])[0]["terminal_ready"]
     assert after["terminals"] == [
-        {"terminal_id": str(first), "machine": "gx10", "surface": "chat"},
-        {"terminal_id": str(second), "machine": "gx10", "surface": "tile-1"},
+        {"terminal_id": str(first), "host": "gx10", "surface": "chat"},
+        {"terminal_id": str(second), "host": "gx10", "surface": "tile-1"},
     ]
-    assert (other["machines"], other["terminals"]) == ([], [])
+    assert (other["hosts"], other["terminals"]) == ([], [])
 
 
-async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
+async def test_the_assistant_lists_the_hosts_of_the_person_it_answers(
     world: TerminalWorld,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -464,7 +464,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
     await world.join(cookie, name="gx10")
     await world.wait()
     canvas, _ = await world.canvas(ada)
-    path = wire_terminals.TERMINAL_MACHINES_PATH
+    path = wire_terminals.TERMINAL_HOSTS_PATH
 
     def owned(email: str) -> str:
         return f"{path}?owner={email}&canvas={canvas}"
@@ -486,7 +486,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
 
     assert for_ada.status_code == 200, for_ada.text
     assert from_plain(for_ada.json(), dict[str, object]) == {
-        "machines": [
+        "hosts": [
             {
                 "name": "gx10",
                 "status": "online",
@@ -494,7 +494,7 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "confirmed": True,
                 "clis": [],
                 "runs": [],
-                "host_outdated": False,
+                "daemon_outdated": False,
                 "files": False,
                 "tools": False,
             },
@@ -505,14 +505,14 @@ async def test_the_assistant_lists_the_machines_of_the_person_it_answers(
                 "confirmed": True,
                 "clis": [],
                 "runs": [],
-                "host_outdated": False,
+                "daemon_outdated": False,
                 "files": False,
                 "tools": False,
             },
         ],
         "terminals": [],
     }
-    assert from_plain(for_bob.json(), dict[str, object])["machines"] == []
+    assert from_plain(for_bob.json(), dict[str, object])["hosts"] == []
     refused = (for_viewer, as_itself, ada_names_herself, bob_names_ada)
     assert [each.status_code for each in refused] == [403] * 4
     assert {refusal_detail_code(each) for each in refused} == {"terminal_forbidden"}
@@ -537,7 +537,7 @@ async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
     assistant = {
         "Authorization": f"Bearer {await world.key(await world.person('kb@x.y'))}",
     }
-    path = wire_terminals.TERMINAL_MACHINES_CHANGES_PATH
+    path = wire_terminals.TERMINAL_HOSTS_CHANGES_PATH
 
     async def version(owner: str, query: str = "") -> int:
         answer = await world.call(
@@ -546,7 +546,7 @@ async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
             headers=assistant,
         )
         assert answer.status_code == 200, answer.text
-        return MachinesVersion.model_validate(answer.json()).version
+        return HostsVersion.model_validate(answer.json()).version
 
     now = await version("ada@x.y")
     bob_now = await version("bob@x.y")
@@ -556,7 +556,7 @@ async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
     await world.join(world.cookie(ada), name="laptop")
     async with asyncio.timeout(5):
         woken = await held
-    # A join writes the machine more than once; the first write woke the wait.
+    # A join writes the host more than once; the first write woke the wait.
     joined = await version("ada@x.y")
     unchanged = await version("ada@x.y", f"&since={joined}&wait_sec=0.01")
     for_bob = await version("bob@x.y", f"&since={bob_now}&wait_sec=0.01")
@@ -576,7 +576,7 @@ async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
     assert for_bob == bob_now
     assert [each.status_code for each in refused] == [403] * 3
     assert {refusal_detail_code(each) for each in refused} == {"terminal_forbidden"}
-    assert MachinesVersion.model_validate(own.json()).version == joined
+    assert HostsVersion.model_validate(own.json()).version == joined
 
 
 async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_that_person_alone(
@@ -611,16 +611,16 @@ async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_tha
             "name": "box-1a2b3c4d",
             "token": from_plain(enrolled.json(), dict[str, str])["token"],
             "instance": str(TERMINAL_INSTANCE),
-            "host_version": "t",
+            "daemon_version": "t",
             "facts": {"terminal": True},
         },
     )
-    world.machine_id = uuid.UUID(
-        from_plain(joined.json(), dict[str, str])["machine_id"],
+    world.host_id = uuid.UUID(
+        from_plain(joined.json(), dict[str, str])["host_id"],
     )
     world.credential = from_plain(joined.json(), dict[str, str])["credential"]
     await world.wait()
-    listing = wire_terminals.TERMINAL_MACHINES_PATH
+    listing = wire_terminals.TERMINAL_HOSTS_PATH
     ada_sees = await world.call(
         "GET",
         listing,
@@ -631,8 +631,8 @@ async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_tha
         listing,
         headers=world.browser(world.cookie(bob)),
     )
-    ada_opens = await world.open(world.cookie(ada), machine="box-1a2b3c4d")
-    bob_opens = await world.open(world.cookie(bob), machine="box-1a2b3c4d")
+    ada_opens = await world.open(world.cookie(ada), host="box-1a2b3c4d")
+    bob_opens = await world.open(world.cookie(bob), host="box-1a2b3c4d")
 
     assert enrolled.status_code == 201, enrolled.text
     assert from_plain(enrolled.json(), dict[str, str])["owner"] == "ada@x.y"
@@ -640,15 +640,15 @@ async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_tha
     assert [
         (each["name"], each["terminal_ready"], each["confirmed"])
         for each in from_plain(ada_sees.json(), dict[str, list[dict[str, object]]])[
-            "machines"
+            "hosts"
         ]
     ] == [("box-1a2b3c4d", True, True)]
-    assert from_plain(bob_sees.json(), dict[str, object])["machines"] == []
+    assert from_plain(bob_sees.json(), dict[str, object])["hosts"] == []
     assert ada_opens.status_code == 201, ada_opens.text
     assert bob_opens.status_code == 404
 
 
-async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
+async def test_the_assistant_opens_only_a_detached_run_on_its_askers_host(
     world: TerminalWorld,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -669,7 +669,7 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
     canvas, _ = await world.canvas(ada)
     session = uuid.uuid4()
     body = {
-        "machine": "gx10",
+        "host": "gx10",
         "rows": 40,
         "cols": 120,
         "canvas": str(canvas),
@@ -679,7 +679,7 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
         "cwd": "~/work",
     }
     headers = {"Authorization": f"Bearer {await world.key(assistant)}"}
-    before = machine_changes(app).version("ada@x.y")
+    before = host_changes(app).version("ada@x.y")
 
     opened = await world.call(
         "POST",
@@ -690,7 +690,7 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
 
     _opened(opened)
     # The folder a run names is the listing's ``cwd``.
-    assert machine_changes(app).version("ada@x.y") == before + 1
+    assert host_changes(app).version("ada@x.y") == before + 1
     waiting = from_plain((await world.wait()).json(), dict[str, object])
     assert (
         waiting["command"],
@@ -705,7 +705,7 @@ async def test_the_assistant_opens_only_a_detached_run_on_its_askers_machine(
     )
 
 
-async def test_the_assistant_cannot_open_a_shell_or_another_askers_machine(
+async def test_the_assistant_cannot_open_a_shell_or_another_askers_host(
     world: TerminalWorld,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -726,7 +726,7 @@ async def test_the_assistant_cannot_open_a_shell_or_another_askers_machine(
     await world.wait()
     canvas, _ = await world.canvas(ada)
     body = {
-        "machine": "gx10",
+        "host": "gx10",
         "rows": 40,
         "cols": 120,
         "canvas": str(canvas),
@@ -753,7 +753,7 @@ async def test_the_assistant_cannot_open_a_shell_or_another_askers_machine(
         "POST",
         f"{wire_terminals.TERMINALS_PATH}?asker=bob@x.y",
         headers=headers,
-        body={"machine": "gx10", "rows": 24, "cols": 80},
+        body={"host": "gx10", "rows": 24, "cols": 80},
     )
     no_asker = await world.call(
         "POST",
@@ -777,7 +777,7 @@ async def test_the_assistant_cannot_open_a_shell_or_another_askers_machine(
     ] * 4
 
 
-async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_machine(
+async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_host(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -788,7 +788,7 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
     assert (await world.open(cookie)).status_code == 409
     await world.wait()
     assert (await world.open(world.cookie(bob))).status_code == 404
-    assert (await world.open(cookie, machine="nope")).status_code == 404
+    assert (await world.open(cookie, host="nope")).status_code == 404
     # A cookie's write without this site's Origin is refused before the route runs.
     assert (await world.open(cookie, origin=None)).status_code == 403
     assert (await world.open(cookie, origin="https://evil.test")).status_code == 403
@@ -799,7 +799,7 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
         "POST",
         wire_terminals.TERMINALS_PATH,
         headers={"Authorization": f"Bearer {key}", "Origin": TERMINAL_ORIGIN},
-        body={"machine": "gx10", "rows": 24, "cols": 80},
+        body={"host": "gx10", "rows": 24, "cols": 80},
     )
     assert keyed.status_code == 403
     for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
@@ -809,18 +809,18 @@ async def test_an_open_is_refused_unless_a_person_who_owns_an_online_enabled_mac
 
     async with world.store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE machines SET last_heartbeat = now() - interval '1 hour'",
+            "UPDATE hosts SET last_heartbeat = now() - interval '1 hour'",
         )
     assert (await world.open(cookie)).status_code == 404
     async with world.store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE machines SET last_heartbeat = now(), owner = NULL",
+            "UPDATE hosts SET last_heartbeat = now(), owner = NULL",
         )
     assert (await world.open(cookie)).status_code == 404
-    # A host that released the machine on Ctrl-C leaves it offline at once.
+    # A host that released the host on Ctrl-C leaves it offline at once.
     async with world.store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE machines SET owner = 'ada@x.y', host_instance = NULL",
+            "UPDATE hosts SET owner = 'ada@x.y', daemon_instance = NULL",
         )
     assert (await world.open(cookie)).status_code == 404
 
@@ -842,17 +842,17 @@ async def _key_enrolled(world: TerminalWorld, key: str, name: str) -> uuid.UUID:
             "name": name,
             "token": from_plain(enrolled.json(), dict[str, str])["token"],
             "instance": str(TERMINAL_INSTANCE),
-            "host_version": "t",
+            "daemon_version": "t",
         },
     )
     assert joined.status_code == 201, joined.text
     body = from_plain(joined.json(), dict[str, str])
-    world.machine_id = uuid.UUID(body["machine_id"])
+    world.host_id = uuid.UUID(body["host_id"])
     world.credential = body["credential"]
-    return world.machine_id
+    return world.host_id
 
 
-async def test_a_machine_an_agent_enrolled_opens_no_terminal_until_its_owner_confirms(
+async def test_a_host_an_agent_enrolled_opens_no_terminal_until_its_owner_confirms(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -864,18 +864,18 @@ async def test_a_machine_an_agent_enrolled_opens_no_terminal_until_its_owner_con
     await world.wait()
     confirm = wire_terminals.TERMINAL_CONFIRM_PATH.format(name="evilbox")
 
-    unconfirmed = await world.open(cookie, machine="evilbox")
+    unconfirmed = await world.open(cookie, host="evilbox")
     listed = from_plain(
         from_plain(
             (
                 await world.call(
                     "GET",
-                    wire_terminals.TERMINAL_MACHINES_PATH,
+                    wire_terminals.TERMINAL_HOSTS_PATH,
                     headers=world.browser(cookie),
                 )
             ).json(),
             dict[str, object],
-        )["machines"],
+        )["hosts"],
         list[dict[str, object]],
     )
     by_key = await world.call(
@@ -901,12 +901,12 @@ async def test_a_machine_an_agent_enrolled_opens_no_terminal_until_its_owner_con
         ("older", False),
     ]
 
-    before = machine_changes(app).version("ada@x.y")
+    before = host_changes(app).version("ada@x.y")
     mine = await world.call("POST", confirm, headers=world.browser(cookie))
-    opened = await world.open(cookie, machine="evilbox")
+    opened = await world.open(cookie, host="evilbox")
 
     assert (mine.status_code, opened.status_code) == (204, 201)
-    assert machine_changes(app).version("ada@x.y") == before + 1
+    assert host_changes(app).version("ada@x.y") == before + 1
 
 
 async def test_every_terminal_route_and_both_sockets_refuse_a_server_without_auth(
@@ -924,15 +924,15 @@ async def test_every_terminal_route_and_both_sockets_refuse_a_server_without_aut
         Config(auth_disabled=True),
     )
     rebound = {"Host": "evil.example:8765", "Origin": "http://evil.example:8765"}
-    machine = wire_terminals.TERMINAL_MACHINES_PATH
+    host = wire_terminals.TERMINAL_HOSTS_PATH
     paths = [
         (
             "POST",
             wire_terminals.TERMINALS_PATH,
-            {"machine": "gx10", "rows": 24, "cols": 80},
+            {"host": "gx10", "rows": 24, "cols": 80},
         ),
-        ("GET", machine, None),
-        ("GET", wire_terminals.TERMINAL_MACHINES_CHANGES_PATH, None),
+        ("GET", host, None),
+        ("GET", wire_terminals.TERMINAL_HOSTS_CHANGES_PATH, None),
         ("POST", wire_terminals.TERMINAL_CONFIRM_PATH.format(name="gx10"), None),
         (
             "POST",
@@ -957,13 +957,13 @@ async def test_every_terminal_route_and_both_sockets_refuse_a_server_without_aut
     )
     browser.push(Frame.ATTACH, _attach("x" * wire_terminals.TICKET_CHARS))
     await _run_browser(browser, terminal_id)
-    host = _host_peer(world, terminal_id)
-    await _run_host(host, world, terminal_id)
+    daemon = _daemon_peer(world, terminal_id)
+    await _run_host(daemon, world, terminal_id)
 
     assert answers == [403] * 6
     assert waited.status_code == 403
     assert await browser.close_code() == wire_terminals.CLOSE_REFUSED
-    assert await host.close_code() == wire_terminals.CLOSE_REFUSED
+    assert await daemon.close_code() == wire_terminals.CLOSE_REFUSED
 
 
 async def test_the_sweep_ends_a_terminal_whose_owner_is_no_longer_a_writer(
@@ -974,15 +974,15 @@ async def test_the_sweep_ends_a_terminal_whose_owner_is_no_longer_a_writer(
     await world.join(cookie)
     await world.wait()
     terminal_id, _ = _opened(await world.open(cookie))
-    hub = terminal_hub(app)
-    await hub.sweep()
-    assert hub.terminal(terminal_id) is not None
+    relay = terminal_relay(app)
+    await relay.sweep()
+    assert relay.terminal(terminal_id) is not None
 
     async with world.store.engine.acquire() as conn:
         await conn.execute("UPDATE users SET role = 'viewer'")
-    await hub.sweep()
+    await relay.sweep()
 
-    assert hub.terminal(terminal_id) is None
+    assert relay.terminal(terminal_id) is None
 
 
 async def test_a_wait_is_clamped_to_its_ceiling_and_needs_the_current_instance(
@@ -1060,18 +1060,18 @@ async def test_the_host_socket_refuses_an_unknown_credential_a_stale_instance_an
     terminal_id, _ = _opened(await world.open(cookie))
 
     async def code(peer: _Peer, instance: uuid.UUID = TERMINAL_INSTANCE) -> int:
-        await terminal_routes.terminal_host_socket(
+        await terminal_routes.terminal_daemon_socket(
             peer.websocket,
-            world.machine_id,
+            world.host_id,
             terminal_id,
             instance,
         )
         return await peer.close_code()
 
-    unknown = _host_peer(world, terminal_id, credential="trax_machine_x")
-    stale = _host_peer(world, terminal_id)
-    claimed = _host_peer(world, terminal_id)
-    holder = _host_peer(world, terminal_id)
+    unknown = _daemon_peer(world, terminal_id, credential="trax_machine_x")
+    stale = _daemon_peer(world, terminal_id)
+    claimed = _daemon_peer(world, terminal_id)
+    holder = _daemon_peer(world, terminal_id)
     task = asyncio.create_task(_run_host(holder, world, terminal_id))
     await asyncio.sleep(0.05)
     codes = [
@@ -1083,10 +1083,10 @@ async def test_the_host_socket_refuses_an_unknown_credential_a_stale_instance_an
     await task
 
     assert codes == [wire_terminals.CLOSE_REFUSED] * 3
-    assert terminal_hub(app).terminal(terminal_id) is None
+    assert terminal_relay(app).terminal(terminal_id) is None
 
 
-async def test_a_revoke_closes_both_legs_with_4410(
+async def test_a_revoke_closes_both_sockets_with_4410(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -1096,10 +1096,10 @@ async def test_a_revoke_closes_both_legs_with_4410(
     await world.wait()
     terminal_id, ticket = _opened(await world.open(cookie))
     browser = _browser_peer(world, cookie, terminal_id)
-    host = _host_peer(world, terminal_id)
+    daemon = _daemon_peer(world, terminal_id)
     tasks = [
         asyncio.create_task(_run_browser(browser, terminal_id)),
-        asyncio.create_task(_run_host(host, world, terminal_id)),
+        asyncio.create_task(_run_host(daemon, world, terminal_id)),
     ]
     browser.push(Frame.ATTACH, _attach(ticket))
     assert (await browser.frame())[0] is Frame.ACK
@@ -1111,20 +1111,20 @@ async def test_a_revoke_closes_both_legs_with_4410(
     assert (
         await world.call("POST", path, headers=world.browser(cookie))
     ).status_code == 204
-    codes = [await browser.close_code(), await host.close_code()]
-    host.leave()
+    codes = [await browser.close_code(), await daemon.close_code()]
+    daemon.leave()
     browser.leave()
     await asyncio.gather(*tasks)
 
-    assert codes == [wire_terminals.CLOSE_MACHINE_REVOKED] * 2
-    revoked = _host_peer(world, terminal_id)
-    await terminal_routes.terminal_host_socket(
+    assert codes == [wire_terminals.CLOSE_HOST_REVOKED] * 2
+    revoked = _daemon_peer(world, terminal_id)
+    await terminal_routes.terminal_daemon_socket(
         revoked.websocket,
-        world.machine_id,
+        world.host_id,
         terminal_id,
         TERMINAL_INSTANCE,
     )
-    assert await revoked.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
+    assert await revoked.close_code() == wire_terminals.CLOSE_HOST_REVOKED
 
 
 async def test_attach_mints_a_ticket_for_the_opener_and_close_stops_the_shell(
@@ -1136,8 +1136,8 @@ async def test_attach_mints_a_ticket_for_the_opener_and_close_stops_the_shell(
     await world.join(cookie)
     await world.wait()
     terminal_id, _ = _opened(await world.open(cookie))
-    host = _host_peer(world, terminal_id)
-    task = asyncio.create_task(_run_host(host, world, terminal_id))
+    daemon = _daemon_peer(world, terminal_id)
+    task = asyncio.create_task(_run_host(daemon, world, terminal_id))
     await asyncio.sleep(0.05)
     attach = wire_terminals.TERMINAL_ATTACH_PATH.format(terminal_id=terminal_id)
     close = wire_terminals.TERMINAL_CLOSE_PATH.format(terminal_id=terminal_id)
@@ -1161,12 +1161,12 @@ async def test_attach_mints_a_ticket_for_the_opener_and_close_stops_the_shell(
         == 43
     )
     assert closed.status_code == 204
-    assert await host.frame() == (Frame.STOP, b"")
-    host.leave()
+    assert await daemon.frame() == (Frame.STOP, b"")
+    daemon.leave()
     await task
 
 
-async def test_a_writer_enrolls_a_personal_machine_only_its_owner_sees(
+async def test_a_writer_enrolls_a_personal_host_only_its_owner_sees(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -1179,12 +1179,12 @@ async def test_a_writer_enrolls_a_personal_machine_only_its_owner_sees(
             (
                 await world.call(
                     "GET",
-                    MACHINES_PATH,
+                    HOSTS_PATH,
                     headers={"Cookie": world.cookie(user)},
                 )
             ).json(),
             dict[str, list[dict[str, object]]],
-        )["machines"]
+        )["hosts"]
         for name, user in (("ada", ada), ("bob", bob), ("boss", boss))
     }
 
@@ -1232,14 +1232,14 @@ async def test_a_token_joins_while_its_owner_is_active_and_not_after(
             "name": "laptop",
             "token": token,
             "instance": str(TERMINAL_INSTANCE),
-            "host_version": "t",
+            "daemon_version": "t",
         },
     )
 
     assert refused.status_code == 401
 
 
-async def test_a_run_opens_only_where_the_machine_facts_list_its_cli(
+async def test_a_run_opens_only_where_the_host_facts_list_its_cli(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -1265,10 +1265,10 @@ async def test_files_open_only_where_the_facts_say_files_and_the_host_is_told(
     await world.join(cookie, name="new", facts={"files": True})
     await world.wait()
 
-    refused = await world.open(cookie, machine="old", kind="files")
-    _opened(await world.open(cookie, machine="new", kind="files"))
+    refused = await world.open(cookie, host="old", kind="files")
+    _opened(await world.open(cookie, host="new", kind="files"))
     files = from_plain((await world.wait()).json(), dict[str, object])
-    _opened(await world.open(cookie, machine="new"))
+    _opened(await world.open(cookie, host="new"))
     shell = from_plain((await world.wait()).json(), dict[str, object])
 
     assert (refused.status_code, refusal_detail_code(refused)) == (
@@ -1281,7 +1281,7 @@ async def test_files_open_only_where_the_facts_say_files_and_the_host_is_told(
     assert "kind" not in shell
 
 
-async def test_the_listing_says_which_machines_serve_tools(
+async def test_the_listing_says_which_hosts_serve_tools(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -1293,15 +1293,15 @@ async def test_the_listing_says_which_machines_serve_tools(
         (
             await world.call(
                 "GET",
-                wire_terminals.TERMINAL_MACHINES_PATH,
+                wire_terminals.TERMINAL_HOSTS_PATH,
                 headers=world.browser(cookie),
             )
         ).json(),
         dict[str, object],
     )
 
-    machines = from_plain(listed["machines"], list[dict[str, object]])
-    assert {m["name"]: m["tools"] for m in machines} == {"served": True, "bare": False}
+    hosts = from_plain(listed["hosts"], list[dict[str, object]])
+    assert {m["name"]: m["tools"] for m in hosts} == {"served": True, "bare": False}
 
 
 async def test_files_open_from_no_canvas_and_never_for_a_key(
@@ -1322,7 +1322,7 @@ async def test_files_open_from_no_canvas_and_never_for_a_key(
             "Authorization": f"Bearer {await world.key(ada)}",
             "Origin": TERMINAL_ORIGIN,
         },
-        body={"machine": "gx10", "rows": 24, "cols": 80, "kind": "files"},
+        body={"host": "gx10", "rows": 24, "cols": 80, "kind": "files"},
     )
 
     assert (on_canvas.status_code, run.status_code) == (422, 422)
@@ -1375,10 +1375,10 @@ async def test_a_session_has_one_run_open_at_a_time(world: TerminalWorld) -> Non
     first, _ = _opened(await world.open(cookie, command="claude", attach=session_id))
     refused = await world.open(cookie, command="codex", attach=session_id)
     _opened(await world.open(cookie, command="codex", attach=uuid.uuid4()))
-    hub = terminal_hub(app)
-    term = hub.terminal(first)
+    relay = terminal_relay(app)
+    term = relay.terminal(first)
     assert term is not None
-    await hub.stop(term)
+    await relay.stop(term)
 
     assert (refused.status_code, refusal_detail_code(refused)) == (409, "chat_run_live")
     _opened(await world.open(cookie, command="codex", attach=session_id))
@@ -1423,7 +1423,7 @@ async def test_the_host_is_handed_the_folder_each_run_starts_in_as_named(
     assert (run["cwd"], plain.get("cwd")) == ("~/project", None)
 
 
-async def test_a_machine_listing_keeps_the_folder_its_owner_named(
+async def test_a_host_listing_keeps_the_folder_its_owner_named(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -1434,18 +1434,18 @@ async def test_a_machine_listing_keeps_the_folder_its_owner_named(
     _opened(await world.open(cookie, command="claude", cwd="~/work"))
     listed = await world.call(
         "GET",
-        wire_terminals.TERMINAL_MACHINES_PATH,
+        wire_terminals.TERMINAL_HOSTS_PATH,
         headers=world.browser(cookie),
     )
 
-    machines = from_plain(
-        from_plain(listed.json(), dict[str, object])["machines"],
+    hosts = from_plain(
+        from_plain(listed.json(), dict[str, object])["hosts"],
         list[dict[str, object]],
     )
-    assert machines[0]["cwd"] == "~/work"
+    assert hosts[0]["cwd"] == "~/work"
 
 
-async def test_the_machine_list_names_the_clis_its_facts_list(
+async def test_the_host_list_names_the_clis_its_facts_list(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -1456,18 +1456,18 @@ async def test_the_machine_list_names_the_clis_its_facts_list(
         (
             await world.call(
                 "GET",
-                wire_terminals.TERMINAL_MACHINES_PATH,
+                wire_terminals.TERMINAL_HOSTS_PATH,
                 headers=world.browser(cookie),
             )
         ).json(),
         dict[str, object],
     )
 
-    machines = from_plain(listed["machines"], list[dict[str, object]])
-    assert machines[0]["clis"] == ["claude", "git"]
+    hosts = from_plain(listed["hosts"], list[dict[str, object]])
+    assert hosts[0]["clis"] == ["claude", "git"]
 
 
-async def test_the_machine_list_says_which_hosts_serve_files(
+async def test_the_host_list_says_which_hosts_serve_files(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -1479,7 +1479,7 @@ async def test_the_machine_list_says_which_hosts_serve_files(
         (
             await world.call(
                 "GET",
-                wire_terminals.TERMINAL_MACHINES_PATH,
+                wire_terminals.TERMINAL_HOSTS_PATH,
                 headers=world.browser(cookie),
             )
         ).json(),
@@ -1488,24 +1488,24 @@ async def test_the_machine_list_says_which_hosts_serve_files(
 
     assert {
         from_plain(each["name"], str): each["files"]
-        for each in from_plain(listed["machines"], list[dict[str, object]])
+        for each in from_plain(listed["hosts"], list[dict[str, object]])
     } == {"old": False, "new": True}
 
 
-async def test_the_machine_list_names_a_host_older_than_the_wire_supports(
+async def test_the_host_list_names_a_host_older_than_the_wire_supports(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    await world.join(cookie, name="old", host_version="0.1.8")
-    await world.join(cookie, name="new", host_version="0.1.10")
-    await world.join(cookie, name="source", host_version="")
+    await world.join(cookie, name="old", daemon_version="0.1.8")
+    await world.join(cookie, name="new", daemon_version="0.1.10")
+    await world.join(cookie, name="source", daemon_version="")
 
     listed = from_plain(
         (
             await world.call(
                 "GET",
-                wire_terminals.TERMINAL_MACHINES_PATH,
+                wire_terminals.TERMINAL_HOSTS_PATH,
                 headers=world.browser(cookie),
             )
         ).json(),
@@ -1513,8 +1513,8 @@ async def test_the_machine_list_names_a_host_older_than_the_wire_supports(
     )
 
     assert {
-        from_plain(each["name"], str): each["host_outdated"]
-        for each in from_plain(listed["machines"], list[dict[str, object]])
+        from_plain(each["name"], str): each["daemon_outdated"]
+        for each in from_plain(listed["hosts"], list[dict[str, object]])
     } == {"old": True, "new": False, "source": False}
 
 
@@ -1526,7 +1526,7 @@ async def test_the_servers_stun_list_reaches_the_open_the_attach_and_the_host_wa
     cookie = world.cookie(ada)
     await world.join(cookie)
     await world.wait()
-    monkeypatch.setattr(terminal_hub(app), "ice_servers", ("stun:s.test:3478",))
+    monkeypatch.setattr(terminal_relay(app), "ice_servers", ("stun:s.test:3478",))
 
     opened = await world.open(cookie)
     offered = await world.wait()
@@ -1550,7 +1550,7 @@ async def test_a_retried_open_of_a_terminal_that_ended_is_gone(
     await world.join(cookie)
     await world.wait()
     headers = {**world.browser(cookie), "Idempotency-Key": str(uuid.uuid4())}
-    body = {"machine": "gx10", "rows": 24, "cols": 80}
+    body = {"host": "gx10", "rows": 24, "cols": 80}
     terminal_id, _ticket = _opened(
         await world.call(
             "POST",
@@ -1596,7 +1596,7 @@ async def test_a_browser_socket_with_no_valid_sign_in_is_refused(
     await _run_browser(browser, terminal_id)
 
     assert await browser.close_code() == wire_terminals.CLOSE_REFUSED
-    assert terminal_hub(app).terminal(terminal_id) is not None
+    assert terminal_relay(app).terminal(terminal_id) is not None
 
 
 async def test_a_browser_that_breaks_a_frame_rule_is_closed(
@@ -1607,13 +1607,13 @@ async def test_a_browser_that_breaks_a_frame_rule_is_closed(
     await world.join(cookie)
     await world.wait()
     terminal_id, ticket = _opened(await world.open(cookie))
-    browser, host, tasks = await _connected(world, cookie, terminal_id, ticket)
+    browser, daemon, tasks = await _connected(world, cookie, terminal_id, ticket)
 
     browser.push(Frame.RESIZE, b"not a winsize")
     closed = await browser.close_code()
     browser.leave()
     await tasks[0]
-    host.leave()
+    daemon.leave()
     await tasks[1]
 
     assert closed == wire_terminals.CLOSE_REFUSED
@@ -1628,7 +1628,7 @@ async def test_a_browser_taken_over_by_another_reads_no_more_of_its_own(
     await world.join(cookie)
     await world.wait()
     terminal_id, ticket = _opened(await world.open(cookie))
-    first, host, tasks = await _connected(world, cookie, terminal_id, ticket)
+    first, daemon, tasks = await _connected(world, cookie, terminal_id, ticket)
     minted = await world.call(
         "POST",
         wire_terminals.TERMINAL_ATTACH_PATH.format(terminal_id=terminal_id),
@@ -1649,12 +1649,12 @@ async def test_a_browser_taken_over_by_another_reads_no_more_of_its_own(
     await tasks[0]
     second.push(Frame.INPUT, b"live\n")
 
-    typed = await host.frame()
+    typed = await daemon.frame()
     while typed[0] is Frame.ROUTE:
-        typed = await host.frame()
+        typed = await daemon.frame()
     assert typed == (Frame.INPUT, b"live\n")
     second.leave()
-    host.leave()
+    daemon.leave()
     await asyncio.gather(second_task, tasks[1])
 
 
@@ -1663,10 +1663,10 @@ async def _ready_host(
     world: TerminalWorld,
     terminal_id: uuid.UUID,
 ) -> None:
-    """Run a host leg that acknowledges its start before it claims the terminal."""
-    await terminal_routes.terminal_host_socket(
+    """Run a host socket that acknowledges its start before it claims the terminal."""
+    await terminal_routes.terminal_daemon_socket(
         peer.websocket,
-        world.machine_id,
+        world.host_id,
         terminal_id,
         TERMINAL_INSTANCE,
         ready=True,
@@ -1681,21 +1681,21 @@ async def test_a_ready_host_whose_first_frame_is_no_ack_is_refused(
     await world.join(cookie)
     await world.wait()
     terminal_id, _ticket = _opened(await world.open(cookie))
-    host = _host_peer(world, terminal_id)
-    host.push(Frame.OUTPUT, b"$ ")
+    daemon = _daemon_peer(world, terminal_id)
+    daemon.push(Frame.OUTPUT, b"$ ")
 
-    await _ready_host(host, world, terminal_id)
+    await _ready_host(daemon, world, terminal_id)
 
-    assert await host.close_code() == wire_terminals.CLOSE_REFUSED
-    term = terminal_hub(app).terminal(terminal_id)
+    assert await daemon.close_code() == wire_terminals.CLOSE_REFUSED
+    term = terminal_relay(app).terminal(terminal_id)
     assert term is not None
-    assert term.host is None
+    assert term.daemon is None
 
 
-async def test_a_host_leg_taken_over_while_starting_relays_no_more(
+async def test_a_host_socket_taken_over_while_starting_relays_no_more(
     world: TerminalWorld,
 ) -> None:
-    """A second ready leg takes the start; the first one's next frame ends its relay."""
+    """A second ready socket takes the start; the first one's next frame ends its relay."""
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
     await world.join(cookie)
@@ -1705,11 +1705,11 @@ async def test_a_host_leg_taken_over_while_starting_relays_no_more(
     browser_task = asyncio.create_task(_run_browser(browser, terminal_id))
     browser.push(Frame.ATTACH, _attach(ticket))
     assert (await browser.frame())[0] is Frame.ACK
-    first = _host_peer(world, terminal_id)
+    first = _daemon_peer(world, terminal_id)
     first_task = asyncio.create_task(_ready_host(first, world, terminal_id))
     first.push(Frame.ACK)
     assert await first.frame() == (Frame.ACK, b"")
-    second = _host_peer(world, terminal_id)
+    second = _daemon_peer(world, terminal_id)
     second_task = asyncio.create_task(_ready_host(second, world, terminal_id))
     second.push(Frame.ACK)
     assert await second.frame() == (Frame.ACK, b"")

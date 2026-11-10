@@ -61,21 +61,21 @@ class ServerContext:
     Attributes:
       store: The server's graph store, opened and bootstrapped.
       inbound: The live-session message queue, as the subscriber push uses it.
-      machine_idle_sec: How long a machine, by id, has had no tool call or result and
+      host_idle_sec: How long a host, by id, has had no tool call or result and
         no terminal input or output, relayed or direct, as this process saw; a
-        machine with none since the process started is counted from its start.
-      machines_changed: Tells the followers of an owner's machine listing, by email,
+        host with none since the process started is counted from its start.
+      hosts_changed: Tells the followers of an owner's host listing, by email,
         that it changed; called once the write has committed.
-      machine_closed: Ends the tool pipes and terminals of a machine, by id, taken
+      host_closed: Ends the tool pipes and terminals of a host, by id, taken
         out of service.
 
     """
 
     store: Store
     inbound: InboundQueue
-    machine_idle_sec: Callable[[UUID], float]
-    machines_changed: Callable[[str], None]
-    machine_closed: Callable[[UUID], Awaitable[None]]
+    host_idle_sec: Callable[[UUID], float]
+    hosts_changed: Callable[[str], None]
+    host_closed: Callable[[UUID], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

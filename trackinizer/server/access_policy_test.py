@@ -48,7 +48,7 @@ def test_a_principal_defaults_no_groups_and_no_key() -> None:
 
 
 def test_a_resource_defaults_no_account() -> None:
-    assert Resource(kind="machine", id="box").account is None
+    assert Resource(kind="host", id="box").account is None
 
 
 def test_access_denied_is_an_exception_carrying_its_message() -> None:

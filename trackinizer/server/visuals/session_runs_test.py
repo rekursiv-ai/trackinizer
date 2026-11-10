@@ -1,4 +1,4 @@
-"""Tests for who opened a session and what its live run is doing."""
+"""Tests for who opened a session and what its agent process is doing."""
 
 from __future__ import annotations
 

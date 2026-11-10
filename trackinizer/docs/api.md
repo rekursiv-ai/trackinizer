@@ -602,7 +602,7 @@ POST   /api/messages
 turn is within `days` (1 to 365, default 14) or that are still open, newest activity
 first, at most `limit` (1 to 500, default 500), leaving out any the caller does not
 read; `more` says more matched. Each carries `last_activity` (its last turn's time,
-else when it was made), `live` (a run holds its lease now), `machine` (the live run's,
+else when it was made), `live` (a run holds its lease now), `host` (the live session's,
 else where it last ran since the server started), the run's `state`, `goal` (the
 last goal its CLI's log reported), `first_line` (the first line a person wrote),
 `conversation_id`, `canvas_id` and `workspace_id` (its chat's canvas, or the one it
@@ -617,13 +617,13 @@ beside it, `source_role`, that sender's effective role (`viewer`, `writer` or
 the request, and a message the server generates has no `source_role`.
 
 `POST .../inbound` takes a line alone: a body naming `kind` or `payload` is 422, so
-no key acts on a run's machine without a person in Chat. `POST /api/chats` (section
+no key acts on a run's host without a person in Chat. `POST /api/chats` (section
 1.25) takes `kind`, what the message is: `line` (a person's chat line,
 the default, delivered with its sender), `command` (a slash command typed verbatim,
 which the server makes of a line, 422 when a client names it),
 `answer` (a decision on a pending prompt), `settings` (a model or effort change),
 `interrupt` (stops the running turn) or `run` (a command the agent wrote that the
-chat's starter clicked Run on, which the run runs on its machine); any other value is
+chat's starter clicked Run on, which the run runs on its host); any other value is
 422. `payload` carries the
 structured data of a kind and is `null` for the kinds that carry none. An `answer`
 is `{"prompt_id": "<text>", "option": "<id>", "updated_input": <object> | null,
@@ -637,9 +637,9 @@ named run stopped. `text` stays required: for
 an `answer` it is the one-line form, "Yes" or "No: <reason>". A drained message
 carries `kind` and `payload` beside its `text`, `source` and `room`.
 
-`GET .../inbound` (the drain) takes `run`, `machine` and `cwd`, where the draining
+`GET .../inbound` (the drain) takes `run`, `host` and `cwd`, where the draining
 run is: the name of the detached run an attach reaches (absent for a run in
-a terminal of its own), the machine as the machine host names it, and the
+a terminal of its own), the host as the daemon names it, and the
 working directory, `~/...` under its home, at most 1,024 characters with no control
 character. A malformed one is 422. The poller lease keeps them while it holds, for
 Chat to show; they are the run's own word, shown and never a grant.
@@ -708,13 +708,13 @@ the session's records (403 `session_audience` otherwise).
 it over or it went away. Browser only, with the `Idempotency-Key` header; the chat's
 starter alone (403 `reattach_not_owner`). The run's lease is revoked and the run is
 turned away when it drains again, which ends its terminal; terminals this server
-opened for it are stopped; then the machine's host is offered a new detached run of
+opened for it are stopped; then the daemon is offered a new detached run of
 the chat's CLI attached to the session, in the folder the last run named, under that
 run's host name (`chat-<8 hex of the session>` when it named none). A launch of that
 name ends the old host and resumes the CLI session its terminal continued. A run that is live and not taken over is 409
 `chat_run_live`; a session that is no chat 409 `not_a_chat`; a chat the assistant
-answers 409 `provider_is_assistant`; a chat whose machine and folder the server no
-longer knows (it restarts with the leases) 409 `reattach_place_unknown`; the machine
+answers 409 `provider_is_assistant`; a chat whose host and folder the server no
+longer knows (it restarts with the leases) 409 `reattach_place_unknown`; the host
 and CLI are held to the rules of `POST /api/terminals`. It answers 204.
 
 `POST /api/sessions/start` takes `attach`, the AgentSession a run re-opens: it is
@@ -942,7 +942,7 @@ an interactive browser session. API keys cannot change that choice.
 also names `api_key_id`, the key the request used, or null for a browser session.
 
 `PATCH /api/me/preferences` changes the caller's preferences, kept on their user
-row so every browser and machine finds them: a body such as `{"theme": "light",
+row so every browser and host finds them: a body such as `{"theme": "light",
 "chat_side": null}` sets `theme` and puts `chat_side` back to its default, and the
 keys it leaves out keep their values. It answers every key, defaults filled; a key no
 preference has, or a value its key does not take, is a 422 and nothing is written.
@@ -1033,7 +1033,7 @@ reading each canvas.
 `POST /api/canvases/new` makes a canvas. An optional body `{workspace_id,
 provider}` names its workspace (else the caller's default workspace, made if they
 have none) and the provider its chat starts on
-(else the caller's `chat_provider` preference); a CLI is taken with no machine to
+(else the caller's `chat_provider` preference); a CLI is taken with no host to
 run on, and nothing runs until one is picked.
 `PATCH /api/canvases/<uuid>` with `{"name"}` renames it: the name is trimmed
 and must then be 1 to 120 characters (else 422); a name the user already has is
@@ -1091,7 +1091,7 @@ assistant's newest live session. `assistant` in the state is its actor, or null 
 none is configured. `partner` is computed on every read and never stored:
 `session_id`, `actor`, `cli`, `status` (`live`, `unavailable`, or `offline` for a CLI
 no run holds), `provider`, `label` (`claude · gx10`), and for a live CLI run the
-`machine`, `run_name` and `cwd` its last drain named (null otherwise). An offline CLI
+`host`, `run_name` and `cwd` its last drain named (null otherwise). An offline CLI
 partner also says why the server refused the last drain by a run of the chat's own
 account: `refused`, its message, and `refused_at`, which a new refusal moves (empty and
 null when none was refused since a drain was let in).
@@ -1101,12 +1101,12 @@ answers its Chat; a canvas stored with the retired `partner_choice` reads as
 `assistant`. A new canvas starts on the provider `POST /api/canvases/new` names,
 else on its owner's `chat_provider` preference; a fork keeps its source canvas's.
 The operation `{"kind": "provider", "provider": P}` is the owner's browser's alone
-(an API key is 422). A CLI no confirmed online machine of the owner lists is 409
+(an API key is 422). A CLI no confirmed online host of the owner lists is 409
 `provider_unavailable` with the reason; choosing a CLI gives the canvas a chat and
 the chat a session at once, which an offline partner names for a run to attach to.
 A switch does not stop an assistant turn already running; its answer still lands.
 The state carries `available` and `reasons` per provider: a CLI is available while
-such a machine lists it, and `assistant` always is here (its credit is the billing
+such a host lists it, and `assistant` always is here (its credit is the billing
 addon's to say).
 
 The partner's key may read and operate a canvas while that canvas's partner
@@ -1122,7 +1122,7 @@ assistant, which attaches to it; the assistant then has that chat open. A scienc
 canvas names: for a CLI, the assistant's key is 409 `provider_is_cli`; for
 `assistant`, an opening key that is not the assistant's is 409
 `provider_is_assistant`. Either holds from the moment the canvas switches. A chat
-has one live run at a time: a `provider` operation revokes the lease of the chat's
+has one agent process at a time: a `provider` operation revokes the lease of the chat's
 run of any CLI it leaves and stops that canvas owner's terminals attached to the
 chat's session, and `POST /api/terminals` with `attach` is 409 `chat_run_live` while
 another terminal or lease holds the session. Only the starter's canvas says who
@@ -1213,7 +1213,7 @@ assistant does not have the chat open. A `claude` or
 `line` carrying the canvas context, and while that run is taken over in a terminal
 refuses every post with 409 `chat_taken_over`. A `run` comes from the chat's starter
 alone, as an `answer` does (403 `answer_not_owner`, "Only <starter> can run commands
-on their machine."), and is 409 `run_unsupported` while the run holding the chat did
+on their host."), and is 409 `run_unsupported` while the run holding the chat did
 not say it takes runs. A canvas holds one chat: with none, the line's conversation becomes its
 chat in the transaction that queues the line; with one, a line that names another
 conversation is 409, as is one for a conversation another canvas of the poster
@@ -1235,7 +1235,7 @@ receipt is `{conversation_id, canvas_id, session_id}` at once;
 the assistant has the session open. The same key again returns the original receipt and queues nothing; a key
 reused for another line is 409. The de-duplication is in memory, so a retry after
 a server restart queues the line again. On `assistant`, no live assistant is 409; on
-a CLI, no live run is 409 `provider_offline`, except for a fork, whose line waits on
+a CLI, no live session is 409 `provider_offline`, except for a fork, whose line waits on
 its new session for the run the person starts. A full queue is 409 `partner busy`,
 and nothing is queued.
 
@@ -1259,9 +1259,9 @@ command among it, is a line. A post of any other `kind` is not judged.
 
 Answers. An `answer` to a `claude` or `codex` chat comes from the chat's starter
 alone, the owner of the run showing the prompt, since it runs a tool or grants
-trust on their machine: anyone else, a person it is shared with included, is 403
+trust on their host: anyone else, a person it is shared with included, is 403
 `{"detail": {"code": "answer_not_owner", "message": "Only <starter> can answer
-prompts from their machine."}}`, and nothing is queued. An `answer` to a card the
+prompts from their host."}}`, and nothing is queued. An `answer` to a card the
 `assistant` asked comes from the person the card asked (its `$interaction` record's
 `input.asker`; the starter when it names nobody), since the card lists that
 person's own choices: anyone else is the same 403, "Only <asker> can answer this
@@ -1346,7 +1346,7 @@ each email domain one organisation, whose members are the people Google's `hd`
 claim names members of it (never a consumer account, whatever its address), and the
 starter's organisation is; `single` makes every user one organisation, and only a
 server whose users are all one organisation sets it. Anyone else reads none of the
-chat. A line goes to the starter's own run, on their machine, under its sender's
+chat. A line goes to the starter's own run, on their host, under its sender's
 name, so only some members post into it: its starter, the people it is shared with
 and, under `domain`, the starter's organisation. Anyone else's post, of any `kind`,
 every other member's on a `single` server included, is 403
@@ -1501,7 +1501,7 @@ DELETE /api/variables/<name>
 ```
 
 The environment variables an agent launch exports, plain and secret. Only the
-org layer has routes; the store also keys machine and user layers. `GET` is
+org layer has routes; the store also keys host and user layers. `GET` is
 writer role and `PUT` / `DELETE` are admin role. Bodies: section 3.25.
 
 A plain value is stored and listed. A secret's value goes to the server's
@@ -1514,29 +1514,29 @@ and a value is 1 to 65536 bytes of UTF-8 with no NUL; anything else answers
 422, and a 422 under `/api/variables` never echoes the rejected input, not
 even as a body key. The same holds behind a path prefix.
 
-### 1.26 Machines
+### 1.26 Hosts
 
 ```
-GET    /api/machines
-GET    /api/machines/<name>
-PUT    /api/machines/<name>
-PATCH  /api/machines/<name>/labels
-DELETE /api/machines/<name>
-POST   /api/machines/enroll
-POST   /api/machines/join
-POST   /api/machines/<uuid>/heartbeat
-POST   /api/machines/<name>/revoke
+GET    /api/hosts
+GET    /api/hosts/<name>
+PUT    /api/hosts/<name>
+PATCH  /api/hosts/<name>/labels
+DELETE /api/hosts/<name>
+POST   /api/hosts/enroll
+POST   /api/hosts/join
+POST   /api/hosts/<uuid>/heartbeat
+POST   /api/hosts/<name>/revoke
 ```
 
-The registry of machines a campaign may run on: a name, a role, a `how`
-line telling an agent how to use the machine, and labels. It never reaches a
-machine, so `DELETE` only unregisters. Both `GET`s are writer role; `PUT`,
+The registry of hosts a campaign may run on: a name, a role, a `how`
+line telling an agent how to use the host, and labels. It never reaches a
+host, so `DELETE` only unregisters. Both `GET`s are writer role; `PUT`,
 `PATCH`, `DELETE`, `enroll` and `revoke` are admin role. `join` and
 `heartbeat` take no role: the secret they carry is the credential. Bodies:
 section 3.26.
 
-`PUT` creates the machine when the name is new. A field the body leaves out
-keeps its value (a new machine starts with it empty) and `""` clears it.
+`PUT` creates the host when the name is new. A field the body leaves out
+keeps its value (a new host starts with it empty) and `""` clears it.
 `PATCH` adds the `add` labels, then removes the `remove` labels; adding a
 label already present and removing one that is absent are no-ops. Labels are
 stripped and deduplicated, as an Issue's are, and a blank label answers 422.
@@ -1548,105 +1548,105 @@ route segments and CLI words. A role is empty or matches
 `^[a-z][a-z0-9-]{0,31}$`; `how` is at most 2000 characters with no NUL.
 Anything else, on any of the five registry routes, answers 422.
 
-A machine that runs a host connects in three steps. An admin calls `enroll`
-with the machine's name, which registers the machine if it is new and returns a
+A host that runs a host connects in three steps. An admin calls `enroll`
+with the host's name, which registers the host if it is new and returns a
 one-use enrollment token (`enr_...`) valid for 15 minutes; a new `enroll`
 supersedes any open token. A writer may `enroll` too, for a name that is new or
-already theirs: the machine's `owner` is the enroller, and a writer's new machine
-has the role `personal`, so `GET /api/machines` shows it only to its owner, an admin
+already theirs: the host's `owner` is the enroller, and a writer's new host
+has the role `personal`, so `GET /api/hosts` shows it only to its owner, an admin
 included (no campaign is offered it; an admin still `revoke`s it by name). `owner`
-is shown to the owner and admins only. An admin or the owner may `revoke` a machine.
-Nobody adopts a name another person holds: an admin's `enroll` of a machine another
-person owns answers 409 `machine_owned` and names the owner, and the response of
-`enroll` names the owner. A token joins only for an active admin when the machine is
-unowned or the admin's own, or for the owner of a personal machine. An admin's
-`enroll` confirms the machine; a writer's (often an agent's key) leaves it
-unconfirmed until its owner calls `POST /api/terminals/machines/<name>/confirm` in a
+is shown to the owner and admins only. An admin or the owner may `revoke` a host.
+Nobody adopts a name another person holds: an admin's `enroll` of a host another
+person owns answers 409 `host_owned` and names the owner, and the response of
+`enroll` names the owner. A token joins only for an active admin when the host is
+unowned or the admin's own, or for the owner of a personal host. An admin's
+`enroll` confirms the host; a writer's (often an agent's key) leaves it
+unconfirmed until its owner calls `POST /api/terminals/hosts/<name>/confirm` in a
 browser session, and no terminal opens on it before (409 `terminal_unconfirmed`). The host calls `join` with the token, once, and
-receives the machine's id and its machine credential (`trax_machine_...`).
+receives the host's id and its host credential (`trax_machine_...`).
 A token that is malformed, unknown, used, expired, issued for another name, or
-issued by an account that is neither an active admin nor the owner of a personal machine
-answers 401 with one body. Joining a machine that already has a live credential revokes that
+issued by an account that is neither an active admin nor the owner of a personal host
+answers 401 with one body. Joining a host that already has a live credential revokes that
 credential first. Both responses are `Cache-Control: no-store`, and a 422 on
 `join` never echoes the token, not even as a body key.
 
 The host then calls `heartbeat` with the credential as its bearer token, about
 every 15 seconds, naming its `instance` (a new id each time it starts) and a
-`claim`. One instance holds a machine at a time. Under `keep`, the default, a
-different instance answers 409 `another_host_connected` until the first has been
-silent for 180 seconds, and then takes over. `take` takes the machine at once
+`claim`. One instance holds a host at a time. Under `keep`, the default, a
+different instance answers 409 `another_daemon_connected` until the first has been
+silent for 180 seconds, and then takes over. `take` takes the host at once
 whoever holds it; a host sends it with its first heartbeat, so a restart never waits
 out its old self, and the old host stops when its next `keep` answers 409.
-`release` from the holder leaves the machine held by none, so it reads `offline` at
+`release` from the holder leaves the host held by none, so it reads `offline` at
 once; from any other instance it changes nothing. A heartbeat whose
 credential was revoked while it was in flight answers 410 and writes nothing.
-A machine's `status` is derived, never stored: `online` within 180 seconds of
+A host's `status` is derived, never stored: `online` within 180 seconds of
 its last heartbeat unless its host released it since, `offline` after, `never`
 before the first, and `revoked`
-once every credential it had was revoked. `GET /api/machines/<name>` adds
-`last_heartbeat`, `host_version` and `facts`.
+once every credential it had was revoked. `GET /api/hosts/<name>` adds
+`last_heartbeat`, `daemon_version` and `facts`.
 
-A machine credential is checked by its own dependency, not by the user roles. It
+A host credential is checked by its own dependency, not by the user roles. It
 never authenticates any other route (those answer 401), and an API key never
-authenticates `heartbeat` (401). A credential for machine A on machine B's path
+authenticates `heartbeat` (401). A credential for host A on host B's path
 answers 404. `revoke` keeps the credential's row and closes any unused token; the
-host's next request then answers 410 `machine_revoked`, while an unknown
+host's next request then answers 410 `host_revoked`, while an unknown
 credential answers 401, so only a holder of a once-valid secret learns of the
-revoke. Revoking a revoked machine, or one that never joined, is a no-op.
-`DELETE` answers 409 `machine_in_service` while the machine holds a live
+revoke. Revoking a revoked host, or one that never joined, is a no-op.
+`DELETE` answers 409 `host_in_service` while the host holds a live
 credential; revoke it first.
 
 #### Terminals
 
 ```
 POST   /api/terminals
-GET    /api/terminals/machines?canvas=<uuid>
-GET    /api/terminals/machines/changes?since=<n>&wait_sec=25
+GET    /api/terminals/hosts?canvas=<uuid>
+GET    /api/terminals/hosts/changes?since=<n>&wait_sec=25
 POST   /api/terminals/<uuid>/attach
 POST   /api/terminals/<uuid>/close
 WS     /api/terminals/<uuid>/ws
-GET    /api/machines/<uuid>/terminals/wait?instance=<uuid>&wait_sec=25
-WS     /api/machines/<uuid>/terminals/<uuid>/ws?instance=<uuid>
+GET    /api/hosts/<uuid>/terminals/wait?instance=<uuid>&wait_sec=25
+WS     /api/hosts/<uuid>/terminals/<uuid>/ws?instance=<uuid>
 ```
 
-A shell on a connected machine, shown in its owner's browser. A server running with
+A shell on a connected host, shown in its owner's browser. A server running with
 authentication off refuses every terminal route and both sockets (403
 `terminal_forbidden`, close 4403). Both sides dial the
 server, which pairs and relays them; the host listens on nothing. Only the
-machine's owner opens one, with a browser session (a cookie): an API key, a
+host's owner opens one, with a browser session (a cookie): an API key, a
 service account, a request without this server's own `Origin`, and anyone else
-answer 403 or 404. The machine must be online and its host must have asked for
-terminals within 45 seconds (the machine host does by default), else 409
+answer 403 or 404. The host must be online and its host must have asked for
+terminals within 45 seconds (the daemon does by default), else 409
 `terminal_not_enabled`. A canvas may hold any number of terminals; a user's 11th
 open within a minute answers 429. Every terminal refusal answers
 `detail: {code, message}`: `terminal_forbidden`, `terminal_not_enabled`,
 `terminal_unconfirmed`, `terminal_limit`, `cli_not_installed`, `files_not_enabled` and
 `chat_run_live`.
 
-`POST /api/terminals` takes `{machine, rows, cols, canvas?, surface?, command?,
+`POST /api/terminals` takes `{host, rows, cols, canvas?, surface?, command?,
 attach?, run_name?, cwd?, kind?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
 `codex`: the terminal starts the runner of that CLI in place of a login shell, and
 any other value is 422. `attach` (the AgentSession the run re-opens), `run_name`
 (the detached run's name, which the runner's `attach NAME` reaches) and `cwd` need a
-`command`, else 422. A `command` the machine's facts do not list is 409
+`command`, else 422. A `command` the host's facts do not list is 409
 `cli_not_installed`; one whose `attach` session already has a live terminal, or a
 run that holds its poller lease, is 409 `chat_run_live`. With no `run_name` the server
 names the run `chat-<first 8 hex
-of attach>`, or `run-<8 hex of the terminal id>` without one. `cwd` is the folder the run starts in, on the machine: absolute or
+of attach>`, or `run-<8 hex of the terminal id>` without one. `cwd` is the folder the run starts in, on the host: absolute or
 `~`-relative, up to 1,024 characters with no control character. The host resolves `~`,
 and a folder that is not there ends the terminal with one line saying so. The host's
 `wait` returns the same four fields, leaving out each one that is null, so a host on
-an older wire still opens a login shell. Each machine in
-`GET /api/terminals/machines` carries `clis`, the CLIs its facts name, so a picker
+an older wire still opens a login shell. Each host in
+`GET /api/terminals/hosts` carries `clis`, the CLIs its facts name, so a picker
 offers only what is installed, and `files`, whether its facts say `files`.
 
-`GET /api/terminals/machines/changes` answers `{version}`, the version of that listing,
+`GET /api/terminals/hosts/changes` answers `{version}`, the version of that listing,
 the moment it is not `since`, else when it moves, else after `wait_sec` (at most 25)
 with `since` again; without `since` it answers at once. Who may call it, and name an
 `owner`, is as for the listing. A follower lists, waits here, and lists again when the
-version moves. It moves when a write to the owner's machines commits: an enroll, a
-join, a heartbeat that reports new facts or releases the machine, a confirm, a run's
-folder, a revoke, a delete, and a device approval that enrolls one. Whether a machine
+version moves. It moves when a write to the owner's hosts commits: an enroll, a
+join, a heartbeat that reports new facts or releases the host, a confirm, a run's
+folder, a revoke, a delete, and a device approval that enrolls one. Whether a host
 reads online changes by time, and moves nothing. The versions are this server
 process's own and a restart forgets them; each process starts them at a random
 number, so a version kept from before answers at once.
@@ -1654,11 +1654,11 @@ number, so a version kept from before answers at once.
 `kind` is `shell` (the default) or `files`. A `files` terminal starts no shell: the
 host answers file requests the browser sends as `INPUT` with `OUTPUT`, over the same
 sockets, ring and limits, and the server reads neither. It takes no `canvas` and no
-`command` (422), only from the owner's browser, on a machine whose facts say `files`,
+`command` (422), only from the owner's browser, on a host whose facts say `files`,
 else 409 `files_not_enabled`. The host's `wait` carries `kind: files` for one and no
 `kind` for a shell. `surface` names the view that opened it;
-`GET /api/terminals/machines?canvas=ID` lists the caller's live terminals for
-that canvas as `terminals` (`terminal_id`, `machine`, `surface`), oldest first. The
+`GET /api/terminals/hosts?canvas=ID` lists the caller's live terminals for
+that canvas as `terminals` (`terminal_id`, `host`, `surface`), oldest first. The
 ticket is 256 random bits, valid once for 30 seconds; it never travels in a URL.
 The browser opens the WebSocket and sends
 `ATTACH` first (the 43-character ticket, then a u64 offset). One binary message is
@@ -1670,7 +1670,7 @@ re-attaches within 60 seconds with a ticket from `attach` and its last offset; a
 offset that fell out of the 256 KiB ring gets the whole ring after a
 `--- output lost ---` line. Close codes: 4000 ended, 4001 taken over, 4002 idle
 (60 minutes without input), 4003 lifetime (24 hours), 4004 host lost, 4403
-refused, 4410 machine revoked.
+refused, 4410 host revoked.
 
 A direct link (an optional speed-up for a slow server path). The open, `attach` and
 the host's `wait` also return `ice_servers`, the STUN URLs from the server's
@@ -1688,55 +1688,55 @@ the terminal stays on the relay. The server learns neither the bytes nor the
 addresses on a direct link.
 
 The host holds `wait` (at most 25 seconds; `null` when nothing came) and dials the
-host WebSocket with its machine credential and its current `instance`; a second
+host WebSocket with its host credential and its current `instance`; a second
 claim of one terminal, a stale instance or an unknown credential closes 4403, a
-revoked one 4410. Revoking a machine closes its terminals with 4410 on both legs.
+revoked one 4410. Revoking a host closes its terminals with 4410 on both sockets.
 
 Closing a terminal, an idle or lifetime limit and a revoke end the shell's process
 group, as closing an ssh session does: a job the shell started with `nohup`, `setsid`
 or `tmux` (or an interactive shell's background job, which has a group of its own)
-keeps running on the machine. The host reports the shell's exit within half a second
+keeps running on the host. The host reports the shell's exit within half a second
 even when such a job still holds the terminal open.
 
 Nothing a terminal shows or receives is stored: the server keeps the last 256 KiB
 in memory for a re-attach and drops it when the terminal ends. An agent run started
 inside the shell records its own session, placed in the canvas, as it does anywhere.
 
-#### Tool pipes
+#### Tool connections
 
 ```
-WS     /api/machines/<name>/tools/ws?asker=<email>
-GET    /api/machines/<uuid>/tools/wait?instance=<uuid>&wait_sec=25
-WS     /api/machines/<uuid>/tools/<uuid>/ws?instance=<uuid>
+WS     /api/hosts/<name>/tools/ws?asker=<email>
+GET    /api/hosts/<uuid>/tools/wait?instance=<uuid>&wait_sec=25
+WS     /api/hosts/<uuid>/tools/<uuid>/ws?instance=<uuid>
 ```
 
-How an agent reaches the tools of a connected machine. Only the configured assistant's
-key opens the first socket, naming an active writer or admin who owns the machine, which
+How an agent reaches the tools of a connected host. Only the configured assistant's
+key opens the first socket, naming an active writer or admin who owns the host, which
 must not be revoked, be confirmed and report `tools: true`; how lately it was heard from
-is not asked, as its host's dial-back says whether it is up. The machine's host holds the wait,
-which returns `{pipe_id}` the moment an agent arrives, and dials back with its machine
-credential within 20 seconds. A machine holds 16 pipes at once. The server relays binary
-frames of at most 64 KiB and keeps no buffer, so either leg dropping ends the pipe, and
+is not asked, as its host's dial-back says whether it is up. The daemon holds the wait,
+which returns `{connection_id}` the moment an agent arrives, and dials back with its host
+credential within 20 seconds. A host holds 16 connections at once. The server relays binary
+frames of at most 64 KiB and keeps no buffer, so either socket dropping ends the connection, and
 the agent reconnects with a new one. The server asks the whole rule again every 60
-seconds, with whether the attached host is still the machine's current instance, and
-ends a pipe it no longer holds for: a revoked key or a disabled or demoted asker loses
-the machine within that time. The dial-back, the pipes a machine holds and the sweep's
+seconds, with whether the attached host is still the host's current instance, and
+ends a connection it no longer holds for: a revoked key or a disabled or demoted asker loses
+the host within that time. The dial-back, the connections a host holds and the sweep's
 interval are the server's settings (`Config.tool_dial_back_sec`,
-`tool_pipes_per_machine`, `tool_sweep_sec`); the numbers here are their defaults.
+`tool_connections_per_host`, `tool_sweep_sec`); the numbers here are their defaults.
 
 The server keeps no table of calls: what an agent ran is in its session's record. It
 logs each call as it relays it (see below); the session and the call's id join a log
 line to what the session recorded the tool doing.
 
 Both sockets accept, then refuse with a close code and a reason saying what happened,
-at most 123 bytes. Each leg closes with one of:
+at most 123 bytes. Each socket closes with one of:
 
 | Code | Meaning |
 |---|---|
-| 4000 | The pipe ended: the agent left, or the server is stopping |
+| 4000 | The connection ended: the agent left, or the server is stopping |
 | 4004 | The host left, or did not dial back in time |
-| 4403 | Refused, or no longer allowed; the reason says which: not this caller, not its machine, unconfirmed or serving no tools, all its pipes held, a stale instance, no such pipe, a line the server will not relay, or a server that could not go on |
-| 4410 | The machine was revoked or joined again |
+| 4403 | Refused, or no longer allowed; the reason says which: not this caller, not its host, unconfirmed or serving no tools, all its connections held, a stale instance, no such connection, a line the server will not relay, or a server that could not go on |
+| 4410 | The host was revoked or joined again |
 
 Nothing acts on which refusal it was, so they share one code; an agent reads the reason
 as its endpoint's error.
@@ -1751,20 +1751,20 @@ the type of its failure and its size.
 
 | Level | Line | Fields |
 |---|---|---|
-| INFO | `tool pipe opened:` | `pipe machine machine_id asker key assistant` |
-| INFO | `tool call:` | `at pipe asker agent session machine tool call_id argument_bytes verdict` |
-| INFO | `tool pipe ended:` | `pipe machine_id by code reason cause duration_sec` |
-| WARNING | `tool pipe refused:` | `leg machine code reason`: a leg refused as it opened, its pipes all held included |
-| WARNING | `tool pipe line refused:` | `pipe failure bytes`: a line that ends the pipe |
-| WARNING | `tool pipe line dropped:` | `pipe failure bytes`: a line of a kind not offered |
-| WARNING | `tool pipe no longer allowed:` | `pipe machine_id check`: the sweep's check that failed |
-| WARNING | `tool pipe dial-back timed out:` | `pipe machine_id wait_sec` |
+| INFO | `tool connection opened:` | `connection host host_id asker key assistant` |
+| INFO | `tool call:` | `at connection asker agent session host tool call_id argument_bytes verdict` |
+| INFO | `tool connection ended:` | `connection host_id by code reason cause duration_sec` |
+| WARNING | `tool connection refused:` | `socket machine code reason`: a socket refused as it opened, its connections all held included |
+| WARNING | `tool connection line refused:` | `connection failure bytes`: a line that ends the connection |
+| WARNING | `tool connection line dropped:` | `connection failure bytes`: a line of a kind not offered |
+| WARNING | `tool connection no longer allowed:` | `connection host_id check`: the sweep's check that failed |
+| WARNING | `tool connection dial-back timed out:` | `connection host_id wait_sec` |
 
-`by` is what ended the pipe: `agent`, `host`, `dial-back`, `sweep`, `revoke` or
+`by` is what ended the connection: `agent`, `host`, `dial-back`, `sweep`, `revoke` or
 `server`; `cause` is the type of an error that ended it, or `-`. `verdict` is the gate's
-(`allow` or `deny`): what was let through, not that the tool ran. A machine's host says
-in its own log when it adopts a pipe, and how the pipe ended, failed (by the error's
-type alone) or was dropped past the host's own cap, each line naming the pipe.
+(`allow` or `deny`): what was let through, not that the tool ran. A daemon says
+in its own log when it adopts a connection, and how the connection ended, failed (by the error's
+type alone) or was dropped past the host's own cap, each line naming the connection.
 
 ### 1.27 Code store
 
@@ -2394,40 +2394,40 @@ GET /api/variables          {"variables": [{"layer": "org", "owner": "", "name":
 `null`. `PUT` and `DELETE` answer `204` with no body, so a secret is never
 echoed. `updated_by` is the email of the principal who last set the variable.
 
-### 3.26 Machines
+### 3.26 Hosts
 
 ```
-PUT   /api/machines/<name>          {"role": "<role>", "how": "<text>"}
-PATCH /api/machines/<name>/labels   {"add": ["<label>"], "remove": ["<label>"]}
-GET   /api/machines                 {"machines": [{"name": "<name>", "role": "<role>", "how": "<text>", "labels": ["<label>"], "updated_by": "<email>", "updated": "<timestamp>"}, ...]}
-GET   /api/machines/<name>          {"name": "<name>", "role": "<role>", "how": "<text>", "labels": ["<label>"], "updated_by": "<email>", "updated": "<timestamp>"}
+PUT   /api/hosts/<name>          {"role": "<role>", "how": "<text>"}
+PATCH /api/hosts/<name>/labels   {"add": ["<label>"], "remove": ["<label>"]}
+GET   /api/hosts                 {"hosts": [{"name": "<name>", "role": "<role>", "how": "<text>", "labels": ["<label>"], "updated_by": "<email>", "updated": "<timestamp>"}, ...]}
+GET   /api/hosts/<name>          {"name": "<name>", "role": "<role>", "how": "<text>", "labels": ["<label>"], "updated_by": "<email>", "updated": "<timestamp>"}
 ```
 
 Every `PUT` field is optional; `add` and `remove` default to empty. The list
 is sorted by name in byte order and labels keep the order they were added in.
 `PUT`, `PATCH` and `DELETE` answer `204` with no body. `updated_by` is the
-email of the principal who last changed the machine. Each listed machine also
+email of the principal who last changed the host. Each listed host also
 carries `"status": "never|online|offline|revoked"` and `"last_heartbeat":
-"<timestamp>"` (`null` before the first); `GET /api/machines/<name>` adds
-`"host_version": "<text>"` and `"facts": {"<key>": <value>, ...}`.
+"<timestamp>"` (`null` before the first); `GET /api/hosts/<name>` adds
+`"daemon_version": "<text>"` and `"facts": {"<key>": <value>, ...}`.
 
 ```
-POST /api/machines/enroll             {"name": "<name>"}
+POST /api/hosts/enroll             {"name": "<name>"}
                                       -> 201 {"token": "enr_...", "expires_at": "<timestamp>"}
-POST /api/machines/join               {"name": "<name>", "token": "enr_...", "instance": "<uuid>",
-                                       "host_version": "<text>", "facts": {"<key>": <value>}}
-                                      -> 201 {"machine_id": "<uuid>", "credential": "trax_machine_..."}
-POST /api/machines/<uuid>/heartbeat   {"instance": "<uuid>", "host_version": "<text>",
+POST /api/hosts/join               {"name": "<name>", "token": "enr_...", "instance": "<uuid>",
+                                       "daemon_version": "<text>", "facts": {"<key>": <value>}}
+                                      -> 201 {"host_id": "<uuid>", "credential": "trax_machine_..."}
+POST /api/hosts/<uuid>/heartbeat   {"instance": "<uuid>", "daemon_version": "<text>",
                                        "facts": {"<key>": <value>}}
                                       -> 200 {"server_time": "<timestamp>"}
-POST /api/machines/<name>/revoke      -> 204 with no body
+POST /api/hosts/<name>/revoke      -> 204 with no body
 ```
 
 `facts` is optional on `join` (default empty) and on `heartbeat`, where leaving
 it out keeps the stored facts and sending it replaces them. A key matches
 `^[a-z][a-z0-9_]{0,31}$`; a value is a string of at most 256 characters with no
 NUL, an integer within 64 bits, a boolean, or a list of such strings; at most 64
-keys and 4096 bytes as compact JSON. `host_version` is at most 64 characters
+keys and 4096 bytes as compact JSON. `daemon_version` is at most 64 characters
 with no NUL. Anything else answers 422.
 
 ### 3.27 Service accounts
@@ -2498,17 +2498,17 @@ counted twice, and `size` is one blob's. `files` is sorted by path.
 201  create success
 302  auth redirect
 400  invalid body, invalid field for kind, invalid projected edge mutation
-401  missing or invalid auth; an unusable enrollment token or machine credential
+401  missing or invalid auth; an unusable enrollment token or host credential
 403  role too low; `modified` on an inquiry create from a non-admin; a service account's key on a route that manages keys; a grant beyond the caller's role or audiences; a chat's share or delete the caller may not make; a session's transcript the caller does not read (`session_audience`), or may not hide (`session_not_owner`), or a chat it may not read into (`chat_not_member`); code filed under another's email by a caller who does not hold `staff`
 404  row not found
-409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, machine in service, another host connected, service account name taken or account disabled; a `staff` session hidden (`session_staff`), a private or staff chat forked (`chat_fork_closed`), a staff chat shared outside staff (`chat_staff_only`), a staff read into a private chat (`chat_private`); a code snapshot whose blob is not stored (`code_blobs_missing`) or whose parent holds none of its owner (`code_parent_missing`)
-410  machine credential revoked; a deleted science chat (`chat_deleted`)
+409  idempotency conflict, expected mismatch, immutable field, edge cycle, citation kind mismatch, plain value for a secret variable, host in service, another host connected, service account name taken or account disabled; a `staff` session hidden (`session_staff`), a private or staff chat forked (`chat_fork_closed`), a staff chat shared outside staff (`chat_staff_only`), a staff read into a private chat (`chat_private`); a code snapshot whose blob is not stored (`code_blobs_missing`) or whose parent holds none of its owner (`code_parent_missing`)
+410  host credential revoked; a deleted science chat (`chat_deleted`)
 422  well-formed body rejected by domain validation (e.g. self-loop edge, priority on a non-priority edge kind)
 500  server fault
 503  secret variable requested and no secret backend is configured
 ```
 
-Variable and machine `PUT`, `PATCH` and `DELETE`, and machine `revoke`, return `204`
+Variable and host `PUT`, `PATCH` and `DELETE`, and host `revoke`, return `204`
 with no body.
 
 Inquiry and edge mutations -- including `DELETE` (field unset, inquiry
@@ -2520,17 +2520,17 @@ Canvas mutations return canvas state; they do not produce a graph change.
 ### 4.2 Roles
 
 ```
-viewer  GET /api/** except GET /api/variables and GET /api/machines/**, GET /api/web/**, GET /api/me/**, GET /trax/**,
+viewer  GET /api/** except GET /api/variables and GET /api/hosts/**, GET /api/web/**, GET /api/me/**, GET /trax/**,
         PUT /api/me/visual-canvas,
         POST /api/canvases, POST /api/canvases/<uuid>/operations
 writer  viewer + inquiry/edge create/mutate/delete, GET /api/variables,
-        GET /api/machines/**, POST /api/code/blobs/**,
+        GET /api/hosts/**, POST /api/code/blobs/**,
         PUT /api/code/records/<uuid>/snapshot
 admin   writer + /api/admin/**, modified on inquiry create,
-        PUT/DELETE /api/variables/<name>, PUT/PATCH/DELETE /api/machines/**,
-        POST /api/machines/enroll, POST /api/machines/<name>/revoke
-none    POST /api/machines/join, POST /api/machines/<uuid>/heartbeat (the
-        enrollment token or machine credential in the request is the credential)
+        PUT/DELETE /api/variables/<name>, PUT/PATCH/DELETE /api/hosts/**,
+        POST /api/hosts/enroll, POST /api/hosts/<name>/revoke
+none    POST /api/hosts/join, POST /api/hosts/<uuid>/heartbeat (the
+        enrollment token or host credential in the request is the credential)
 ```
 
 ### 4.3 Filters and pagination

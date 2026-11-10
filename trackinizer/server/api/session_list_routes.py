@@ -32,7 +32,7 @@ async def list_sessions_route(
 ) -> SessionList:
     """List the caller's sessions active in the last ``days`` days or still open.
 
-    Each says whether a run drains it now and on which machine (the run's lease,
+    Each says whether a run drains it now and on which host (the run's lease,
     else where it last ran), when it last took a turn, its goal and first line, the
     canvas and workspace it sits in, and the Issues it was produced by; the Issues
     come once each, with the Issues they narrow or were produced by. A session the

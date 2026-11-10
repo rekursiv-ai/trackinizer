@@ -142,25 +142,25 @@ def refusal(status_code: int, *, code: str, message: str) -> HTTPException:
 
 async def require_instance(
     connection: HTTPConnection,
-    machine_id: UUID,
+    host_id: UUID,
     *,
     instance: UUID,
 ) -> None:
-    """Refuse a host that is not the machine's current instance.
+    """Refuse a host that is not the host's current instance.
 
     Args:
       connection: The request or websocket, carrying the database engine.
-      machine_id: The machine.
+      host_id: The host.
       instance: The host instance asking.
 
     Raises:
-      HTTPException: 403 when another instance holds the machine, or none does.
+      HTTPException: 403 when another instance holds the host, or none does.
 
     """
     async with request_engine(connection).acquire() as conn:
         current = await conn.fetchval(
-            "SELECT host_instance = $2 FROM machines WHERE id = $1",
-            machine_id,
+            "SELECT daemon_instance = $2 FROM hosts WHERE id = $1",
+            host_id,
             instance,
         )
     if current is not True:

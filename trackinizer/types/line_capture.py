@@ -142,7 +142,7 @@ class LineCapture:
             raw += b"\n"
         # Guarded like the file drain's ``_process_chunk``: this runs on the
         # pump's IO thread, so an escaping consumer error would unwind the
-        # pump and terminate the live run over one bad line.
+        # pump and terminate the agent process over one bad line.
         try:
             self._emit(raw)
         except Exception:

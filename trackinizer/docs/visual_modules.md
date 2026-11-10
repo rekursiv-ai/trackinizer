@@ -90,12 +90,12 @@ panels (`server/private/canvas_old_clients.py`).
 Chat talks to the canvas's partner, which `CanvasState.partner` names on
 every read and the events stream pushes when it changes. It follows the canvas's
 `provider`: the server's shared assistant (`assistant`), or the owner's own
-The runner attached to the chat's session on one of their machines. The
+The runner attached to the chat's session on one of their hosts. The
 header's provider card chooses it (`{"kind": "provider"}`), stars the default for
-new chats (the `chat_provider` preference), allows a newly connected machine, and
-starts a run on a machine that lists the CLI, in a folder the person names. A CLI's
+new chats (the `chat_provider` preference), allows a newly connected host, and
+starts a run on a host that lists the CLI, in a folder the person names. A CLI's
 partner is `offline` while no such run drains the chat, and still names the session
-to attach a run to; a live one carries its `machine`, `run_name` (for an
+to attach a run to; a live one carries its `host`, `run_name` (for an
 attach) and `cwd`. A partner that is not `live` disables the composer.
 
 A claude run's prompts reach Chat as cards: the run records a prompt with

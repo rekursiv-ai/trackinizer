@@ -1,7 +1,7 @@
 """Authentication: secret hashing, bearer tokens, session cookies, bootstrap.
 
 Two credential flows share one :class:`AuthIdentity` dataclass so route
-handlers never branch on credential type: bearer tokens (machine clients)
+handlers never branch on credential type: bearer tokens (host clients)
 and Google-OAuth browser session cookies (interactive users).
 
 The pieces:
@@ -45,11 +45,11 @@ from trackinizer.server.audience import key_audiences, person_audiences
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
-from trackinizer.wire.wire_job import BOX_CREDENTIAL_PREFIX
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
+from trackinizer.wire.wire_job import BOX_CREDENTIAL_PREFIX
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
@@ -315,7 +315,7 @@ def generate_token() -> tuple[str, str]:
 
     """
     secret = "trax_" + secrets.token_urlsafe(_TOKEN_BYTES)
-    # A machine or campaign-box credential starts ``trax_machine_`` or
+    # A host or campaign-box credential starts ``trax_machine_`` or
     # ``trax_gpubox_``; an API key that did would be mistaken for one by
     # ``current_user``'s early 401. Odds 2^-48 per mint.
     while secret.startswith((CREDENTIAL_PREFIX, BOX_CREDENTIAL_PREFIX)):
@@ -379,7 +379,7 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
     # The Store carries the per-process ``last_used_at`` throttle.
     store = state.store
     bearer = extract_bearer(request)
-    # A machine credential, enrollment token or campaign-box credential is not a user
+    # A host credential, enrollment token or campaign-box credential is not a user
     # credential: refuse it before any lookup, with the answer an unknown bearer gets.
     if bearer is not None and bearer.startswith(
         (CREDENTIAL_PREFIX, ENROLLMENT_PREFIX, BOX_CREDENTIAL_PREFIX),
@@ -489,7 +489,7 @@ async def create_api_key(
     ceiling: Role,
     open_into: str | None = None,
     minter: AuthIdentity | None = None,
-    machine_id: uuid.UUID | None = None,
+    host_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, str, str, Role]:
     """Insert a fresh ``api_keys`` row; return ``(key_id, secret, prefix, role)``.
 
@@ -516,8 +516,8 @@ async def create_api_key(
       open_into: The one audience the key opens sessions into; ``None`` for no pin.
       minter: The identity that presented the request, or ``None`` for the
         bootstrap seed.
-      machine_id: The machine a device login enrolled with the key, which logging
-        that machine out revokes it with; ``None`` for any other key.
+      host_id: The host a device login enrolled with the key, which logging
+        that host out revokes it with; ``None`` for any other key.
 
     Returns:
       result: Tuple of (key_id, secret, prefix, role) for the new key.
@@ -542,7 +542,7 @@ async def create_api_key(
     secret_hash = hash_secret(secret)
     await conn.execute(
         "INSERT INTO api_keys "
-        "(id, user_id, name, secret_hash, prefix, role, open_into, machine_id) "
+        "(id, user_id, name, secret_hash, prefix, role, open_into, host_id) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         key_id,
         user_id,
@@ -551,7 +551,7 @@ async def create_api_key(
         prefix,
         final_role,
         open_into,
-        machine_id,
+        host_id,
     )
     return key_id, secret, prefix, final_role
 

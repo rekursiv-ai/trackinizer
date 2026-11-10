@@ -1,4 +1,4 @@
-"""The machine-job wire contract: what a submit, a host's work and a read may carry."""
+"""The host-job wire contract: what a submit, a host's work and a read may carry."""
 
 from __future__ import annotations
 
@@ -8,23 +8,23 @@ import uuid
 import pydantic
 import pytest
 
-from trackinizer.wire import wire_machine_job
-from trackinizer.wire.wire_job import MAX_ARGV_CHARS
-from trackinizer.wire.wire_machine_job import (
+from trackinizer.wire import wire_host_job
+from trackinizer.wire.wire_host_job import (
     MAX_CHUNK_BYTES,
     Chunk,
+    HostJobSubmit,
     JobReport,
-    MachineJobSubmit,
     ReadReply,
     ReadWork,
     WorkOffer,
     remote_protocol,
     remote_url,
 )
+from trackinizer.wire.wire_job import MAX_ARGV_CHARS
 
 
 _SUBMIT = {
-    "machine": "gx10",
+    "host": "gx10",
     "argv": ["python", "train.py"],
     "gpus": 1,
     "memory_mb": 32_768,
@@ -105,15 +105,15 @@ def test_a_remote_that_is_not_a_plain_https_or_ssh_url_is_refused(
 
 
 def test_a_submit_carries_the_job_and_the_pushed_commit() -> None:
-    body = MachineJobSubmit.model_validate(_SUBMIT)
+    body = HostJobSubmit.model_validate(_SUBMIT)
 
-    assert (body.machine, body.gpus, body.label) == ("gx10", 1, "")
+    assert (body.host, body.gpus, body.label) == ("gx10", 1, "")
 
 
 @pytest.mark.parametrize(
     "fields",
     [
-        {"machine": "GX10"},
+        {"host": "GX10"},
         {"argv": []},
         {"argv": ["a\x00b"]},
         {"argv": ["x" * MAX_ARGV_CHARS]},
@@ -131,7 +131,7 @@ def test_a_submit_carries_the_job_and_the_pushed_commit() -> None:
 )
 def test_a_submit_outside_the_limits_is_refused(fields: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):
-        _ = MachineJobSubmit.model_validate(_SUBMIT | fields)
+        _ = HostJobSubmit.model_validate(_SUBMIT | fields)
 
 
 @pytest.mark.parametrize(
@@ -156,11 +156,11 @@ def test_a_ref_that_is_not_a_branch_git_takes_is_refused(ref: str) -> None:
         pydantic.ValidationError,
         match=r"Value error, the ref must be a branch, refs/heads/NAME \[",
     ):
-        _ = MachineJobSubmit.model_validate(_SUBMIT | {"ref": ref})
+        _ = HostJobSubmit.model_validate(_SUBMIT | {"ref": ref})
 
 
 def test_the_boundaries_of_a_submit_are_accepted() -> None:
-    body = MachineJobSubmit.model_validate(
+    body = HostJobSubmit.model_validate(
         _SUBMIT
         | {
             "gpus": 0,
@@ -265,7 +265,7 @@ def test_a_manifest_lists_at_most_ten_thousand_files() -> None:
     entries = [{"path": f"f{n}", "size": 0, "sha256": None} for n in range(10_001)]
 
     with pytest.raises(pydantic.ValidationError):
-        _ = wire_machine_job.ResultManifest.model_validate(
+        _ = wire_host_job.ResultManifest.model_validate(
             {"entries": entries, "total_bytes": 0},
         )
 
@@ -278,7 +278,7 @@ def test_manifest_paths_and_aggregate_bytes_are_bounded(
     entries = [{"path": "p" * length, "size": 0, "sha256": None}] * count
 
     with pytest.raises(pydantic.ValidationError):
-        wire_machine_job.ResultManifest.model_validate(
+        wire_host_job.ResultManifest.model_validate(
             {"entries": entries, "total_bytes": 0},
         )
 

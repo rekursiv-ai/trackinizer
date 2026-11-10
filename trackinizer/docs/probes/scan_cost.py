@@ -6,9 +6,9 @@ exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$
 Measure the per-tick session-file discovery scan cost, per adapter.
 
 Reproduces the table in ``design_agent_session_logging.md``'s addendum.
-Numbers are machine- and history-dependent: the claude figure scales with
+Numbers are host- and history-dependent: the claude figure scales with
 how many project directories that CLI has ever created on THIS host, so a
-fresh machine shows a small number and a long-lived one a large one.
+fresh host shows a small number and a long-lived one a large one.
 
 Run:  uv --quiet run --frozen python trackinizer/docs/probes/scan_cost.py
 '''

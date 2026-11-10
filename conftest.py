@@ -8,7 +8,7 @@ is honored only in the ROOTDIR conftest -- the package's own
 does this; the public tree has no such root, so it is declared here.
 
 ``pytest_postgresql`` loads through its own entry point: the test group pins
-``psycopg[binary]``, whose bundled libpq lets that plugin import on any machine.
+``psycopg[binary]``, whose bundled libpq lets that plugin import on any host.
 
 The math-thread caps run here, at the root, because this conftest loads before
 any test or package conftest imports NumPy or torch. In the monorepo the

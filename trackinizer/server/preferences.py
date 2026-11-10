@@ -1,7 +1,7 @@
 """A user's preferences: every key, its type, its default, and what it means.
 
 They are kept on the user's row (``users.preferences``), so they follow the user to
-any browser or machine, and an agent the user works with can change them. The
+any browser or host, and an agent the user works with can change them. The
 stored object holds only the keys the user set; a read fills in the defaults.
 Each field's description is the comment Settings shows beside the key.
 
@@ -467,7 +467,7 @@ class Preferences(_Strict):
         default="assistant",
         description=(
             "The provider a new chat starts on: the assistant, or claude or codex run on "
-            "a machine of yours."
+            "a host of yours."
         ),
         json_schema_extra=SETTING,
     )
@@ -487,7 +487,7 @@ class Preferences(_Strict):
         default="",
         description=(
             "The folder a claude or codex run that Chat starts works in, on whichever "
-            "machine it starts: ~/... under your home, or a full path. Empty for your "
+            "host it starts: ~/... under your home, or a full path. Empty for your "
             "home directory."
         ),
         json_schema_extra=SETTING,

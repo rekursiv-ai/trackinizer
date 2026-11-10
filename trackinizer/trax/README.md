@@ -82,17 +82,17 @@ trax env secret API_TOKEN to @token.txt                # secret from a file
 trax env REGION del                                    # delete
 ```
 
-## Machines and jobs
+## Hosts and jobs
 
-The registry of machines campaigns may run on, and GPU jobs, moved out of trax:
-`trax machine` and `trax job` say so and exit 2.
+The registry of hosts campaigns may run on, and GPU jobs, moved out of trax:
+`trax host` and `trax job` say so and exit 2.
 
 ## Agent runs
 
 Running an agent CLI recorded as an AgentSession moved out of trax: `trax run`
 and `trax agentsession N run` say so and exit 2. trax reads what a run records
 (`trax agentsession N`, `trax agentsession N records`) and sends a message into
-a live run with `trax send @NAME TEXT`. The run model the server and other
+a live session with `trax send @NAME TEXT`. The run model the server and other
 readers share stays in the package as `trackinizer.runs`; its adapters, in
 [`runs/adapters/`](../runs/adapters/), each know where a CLI writes its session
 JSONL and how to map a line to a record.

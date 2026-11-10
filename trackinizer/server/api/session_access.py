@@ -690,7 +690,7 @@ def _require_input(
     asker: Asker | None,
 ) -> None:
     """Allow input only from the account, its delegated writer, or the opening key."""
-    # Reading a transcript grants no control of the machine that consumes its input.
+    # Reading a transcript grants no control of the host that consumes its input.
     if asker is not None:
         if asker.role in {"writer", "admin"} and (
             asker.email.lower() == session.account.lower()

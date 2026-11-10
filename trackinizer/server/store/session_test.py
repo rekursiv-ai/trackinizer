@@ -193,7 +193,7 @@ async def test_session_audiences_keep_nulls_and_omit_unknown_sessions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_past_runs_read_a_machines_runs_for_one_account() -> None:
+async def test_past_runs_read_a_hosts_runs_for_one_account() -> None:
     """Each liveness row becomes a run, open or ended, in the order read.
 
     The first row's times arrive as ISO text, so each is read into a datetime.
@@ -223,7 +223,7 @@ async def test_past_runs_read_a_machines_runs_for_one_account() -> None:
     )
     store, _ = make_store(conn)
 
-    runs = await store.past_runs(machine="box", account="Ada@example.com", limit=2)
+    runs = await store.past_runs(host="box", account="Ada@example.com", limit=2)
 
     assert runs == [
         PastRun(
@@ -248,7 +248,7 @@ async def test_past_runs_read_a_machines_runs_for_one_account() -> None:
         "liveness.last_seen, inquiries.agentsession_ended AS ended "
         "FROM session_liveness AS liveness "
         "JOIN inquiries ON inquiries.id = liveness.session_id "
-        "WHERE liveness.machine = $1 AND liveness.cli IS NOT NULL "
+        "WHERE liveness.host = $1 AND liveness.cli IS NOT NULL "
         "AND lower(inquiries.account) = lower($2) "
         "ORDER BY liveness.last_seen DESC, liveness.session_id LIMIT $3",
         "box",
@@ -1249,7 +1249,7 @@ async def test_liveness_writes_the_poll_place_or_only_refreshes_a_watched_sessio
         session_id,
         at=at,
         polled=polled,
-        place=RunPlace(machine="box", run="r", cli="codex", cwd="/work"),
+        place=RunPlace(host="box", run="r", cli="codex", cwd="/work"),
     )
     assert engine.conn.execute.await_args is not None
     sql, *args = engine.conn.execute.await_args.args

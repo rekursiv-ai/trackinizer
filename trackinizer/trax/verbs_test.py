@@ -1992,14 +1992,14 @@ def test_export_writes_each_line_to_stdout(
 def test_export_sends_its_selector_clauses_in_order(client: FakeClient) -> None:
     """``labels is x labels nre y`` reaches the client as two ANDed clauses."""
     run(
-        ["export", "labels", "is", "org:rekursiv", "labels", "nre", "^machine:"],
+        ["export", "labels", "is", "org:rekursiv", "labels", "nre", "^host:"],
         client,
     )
 
     assert client.calls[0][2] == {
         "selector": (
             Filter(field="labels", op="is", value="org:rekursiv"),
-            Filter(field="labels", op="nre", value="^machine:"),
+            Filter(field="labels", op="nre", value="^host:"),
         ),
     }
 

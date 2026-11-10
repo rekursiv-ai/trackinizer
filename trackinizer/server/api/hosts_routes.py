@@ -1,8 +1,8 @@
-"""Routes for the machines registry: where campaigns may run.
+"""Routes for the hosts registry: where campaigns may run.
 
-The registry never reaches a machine, so deleting one unregisters it and touches
-nothing on the machine. A machine whose host holds a live credential is in service,
-and is not deleted until an admin revokes it (``machine_host_routes``).
+The registry never reaches a host, so deleting one unregisters it and touches
+nothing on the host. A host whose host holds a live credential is in service,
+and is not deleted until an admin revokes it (``daemon_routes``).
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastapi import APIRouter, Depends, Path, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._deps import machines_changed
+from trackinizer.server.api._deps import hosts_changed
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import tx
@@ -23,20 +23,20 @@ from trackinizer.types.errors import (
     NotFoundError,
     ValidationError,
 )
-from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
-from trackinizer.wire.wire_machines import (
-    MACHINE_LABELS_PATH,
-    MACHINE_PATH,
-    MACHINES_PATH,
+from trackinizer.wire.wire_daemon import OFFLINE_AFTER_SEC
+from trackinizer.wire.wire_hosts import (
+    HOST_LABELS_PATH,
+    HOST_PATH,
+    HOSTS_PATH,
     NAME_PATTERN,
     PERSONAL_ROLE,
     RESERVED_LABELS,
     RESERVED_NAMES,
-    Machine,
-    MachineDetail,
-    MachineLabels,
-    MachineList,
-    MachinePut,
+    Host,
+    HostDetail,
+    HostLabels,
+    HostList,
+    HostPut,
 )
 
 
@@ -49,15 +49,15 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "MachineInServiceError",
-    "MachineName",
-    "absent_machine",
-    "change_machine_labels_route",
-    "delete_machine_route",
-    "fetch_machines",
-    "get_machine_route",
-    "list_machines_route",
-    "put_machine_route",
+    "HostInServiceError",
+    "HostName",
+    "absent_host",
+    "change_host_labels_route",
+    "delete_host_route",
+    "fetch_hosts",
+    "get_host_route",
+    "list_hosts_route",
+    "put_host_route",
     "refuse_reserved",
     "router",
 ]
@@ -66,77 +66,77 @@ __all__ = [
 router = APIRouter()
 
 
-class MachineInServiceError(ConflictError):
-    """The machine's host holds a live credential, so it cannot be deleted."""
+class HostInServiceError(ConflictError):
+    """The daemon holds a live credential, so it cannot be deleted."""
 
-    code = "machine_in_service"
-
-
-MachineName = Annotated[str, Path(pattern=NAME_PATTERN)]
+    code = "host_in_service"
 
 
-@router.get(MACHINES_PATH, response_model=MachineList)
-async def list_machines_route(
+HostName = Annotated[str, Path(pattern=NAME_PATTERN)]
+
+
+@router.get(HOSTS_PATH, response_model=HostList)
+async def list_hosts_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
-) -> MachineList:
-    """List every registered machine.
+) -> HostList:
+    """List every registered host.
 
     Args:
       request: Request carrying the database engine.
       identity: Writer-role principal.
 
     Returns:
-      machines: Every machine, sorted by name in byte order.
+      hosts: Every host, sorted by name in byte order.
 
     """
     async with request_engine(request).acquire() as conn:
-        rows = await fetch_machines(conn, name=None, viewer=identity)
-    return MachineList(machines=[_machine(row, viewer=identity) for row in rows])
+        rows = await fetch_hosts(conn, name=None, viewer=identity)
+    return HostList(hosts=[_host(row, viewer=identity) for row in rows])
 
 
-@router.get(MACHINE_PATH, response_model=MachineDetail)
-async def get_machine_route(
-    name: MachineName,
+@router.get(HOST_PATH, response_model=HostDetail)
+async def get_host_route(
+    name: HostName,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
-) -> MachineDetail:
-    """Return one machine, with what its host reported.
+) -> HostDetail:
+    """Return one host, with what its host reported.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       request: Request carrying the database engine.
       identity: Writer-role principal.
 
     Returns:
-      machine: The machine.
+      host: The host.
 
     Raises:
-      NotFoundError: No such machine.
+      NotFoundError: No such host.
 
     """
     refuse_reserved(name)
     async with request_engine(request).acquire() as conn:
-        rows = await fetch_machines(conn, name=name, viewer=identity)
+        rows = await fetch_hosts(conn, name=name, viewer=identity)
     if not rows:
-        raise absent_machine(name)
-    return _machine_detail(rows[0], viewer=identity)
+        raise absent_host(name)
+    return _host_detail(rows[0], viewer=identity)
 
 
-@router.put(MACHINE_PATH, status_code=204)
-async def put_machine_route(
-    name: MachineName,
-    body: MachinePut,
+@router.put(HOST_PATH, status_code=204)
+async def put_host_route(
+    name: HostName,
+    body: HostPut,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> Response:
-    """Register a machine, or change the fields the body names.
+    """Register a host, or change the fields the body names.
 
-    A field left out keeps its value, or defaults to empty on a new machine;
+    A field left out keeps its value, or defaults to empty on a new host;
     an empty string clears it.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       body: The new role and how line, each optional.
       request: Request carrying the database engine.
       identity: Admin principal, recorded as who changed it.
@@ -148,11 +148,11 @@ async def put_machine_route(
     refuse_reserved(name)
     async with request_engine(request).acquire() as conn:
         await conn.execute(
-            "INSERT INTO machines (name, role, how, updated_by) "
+            "INSERT INTO hosts (name, role, how, updated_by) "
             "VALUES ($1, COALESCE($2, ''), COALESCE($3, ''), $4) "
             "ON CONFLICT (name) DO UPDATE SET "
-            "role = COALESCE($2, machines.role), "
-            "how = COALESCE($3, machines.how), "
+            "role = COALESCE($2, hosts.role), "
+            "how = COALESCE($3, hosts.how), "
             "updated_by = EXCLUDED.updated_by, updated = now()",
             name,
             body.role,
@@ -162,10 +162,10 @@ async def put_machine_route(
     return Response(status_code=204)
 
 
-@router.patch(MACHINE_LABELS_PATH, status_code=204)
-async def change_machine_labels_route(
-    name: MachineName,
-    body: MachineLabels,
+@router.patch(HOST_LABELS_PATH, status_code=204)
+async def change_host_labels_route(
+    name: HostName,
+    body: HostLabels,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> Response:
@@ -174,7 +174,7 @@ async def change_machine_labels_route(
     Labels follow the Issue label rules: stripped, deduplicated, never blank.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       body: The labels to add and to remove.
       request: Request carrying the database engine.
       identity: Admin principal, recorded as who changed it.
@@ -184,7 +184,7 @@ async def change_machine_labels_route(
 
     Raises:
       ValidationError: A label is blank or holds a NUL.
-      NotFoundError: No such machine.
+      NotFoundError: No such host.
 
     """
     refuse_reserved(name)
@@ -194,7 +194,7 @@ async def change_machine_labels_route(
         # One statement: the labels are read, changed and written under the row lock,
         # so two concurrent changes cannot overwrite each other.
         stored = await conn.fetchval(
-            "UPDATE machines SET labels = ARRAY("
+            "UPDATE hosts SET labels = ARRAY("
             "SELECT label FROM unnest(labels || $2::text[]) "
             "WITH ORDINALITY AS t(label, position) "
             "WHERE label <> ALL($3::text[]) "
@@ -207,20 +207,20 @@ async def change_machine_labels_route(
             identity.email,
         )
     if stored is None:
-        raise absent_machine(name)
+        raise absent_host(name)
     return Response(status_code=204)
 
 
-@router.delete(MACHINE_PATH, status_code=204)
-async def delete_machine_route(
-    name: MachineName,
+@router.delete(HOST_PATH, status_code=204)
+async def delete_host_route(
+    name: HostName,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("admin"))],
 ) -> Response:
-    """Unregister a machine; nothing on the machine itself is touched.
+    """Unregister a host; nothing on the host itself is touched.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       request: Request carrying the database engine.
       identity: Admin principal.
 
@@ -228,8 +228,8 @@ async def delete_machine_route(
       empty: 204 with no body.
 
     Raises:
-      NotFoundError: No such machine.
-      MachineInServiceError: The machine holds a live credential.
+      NotFoundError: No such host.
+      HostInServiceError: The host holds a live credential.
 
     """
     del identity
@@ -239,75 +239,75 @@ async def delete_machine_route(
         # cannot appear between the check and the delete. The check is a separate
         # statement: one sharing the lock's would read the snapshot taken before the
         # lock was granted, and miss a join that committed meanwhile.
-        machine = await conn.fetchrow(
-            "SELECT id, owner FROM machines WHERE name = $1 FOR UPDATE",
+        host = await conn.fetchrow(
+            "SELECT id, owner FROM hosts WHERE name = $1 FOR UPDATE",
             name,
         )
-        if machine is None:
-            raise absent_machine(name)
+        if host is None:
+            raise absent_host(name)
         if await conn.fetchval(
-            "SELECT EXISTS (SELECT 1 FROM machine_credentials "
-            "WHERE machine_id = $1 AND revoked_at IS NULL)",
-            machine["id"],
+            "SELECT EXISTS (SELECT 1 FROM host_credentials "
+            "WHERE host_id = $1 AND revoked_at IS NULL)",
+            host["id"],
         ):
-            raise MachineInServiceError(
-                f"machine {name!r} has a live credential; revoke it first",
+            raise HostInServiceError(
+                f"host {name!r} has a live credential; revoke it first",
             )
-        await conn.execute("DELETE FROM machines WHERE name = $1", name)
-    machines_changed(request, owner=from_plain(machine["owner"], str, default=None))
+        await conn.execute("DELETE FROM hosts WHERE name = $1", name)
+    hosts_changed(request, owner=from_plain(host["owner"], str, default=None))
     return Response(status_code=204)
 
 
-def absent_machine(name: str) -> NotFoundError:
-    """Return the error for a machine that is not registered."""
-    return NotFoundError(f"machine {name!r} is not registered")
+def absent_host(name: str) -> NotFoundError:
+    """Return the error for a host that is not registered."""
+    return NotFoundError(f"host {name!r} is not registered")
 
 
 # Each route calls this in its body, so the role check refuses a caller first and the
 # reserved-name check cannot answer before it.
 def refuse_reserved(name: str) -> None:
-    """Refuse a reserved machine name with 422."""
+    """Refuse a reserved host name with 422."""
     if name in RESERVED_NAMES:
-        raise ValidationError(f"{name!r} is a reserved machine name")
+        raise ValidationError(f"{name!r} is a reserved host name")
 
 
 # One statement for the listing and the single read, so the derived status has one
-# spelling. ``$1`` is the silence, in seconds, after which a connected machine reads
-# offline; ``$2`` is one name, or NULL for every machine. ``revoked`` means every
-# credential the machine ever had was revoked; ``never`` means no heartbeat yet. A
-# personal machine (``$3``) is read only by its owner (``$4``), an admin included: an
-# admin revokes it by name, but never lists it, so nothing that lists machines to choose
+# spelling. ``$1`` is the silence, in seconds, after which a connected host reads
+# offline; ``$2`` is one name, or NULL for every host. ``revoked`` means every
+# credential the host ever had was revoked; ``never`` means no heartbeat yet. A
+# personal host (``$3``) is read only by its owner (``$4``), an admin included: an
+# admin revokes it by name, but never lists it, so nothing that lists hosts to choose
 # one offers a person's laptop.
-async def fetch_machines(
+async def fetch_hosts(
     conn: Conn,
     *,
     name: str | None,
     viewer: AuthIdentity,
 ) -> list[Record]:
-    """Read the machines ``viewer`` may see, with the status derived.
+    """Read the hosts ``viewer`` may see, with the status derived.
 
     Args:
       conn: A connection.
-      name: One machine's name, or ``None`` for every machine.
-      viewer: Who reads; a personal machine is read only by its owner.
+      name: One host's name, or ``None`` for every host.
+      viewer: Who reads; a personal host is read only by its owner.
 
     Returns:
-      rows: The machines, sorted by name in byte order.
+      rows: The hosts, sorted by name in byte order.
 
     """
     return await conn.fetch(
         "SELECT id, name, role, how, labels, updated_by, updated, last_heartbeat, owner, "
         "created, confirmed_at, last_run_cwd, "
-        "host_version, facts, CASE "
-        "WHEN EXISTS (SELECT 1 FROM machine_credentials c "
-        "WHERE c.machine_id = machines.id) "
-        "AND NOT EXISTS (SELECT 1 FROM machine_credentials c "
-        "WHERE c.machine_id = machines.id AND c.revoked_at IS NULL) THEN 'revoked' "
+        "daemon_version, facts, CASE "
+        "WHEN EXISTS (SELECT 1 FROM host_credentials c "
+        "WHERE c.host_id = hosts.id) "
+        "AND NOT EXISTS (SELECT 1 FROM host_credentials c "
+        "WHERE c.host_id = hosts.id AND c.revoked_at IS NULL) THEN 'revoked' "
         "WHEN last_heartbeat IS NULL THEN 'never' "
-        "WHEN host_instance IS NOT NULL "
+        "WHEN daemon_instance IS NOT NULL "
         "AND last_heartbeat > now() - make_interval(secs => $1) THEN 'online' "
         "ELSE 'offline' END AS status "
-        "FROM machines WHERE ($2::text IS NULL OR name = $2) "
+        "FROM hosts WHERE ($2::text IS NULL OR name = $2) "
         "AND (role <> $3 OR owner = $4) "
         'ORDER BY name COLLATE "C"',
         OFFLINE_AFTER_SEC,
@@ -317,24 +317,24 @@ async def fetch_machines(
     )
 
 
-def _machine(row: Record, *, viewer: AuthIdentity) -> Machine:
-    """Build the wire model of one ``machines`` row."""
-    return Machine.model_validate(_fields(row, viewer=viewer))
+def _host(row: Record, *, viewer: AuthIdentity) -> Host:
+    """Build the wire model of one ``hosts`` row."""
+    return Host.model_validate(_fields(row, viewer=viewer))
 
 
-def _machine_detail(row: Record, *, viewer: AuthIdentity) -> MachineDetail:
-    """Build the detailed wire model of one ``machines`` row."""
-    return MachineDetail.model_validate(
+def _host_detail(row: Record, *, viewer: AuthIdentity) -> HostDetail:
+    """Build the detailed wire model of one ``hosts`` row."""
+    return HostDetail.model_validate(
         {
             **_fields(row, viewer=viewer),
-            "host_version": from_plain(row["host_version"], str),
+            "daemon_version": from_plain(row["daemon_version"], str),
             "facts": from_plain(row["facts"], dict[str, object]),
         },
     )
 
 
 def _fields(row: Record, *, viewer: AuthIdentity) -> dict[str, object]:
-    """Return the fields a listed machine carries; the owner only to who may see it."""
+    """Return the fields a listed host carries; the owner only to who may see it."""
     owner = from_plain(row["owner"], str | None)
     return {
         "owner": owner if viewer.role == "admin" or owner == viewer.email else None,

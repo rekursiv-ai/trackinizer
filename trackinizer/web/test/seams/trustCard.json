@@ -14,7 +14,7 @@
         "input": {
           "folder": "~/proj"
         },
-        "machine": "gx10",
+        "host": "gx10",
         "plan": null,
         "questions": null,
         "remembered": false,

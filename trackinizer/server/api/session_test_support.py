@@ -241,7 +241,7 @@ async def drain(
     session_id: uuid.UUID,
     cli: str | None = None,
     instance: str | None = None,
-    machine: str | None = None,
+    host: str | None = None,
 ) -> httpx2.Response:
     """Drain a session's inbound queue as the installed identity.
 
@@ -250,7 +250,7 @@ async def drain(
       session_id: The session.
       cli: The CLI the draining run says it is; none, as an older ``trax`` sends.
       instance: The draining run's own id; none, as an older ``trax`` sends.
-      machine: The machine the draining run says it is on; none by default.
+      host: The host the draining run says it is on; none by default.
 
     Returns:
       response: The raw response.
@@ -263,7 +263,7 @@ async def drain(
             for name, value in (
                 ("cli", cli),
                 ("instance", instance),
-                ("machine", machine),
+                ("host", host),
             )
             if value is not None
         },

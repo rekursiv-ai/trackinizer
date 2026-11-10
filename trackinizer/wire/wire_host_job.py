@@ -1,10 +1,10 @@
-"""Wire contract for jobs on a person's own machine, run by the machine host.
+"""Wire contract for jobs on a person's own host, run by the daemon.
 
-A person's own API key asks for a job on a machine they own whose host says it runs
-jobs (:data:`JOBS_FACT`). The host holds a wait on :data:`MACHINE_WORK_PATH` and is
+A person's own API key asks for a job on a host they own whose host says it runs
+jobs (:data:`JOBS_FACT`). The host holds a wait on :data:`HOST_WORK_PATH` and is
 handed one piece of work at a time: a job to start, a job to cancel, or a read of a
-job's log or results. It reports each job's state on :data:`MACHINE_JOB_REPORT_PATH`
-and answers a read on :data:`MACHINE_READ_REPLY_PATH` with at most
+job's log or results. It reports each job's state on :data:`HOST_JOB_REPORT_PATH`
+and answers a read on :data:`HOST_READ_REPLY_PATH` with at most
 :data:`MAX_CHUNK_BYTES`, which the server hands to the reader waiting for it and keeps
 nowhere.
 
@@ -35,29 +35,29 @@ from pydantic import (
 )
 
 from trackinizer.wire.wire_exec import MAX_STREAM_BYTES, Base64
+from trackinizer.wire.wire_hosts import NAME_PATTERN
 from trackinizer.wire.wire_job import (
     JOB_PREFIX,
     MAX_ARGV_CHARS,
     CommitSha,
     ManifestEntry,
 )
-from trackinizer.wire.wire_machines import NAME_PATTERN
 
 
 __all__ = [
     "GPUS_FACT",
+    "HOST_JOBS_PATH",
+    "HOST_JOB_CANCEL_PATH",
+    "HOST_JOB_FILE_PATH",
+    "HOST_JOB_LOG_PATH",
+    "HOST_JOB_MANIFEST_PATH",
+    "HOST_JOB_PATH",
+    "HOST_JOB_REPORT_PATH",
+    "HOST_READ_REPLY_PATH",
+    "HOST_TERMINAL_STATES",
+    "HOST_WORK_PATH",
     "JOBS_FACT",
     "JOBS_MEMORY_FACT",
-    "MACHINE_JOBS_PATH",
-    "MACHINE_JOB_CANCEL_PATH",
-    "MACHINE_JOB_FILE_PATH",
-    "MACHINE_JOB_LOG_PATH",
-    "MACHINE_JOB_MANIFEST_PATH",
-    "MACHINE_JOB_PATH",
-    "MACHINE_JOB_REPORT_PATH",
-    "MACHINE_READ_REPLY_PATH",
-    "MACHINE_TERMINAL_STATES",
-    "MACHINE_WORK_PATH",
     "MAX_CHUNK_BYTES",
     "MAX_GPUS",
     "MAX_MANIFEST_BYTES",
@@ -70,13 +70,13 @@ __all__ = [
     "WAIT_MAX_SEC",
     "CancelWork",
     "Chunk",
+    "HostJobList",
+    "HostJobSpec",
+    "HostJobState",
+    "HostJobSubmit",
+    "HostJobView",
     "JobRecovery",
     "JobReport",
-    "MachineJobList",
-    "MachineJobSpec",
-    "MachineJobState",
-    "MachineJobSubmit",
-    "MachineJobView",
     "ReadRefused",
     "ReadReply",
     "ReadWhat",
@@ -89,28 +89,26 @@ __all__ = [
     "remote_url",
 ]
 
-MACHINE_JOBS_PATH: Final = f"{JOB_PREFIX}/machine-jobs"
-"""``POST``: queue a job on one of the caller's machines; ``GET``: list them."""
+HOST_JOBS_PATH: Final = f"{JOB_PREFIX}/host-jobs"
+"""``POST``: queue a job on one of the caller's hosts; ``GET``: list them."""
 
-MACHINE_JOB_PATH: Final = f"{JOB_PREFIX}/machine-jobs/{{job_id}}"
-MACHINE_JOB_CANCEL_PATH: Final = f"{JOB_PREFIX}/machine-jobs/{{job_id}}/cancel"
-MACHINE_JOB_LOG_PATH: Final = f"{JOB_PREFIX}/machine-jobs/{{job_id}}/log"
+HOST_JOB_PATH: Final = f"{JOB_PREFIX}/host-jobs/{{job_id}}"
+HOST_JOB_CANCEL_PATH: Final = f"{JOB_PREFIX}/host-jobs/{{job_id}}/cancel"
+HOST_JOB_LOG_PATH: Final = f"{JOB_PREFIX}/host-jobs/{{job_id}}/log"
 """``GET ?offset=N&wait=S``: the log from byte ``N``, relayed from the host."""
 
-MACHINE_JOB_MANIFEST_PATH: Final = f"{JOB_PREFIX}/machine-jobs/{{job_id}}/manifest"
-MACHINE_JOB_FILE_PATH: Final = f"{JOB_PREFIX}/machine-jobs/{{job_id}}/file"
+HOST_JOB_MANIFEST_PATH: Final = f"{JOB_PREFIX}/host-jobs/{{job_id}}/manifest"
+HOST_JOB_FILE_PATH: Final = f"{JOB_PREFIX}/host-jobs/{{job_id}}/file"
 """``GET ?path=P&offset=N``: one result file from byte ``N``, relayed from the host."""
 
-MACHINE_WORK_PATH: Final = f"{JOB_PREFIX}/machines/{{machine_id}}/work"
+HOST_WORK_PATH: Final = f"{JOB_PREFIX}/hosts/{{host_id}}/work"
 """``GET ?instance=ID&wait_sec=S``, held up to :data:`WAIT_MAX_SEC`: the host's next
 piece of work, as a :class:`WorkOffer`."""
 
-MACHINE_JOB_REPORT_PATH: Final = f"{JOB_PREFIX}/machines/{{machine_id}}/jobs/{{job_id}}"
+HOST_JOB_REPORT_PATH: Final = f"{JOB_PREFIX}/hosts/{{host_id}}/jobs/{{job_id}}"
 """``POST``: the host's :class:`JobReport` on one of its jobs."""
 
-MACHINE_READ_REPLY_PATH: Final = (
-    f"{JOB_PREFIX}/machines/{{machine_id}}/reads/{{read_id}}"
-)
+HOST_READ_REPLY_PATH: Final = f"{JOB_PREFIX}/hosts/{{host_id}}/reads/{{read_id}}"
 """``POST``: the host's :class:`ReadReply` to a read it was handed."""
 
 JOBS_FACT: Final = "jobs"
@@ -132,7 +130,7 @@ READ_HOLD_MAX_SEC: Final = 20
 """The longest a host holds a log read for new bytes."""
 
 MAX_MINUTES: Final = 1_440
-"""The longest wall-clock limit a job on a machine may ask for."""
+"""The longest wall-clock limit a job on a host may ask for."""
 
 MAX_GPUS: Final = 8
 MIN_MEMORY_MB: Final = 64
@@ -147,7 +145,7 @@ MAX_MANIFEST_BYTES: Final = MAX_CHUNK_BYTES - 1_024
 MAX_RESULT_PATH_BYTES: Final = 4_096
 """The most UTF-8 bytes in one result entry's path."""
 
-type MachineJobState = Literal[
+type HostJobState = Literal[
     "requested",
     "queued",
     "running",
@@ -159,7 +157,7 @@ type MachineJobState = Literal[
 """``requested`` until the host takes the job; ``queued`` while the host fetches its
 code or waits for room; then ``running``, and one of the four ends."""
 
-MACHINE_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
+HOST_TERMINAL_STATES: Final[frozenset[str]] = frozenset(
     {"completed", "failed", "cancelled", "timeout"},
 )
 """States a job never leaves."""
@@ -264,13 +262,13 @@ type BranchRef = Annotated[str, AfterValidator(branch_ref)]
 type _Arg = Annotated[str, Field(pattern=r"^[^\x00]*$")]
 
 
-class MachineJobSubmit(BaseModel):
-    """What a person asks for: a command on one of their machines, from a pushed commit."""
+class HostJobSubmit(BaseModel):
+    """What a person asks for: a command on one of their hosts, from a pushed commit."""
 
     model_config = ConfigDict(extra="forbid")
 
-    machine: str = Field(pattern=NAME_PATTERN)
-    """The machine, by name; it must be the caller's."""
+    host: str = Field(pattern=NAME_PATTERN)
+    """The host, by name; it must be the caller's."""
 
     argv: list[_Arg] = Field(min_length=1)
     """The command, run without a shell in a fresh worktree of the commit."""
@@ -299,12 +297,12 @@ class MachineJobSubmit(BaseModel):
         return value
 
 
-class MachineJobView(BaseModel):
-    """One machine job as its owner sees it."""
+class HostJobView(BaseModel):
+    """One host job as its owner sees it."""
 
     id: int
-    machine: str
-    state: MachineJobState
+    host: str
+    state: HostJobState
     gpus: int
     memory_mb: int
     minutes: int
@@ -323,13 +321,13 @@ class MachineJobView(BaseModel):
     ended_at: datetime | None
 
 
-class MachineJobList(BaseModel):
-    """The caller's machine jobs, newest first."""
+class HostJobList(BaseModel):
+    """The caller's host jobs, newest first."""
 
-    jobs: list[MachineJobView]
+    jobs: list[HostJobView]
 
 
-class MachineJobSpec(BaseModel):
+class HostJobSpec(BaseModel):
     """A job as the host is handed it."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -354,7 +352,7 @@ class StartWork(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     kind: Literal["start"] = "start"
-    job: MachineJobSpec
+    job: HostJobSpec
 
 
 class CancelWork(BaseModel):

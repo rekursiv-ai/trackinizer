@@ -1,10 +1,10 @@
-"""The tool routes end to end over PGlite: who may open a pipe, and a host's round trip.
+"""The tool routes end to end over PGlite: who may open a tool connection, and a host's round trip.
 
-The HTTP routes are driven through the whole app with the real sign-in and machine
+The HTTP routes are driven through the whole app with the real sign-in and host
 credentials. A WebSocket route is called as the server calls it, with a Starlette
 ``WebSocket`` over a scripted ASGI channel, since the test client cannot share the
 session event loop that owns the database. The host is played by the test: it holds the
-wait route and dials back, as the machine host does.
+wait route and dials back, as the daemon does.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.server.api import tool_routes
-from trackinizer.server.api._deps import pipe_hub
+from trackinizer.server.api._deps import tool_relay
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import clear_identity_override, patch_state
 from trackinizer.server.api.tool_access import tool_access
@@ -40,13 +40,13 @@ from trackinizer.server.tool_lines import (
     refused_line,
 )
 from trackinizer.wire import wire_terminals
+from trackinizer.wire.wire_daemon import ENROLL_PATH, JOIN_PATH, REVOKE_PATH
 from trackinizer.wire.wire_exec import (
-    MACHINE_EXEC_RESULT_PATH,
-    MACHINE_EXEC_WAIT_PATH,
+    HOST_EXEC_RESULT_PATH,
+    HOST_EXEC_WAIT_PATH,
 )
-from trackinizer.wire.wire_machine_host import ENROLL_PATH, JOIN_PATH, REVOKE_PATH
 from trackinizer.wire.wire_tools import (
-    MACHINE_TOOLS_WAIT_PATH,
+    HOST_TOOLS_WAIT_PATH,
     ToolOffer,
 )
 
@@ -90,7 +90,7 @@ def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class _Machine:
+class _Host:
     name: str
     id: uuid.UUID
     credential: str
@@ -163,7 +163,7 @@ class _Peer:
 
 
 class _World:
-    """A served app with users, the assistant, and a fresh pipe hub."""
+    """A served app with users, the assistant, and a fresh tool connection relay."""
 
     def __init__(self, client: httpx2.AsyncClient, store: Store) -> None:
         self.client = client
@@ -238,7 +238,7 @@ class _World:
         *,
         confirm: bool = True,
         facts: dict[str, object] | None = None,
-    ) -> _Machine:
+    ) -> _Host:
         """Self-enroll ``name`` with ``cookie``'s user, join it, and confirm it."""
         enrolled = await self.call(
             "POST",
@@ -255,7 +255,7 @@ class _World:
                 "name": name,
                 "token": from_plain(enrolled.json(), dict[str, str])["token"],
                 "instance": str(_INSTANCE),
-                "host_version": "t",
+                "daemon_version": "t",
                 "facts": {"tools": True} if facts is None else facts,
             },
         )
@@ -268,9 +268,9 @@ class _World:
                 headers=self.browser(cookie),
             )
             assert confirmed.status_code == 204, confirmed.text
-        return _Machine(
+        return _Host(
             name=name,
-            id=uuid.UUID(body["machine_id"]),
+            id=uuid.UUID(body["host_id"]),
             credential=body["credential"],
         )
 
@@ -279,33 +279,33 @@ class _World:
         headers: Mapping[str, str],
         *,
         asker: str | None = "ada@x.y",
-        machine: str = "gx10",
+        host: str = "gx10",
     ) -> _Peer:
-        """Dial the agent's leg in a task of its own, as the server would run it."""
+        """Dial the agent's socket in a task of its own, as the server would run it."""
         peer = _Peer(headers)
         self.tasks.append(
             asyncio.ensure_future(
-                tool_routes.tools_agent_socket(peer.websocket, machine, asker),
+                tool_routes.tools_agent_socket(peer.websocket, host, asker),
             ),
         )
         return peer
 
-    def host(
+    def daemon(
         self,
-        machine: _Machine,
-        pipe_id: uuid.UUID,
+        host: _Host,
+        connection_id: uuid.UUID,
         *,
         instance: uuid.UUID = _INSTANCE,
         headers: Mapping[str, str] | None = None,
     ) -> _Peer:
-        """Dial the host's leg back in a task of its own."""
-        peer = _Peer(machine.headers() if headers is None else headers)
+        """Dial the host's socket back in a task of its own."""
+        peer = _Peer(host.headers() if headers is None else headers)
         self.tasks.append(
             asyncio.ensure_future(
-                tool_routes.tools_host_socket(
+                tool_routes.tools_daemon_socket(
                     peer.websocket,
-                    machine.id,
-                    pipe_id,
+                    host.id,
+                    connection_id,
                     instance,
                 ),
             ),
@@ -314,38 +314,38 @@ class _World:
 
     async def wait(
         self,
-        machine: _Machine,
+        host: _Host,
         *,
         instance: uuid.UUID = _INSTANCE,
         wait_sec: float = 0,
         key: uuid.UUID | None = None,
     ) -> httpx2.Response:
         """Hold the wait route as the host does."""
-        path = MACHINE_TOOLS_WAIT_PATH.format(machine_id=machine.id)
+        path = HOST_TOOLS_WAIT_PATH.format(host_id=host.id)
         return await self.call(
             "GET",
             f"{path}?instance={instance}&wait_sec={wait_sec}",
-            headers=machine.headers()
+            headers=host.headers()
             | ({} if key is None else {"Idempotency-Key": str(key)}),
         )
 
-    async def offer(self, machine: _Machine) -> uuid.UUID:
-        """Take the machine's next offer, and return its pipe's id."""
-        waited = await self.wait(machine, wait_sec=5)
+    async def offer(self, host: _Host) -> uuid.UUID:
+        """Take the host's next offer, and return its tool connection's id."""
+        waited = await self.wait(host, wait_sec=5)
         assert waited.status_code == 200, waited.text
-        return ToolOffer.model_validate(waited.json()).pipe_id
+        return ToolOffer.model_validate(waited.json()).connection_id
 
     async def paired(
         self,
-        machine: _Machine,
+        host: _Host,
         headers: Mapping[str, str],
     ) -> tuple[_Peer, _Peer]:
-        """Bring up a whole pipe, proven by a line crossing it."""
+        """Bring up a whole tool connection, proven by a line crossing it."""
         agent = self.agent(headers)
-        host = self.host(machine, await self.offer(machine))
+        daemon = self.daemon(host, await self.offer(host))
         agent.push(_HELLO)
-        assert await host.frame() == _HELLO
-        return agent, host
+        assert await daemon.frame() == _HELLO
+        return agent, daemon
 
     async def finish(self) -> None:
         """Say every route that was started has ended, with nothing left running."""
@@ -363,7 +363,7 @@ async def world(
     client, store = pglite_route_client
     clear_identity_override()
     patch_state(monkeypatch, "config", _config())
-    monkeypatch.delattr(app.state, "tool_pipes", raising=False)
+    monkeypatch.delattr(app.state, "tool_relay", raising=False)
     monkeypatch.delattr(app.state, "replays", raising=False)
     found = _World(client, store)
     yield found
@@ -395,34 +395,34 @@ def _call(call_id: str, arguments: dict[str, object] | None = None) -> bytes:
     return (json.dumps(line) + "\n").encode()
 
 
-async def _take_over(world: _World, machine: _Machine) -> uuid.UUID:
-    """Make another instance the machine's current host, and return its id."""
+async def _take_over(world: _World, host: _Host) -> uuid.UUID:
+    """Make another instance the host's current host, and return its id."""
     successor = uuid.uuid4()
     async with world.store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE machines SET host_instance = $2 WHERE id = $1",
-            machine.id,
+            "UPDATE hosts SET daemon_instance = $2 WHERE id = $1",
+            host.id,
             successor,
         )
     return successor
 
 
-# -- A pipe, whole ----------------------------------------------------------------------
+# -- A tool connection, whole ----------------------------------------------------------------------
 
 
-async def test_bytes_cross_a_whole_pipe_and_either_end_closes_the_other(
+async def test_bytes_cross_a_whole_connection_and_either_end_closes_the_other(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
 
-    host.push(b"Welcome \xff\n")
+    daemon.push(b"Welcome \xff\n")
     assert await agent.frame() == b"Welcome \xff\n"
 
-    host.leave()
+    daemon.leave()
 
-    assert await agent.close_code() == wire_terminals.CLOSE_HOST_LOST
+    assert await agent.close_code() == wire_terminals.CLOSE_DAEMON_LOST
     await world.finish()
 
 
@@ -430,54 +430,54 @@ async def test_an_agent_that_leaves_closes_its_host_and_its_slot_is_free(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
 
     agent.leave()
 
-    assert await host.close_code() == wire_terminals.CLOSE_ENDED
+    assert await daemon.close_code() == wire_terminals.CLOSE_ENDED
     await world.finish()
-    assert pipe_hub(app)._pipes == {}
+    assert tool_relay(app)._connections == {}
 
 
-async def test_a_frame_that_is_not_binary_ends_the_pipe(world: _World) -> None:
+async def test_a_frame_that_is_not_binary_ends_the_connection(world: _World) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
 
     agent.push_text("not binary")
 
-    assert await host.close_code() == wire_terminals.CLOSE_ENDED
+    assert await daemon.close_code() == wire_terminals.CLOSE_ENDED
     assert await agent.close_code() == wire_terminals.CLOSE_ENDED
     await world.finish()
 
 
-# -- Who may open the agent's leg -------------------------------------------------------
+# -- Who may open the agent's socket -------------------------------------------------------
 
 
 async def test_a_persons_own_key_is_refused(world: _World) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
 
     for asker in (None, "ada@x.y"):
         peer = world.agent(await world.key(ada), asker=asker)
         assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
 
-    assert (await world.wait(machine)).json() is None
+    assert (await world.wait(host)).json() is None
 
 
-async def test_another_owners_machine_is_refused(world: _World) -> None:
+async def test_another_owners_host_is_refused(world: _World) -> None:
     ada = await world.person("ada@x.y")
     _ = await world.person("bob@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     headers = await world.assistant()
 
     foreign = world.agent(headers, asker="bob@x.y")
-    unknown = world.agent(headers, machine="nowhere")
+    unknown = world.agent(headers, host="nowhere")
 
     assert await foreign.close_code() == wire_terminals.CLOSE_REFUSED
     assert await unknown.close_code() == wire_terminals.CLOSE_REFUSED
-    assert (await world.wait(machine)).json() is None
+    assert (await world.wait(host)).json() is None
 
 
 @pytest.mark.parametrize(
@@ -498,13 +498,13 @@ async def test_another_owners_machine_is_refused(world: _World) -> None:
         "auth_disabled",
     ],
 )
-async def test_nobody_but_the_assistant_naming_a_writer_or_admin_opens_a_pipe(
+async def test_nobody_but_the_assistant_naming_a_writer_or_admin_opens_a_connection(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
     caller: str,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     _ = await world.person("vic@x.y", role="viewer")
     _ = await world.person("dee@x.y", status="disabled")
     admin = await world.person("boss@x.y", role="admin")
@@ -544,23 +544,23 @@ async def test_nobody_but_the_assistant_naming_a_writer_or_admin_opens_a_pipe(
 
     assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
     if caller != "auth_disabled":
-        assert (await world.wait(machine)).json() is None
+        assert (await world.wait(host)).json() is None
     await world.finish()
 
 
-async def test_an_admin_asker_owns_a_pipe_too(world: _World) -> None:
+async def test_an_admin_asker_owns_a_connection_too(world: _World) -> None:
     boss = await world.person("ada@x.y", role="admin")
-    machine = await world.join(world.cookie(boss))
+    host = await world.join(world.cookie(boss))
 
     # Pairing proves the line crossed.
-    _ = await world.paired(machine, await world.assistant())
+    _ = await world.paired(host, await world.assistant())
 
 
 @pytest.mark.parametrize(
     "state",
     ["revoked", "unconfirmed", "tools_off", "tools_not_a_flag", "exec_only"],
 )
-async def test_a_machine_that_is_revoked_unconfirmed_or_not_opted_in_opens_nothing(
+async def test_a_host_that_is_revoked_unconfirmed_or_not_opted_in_opens_nothing(
     world: _World,
     state: str,
 ) -> None:
@@ -571,7 +571,7 @@ async def test_a_machine_that_is_revoked_unconfirmed_or_not_opted_in_opens_nothi
         "tools_not_a_flag": {"tools": "true"},
         "exec_only": {"exec": True},
     }
-    machine = await world.join(
+    host = await world.join(
         cookie,
         confirm=state != "unconfirmed",
         facts=facts.get(state, {"tools": True}),
@@ -587,48 +587,48 @@ async def test_a_machine_that_is_revoked_unconfirmed_or_not_opted_in_opens_nothi
     peer = world.agent(await world.assistant())
 
     assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
-    waited = await world.wait(machine)
+    waited = await world.wait(host)
     assert waited.status_code != 200 or waited.json() is None
 
 
-async def test_a_machine_heard_from_an_hour_ago_still_opens_a_pipe(
+async def test_a_host_heard_from_an_hour_ago_still_opens_a_connection(
     world: _World,
 ) -> None:
-    """Whether its host is up is for the pipe to find: it dials back, or does not."""
+    """Whether its host is up is for the tool connection to find: it dials back, or does not."""
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     async with world.store.engine.acquire() as conn:
         await conn.execute(
-            "UPDATE machines SET last_heartbeat = now() - interval '1 hour'",
+            "UPDATE hosts SET last_heartbeat = now() - interval '1 hour'",
         )
 
-    agent, host = await world.paired(machine, await world.assistant())
+    agent, daemon = await world.paired(host, await world.assistant())
 
     agent.leave()
-    assert await host.close_code() == wire_terminals.CLOSE_ENDED
+    assert await daemon.close_code() == wire_terminals.CLOSE_ENDED
     await world.finish()
 
 
-# -- A machine whose host reports no tools fact -------------------------------------------
+# -- A host whose host reports no tools fact -------------------------------------------
 
 
 @pytest.mark.parametrize("name", ["gx10", "a" * 63])
-async def test_a_machine_without_the_tools_fact_is_refused_at_once(
+async def test_a_host_without_the_tools_fact_is_refused_at_once(
     world: _World,
     name: str,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada), name, facts={"exec": True})
+    host = await world.join(world.cookie(ada), name, facts={"exec": True})
 
-    peer = world.agent(await world.assistant(), machine=name)
+    peer = world.agent(await world.assistant(), host=name)
     started = time.monotonic()
 
     assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
     assert time.monotonic() - started < Config().tool_dial_back_sec / 4
     assert peer.reason == f"{name} serves no tools: update its host, or drop --no-exec"
     assert len(peer.reason.encode()) <= 123
-    assert (await world.wait(machine)).json() is None
-    assert pipe_hub(app)._pipes == {}
+    assert (await world.wait(host)).json() is None
+    assert tool_relay(app)._connections == {}
     await world.finish()
 
 
@@ -663,21 +663,21 @@ async def test_each_call_logs_one_line_and_never_its_arguments(
 ) -> None:
     caplog.set_level(logging.INFO, logger=tool_routes.__name__)
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
-    (pipe_id,) = pipe_hub(app)._pipes
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
+    (connection_id,) = tool_relay(app)._connections
     arguments: dict[str, object] = {"command": f"echo {_PRIVATE}", "cwd": "/work"}
     shown = json.dumps(arguments, sort_keys=True).encode()
     agent.push(_call("c1", arguments))
-    assert json.loads(await host.frame()) == json.loads(_call("c1", arguments))
+    assert json.loads(await daemon.frame()) == json.loads(_call("c1", arguments))
 
     (logged,) = _calls(caplog)
     assert logged == {
-        "pipe": str(pipe_id),
+        "connection": str(connection_id),
         "asker": "ada@x.y",
         "agent": "main",
         "session": "s1",
-        "machine": "gx10",
+        "host": "gx10",
         "tool": "bash",
         "call_id": "c1",
         "argument_bytes": str(len(shown)),
@@ -685,7 +685,7 @@ async def test_each_call_logs_one_line_and_never_its_arguments(
     }
     assert _PRIVATE not in caplog.text
     agent.push(_call("c2"))
-    _ = await host.frame()
+    _ = await daemon.frame()
     assert [call["call_id"] for call in _calls(caplog)] == ["c1", "c2"]
 
 
@@ -701,13 +701,13 @@ async def test_a_denied_call_is_logged_and_never_reaches_the_host(
 
     monkeypatch.setattr(tool_routes, "authorize", deny)
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
 
     agent.push(_call("c1"))
     agent.push(_PING)
 
-    assert await host.frame() == _PING
+    assert await daemon.frame() == _PING
     assert await agent.frame() == refused_line("c1", "No bash.")
     assert [(call["tool"], call["verdict"]) for call in _calls(caplog)] == [
         ("bash", "deny"),
@@ -735,15 +735,15 @@ async def test_a_frame_of_calls_is_logged_in_order_and_routed_by_each_verdict(
 
     monkeypatch.setattr(tool_routes, "authorize", gate)
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
     last = _named("c4", "t4")
 
     agent.push(
         _named("c1", "t1") + _named("c2", "nope") + _named("c3", "t3") + last[:20],
     )
 
-    forwarded = (await host.frame()).splitlines()
+    forwarded = (await daemon.frame()).splitlines()
     assert [json.loads(line)["id"] for line in forwarded] == ["c1", "c3"]
     assert await agent.frame() == refused_line("c2", "No.")
     assert [(call["tool"], call["verdict"]) for call in _calls(caplog)] == [
@@ -754,22 +754,22 @@ async def test_a_frame_of_calls_is_logged_in_order_and_routed_by_each_verdict(
 
     agent.push(last[20:])
 
-    assert json.loads(await host.frame())["id"] == "c4"
+    assert json.loads(await daemon.frame())["id"] == "c4"
     assert [call["tool"] for call in _calls(caplog)][-1] == "t4"
 
 
-async def test_a_line_that_cannot_be_read_ends_the_pipe_with_its_own_code(
+async def test_a_line_that_cannot_be_read_ends_the_connection_with_its_own_code(
     world: _World,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
-    (pipe_id,) = pipe_hub(app)._pipes
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
+    (connection_id,) = tool_relay(app)._connections
 
     with caplog.at_level("INFO"):
         agent.push(f"{_PRIVATE} not json\n".encode())
-        assert await host.close_code() == wire_terminals.CLOSE_REFUSED
+        assert await daemon.close_code() == wire_terminals.CLOSE_REFUSED
         assert await agent.close_code() == wire_terminals.CLOSE_REFUSED
         assert agent.reason.startswith("the server will not relay a line: Expecting")
         await world.finish()
@@ -777,7 +777,7 @@ async def test_a_line_that_cannot_be_read_ends_the_pipe_with_its_own_code(
     about = [
         _fields(record.getMessage())
         for record in caplog.records
-        if f"pipe={pipe_id}" in record.getMessage()
+        if f"connection={connection_id}" in record.getMessage()
     ]
     assert [
         (each.get("failure"), each.get("by"), each.get("cause")) for each in about
@@ -788,35 +788,35 @@ async def test_a_line_that_cannot_be_read_ends_the_pipe_with_its_own_code(
     assert _PRIVATE not in caplog.text
 
 
-# -- Who may open the host's leg --------------------------------------------------------
+# -- Who may open the host's socket --------------------------------------------------------
 
 
 async def test_a_stale_instance_is_refused(world: _World) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     agent = world.agent(await world.assistant())
-    pipe_id = await world.offer(machine)
+    connection_id = await world.offer(host)
 
-    stale = world.host(machine, pipe_id, instance=uuid.uuid4())
+    stale = world.daemon(host, connection_id, instance=uuid.uuid4())
 
     assert await stale.close_code() == wire_terminals.CLOSE_REFUSED
 
-    # The refused dial took nothing: the current instance still gets the pipe.
-    host = world.host(machine, pipe_id)
+    # The refused dial took nothing: the current instance still gets the tool connection.
+    daemon = world.daemon(host, connection_id)
     agent.push(_HELLO)
-    assert await host.frame() == _HELLO
+    assert await daemon.frame() == _HELLO
 
 
 async def test_an_instance_taken_over_after_its_offer_is_refused(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     _ = world.agent(await world.assistant())
-    pipe_id = await world.offer(machine)
-    _ = await _take_over(world, machine)
+    connection_id = await world.offer(host)
+    _ = await _take_over(world, host)
 
-    old = world.host(machine, pipe_id)
+    old = world.daemon(host, connection_id)
 
     assert await old.close_code() == wire_terminals.CLOSE_REFUSED
 
@@ -824,21 +824,21 @@ async def test_an_instance_taken_over_after_its_offer_is_refused(
 async def test_another_owners_host_cannot_attach(world: _World) -> None:
     ada = await world.person("ada@x.y")
     bob = await world.person("bob@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     bobs = await world.join(world.cookie(bob), name="bobs")
     agent = world.agent(await world.assistant())
-    pipe_id = await world.offer(machine)
+    connection_id = await world.offer(host)
 
     # With its own credential on its own path, and with it on the victim's path.
-    own_path = world.host(bobs, pipe_id)
-    victim_path = world.host(machine, pipe_id, headers=bobs.headers())
+    own_path = world.daemon(bobs, connection_id)
+    victim_path = world.daemon(host, connection_id, headers=bobs.headers())
 
     assert await own_path.close_code() == wire_terminals.CLOSE_REFUSED
     assert await victim_path.close_code() == wire_terminals.CLOSE_REFUSED
 
-    host = world.host(machine, pipe_id)
+    daemon = world.daemon(host, connection_id)
     agent.push(_HELLO)
-    assert await host.frame() == _HELLO
+    assert await daemon.frame() == _HELLO
 
 
 @pytest.mark.parametrize(
@@ -848,37 +848,39 @@ async def test_another_owners_host_cannot_attach(world: _World) -> None:
         {"Authorization": "Bearer nonsense"},
     ],
 )
-async def test_a_host_leg_without_the_machines_credential_is_refused(
+async def test_a_host_socket_without_the_hosts_credential_is_refused(
     world: _World,
     headers: dict[str, str],
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     _ = world.agent(await world.assistant())
-    pipe_id = await world.offer(machine)
+    connection_id = await world.offer(host)
 
-    peer = world.host(machine, pipe_id, headers=headers)
+    peer = world.daemon(host, connection_id, headers=headers)
 
     assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
 
 
-async def test_a_persons_session_cannot_open_a_host_leg(world: _World) -> None:
+async def test_a_persons_session_cannot_open_a_host_socket(world: _World) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    machine = await world.join(cookie)
+    host = await world.join(cookie)
     _ = world.agent(await world.assistant())
-    pipe_id = await world.offer(machine)
+    connection_id = await world.offer(host)
 
-    peer = world.host(machine, pipe_id, headers=world.browser(cookie))
+    peer = world.daemon(host, connection_id, headers=world.browser(cookie))
 
     assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
 
 
-async def test_a_host_leg_for_a_pipe_never_offered_is_refused(world: _World) -> None:
+async def test_a_host_socket_for_a_connection_never_offered_is_refused(
+    world: _World,
+) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
 
-    peer = world.host(machine, uuid.uuid4())
+    peer = world.daemon(host, uuid.uuid4())
 
     assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
 
@@ -888,9 +890,9 @@ async def test_a_revoked_credential_dialing_back_is_told_it_is_revoked(
 ) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    machine = await world.join(cookie)
+    host = await world.join(cookie)
     agent = world.agent(await world.assistant())
-    pipe_id = await world.offer(machine)
+    connection_id = await world.offer(host)
     revoked = await world.call(
         "POST",
         REVOKE_PATH.format(name="gx10"),
@@ -898,34 +900,34 @@ async def test_a_revoked_credential_dialing_back_is_told_it_is_revoked(
     )
     assert revoked.status_code == 204
 
-    peer = world.host(machine, pipe_id)
+    peer = world.daemon(host, connection_id)
 
-    assert await peer.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
-    assert await agent.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
+    assert await peer.close_code() == wire_terminals.CLOSE_HOST_REVOKED
+    assert await agent.close_code() == wire_terminals.CLOSE_HOST_REVOKED
 
 
-async def test_the_host_leg_refuses_a_server_without_auth(
+async def test_the_host_socket_refuses_a_server_without_auth(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     patch_state(monkeypatch, "config", Config(auth_disabled=True))
 
-    peer = world.host(machine, uuid.uuid4())
+    peer = world.daemon(host, uuid.uuid4())
 
     assert await peer.close_code() == wire_terminals.CLOSE_REFUSED
 
 
-# -- What ends a pipe -------------------------------------------------------------------
+# -- What ends a tool connection -------------------------------------------------------------------
 
 
-async def test_a_revoked_machine_ends_its_pipes(world: _World) -> None:
+async def test_a_revoked_host_ends_its_connections(world: _World) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    machine = await world.join(cookie)
+    host = await world.join(cookie)
     headers = await world.assistant()
-    agent, host = await world.paired(machine, headers)
+    agent, daemon = await world.paired(host, headers)
     queued = world.agent(headers)
 
     revoked = await world.call(
@@ -935,31 +937,31 @@ async def test_a_revoked_machine_ends_its_pipes(world: _World) -> None:
     )
 
     assert revoked.status_code == 204
-    assert await agent.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
-    assert await host.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
-    assert await queued.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
+    assert await agent.close_code() == wire_terminals.CLOSE_HOST_REVOKED
+    assert await daemon.close_code() == wire_terminals.CLOSE_HOST_REVOKED
+    assert await queued.close_code() == wire_terminals.CLOSE_HOST_REVOKED
     await world.finish()
 
 
-async def test_a_host_that_joins_again_ends_the_pipes_of_its_old_self(
+async def test_a_host_that_joins_again_ends_the_connections_of_its_old_self(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    machine = await world.join(cookie)
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(cookie)
+    agent, daemon = await world.paired(host, await world.assistant())
 
     _ = await world.join(cookie)
 
-    assert await agent.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
-    assert await host.close_code() == wire_terminals.CLOSE_MACHINE_REVOKED
+    assert await agent.close_code() == wire_terminals.CLOSE_HOST_REVOKED
+    assert await daemon.close_code() == wire_terminals.CLOSE_HOST_REVOKED
 
 
 # -- Asking the rule again ---------------------------------------------------------------
 
 
-# Each change that breaks the rule, applied while a pipe is up, has the sweep end it;
-# applied before a pipe opens, has the open refused. Both name the same check.
+# Each change that breaks the rule, applied while a tool connection is up, has the sweep end it;
+# applied before a tool connection opens, has the open refused. Both name the same check.
 _BROKEN: Final[dict[str, tuple[str, Check]]] = {
     "no_assistant": ("", "assistant"),
     "another_assistant": ("", "key"),
@@ -981,15 +983,15 @@ _BROKEN: Final[dict[str, tuple[str, Check]]] = {
         "UPDATE users SET role = 'viewer' WHERE email = 'ada@x.y'",
         "asker",
     ),
-    "given_away": ("UPDATE machines SET owner = 'bob@x.y'", "machine"),
+    "given_away": ("UPDATE hosts SET owner = 'bob@x.y'", "host"),
     "credential_revoked": (
-        "UPDATE machine_credentials SET revoked_at = now()",
+        "UPDATE host_credentials SET revoked_at = now()",
         "credential",
     ),
-    "unconfirmed": ("UPDATE machines SET confirmed_at = NULL", "confirmed"),
-    "tools_off": ("UPDATE machines SET facts = '{\"tools\": false}'", "tools"),
-    "no_tools_fact": ("UPDATE machines SET facts = '{\"exec\": true}'", "tools"),
-    "tools_not_a_flag": ('UPDATE machines SET facts = \'{"tools": "true"}\'', "tools"),
+    "unconfirmed": ("UPDATE hosts SET confirmed_at = NULL", "confirmed"),
+    "tools_off": ("UPDATE hosts SET facts = '{\"tools\": false}'", "tools"),
+    "no_tools_fact": ("UPDATE hosts SET facts = '{\"exec\": true}'", "tools"),
+    "tools_not_a_flag": ('UPDATE hosts SET facts = \'{"tools": "true"}\'', "tools"),
 }
 """Each change that breaks the rule, and the check that then fails."""
 
@@ -1040,98 +1042,98 @@ async def test_the_open_and_the_sweep_refuse_alike(
     caplog.set_level(logging.WARNING)
     ada = await world.person("ada@x.y")
     _ = await world.person("bob@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     headers = await world.assistant()
-    agent, host = await world.paired(machine, headers)
+    agent, daemon = await world.paired(host, headers)
 
     await _break(world, monkeypatch, change)
-    await pipe_hub(app).sweep()
+    await tool_relay(app).sweep()
     refused = world.agent(headers)
 
     assert await agent.close_code() == wire_terminals.CLOSE_REFUSED
-    assert await host.close_code() == wire_terminals.CLOSE_REFUSED
+    assert await daemon.close_code() == wire_terminals.CLOSE_REFUSED
     assert await refused.close_code() == wire_terminals.CLOSE_REFUSED
     await world.finish()
     _, check = _BROKEN[change]
-    assert _checks(caplog, "tool pipe no longer allowed") == [check]
-    assert _checks(caplog, "tool pipe refused") == [check]
-    assert pipe_hub(app)._pipes == {}
+    assert _checks(caplog, "tool connection no longer allowed") == [check]
+    assert _checks(caplog, "tool connection refused") == [check]
+    assert tool_relay(app)._connections == {}
 
 
 @pytest.mark.parametrize(
     ("change", "check"),
     [
-        ("UPDATE machines SET host_instance = gen_random_uuid()", "instance"),
-        ("UPDATE machines SET host_instance = NULL", "instance"),
+        ("UPDATE hosts SET daemon_instance = gen_random_uuid()", "instance"),
+        ("UPDATE hosts SET daemon_instance = NULL", "instance"),
         ("SELECT 1", None),
     ],
 )
-async def test_a_pipe_a_host_attached_needs_that_host_to_stay_the_machines(
+async def test_a_connection_a_host_attached_needs_that_host_to_stay_the_hosts(
     world: _World,
     change: str,
     check: Check | None,
 ) -> None:
     """Asked at the sweep alone: an open has no host yet, and an attach asks itself."""
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    _ = await world.paired(machine, await world.assistant())
-    (pipe,) = pipe_hub(app)._pipes.values()
+    host = await world.join(world.cookie(ada))
+    _ = await world.paired(host, await world.assistant())
+    (connection,) = tool_relay(app)._connections.values()
     async with world.store.engine.acquire() as conn:
         _ = await conn.execute(change)
         access = await tool_access(
             conn,
             assistant=Assistant(actor="kb", email=_ASSISTANT),
-            api_key_id=pipe.api_key_id,
-            asker=pipe.asker,
-            machine=pipe.machine_id,
-            instance=pipe.instance,
+            api_key_id=connection.api_key_id,
+            asker=connection.asker,
+            host=connection.host_id,
+            instance=connection.instance,
         )
-    assert (access.machine_id, access.failed) == (machine.id, check)
+    assert (access.host_id, access.failed) == (host.id, check)
 
 
-async def test_a_machine_is_named_by_its_name_or_its_id_and_the_asker_by_any_case(
+async def test_a_host_is_named_by_its_name_or_its_id_and_the_asker_by_any_case(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     headers = await world.assistant()
-    _ = await world.paired(machine, headers)
-    (pipe,) = pipe_hub(app)._pipes.values()
+    _ = await world.paired(host, headers)
+    (connection,) = tool_relay(app)._connections.values()
     assistant = Assistant(actor="kb", email=_ASSISTANT)
     async with world.store.engine.acquire() as conn:
         by_name = await tool_access(
             conn,
             assistant=assistant,
-            api_key_id=pipe.api_key_id,
+            api_key_id=connection.api_key_id,
             asker="Ada@X.Y",
-            machine=machine.name,
+            host=host.name,
         )
         nowhere = await tool_access(
             conn,
             assistant=assistant,
-            api_key_id=pipe.api_key_id,
+            api_key_id=connection.api_key_id,
             asker="ada@x.y",
-            machine=uuid.uuid4(),
+            host=uuid.uuid4(),
         )
         nobody = await tool_access(
             conn,
             assistant=assistant,
-            api_key_id=pipe.api_key_id,
+            api_key_id=connection.api_key_id,
             asker=None,
-            machine=machine.name,
+            host=host.name,
         )
-    assert (by_name.machine_id, by_name.failed) == (machine.id, None)
-    assert (nowhere.machine_id, nowhere.failed) == (None, "machine")
-    assert (nobody.machine_id, nobody.failed) == (None, "asker")
+    assert (by_name.host_id, by_name.failed) == (host.id, None)
+    assert (nowhere.host_id, nowhere.failed) == (None, "host")
+    assert (nobody.host_id, nobody.failed) == (None, "asker")
 
 
-async def test_another_key_of_the_assistant_revoked_leaves_a_pipe_up(
+async def test_another_key_of_the_assistant_revoked_leaves_a_connection_up(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     assistant = await world.person(_ASSISTANT)
-    agent, host = await world.paired(machine, await world.key(assistant))
+    agent, daemon = await world.paired(host, await world.key(assistant))
     _ = await world.key(assistant)
 
     async with world.store.engine.acquire() as conn:
@@ -1139,82 +1141,84 @@ async def test_another_key_of_the_assistant_revoked_leaves_a_pipe_up(
             "UPDATE api_keys SET revoked_at = now() WHERE id = "
             "(SELECT id FROM api_keys ORDER BY created_at DESC LIMIT 1)",
         )
-    await pipe_hub(app).sweep()
+    await tool_relay(app).sweep()
 
     agent.push(_PING)
-    assert await host.frame() == _PING
+    assert await daemon.frame() == _PING
 
 
-async def test_a_live_pipe_survives_the_sweep_and_goes_on_relaying(
+async def test_a_live_connection_survives_the_sweep_and_goes_on_relaying(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
 
-    await pipe_hub(app).sweep()
+    await tool_relay(app).sweep()
 
     agent.push(_PING)
-    assert await host.frame() == _PING
-    host.push(b"Pong\n")
+    assert await daemon.frame() == _PING
+    daemon.push(b"Pong\n")
     assert await agent.frame() == b"Pong\n"
 
 
-async def test_a_database_error_during_the_sweep_leaves_a_pipe_up(
+async def test_a_database_error_during_the_sweep_leaves_a_connection_up(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    agent, host = await world.paired(machine, await world.assistant())
+    host = await world.join(world.cookie(ada))
+    agent, daemon = await world.paired(host, await world.assistant())
 
     def refused() -> None:
         raise OSError("the database is down")
 
     with monkeypatch.context() as down:
         down.setattr(world.store.engine, "acquire", refused)
-        await pipe_hub(app).sweep()
+        await tool_relay(app).sweep()
 
     agent.push(_PING)
-    assert await host.frame() == _PING
+    assert await daemon.frame() == _PING
 
 
-async def test_a_queued_pipe_is_not_ended_for_a_takeover_so_the_successor_takes_it(
+async def test_a_queued_connection_is_not_ended_for_a_takeover_so_the_successor_takes_it(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     agent = world.agent(await world.assistant())
     for _ in range(2_000):
-        if pipe_hub(app)._pipes:
+        if tool_relay(app)._connections:
             break
         await asyncio.sleep(0.005)
-    successor = await _take_over(world, machine)
+    successor = await _take_over(world, host)
 
-    await pipe_hub(app).sweep()
+    await tool_relay(app).sweep()
 
-    handed = await world.wait(machine, instance=successor, wait_sec=5)
-    host = world.host(
-        machine,
-        ToolOffer.model_validate(handed.json()).pipe_id,
+    handed = await world.wait(host, instance=successor, wait_sec=5)
+    daemon = world.daemon(
+        host,
+        ToolOffer.model_validate(handed.json()).connection_id,
         instance=successor,
     )
     agent.push(_HELLO)
-    assert await host.frame() == _HELLO
+    assert await daemon.frame() == _HELLO
 
 
-async def test_a_queued_pipe_is_ended_when_its_key_is_revoked(world: _World) -> None:
+async def test_a_queued_connection_is_ended_when_its_key_is_revoked(
+    world: _World,
+) -> None:
     ada = await world.person("ada@x.y")
     _ = await world.join(world.cookie(ada))
     agent = world.agent(await world.assistant())
     for _ in range(2_000):
-        if pipe_hub(app)._pipes:
+        if tool_relay(app)._connections:
             break
         await asyncio.sleep(0.005)
 
     async with world.store.engine.acquire() as conn:
         await conn.execute("UPDATE api_keys SET revoked_at = now()")
-    await pipe_hub(app).sweep()
+    await tool_relay(app).sweep()
 
     assert await agent.close_code() == wire_terminals.CLOSE_REFUSED
 
@@ -1222,18 +1226,18 @@ async def test_a_queued_pipe_is_ended_when_its_key_is_revoked(world: _World) -> 
 # -- The host's wait --------------------------------------------------------------------
 
 
-async def test_the_wait_takes_only_the_machines_own_credential_and_instance(
+async def test_the_wait_takes_only_the_hosts_own_credential_and_instance(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    machine = await world.join(cookie)
+    host = await world.join(cookie)
     _ = world.agent(await world.assistant())
 
-    stale = await world.wait(machine, instance=uuid.uuid4())
+    stale = await world.wait(host, instance=uuid.uuid4())
     as_person = await world.call(
         "GET",
-        f"{MACHINE_TOOLS_WAIT_PATH.format(machine_id=machine.id)}?instance={_INSTANCE}",
+        f"{HOST_TOOLS_WAIT_PATH.format(host_id=host.id)}?instance={_INSTANCE}",
         headers={"Cookie": cookie},
     )
 
@@ -1247,22 +1251,22 @@ async def test_an_offer_whose_response_is_lost_heals_by_the_dial_back_and_a_redi
 ) -> None:
     patch_state(monkeypatch, "config", _config(tool_dial_back_sec=0.2))
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     assistant = await world.assistant()
     lost = world.agent(assistant)
     key = uuid.uuid4()
 
-    first = await world.wait(machine, wait_sec=5, key=key)
+    first = await world.wait(host, wait_sec=5, key=key)
     # The retry of the lost response, under its key, finds no offer kept for it.
-    again = await world.wait(machine, wait_sec=0, key=key)
+    again = await world.wait(host, wait_sec=0, key=key)
 
-    assert ToolOffer.model_validate(first.json()).pipe_id
+    assert ToolOffer.model_validate(first.json()).connection_id
     assert again.json() is None
-    # No host dials back, so the pipe ends, and the agent dials a new one.
-    assert await lost.close_code() == wire_terminals.CLOSE_HOST_LOST
-    agent, host = await world.paired(machine, assistant)
+    # No host dials back, so the tool connection ends, and the agent dials a new one.
+    assert await lost.close_code() == wire_terminals.CLOSE_DAEMON_LOST
+    agent, daemon = await world.paired(host, assistant)
     agent.leave()
-    assert await host.close_code() == wire_terminals.CLOSE_ENDED
+    assert await daemon.close_code() == wire_terminals.CLOSE_ENDED
     await world.finish()
 
 
@@ -1271,10 +1275,10 @@ async def test_the_wait_refuses_a_server_without_auth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     patch_state(monkeypatch, "config", Config(auth_disabled=True))
 
-    waited = await world.wait(machine)
+    waited = await world.wait(host)
 
     assert waited.status_code == 403
 
@@ -1284,31 +1288,31 @@ async def test_an_offer_a_superseded_host_claims_costs_one_dial_back_and_a_redia
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_state(monkeypatch, "config", _config(tool_dial_back_sec=0.2))
-    machine = await world.join(world.cookie(await world.person("ada@x.y")))
-    old = asyncio.ensure_future(world.wait(machine, wait_sec=5))
+    host = await world.join(world.cookie(await world.person("ada@x.y")))
+    old = asyncio.ensure_future(world.wait(host, wait_sec=5))
     for _ in range(2_000):
-        if machine.id in pipe_hub(app)._waiters:
+        if host.id in tool_relay(app)._waiters:
             break
         await asyncio.sleep(0.005)
-    successor = await _take_over(world, machine)
+    successor = await _take_over(world, host)
 
     assistant = await world.assistant()
     first = world.agent(assistant)
-    claimed = ToolOffer.model_validate((await old).json()).pipe_id
-    stale = world.host(machine, claimed)
+    claimed = ToolOffer.model_validate((await old).json()).connection_id
+    stale = world.daemon(host, claimed)
 
     # Its dial-back is refused, as only the current instance attaches.
     assert await stale.close_code() == wire_terminals.CLOSE_REFUSED
-    assert await first.close_code() == wire_terminals.CLOSE_HOST_LOST
+    assert await first.close_code() == wire_terminals.CLOSE_DAEMON_LOST
     second = world.agent(assistant)
-    handed = await world.wait(machine, instance=successor, wait_sec=5)
-    host = world.host(
-        machine,
-        ToolOffer.model_validate(handed.json()).pipe_id,
+    handed = await world.wait(host, instance=successor, wait_sec=5)
+    daemon = world.daemon(
+        host,
+        ToolOffer.model_validate(handed.json()).connection_id,
         instance=successor,
     )
     second.push(_HELLO)
-    assert await host.frame() == _HELLO
+    assert await daemon.frame() == _HELLO
 
 
 # -- An old host, on the exec wire, for one release --------------------------------------
@@ -1316,45 +1320,45 @@ async def test_an_offer_a_superseded_host_claims_costs_one_dial_back_and_a_redia
 
 async def test_an_old_hosts_exec_wait_gets_null(world: _World) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
     agent = world.agent(await world.assistant())
-    path = MACHINE_EXEC_WAIT_PATH.format(machine_id=machine.id)
+    path = HOST_EXEC_WAIT_PATH.format(host_id=host.id)
 
     waited = await world.call(
         "GET",
         f"{path}?instance={_INSTANCE}&wait_sec=0",
-        headers=machine.headers() | {"Idempotency-Key": str(uuid.uuid4())},
+        headers=host.headers() | {"Idempotency-Key": str(uuid.uuid4())},
     )
 
     assert (waited.status_code, waited.json()) == (200, None)
     # The waiting agent stayed queued for a host on the tools wire.
-    host = world.host(machine, await world.offer(machine))
+    daemon = world.daemon(host, await world.offer(host))
     agent.push(_HELLO)
-    assert await host.frame() == _HELLO
+    assert await daemon.frame() == _HELLO
 
 
 async def test_an_old_hosts_exec_wait_is_held_so_it_does_not_spin(
     world: _World,
 ) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
-    path = MACHINE_EXEC_WAIT_PATH.format(machine_id=machine.id)
+    host = await world.join(world.cookie(ada))
+    path = HOST_EXEC_WAIT_PATH.format(host_id=host.id)
 
     waiting = asyncio.ensure_future(
         world.call(
             "GET",
             f"{path}?instance={_INSTANCE}&wait_sec=5",
-            headers=machine.headers(),
+            headers=host.headers(),
         ),
     )
     for _ in range(2_000):
-        if machine.id in pipe_hub(app)._waiters:
+        if host.id in tool_relay(app)._waiters:
             break
         await asyncio.sleep(0.005)
 
-    assert machine.id in pipe_hub(app)._waiters
+    assert host.id in tool_relay(app)._waiters
     assert not waiting.done()
-    pipe_hub(app).close_machine(machine.id)
+    tool_relay(app).close_host(host.id)
     assert (await waiting).status_code == 410
 
 
@@ -1364,14 +1368,14 @@ async def test_an_old_hosts_exec_wait_keeps_its_credential_and_instance_checks(
 ) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    machine = await world.join(cookie)
-    path = MACHINE_EXEC_WAIT_PATH.format(machine_id=machine.id)
+    host = await world.join(cookie)
+    path = HOST_EXEC_WAIT_PATH.format(host_id=host.id)
     query = f"?instance={_INSTANCE}&wait_sec=0"
 
     stale = await world.call(
         "GET",
         f"{path}?instance={uuid.uuid4()}&wait_sec=0",
-        headers=machine.headers(),
+        headers=host.headers(),
     )
     as_person = await world.call(
         "GET",
@@ -1381,24 +1385,24 @@ async def test_an_old_hosts_exec_wait_keeps_its_credential_and_instance_checks(
     assert (stale.status_code, as_person.status_code) == (403, 401)
 
     patch_state(monkeypatch, "config", Config(auth_disabled=True))
-    without_auth = await world.call("GET", path + query, headers=machine.headers())
+    without_auth = await world.call("GET", path + query, headers=host.headers())
     assert without_auth.status_code == 403
 
 
 async def test_the_exec_command_and_result_routes_are_gone(world: _World) -> None:
     ada = await world.person("ada@x.y")
-    machine = await world.join(world.cookie(ada))
+    host = await world.join(world.cookie(ada))
 
     run = await world.call(
         "POST",
-        "/api/machines/gx10/exec?asker=ada@x.y",
+        "/api/hosts/gx10/exec?asker=ada@x.y",
         headers=await world.assistant(),
         body={"command": "ls", "cwd": "~", "timeout_sec": 5},
     )
     result = await world.call(
         "POST",
-        MACHINE_EXEC_RESULT_PATH.format(machine_id=machine.id, exec_id=uuid.uuid4()),
-        headers=machine.headers(),
+        HOST_EXEC_RESULT_PATH.format(host_id=host.id, exec_id=uuid.uuid4()),
+        headers=host.headers(),
         body={},
     )
 

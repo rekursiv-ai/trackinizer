@@ -189,7 +189,7 @@ deepest edge so far), so a verdict `note` sits beside the node it describes, e.g
 window closes (further metadata would belong to the child) and a stray field is
 an error (the node is closed), though `cost_action`s may still follow the edges.
 
-The canonical, machine-checked grammar is [`grammar.lark`](grammar.lark),
+The canonical, host-checked grammar is [`grammar.lark`](grammar.lark),
 accepted (with its intended ambiguities accounted for) by
 [`grammar_check.py`](grammar_check.py); both sit alongside this file in
 `trax/docs/`. The checker uses a general (Earley) parser for two reasons:
@@ -466,7 +466,7 @@ These are the non-row top-level verbs. Each parses its own argv with
 flags documented here.
 
 ```
-verb_name   ::= "help" | "profile" | "env" | "machine" | "job" | "next"
+verb_name   ::= "help" | "profile" | "env" | "host" | "job" | "next"
              |  "recent" | "cost" | "confidence" | "authority" | "blocked"
              |  "board" | "graph" | "id" | "version" | "export" | "send" | "run"
              |  "search-sessions"
@@ -511,10 +511,10 @@ kinds resolve first, so a field can never shadow a command.
   retired when the filter grammar subsumed inquiry search.)
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
   session addressed by its routing name (the `--as` owner of its run).
-- `trax run|machine|job [ARGS...]` -- moved out of trax: wrapping an agent CLI,
-  the registry of machines campaigns may run on, and GPU jobs are no longer
-  trax's. Each prints `trax run moved out of trax` (or `machine`, `job`) and
-  exits 2; so does `trax help machine`.
+- `trax run|host|job [ARGS...]` -- moved out of trax: wrapping an agent CLI,
+  the registry of hosts campaigns may run on, and GPU jobs are no longer
+  trax's. Each prints `trax run moved out of trax` (or `host`, `job`) and
+  exits 2; so does `trax help host`.
 
 ## 8. Profile command
 
@@ -1178,10 +1178,10 @@ write is rejected up front so `status` does not commit while
 | E009 | null_op on a NOT-NULL column  | list_query / bulk_apply    |
 | E010 | literal secret value          | env_value                  |
 | E011 | invalid variable name         | var_name                   |
-| E012 | (retired: reserved machine name)   | moved out of trax     |
-| E013 | (retired: invalid machine name)    | moved out of trax     |
-| E014 | (retired: machine set without 'to')| moved out of trax     |
-| E015 | (retired: unknown machine field)   | moved out of trax     |
+| E012 | (retired: reserved host name)   | moved out of trax     |
+| E013 | (retired: invalid host name)    | moved out of trax     |
+| E014 | (retired: host set without 'to')| moved out of trax     |
+| E015 | (retired: unknown host field)   | moved out of trax     |
 | E016 | (retired: label action not add/del)| moved out of trax     |
 | ...  | (extend as needed)            |                            |
 

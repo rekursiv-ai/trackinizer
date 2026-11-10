@@ -7,29 +7,55 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
-- The exec channel is now a pipe for sagent's tools. The assistant's key opens
-  `WS /api/machines/{name}/tools/ws?asker=EMAIL` under the same rule as before, except
-  that the machine must report `tools: true` (it was `exec: true`) and need not have
-  been heard from lately, as its host's dial-back says whether it is up. The
-  host takes the offer from `GET /api/machines/{id}/tools/wait` (`Client.wait_tools`),
-  and dials back on `WS /api/machines/{id}/tools/{pipe}/ws`. The server keeps no buffer
-  and either leg dropping ends the pipe. Every 60 seconds the server asks the rule
-  again, and closes a pipe it no longer holds for with 4403. Every refusal closes with
-  4403 and a reason saying which, save a revoked machine's 4410; a leg that left closes
-  with 4000 or 4004.
+- **Breaking:** a computer enrolled with the server is a *host*, not a *machine*, and
+  the process that connects it to the server is its *daemon*. Released clients stop
+  working against this server: upgrade the client on every host with it.
+  - Routes: `/api/machines…` is `/api/hosts…`, and `/api/terminals/machines…` is
+    `/api/terminals/hosts…`.
+  - `Client`: each `*machine*` method is `*host*` (`list_hosts`, `get_host`,
+    `put_host`, `delete_host`, `enroll_host`, `join_host`, `heartbeat_host`,
+    `hosts_version`, `revoke_host`, `host_runs`, `stop_host_run`, `disconnect_host`,
+    `logout_host`, the `host_job_*` methods, `wait_host_work`, `report_host_job`,
+    `post_host_read`).
+  - Wire: `wire_machines` is `wire_hosts` (`Machine…` types are `Host…`),
+    `wire_machine_host` is `wire_daemon`, `wire_machine_job` is `wire_host_job`. A
+    join and heartbeat send `daemon_version` (was `host_version`); a heartbeat answers
+    `daemon_outdated` (was `host_outdated`). A device login names the computer
+    `hostname` (was `host`) and the host `host` (was `machine`). Every `machine` and
+    `machine_id` field is `host` and `host_id`.
+  - Database: migration `schema.076.sql` renames the tables `machines`,
+    `machine_enrollments`, `machine_credentials` and `machine_jobs`, their columns,
+    constraints and indexes; `host_rename_down.sql` reverses it.
+  - The terminal and tool relays: `TerminalHub` is `TerminalRelay`, `PipeHub` is
+    `ToolRelay` (`server/tool_pipes.py` is `server/tool_relay.py`), a pipe is a tool
+    connection (`ToolOffer.pipe_id` is `connection_id`) and a leg is a socket.
+    `CLOSE_HOST_LOST` is `CLOSE_DAEMON_LOST`, still 4004. A daemon's tool and terminal
+    log lines name it `daemon`, not `host`.
+  - Unchanged: a host credential still starts `trax_machine_`, so no host enrolls
+    again.
+- The exec channel is now a tool connection for sagent's tools. The assistant's key opens
+  `WS /api/hosts/{name}/tools/ws?asker=EMAIL` under the same rule as before, except
+  that the host must report `tools: true` (it was `exec: true`) and need not have
+  been heard from lately, as its daemon's dial-back says whether it is up. The
+  daemon takes the offer from `GET /api/hosts/{id}/tools/wait` (`Client.wait_tools`),
+  and dials back on `WS /api/hosts/{id}/tools/{connection_id}/ws`. The server keeps no
+  buffer and either socket dropping ends the connection. Every 60 seconds the server
+  asks the rule again, and closes a connection it no longer holds for with 4403. Every
+  refusal closes with 4403 and a reason saying which, save a revoked host's 4410; a
+  socket that left closes with 4000 or 4004.
 - Each tool call the gate judges is logged, one line with fixed `key=value` fields and
   its arguments by their size alone; its `session` and `call_id` join it to what the
-  session recorded the tool doing. A pipe's opening and end, each refusal, a line that
-  ends a pipe, and the sweep ending one log a line too. No table keeps the calls.
-- `GET /api/terminals/machines/changes?since=N` (`Client.machines_version`) holds until
-  the version of the caller's machine list, or the assistant's `owner`'s, is not
-  `since`, and answers `MachinesVersion`. Each write to a person's machines moves it, so
+  session recorded the tool doing. A tool connection's opening and end, each refusal, a
+  line that ends one, and the sweep ending one log a line too. No table keeps the calls.
+- `GET /api/terminals/hosts/changes?since=N` (`Client.hosts_version`) holds until
+  the version of the caller's host list, or the assistant's `owner`'s, is not
+  `since`, and answers `HostsVersion`. Each write to a person's hosts moves it, so
   a follower waits here and lists again, instead of listing on a timer.
-- The pipe cap, the dial-back and the tool pipe sweep are the server's `Config`
-  (`tool_pipes_per_machine`, `tool_dial_back_sec`, `tool_sweep_sec`), no longer
+- The tool connection cap, the dial-back and the sweep are the server's `Config`
+  (`tool_connections_per_host`, `tool_dial_back_sec`, `tool_sweep_sec`), no longer
   `wire_tools.MAX_PIPES_PER_MACHINE` and `wire_tools.DIAL_BACK_SEC`.
-- `GET /api/machines/{id}/exec/wait` answers `null` after its hold, for one release, so
-  a host from before the pipe gets no error and no offer. `wire_exec`, `Client.wait_exec`
+- `GET /api/hosts/{id}/exec/wait` answers `null` after its hold, for one release, so
+  a daemon from before tool connections gets no error and no offer. `wire_exec`, `Client.wait_exec`
   and `Client.post_exec_result` stay for that release too.
 - `JobView` carries a GPU job's charge as `gpu_seconds`. The server still sends
   `gpu_minutes`, the seconds rounded up to the minute, because 0.1.13 and

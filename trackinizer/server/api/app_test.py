@@ -21,7 +21,7 @@ import pytest
 
 from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.server.access_policy import AccessDeniedError
-from trackinizer.server.api import app, machine_host_routes, meta_routes, query
+from trackinizer.server.api import app, daemon_routes, meta_routes, query
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
     _RequestLogSpan,
@@ -38,15 +38,15 @@ from trackinizer.server.config import Config, ConfigError, ServiceKeys
 from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.secrets import FileSecrets, SecretRef
-from trackinizer.server.terminals import TerminalHub
-from trackinizer.server.tool_pipes import PipeHub
+from trackinizer.server.terminals import TerminalRelay
+from trackinizer.server.tool_relay import ToolRelay
 from trackinizer.types.errors import (
     ChatDeletedError,
     ConflictError,
     NotFoundError,
     ValidationError,
 )
-from trackinizer.wire.wire_machine_host import JOIN_PATH
+from trackinizer.wire.wire_daemon import JOIN_PATH
 
 
 if TYPE_CHECKING:
@@ -680,7 +680,7 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_sweeps_the_terminals_and_the_tool_pipes(
+async def test_lifespan_sweeps_the_terminals_and_the_tool_connections(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, engine = make_store()
@@ -696,9 +696,9 @@ async def test_lifespan_sweeps_the_terminals_and_the_tool_pipes(
     async with lifespan(fastapi_app):
         await asyncio.sleep(0)
 
-    hubs: list[object] = [call.args[0] for call in sweeping.call_args_list]
-    assert [type(hub) for hub in hubs] == [TerminalHub, PipeHub]
-    # The tool pipes are swept as the configuration says; the terminals as they were.
+    relays: list[object] = [call.args[0] for call in sweeping.call_args_list]
+    assert [type(relay) for relay in relays] == [TerminalRelay, ToolRelay]
+    # The tool connections are swept as the configuration says; the terminals as they were.
     assert [call.kwargs for call in sweeping.call_args_list] == [
         {},
         {"interval_sec": 7.0},
@@ -717,7 +717,7 @@ def validation_client(
     built.state.engine = engine
     built.dependency_overrides.update(app.app.dependency_overrides)
     built.include_router(query.router)
-    built.include_router(machine_host_routes.router)
+    built.include_router(daemon_routes.router)
     return TestClient(built)
 
 
@@ -757,7 +757,7 @@ def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
     [
         {"instance": None},
         {"instance": "not-a-uuid"},
-        {"host_version": 3},
+        {"daemon_version": 3},
         {"facts": {"Bad Key": "x"}},
         {"token": "SECRETMARKER" * 12},
         {"unexpected": "x"},
@@ -775,7 +775,7 @@ def test_join_422_does_not_echo_the_token(
         "name": "dev-1",
         "token": token,
         "instance": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        "host_version": "0.1",
+        "daemon_version": "0.1",
         "facts": {},
         **overrides,
     }

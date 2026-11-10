@@ -8,8 +8,8 @@ strictly this server's own origin: an API key, a service account, a server with
 authentication off or a foreign page is refused, since the click is the one thing
 standing between a stranger's request and a key in the person's name.
 
-An approval marks the row and, when the request named a machine, makes that machine
-the approver's own confirmed personal machine. The key is minted by the first poll
+An approval marks the row and, when the request named a host, makes that host
+the approver's own confirmed personal host. The key is minted by the first poll
 after it, in the transaction that deletes the row, so the secret is shown once and
 never stored, and a second poll finds nothing. Neither secret is stored: the row keeps
 a SHA-256 of the poll secret and the eight letters the person checks.
@@ -32,18 +32,18 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from treekle import from_plain
 
-from trackinizer.server.api._deps import auth_is_disabled, machines_changed
+from trackinizer.server.api._deps import auth_is_disabled, hosts_changed
 from trackinizer.server.api._origin import is_strictly_same_origin
 from trackinizer.server.api._routes_shared import request_engine
+from trackinizer.server.api.daemon_routes import (
+    claim_host,
+    issue_enrollment,
+)
 from trackinizer.server.api.device_limits import (
     device_code_requests,
     device_wrong_entries,
 )
-from trackinizer.server.api.machine_host_routes import (
-    claim_machine,
-    issue_enrollment,
-)
-from trackinizer.server.api.machines_routes import refuse_reserved
+from trackinizer.server.api.hosts_routes import refuse_reserved
 from trackinizer.server.auth import (
     AuthIdentity,
     create_api_key,
@@ -108,7 +108,7 @@ async def device_code_route(
     request's own is not what a person can open.
 
     Args:
-      body: The program, the computer it runs on, and the machine it asks to enroll.
+      body: The program, the computer it runs on, and the host it asks to enroll.
       request: Request carrying the database engine.
       response: Response, marked ``no-store`` because it carries a secret.
 
@@ -116,7 +116,7 @@ async def device_code_route(
       code: Both codes, where to enter the code, and how long and how often.
 
     Raises:
-      ValidationError: The machine name is reserved.
+      ValidationError: The host name is reserved.
       HTTPException: 403 ``device_auth_disabled`` on a server with authentication off,
         which needs no key; 429 ``device_rate_limited`` when this address asked for
         too many codes lately; 429 ``device_codes_busy`` when a thousand codes are open.
@@ -136,8 +136,8 @@ async def device_code_route(
             code="device_rate_limited",
             message="too many logins were started from this address; try again later",
         )
-    if body.machine is not None:
-        refuse_reserved(body.machine)
+    if body.host is not None:
+        refuse_reserved(body.host)
     device_code = secrets.token_urlsafe(32)
     user_code = "".join(
         secrets.choice(USER_CODE_ALPHABET) for _ in range(USER_CODE_LENGTH)
@@ -155,13 +155,13 @@ async def device_code_route(
         # program asks again.
         await conn.execute(
             "INSERT INTO device_logins "
-            "(device_sha256, user_code, client, host, machine, expires_at) "
+            "(device_sha256, user_code, client, hostname, host, expires_at) "
             "VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))",
             _digest(device_code),
             user_code,
             body.client,
+            body.hostname,
             body.host,
-            body.machine,
             DEVICE_CODE_TTL_SEC,
         )
     response.headers["Cache-Control"] = "no-store"
@@ -199,14 +199,14 @@ async def device_token_route(
       token: The status, with the key when approved.
 
     Raises:
-      HTTPException: 409 ``device_machine_gone`` when the approved machine was deleted
+      HTTPException: 409 ``device_host_gone`` when the approved host was deleted
         meanwhile; the code stays open and nothing is minted.
 
     """
     response.headers["Cache-Control"] = "no-store"
     async with request_engine(request).acquire() as conn, tx(conn):
         row = await conn.fetchrow(
-            "SELECT id, status, approver, client, host, machine, "
+            "SELECT id, status, approver, client, hostname, host, "
             "COALESCE(last_polled_at > now() - make_interval(secs => $2), false) "
             "AS too_soon FROM device_logins "
             "WHERE device_sha256 = $1 AND expires_at > now() FOR UPDATE",
@@ -248,7 +248,7 @@ async def device_lookup_route(
       identity: The signed-in person.
 
     Returns:
-      view: The account signed in, the program, its computer, the machine, and the
+      view: The account signed in, the program, its computer, the host, and the
         role the key would hold.
 
     Raises:
@@ -264,8 +264,8 @@ async def device_lookup_route(
         user_code=format_user_code(login.user_code),
         account=identity.email,
         client=login.client,
+        hostname=login.hostname,
         host=login.host,
-        machine=login.machine,
         role=effective_role(identity.role, "writer"),
     )
 
@@ -278,9 +278,9 @@ async def device_approve_route(
 ) -> None:
     """Approve the login: the next poll returns a key in the person's name.
 
-    When the login named a machine, it becomes the person's own personal machine,
-    already confirmed, and the key's reply carries the token its host joins with. A
-    machine another person owns, or a viewer asking for any, is refused and the code
+    When the login named a host, it becomes the person's own personal host,
+    already confirmed, and the key's reply carries the token its hostname joins with. A
+    host another person owns, or a viewer asking for any, is refused and the code
     stays open.
 
     Args:
@@ -289,32 +289,32 @@ async def device_approve_route(
       identity: The signed-in person.
 
     Raises:
-      HTTPException: As ``lookup``, and 403 ``device_machine_needs_writer`` for a
-        viewer and 403 for a machine that is not theirs.
+      HTTPException: As ``lookup``, and 403 ``device_host_needs_writer`` for a
+        viewer and 403 for a host that is not theirs.
 
     """
     _require_person(request, identity)
     async with request_engine(request).acquire() as conn, tx(conn):
         login = await _open_login(request, conn, identity=identity, body=body)
-        if login.machine is not None:
+        if login.host is not None:
             if identity.role == "viewer":
                 raise _refused(
                     403,
-                    code="device_machine_needs_writer",
-                    message="enrolling a machine needs the writer role",
+                    code="device_host_needs_writer",
+                    message="enrolling a host needs the writer role",
                 )
-            await claim_machine(
+            await claim_host(
                 conn,
-                name=login.machine,
+                name=login.host,
                 email=identity.email,
                 admin=False,
-                # The person is at their browser and has seen the machine's name: this
+                # The person is at their browser and has seen the host's name: this
                 # is the confirmation a key could not give.
                 confirmed=True,
             )
         await _decide(conn, login=login, status="approved", identity=identity)
-    if login.machine is not None:
-        machines_changed(request, owner=identity.email)
+    if login.host is not None:
+        hosts_changed(request, owner=identity.email)
 
 
 @router.post(DEVICE_DENY_PATH, status_code=204)
@@ -381,7 +381,7 @@ async def _open_login(
 ) -> _Login:
     """Lock and return the open login the typed code names, or refuse."""
     row = await conn.fetchrow(
-        "SELECT id, user_code, client, host, machine, status FROM device_logins "
+        "SELECT id, user_code, client, hostname, host, status FROM device_logins "
         "WHERE user_code = $1 AND expires_at > now() FOR UPDATE",
         normalize_user_code(body.user_code),
     )
@@ -428,18 +428,18 @@ async def _issue(conn: Conn, *, login: _Login) -> DeviceToken:
         await conn.execute("DELETE FROM device_logins WHERE id = $1", login.id)
         return DeviceToken(status="expired_token")
     email = from_plain(approver["email"], str)
-    # The key names the machine it logged in, so logging that machine out revokes it.
-    machine_token, machine_id = (
+    # The key names the host it logged in, so logging that host out revokes it.
+    host_token, host_id = (
         ("", None)
-        if login.machine is None
-        else await _enrollment_token(conn, machine=login.machine, email=email)
+        if login.host is None
+        else await _enrollment_token(conn, host=login.host, email=email)
     )
     _, secret, _, role = await create_api_key(
         conn,
         user_id=from_plain(login.approver, UUID),
-        name=f"{login.client}@{login.host}" if login.host else login.client,
+        name=f"{login.client}@{login.hostname}" if login.hostname else login.client,
         ceiling="writer",
-        machine_id=machine_id,
+        host_id=host_id,
     )
     await conn.execute("DELETE FROM device_logins WHERE id = $1", login.id)
     return DeviceToken(
@@ -448,37 +448,37 @@ async def _issue(conn: Conn, *, login: _Login) -> DeviceToken:
             api_key=secret,
             role=role,
             email=email,
-            machine_token=machine_token,
+            host_token=host_token,
         ),
     )
 
 
-# The approval made the machine theirs; it is read again here because the token cannot
-# be stored, and a machine deleted since is not enrolled again.
+# The approval made the host theirs; it is read again here because the token cannot
+# be stored, and a host deleted since is not enrolled again.
 async def _enrollment_token(
     conn: Conn,
     *,
-    machine: str,
+    host: str,
     email: str,
 ) -> tuple[str, UUID]:
-    """Return a one-use token for the approver's machine and its id, or refuse if it is gone."""
-    machine_id = await conn.fetchval(
-        "SELECT id FROM machines WHERE name = $1 AND owner = $2 FOR UPDATE",
-        machine,
+    """Return a one-use token for the approver's host and its id, or refuse if it is gone."""
+    host_id = await conn.fetchval(
+        "SELECT id FROM hosts WHERE name = $1 AND owner = $2 FOR UPDATE",
+        host,
         email,
     )
-    if machine_id is None:
+    if host_id is None:
         raise _refused(
             409,
-            code="device_machine_gone",
-            message="the machine was deleted after the approval; log in again",
+            code="device_host_gone",
+            message="the host was deleted after the approval; log in again",
         )
     minted, _ = await issue_enrollment(
         conn,
-        machine_id=from_plain(machine_id, UUID),
+        host_id=from_plain(host_id, UUID),
         created_by=email,
     )
-    return minted.token, from_plain(machine_id, UUID)
+    return minted.token, from_plain(host_id, UUID)
 
 
 # Behind a TLS-terminating proxy the request's own scheme, host and path prefix are not
@@ -505,8 +505,8 @@ class _Login:
 
     id: UUID
     client: str
-    host: str
-    machine: str | None
+    hostname: str
+    host: str | None
     status: str
     user_code: str = ""
     approver: UUID | None = None

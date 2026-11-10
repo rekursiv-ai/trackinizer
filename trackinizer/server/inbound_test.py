@@ -727,7 +727,7 @@ class TestReplacingARun:
         queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
         session = uuid.uuid4()
         old, new = "a" * 32, "b" * 32
-        queue.mark_poller(session, cli="claude", machine="box", instance=old)
+        queue.mark_poller(session, cli="claude", host="box", instance=old)
         now[0] = 200.0
         assert queue.take_gone() == [session]
 
@@ -755,25 +755,25 @@ class TestReplacingARun:
         assert queue.held_by_another(second, cli="claude", instance="a" * 32)
 
 
-class TestTheRunsOnAMachine:
-    """A machine's owner sees the live runs that say they run on it, and stops them."""
+class TestTheRunsOnAHost:
+    """A host's owner sees the live sessions that say they run on it, and stops them."""
 
-    def test_a_machine_lists_its_owners_live_cli_runs_alone(self) -> None:
+    def test_a_host_lists_its_owners_live_cli_runs_alone(self) -> None:
         queue = InboundQueue()
         mine, theirs, elsewhere, assistant = (uuid.uuid4() for _ in range(4))
-        queue.mark_poller(mine, machine="box", cli="claude", account="Dan@x.ai")
-        queue.mark_poller(theirs, machine="box", cli="claude", account="eve@x.ai")
-        queue.mark_poller(elsewhere, machine="gx10", cli="codex", account="dan@x.ai")
-        queue.mark_poller(assistant, machine="box", account="dan@x.ai")
+        queue.mark_poller(mine, host="box", cli="claude", account="Dan@x.ai")
+        queue.mark_poller(theirs, host="box", cli="claude", account="eve@x.ai")
+        queue.mark_poller(elsewhere, host="gx10", cli="codex", account="dan@x.ai")
+        queue.mark_poller(assistant, host="box", account="dan@x.ai")
 
         assert queue.runs_on("box", account="dan@X.ai") == {
-            mine: PollerRun(machine="box", cli="claude"),
+            mine: PollerRun(host="box", cli="claude"),
         }
 
     def test_a_run_whose_lease_lapsed_is_not_listed(self) -> None:
         now = [100.0]
         queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
-        queue.mark_poller(uuid.uuid4(), machine="box", cli="claude", account="d@x.ai")
+        queue.mark_poller(uuid.uuid4(), host="box", cli="claude", account="d@x.ai")
         now[0] = 200.0
 
         assert queue.runs_on("box", account="d@x.ai") == {}
@@ -782,7 +782,7 @@ class TestTheRunsOnAMachine:
         queue = InboundQueue()
         session = uuid.uuid4()
         old, new = "a" * 32, "b" * 32
-        queue.mark_poller(session, machine="box", cli="claude", instance=old)
+        queue.mark_poller(session, host="box", cli="claude", instance=old)
 
         queue.stop_run(session)
 
@@ -843,13 +843,13 @@ class TestWhereARunWas:
         assert queue.last_run(second) == _AT
 
 
-_AT = PollerRun(run="chat-1a2b3c4d", machine="gx10", cwd="~/work")
+_AT = PollerRun(run="chat-1a2b3c4d", host="gx10", cwd="~/work")
 """Where a detached run on gx10, working in ``~/work``, says it is."""
 
 
 def _mark_at(queue: InboundQueue, session_id: uuid.UUID) -> None:
     """Renew ``session_id``'s lease as a poll from the run at :data:`_AT` does."""
-    queue.mark_poller(session_id, run=_AT.run, machine=_AT.machine, cwd=_AT.cwd)
+    queue.mark_poller(session_id, run=_AT.run, host=_AT.host, cwd=_AT.cwd)
 
 
 class TestSendIdempotency:

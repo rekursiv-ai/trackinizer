@@ -15,8 +15,8 @@ unchanged and may name rows outside the slice. They do not expand selection.
 
 Filters reuse :mod:`trackinizer.wire.filters` rather than a selector language
 of this module's own. The example in the request, ``org:rekursiv AND NOT
-machine:*``, is already two clauses the list queries can say: ``labels is
-org:rekursiv`` and ``labels nre ^machine:``. They AND, which is what a
+host:*``, is already two clauses the list queries can say: ``labels is
+org:rekursiv`` and ``labels nre ^host:``. They AND, which is what a
 partition asks for and all the request asks for; OR would need a grammar, and
 no caller has needed one yet.
 

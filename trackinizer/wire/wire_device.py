@@ -3,8 +3,8 @@
 A program that cannot open a browser asks for a code, prints it, and polls. The
 person opens the verification page, signs in, checks who is asking and approves. The
 next poll returns an API key once; the server keeps no copy of the secret. When the
-request named a machine, the approval also makes it the approver's own confirmed
-personal machine, and the same reply carries the one-use token the host joins with.
+request named a host, the approval also makes it the approver's own confirmed
+personal host, and the same reply carries the one-use token the hostname joins with.
 
 This package is part of the publishable client distribution, so it must
 not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -24,7 +24,7 @@ from pydantic import (
     model_validator,
 )
 
-from trackinizer.wire.wire_machines import NAME_PATTERN
+from trackinizer.wire.wire_hosts import NAME_PATTERN
 from trackinizer.wire.wire_service_accounts import TokenRole
 
 
@@ -106,18 +106,18 @@ def format_user_code(code: str) -> str:
 
 
 class DeviceCodeRequest(BaseModel):
-    """Ask for a code: which program is asking, from where, for which machine."""
+    """Ask for a code: which program is asking, from where, for which host."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     client: str = Field(pattern=r"^[a-z][a-z0-9-]{0,31}$")
-    """The program, such as a machine host; the page names it and the key is named for it."""
+    """The program, such as a daemon; the page names it and the key is named for it."""
 
-    host: str = Field(default="", pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,62})?$")
-    """The computer's host name, shown on the page and in the key's name."""
+    hostname: str = Field(default="", pattern=r"^(?:[A-Za-z0-9][A-Za-z0-9._-]{0,62})?$")
+    """The computer's hostname name, shown on the page and in the key's name."""
 
-    machine: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """A machine to enroll as the approver's own; ``None`` asks for a key alone."""
+    host: str | None = Field(default=None, pattern=NAME_PATTERN)
+    """A host to enroll as the approver's own; ``None`` asks for a key alone."""
 
 
 class DeviceCode(BaseModel):
@@ -171,8 +171,8 @@ class IssuedKey(BaseModel):
     email: str
     """Who approved, and so whose key it is."""
 
-    machine_token: str = Field(default="", repr=False)
-    """The one-use enrollment token for the requested machine; empty when none was."""
+    host_token: str = Field(default="", repr=False)
+    """The one-use enrollment token for the requested host; empty when none was."""
 
 
 class DeviceToken(BaseModel):
@@ -212,16 +212,16 @@ class DeviceLoginView(BaseModel):
     """The code, as people read it."""
 
     account: str
-    """The signed-in person's email: whose key it would be, and whose machine."""
+    """The signed-in person's email: whose key it would be, and whose host."""
 
     client: str
     """The program that asked."""
 
-    host: str
+    hostname: str
     """The computer it runs on; empty when it did not say."""
 
-    machine: str | None
-    """The machine the approval would enroll as theirs, or ``None``."""
+    host: str | None
+    """The host the approval would enroll as theirs, or ``None``."""
 
     role: TokenRole
     """The role the key would hold: a writer, or less when they hold less."""

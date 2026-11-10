@@ -1,6 +1,6 @@
-"""Machine host routes against a mocked connection: the SQL each route sends.
+"""Daemon routes against a mocked connection: the SQL each route sends.
 
-``machine_host_routes_pglite_test.py`` runs the same routes against a real database;
+``daemon_routes_pglite_test.py`` runs the same routes against a real database;
 these pin what the routes and the credential check ask of the connection, and that
 a refusal sends nothing further.
 """
@@ -19,27 +19,27 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import executed_sql, make_conn, set_field_row
-from trackinizer.server.api import machine_host_routes
+from trackinizer.server.api import daemon_routes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
 )
-from trackinizer.server.api.machine_host_routes import (
-    MachineOwnedError,
-    claim_machine,
+from trackinizer.server.api.daemon_routes import (
+    HostOwnedError,
+    claim_host,
     issue_enrollment,
-    unregister_machine,
+    unregister_host,
 )
 from trackinizer.server.config import Assistant, Config
-from trackinizer.server.machine_auth import (
+from trackinizer.server.host_auth import (
     MintedSecret,
     mint_secret,
     parse_credential,
     parse_enrollment,
 )
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLL_PATH,
     ENROLL_TTL_SEC,
@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
-_MACHINE_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_HOST_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _INSTANCE = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
 _BEAT = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
 
@@ -70,7 +70,7 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
     engine.conn.fetchval.side_effect = [_BEAT]
 
     response = client.post(ENROLL_PATH, json={"name": "dev-1"})
@@ -83,22 +83,22 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
     insert = engine.conn.fetchval.call_args
     assert upsert is not None
     assert insert is not None
-    # One statement registers the machine or locks its row; a separate insert and
-    # lock leave a gap in which a delete commits and the lock finds no machine.
+    # One statement registers the host or locks its row; a separate insert and
+    # lock leave a gap in which a delete commits and the lock finds no host.
     sql = upsert.args[0]
     assert isinstance(sql, str)
-    assert "INSERT INTO machines (name, updated_by, owner, role, confirmed_at)" in sql
+    assert "INSERT INTO hosts (name, updated_by, owner, role, confirmed_at)" in sql
     assert "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END)" in sql
     assert "ON CONFLICT (name) DO UPDATE SET" in sql
-    assert "COALESCE(machines.confirmed_at, now())" in sql
+    assert "COALESCE(hosts.confirmed_at, now())" in sql
     assert "RETURNING id, owner" in sql
     assert upsert.args[1:] == ("dev-1", TEST_USER_EMAIL, "", True)
     sql = insert.args[0]
     assert isinstance(sql, str)
-    assert "INSERT INTO machine_enrollments" in sql
+    assert "INSERT INTO host_enrollments" in sql
     assert insert.args[1:] == (
         parsed.id,
-        _MACHINE_ID,
+        _HOST_ID,
         parsed.digest,
         TEST_USER_EMAIL,
         ENROLL_TTL_SEC,
@@ -106,7 +106,7 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
     sent = executed_sql(engine.conn)
     assert [sql.split(" WHERE")[0] for sql in sent] == [
         "BEGIN",
-        "UPDATE machine_enrollments SET used_at = now()",
+        "UPDATE host_enrollments SET used_at = now()",
         "COMMIT",
     ]
     assert "used_at IS NULL" in sent[1]
@@ -114,31 +114,31 @@ def test_enroll_supersedes_open_tokens_then_stores_only_the_digest(
 
 
 _CLAIM_SQL = (
-    "INSERT INTO machines (name, updated_by, owner, role, confirmed_at) "
+    "INSERT INTO hosts (name, updated_by, owner, role, confirmed_at) "
     "VALUES ($1, $2, $2, $3, CASE WHEN $4 THEN now() END) "
     "ON CONFLICT (name) DO UPDATE SET "
     "owner = CASE WHEN $4 AND $3 = '' "
-    "THEN COALESCE(machines.owner, EXCLUDED.owner) "
-    "ELSE machines.owner END, "
-    "confirmed_at = CASE WHEN $4 THEN COALESCE(machines.confirmed_at, now()) "
-    "ELSE machines.confirmed_at END RETURNING id, owner"
+    "THEN COALESCE(hosts.owner, EXCLUDED.owner) "
+    "ELSE hosts.owner END, "
+    "confirmed_at = CASE WHEN $4 THEN COALESCE(hosts.confirmed_at, now()) "
+    "ELSE hosts.confirmed_at END RETURNING id, owner"
 )
 
 
 @pytest.mark.parametrize(("admin", "role"), [(True, ""), (False, "personal")])
-def test_claim_machine_registers_or_locks_the_machine_in_one_statement(
+def test_claim_host_registers_or_locks_the_host_in_one_statement(
     admin: bool,
     role: str,
 ) -> None:
     conn = make_conn()
     conn.fetchrow.side_effect = None
-    conn.fetchrow.return_value = {"id": str(_MACHINE_ID), "owner": TEST_USER_EMAIL}
+    conn.fetchrow.return_value = {"id": str(_HOST_ID), "owner": TEST_USER_EMAIL}
 
     claimed = asyncio.run(
-        claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=admin),
+        claim_host(conn, name="dev-1", email=TEST_USER_EMAIL, admin=admin),
     )
 
-    assert claimed == _MACHINE_ID
+    assert claimed == _HOST_ID
     conn.fetchrow.assert_awaited_once_with(
         _CLAIM_SQL,
         "dev-1",
@@ -148,13 +148,13 @@ def test_claim_machine_registers_or_locks_the_machine_in_one_statement(
     )
 
 
-def test_claim_machine_confirms_a_personal_machine_when_asked() -> None:
+def test_claim_host_confirms_a_personal_host_when_asked() -> None:
     conn = make_conn()
     conn.fetchrow.side_effect = None
-    conn.fetchrow.return_value = {"id": str(_MACHINE_ID), "owner": TEST_USER_EMAIL}
+    conn.fetchrow.return_value = {"id": str(_HOST_ID), "owner": TEST_USER_EMAIL}
 
     asyncio.run(
-        claim_machine(
+        claim_host(
             conn,
             name="dev-1",
             email=TEST_USER_EMAIL,
@@ -172,49 +172,49 @@ def test_claim_machine_confirms_a_personal_machine_when_asked() -> None:
     )
 
 
-def test_claim_machine_expects_the_statement_to_return_a_row() -> None:
+def test_claim_host_expects_the_statement_to_return_a_row() -> None:
     conn = make_conn()
     conn.fetchrow.side_effect = None
     conn.fetchrow.return_value = None
 
-    with pytest.raises(ValueError, match=r"^Expected machine is not None\.$"):
+    with pytest.raises(ValueError, match=r"^Expected host is not None\.$"):
         asyncio.run(
-            claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=True),
+            claim_host(conn, name="dev-1", email=TEST_USER_EMAIL, admin=True),
         )
 
 
-def test_claim_machine_refuses_an_admin_a_name_another_person_owns() -> None:
+def test_claim_host_refuses_an_admin_a_name_another_person_owns() -> None:
     conn = make_conn()
     conn.fetchrow.side_effect = None
-    conn.fetchrow.return_value = {"id": _MACHINE_ID, "owner": "mal@x.y"}
+    conn.fetchrow.return_value = {"id": _HOST_ID, "owner": "mal@x.y"}
 
-    with pytest.raises(MachineOwnedError) as refused:
+    with pytest.raises(HostOwnedError) as refused:
         asyncio.run(
-            claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=True),
+            claim_host(conn, name="dev-1", email=TEST_USER_EMAIL, admin=True),
         )
 
     assert str(refused.value) == (
-        "machine 'dev-1' is owned by mal@x.y; "
+        "host 'dev-1' is owned by mal@x.y; "
         "choose another name, or have them revoke it first"
     )
 
 
 @pytest.mark.parametrize("owner", ["mal@x.y", None])
-def test_claim_machine_refuses_anyone_else_a_machine_that_is_not_theirs(
+def test_claim_host_refuses_anyone_else_a_host_that_is_not_theirs(
     owner: str | None,
 ) -> None:
     conn = make_conn()
     conn.fetchrow.side_effect = None
-    conn.fetchrow.return_value = {"id": _MACHINE_ID, "owner": owner}
+    conn.fetchrow.return_value = {"id": _HOST_ID, "owner": owner}
 
     with pytest.raises(HTTPException) as refused:
         asyncio.run(
-            claim_machine(conn, name="dev-1", email=TEST_USER_EMAIL, admin=False),
+            claim_host(conn, name="dev-1", email=TEST_USER_EMAIL, admin=False),
         )
 
     assert (refused.value.status_code, refused.value.detail) == (
         403,
-        "machine belongs to another user",
+        "host belongs to another user",
     )
 
 
@@ -223,24 +223,24 @@ def test_issue_enrollment_supersedes_the_open_token_and_returns_the_new_one() ->
     conn.fetchval.return_value = _BEAT
 
     minted, expires_at = asyncio.run(
-        issue_enrollment(conn, machine_id=_MACHINE_ID, created_by=TEST_USER_EMAIL),
+        issue_enrollment(conn, host_id=_HOST_ID, created_by=TEST_USER_EMAIL),
     )
 
     parsed = parse_enrollment(minted.token)
     assert parsed is not None
     assert expires_at == _BEAT
     conn.execute.assert_awaited_once_with(
-        "UPDATE machine_enrollments SET used_at = now() "
-        "WHERE machine_id = $1 AND used_at IS NULL",
-        _MACHINE_ID,
+        "UPDATE host_enrollments SET used_at = now() "
+        "WHERE host_id = $1 AND used_at IS NULL",
+        _HOST_ID,
     )
     conn.fetchval.assert_awaited_once_with(
-        "INSERT INTO machine_enrollments "
-        "(id, machine_id, secret_sha256, created_by, expires_at) "
+        "INSERT INTO host_enrollments "
+        "(id, host_id, secret_sha256, created_by, expires_at) "
         "VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5)) "
         "RETURNING expires_at",
         parsed.id,
-        _MACHINE_ID,
+        _HOST_ID,
         parsed.digest,
         TEST_USER_EMAIL,
         ENROLL_TTL_SEC,
@@ -259,11 +259,11 @@ def test_enroll_by_a_viewer_sends_nothing(
     _assert_untouched(engine)
 
 
-def test_a_writer_enrolls_a_machine_that_is_new_as_their_own_personal_one(
+def test_a_writer_enrolls_a_host_that_is_new_as_their_own_personal_one(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
     engine.conn.fetchval.side_effect = [_BEAT]
 
     response = client.post(ENROLL_PATH, json={"name": "laptop"})
@@ -286,15 +286,15 @@ def _assistant(monkeypatch: pytest.MonkeyPatch, *, email: str) -> None:
     )
 
 
-def test_the_assistant_enrolls_a_machine_for_its_asker_as_their_confirmed_personal_one(
+def test_the_assistant_enrolls_a_host_for_its_asker_as_their_confirmed_personal_one(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, _, engine = route_client
     _assistant(monkeypatch, email=TEST_USER_EMAIL)
     asker = {"email": "ada@x.y", "role": "writer", "hosted_domain": None}
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "ada@x.y"})
-    engine.conn.fetchrow.side_effect = [asker, {"id": _MACHINE_ID, "owner": "ada@x.y"}]
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": "ada@x.y"})
+    engine.conn.fetchrow.side_effect = [asker, {"id": _HOST_ID, "owner": "ada@x.y"}]
     engine.conn.fetchval.side_effect = [_BEAT]
 
     response = client.post(
@@ -320,7 +320,7 @@ def test_the_assistant_enrolls_a_machine_for_its_asker_as_their_confirmed_person
     ],
     ids=["unknown", "viewer"],
 )
-def test_an_asker_who_is_unknown_or_cannot_write_gets_no_machine(
+def test_an_asker_who_is_unknown_or_cannot_write_gets_no_host(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
     asker: dict[str, object] | None,
@@ -378,11 +378,11 @@ def test_without_auth_no_asker_is_believed_and_none_is_read(
     _assert_untouched(engine)
 
 
-def test_a_writer_cannot_enroll_a_machine_that_belongs_to_someone_else(
+def test_a_writer_cannot_enroll_a_host_that_belongs_to_someone_else(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "other@x.y"})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": "other@x.y"})
 
     response = client.post(ENROLL_PATH, json={"name": "laptop"})
 
@@ -391,32 +391,32 @@ def test_a_writer_cannot_enroll_a_machine_that_belongs_to_someone_else(
     assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
 
-def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
+def test_join_checks_the_token_unlocked_then_locks_the_host_and_claims_it(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
     enrollment = mint_secret(ENROLLMENT_PREFIX)
     parsed_enrollment = parse_enrollment(enrollment.token)
     assert parsed_enrollment is not None
-    engine.conn.fetchval.side_effect = [enrollment.digest, _MACHINE_ID]
-    engine.conn.fetchrow.side_effect = [{"id": _MACHINE_ID, "owner": TEST_USER_EMAIL}]
+    engine.conn.fetchval.side_effect = [enrollment.digest, _HOST_ID]
+    engine.conn.fetchrow.side_effect = [{"id": _HOST_ID, "owner": TEST_USER_EMAIL}]
 
     response = _join(client, enrollment.token, facts={"os": "linux"})
 
     assert response.status_code == 201
     body = from_plain(response.json(), dict[str, str])
-    assert body["machine_id"] == str(_MACHINE_ID)
+    assert body["host_id"] == str(_HOST_ID)
     credential = parse_credential(body["credential"])
     assert credential is not None
     check, claim = engine.conn.fetchval.call_args_list
     lock = engine.conn.fetchrow.call_args
     assert lock is not None
     # A plain read first: join has no authentication, so a token that cannot succeed
-    # must be refused before it queues for the machine row.
+    # must be refused before it queues for the host row.
     sql = check.args[0]
     assert isinstance(sql, str)
     assert "FOR UPDATE" not in sql
-    assert "FROM machine_enrollments e JOIN machines m ON m.id = e.machine_id" in sql
+    assert "FROM host_enrollments e JOIN hosts m ON m.id = e.host_id" in sql
     assert "e.id = $1 AND m.name = $2 AND e.used_at IS NULL" in sql
     assert "AND e.expires_at > now()" in sql
     assert (
@@ -430,39 +430,39 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
     # them deadlocks.
     sql = lock.args[0]
     assert isinstance(sql, str)
-    assert "FROM machines WHERE name = $1 FOR UPDATE" in sql
+    assert "FROM hosts WHERE name = $1 FOR UPDATE" in sql
     assert lock.args[1:] == ("dev-1",)
     sql = claim.args[0]
     assert isinstance(sql, str)
-    assert "UPDATE machine_enrollments SET used_at = now()" in sql
+    assert "UPDATE host_enrollments SET used_at = now()" in sql
     assert "used_at IS NULL AND expires_at > now() AND secret_sha256 = $2" in sql
-    assert "AND machine_id = $3" in sql
+    assert "AND host_id = $3" in sql
     assert (
-        "FROM users u JOIN machines m ON m.id = $3 "
-        "WHERE u.email = machine_enrollments.created_by AND u.status = 'active' "
+        "FROM users u JOIN hosts m ON m.id = $3 "
+        "WHERE u.email = host_enrollments.created_by AND u.status = 'active' "
         "AND ((u.role = 'admin' AND (m.owner IS NULL OR m.owner = u.email)) "
         "OR (m.owner = u.email AND m.role = $4))"
     ) in sql
     assert claim.args[1:] == (
         parsed_enrollment.id,
         enrollment.digest,
-        _MACHINE_ID,
+        _HOST_ID,
         "personal",
     )
     sent = executed_sql(engine.conn)
     assert [sql.split(" (")[0].split(" SET")[0] for sql in sent] == [
         "BEGIN",
-        "UPDATE machine_credentials",
-        "INSERT INTO machine_credentials",
-        "UPDATE machines",
+        "UPDATE host_credentials",
+        "INSERT INTO host_credentials",
+        "UPDATE hosts",
         "COMMIT",
     ]
     assert "revoked_at = now()" in sent[1]
     assert "revoked_at IS NULL" in sent[1]
     insert, update = engine.conn.execute.call_args_list[-3:-1]
-    assert insert.args[1:] == (credential.id, _MACHINE_ID, credential.digest)
+    assert insert.args[1:] == (credential.id, _HOST_ID, credential.digest)
     assert update.args[1:] == (
-        _MACHINE_ID,
+        _HOST_ID,
         {"os": "linux"},
         uuid.UUID(_INSTANCE),
         "0.1",
@@ -471,19 +471,19 @@ def test_join_checks_the_token_unlocked_then_locks_the_machine_and_claims_it(
 
 
 @pytest.mark.parametrize(
-    ("machine", "claimed"),
-    [(None, []), ({"id": _MACHINE_ID, "owner": None}, [None])],
-    ids=["unknown-machine", "unclaimable-token"],
+    ("host", "claimed"),
+    [(None, []), ({"id": _HOST_ID, "owner": None}, [None])],
+    ids=["unknown-host", "unclaimable-token"],
 )
-def test_join_that_finds_no_machine_or_no_claimable_token_is_401_and_writes_nothing(
+def test_join_that_finds_no_host_or_no_claimable_token_is_401_and_writes_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
-    machine: dict[str, object] | None,
+    host: dict[str, object] | None,
     claimed: list[None],
 ) -> None:
     client, _, engine = route_client
     enrollment = mint_secret(ENROLLMENT_PREFIX)
     engine.conn.fetchval.side_effect = [enrollment.digest, *claimed]
-    engine.conn.fetchrow.side_effect = [machine]
+    engine.conn.fetchrow.side_effect = [host]
 
     response = _join(client, enrollment.token)
 
@@ -539,7 +539,7 @@ def test_join_with_a_malformed_token_never_reaches_the_database(
     _assert_untouched(engine)
 
 
-def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the_row(
+def test_heartbeat_locks_the_host_then_checks_the_credential_then_updates_the_row(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -557,7 +557,7 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
     assert lookup is not None
     sql = lookup.args[0]
     assert isinstance(sql, str)
-    assert "FROM machine_credentials c JOIN machines m ON m.id = c.machine_id" in sql
+    assert "FROM host_credentials c JOIN hosts m ON m.id = c.host_id" in sql
     assert "WHERE c.id = $1" in sql
     assert "revoked_at IS NULL" not in sql
     assert lookup.args[1:] == (credential.id,)
@@ -566,19 +566,19 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
     # reads the credential, and the update cannot land after it.
     sql = lock.args[0]
     assert isinstance(sql, str)
-    assert "FROM machines WHERE id = $1 FOR UPDATE" in sql
-    assert lock.args[1:] == (_MACHINE_ID,)
+    assert "FROM hosts WHERE id = $1 FOR UPDATE" in sql
+    assert lock.args[1:] == (_HOST_ID,)
     sql = live.args[0]
     assert isinstance(sql, str)
-    assert "FROM machine_credentials WHERE id = $1 AND revoked_at IS NULL" in sql
+    assert "FROM host_credentials WHERE id = $1 AND revoked_at IS NULL" in sql
     assert live.args[1:] == (credential.id,)
     sql = beat.args[0]
     assert isinstance(sql, str)
-    assert "($6::boolean OR host_instance IS NULL OR host_instance = $2" in sql
+    assert "($6::boolean OR daemon_instance IS NULL OR daemon_instance = $2" in sql
     assert "last_heartbeat < now() - make_interval(secs => $5)" in sql
     assert "facts = COALESCE($4, facts)" in sql
     assert beat.args[1:] == (
-        _MACHINE_ID,
+        _HOST_ID,
         uuid.UUID(_INSTANCE),
         "0.1",
         {"cpus": 4},
@@ -587,30 +587,30 @@ def test_heartbeat_locks_the_machine_then_checks_the_credential_then_updates_the
     )
 
 
-# The oldest supported host is raised to 0.2 here, above 0.1.11, the first host that
+# The oldest supported daemon is raised to 0.2 here, above 0.1.11, the first daemon that
 # reads an answer naming a field it does not know.
 @pytest.mark.parametrize(
-    ("host_version", "told"),
+    ("daemon_version", "told"),
     [("0.1.11", True), ("0.1.9", False), ("0.2", False), ("", False)],
 )
-def test_a_heartbeat_tells_an_outdated_host_only_when_it_can_read_that(
+def test_a_heartbeat_tells_an_outdated_daemon_only_when_it_can_read_that(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
-    host_version: str,
+    daemon_version: str,
     told: bool,
 ) -> None:
     client, _, engine = route_client
-    monkeypatch.setattr(machine_host_routes, "MIN_HOST_VERSION", "0.2")
+    monkeypatch.setattr(daemon_routes, "MIN_DAEMON_VERSION", "0.2")
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(engine.conn, _credential_row(credential))
     engine.conn.fetchval.side_effect = [TEST_USER_EMAIL, True, _BEAT]
 
-    response = _heartbeat(client, credential.token, host_version=host_version)
+    response = _heartbeat(client, credential.token, daemon_version=daemon_version)
 
     assert response.status_code == 200
     assert from_plain(response.json(), dict[str, object]) == {
         "server_time": "2026-10-07T12:00:00Z",
-        **({"host_outdated": True} if told else {}),
+        **({"daemon_outdated": True} if told else {}),
     }
 
 
@@ -626,7 +626,8 @@ def test_a_heartbeat_the_instance_rule_refuses_is_409(
 
     assert response.status_code == 409
     assert (
-        from_plain(response.json(), dict[str, str])["code"] == "another_host_connected"
+        from_plain(response.json(), dict[str, str])["code"]
+        == "another_daemon_connected"
     )
 
 
@@ -646,9 +647,9 @@ def test_a_take_passes_the_instance_rule_by_and_a_release_only_lets_go(
     assert took.args[-1] is True
     sql = let_go.args[0]
     assert isinstance(sql, str)
-    assert "CASE WHEN host_instance = $2 THEN NULL ELSE host_instance END" in sql
+    assert "CASE WHEN daemon_instance = $2 THEN NULL ELSE daemon_instance END" in sql
     assert "last_heartbeat" not in sql
-    assert let_go.args[1:] == (_MACHINE_ID, uuid.UUID(_INSTANCE))
+    assert let_go.args[1:] == (_HOST_ID, uuid.UUID(_INSTANCE))
 
 
 def test_a_heartbeat_whose_credential_was_revoked_meanwhile_is_410_and_writes_nothing(
@@ -662,7 +663,7 @@ def test_a_heartbeat_whose_credential_was_revoked_meanwhile_is_410_and_writes_no
     response = _heartbeat(client, credential.token)
 
     assert response.status_code == 410
-    assert from_plain(response.json(), dict[str, str])["detail"] == "machine_revoked"
+    assert from_plain(response.json(), dict[str, str])["detail"] == "host_revoked"
     assert engine.conn.fetchval.call_count == 2
     assert executed_sql(engine.conn)[-1] == "ROLLBACK"
 
@@ -682,7 +683,7 @@ def test_last_used_is_written_by_the_first_authenticated_request_only(
     for recorded in engine.conn.execute.call_args_list:
         sql = recorded.args[0]
         assert isinstance(sql, str)
-        if "UPDATE machine_credentials SET last_used = now()" in sql:
+        if "UPDATE host_credentials SET last_used = now()" in sql:
             touches.append(recorded.args[1:])
     assert touches == [(credential.id,)]
 
@@ -703,7 +704,7 @@ def test_a_revoked_credential_is_410_only_when_its_secret_matches(
     wrong = _heartbeat(client, forged.token)
 
     assert (matching.status_code, wrong.status_code) == (410, 401)
-    assert from_plain(matching.json(), dict[str, str])["detail"] == "machine_revoked"
+    assert from_plain(matching.json(), dict[str, str])["detail"] == "host_revoked"
     engine.conn.fetchval.assert_not_called()
     engine.conn.execute.assert_not_called()
 
@@ -719,8 +720,8 @@ def test_an_unknown_or_missing_credential_is_401_with_one_body(
         _heartbeat(client, unknown),
         _heartbeat(client, "not-a-credential"),
         client.post(
-            HEARTBEAT_PATH.format(machine_id=_MACHINE_ID),
-            json={"instance": _INSTANCE, "host_version": "0.1"},
+            HEARTBEAT_PATH.format(host_id=_HOST_ID),
+            json={"instance": _INSTANCE, "daemon_version": "0.1"},
         ),
     ]
 
@@ -729,7 +730,7 @@ def test_an_unknown_or_missing_credential_is_401_with_one_body(
     engine.conn.fetchval.assert_not_called()
 
 
-def test_a_host_request_naming_a_field_the_server_does_not_know_is_422(
+def test_a_daemon_request_naming_a_field_the_server_does_not_know_is_422(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -737,8 +738,8 @@ def test_a_host_request_naming_a_field_the_server_does_not_know_is_422(
     set_field_row(engine.conn, _credential_row(credential))
 
     beat = client.post(
-        HEARTBEAT_PATH.format(machine_id=_MACHINE_ID),
-        json={"instance": _INSTANCE, "host_version": "0.1", "lane": 1},
+        HEARTBEAT_PATH.format(host_id=_HOST_ID),
+        json={"instance": _INSTANCE, "daemon_version": "0.1", "lane": 1},
         headers={"Authorization": f"Bearer {credential.token}"},
     )
     joined = client.post(
@@ -747,7 +748,7 @@ def test_a_host_request_naming_a_field_the_server_does_not_know_is_422(
             "name": "dev-1",
             "token": mint_secret(ENROLLMENT_PREFIX).token,
             "instance": _INSTANCE,
-            "host_version": "0.1",
+            "daemon_version": "0.1",
             "lane": 1,
         },
     )
@@ -756,14 +757,14 @@ def test_a_host_request_naming_a_field_the_server_does_not_know_is_422(
     engine.conn.fetchval.assert_not_called()
 
 
-def test_another_machines_credential_is_404_and_updates_nothing(
+def test_another_hosts_credential_is_404_and_updates_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
     credential = mint_secret(CREDENTIAL_PREFIX)
     set_field_row(
         engine.conn,
-        {**_credential_row(credential), "machine_id": uuid.uuid4()},
+        {**_credential_row(credential), "host_id": uuid.uuid4()},
     )
 
     response = _heartbeat(client, credential.token)
@@ -773,12 +774,12 @@ def test_another_machines_credential_is_404_and_updates_nothing(
     engine.conn.execute.assert_not_called()
 
 
-def test_revoke_closes_credentials_enrollments_and_the_host_instance(
+def test_revoke_closes_credentials_enrollments_and_the_daemon_instance(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "other@x.y"})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": "other@x.y"})
 
     response = client.post(REVOKE_PATH.format(name="dev-1"))
 
@@ -787,25 +788,25 @@ def test_revoke_closes_credentials_enrollments_and_the_host_instance(
     assert select is not None
     sql = select.args[0]
     assert isinstance(sql, str)
-    assert "FROM machines WHERE name = $1 FOR UPDATE" in sql
+    assert "FROM hosts WHERE name = $1 FOR UPDATE" in sql
     assert select.args[1:] == ("dev-1",)
     sent = executed_sql(engine.conn)
     assert [sql.split(" SET")[0] for sql in sent] == [
         "BEGIN",
-        "UPDATE machine_credentials",
-        "UPDATE machine_enrollments",
-        "UPDATE machines",
+        "UPDATE host_credentials",
+        "UPDATE host_enrollments",
+        "UPDATE hosts",
         "COMMIT",
     ]
     assert "revoked_at = now()" in sent[1]
     assert "revoked_at IS NULL" in sent[1]
-    assert "host_instance = NULL" in sent[3]
+    assert "daemon_instance = NULL" in sent[3]
     assert [c.args[1:] for c in engine.conn.execute.call_args_list[1:4]] == [
-        (_MACHINE_ID,),
+        (_HOST_ID,),
     ] * 3
 
 
-def test_revoke_of_an_absent_machine_is_404_and_changes_nothing(
+def test_revoke_of_an_absent_host_is_404_and_changes_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -830,36 +831,36 @@ def test_revoke_by_a_viewer_sends_nothing(
     _assert_untouched(engine)
 
 
-def test_a_writer_revokes_their_own_machine_and_not_another_users(
+def test_a_writer_revokes_their_own_host_and_not_another_users(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": "other@x.y"})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": "other@x.y"})
 
     refused = client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert refused.status_code == 403
     assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
     allowed = client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert allowed.status_code == 204
 
 
 @pytest.mark.asyncio
-async def test_unregister_takes_the_owners_machine_out_of_service_then_deletes_it(
+async def test_unregister_takes_the_owners_host_out_of_service_then_deletes_it(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     _, _, engine = route_client
-    # The row's id as text, as a driver may hand it: the machine is named by its UUID.
-    set_field_row(engine.conn, {"id": str(_MACHINE_ID)})
+    # The row's id as text, as a driver may hand it: the host is named by its UUID.
+    set_field_row(engine.conn, {"id": str(_HOST_ID)})
 
-    machine_id = await unregister_machine(engine.conn, name="box-1", owner="ada@x.y")
+    host_id = await unregister_host(engine.conn, name="box-1", owner="ada@x.y")
 
-    assert machine_id == _MACHINE_ID
+    assert host_id == _HOST_ID
     assert [call.args[1:] for call in engine.conn.execute.call_args_list] == [
-        (_MACHINE_ID,),
+        (_HOST_ID,),
     ] * 4
     assert all(
         isinstance(call.args[1], uuid.UUID)
@@ -868,26 +869,26 @@ async def test_unregister_takes_the_owners_machine_out_of_service_then_deletes_i
     select = engine.conn.fetchrow.call_args
     assert select is not None
     assert select.args == (
-        "SELECT id FROM machines WHERE name = $1 AND owner = $2 FOR UPDATE",
+        "SELECT id FROM hosts WHERE name = $1 AND owner = $2 FOR UPDATE",
         "box-1",
         "ada@x.y",
     )
     assert [sql.split(" SET")[0] for sql in executed_sql(engine.conn)] == [
-        "UPDATE machine_credentials",
-        "UPDATE machine_enrollments",
-        "UPDATE machines",
-        "DELETE FROM machines WHERE id = $1",
+        "UPDATE host_credentials",
+        "UPDATE host_enrollments",
+        "UPDATE hosts",
+        "DELETE FROM hosts WHERE id = $1",
     ]
 
 
 @pytest.mark.asyncio
-async def test_unregister_leaves_a_machine_that_is_gone_or_another_persons(
+async def test_unregister_leaves_a_host_that_is_gone_or_another_persons(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     _, _, engine = route_client
     set_field_row(engine.conn, None)
 
-    assert await unregister_machine(engine.conn, name="box-1", owner="ada@x.y") is None
+    assert await unregister_host(engine.conn, name="box-1", owner="ada@x.y") is None
     assert executed_sql(engine.conn) == []
 
 
@@ -903,7 +904,7 @@ def _credential_row(
     return {
         "secret_sha256": credential.digest,
         "revoked_at": _BEAT if revoked else None,
-        "machine_id": _MACHINE_ID,
+        "host_id": _HOST_ID,
         "name": "dev-1",
     }
 
@@ -920,7 +921,7 @@ def _join(
             "name": "dev-1",
             "token": token,
             "instance": _INSTANCE,
-            "host_version": "0.1",
+            "daemon_version": "0.1",
             "facts": facts or {},
         },
     )
@@ -932,15 +933,15 @@ def _heartbeat(
     *,
     facts: dict[str, object] | None = None,
     claim: str | None = None,
-    host_version: str = "0.1",
+    daemon_version: str = "0.1",
 ) -> Response:
-    body: dict[str, object] = {"instance": _INSTANCE, "host_version": host_version}
+    body: dict[str, object] = {"instance": _INSTANCE, "daemon_version": daemon_version}
     if facts is not None:
         body["facts"] = facts
     if claim is not None:
         body["claim"] = claim
     return client.post(
-        HEARTBEAT_PATH.format(machine_id=_MACHINE_ID),
+        HEARTBEAT_PATH.format(host_id=_HOST_ID),
         json=body,
         headers={"Authorization": f"Bearer {bearer}"},
     )

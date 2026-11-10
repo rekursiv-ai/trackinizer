@@ -239,7 +239,7 @@ async def test_a_session_the_caller_does_not_read_is_left_out(store: Store) -> N
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_live_run_says_its_machine_and_a_lapsed_one_where_it_last_ran(
+async def test_a_live_run_says_its_host_and_a_lapsed_one_where_it_last_ran(
     store: Store,
 ) -> None:
     now = [0.0]
@@ -247,22 +247,22 @@ async def test_a_live_run_says_its_machine_and_a_lapsed_one_where_it_last_ran(
     live = await _session(store, records=[_turn(_NOW)])
     lapsed = await _session(store, records=[_turn(_NOW - timedelta(hours=1))])
     never = await _session(store, records=[_turn(_NOW - timedelta(hours=2))])
-    inbound.mark_poller(lapsed, machine="build-box", cli="codex")
+    inbound.mark_poller(lapsed, host="build-box", cli="codex")
     now[0] = 60.0
-    inbound.mark_poller(live, machine="workstation", cli="claude", instance="a" * 32)
+    inbound.mark_poller(live, host="workstation", cli="claude", instance="a" * 32)
     _ = inbound.report_state(live, instance="a" * 32, state="running")
 
     sessions = {
         each.id: each for each in (await _list(store, inbound=inbound)).sessions
     }
 
-    assert (sessions[live].live, sessions[live].machine, sessions[live].state) == (
+    assert (sessions[live].live, sessions[live].host, sessions[live].state) == (
         True,
         "workstation",
         "running",
     )
-    assert (sessions[lapsed].live, sessions[lapsed].machine) == (False, "build-box")
-    assert (sessions[lapsed].state, sessions[never].machine) == ("idle", None)
+    assert (sessions[lapsed].live, sessions[lapsed].host) == (False, "build-box")
+    assert (sessions[lapsed].state, sessions[never].host) == ("idle", None)
 
 
 @pytest.mark.db_pglite
@@ -456,9 +456,9 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
     policy = RecordingPolicy()
     monkeypatch.setattr(RecordingPolicy, "read_filter", Mock(return_value=predicate))
     inbound = InboundQueue()
-    inbound.mark_poller(placed, machine="old-box")
+    inbound.mark_poller(placed, host="old-box")
     inbound.forget_poller(placed)
-    inbound.mark_poller(chat, machine="live-box")
+    inbound.mark_poller(chat, host="live-box")
     before = datetime.now(UTC)
 
     listed = await list_own_sessions(
@@ -481,10 +481,10 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
         "Please fix",
         line,
     )
-    assert (first.live, first.state, first.machine) == (True, "running", "live-box")
+    assert (first.live, first.state, first.host) == (True, "running", "live-box")
     assert second.produced_by == [issue]
-    assert (second.live, second.state, second.machine) == (False, "idle", "old-box")
-    assert (third.canvas_id, third.workspace_id, third.machine) == (None, None, None)
+    assert (second.live, second.state, second.host) == (False, "idle", "old-box")
+    assert (third.canvas_id, third.workspace_id, third.host) == (None, None, None)
     assert (third.goal, third.first_line, third.last_line, third.produced_by) == (
         None,
         None,

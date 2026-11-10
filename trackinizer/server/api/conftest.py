@@ -56,7 +56,7 @@ from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_machine_host import ENROLL_PATH, JOIN_PATH
+from trackinizer.wire.wire_daemon import ENROLL_PATH, JOIN_PATH
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
 
 
@@ -243,12 +243,12 @@ def cheap_scrypt(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TerminalWorld:
-    """A served app with users, a joined machine and a fresh terminal hub."""
+    """A served app with users, a joined host and a fresh terminal hub."""
 
     def __init__(self, client: httpx2.AsyncClient, store: Store) -> None:
         self.client = client
         self.store = store
-        self.machine_id = uuid.UUID(int=0)
+        self.host_id = uuid.UUID(int=0)
         self.credential = ""
 
     async def person(self, email: str, *, role: str = "writer") -> uuid.UUID:
@@ -317,7 +317,7 @@ class TerminalWorld:
         *,
         confirm: bool = True,
         facts: dict[str, object] | None = None,
-        host_version: str = "t",
+        daemon_version: str = "t",
     ) -> None:
         """Self-enroll ``name`` with ``cookie``'s user, join it, and confirm it."""
         enrolled = await self.call(
@@ -336,14 +336,14 @@ class TerminalWorld:
                 "name": name,
                 "token": from_plain(enrolled.json(), dict[str, str])["token"],
                 "instance": str(TERMINAL_INSTANCE),
-                "host_version": host_version,
+                "daemon_version": daemon_version,
                 "facts": facts or {},
             },
         )
         if joined.status_code != 201:
             raise ValueError("Expected joined.status_code == 201.")
         body = from_plain(joined.json(), dict[str, str])
-        self.machine_id = uuid.UUID(body["machine_id"])
+        self.host_id = uuid.UUID(body["host_id"])
         self.credential = body["credential"]
         if confirm:
             confirmed = await self.call(
@@ -366,8 +366,8 @@ class TerminalWorld:
         wait_sec: float = 0,
     ) -> httpx2.Response:
         """Ask for the next terminal as the host does; a wait also marks it ready."""
-        path = wire_terminals.MACHINE_TERMINAL_WAIT_PATH.format(
-            machine_id=self.machine_id,
+        path = wire_terminals.HOST_TERMINAL_WAIT_PATH.format(
+            host_id=self.host_id,
         )
         return await self.call(
             "GET",
@@ -379,7 +379,7 @@ class TerminalWorld:
         self,
         cookie: str,
         *,
-        machine: str = "gx10",
+        host: str = "gx10",
         canvas: uuid.UUID | None = None,
         origin: str | None = TERMINAL_ORIGIN,
         requested_by: str | None = None,
@@ -391,7 +391,7 @@ class TerminalWorld:
         kind: str | None = None,
     ) -> httpx2.Response:
         """Ask to open a terminal from the browser signed in by ``cookie``."""
-        body: dict[str, object] = {"machine": machine, "rows": 24, "cols": 80}
+        body: dict[str, object] = {"host": host, "rows": 24, "cols": 80}
         if kind is not None:
             body["kind"] = kind
         if surface is not None:

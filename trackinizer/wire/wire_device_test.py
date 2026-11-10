@@ -60,7 +60,7 @@ def test_the_secrets_stay_out_of_reprs() -> None:
     [
         {"client": "Bad"},
         {"client": "ok", "host": "-x"},
-        {"client": "ok", "machine": "A"},
+        {"client": "ok", "host": "A"},
     ],
 )
 def test_a_code_request_is_checked_field_by_field(fields: dict[str, str]) -> None:

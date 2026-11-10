@@ -714,7 +714,7 @@ class TestImportPurity:
         The property that matters is WHICH modules load, not how many
         milliseconds they take: import time swings several fold with the CPU
         governor, page-cache warmth, and parallel-test load, so a wall-clock
-        budget fails on a busy machine while the module set it stands in for
+        budget fails on a busy host while the module set it stands in for
         is unchanged. Naming the modules asserts the same thing
         deterministically.
         """

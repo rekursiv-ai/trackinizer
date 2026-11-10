@@ -88,7 +88,7 @@ class TestHeaded:
             "Stdin",
         ],
     )
-    def test_machine_output_keeps_only_the_fts_head(self, kind: str) -> None:
+    def test_host_output_keeps_only_the_fts_head(self, kind: str) -> None:
         text = "exit 1: ModuleNotFoundError\n" + "log spam " * 10_000
         units = MAPPER.units(kind=kind, text=text)
         assert len(units) == 1

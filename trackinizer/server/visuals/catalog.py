@@ -306,7 +306,7 @@ class FilesVisual:
 
 
 class TerminalVisual:
-    """A shell on one of the viewer's own machines."""
+    """A shell on one of the viewer's own hosts."""
 
     class Config(Fig["TerminalVisual"]):
         title: str = "Terminal"
@@ -328,14 +328,14 @@ class TerminalVisual:
             version=1,
             title=self.config.title,
             description=(
-                "A shell on one of your own machines. "
+                "A shell on one of your own hosts. "
                 "It starts only when you click Start terminal."
             ),
             requires=[],
             default_size="wide",
             parameter_schema={
-                # A machine name; empty lets the viewer pick one.
-                "machine": ParameterDescription(
+                # A host name; empty lets the viewer pick one.
+                "host": ParameterDescription(
                     type="string",
                     default="",
                     max_length=63,

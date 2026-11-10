@@ -76,7 +76,7 @@ __all__ = [
 
 
 # The provider a part's format names, as a person would name it in the conversation:
-# the assistant's own parts are the bot's; a machine's sagent run is ``sagent``.
+# the assistant's own parts are the bot's; a host's sagent run is ``sagent``.
 _PROVIDER_OF_FORMAT: Final = {
     "assistant": "bot",
     "claude": "claude",
