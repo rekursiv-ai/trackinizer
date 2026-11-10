@@ -45,6 +45,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    StringConstraints,
     ValidationError,
     field_validator,
     model_validator,
@@ -444,7 +445,10 @@ class ChatSend(BaseModel):
 
 
 class ChatPartial(BaseModel):
-    """The answer a chat's assistant is writing, as far as it has written it."""
+    """What a chat's assistant is doing on a turn, as far as it has done it.
+
+    Each text is vetted for secrets, as a stored answer is, and clipped.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -453,11 +457,22 @@ class ChatPartial(BaseModel):
     stored shows no partial of it again."""
 
     text: str = Field(max_length=CHAT_PARTIAL_CHARS)
-    """The answer so far, as a reader is shown it: vetted for secrets, without the
-    notes the model keeps, and clipped."""
+    """The answer so far, without the notes the model keeps."""
 
     done: bool = False
     """Whether ``text`` is the whole answer, which the assistant is now storing."""
+
+    thinking: str = Field(default="", max_length=CHAT_PARTIAL_CHARS)
+    """The reasoning the model's call is writing, as its provider summarizes it."""
+
+    calls: list[Annotated[str, StringConstraints(max_length=1_000)]] = Field(
+        default_factory=list[str],
+        max_length=50,
+    )
+    """The tool calls running now, each by its label."""
+
+    status: str = Field(default="", max_length=200)
+    """The status line sagent's terminal UI shows: time, tokens, spend, the wait."""
 
 
 class ChatPartialState(BaseModel):

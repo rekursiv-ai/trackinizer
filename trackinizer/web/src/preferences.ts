@@ -36,7 +36,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   chat_provider: "assistant",
   assistant_prompt: "sagent",
   cli_folder: "",
-  chat_tool_calls: false,
+  chat_view: { view: "chat", density: "auto", thinking: false, output_lines: "tool", times: false },
   autofix: true,
   automerge: false,
   hide_closed_pulls: true,
