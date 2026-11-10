@@ -352,7 +352,7 @@ class TestTheKeyThatDrainsAChatLineHoldsItsTurn:
 
 
 class TestTheDrainSaysWhereItsRunIs:
-    """A run names its detached host, machine and folder on each drain, for Chat."""
+    """A run names its detached host, host and folder on each drain, for Chat."""
 
     @pytest.fixture
     def drain_at(
@@ -383,9 +383,9 @@ class TestTheDrainSaysWhereItsRunIs:
             for session_id, params in (
                 (
                     detached,
-                    {"run": "chat-1a2b3c4d", "machine": "gx10", "cwd": "~/work"},
+                    {"run": "chat-1a2b3c4d", "host": "gx10", "cwd": "~/work"},
                 ),
-                (foreground, {"machine": "gx10", "cwd": "/srv/work"}),
+                (foreground, {"host": "gx10", "cwd": "/srv/work"}),
                 (older, dict[str, str]()),
             )
         ]
@@ -393,11 +393,11 @@ class TestTheDrainSaysWhereItsRunIs:
         assert [r.status_code for r in said] == [200, 200, 200], [r.text for r in said]
         assert inbound.poller_run(detached) == PollerRun(
             run="chat-1a2b3c4d",
-            machine="gx10",
+            host="gx10",
             cwd="~/work",
         )
         assert inbound.poller_run(foreground) == PollerRun(
-            machine="gx10",
+            host="gx10",
             cwd="/srv/work",
         )
         assert inbound.poller_run(older) == PollerRun()
@@ -409,10 +409,10 @@ class TestTheDrainSaysWhereItsRunIs:
             {"run": "has/slash"},
             {"run": "a" * 129},
             {"run": "claude\n"},
-            {"machine": "GX10"},
-            {"machine": "gx10.local"},
-            {"machine": "x" * 64},
-            {"machine": "gx10\n"},
+            {"host": "GX10"},
+            {"host": "gx10.local"},
+            {"host": "x" * 64},
+            {"host": "gx10\n"},
             {"cwd": "~/work\n"},
             {"cwd": "~/\x1b[31mred"},
             {"cwd": "~/" + "d" * 1_023},
@@ -1774,7 +1774,7 @@ async def test_a_stopped_run_is_refused_with_a_403_and_a_new_run_is_not(
         session_id=session_id,
         cli="claude",
         instance=old,
-        machine="box",
+        host="box",
     )
     assert first.status_code == 200
     assert list(inbound.runs_on("box", account=TEST_USER_EMAIL)) == [session_id]

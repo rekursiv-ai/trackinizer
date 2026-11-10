@@ -171,7 +171,7 @@ Steps:
    to see the comparison fail. Record the script's output with the change;
    never add it to the test suite.
 
-   **A single writing statement uses ONE core, whatever the machine has.**
+   **A single writing statement uses ONE core, whatever the host has.**
    Postgres never parallelizes a query whose top node writes rows
    (`INSERT ... SELECT`, `UPDATE`): the plan is serial in the leader, and the
    source scan gets no workers either. Measured on a 128-core host:

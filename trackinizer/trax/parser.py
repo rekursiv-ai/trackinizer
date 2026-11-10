@@ -270,7 +270,7 @@ _Clause = _KindClause | _RangeClause | _FilterClause | _MutationClause | _Unknow
 
 # Its own parser rather than ``parse_list_query``'s: that one reads kinds and seq
 # ranges too, and an export selector takes neither. Same CLI spelling though, so
-# ``labels nre '^machine:'`` means here exactly what it means in a list query.
+# ``labels nre '^host:'`` means here exactly what it means in a list query.
 def parse_export_selector(tokens: Sequence[str]) -> tuple[Filter, ...]:
     """Parse ``<field> <op> [value]`` triples into export selector clauses.
 

@@ -1,7 +1,7 @@
 """The caller's own sessions, newest activity first, each with its run and its place.
 
 What a person reads to find their work: every session they started that was active
-lately or is still open, with whether a run drains it now and on which machine (the
+lately or is still open, with whether a run drains it now and on which host (the
 poller's lease, which the server holds in memory), when it last took a turn, the goal
 its CLI's log last reported, the first line a person wrote in it, the last line said in
 it and by whom, and the canvas and workspace it sits in. The Issues the sessions were
@@ -90,12 +90,12 @@ class ListedSession(BaseModel):
     live: bool
     """A run drains it now: its poller's lease holds."""
 
-    machine: str | None
-    """The machine the live run names, else the one it last ran on since the server
+    host: str | None
+    """The host the agent process names, else the one it last ran on since the server
     started; None when no run of it named one."""
 
     state: RunState
-    """What the live run is doing; ``idle`` when no run is live."""
+    """What the agent process is doing; ``idle`` when no run is live."""
 
 
 class ListedIssue(BaseModel):
@@ -358,7 +358,7 @@ def _listed(
         first_line=lines.first_line,
         last_line=lines.last_line,
         live=state is not None,
-        machine=None if where is None else where.machine,
+        host=None if where is None else where.host,
         state=state or "idle",
     )
 

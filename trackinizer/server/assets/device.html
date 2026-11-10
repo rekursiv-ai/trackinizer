@@ -98,7 +98,7 @@
       <dt>Account</dt><dd id="r-account"></dd>
       <dt>Program</dt><dd id="r-client"></dd>
       <dt>Computer</dt><dd id="r-host"></dd>
-      <dt>Machine</dt><dd id="r-machine"></dd>
+      <dt>Host</dt><dd id="r-host"></dd>
       <dt>Role</dt><dd id="r-role"></dd>
     </dl>
     <div class="actions">
@@ -157,12 +157,12 @@
     const view = result.body;
     current = view.user_code;
     el("r-code").textContent = view.user_code;
-    // The signed-in account is the one the key and the machine become, so a person signed
+    // The signed-in account is the one the key and the host become, so a person signed
     // in as someone else sees it before they click.
     el("r-as").textContent = el("r-account").textContent = view.account;
     el("r-client").textContent = view.client;
     el("r-host").textContent = view.host || "not given";
-    el("r-machine").textContent = view.machine ? `${view.machine} (becomes your machine)` : "none";
+    el("r-host").textContent = view.host ? `${view.host} (becomes your host)` : "none";
     el("r-role").textContent = view.role;
     say("");
     show("review");

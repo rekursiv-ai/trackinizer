@@ -39,10 +39,10 @@ type ResourceKind = Literal[
     "session",
     "canvas",
     "variable",
-    "machine",
+    "host",
     "terminal",
     "gpu_job",
-    "machine_job",
+    "host_job",
     "box",
 ]
 """Every kind of resource with an owner; a grant is keyed by kind and id."""

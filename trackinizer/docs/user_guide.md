@@ -30,7 +30,7 @@ sign-in, and with no terminals: a terminal opens only for a signed-in person.
 The top bar folds into a thin strip along the top of the window. Rest the
 pointer on the strip, or tap it, to open the bar; the pin (📌) keeps it open.
 From left to right it holds the logo (the graph), **Go** (every page), Search
-(⌘K, or Ctrl+K), New, your workspaces, **Machines** (where commands run),
+(⌘K, or Ctrl+K), New, your workspaces, **Hosts** (where commands run),
 **Workbench** (the canvas's visuals) and your avatar. The avatar's menu has
 **Your settings**, Appearance, the other accounts this browser has used,
 **Add another account** and **Sign out**.
@@ -41,7 +41,7 @@ The app ships a web app manifest, so a browser that installs web apps can
 install it: use the browser's Install or Add to Home Screen command. The
 installed app opens in a window of its own at `/trax/`. It also gets a few keys
 that a browser keeps for itself in a plain tab (see
-[Terminals and machines](#terminals-and-machines)).
+[Terminals and hosts](#terminals-and-hosts)).
 
 ### On a phone
 
@@ -95,7 +95,7 @@ a touch screen.
   suggests a workspace, a chip with its name and a question mark moves the chat
   there in one click.
 - **The terminal icon** flips Chat over to a terminal on your own computer
-  ([section 3](#3-a-terminal-on-your-own-machine)).
+  ([section 3](#3-a-terminal-on-your-own-host)).
 - **▷ or ◁** docks Chat on the other side.
 - **⋯** opens the chat's menu:
   - **Clear chat** starts a new chat on the same canvas.
@@ -176,46 +176,46 @@ every box on the page.
 Chat needs a partner, the server's shared assistant. When the server has none, or
 it is not running, Chat says so and the message box stays off.
 
-## 3. A terminal on your own machine
+## 3. A terminal on your own host
 
 Flip Chat over and it becomes a terminal: a shell on a computer of yours, in
-the browser. A machine host, running on that computer, makes it possible: the
+the browser. A daemon, running on that computer, makes it possible: the
 program that connects a computer to the server. The computer dials out to the
 server and listens on nothing.
 
 ### Connect a computer
 
-The top bar's **Machines** menu (the server icon) lists your machines, with
+The top bar's **Hosts** menu (the server icon) lists your hosts, with
 Allow.
 
-1. On the computer, install your deployment's machine host.
+1. On the computer, install your deployment's daemon.
 
 2. Connect it to the server, and leave it running, in tmux or as a user service.
    It prints a link and a code. Open the link, check who is asking and
-   click **Approve**; a phone will do. The machine host saves the key it receives,
-   names the machine after the computer's short
-   hostname (`laptop` here), enrolls it as your personal machine, which only you
+   click **Approve**; a phone will do. The daemon saves the key it receives,
+   names the host after the computer's short
+   hostname (`laptop` here), enrolls it as your personal host, which only you
    and admins see, and serves terminals and commands until you stop it. Approving
-   also allows the machine, so there is nothing to click in step 3.
+   also allows the host, so there is nothing to click in step 3.
 
 3. In the browser, click the terminal icon in Chat's header, then **Start
    terminal on laptop**.
 
-A computer that already has a profile for the server enrolls its machine with that
-profile's key and asks for no code. The machine then waits for your click in the
-browser: a bar says "New machine laptop wants terminals." Click **Allow**, since
-anything holding your key could have enrolled it. An admin's machines need no Allow.
+A computer that already has a profile for the server enrolls its host with that
+profile's key and asks for no code. The host then waits for your click in the
+browser: a bar says "New host laptop wants terminals." Click **Allow**, since
+anything holding your key could have enrolled it. An admin's hosts need no Allow.
 
 A box with no browser takes an enrollment token on standard input instead, and
 joins without a login, under the name the host is given.
 
-The first run saves the machine's own credential, readable only by you, and later
+The first run saves the host's own credential, readable only by you, and later
 runs use it and the saved key, with no code. While it runs it prints whether
 the direct link is on (see [below](#typing-feels-slow-the-direct-link)),
-`joined: machine laptop` the first time, and `terminal opened by` with your address
+`joined: host laptop` the first time, and `terminal opened by` with your address
 for each terminal.
 
-The machine host also serves sagent's tools (the shell and your files) to the server's
+The daemon also serves sagent's tools (the shell and your files) to the server's
 assistant, which runs them on this computer, as you; the server logs each call. With
 its `--no-exec` flag it serves terminals only.
 
@@ -232,7 +232,7 @@ Flags you give the agent yourself, such as `--permission-mode plan` for claude
 or `-s read-only` for codex, are never replaced. A claude `--settings` you
 pass as inline JSON is kept, with the skip added; one you pass as a file
 leaves claude in its auto permission mode for that run. The declaration describes
-the computer, not one machine name, and each connect sets it: a machine host
+the computer, not one host name, and each connect sets it: a daemon
 without `--sandbox` turns it off again.
 
 Use it on a computer built to be thrown away. Do not use it on your own
@@ -247,18 +247,18 @@ environment, as an ssh login is. It knows the chat that opened it
 so `trax` in it reports to that server, and agents started in it are filed in
 that chat.
 
-### Terminals and machines
+### Terminals and hosts
 
-- Chat's terminals are named after their machine and a number: "laptop 1",
+- Chat's terminals are named after their host and a number: "laptop 1",
   "laptop 2".
 - Flipped, the name button in Chat's header opens the terminal menu: the
   terminals in this chat, then **+ New terminal**, or one **+ New terminal on
-  NAME** for each ready machine.
+  NAME** for each ready host.
 - Connect more computers the same way; each is offered once it is connected
   and allowed.
 - The canvas has a Terminal tile too: Workbench → Terminal, or New terminal in
   the palette. It holds several terminals as tabs: + opens one, asking which
-  machine when more than one is ready, and × closes one.
+  host when more than one is ready, and × closes one.
 - In the tile, Ctrl+Shift+T opens a tab, Ctrl+Shift+W closes one, and
   Ctrl+Shift+PageDown and Ctrl+Shift+PageUp switch tabs. **Your settings** →
   Appearance → "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal
@@ -268,7 +268,7 @@ that chat.
   included: click outside the terminal to use ⌘K or Ctrl+\\.
 - ⤢ makes a terminal fill the canvas, and ⤡ restores it. **Your settings** →
   Appearance → Terminal font size sets its text size.
-- The assistant can open a Terminal tile on a machine it names; the terminal
+- The assistant can open a Terminal tile on a host it names; the terminal
   then says "Opened at NAME's request."
 
 ### The flipped header
@@ -287,19 +287,19 @@ This browser remembers which chats you left flipped.
 
 A terminal's traffic goes through the server. When the server is far from you,
 let your browser talk to the computer directly, over WebRTC; the server only
-introduces the two. Install the `aiortc` library into the machine host's Python
+introduces the two. Install the `aiortc` library into the daemon's Python
 environment, then restart the host. It prints `direct terminal link: on`, and
 the terminal shows a **Direct link** badge while the link works. If the direct
 path drops, the terminal carries on through the server.
-`TRAX_MACHINE_TERMINAL_DIRECT=0` turns the link off. Keep the library when you
+`TRAX_HOST_TERMINAL_DIRECT=0` turns the link off. Keep the library when you
 reinstall the host: an install without it removes it.
 
-### Restarting and stopping the machine host
+### Restarting and stopping the daemon
 
-- Restarting the machine host serves at once: the new one takes the
-  machine over, and the old one stops.
+- Restarting the daemon serves at once: the new one takes the
+  host over, and the old one stops.
 - Ctrl-C stops it, as does the termination signal a service manager sends, and the
-  machine shows offline at once.
+  host shows offline at once.
 - Either way, the shells it was serving end.
 - Restart it with the same flags: a run without `--sandbox` turns the sandbox
   off.
@@ -316,7 +316,7 @@ button to take it back.
 | No page shows it for over a minute (tab closed, laptop asleep) | ends |
 | No typing for 60 minutes | is closed |
 | 24 hours after it opened | is closed |
-| The machine host restarts or stops | ends |
+| The daemon restarts or stops | ends |
 
 Ending a shell ends its process group, as closing ssh does; `tmux`, `nohup` and
 `setsid` jobs keep running. For long work, use tmux or a detached run
@@ -331,10 +331,10 @@ same chat. A far host with no profile for the server says how to add one.
 
 ### One computer, two servers
 
-`trax` keeps a named profile per server, and the machine host keeps the machine's
-credential per server, so one computer can be a machine of two servers. Run a
-second machine host beside the first, connected to the second server. Each
-server's web app asks you to Allow the machine once. A shell carries the
+`trax` keeps a named profile per server, and the daemon keeps the host's
+credential per server, so one computer can be a host of two servers. Run a
+second daemon beside the first, connected to the second server. Each
+server's web app asks you to Allow the host once. A shell carries the
 profile of the server that opened it, so `trax` and agents in it report back
 to that server. `trax profile` lists the profiles, and `trax profile current
 work` makes `work` the one used when no `--profile` is given.
@@ -354,7 +354,7 @@ the hand: the place where it reads files and runs commands. The two need not be
 the same.
 
 - A session can work on your laptop today and on a disposable box or a GPU
-  machine tomorrow, and keep its history. Resume it on the other computer by
+  host tomorrow, and keep its history. Resume it on the other computer by
   its id.
 - So the place you develop need not be the place an agent acts. Keep the
   computer that holds your work and your keys for yourself, and give agents
@@ -375,7 +375,7 @@ to the chat. Your own run in a terminal is unchanged.
   the card closes with who answered. A card the run can no longer answer, because it ended or
   went offline, closes as Released within about a minute. While a card waits,
   the chat header and its workspace tab show a blue dot. A card for a run on
-  your machine is yours alone to answer; one the assistant asks is answered by
+  your host is yours alone to answer; one the assistant asks is answered by
   the person it asked. A computer connected with `--sandbox` shows no cards:
   its agents do not ask.
 - **Take a run over.** To use the CLI's own screen, attach to the run by its
@@ -483,7 +483,7 @@ of row.
 ## Where to read more
 
 - [`trax/README.md`](../trax/README.md): profiles, environment variables,
-  machines and agent runs.
+  hosts and agent runs.
 - [`trax/docs/GRAMMAR.md`](../trax/docs/GRAMMAR.md): the full command grammar.
 - [`trax/docs/skills/`](../trax/docs/skills/README.md): what a well-formed
   Issue, Belief, Experiment or other row holds.

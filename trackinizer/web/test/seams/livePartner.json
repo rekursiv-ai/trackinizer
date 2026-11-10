@@ -3,7 +3,7 @@
   "cli": "claude",
   "cwd": "~/project",
   "label": "claude · gx10",
-  "machine": "gx10",
+  "host": "gx10",
   "provider": "claude",
   "refused": "",
   "refused_at": null,

@@ -1,10 +1,10 @@
-"""What a published machine host still imports of the old exec channel, for one release.
+"""What a published daemon still imports of the old exec channel, for one release.
 
 That host allows any newer version of this package, so without this module it crashes on
-start after an upgrade. It holds a ``GET`` on :data:`MACHINE_EXEC_WAIT_PATH`, which
-answers ``null``, so it never runs a command. Tools reach a machine over a pipe now
+start after an upgrade. It holds a ``GET`` on :data:`HOST_EXEC_WAIT_PATH`, which
+answers ``null``, so it never runs a command. Tools reach a host over a pipe now
 (``wire_tools``). This module goes once a host without it is out, but for
-:data:`MAX_STREAM_BYTES` and :data:`Base64`, which ``wire_machine_job`` reads.
+:data:`MAX_STREAM_BYTES` and :data:`Base64`, which ``wire_host_job`` reads.
 
 A command that passes its ``timeout_sec`` is killed by the host, which reports exit code
 :data:`TIMEOUT_EXIT_CODE`. Output is bytes, so both streams travel as base64.
@@ -25,8 +25,8 @@ from trackinizer.wire.wire_terminals import RunFolder
 
 
 __all__ = [
-    "MACHINE_EXEC_RESULT_PATH",
-    "MACHINE_EXEC_WAIT_PATH",
+    "HOST_EXEC_RESULT_PATH",
+    "HOST_EXEC_WAIT_PATH",
     "MAX_ENV_VARS",
     "MAX_STREAM_BYTES",
     "TIMEOUT_EXIT_CODE",
@@ -36,10 +36,10 @@ __all__ = [
     "ExecWait",
 ]
 
-MACHINE_EXEC_WAIT_PATH: Final = "/api/machines/{machine_id}/exec/wait"
+HOST_EXEC_WAIT_PATH: Final = "/api/hosts/{host_id}/exec/wait"
 """``GET ?instance=ID``, held up to :data:`WAIT_MAX_SEC`: always ``null`` now."""
 
-MACHINE_EXEC_RESULT_PATH: Final = "/api/machines/{machine_id}/exec/{exec_id}/result"
+HOST_EXEC_RESULT_PATH: Final = "/api/hosts/{host_id}/exec/{exec_id}/result"
 """``POST``: no route answers this now, and no host is handed a command to report."""
 
 WAIT_MAX_SEC: Final = 25
@@ -76,7 +76,7 @@ type Base64 = Annotated[
 
 
 class ExecRequest(BaseModel):
-    """One command to run on a machine."""
+    """One command to run on a host."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

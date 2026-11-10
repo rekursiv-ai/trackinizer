@@ -1,4 +1,4 @@
-"""The host's calls: its wait for a tool pipe, and the old exec wait and result."""
+"""The host's calls: its wait for a tool connection, and the old exec wait and result."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
 
-_MACHINE = UUID(int=1)
+_HOST = UUID(int=1)
 _INSTANCE = UUID(int=2)
 _RESULT = ExecResult(
     exit_code=3,
@@ -63,21 +63,21 @@ class _Recorder:
 
 
 def test_the_hosts_tool_wait_returns_the_next_offer_or_none() -> None:
-    offer = ToolOffer(pipe_id=uuid4())
+    offer = ToolOffer(connection_id=uuid4())
     recorder = _Recorder(
         httpx2.Response(200, json=offer.model_dump(mode="json")),
         httpx2.Response(200, json=None),
     )
 
     with _client(recorder) as found:
-        first = found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=25)
-        second = found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=0)
+        first = found.wait_tools(_HOST, instance=_INSTANCE, wait_sec=25)
+        second = found.wait_tools(_HOST, instance=_INSTANCE, wait_sec=0)
 
     assert (first, second) == (offer, None)
     sent = recorder.requests[0]
     assert (sent.method, sent.url.path, dict(parse_qsl(sent.url.query.decode()))) == (
         "GET",
-        f"/api/machines/{_MACHINE}/tools/wait",
+        f"/api/hosts/{_HOST}/tools/wait",
         {"instance": str(_INSTANCE), "wait_sec": "25"},
     )
 
@@ -93,17 +93,17 @@ def test_a_tool_wait_whose_response_was_lost_is_asked_again_with_no_key(
     )
 
     with _client(recorder) as found:
-        assert found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=0) is None
+        assert found.wait_tools(_HOST, instance=_INSTANCE, wait_sec=0) is None
 
     assert len(recorder.requests) == 2
     assert not any("Idempotency-Key" in each.headers for each in recorder.requests)
 
 
 def test_a_malformed_offer_is_a_client_error() -> None:
-    recorder = _Recorder(httpx2.Response(200, json={"pipe_id": "not a uuid"}))
+    recorder = _Recorder(httpx2.Response(200, json={"connection_id": "not a uuid"}))
 
     with _client(recorder) as found, pytest.raises(ClientError, match="malformed"):
-        _ = found.wait_tools(_MACHINE, instance=_INSTANCE, wait_sec=0)
+        _ = found.wait_tools(_HOST, instance=_INSTANCE, wait_sec=0)
 
 
 def test_the_hosts_wait_returns_the_next_command_or_none() -> None:
@@ -120,14 +120,14 @@ def test_the_hosts_wait_returns_the_next_command_or_none() -> None:
     )
 
     with _client(recorder) as found:
-        first = found.wait_exec(_MACHINE, instance=_INSTANCE, wait_sec=25)
-        second = found.wait_exec(_MACHINE, instance=_INSTANCE, wait_sec=0)
+        first = found.wait_exec(_HOST, instance=_INSTANCE, wait_sec=25)
+        second = found.wait_exec(_HOST, instance=_INSTANCE, wait_sec=0)
 
     assert (first, second) == (offer, None)
     sent = recorder.requests[0]
     assert (sent.method, sent.url.path, dict(parse_qsl(sent.url.query.decode()))) == (
         "GET",
-        f"/api/machines/{_MACHINE}/exec/wait",
+        f"/api/hosts/{_HOST}/exec/wait",
         {"instance": str(_INSTANCE), "wait_sec": "25"},
     )
 
@@ -142,7 +142,7 @@ def test_a_wait_whose_response_was_lost_is_retried_under_the_same_key(
     )
 
     with _client(recorder) as found:
-        assert found.wait_exec(_MACHINE, instance=_INSTANCE, wait_sec=0) is None
+        assert found.wait_exec(_HOST, instance=_INSTANCE, wait_sec=0) is None
 
     keys = {each.headers["Idempotency-Key"] for each in recorder.requests}
     assert (len(recorder.requests), len(keys)) == (2, 1)
@@ -153,12 +153,12 @@ def test_the_host_posts_a_result_under_the_commands_id() -> None:
     exec_id = uuid4()
 
     with _client(recorder) as found:
-        found.post_exec_result(_MACHINE, exec_id, _RESULT)
+        found.post_exec_result(_HOST, exec_id, _RESULT)
 
     (sent,) = recorder.requests
     assert (sent.method, sent.url.path) == (
         "POST",
-        f"/api/machines/{_MACHINE}/exec/{exec_id}/result",
+        f"/api/hosts/{_HOST}/exec/{exec_id}/result",
     )
     assert ExecResult.model_validate_json(sent.content) == _RESULT
 
@@ -169,7 +169,7 @@ def test_a_result_for_a_command_that_ended_is_a_client_error_the_host_can_read()
     recorder = _Recorder(httpx2.Response(404, json={"detail": "no such command"}))
 
     with _client(recorder) as found, pytest.raises(ClientError) as ended:
-        found.post_exec_result(_MACHINE, uuid4(), _RESULT)
+        found.post_exec_result(_HOST, uuid4(), _RESULT)
 
     assert ended.value.status_code == 404
 

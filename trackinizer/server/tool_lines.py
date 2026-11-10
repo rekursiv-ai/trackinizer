@@ -1,8 +1,8 @@
-"""Read each line going to a machine, gate it, and describe it for the relay's log.
+"""Read each line going to a host, gate it, and describe it for the relay's log.
 
-The agent's leg of a tool pipe carries lines (see ``trackinizer.sagent.host.wire``) that the
-machine's host acts on. The host's reader checks every field of every line, and a line
-it cannot read ends that pipe alone. So this module reads, by JSON alone (Trackinizer
+The agent's socket of a tool connection carries lines (see ``trackinizer.sagent.host.wire``) that the
+daemon acts on. The host's reader checks every field of every line, and a line
+it cannot read ends that tool connection alone. So this module reads, by JSON alone (Trackinizer
 does not import sagent), only what the relay needs to decide and to log:
 
 - A line's kind is its ``py/object``; only :data:`ALLOWED_LINES` pass. Any other is
@@ -16,16 +16,16 @@ does not import sagent), only what the relay needs to decide and to log:
   reads the ``id`` of each ``Result`` the host sends: between a call and either, the
   call is running, which the relay's idle rule needs.
 - What is forwarded is this module's own ``json.dumps`` of the parsed line, never the
-  bytes received, so what is logged is what the machine reads, whatever a duplicate
+  bytes received, so what is logged is what the host reads, whatever a duplicate
   or escaped key made of the original.
 
-Anything else ends the pipe: :meth:`ToolLines.feed` raises ``ValueError`` saying why,
-and nothing of that frame is forwarded. A line over the pipe's ``line_bytes`` is one;
+Anything else ends the tool connection: :meth:`ToolLines.feed` raises ``ValueError`` saying why,
+and nothing of that frame is forwarded. A line over the tool connection's ``line_bytes`` is one;
 the agent then reads that call as lost.
 
 Typical usage example:
 
-  lines = ToolLines(asker=a, machine=m, authorize=authorize, line_bytes=n)
+  lines = ToolLines(asker=a, host=m, authorize=authorize, line_bytes=n)
   routed, calls = lines.feed(frame)
 """
 
@@ -57,15 +57,15 @@ __all__ = [
 ALLOWED_LINES: Final = frozenset(
     {"Hello", "Call", "Cancel", "Ack", "Describe", "Ping", "Bye"},
 )
-"""The kinds an agent may send a machine; ``Note``, ``Peers`` and the daemon's do not pass."""
+"""The kinds an agent may send a host; ``Note``, ``Peers`` and the daemon's do not pass."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Routed:
     """Where the bytes read go."""
 
-    to_host: bytes = b""
-    """Lines for the machine."""
+    to_daemon: bytes = b""
+    """Lines for the host."""
 
     to_agent: bytes = b""
     """Lines for the agent: the answers to what was refused."""
@@ -80,14 +80,14 @@ class Routed:
 type Outcome = Literal["allow", "deny"]
 """The gate's verdict on a call, not what the tool did.
 
-``allow`` means it was let through to the machine, not that it arrived or ran."""
+``allow`` means it was let through to the host, not that it arrived or ran."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class GatedCall:
     """One call the gate judged, as the relay logs it: never what its arguments say.
 
-    Every field but ``asker`` and ``machine`` is read from the agent's own
+    Every field but ``asker`` and ``host`` is read from the agent's own
     ``Call`` line, and its ``Hello``. What the tool did is in the session's record,
     which ``session`` and ``call_id`` join this to.
     """
@@ -95,7 +95,7 @@ class GatedCall:
     asker: str
     agent: str
     session: str
-    machine: str
+    host: str
     call_id: str
     """The ``id`` of the agent's ``Call`` line, as the agent sent it."""
 
@@ -150,19 +150,19 @@ def refused_line(call_id: str, reason: str) -> bytes:
 
 
 class ToolLines:
-    """Reads the bytes an agent sends a machine, a frame at a time."""
+    """Reads the bytes an agent sends a host, a frame at a time."""
 
     def __init__(
         self,
         *,
         asker: str,
-        machine: str,
+        host: str,
         authorize: Authorize,
         line_bytes: int,
     ) -> None:
-        """Hold the pipe's parties, its gate, and the longest line it reads."""
+        """Hold the tool connection's parties, its gate, and the longest line it reads."""
         self._asker = asker
-        self._machine = machine
+        self._host = host
         self._authorize = authorize
         self._line_bytes = line_bytes
         self._pending = bytearray()
@@ -178,15 +178,15 @@ class ToolLines:
           payload: Bytes the agent sent, cut anywhere.
 
         Returns:
-          routed: The lines for the machine and for the agent, and the calls read.
+          routed: The lines for the host and for the agent, and the calls read.
 
         Raises:
-          ValueError: A line ends the pipe; it says why. Nothing from this frame is
+          ValueError: A line ends the tool connection; it says why. Nothing from this frame is
             forwarded, and every later feed raises too.
 
         """
         if self._failed:
-            msg = "the pipe has been spent"
+            msg = "the tool connection has been spent"
             raise ValueError(msg)
         try:
             return self._feed(payload)
@@ -203,7 +203,7 @@ class ToolLines:
         self._pending.clear()
 
     def _feed(self, payload: bytes) -> tuple[Routed, Sequence[GatedCall]]:
-        to_host = bytearray()
+        to_daemon = bytearray()
         to_agent = bytearray()
         calls: list[GatedCall] = []
         dropped: list[int] = []
@@ -213,11 +213,11 @@ class ToolLines:
             self._hold(piece)
             line = bytes(self._pending)
             self._pending.clear()
-            if not self._route(line, to_host, to_agent, calls, acks):
+            if not self._route(line, to_daemon, to_agent, calls, acks):
                 dropped.append(len(line))
         self._hold(rest)
         routed = Routed(
-            to_host=bytes(to_host),
+            to_daemon=bytes(to_daemon),
             to_agent=bytes(to_agent),
             dropped=tuple(dropped),
             acks=tuple(acks),
@@ -225,7 +225,7 @@ class ToolLines:
         return routed, calls
 
     def _hold(self, piece: bytes) -> None:
-        """Add ``piece`` to the line being read; past the cap it ends the pipe."""
+        """Add ``piece`` to the line being read; past the cap it ends the tool connection."""
         if len(self._pending) + len(piece) > self._line_bytes:
             msg = f"a line is over {self._line_bytes} bytes"
             raise ValueError(msg)
@@ -234,7 +234,7 @@ class ToolLines:
     def _route(
         self,
         raw: bytes,
-        to_host: bytearray,
+        to_daemon: bytearray,
         to_agent: bytearray,
         calls: list[GatedCall],
         acks: list[str],
@@ -260,7 +260,7 @@ class ToolLines:
                     verdict.reason or "The call is not allowed.",
                 )
                 return True
-        to_host += _dumped(line)
+        to_daemon += _dumped(line)
         return True
 
     def _hello(self, line: dict[str, object]) -> None:
@@ -272,7 +272,7 @@ class ToolLines:
 
     # ``argument_bytes`` is over the wire form of ``arguments`` as forwarded
     # (``{"py/dict": ...}`` and the like), not over what the tool reads, so it sizes the
-    # bytes the machine is sent.
+    # bytes the host is sent.
     def _call(self, line: dict[str, object]) -> tuple[GatedCall, Verdict]:
         """Return the call ``line`` makes, and the verdict on it."""
         call_id, agent, tool = line.get("id"), line.get("agent"), line.get("tool")
@@ -294,7 +294,7 @@ class ToolLines:
             asker=self._asker,
             agent=agent,
             session=self._session,
-            machine=self._machine,
+            host=self._host,
             call_id=call_id,
             tool=tool,
             argument_bytes=len(shown),
@@ -308,11 +308,11 @@ class ToolLines:
 
 
 class ResultIds:
-    """Reads which calls the ``Result`` lines a machine's host sends answer.
+    """Reads which calls the ``Result`` lines a daemon sends answer.
 
     The host's frames are relayed as they came; this reads a copy, by JSON alone, as
     :class:`ToolLines` reads the agent's. A line it cannot read, or one longer than
-    ``line_bytes``, is passed over and never ends the pipe: what the host sends is the
+    ``line_bytes``, is passed over and never ends the tool connection: what the host sends is the
     agent's to judge, and the agent's ``Ack`` of a result passed over still says it
     came.
     """
@@ -380,5 +380,5 @@ def _parsed(raw: bytes) -> dict[str, object]:
     line = cast(object, json.loads(raw.decode("utf-8")))
     if not isinstance(line, dict):
         msg = "a line is not an object"
-        raise ValueError(msg)  # noqa: TRY004 -- The caller ends the pipe on ValueError.
+        raise ValueError(msg)  # noqa: TRY004 -- The caller ends the tool connection on ValueError.
     return cast(dict[str, object], line)

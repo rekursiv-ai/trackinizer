@@ -31,7 +31,7 @@ async def live_run_states(
     inbound: InboundQueue,
     session_ids: Sequence[uuid.UUID],
 ) -> dict[uuid.UUID, RunState]:
-    """Say what each live run among some sessions is doing.
+    """Say what each agent process among some sessions is doing.
 
     Args:
       conn: A database connection.
@@ -55,7 +55,7 @@ async def live_run_states(
 
 
 def settled(run: PollerRun, *, waiting: bool) -> RunState:
-    """Say what a live run is doing: its own word, or waiting on an ask open to it.
+    """Say what an agent process is doing: its own word, or waiting on an ask open to it.
 
     Args:
       run: The run's lease, which holds the state it last reported.

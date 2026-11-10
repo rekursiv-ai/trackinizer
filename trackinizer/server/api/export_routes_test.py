@@ -208,14 +208,14 @@ def test_clauses_arrive_in_the_order_they_were_sent(
                 EXPORT_FILTER_PARAM,
                 '{"field":"labels","op":"is","value":"org:rekursiv"}',
             ),
-            (EXPORT_FILTER_PARAM, '{"field":"labels","op":"nre","value":"^machine:"}'),
+            (EXPORT_FILTER_PARAM, '{"field":"labels","op":"nre","value":"^host:"}'),
         ],
     )
 
     header = json_loads(r.text.splitlines()[0], dict[str, object])
     assert header["selector"] == [
         {"field": "labels", "op": "is", "value": "org:rekursiv"},
-        {"field": "labels", "op": "nre", "value": "^machine:"},
+        {"field": "labels", "op": "nre", "value": "^host:"},
     ]
 
 

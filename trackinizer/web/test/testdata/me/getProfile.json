@@ -7,8 +7,8 @@
     "body": {
       "api_key_id": null,
       "email": "no-auth@localhost",
+      "host": null,
       "last_login": null,
-      "machine": null,
       "name": "no-auth",
       "open_audiences": [
         "open",

@@ -21,7 +21,7 @@ A line goes to ``POST /api/chats``. Who answers it is the canvas's provider
 conversation's own session while the assistant keeps one open, and for the
 assistant's service session otherwise, which opens or resumes the conversation's
 session before it answers. For ``claude`` or ``codex`` it queues it for the
-conversation's session, which the person's own run on a machine of theirs drains.
+conversation's session, which the person's own run on a host of theirs drains.
 The answer to a post is the conversation id at once; ``GET /api/chats/{id}`` answers
 404 until some session carries the conversation.
 
@@ -141,7 +141,7 @@ type ChatProvider = Literal["assistant", "claude", "codex", "sagent"]
 
 Values:
   assistant: The server's shared assistant.
-  claude: The person's own claude agent run on a machine of theirs, attached to
+  claude: The person's own claude agent run on a host of theirs, attached to
     the chat's session.
   codex: The same with codex.
   sagent: The same with sagent.

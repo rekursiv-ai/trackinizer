@@ -199,8 +199,8 @@ async def test_a_key_in_the_file_that_does_not_work_is_replaced(
 async def test_a_second_start_keeps_the_key_the_first_wrote(named: Path) -> None:
     first = _Conn(account=None, keys=[])
     await _ensure(first, named)
-    [(key_id, _user, _name, secret_hash, _prefix, role, pin, _machine)] = (
-        first.statements("INSERT INTO api_keys")
+    [(key_id, _user, _name, secret_hash, _prefix, role, pin, _host)] = first.statements(
+        "INSERT INTO api_keys",
     )
     key = (named / "chat").read_text()
     second = _Conn(

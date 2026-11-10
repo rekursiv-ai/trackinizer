@@ -1,14 +1,14 @@
-"""Each machine owner's version of their machine list, for a long-poll on its change.
+"""Each host owner's version of their host list, for a long-poll on its change.
 
-The listing (``TERMINAL_MACHINES_PATH``) says which machines a person may use. A route
-that writes a machine bumps its owner's version as soon as the write has committed,
-before anything else that may fail, and a follower holds :meth:`MachineChanges.wait`
+The listing (``TERMINAL_HOSTS_PATH``) says which hosts a person may use. A route
+that writes a host bumps its owner's version as soon as the write has committed,
+before anything else that may fail, and a follower holds :meth:`HostChanges.wait`
 until the version moves, then lists again. A follower whose wait runs out lists nothing,
 so a write made outside these routes, by hand or by another process, bumps nothing and
 is not seen until the next bump of that owner, or this process restarts.
 
-The versions live in this process's memory, as ``PipeHub``'s pipes and
-``TerminalHub``'s terminals do, so it assumes one server process. A restart forgets
+The versions live in this process's memory, as ``ToolRelay``'s tool connections and
+``TerminalRelay``'s terminals do, so it assumes one server process. A restart forgets
 them: each process starts every owner at a random number of its own, so a version a
 client kept from the last one does not match by chance, and its next wait answers at
 once.
@@ -23,14 +23,14 @@ import contextlib
 import secrets
 
 
-__all__ = ["MachineChanges"]
+__all__ = ["HostChanges"]
 
 _START_BELOW: Final = 1 << 52
 """Versions start below this, so one stays exact as a JavaScript number."""
 
 
-class MachineChanges:
-    """The version of each owner's machine list in this process, and its waits."""
+class HostChanges:
+    """The version of each owner's host list in this process, and its waits."""
 
     def __init__(self) -> None:
         self._start = secrets.randbelow(_START_BELOW)
@@ -38,7 +38,7 @@ class MachineChanges:
         self._changed: dict[str, asyncio.Event] = {}
 
     def version(self, owner: str) -> int:
-        """Return the version of ``owner``'s machine list."""
+        """Return the version of ``owner``'s host list."""
         return self._versions.get(owner, self._start)
 
     def bump(self, owner: str) -> None:
@@ -51,7 +51,7 @@ class MachineChanges:
         """Return ``owner``'s version once it is not ``since``, or after ``wait_sec``.
 
         Args:
-          owner: Whose machine list.
+          owner: Whose host list.
           since: The version the caller holds; ``None`` for none, answered at once.
           wait_sec: How long to hold while the version is still ``since``.
 

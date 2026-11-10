@@ -33,12 +33,12 @@ that contract over Postgres + HTTP.
 
 New to the web app? [`docs/user_guide.md`](trackinizer/docs/user_guide.md)
 walks through it and `trax` end to end: signing in, Chat and the canvas,
-terminals on your own machine, and agent sessions.
+terminals on your own host, and agent sessions.
 
 The web app browses the same records the API serves. Its source is `web/`
 ([`web/README.md`](trackinizer/web/README.md)), and the package ships it
 built: `trackinizer` serves it at `/trax/`, and `/` and its old address `/app/`
-lead there. To use it on your own machine, run the server in single-user local
+lead there. To use it on your own host, run the server in single-user local
 mode, then open http://127.0.0.1:8765/trax/:
 
 ```bash
@@ -284,7 +284,7 @@ PGlite datadir it is not tied to the storage internals that wrote it, and an
 unchanged graph exports the same bytes twice. Line format:
 [`docs/api.md`](trackinizer/docs/api.md) section 3.24.
 
-`trax export labels is org:rekursiv labels nre '^machine:'` writes the
+`trax export labels is org:rekursiv labels nre '^host:'` writes the
 subgraph those clauses match instead. Clauses read like any other filter and
 AND together; the inquiries decide the subgraph, and an edge comes along only
 when both of its ends did. The header names the selector, so a reader can
@@ -292,7 +292,7 @@ tell a slice from a backup.
 
 ## Package dependency graph
 
-Four layers, two legs sharing one contract spine. An arrow means
+Four layers, two sockets sharing one contract spine. An arrow means
 "imports / depends on" and points toward the dependency.
 
 ```
@@ -303,8 +303,8 @@ Four layers, two legs sharing one contract spine. An arrow means
        │                                     │
        ▼                                     ▼
 ┌──────────────┐                      ┌──────────────┐
-│   client     │                      │     api      │   server leg adds
-│ (httpx SDK)  │                      │  (FastAPI    │   Store; client leg
+│   client     │                      │     api      │   server socket adds
+│ (httpx SDK)  │                      │  (FastAPI    │   Store; client socket
 │              │                      │   handlers)  │   adds httpx
 └──────┬───────┘                      └──────┬───────┘
        │                                     │
@@ -329,10 +329,10 @@ Four layers, two legs sharing one contract spine. An arrow means
               └───────────────┘
 ```
 
-Two legs, one shared spine:
+Two sockets, one shared spine:
 
-- client leg: `trax` → `client` → `wire` → `types`
-- server leg: `server/__main__` → `server/api` → `wire` → `types`
+- client socket: `trax` → `client` → `wire` → `types`
+- server socket: `server/__main__` → `server/api` → `wire` → `types`
 
 The whole point of this split: `types/` + `wire/` + `client/` form a
 self-contained client distribution. `wire/` and `client/` never import

@@ -768,7 +768,7 @@ scripts/seed_local.py --writer --interval 1   # then keep editing, for live chec
 ```
 
 `PORT` changes the port and `PREVIEW_DATA` the database directory, by default
-`/opt/scratch/runs/trackinizer-web-local`, which a machine without
+`/opt/scratch/runs/trackinizer-web-local`, which a host without
 `/opt/scratch` must change; two servers cannot share one. `--no-auth` makes
 every request an admin, so never expose it.
 
@@ -804,7 +804,7 @@ The web checks, as CI runs them:
 ./npm test              # Vitest: unit and screen tests, each under 100 ms
 ./npm run build         # vite build into dist/, with dist/version.json
 ./npm run size          # first-load JavaScript under 250 KB gzip
-./npm exec -- playwright install chromium   # once per machine
+./npm exec -- playwright install chromium   # once per host
 ./npm run e2e           # build into dist-e2e/<port>, then Playwright
 ```
 
@@ -859,7 +859,7 @@ takes the screenshots again from synthetic records, and `scripts/demo_video.ts`
 records the video:
 
 ```sh
-./npm exec -- playwright install chromium   # once per machine
+./npm exec -- playwright install chromium   # once per host
 brew install webp ffmpeg                     # once: cwebp, img2webp, ffmpeg (apt install webp ffmpeg on Linux)
 ./npm run screenshots                        # rewrites ../docs/screenshots/*.webp
 ./npm run screenshots -- DIR                 # or writes them into DIR
@@ -915,7 +915,7 @@ fingerprint being the first 24 hex digits of the SHA-256 of the five files'
   `trackinizer.graph()` returns what it draws: each node, with its screen
   position, and edge, hidden or not, the selection and the focus, since its
   canvas cannot be read. When the browser refuses the
-  clipboard (a page over plain http from another machine), the button says
+  clipboard (a page over plain http from another host), the button says
   "Not copied: see the console", and `trackinizer.details()` gives the text it
   could not copy; the console only says where to find it.
 - Nothing logged holds a token, a cookie or `Authorization` value, a request

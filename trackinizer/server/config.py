@@ -195,26 +195,26 @@ class Config:
         the chat's readers to read as it grows. Off refuses its routes with 404
         ``chat_partials_off``, and the assistant stops sending it. Environment
         only (``TRACKINIZER_CHAT_STREAMING``, ``on`` or ``off``).
-      terminal_stun: STUN servers the browser and a machine host use to reach each
+      terminal_stun: STUN servers the browser and a daemon use to reach each
         other direct, as ``stun:HOST[:PORT]`` URLs. Empty (the default) means a
         direct link forms on one network only. Environment only
         (``TRACKINIZER_TERMINAL_STUN``, comma separated).
       compute: What this server provides to run commands on, which the web app's
-        Machines menu shows beside the person's own machines. Empty (the default)
+        Hosts menu shows beside the person's own hosts. Empty (the default)
         shows none. Environment only (``TRACKINIZER_COMPUTE``, a JSON list of
         ``{"name", "about"}`` objects).
       service_keys: The service accounts this server keeps one live key each for,
         at every start, and where the key files live; none when unset.
         Environment only (``TRACKINIZER_SERVICE_KEYS``, comma separated
         ``NAME:ROLE`` pairs, and ``TRACKINIZER_SERVICE_KEY_DIR``).
-      tool_pipes_per_machine: The most tool pipes one machine holds at once; the
+      tool_connections_per_host: The most tool connections one host holds at once; the
         next agent is refused.
-      tool_dial_back_sec: How long an offered tool pipe waits for its host to dial
+      tool_dial_back_sec: How long an offered tool connection waits for its host to dial
         back before it ends.
-      tool_sweep_sec: How often each tool pipe's rule is asked again, so a revoked
-        key or a demoted asker loses the machine within it.
-      tool_line_bytes: The longest line the server reads from an agent's tool pipe;
-        a longer one ends the pipe. The default fits a ``Write`` of 8 MiB. Each line
+      tool_sweep_sec: How often each tool connection's rule is asked again, so a revoked
+        key or a demoted asker loses the host within it.
+      tool_line_bytes: The longest line the server reads from an agent's tool connection;
+        a longer one ends the tool connection. The default fits a ``Write`` of 8 MiB. Each line
         is parsed inline, on the one process, so a line this long stalls it for a
         moment; only the configured assistant's key can send one.
 
@@ -260,7 +260,7 @@ class Config:
     terminal_stun: tuple[str, ...] = ()
     compute: tuple[ComputeNote, ...] = ()
     service_keys: ServiceKeys | None = None
-    tool_pipes_per_machine: int = 16
+    tool_connections_per_host: int = 16
     tool_dial_back_sec: float = 20.0
     tool_sweep_sec: float = 60.0
     tool_line_bytes: int = 16 << 20

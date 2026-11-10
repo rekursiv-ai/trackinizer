@@ -751,7 +751,7 @@ class TestTerminalStun:
 
 
 class TestCompute:
-    """``$TRACKINIZER_COMPUTE``: what this server provides, for the Machines menu."""
+    """``$TRACKINIZER_COMPUTE``: what this server provides, for the Hosts menu."""
 
     def test_unset_or_an_empty_list_means_no_notes(self) -> None:
         assert parse_compute("") == ()
@@ -947,11 +947,11 @@ class TestSessionSecretFile:
         assert not (tmp_path / "s").exists()
 
 
-def test_a_machine_holds_16_tool_pipes_each_dialed_back_in_20_seconds() -> None:
+def test_a_host_holds_16_tool_connections_each_dialed_back_in_20_seconds() -> None:
     config = Config()
 
     assert (
-        config.tool_pipes_per_machine,
+        config.tool_connections_per_host,
         config.tool_dial_back_sec,
         config.tool_sweep_sec,
     ) == (16, 20.0, 60.0)

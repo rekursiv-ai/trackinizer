@@ -1,13 +1,13 @@
 """Wire contract for the browser terminal: paths, bodies, limits, close codes, frames.
 
-A terminal is a shell on a machine its owner connected, shown in the owner's
-browser. The browser and the host each dial the server, which pairs them and
+A terminal is a shell on a host its owner connected, shown in the owner's
+browser. The browser and the daemon each dial the server, which pairs them and
 relays bytes:
 
 - The browser ``POST``s :data:`TERMINALS_PATH`, then opens
   :data:`TERMINAL_WS_PATH` and sends ``ATTACH`` first.
-- The host holds a ``GET`` on :data:`MACHINE_TERMINAL_WAIT_PATH`; an open request
-  returns at once, and the host dials :data:`MACHINE_TERMINAL_WS_PATH`.
+- The daemon holds a ``GET`` on :data:`HOST_TERMINAL_WAIT_PATH`; an open request
+  returns at once, and the daemon dials :data:`HOST_TERMINAL_WS_PATH`.
 
 One WebSocket binary message is one frame: a kind byte, a four-byte big-endian
 length, and the payload (``trackinizer.lib.posix.host.encode_frame``). The kinds below
@@ -17,20 +17,20 @@ equal that module's ``Frame`` values; a test holds them equal.
   u64 offset) first, then ``INPUT``, ``RESIZE`` (u16 rows, u16 cols), ``STOP``.
 - Server to browser: ``ACK`` (u64 offset the stream resumes at), ``OUTPUT``, ``EXIT``
   (u32 status).
-- Server to host: ``INPUT``, ``RESIZE``, ``STOP``. Host to server: ``OUTPUT``, ``EXIT``.
+- Server to daemon: ``INPUT``, ``RESIZE``, ``STOP``. Daemon to server: ``OUTPUT``, ``EXIT``.
 
-A terminal of kind ``files`` carries no shell: the host answers the file requests
-the browser sends as ``INPUT`` with ``OUTPUT``, over the same legs, ring and limits.
-The server never reads either; the host defines them.
+A terminal of kind ``files`` carries no shell: the daemon answers the file requests
+the browser sends as ``INPUT`` with ``OUTPUT``, over the same sockets, ring and limits.
+The server never reads either; the daemon defines them.
 
-A direct link (a WebRTC data channel between the browser and the host) is set up
+A direct link (a WebRTC data channel between the browser and the daemon) is set up
 over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`)
-and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The host
+and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The daemon
 sends ``KEEPALIVE`` (u32 milliseconds since it last saw input, then u32 milliseconds
 since the shell last wrote output) every :data:`KEEPALIVE_SEC` while output goes
-direct, so the idle limit still holds and the server knows the machine is in use. A
-host from before output idle time sends the first u32 alone. A
-host that returns to the relay answers with ``ACK`` (the offset it resumes at)
+direct, so the idle limit still holds and the server knows the host is in use. A
+daemon from before output idle time sends the first u32 alone. A
+daemon that returns to the relay answers with ``ACK`` (the offset it resumes at)
 then ``OUTPUT``; the server restarts its ring there.
 
 This package is part of the publishable client distribution, so it must
@@ -45,15 +45,15 @@ import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from trackinizer.wire.wire_machines import NAME_PATTERN, MachineRun, MachineStatus
+from trackinizer.wire.wire_hosts import NAME_PATTERN, HostRun, HostStatus
 
 
 __all__ = [
+    "CLOSE_DAEMON_LOST",
     "CLOSE_ENDED",
-    "CLOSE_HOST_LOST",
+    "CLOSE_HOST_REVOKED",
     "CLOSE_IDLE",
     "CLOSE_LIFETIME",
-    "CLOSE_MACHINE_REVOKED",
     "CLOSE_REFUSED",
     "CLOSE_TAKEN_OVER",
     "DETACH_GRACE_SEC",
@@ -70,11 +70,11 @@ __all__ = [
     "FRAME_ROUTE",
     "FRAME_SIGNAL",
     "FRAME_STOP",
+    "HOST_TERMINAL_WAIT_PATH",
+    "HOST_TERMINAL_WS_PATH",
     "IDLE_SEC",
     "KEEPALIVE_SEC",
     "LIFETIME_SEC",
-    "MACHINE_TERMINAL_WAIT_PATH",
-    "MACHINE_TERMINAL_WS_PATH",
     "MAX_COLS",
     "MAX_ICE_SERVERS",
     "MAX_INPUT_BYTES_PER_SEC",
@@ -96,21 +96,21 @@ __all__ = [
     "TERMINAL_CLOSE_PATH",
     "TERMINAL_CONFIRM_PATH",
     "TERMINAL_FORBIDDEN",
-    "TERMINAL_MACHINES_CHANGES_PATH",
-    "TERMINAL_MACHINES_PATH",
+    "TERMINAL_HOSTS_CHANGES_PATH",
+    "TERMINAL_HOSTS_PATH",
     "TERMINAL_WS_PATH",
     "TICKET_CHARS",
     "TICKET_TTL_SEC",
     "WAIT_LEASE_SEC",
     "WAIT_MAX_SEC",
     "DirectSignal",
+    "HostsVersion",
     "LiveTerminal",
-    "MachinesVersion",
     "OpenTerminal",
     "TerminalCommand",
+    "TerminalHost",
+    "TerminalHosts",
     "TerminalKind",
-    "TerminalMachine",
-    "TerminalMachines",
     "TerminalOpened",
     "TerminalTicket",
     "TerminalWait",
@@ -125,19 +125,19 @@ TERMINALS_PATH: Final = "/api/terminals"
 
 TERMINAL_FORBIDDEN: Final = "terminal_forbidden"
 """The code of the server's own refusal of a caller who may not reach terminals here,
-nor list machines: a 403 without it came from something in front of the server."""
+nor list hosts: a 403 without it came from something in front of the server."""
 
-TERMINAL_MACHINES_PATH: Final = "/api/terminals/machines"
-"""``GET``: the caller's own machines; ``?canvas=ID`` also lists its live terminals.
+TERMINAL_HOSTS_PATH: Final = "/api/terminals/hosts"
+"""``GET``: the caller's own hosts; ``?canvas=ID`` also lists its live terminals.
 The configured assistant passes ``?owner=EMAIL`` to list the person it answers."""
 
-TERMINAL_MACHINES_CHANGES_PATH: Final = "/api/terminals/machines/changes"
+TERMINAL_HOSTS_CHANGES_PATH: Final = "/api/terminals/hosts/changes"
 """``GET ?owner=EMAIL&since=N``, held up to :data:`WAIT_MAX_SEC`: the
-:class:`MachinesVersion` of the listing, the moment it is not ``since``; ``since`` left
+:class:`HostsVersion` of the listing, the moment it is not ``since``; ``since`` left
 out answers at once. Who may name ``owner`` is as for the listing."""
 
-TERMINAL_CONFIRM_PATH: Final = "/api/terminals/machines/{name}/confirm"
-"""``POST``: the owner confirms a machine enrolled with a key, so terminals may open."""
+TERMINAL_CONFIRM_PATH: Final = "/api/terminals/hosts/{name}/confirm"
+"""``POST``: the owner confirms a host enrolled with a key, so terminals may open."""
 
 TERMINAL_ATTACH_PATH: Final = "/api/terminals/{terminal_id}/attach"
 """``POST``: mint a reconnect ticket for the opener."""
@@ -148,14 +148,12 @@ TERMINAL_CLOSE_PATH: Final = "/api/terminals/{terminal_id}/close"
 TERMINAL_WS_PATH: Final = "/api/terminals/{terminal_id}/ws"
 """The browser's WebSocket; its first frame is ``ATTACH``."""
 
-MACHINE_TERMINAL_WAIT_PATH: Final = "/api/machines/{machine_id}/terminals/wait"
-"""``GET ?instance=ID``, held up to :data:`WAIT_MAX_SEC`: the host's next open request,
+HOST_TERMINAL_WAIT_PATH: Final = "/api/hosts/{host_id}/terminals/wait"
+"""``GET ?instance=ID``, held up to :data:`WAIT_MAX_SEC`: the daemon's next open request,
 or ``null`` when none came."""
 
-MACHINE_TERMINAL_WS_PATH: Final = (
-    "/api/machines/{machine_id}/terminals/{terminal_id}/ws"
-)
-"""The host's WebSocket, authenticated by the machine credential."""
+HOST_TERMINAL_WS_PATH: Final = "/api/hosts/{host_id}/terminals/{terminal_id}/ws"
+"""The daemon's WebSocket, authenticated by the host credential."""
 
 FRAME_ATTACH: Final = 1
 FRAME_INPUT: Final = 2
@@ -194,12 +192,12 @@ CLOSE_ENDED: Final = 4000
 CLOSE_TAKEN_OVER: Final = 4001
 CLOSE_IDLE: Final = 4002
 CLOSE_LIFETIME: Final = 4003
-CLOSE_HOST_LOST: Final = 4004
+CLOSE_DAEMON_LOST: Final = 4004
 CLOSE_REFUSED: Final = 4403
-CLOSE_MACHINE_REVOKED: Final = 4410
+CLOSE_HOST_REVOKED: Final = 4410
 
 FINAL_CLOSE_CODES: Final = frozenset(
-    {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_IDLE, CLOSE_LIFETIME, CLOSE_MACHINE_REVOKED},
+    {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_IDLE, CLOSE_LIFETIME, CLOSE_HOST_REVOKED},
 )
 """Close codes after which the browser does not reconnect."""
 
@@ -217,7 +215,7 @@ TICKET_TTL_SEC: Final = 30
 OPEN_TTL_SEC: Final = 60
 WAIT_MAX_SEC: Final = 25
 WAIT_LEASE_SEC: Final = 45
-"""A machine that waited within this long can take an open."""
+"""A daemon that waited within this long can take an open."""
 
 DETACH_GRACE_SEC: Final = 60
 IDLE_SEC: Final = 3_600
@@ -233,28 +231,28 @@ type IceServers = Annotated[
     list[Annotated[str, Field(pattern=r"^stun:\S{1,200}$")]],
     Field(max_length=MAX_ICE_SERVERS),
 ]
-"""STUN servers the browser and the host both use to find each other's address."""
+"""STUN servers the browser and the daemon both use to find each other's address."""
 
 type TerminalCommand = Literal["claude", "codex", "sagent"]
-"""A CLI a terminal may start in place of a login shell; the host allows these."""
+"""A CLI a terminal may start in place of a login shell; the daemon allows these."""
 
 type TerminalKind = Literal["shell", "files"]
-"""What a terminal carries: a shell, or the host's answers to file requests."""
+"""What a terminal carries: a shell, or the daemon's answers to file requests."""
 
 type RunFolder = Annotated[
     str,
     Field(max_length=1_024, pattern=r"^[/~][^\x00-\x1f\x7f]*$"),
 ]
 """The folder a run starts in: absolute or ``~``-relative, with no control character,
-since the host writes it into the terminal."""
+since the daemon writes it into the terminal."""
 
 
 class OpenTerminal(BaseModel):
-    """Open a terminal on one of the caller's machines."""
+    """Open a terminal on one of the caller's hosts."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    machine: str = Field(pattern=NAME_PATTERN)
+    host: str = Field(pattern=NAME_PATTERN)
     rows: Annotated[int, Field(ge=1, le=MAX_ROWS)]
     cols: Annotated[int, Field(ge=1, le=MAX_COLS)]
 
@@ -264,7 +262,7 @@ class OpenTerminal(BaseModel):
     requested_by: (
         Annotated[str, Field(max_length=63, pattern=r"^[\x20-\x7e]*$")] | None
     ) = None
-    """The actor that placed the tile asking for it: shown and logged by the host, never trusted."""
+    """The actor that placed the tile asking for it: shown and logged by the daemon, never trusted."""
 
     surface: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")] | None = None
     """The view that opened it (Chat's terminal side, or one tile): it re-attaches to its own."""
@@ -279,10 +277,10 @@ class OpenTerminal(BaseModel):
     """The detached run's name, which an attach takes; needs ``command``."""
 
     cwd: RunFolder | None = None
-    """The run's folder on the machine, absolute or ``~``; needs ``command``."""
+    """The run's folder on the host, absolute or ``~``; needs ``command``."""
 
     kind: TerminalKind = "shell"
-    """``files`` starts no shell: the host answers file requests on it instead."""
+    """``files`` starts no shell: the daemon answers file requests on it instead."""
 
     @model_validator(mode="after")
     def _run_fields_need_a_command(self) -> Self:
@@ -316,7 +314,7 @@ class TerminalOpened(BaseModel):
     ticket: str = Field(repr=False)
 
     ice_servers: IceServers = Field(default_factory=list)
-    """The STUN servers to find the host with; empty means the same network only."""
+    """The STUN servers to find the daemon with; empty means the same network only."""
 
 
 class TerminalTicket(BaseModel):
@@ -329,19 +327,19 @@ class TerminalTicket(BaseModel):
     ice_servers: IceServers = Field(default_factory=list)
 
 
-class TerminalMachine(BaseModel):
-    """One machine the caller owns, and whether it can take a terminal now."""
+class TerminalHost(BaseModel):
+    """One host the caller owns, and whether it can take a terminal now."""
 
-    # It ignores an unknown field as :class:`TerminalMachines`, which holds it, does.
+    # It ignores an unknown field as :class:`TerminalHosts`, which holds it, does.
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     name: str = Field(pattern=NAME_PATTERN)
-    status: MachineStatus
+    status: HostStatus
     terminal_ready: bool
-    """Online, and its host waited for an open within :data:`WAIT_LEASE_SEC`."""
+    """Online, and its daemon waited for an open within :data:`WAIT_LEASE_SEC`."""
 
     confirmed: bool
-    """Whether its owner confirmed it; a terminal opens only on a confirmed machine
+    """Whether its owner confirmed it; a terminal opens only on a confirmed host
     (409 ``terminal_unconfirmed``). An admin's enroll confirms; a writer's does not."""
 
     clis: list[str] = Field(default_factory=list)
@@ -351,50 +349,50 @@ class TerminalMachine(BaseModel):
     cwd: RunFolder | None = None
     """The folder its owner last chose for a CLI run; None until one is named."""
 
-    runs: list[MachineRun] = Field(default_factory=list)
-    """Its owner's live runs that name it. They reach the server without its host, so
-    the machine is still connected while one is live, whatever ``status`` says."""
+    runs: list[HostRun] = Field(default_factory=list)
+    """Its owner's live sessions that name it. They reach the server without its daemon, so
+    the host is still connected while one is live, whatever ``status`` says."""
 
-    host_outdated: bool = False
-    """Its host last reported a trackinizer older than the oldest this server's wire
-    supports (``wire_machine_host.MIN_HOST_VERSION``): it may never open a terminal
+    daemon_outdated: bool = False
+    """Its daemon last reported a trackinizer older than the oldest this server's wire
+    supports (``wire_daemon.MIN_DAEMON_VERSION``): it may never open a terminal
     until it is upgraded."""
 
     files: bool = False
-    """Its facts say its host answers a ``files`` terminal."""
+    """Its facts say its daemon answers a ``files`` terminal."""
 
     tools: bool = False
-    """Its facts say its host serves tools to an agent's ``RemoteTool``."""
+    """Its facts say its daemon serves tools to an agent's ``RemoteTool``."""
 
 
 class LiveTerminal(BaseModel):
     """A terminal that is open now."""
 
-    # It ignores an unknown field as :class:`TerminalMachines`, which holds it, does.
+    # It ignores an unknown field as :class:`TerminalHosts`, which holds it, does.
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     terminal_id: uuid.UUID
-    machine: str = Field(pattern=NAME_PATTERN)
+    host: str = Field(pattern=NAME_PATTERN)
     surface: str | None = None
     """The ``surface`` it was opened with."""
 
 
-class TerminalMachines(BaseModel):
-    """The caller's machines, and their live terminals for the asked canvas."""
+class TerminalHosts(BaseModel):
+    """The caller's hosts, and their live terminals for the asked canvas."""
 
     # The configured assistant reads this listing without the ``Client``, which ignores
     # a field a newer server added; so this model and the ones it holds ignore one.
     model_config = ConfigDict(extra="ignore", frozen=True)
 
-    machines: list[TerminalMachine]
-    """Newest first, by when each machine was registered."""
+    hosts: list[TerminalHost]
+    """Newest first, by when each host was registered."""
 
     terminals: list[LiveTerminal] = Field(default_factory=list)
     """The caller's live terminals opened from ``?canvas=``, oldest first."""
 
 
-class MachinesVersion(BaseModel):
-    """The version of a person's machine list, which moves when a machine changes."""
+class HostsVersion(BaseModel):
+    """The version of a person's host list, which moves when a host changes."""
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -432,7 +430,7 @@ class TerminalWait(BaseModel):
     """As :attr:`OpenTerminal.run_name`: the detached run's name."""
 
     cwd: RunFolder | None = None
-    """As :attr:`OpenTerminal.cwd`: the folder the run starts in, on this machine."""
+    """As :attr:`OpenTerminal.cwd`: the folder the run starts in, on this host."""
 
     # Absent for a shell, so a host on an older wire, which refuses a key it does not
     # know, still opens one; only a host whose facts say ``files`` is sent one.

@@ -250,7 +250,7 @@ async def test_the_agents_leg_reads_a_line_past_the_relays_limit_and_refuses_pas
     reader, writer = await dial_tools(
         "http://h",
         api_key="k",
-        machine="m",
+        host="m",
         asker="a@b.c",
         limit=2 * Config().tool_line_bytes,
     )
@@ -265,7 +265,7 @@ async def test_the_agents_leg_reads_a_line_past_the_relays_limit_and_refuses_pas
     reader, writer = await dial_tools(
         "http://h",
         api_key="k",
-        machine="m",
+        host="m",
         asker="a@b.c",
         limit=8,
     )
@@ -282,7 +282,7 @@ async def test_a_server_url_with_no_host_is_a_value_error() -> None:
         _ = await dial_tools(
             "http://:80",
             api_key="k",
-            machine="m",
+            host="m",
             asker="a@b.c",
             limit=_LIMIT,
         )
@@ -353,7 +353,7 @@ async def test_dial_tools_reaches_a_real_server_and_refusal_is_an_oserror() -> N
         reader, writer = await dial_tools(
             url,
             api_key="secret",
-            machine="my box/1",
+            host="my box/1",
             asker="a+b@example.com",
             limit=_LIMIT,
         )
@@ -368,7 +368,7 @@ async def test_dial_tools_reaches_a_real_server_and_refusal_is_an_oserror() -> N
             await dial_tools(
                 url,
                 api_key="wrong",
-                machine="m",
+                host="m",
                 asker="x@example.com",
                 limit=_LIMIT,
             )
@@ -377,13 +377,13 @@ async def test_dial_tools_reaches_a_real_server_and_refusal_is_an_oserror() -> N
             await dial_tools(
                 "ws://x",
                 api_key="k",
-                machine="m",
+                host="m",
                 asker="x@y.z",
                 limit=_LIMIT,
             )
 
     assert seen[0] == (
-        "/api/machines/my%20box%2F1/tools/ws?asker=a%2Bb%40example.com",
+        "/api/hosts/my%20box%2F1/tools/ws?asker=a%2Bb%40example.com",
         "Bearer secret",
     )
     await _settled(before)
@@ -408,13 +408,13 @@ async def test_dial_tools_dials_what_its_arguments_name(
         await dial_tools(
             "https://http.boX/",
             api_key="k",
-            machine="my box/1",
+            host="my box/1",
             asker="a+b@c.d",
             limit=_LIMIT,
         )
     assert dialed == [
         (
-            "wss://http.boX/api/machines/my%20box%2F1/tools/ws?asker=a%2Bb%40c.d",
+            "wss://http.boX/api/hosts/my%20box%2F1/tools/ws?asker=a%2Bb%40c.d",
             {
                 "additional_headers": {"Authorization": "Bearer k"},
                 "max_size": None,

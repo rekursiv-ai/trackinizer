@@ -2178,6 +2178,11 @@
     "title": "CreateTokenBody",
     "type": "object"
    },
+   "DaemonVersion": {
+    "maxLength": 64,
+    "pattern": "^[^\\x00]*$",
+    "type": "string"
+   },
    "DraftRelation": {
     "additionalProperties": false,
     "description": "One relation picked on the create form: the option's key, and its target.",
@@ -2217,7 +2222,7 @@
    },
    "EnrollRequest": {
     "additionalProperties": false,
-    "description": "Enroll a machine: the name the host will join as.",
+    "description": "Enroll a host: the name the daemon will join as.",
     "properties": {
      "asker": {
       "anyOf": [
@@ -3863,6 +3868,9 @@
       "$ref": "#/components/schemas/Claim",
       "default": "keep"
      },
+     "daemon_version": {
+      "$ref": "#/components/schemas/DaemonVersion"
+     },
      "facts": {
       "anyOf": [
        {
@@ -3873,9 +3881,6 @@
        }
       ]
      },
-     "host_version": {
-      "$ref": "#/components/schemas/HostVersion"
-     },
      "instance": {
       "format": "uuid",
       "title": "Instance",
@@ -3884,18 +3889,18 @@
     },
     "required": [
      "instance",
-     "host_version"
+     "daemon_version"
     ],
     "title": "HeartbeatRequest",
     "type": "object"
    },
    "HeartbeatResponse": {
     "additionalProperties": false,
-    "description": "The server's clock at the heartbeat, and whether the host must be upgraded.",
+    "description": "The server's clock at the heartbeat, and whether the daemon must be upgraded.",
     "properties": {
-     "host_outdated": {
+     "daemon_outdated": {
       "default": false,
-      "title": "Host Outdated",
+      "title": "Daemon Outdated",
       "type": "boolean"
      },
      "server_time": {
@@ -3910,9 +3915,382 @@
     "title": "HeartbeatResponse",
     "type": "object"
    },
-   "HostVersion": {
-    "maxLength": 64,
-    "pattern": "^[^\\x00]*$",
+   "Host": {
+    "additionalProperties": false,
+    "description": "One registered host, as listed.",
+    "properties": {
+     "how": {
+      "maxLength": 2000,
+      "title": "How",
+      "type": "string"
+     },
+     "labels": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Labels",
+      "type": "array"
+     },
+     "last_heartbeat": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Heartbeat"
+     },
+     "name": {
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+      "title": "Name",
+      "type": "string"
+     },
+     "owner": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Owner"
+     },
+     "role": {
+      "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+      "title": "Role",
+      "type": "string"
+     },
+     "status": {
+      "$ref": "#/components/schemas/HostStatus",
+      "default": "never"
+     },
+     "updated": {
+      "format": "date-time",
+      "title": "Updated",
+      "type": "string"
+     },
+     "updated_by": {
+      "title": "Updated By",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "role",
+     "how",
+     "labels",
+     "updated_by",
+     "updated"
+    ],
+    "title": "Host",
+    "type": "object"
+   },
+   "HostDetail": {
+    "additionalProperties": false,
+    "description": "One host with what its host reported about itself.",
+    "properties": {
+     "daemon_version": {
+      "default": "",
+      "title": "Daemon Version",
+      "type": "string"
+     },
+     "facts": {
+      "$ref": "#/components/schemas/Facts"
+     },
+     "how": {
+      "maxLength": 2000,
+      "title": "How",
+      "type": "string"
+     },
+     "labels": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Labels",
+      "type": "array"
+     },
+     "last_heartbeat": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Heartbeat"
+     },
+     "name": {
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+      "title": "Name",
+      "type": "string"
+     },
+     "owner": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Owner"
+     },
+     "role": {
+      "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+      "title": "Role",
+      "type": "string"
+     },
+     "status": {
+      "$ref": "#/components/schemas/HostStatus",
+      "default": "never"
+     },
+     "updated": {
+      "format": "date-time",
+      "title": "Updated",
+      "type": "string"
+     },
+     "updated_by": {
+      "title": "Updated By",
+      "type": "string"
+     }
+    },
+    "required": [
+     "name",
+     "role",
+     "how",
+     "labels",
+     "updated_by",
+     "updated"
+    ],
+    "title": "HostDetail",
+    "type": "object"
+   },
+   "HostLabels": {
+    "additionalProperties": false,
+    "description": "Add labels, then remove labels; each is a no-op when already so.",
+    "properties": {
+     "add": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Add",
+      "type": "array"
+     },
+     "remove": {
+      "items": {
+       "type": "string"
+      },
+      "title": "Remove",
+      "type": "array"
+     }
+    },
+    "title": "HostLabels",
+    "type": "object"
+   },
+   "HostList": {
+    "additionalProperties": false,
+    "description": "Every registered host, sorted by name.",
+    "properties": {
+     "hosts": {
+      "items": {
+       "$ref": "#/components/schemas/Host"
+      },
+      "title": "Hosts",
+      "type": "array"
+     }
+    },
+    "required": [
+     "hosts"
+    ],
+    "title": "HostList",
+    "type": "object"
+   },
+   "HostLogout": {
+    "additionalProperties": false,
+    "description": "What logging a host out stopped and revoked.",
+    "properties": {
+     "keys": {
+      "title": "Keys",
+      "type": "integer"
+     },
+     "runs": {
+      "items": {
+       "$ref": "#/components/schemas/HostRun"
+      },
+      "title": "Runs",
+      "type": "array"
+     }
+    },
+    "required": [
+     "runs",
+     "keys"
+    ],
+    "title": "HostLogout",
+    "type": "object"
+   },
+   "HostPut": {
+    "additionalProperties": false,
+    "description": "Create a host or change its fields; a field left out keeps its value.",
+    "properties": {
+     "how": {
+      "anyOf": [
+       {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "How"
+     },
+     "role": {
+      "anyOf": [
+       {
+        "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Role"
+     }
+    },
+    "title": "HostPut",
+    "type": "object"
+   },
+   "HostRun": {
+    "description": "A run of a CLI that names the host, under its owner's account: live, or past.\n\nThe host is the run's own word on each poll, shown to the owner and stopped by\nthem, never a grant.",
+    "properties": {
+     "cli": {
+      "title": "Cli",
+      "type": "string"
+     },
+     "conversation_id": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Conversation Id"
+     },
+     "cwd": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Cwd"
+     },
+     "ended": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Ended"
+     },
+     "last_seen": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Last Seen"
+     },
+     "run": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Run"
+     },
+     "seq": {
+      "anyOf": [
+       {
+        "type": "integer"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Seq"
+     },
+     "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+     },
+     "state": {
+      "$ref": "#/components/schemas/RunState",
+      "default": "idle"
+     }
+    },
+    "required": [
+     "session_id",
+     "cli"
+    ],
+    "title": "HostRun",
+    "type": "object"
+   },
+   "HostRuns": {
+    "additionalProperties": false,
+    "description": "The live sessions of one of the caller's hosts, and the ones it had before.",
+    "properties": {
+     "past": {
+      "items": {
+       "$ref": "#/components/schemas/HostRun"
+      },
+      "title": "Past",
+      "type": "array"
+     },
+     "runs": {
+      "items": {
+       "$ref": "#/components/schemas/HostRun"
+      },
+      "title": "Runs",
+      "type": "array"
+     }
+    },
+    "required": [
+     "runs"
+    ],
+    "title": "HostRuns",
+    "type": "object"
+   },
+   "HostStatus": {
+    "enum": [
+     "revoked",
+     "never",
+     "online",
+     "offline"
+    ],
     "type": "string"
    },
    "IceServers": {
@@ -4000,7 +4378,7 @@
    },
    "InboundEnqueueRequest": {
     "additionalProperties": false,
-    "description": "A line a client asks trackinizer to inject into a live session.\n\nThe enqueue **request** carries ``text`` -- the one field the route delivers --\nand, from the configured assistant alone, the ``asker`` it sends for. It names no\nkind: every other :data:`InboundKind` acts on the run's machine, and comes from a\nperson in Chat (``POST /api/chats``) alone, so a key that leaked from an agent\nsends its owner's run nothing but a line. ``source``\nis attested by the route from the authenticated principal (a client cannot forge\nanother sender), and ``room`` has no enqueue semantics (the direct-session\nenqueue route discards it; routed delivery is the separate ``@actor:room``\nsend-message path). ``extra=\"forbid\"`` makes a client-sent ``source`` or ``room``\na 422 rather than a silently-ignored field -- the request and response shapes are\ndeliberately distinct (the response :class:`InboundDrainItem` carries both\n``source`` and ``room``), so neither can be confused for the other.",
+    "description": "A line a client asks trackinizer to inject into a live session.\n\nThe enqueue **request** carries ``text`` -- the one field the route delivers --\nand, from the configured assistant alone, the ``asker`` it sends for. It names no\nkind: every other :data:`InboundKind` acts on the run's host, and comes from a\nperson in Chat (``POST /api/chats``) alone, so a key that leaked from an agent\nsends its owner's run nothing but a line. ``source``\nis attested by the route from the authenticated principal (a client cannot forge\nanother sender), and ``room`` has no enqueue semantics (the direct-session\nenqueue route discards it; routed delivery is the separate ``@actor:room``\nsend-message path). ``extra=\"forbid\"`` makes a client-sent ``source`` or ``room``\na 422 rather than a silently-ignored field -- the request and response shapes are\ndeliberately distinct (the response :class:`InboundDrainItem` carries both\n``source`` and ``room``), so neither can be confused for the other.",
     "properties": {
      "asker": {
       "anyOf": [
@@ -4143,13 +4521,13 @@
    },
    "JoinRequest": {
     "additionalProperties": false,
-    "description": "Join as a machine with an enrollment token.",
+    "description": "Join as a host with an enrollment token.",
     "properties": {
+     "daemon_version": {
+      "$ref": "#/components/schemas/DaemonVersion"
+     },
      "facts": {
       "$ref": "#/components/schemas/Facts"
-     },
-     "host_version": {
-      "$ref": "#/components/schemas/HostVersion"
      },
      "instance": {
       "format": "uuid",
@@ -4171,27 +4549,27 @@
      "name",
      "token",
      "instance",
-     "host_version"
+     "daemon_version"
     ],
     "title": "JoinRequest",
     "type": "object"
    },
    "JoinResponse": {
     "additionalProperties": false,
-    "description": "The machine credential, shown once.",
+    "description": "The host credential, shown once.",
     "properties": {
      "credential": {
       "title": "Credential",
       "type": "string"
      },
-     "machine_id": {
+     "host_id": {
       "format": "uuid",
-      "title": "Machine Id",
+      "title": "Host Id",
       "type": "string"
      }
     },
     "required": [
-     "machine_id",
+     "host_id",
      "credential"
     ],
     "title": "JoinResponse",
@@ -4349,6 +4727,17 @@
       ],
       "title": "Goal"
      },
+     "host": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Host"
+     },
      "id": {
       "format": "uuid",
       "title": "Id",
@@ -4372,17 +4761,6 @@
      "live": {
       "title": "Live",
       "type": "boolean"
-     },
-     "machine": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Machine"
      },
      "produced_by": {
       "items": {
@@ -4437,7 +4815,7 @@
      "first_line",
      "last_line",
      "live",
-     "machine",
+     "host",
      "state"
     ],
     "title": "ListedSession",
@@ -4446,9 +4824,9 @@
    "LiveTerminal": {
     "description": "A terminal that is open now.",
     "properties": {
-     "machine": {
+     "host": {
       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-      "title": "Machine",
+      "title": "Host",
       "type": "string"
      },
      "surface": {
@@ -4470,7 +4848,7 @@
     },
     "required": [
      "terminal_id",
-     "machine"
+     "host"
     ],
     "title": "LiveTerminal",
     "type": "object"
@@ -4526,384 +4904,6 @@
     ],
     "title": "LogMetricsResponse",
     "type": "object"
-   },
-   "Machine": {
-    "additionalProperties": false,
-    "description": "One registered machine, as listed.",
-    "properties": {
-     "how": {
-      "maxLength": 2000,
-      "title": "How",
-      "type": "string"
-     },
-     "labels": {
-      "items": {
-       "type": "string"
-      },
-      "title": "Labels",
-      "type": "array"
-     },
-     "last_heartbeat": {
-      "anyOf": [
-       {
-        "format": "date-time",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Last Heartbeat"
-     },
-     "name": {
-      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-      "title": "Name",
-      "type": "string"
-     },
-     "owner": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Owner"
-     },
-     "role": {
-      "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
-      "title": "Role",
-      "type": "string"
-     },
-     "status": {
-      "$ref": "#/components/schemas/MachineStatus",
-      "default": "never"
-     },
-     "updated": {
-      "format": "date-time",
-      "title": "Updated",
-      "type": "string"
-     },
-     "updated_by": {
-      "title": "Updated By",
-      "type": "string"
-     }
-    },
-    "required": [
-     "name",
-     "role",
-     "how",
-     "labels",
-     "updated_by",
-     "updated"
-    ],
-    "title": "Machine",
-    "type": "object"
-   },
-   "MachineDetail": {
-    "additionalProperties": false,
-    "description": "One machine with what its host reported about itself.",
-    "properties": {
-     "facts": {
-      "$ref": "#/components/schemas/Facts"
-     },
-     "host_version": {
-      "default": "",
-      "title": "Host Version",
-      "type": "string"
-     },
-     "how": {
-      "maxLength": 2000,
-      "title": "How",
-      "type": "string"
-     },
-     "labels": {
-      "items": {
-       "type": "string"
-      },
-      "title": "Labels",
-      "type": "array"
-     },
-     "last_heartbeat": {
-      "anyOf": [
-       {
-        "format": "date-time",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Last Heartbeat"
-     },
-     "name": {
-      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-      "title": "Name",
-      "type": "string"
-     },
-     "owner": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Owner"
-     },
-     "role": {
-      "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
-      "title": "Role",
-      "type": "string"
-     },
-     "status": {
-      "$ref": "#/components/schemas/MachineStatus",
-      "default": "never"
-     },
-     "updated": {
-      "format": "date-time",
-      "title": "Updated",
-      "type": "string"
-     },
-     "updated_by": {
-      "title": "Updated By",
-      "type": "string"
-     }
-    },
-    "required": [
-     "name",
-     "role",
-     "how",
-     "labels",
-     "updated_by",
-     "updated"
-    ],
-    "title": "MachineDetail",
-    "type": "object"
-   },
-   "MachineLabels": {
-    "additionalProperties": false,
-    "description": "Add labels, then remove labels; each is a no-op when already so.",
-    "properties": {
-     "add": {
-      "items": {
-       "type": "string"
-      },
-      "title": "Add",
-      "type": "array"
-     },
-     "remove": {
-      "items": {
-       "type": "string"
-      },
-      "title": "Remove",
-      "type": "array"
-     }
-    },
-    "title": "MachineLabels",
-    "type": "object"
-   },
-   "MachineList": {
-    "additionalProperties": false,
-    "description": "Every registered machine, sorted by name.",
-    "properties": {
-     "machines": {
-      "items": {
-       "$ref": "#/components/schemas/Machine"
-      },
-      "title": "Machines",
-      "type": "array"
-     }
-    },
-    "required": [
-     "machines"
-    ],
-    "title": "MachineList",
-    "type": "object"
-   },
-   "MachineLogout": {
-    "additionalProperties": false,
-    "description": "What logging a machine out stopped and revoked.",
-    "properties": {
-     "keys": {
-      "title": "Keys",
-      "type": "integer"
-     },
-     "runs": {
-      "items": {
-       "$ref": "#/components/schemas/MachineRun"
-      },
-      "title": "Runs",
-      "type": "array"
-     }
-    },
-    "required": [
-     "runs",
-     "keys"
-    ],
-    "title": "MachineLogout",
-    "type": "object"
-   },
-   "MachinePut": {
-    "additionalProperties": false,
-    "description": "Create a machine or change its fields; a field left out keeps its value.",
-    "properties": {
-     "how": {
-      "anyOf": [
-       {
-        "maxLength": 2000,
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "How"
-     },
-     "role": {
-      "anyOf": [
-       {
-        "pattern": "^(?:[a-z][a-z0-9-]{0,31})?$",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Role"
-     }
-    },
-    "title": "MachinePut",
-    "type": "object"
-   },
-   "MachineRun": {
-    "description": "A run of a CLI that names the machine, under its owner's account: live, or past.\n\nThe machine is the run's own word on each poll, shown to the owner and stopped by\nthem, never a grant.",
-    "properties": {
-     "cli": {
-      "title": "Cli",
-      "type": "string"
-     },
-     "conversation_id": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Conversation Id"
-     },
-     "cwd": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Cwd"
-     },
-     "ended": {
-      "anyOf": [
-       {
-        "format": "date-time",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Ended"
-     },
-     "last_seen": {
-      "anyOf": [
-       {
-        "format": "date-time",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Last Seen"
-     },
-     "run": {
-      "anyOf": [
-       {
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Run"
-     },
-     "seq": {
-      "anyOf": [
-       {
-        "type": "integer"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Seq"
-     },
-     "session_id": {
-      "format": "uuid",
-      "title": "Session Id",
-      "type": "string"
-     },
-     "state": {
-      "$ref": "#/components/schemas/RunState",
-      "default": "idle"
-     }
-    },
-    "required": [
-     "session_id",
-     "cli"
-    ],
-    "title": "MachineRun",
-    "type": "object"
-   },
-   "MachineRuns": {
-    "additionalProperties": false,
-    "description": "The live runs of one of the caller's machines, and the ones it had before.",
-    "properties": {
-     "past": {
-      "items": {
-       "$ref": "#/components/schemas/MachineRun"
-      },
-      "title": "Past",
-      "type": "array"
-     },
-     "runs": {
-      "items": {
-       "$ref": "#/components/schemas/MachineRun"
-      },
-      "title": "Runs",
-      "type": "array"
-     }
-    },
-    "required": [
-     "runs"
-    ],
-    "title": "MachineRuns",
-    "type": "object"
-   },
-   "MachineStatus": {
-    "enum": [
-     "revoked",
-     "never",
-     "online",
-     "offline"
-    ],
-    "type": "string"
    },
    "ManifestBody": {
     "description": "What one part's source file is, re-sent with every append batch.\n\nRe-sent rather than written once because it CHANGES as the file grows:\n``records`` counts what has arrived, and the encoding a reader reports is\nonly correct for the prefix it has consumed -- claude's ascii-escaping\nconvention is a majority that is not decided until the stream ends.",
@@ -5294,7 +5294,7 @@
    },
    "OpenTerminal": {
     "additionalProperties": false,
-    "description": "Open a terminal on one of the caller's machines.",
+    "description": "Open a terminal on one of the caller's hosts.",
     "properties": {
      "attach": {
       "anyOf": [
@@ -5346,14 +5346,14 @@
        }
       ]
      },
+     "host": {
+      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+      "title": "Host",
+      "type": "string"
+     },
      "kind": {
       "$ref": "#/components/schemas/TerminalKind",
       "default": "shell"
-     },
-     "machine": {
-      "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-      "title": "Machine",
-      "type": "string"
      },
      "requested_by": {
       "anyOf": [
@@ -5400,7 +5400,7 @@
      }
     },
     "required": [
-     "machine",
+     "host",
      "rows",
      "cols"
     ],
@@ -5540,7 +5540,7 @@
      "chat_provider": {
       "$ref": "#/components/schemas/ChatProvider",
       "default": "assistant",
-      "description": "The provider a new chat starts on: the assistant, or claude or codex run on a machine of yours.",
+      "description": "The provider a new chat starts on: the assistant, or claude or codex run on a host of yours.",
       "x-setting": true
      },
      "chat_side": {
@@ -5568,7 +5568,7 @@
      },
      "cli_folder": {
       "default": "",
-      "description": "The folder a claude or codex run that Chat starts works in, on whichever machine it starts: ~/... under your home, or a full path. Empty for your home directory.",
+      "description": "The folder a claude or codex run that Chat starts works in, on whichever host it starts: ~/... under your home, or a full path. Empty for your home directory.",
       "maxLength": 1024,
       "pattern": "^([/~][^\\x00-\\x1f\\x7f]*)?$",
       "title": "Cli Folder",
@@ -9763,15 +9763,8 @@
     ],
     "type": "string"
    },
-   "TerminalKind": {
-    "enum": [
-     "shell",
-     "files"
-    ],
-    "type": "string"
-   },
-   "TerminalMachine": {
-    "description": "One machine the caller owns, and whether it can take a terminal now.",
+   "TerminalHost": {
+    "description": "One host the caller owns, and whether it can take a terminal now.",
     "properties": {
      "clis": {
       "items": {
@@ -9794,14 +9787,14 @@
        }
       ]
      },
+     "daemon_outdated": {
+      "default": false,
+      "title": "Daemon Outdated",
+      "type": "boolean"
+     },
      "files": {
       "default": false,
       "title": "Files",
-      "type": "boolean"
-     },
-     "host_outdated": {
-      "default": false,
-      "title": "Host Outdated",
       "type": "boolean"
      },
      "name": {
@@ -9811,13 +9804,13 @@
      },
      "runs": {
       "items": {
-       "$ref": "#/components/schemas/MachineRun"
+       "$ref": "#/components/schemas/HostRun"
       },
       "title": "Runs",
       "type": "array"
      },
      "status": {
-      "$ref": "#/components/schemas/MachineStatus"
+      "$ref": "#/components/schemas/HostStatus"
      },
      "terminal_ready": {
       "title": "Terminal Ready",
@@ -9835,17 +9828,17 @@
      "terminal_ready",
      "confirmed"
     ],
-    "title": "TerminalMachine",
+    "title": "TerminalHost",
     "type": "object"
    },
-   "TerminalMachines": {
-    "description": "The caller's machines, and their live terminals for the asked canvas.",
+   "TerminalHosts": {
+    "description": "The caller's hosts, and their live terminals for the asked canvas.",
     "properties": {
-     "machines": {
+     "hosts": {
       "items": {
-       "$ref": "#/components/schemas/TerminalMachine"
+       "$ref": "#/components/schemas/TerminalHost"
       },
-      "title": "Machines",
+      "title": "Hosts",
       "type": "array"
      },
      "terminals": {
@@ -9857,10 +9850,17 @@
      }
     },
     "required": [
-     "machines"
+     "hosts"
     ],
-    "title": "TerminalMachines",
+    "title": "TerminalHosts",
     "type": "object"
+   },
+   "TerminalKind": {
+    "enum": [
+     "shell",
+     "files"
+    ],
+    "type": "string"
    },
    "TerminalOpened": {
     "description": "A terminal was queued for the host; attach with the ticket.",
@@ -10102,7 +10102,7 @@
      "layer": {
       "enum": [
        "org",
-       "machine",
+       "host",
        "user"
       ],
       "title": "Layer",
@@ -13996,6 +13996,596 @@
     "summary": "Export Route"
    }
   },
+  "/api/hosts": {
+   "get": {
+    "description": "List every registered host.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  hosts: Every host, sorted by name in byte order.",
+    "operationId": "list_hosts_route_api_hosts_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HostList"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "List Hosts Route"
+   }
+  },
+  "/api/hosts/enroll": {
+   "post": {
+    "description": "Register the host if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same host. An admin enrolls a\nhost that is new, unowned or already theirs, and confirms it; one another person\nowns answers 409 ``host_owned``, naming the owner. A writer may enroll a host\nthat is new, which becomes theirs with the role ``personal`` and stays unconfirmed\nuntil they confirm it in the web app, or one that is already theirs.\n\nThe configured assistant may name an ``asker``, a writer or admin it answers. The\nhost is then the asker's: personal, confirmed, and theirs to open a terminal on,\nand the token joins only for them. The assistant owns nothing it enrolls.\n\nArgs:\n  body: The host's name, and the asker when the assistant enrolls for one.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Writer principal, recorded as who enrolled the host.\n\nReturns:\n  enrolled: The token, shown once, when it expires, and the host's owner.\n\nRaises:\n  ValidationError: The name is reserved.\n  HostOwnedError: An admin names a host another person owns.\n  HTTPException: 403 when a writer names a host that is not theirs, or anyone\n    but the assistant names an asker, or the asker is no active writer.",
+    "operationId": "enroll_host_route_api_hosts_enroll_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/EnrollRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/EnrollResponse"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Enroll Host Route"
+   }
+  },
+  "/api/hosts/join": {
+   "post": {
+    "description": "Exchange an enrollment token for a host credential.\n\nThe token is the credential, so the route has no other authentication. It is\nvalid once, within 15 minutes, for the host name it was issued for, and only\nwhile the account that issued it is still an active admin, or owns the host and\nit is a personal one.\nJoining a host that already has a live credential revokes that credential first\nand closes the terminals open on it.\n\nArgs:\n  body: The host name, the token, and the daemon's instance, version and facts.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n\nReturns:\n  joined: The host's id and its credential, shown once.\n\nRaises:\n  HTTPException: 401 when the token is malformed, unknown, used, expired, issued\n    for another host, or issued by an account that is no longer an active admin.",
+    "operationId": "join_host_route_api_hosts_join_post",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/JoinRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "201": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/JoinResponse"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Join Host Route"
+   }
+  },
+  "/api/hosts/{host_id}/heartbeat": {
+   "post": {
+    "description": "Record that the daemon is alive, and what it reports about itself.\n\nOne daemon instance holds a host at a time. Under ``keep`` a different instance\nis refused until the connected one has been silent for 180 seconds, then takes\nover; under ``take`` it takes over at once. ``release`` from the instance that\nholds the host leaves it held by none, so it reads offline; from any other\ninstance it changes nothing.\n\nArgs:\n  body: The daemon's instance, version, claim, and facts when they changed.\n  request: Request carrying the database engine.\n  host: The host the credential authenticated as.\n\nReturns:\n  beat: The server's clock at the heartbeat, and ``daemon_outdated`` for a daemon older\n    than ``MIN_DAEMON_VERSION`` that can read it.\n\nRaises:\n  AnotherDaemonConnectedError: Another instance is connected and live.\n  HTTPException: 410 when the credential was revoked after it authenticated.",
+    "operationId": "heartbeat_host_route_api_hosts__host_id__heartbeat_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "host_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Host Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/HeartbeatRequest"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HeartbeatResponse"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Heartbeat Host Route"
+   }
+  },
+  "/api/hosts/{host_id}/terminals/wait": {
+   "get": {
+    "description": "Hold until the host has a terminal to open, then return it; else ``null``.\n\nThe host's own credential authenticates, as for a heartbeat. The wait is held at\nmost 25 seconds, and its arrival tells the server that the daemon serves terminals.\n\nArgs:\n  host_id: The host.\n  request: Request carrying the database engine and the terminal relay.\n  instance: The daemon instance, which must be the host's current one.\n  wait_sec: How long to hold, clamped to 25 seconds.\n\nReturns:\n  terminal: The next terminal to open, or ``None`` when none came in time.",
+    "operationId": "terminal_wait_route_api_hosts__host_id__terminals_wait_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "host_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Host Id",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "instance",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Instance",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "wait_sec",
+      "required": false,
+      "schema": {
+       "default": 25,
+       "minimum": 0,
+       "title": "Wait Sec",
+       "type": "number"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/TerminalWait"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "title": "Response Terminal Wait Route Api Hosts  Host Id  Terminals Wait Get"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Terminal Wait Route"
+   }
+  },
+  "/api/hosts/{name}": {
+   "delete": {
+    "description": "Unregister a host; nothing on the host itself is touched.\n\nArgs:\n  name: The host's name.\n  request: Request carrying the database engine.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such host.\n  HostInServiceError: The host holds a live credential.",
+    "operationId": "delete_host_route_api_hosts__name__delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Delete Host Route"
+   },
+   "get": {
+    "description": "Return one host, with what its host reported.\n\nArgs:\n  name: The host's name.\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  host: The host.\n\nRaises:\n  NotFoundError: No such host.",
+    "operationId": "get_host_route_api_hosts__name__get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HostDetail"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Get Host Route"
+   },
+   "put": {
+    "description": "Register a host, or change the fields the body names.\n\nA field left out keeps its value, or defaults to empty on a new host;\nan empty string clears it.\n\nArgs:\n  name: The host's name.\n  body: The new role and how line, each optional.\n  request: Request carrying the database engine.\n  identity: Admin principal, recorded as who changed it.\n\nReturns:\n  empty: 204 with no body.",
+    "operationId": "put_host_route_api_hosts__name__put",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/HostPut"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Put Host Route"
+   }
+  },
+  "/api/hosts/{name}/disconnect": {
+   "post": {
+    "description": "Revoke a daemon and stop every live session of its owner that names it.\n\nThe host learns of it by a 410 on its next request, and its terminals and\ncommands are closed, as a revoke does. The host joins it again with the key the\ncomputer holds, which this leaves untouched.\n\nArgs:\n  name: The host's name.\n  request: Request carrying the database engine, the hubs and the inbound queue.\n  identity: Admin principal, or the host's owner.\n\nReturns:\n  runs: The runs it stopped.\n\nRaises:\n  NotFoundError: No such host.\n  HTTPException: 403 when a writer names a host that is not theirs.",
+    "operationId": "disconnect_host_route_api_hosts__name__disconnect_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HostRuns"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Disconnect Host Route"
+   }
+  },
+  "/api/hosts/{name}/labels": {
+   "patch": {
+    "description": "Add labels, then remove labels; each is a no-op when already so.\n\nLabels follow the Issue label rules: stripped, deduplicated, never blank.\n\nArgs:\n  name: The host's name.\n  body: The labels to add and to remove.\n  request: Request carrying the database engine.\n  identity: Admin principal, recorded as who changed it.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  ValidationError: A label is blank or holds a NUL.\n  NotFoundError: No such host.",
+    "operationId": "change_host_labels_route_api_hosts__name__labels_patch",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/HostLabels"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Change Host Labels Route"
+   }
+  },
+  "/api/hosts/{name}/logout": {
+   "post": {
+    "description": "Disconnect one of the caller's hosts and revoke the keys it logged in with.\n\nDisconnects it as the disconnect route does, then revokes the caller's live keys\na device login made for it (``api_keys.host_id``). A key made another way, or\nbefore keys named their host, is not one: it is revoked in Settings.\n\nArgs:\n  name: The host's name.\n  request: Request carrying the database engine, the hubs and the inbound queue.\n  identity: The host's owner.\n\nReturns:\n  logout: The runs it stopped and how many keys it revoked.\n\nRaises:\n  NotFoundError: The caller owns no such host.",
+    "operationId": "logout_host_route_api_hosts__name__logout_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HostLogout"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Logout Host Route"
+   }
+  },
+  "/api/hosts/{name}/revoke": {
+   "post": {
+    "description": "Take a host out of service; revoking one already revoked is a no-op.\n\nAn admin may revoke any host, and a writer the hosts they own. The host's\ncredential row is kept, so its daemon learns of the revoke by a 410 on its next\nrequest, and the terminals open on it are closed with 4410. An enrollment token not\nyet used is closed too, so a revoke is not undone by a daemon that joins with it.\n\nArgs:\n  name: The host's name.\n  request: Request carrying the database engine.\n  identity: Admin principal, or the host's owner.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such host.\n  HTTPException: 403 when a writer names a host that is not theirs.",
+    "operationId": "revoke_host_route_api_hosts__name__revoke_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Revoke Host Route"
+   }
+  },
+  "/api/hosts/{name}/runs": {
+   "get": {
+    "description": "List the caller's live sessions that name one of their hosts, and its past ones.\n\nArgs:\n  name: The host's name.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The host's owner.\n  past: The most past runs to list.\n\nReturns:\n  runs: Each live session, by CLI, then host name, then session; and ``past``, the\n    last ``past`` that are not live, most recently heard from first.\n\nRaises:\n  NotFoundError: The caller owns no such host.",
+    "operationId": "list_host_runs_route_api_hosts__name__runs_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "past",
+      "required": false,
+      "schema": {
+       "default": 20,
+       "maximum": 100,
+       "minimum": 0,
+       "title": "Past",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HostRuns"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "List Host Runs Route"
+   }
+  },
+  "/api/hosts/{name}/runs/{session_id}/stop": {
+   "post": {
+    "description": "Stop one of the caller's live sessions on one of their hosts.\n\nIts lease ends now, and its next drain is refused, so the run ends within one\ndrain's hold. Its chat stays, and a new run may take it.\n\nArgs:\n  name: The host's name.\n  session_id: The session the run drains.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The host's owner.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: The caller owns no such host, or no live session of theirs on it\n    drains that session.",
+    "operationId": "stop_host_run_route_api_hosts__name__runs__session_id__stop_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "name",
+      "required": true,
+      "schema": {
+       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
+       "title": "Name",
+       "type": "string"
+      }
+     },
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Stop Host Run Route"
+   }
+  },
   "/api/inquiries": {
    "get": {
     "description": "List inquiries across one or more ``kind`` query params.\n\nResults from every requested kind are concatenated, one block per\nDISTINCT kind: a repeated ``kind`` param yields one block, not several.\n``limit`` and\n``offset`` apply per kind, since each kind runs its own query. At\nleast one ``kind`` is required. Each ``seq_range`` param is one\ninclusive ``a..b`` interval; their union selects rows across disjoint\nseq windows in a single query.\n\nEach ``fields`` param names one key every row keeps; the others are left\nout. A key only another kind's rows carry is absent from this kind's. The\nedges are read only when a relation (``narrows``, ``proved_by``, ...) is\nnamed. Without ``fields`` each row is whole.\n\n``ancestors=narrows`` adds ``ancestors`` to each row, after ``fields``: the\nIssues it narrows, theirs, and so on up to the roots, nearest first, each\nas ``{id, kind, seq, title, status, child_ids}``. ``child_ids`` names which\nof the row and its listed ancestors narrow that one, so a row with several\nparents keeps them all. The walk stops 8 levels up and at 200 ancestors\nfor the whole response, nearest first.\n\nA ``filter`` on a record of an ``AgentSession`` (``user_message``, ``tool_call``,\n...) is answered from its transcript, so it meets only the sessions whose\ntranscript the caller reads (its audience, and for a science chat its members); a\nsession the caller does not read is neither found by it nor ruled out by it.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user identity, viewer-role-gated.\n  kind: Inquiry kinds to list; deduplicated before query.\n  status: Optional status filter applied to each kind's query.\n  limit: Rows per kind (validated in [1, MAX_LIST_LIMIT]).\n  offset: Skip this many rows in each kind's result.\n  seq_range: Inclusive seq intervals; union selects rows.\n  filter_: JSON filter expressions; one per repeated param.\n  fields: Row keys to send, one per repeated param; unset sends every key.\n  ancestors: ``narrows`` adds each row's ``narrows`` ancestry; unset adds none.\n\nReturns:\n  out: One JSON object per distinct kind, with inquiries for that kind.",
@@ -16074,596 +16664,6 @@
     "summary": "Set Validation Route"
    }
   },
-  "/api/machines": {
-   "get": {
-    "description": "List every registered machine.\n\nArgs:\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  machines: Every machine, sorted by name in byte order.",
-    "operationId": "list_machines_route_api_machines_get",
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/MachineList"
-        }
-       }
-      },
-      "description": "Successful Response"
-     }
-    },
-    "summary": "List Machines Route"
-   }
-  },
-  "/api/machines/enroll": {
-   "post": {
-    "description": "Register the machine if it is new and issue a one-use enrollment token.\n\nA new token supersedes any open one for the same machine. An admin enrolls a\nmachine that is new, unowned or already theirs, and confirms it; one another person\nowns answers 409 ``machine_owned``, naming the owner. A writer may enroll a machine\nthat is new, which becomes theirs with the role ``personal`` and stays unconfirmed\nuntil they confirm it in the web app, or one that is already theirs.\n\nThe configured assistant may name an ``asker``, a writer or admin it answers. The\nmachine is then the asker's: personal, confirmed, and theirs to open a terminal on,\nand the token joins only for them. The assistant owns nothing it enrolls.\n\nArgs:\n  body: The machine's name, and the asker when the assistant enrolls for one.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n  identity: Writer principal, recorded as who enrolled the machine.\n\nReturns:\n  enrolled: The token, shown once, when it expires, and the machine's owner.\n\nRaises:\n  ValidationError: The name is reserved.\n  MachineOwnedError: An admin names a machine another person owns.\n  HTTPException: 403 when a writer names a machine that is not theirs, or anyone\n    but the assistant names an asker, or the asker is no active writer.",
-    "operationId": "enroll_machine_route_api_machines_enroll_post",
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/EnrollRequest"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "201": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/EnrollResponse"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Enroll Machine Route"
-   }
-  },
-  "/api/machines/join": {
-   "post": {
-    "description": "Exchange an enrollment token for a machine credential.\n\nThe token is the credential, so the route has no other authentication. It is\nvalid once, within 15 minutes, for the machine name it was issued for, and only\nwhile the account that issued it is still an active admin, or owns the machine and\nit is a personal one.\nJoining a machine that already has a live credential revokes that credential first\nand closes the terminals open on it.\n\nArgs:\n  body: The machine name, the token, and the host's instance, version and facts.\n  request: Request carrying the database engine.\n  response: Response, marked ``no-store`` because it carries a secret.\n\nReturns:\n  joined: The machine's id and its credential, shown once.\n\nRaises:\n  HTTPException: 401 when the token is malformed, unknown, used, expired, issued\n    for another machine, or issued by an account that is no longer an active admin.",
-    "operationId": "join_machine_route_api_machines_join_post",
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/JoinRequest"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "201": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/JoinResponse"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Join Machine Route"
-   }
-  },
-  "/api/machines/{machine_id}/heartbeat": {
-   "post": {
-    "description": "Record that the host is alive, and what it reports about itself.\n\nOne host instance holds a machine at a time. Under ``keep`` a different instance\nis refused until the connected one has been silent for 180 seconds, then takes\nover; under ``take`` it takes over at once. ``release`` from the instance that\nholds the machine leaves it held by none, so it reads offline; from any other\ninstance it changes nothing.\n\nArgs:\n  body: The host's instance, version, claim, and facts when they changed.\n  request: Request carrying the database engine.\n  machine: The machine the credential authenticated as.\n\nReturns:\n  beat: The server's clock at the heartbeat, and ``host_outdated`` for a host older\n    than ``MIN_HOST_VERSION`` that can read it.\n\nRaises:\n  AnotherHostConnectedError: Another instance is connected and live.\n  HTTPException: 410 when the credential was revoked after it authenticated.",
-    "operationId": "heartbeat_machine_route_api_machines__machine_id__heartbeat_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "machine_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Machine Id",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/HeartbeatRequest"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HeartbeatResponse"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Heartbeat Machine Route"
-   }
-  },
-  "/api/machines/{machine_id}/terminals/wait": {
-   "get": {
-    "description": "Hold until the machine has a terminal to open, then return it; else ``null``.\n\nThe machine's own credential authenticates, as for a heartbeat. The wait is held at\nmost 25 seconds, and its arrival tells the server that the host serves terminals.\n\nArgs:\n  machine_id: The machine.\n  request: Request carrying the database engine and the terminal hub.\n  instance: The host instance, which must be the machine's current one.\n  wait_sec: How long to hold, clamped to 25 seconds.\n\nReturns:\n  terminal: The next terminal to open, or ``None`` when none came in time.",
-    "operationId": "terminal_wait_route_api_machines__machine_id__terminals_wait_get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "machine_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Machine Id",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "instance",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Instance",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "wait_sec",
-      "required": false,
-      "schema": {
-       "default": 25,
-       "minimum": 0,
-       "title": "Wait Sec",
-       "type": "number"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "anyOf": [
-          {
-           "$ref": "#/components/schemas/TerminalWait"
-          },
-          {
-           "type": "null"
-          }
-         ],
-         "title": "Response Terminal Wait Route Api Machines  Machine Id  Terminals Wait Get"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Terminal Wait Route"
-   }
-  },
-  "/api/machines/{name}": {
-   "delete": {
-    "description": "Unregister a machine; nothing on the machine itself is touched.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.\n  MachineInServiceError: The machine holds a live credential.",
-    "operationId": "delete_machine_route_api_machines__name__delete",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Delete Machine Route"
-   },
-   "get": {
-    "description": "Return one machine, with what its host reported.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Writer-role principal.\n\nReturns:\n  machine: The machine.\n\nRaises:\n  NotFoundError: No such machine.",
-    "operationId": "get_machine_route_api_machines__name__get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/MachineDetail"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Get Machine Route"
-   },
-   "put": {
-    "description": "Register a machine, or change the fields the body names.\n\nA field left out keeps its value, or defaults to empty on a new machine;\nan empty string clears it.\n\nArgs:\n  name: The machine's name.\n  body: The new role and how line, each optional.\n  request: Request carrying the database engine.\n  identity: Admin principal, recorded as who changed it.\n\nReturns:\n  empty: 204 with no body.",
-    "operationId": "put_machine_route_api_machines__name__put",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/MachinePut"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Put Machine Route"
-   }
-  },
-  "/api/machines/{name}/disconnect": {
-   "post": {
-    "description": "Revoke a machine's host and stop every live run of its owner that names it.\n\nThe host learns of it by a 410 on its next request, and its terminals and\ncommands are closed, as a revoke does. The host joins it again with the key the\ncomputer holds, which this leaves untouched.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine, the hubs and the inbound queue.\n  identity: Admin principal, or the machine's owner.\n\nReturns:\n  runs: The runs it stopped.\n\nRaises:\n  NotFoundError: No such machine.\n  HTTPException: 403 when a writer names a machine that is not theirs.",
-    "operationId": "disconnect_machine_route_api_machines__name__disconnect_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/MachineRuns"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Disconnect Machine Route"
-   }
-  },
-  "/api/machines/{name}/labels": {
-   "patch": {
-    "description": "Add labels, then remove labels; each is a no-op when already so.\n\nLabels follow the Issue label rules: stripped, deduplicated, never blank.\n\nArgs:\n  name: The machine's name.\n  body: The labels to add and to remove.\n  request: Request carrying the database engine.\n  identity: Admin principal, recorded as who changed it.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  ValidationError: A label is blank or holds a NUL.\n  NotFoundError: No such machine.",
-    "operationId": "change_machine_labels_route_api_machines__name__labels_patch",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     }
-    ],
-    "requestBody": {
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/MachineLabels"
-       }
-      }
-     },
-     "required": true
-    },
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Change Machine Labels Route"
-   }
-  },
-  "/api/machines/{name}/logout": {
-   "post": {
-    "description": "Disconnect one of the caller's machines and revoke the keys it logged in with.\n\nDisconnects it as the disconnect route does, then revokes the caller's live keys\na device login made for it (``api_keys.machine_id``). A key made another way, or\nbefore keys named their machine, is not one: it is revoked in Settings.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine, the hubs and the inbound queue.\n  identity: The machine's owner.\n\nReturns:\n  logout: The runs it stopped and how many keys it revoked.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
-    "operationId": "logout_machine_route_api_machines__name__logout_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/MachineLogout"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Logout Machine Route"
-   }
-  },
-  "/api/machines/{name}/revoke": {
-   "post": {
-    "description": "Take a machine out of service; revoking one already revoked is a no-op.\n\nAn admin may revoke any machine, and a writer the machines they own. The machine's\ncredential row is kept, so its host learns of the revoke by a 410 on its next\nrequest, and the terminals open on it are closed with 4410. An enrollment token not\nyet used is closed too, so a revoke is not undone by a host that joins with it.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: Admin principal, or the machine's owner.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: No such machine.\n  HTTPException: 403 when a writer names a machine that is not theirs.",
-    "operationId": "revoke_machine_route_api_machines__name__revoke_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Revoke Machine Route"
-   }
-  },
-  "/api/machines/{name}/runs": {
-   "get": {
-    "description": "List the caller's live runs that name one of their machines, and its past ones.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The machine's owner.\n  past: The most past runs to list.\n\nReturns:\n  runs: Each live run, by CLI, then host name, then session; and ``past``, the\n    last ``past`` that are not live, most recently heard from first.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
-    "operationId": "list_machine_runs_route_api_machines__name__runs_get",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "past",
-      "required": false,
-      "schema": {
-       "default": 20,
-       "maximum": 100,
-       "minimum": 0,
-       "title": "Past",
-       "type": "integer"
-      }
-     }
-    ],
-    "responses": {
-     "200": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/MachineRuns"
-        }
-       }
-      },
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "List Machine Runs Route"
-   }
-  },
-  "/api/machines/{name}/runs/{session_id}/stop": {
-   "post": {
-    "description": "Stop one of the caller's live runs on one of their machines.\n\nIts lease ends now, and its next drain is refused, so the run ends within one\ndrain's hold. Its chat stays, and a new run may take it.\n\nArgs:\n  name: The machine's name.\n  session_id: The session the run drains.\n  request: Request carrying the database engine and the inbound queue.\n  identity: The machine's owner.\n\nReturns:\n  empty: 204 with no body.\n\nRaises:\n  NotFoundError: The caller owns no such machine, or no live run of theirs on it\n    drains that session.",
-    "operationId": "stop_machine_run_route_api_machines__name__runs__session_id__stop_post",
-    "parameters": [
-     {
-      "in": "path",
-      "name": "name",
-      "required": true,
-      "schema": {
-       "pattern": "^[a-z0-9][a-z0-9-]{0,62}$",
-       "title": "Name",
-       "type": "string"
-      }
-     },
-     {
-      "in": "path",
-      "name": "session_id",
-      "required": true,
-      "schema": {
-       "format": "uuid",
-       "title": "Session Id",
-       "type": "string"
-      }
-     }
-    ],
-    "responses": {
-     "204": {
-      "description": "Successful Response"
-     },
-     "422": {
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/HTTPValidationError"
-        }
-       }
-      },
-      "description": "Validation Error"
-     }
-    },
-    "summary": "Stop Machine Run Route"
-   }
-  },
   "/api/me/preferences": {
    "patch": {
     "description": "Set some of the caller's preferences, and put others back to their defaults.\n\nThe keys the body leaves out keep their values. The change is one statement, so\ntwo tabs changing different keys at once both keep theirs.\n\nArgs:\n  body: The keys to change: a value sets the key, ``null`` puts it back to its\n    default.\n  request: FastAPI request with a database engine.\n  identity: The account whose preferences change.\n\nReturns:\n  preferences: Every key after the change, defaults filled.\n\nRaises:\n  HTTPException: 422 for a key no preference has or a value its key does not\n    take, and nothing is written; 404 when the caller's user is gone.",
@@ -16709,7 +16709,7 @@
   },
   "/api/me/profile": {
    "get": {
-    "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, the user's\n    preferences (every key, defaults filled), the id of the API key the request\n    used (``None`` for a browser session) and the machine a device login made it\n    for (``None`` for a key made another way), and the audiences the credential\n    reads and opens into, with its pin if any.",
+    "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, the user's\n    preferences (every key, defaults filled), the id of the API key the request\n    used (``None`` for a browser session) and the host a device login made it\n    for (``None`` for a key made another way), and the audiences the credential\n    reads and opens into, with its pin if any.",
     "operationId": "profile_route_api_me_profile_get",
     "responses": {
      "200": {
@@ -17969,7 +17969,7 @@
   },
   "/api/sessions": {
    "get": {
-    "description": "List the caller's sessions active in the last ``days`` days or still open.\n\nEach says whether a run drains it now and on which machine (the run's lease,\nelse where it last ran), when it last took a turn, its goal and first line, the\ncanvas and workspace it sits in, and the Issues it was produced by; the Issues\ncome once each, with the Issues they narrow or were produced by. A session the\ncaller does not read is left out.\n\nArgs:\n  request: Request carrying the database engine and the poller leases.\n  identity: The caller, whose account the sessions carry.\n  days: How far back the last activity may be.\n  limit: The most sessions to list, newest activity first.\n\nReturns:\n  listed: The sessions and their Issues, and whether more matched.",
+    "description": "List the caller's sessions active in the last ``days`` days or still open.\n\nEach says whether a run drains it now and on which host (the run's lease,\nelse where it last ran), when it last took a turn, its goal and first line, the\ncanvas and workspace it sits in, and the Issues it was produced by; the Issues\ncome once each, with the Issues they narrow or were produced by. A session the\ncaller does not read is left out.\n\nArgs:\n  request: Request carrying the database engine and the poller leases.\n  identity: The caller, whose account the sessions carry.\n  days: How far back the last activity may be.\n  limit: The most sessions to list, newest activity first.\n\nReturns:\n  listed: The sessions and their Issues, and whether more matched.",
     "operationId": "list_sessions_route_api_sessions_get",
     "parameters": [
      {
@@ -18165,7 +18165,7 @@
   },
   "/api/sessions/{session_id}/inbound": {
    "get": {
-    "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's run to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or is\nits account and reads it: a drain takes the lines its run was sent.\n\nA science chat and the assistant's service session are drained by their opening\nkey alone (403 otherwise), save a chat a CLI began that its starter's canvas switched\nto the assistant, which the assistant drains. Viewer access is scoped to the opening\nAPI key so reading chat does not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's canvas names,\nand one live run. For ``claude`` or ``codex`` a drain by the configured assistant's\nkey is 409 ``provider_is_cli``, and the run that drains it may be under any key a\nchat takes a run from (its opening key or its starter's; 403 otherwise). For\n``assistant`` a drain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the canvas switches.\n\nA chat answered by a CLI is drained by a run that names its ``cli``: a drain that\nnames none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and\ntakes no lease, since the server cannot tell which CLI polls. A drain by the other\nCLI than the canvas's is 409 ``provider_is_other_cli``. The lease records the\nnamed CLI, and the chat is live for a provider only while a poller that named it\nholds the lease. ``instance`` is an id the run minted for itself; a drain whose\n``instance`` differs from that of the unexpired lease of the same CLI is 409\n``chat_run_live``, so one chat never has two runs draining it. So is a drain by\na run the server replaced when it reattached the chat (``POST .../reattach``).\n\nA drain of a CLI chat's session that has ended, as when the person closed the chat,\nis 409 ``session_ended`` and the run stops; a session the reaper closed for silence\nis reopened by the drain instead.\n\n``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\n``runs`` says the run takes ``run`` messages, the commands a chat's starter clicks\nRun on; a chat queues one only while such a run holds the lease, since an older run\nwould fail to read the drain that carries it and lose every message in it.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The name of the detached run, which an attach takes; absent for a run in\n    a terminal of its own.\n  machine: The run's machine, as the machine host names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n  cli: The CLI the draining run is, as the run names it: a lowercase word of\n    at most 32 characters.\n  instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of\n    its drains.\n  runs: Whether the run takes ``run`` messages.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
+    "description": "Drain all pending inbound messages for a session (oldest first).\n\nRead by the session's run to inject queued messages into the CLI.\nA viewer key may drain only the session it opened. Unknown session -> 404.\n\n``wait_sec`` holds the request open until a message arrives, so the caller\nwaits instead of asking repeatedly: one held request per session rather\nthan one round trip per interval, and delivery on arrival rather than up\nto an interval late. Zero (the default) returns whatever is pending now,\npreserving the original contract for any caller that does not want to\nblock. The ceiling keeps a held request shorter than the idle timeout of\na proxy that would otherwise cut it. Ending the session ends the hold, so\nthe run that ends it as it exits is not kept waiting on its own poller.\n\nThe drain is 403 ``session_audience`` unless the caller opened the session or is\nits account and reads it: a drain takes the lines its run was sent.\n\nA science chat and the assistant's service session are drained by their opening\nkey alone (403 otherwise), save a chat a CLI began that its starter's canvas switched\nto the assistant, which the assistant drains. Viewer access is scoped to the opening\nAPI key so reading chat does not grant graph-write permission.\n\nA science chat's queue has one drainer, the provider its starter's canvas names,\nand one live session. For ``claude`` or ``codex`` a drain by the configured assistant's\nkey is 409 ``provider_is_cli``, and the run that drains it may be under any key a\nchat takes a run from (its opening key or its starter's; 403 otherwise). For\n``assistant`` a drain by its opening key that is not the assistant's is 409\n``provider_is_assistant``. Either holds from the moment the canvas switches.\n\nA chat answered by a CLI is drained by a run that names its ``cli``: a drain that\nnames none, as a ``trax`` older than the name sends, is 426 ``cli_required`` and\ntakes no lease, since the server cannot tell which CLI polls. A drain by the other\nCLI than the canvas's is 409 ``provider_is_other_cli``. The lease records the\nnamed CLI, and the chat is live for a provider only while a poller that named it\nholds the lease. ``instance`` is an id the run minted for itself; a drain whose\n``instance`` differs from that of the unexpired lease of the same CLI is 409\n``chat_run_live``, so one chat never has two runs draining it. So is a drain by\na run the server replaced when it reattached the chat (``POST .../reattach``).\n\nA drain of a CLI chat's session that has ended, as when the person closed the chat,\nis 409 ``session_ended`` and the run stops; a session the reaper closed for silence\nis reopened by the drain instead.\n\n``run``, ``host`` and ``cwd`` say where the draining run is, and the lease the\ndrain takes keeps them for Chat to show (a malformed one is 422). They are the\ncaller's own word about its own run, shown and never trusted; a run that names\nnone is shown as it was before runs named themselves.\n\n``runs`` says the run takes ``run`` messages, the commands a chat's starter clicks\nRun on; a chat queues one only while such a run holds the lease, since an older run\nwould fail to read the drain that carries it and lose every message in it.\n\nArgs:\n  session_id: UUID of the session to drain messages from.\n  request: Starlette request object.\n  identity: Authenticated reader and, for viewers, the opening key.\n  wait_sec: Seconds to hold the request open for a message to arrive\n    (clamped to [0, 30]; 0 returns queued messages immediately).\n  run: The name of the detached run, which an attach takes; absent for a run in\n    a terminal of its own.\n  host: The run's host, as the daemon names it.\n  cwd: The run's working directory, ``~/...`` under its home: at most 1,024\n    characters, none of them a control character.\n  cli: The CLI the draining run is, as the run names it: a lowercase word of\n    at most 32 characters.\n  instance: The run's own id, 32 lowercase hexadecimal digits, the same on each of\n    its drains.\n  runs: Whether the run takes ``run`` messages.\n\nReturns:\n  response: DrainInboundResponse with list of pending messages (text, kind,\n    payload, source, room), oldest first, or empty list if none are queued.",
     "operationId": "session_inbound_drain_route_api_sessions__session_id__inbound_get",
     "parameters": [
      {
@@ -18207,7 +18207,7 @@
      },
      {
       "in": "query",
-      "name": "machine",
+      "name": "host",
       "required": false,
       "schema": {
        "anyOf": [
@@ -18219,7 +18219,7 @@
          "type": "null"
         }
        ],
-       "title": "Machine"
+       "title": "Host"
       }
      },
      {
@@ -18800,7 +18800,7 @@
   },
   "/api/terminals": {
    "post": {
-    "description": "Open a terminal on one of the caller's machines.\n\nA browser session opens the owner's terminal. The configured assistant may open\nonly a detached campaign run for an attested writer or admin named as ``asker``;\nevery other key, service account or foreign origin is refused. The machine must\nbe online and its host must have asked for terminals within 45 seconds\n(the machine host does by default). Attach with the ticket within 30 seconds.\n\nArgs:\n  body: The machine, the terminal's size, and the canvas it opens from.\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner.\n  asker: The person the configured assistant starts a campaign for.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for an untrusted key, a service account or a foreign origin;\n    404 for no such machine of the asker, or another user's canvas; 409 ``terminal_unconfirmed`` until the\n    owner confirms a machine a key enrolled, ``cli_not_installed`` when the machine's\n    facts do not list the CLI asked for, ``files_not_enabled`` for a ``files``\n    terminal when they do not say ``files``, ``terminal_not_enabled`` when the host\n    is not asking, ``chat_run_live`` when a run is already attached to the ``attach``\n    session, whether opened here or started by hand; 429 ``terminal_limit`` past 10\n    opens a minute. Every terminal route answers 403 on a server with authentication\n    off.",
+    "description": "Open a terminal on one of the caller's hosts.\n\nA browser session opens the owner's terminal. The configured assistant may open\nonly a detached campaign run for an attested writer or admin named as ``asker``;\nevery other key, service account or foreign origin is refused. The host must\nbe online and its daemon must have asked for terminals within 45 seconds\n(the daemon does by default). Attach with the ticket within 30 seconds.\n\nArgs:\n  body: The host, the terminal's size, and the canvas it opens from.\n  request: Request carrying the store and the terminal relay.\n  identity: The signed-in owner.\n  asker: The person the configured assistant starts a campaign for.\n\nReturns:\n  opened: The terminal id and the one-use attach ticket.\n\nRaises:\n  HTTPException: 403 for an untrusted key, a service account or a foreign origin;\n    404 for no such host of the asker, or another user's canvas; 409 ``terminal_unconfirmed`` until the\n    owner confirms a host a key enrolled, ``cli_not_installed`` when the host's\n    facts do not list the CLI asked for, ``files_not_enabled`` for a ``files``\n    terminal when they do not say ``files``, ``terminal_not_enabled`` when the daemon\n    is not asking, ``chat_run_live`` when a run is already attached to the ``attach``\n    session, whether opened here or started by hand; 429 ``terminal_limit`` past 10\n    opens a minute. Every terminal route answers 403 on a server with authentication\n    off.",
     "operationId": "open_terminal_route_api_terminals_post",
     "parameters": [
      {
@@ -18855,10 +18855,10 @@
     "summary": "Open Terminal Route"
    }
   },
-  "/api/terminals/machines": {
+  "/api/terminals/hosts": {
    "get": {
-    "description": "List the caller's own machines, and their live terminals for a canvas.\n\nThe configured assistant names the person it answers as ``owner`` and lists that\nperson's machines, so it offers a terminal only on one they have. It opens none:\nonly the person's own browser does.\n\nArgs:\n  request: Request carrying the store and the terminal hub.\n  identity: The signed-in owner, or the assistant's agent key.\n  canvas: The canvas whose live terminals to list.\n  owner: The person the assistant lists for, a writer or admin; only the\n    assistant may name one.\n\nReturns:\n  machines: The owner's machines, newest first, each with whether it can take a\n    terminal now; and ``terminals``, the owner's live terminals opened from\n    ``canvas``.\n\nRaises:\n  HTTPException: 403 ``terminal_forbidden`` for a key, a service account, anyone\n    but the assistant naming an ``owner``, and an owner who is not a writer.",
-    "operationId": "list_terminal_machines_route_api_terminals_machines_get",
+    "description": "List the caller's own hosts, and their live terminals for a canvas.\n\nThe configured assistant names the person it answers as ``owner`` and lists that\nperson's hosts, so it offers a terminal only on one they have. It opens none:\nonly the person's own browser does.\n\nArgs:\n  request: Request carrying the store and the terminal relay.\n  identity: The signed-in owner, or the assistant's agent key.\n  canvas: The canvas whose live terminals to list.\n  owner: The person the assistant lists for, a writer or admin; only the\n    assistant may name one.\n\nReturns:\n  hosts: The owner's hosts, newest first, each with whether it can take a\n    terminal now; and ``terminals``, the owner's live terminals opened from\n    ``canvas``.\n\nRaises:\n  HTTPException: 403 ``terminal_forbidden`` for a key, a service account, anyone\n    but the assistant naming an ``owner``, and an owner who is not a writer.",
+    "operationId": "list_terminal_hosts_route_api_terminals_hosts_get",
     "parameters": [
      {
       "in": "query",
@@ -18899,7 +18899,7 @@
       "content": {
        "application/json": {
         "schema": {
-         "$ref": "#/components/schemas/TerminalMachines"
+         "$ref": "#/components/schemas/TerminalHosts"
         }
        }
       },
@@ -18916,13 +18916,13 @@
       "description": "Validation Error"
      }
     },
-    "summary": "List Terminal Machines Route"
+    "summary": "List Terminal Hosts Route"
    }
   },
-  "/api/terminals/machines/{name}/confirm": {
+  "/api/terminals/hosts/{name}/confirm": {
    "post": {
-    "description": "Confirm a machine the caller owns, so terminals may open on it.\n\nA machine enrolled with an API key is unconfirmed: an agent could have enrolled a\nhost the person does not control. Only the person, in a browser session, confirms.\n\nArgs:\n  name: The machine's name.\n  request: Request carrying the database engine.\n  identity: The signed-in owner.\n\nRaises:\n  NotFoundError: The caller owns no such machine.",
-    "operationId": "confirm_terminal_machine_route_api_terminals_machines__name__confirm_post",
+    "description": "Confirm a host the caller owns, so terminals may open on it.\n\nA host enrolled with an API key is unconfirmed: an agent could have enrolled a\nhost the person does not control. Only the person, in a browser session, confirms.\n\nArgs:\n  name: The host's name.\n  request: Request carrying the database engine.\n  identity: The signed-in owner.\n\nRaises:\n  NotFoundError: The caller owns no such host.",
+    "operationId": "confirm_terminal_host_route_api_terminals_hosts__name__confirm_post",
     "parameters": [
      {
       "in": "path",
@@ -18950,12 +18950,12 @@
       "description": "Validation Error"
      }
     },
-    "summary": "Confirm Terminal Machine Route"
+    "summary": "Confirm Terminal Host Route"
    }
   },
   "/api/terminals/{terminal_id}/attach": {
    "post": {
-    "description": "Mint a one-use ticket to attach again to the caller's live terminal.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal hub.\n  identity: The signed-in opener.\n\nReturns:\n  ticket: Valid for 30 seconds, once.",
+    "description": "Mint a one-use ticket to attach again to the caller's live terminal.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal relay.\n  identity: The signed-in opener.\n\nReturns:\n  ticket: Valid for 30 seconds, once.",
     "operationId": "attach_terminal_route_api_terminals__terminal_id__attach_post",
     "parameters": [
      {
@@ -18996,7 +18996,7 @@
   },
   "/api/terminals/{terminal_id}/close": {
    "post": {
-    "description": "Stop the caller's terminal; its shell is killed.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal hub.\n  identity: The signed-in opener.",
+    "description": "Stop the caller's terminal; its shell is killed.\n\nArgs:\n  terminal_id: The terminal.\n  request: Request carrying the terminal relay.\n  identity: The signed-in opener.",
     "operationId": "close_terminal_route_api_terminals__terminal_id__close_post",
     "parameters": [
      {

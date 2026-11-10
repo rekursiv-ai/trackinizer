@@ -123,13 +123,13 @@ def test_a_timeout_reports_the_exit_code_timeout_gives() -> None:
     assert wire_exec.TIMEOUT_EXIT_CODE == 124
 
 
-# A published machine host allows any newer version of this package and reads these as
+# A published daemon allows any newer version of this package and reads these as
 # it starts, so a name gone from here crashes a host that upgraded only this package.
 @pytest.mark.parametrize(
     "name",
     [
-        "MACHINE_EXEC_RESULT_PATH",
-        "MACHINE_EXEC_WAIT_PATH",
+        "HOST_EXEC_RESULT_PATH",
+        "HOST_EXEC_WAIT_PATH",
         "MAX_ENV_VARS",
         "MAX_STREAM_BYTES",
         "TIMEOUT_EXIT_CODE",

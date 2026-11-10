@@ -117,7 +117,7 @@ def server_dir(url: str) -> str:
     """Return the directory name of the server at ``url``: its host, and port if set.
 
     A credential belongs to the server that issued it: the same name on another
-    server is another machine, which would refuse it. Results of a GPU job are kept
+    server is another host, which would refuse it. Results of a GPU job are kept
     the same way.
 
     Args:

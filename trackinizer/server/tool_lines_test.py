@@ -1,4 +1,4 @@
-"""``ToolLines`` reads, gates and describes each line an agent sends a machine."""
+"""``ToolLines`` reads, gates and describes each line an agent sends a host."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def _call(**fields: object) -> bytes:
 def _fresh(gate: Authorize = authorize) -> ToolLines:
     return ToolLines(
         asker="me@x",
-        machine="m1",
+        host="m1",
         authorize=gate,
         line_bytes=_CAP,
     )
@@ -51,7 +51,7 @@ def _fresh(gate: Authorize = authorize) -> ToolLines:
 def _lines(gate: Authorize = authorize) -> ToolLines:
     lines = _fresh(gate)
     routed, calls = lines.feed(_HELLO)
-    assert routed.to_host == _HELLO
+    assert routed.to_daemon == _HELLO
     assert not calls
     return lines
 
@@ -60,7 +60,11 @@ def _deny(call: GatedCall) -> Verdict:
     return Verdict(outcome="deny", reason=f"no {call.tool}")
 
 
-def _ends_the_pipe(lines: ToolLines, raw: bytes, match: str | None = None) -> None:
+def _ends_the_connection(
+    lines: ToolLines,
+    raw: bytes,
+    match: str | None = None,
+) -> None:
     """Feed ``raw`` after a clean call: nothing of the frame passes, nor anything later."""
     with pytest.raises(ValueError, match=match):
         lines.feed(_call(id="ok") + raw)
@@ -77,14 +81,14 @@ def test_a_call_is_described_and_forwarded() -> None:
             asker="me@x",
             agent="a",
             session="s1",
-            machine="m1",
+            host="m1",
             call_id="c1",
             tool="Bash",
             argument_bytes=len(shown),
             outcome="allow",
         ),
     ]
-    assert routed == Routed(to_host=_call())
+    assert routed == Routed(to_daemon=_call())
     assert authorize(calls[0]) == Verdict(outcome="allow")
 
 
@@ -105,7 +109,7 @@ def test_a_future_verdict_other_than_allow_is_not_forwarded() -> None:
     assert [call.outcome for call in calls] == ["deny"]
 
 
-def test_a_call_before_hello_ends_the_pipe() -> None:
+def test_a_call_before_hello_ends_the_connection() -> None:
     with pytest.raises(ValueError, match="follows a Hello"):
         _fresh().feed(_call())
 
@@ -132,7 +136,7 @@ def test_the_session_is_not_read_beyond_being_a_string() -> None:
         "x": 1,
     }
     routed, _ = lines.feed((json.dumps(hello) + "\n").encode())
-    assert json.loads(routed.to_host) == hello
+    assert json.loads(routed.to_daemon) == hello
     _, calls = lines.feed(_call())
     assert [call.session for call in calls] == ["../not a session"]
 
@@ -152,17 +156,17 @@ def test_the_session_is_not_read_beyond_being_a_string() -> None:
         {"arguments": None},
     ],
 )
-def test_a_call_whose_logged_fields_are_not_their_type_ends_the_pipe(
+def test_a_call_whose_logged_fields_are_not_their_type_ends_the_connection(
     fields: dict[str, object],
 ) -> None:
-    _ends_the_pipe(_lines(), _call(**fields), match="Call")
+    _ends_the_connection(_lines(), _call(**fields), match="Call")
 
 
-def test_a_call_missing_a_logged_field_ends_the_pipe() -> None:
+def test_a_call_missing_a_logged_field_ends_the_connection() -> None:
     for key in ("id", "agent", "tool", "arguments"):
         line = cast(dict[str, object], json.loads(_call()))
         del line[key]
-        _ends_the_pipe(_lines(), (json.dumps(line) + "\n").encode(), match="Call")
+        _ends_the_connection(_lines(), (json.dumps(line) + "\n").encode(), match="Call")
 
 
 @pytest.mark.parametrize(
@@ -183,7 +187,7 @@ def test_what_the_relay_does_not_read_is_forwarded_as_parsed(
 ) -> None:
     routed, calls = _lines().feed(_call(**fields))
     assert len(calls) == 1
-    assert routed == Routed(to_host=_call(**fields))
+    assert routed == Routed(to_daemon=_call(**fields))
 
 
 def test_a_line_split_across_frames_is_one_call() -> None:
@@ -194,7 +198,7 @@ def test_a_line_split_across_frames_is_one_call() -> None:
     routed, calls = lines.feed(line[20:-1])
     assert (routed, calls) == (Routed(), [])
     routed, calls = lines.feed(line[-1:])
-    assert routed.to_host == line
+    assert routed.to_daemon == line
     assert len(calls) == 1
 
 
@@ -205,7 +209,7 @@ def test_a_split_multibyte_character_is_read_whole() -> None:
     lines.feed(line[:cut])
     routed, calls = lines.feed(line[cut:])
     assert [call.tool for call in calls] == ["Bäsh"]
-    assert routed.to_host == line.replace("ä".encode(), b"\\u00e4")
+    assert routed.to_daemon == line.replace("ä".encode(), b"\\u00e4")
 
 
 def test_two_lines_in_one_frame_are_two_calls() -> None:
@@ -214,7 +218,9 @@ def test_two_lines_in_one_frame_are_two_calls() -> None:
         _call(id="1") + b'{"py/object": "Ping"}\n' + _call(id="2"),
     )
     assert [call.tool for call in calls] == ["Bash", "Bash"]
-    assert routed.to_host == _call(id="1") + b'{"py/object": "Ping"}\n' + _call(id="2")
+    assert routed.to_daemon == _call(id="1") + b'{"py/object": "Ping"}\n' + _call(
+        id="2",
+    )
 
 
 def test_a_duplicate_tool_key_is_forwarded_as_the_key_logged() -> None:
@@ -224,9 +230,9 @@ def test_a_duplicate_tool_key_is_forwarded_as_the_key_logged() -> None:
         b' "tool": "Read", "tool": "Bash", "arguments": {}}\n'
     )
     routed, calls = lines.feed(raw)
-    forwarded = cast(dict[str, object], json.loads(routed.to_host))
+    forwarded = cast(dict[str, object], json.loads(routed.to_daemon))
     assert [call.tool for call in calls] == [forwarded["tool"]] == ["Bash"]
-    assert routed.to_host.count(b'"tool"') == 1
+    assert routed.to_daemon.count(b'"tool"') == 1
 
 
 def test_a_duplicate_kind_key_is_forwarded_as_the_kind_judged() -> None:
@@ -240,7 +246,7 @@ def test_a_duplicate_kind_key_is_forwarded_as_the_kind_judged() -> None:
     )
     raw = b'{"py/object": "Note", "py/object": "Ping"}\n'
     routed, _ = lines.feed(raw)
-    assert routed.to_host == b'{"py/object": "Ping"}\n'
+    assert routed.to_daemon == b'{"py/object": "Ping"}\n'
 
 
 def test_an_escaped_key_is_the_key_it_spells() -> None:
@@ -251,8 +257,8 @@ def test_an_escaped_key_is_the_key_it_spells() -> None:
     )
     routed, calls = lines.feed(raw)
     assert [call.tool for call in calls] == ["Bash"]
-    assert cast(dict[str, object], json.loads(routed.to_host))["tool"] == "Bash"
-    assert b"\\u0074" not in routed.to_host
+    assert cast(dict[str, object], json.loads(routed.to_daemon))["tool"] == "Bash"
+    assert b"\\u0074" not in routed.to_daemon
 
 
 @pytest.mark.parametrize("kind", ["Note", "Peers", "DaemonControl", "Pause", "Tools"])
@@ -263,7 +269,7 @@ def test_a_kind_not_offered_never_reaches_the_host(kind: str) -> None:
     )
     assert calls == []
     assert routed.to_agent == refused_line("x1", f"{kind} is not offered.")
-    assert routed.to_host == b""
+    assert routed.to_daemon == b""
 
 
 @pytest.mark.parametrize(
@@ -288,7 +294,7 @@ def test_a_kind_not_offered_never_reaches_the_host(kind: str) -> None:
 def test_a_kind_not_offered_and_without_an_id_is_dropped(raw: bytes) -> None:
     lines = _lines()
     assert lines.feed(raw) == (Routed(dropped=(len(raw) - 1,)), [])
-    assert lines.feed(_call())[0] == Routed(to_host=_call())
+    assert lines.feed(_call())[0] == Routed(to_daemon=_call())
 
 
 def test_a_line_without_a_kind_is_answered_by_its_id() -> None:
@@ -307,7 +313,7 @@ def test_each_line_dropped_in_a_frame_is_sized_and_the_rest_go_on() -> None:
     note = b'{"py/object": "Note", "id": "n1"}'
     routed, calls = _lines().feed(peers + b"\n" + _call() + note + b"\n")
     assert routed.dropped == (len(peers), len(note))
-    assert routed.to_host == _call()
+    assert routed.to_daemon == _call()
     assert [call.call_id for call in calls] == ["c1"]
 
 
@@ -325,7 +331,7 @@ def test_each_line_dropped_in_a_frame_is_sized_and_the_rest_go_on() -> None:
 def test_the_other_kinds_are_forwarded_unlogged(line: dict[str, object]) -> None:
     raw = (json.dumps(line) + "\n").encode()
     acks = ("c1",) if line == {"py/object": "Ack", "id": "c1"} else ()
-    assert _lines().feed(raw) == (Routed(to_host=raw, acks=acks), [])
+    assert _lines().feed(raw) == (Routed(to_daemon=raw, acks=acks), [])
 
 
 def _padded(size: int) -> bytes:
@@ -341,11 +347,15 @@ def test_a_line_at_the_cap_is_read() -> None:
     assert routed.to_agent == b""
 
 
-def test_a_line_one_byte_over_the_cap_ends_the_pipe() -> None:
-    _ends_the_pipe(_lines(), _padded(_CAP + 1) + b"\n", match=f"over {_CAP} bytes")
+def test_a_line_one_byte_over_the_cap_ends_the_connection() -> None:
+    _ends_the_connection(
+        _lines(),
+        _padded(_CAP + 1) + b"\n",
+        match=f"over {_CAP} bytes",
+    )
 
 
-def test_a_line_over_the_cap_ends_the_pipe_before_its_newline() -> None:
+def test_a_line_over_the_cap_ends_the_connection_before_its_newline() -> None:
     lines = _lines()
     big = _padded(_CAP + 5000)
     assert lines.feed(big[: _CAP // 2]) == (Routed(), [])
@@ -384,20 +394,20 @@ def test_a_line_over_the_cap_ends_the_pipe_before_its_newline() -> None:
         "deeply-nested",
     ],
 )
-def test_unreadable_input_ends_the_pipe_and_forwards_nothing(raw: bytes) -> None:
-    _ends_the_pipe(_lines(), raw)
+def test_unreadable_input_ends_the_connection_and_forwards_nothing(raw: bytes) -> None:
+    _ends_the_connection(_lines(), raw)
 
 
 @pytest.mark.parametrize("number", [b"NaN", b"1e999", b"[-Infinity]"])
-def test_a_number_json_lacks_in_arguments_ends_the_pipe(number: bytes) -> None:
-    _ends_the_pipe(_lines(), _call().replace(b'"ls"', number))
+def test_a_number_json_lacks_in_arguments_ends_the_connection(number: bytes) -> None:
+    _ends_the_connection(_lines(), _call().replace(b'"ls"', number))
 
 
 # Where ``json`` gives out depends on the platform's stack, so every depth either side of
-# it is tried, as one object and inside a call's arguments: each is read or ends the pipe.
+# it is tried, as one object and inside a call's arguments: each is read or ends the tool connection.
 @pytest.mark.parametrize("depth", [500, 900, 990, 1000, 1010, 1100, 5000, 100_000])
 @pytest.mark.parametrize("where", ["line", "arguments", "kind"])
-def test_a_line_nested_any_depth_is_read_or_ends_the_pipe(
+def test_a_line_nested_any_depth_is_read_or_ends_the_connection(
     depth: int,
     where: str,
 ) -> None:
@@ -414,11 +424,11 @@ def test_a_line_nested_any_depth_is_read_or_ends_the_pipe(
         with pytest.raises(ValueError, match="spent"):
             lines.feed(_call())
     else:
-        assert routed.to_host or routed.to_agent
+        assert routed.to_daemon or routed.to_agent
 
 
 @pytest.mark.parametrize("dumps", ["loads", "dumps"])
-def test_a_line_nested_past_the_stack_ends_the_pipe(
+def test_a_line_nested_past_the_stack_ends_the_connection(
     monkeypatch: pytest.MonkeyPatch,
     dumps: str,
 ) -> None:
@@ -442,14 +452,14 @@ def test_a_paired_surrogate_is_text() -> None:
         _call(tool="😀".encode("utf-16", "surrogatepass").decode("utf-16")),
     )
     assert [call.tool for call in calls] == ["\U0001f600"]
-    assert cast(dict[str, object], json.loads(routed.to_host))["tool"] == "\U0001f600"
+    assert cast(dict[str, object], json.loads(routed.to_daemon))["tool"] == "\U0001f600"
 
 
 def test_a_surrogate_in_arguments_is_forwarded_and_sized() -> None:
     routed, calls = _lines().feed(_call(arguments={"a": "\ud800"}))
     shown = json.dumps({"a": "\ud800"}, sort_keys=True).encode()
     assert calls[0].argument_bytes == len(shown)
-    assert routed.to_host == _call(arguments={"a": "\ud800"})
+    assert routed.to_daemon == _call(arguments={"a": "\ud800"})
 
 
 def test_the_wire_form_of_arguments_is_what_is_sized() -> None:
@@ -457,7 +467,7 @@ def test_the_wire_form_of_arguments_is_what_is_sized() -> None:
     routed, calls = _lines().feed(_call(arguments=arguments))
     shown = json.dumps(arguments, sort_keys=True).encode()
     assert calls[0].argument_bytes == len(shown)
-    assert routed.to_host == _call(arguments=arguments)
+    assert routed.to_daemon == _call(arguments=arguments)
 
 
 def test_the_size_is_over_sorted_arguments() -> None:

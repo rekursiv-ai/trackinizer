@@ -82,8 +82,8 @@ class PollerRun:
     """The detached host's name, which an attach takes; ``None`` for a run in
     a terminal of its own."""
 
-    machine: str | None = None
-    """The run's machine, named as the machine host names it."""
+    host: str | None = None
+    """The run's host, named as the daemon names it."""
 
     cwd: str | None = None
     """The run's working directory, ``~/...`` under its home directory."""
@@ -125,7 +125,7 @@ class _Lease:
     where: PollerRun
 
     account: str | None = None
-    """Whose key drained, as the server attested it: the machine a run names is the
+    """Whose key drained, as the server attested it: the host a run names is the
     run's own word, so its owner's list holds only the runs of the owner's account."""
 
 
@@ -261,7 +261,7 @@ class InboundQueue:
         session_id: UUID,
         *,
         run: str | None = None,
-        machine: str | None = None,
+        host: str | None = None,
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
@@ -277,7 +277,7 @@ class InboundQueue:
         Args:
           session_id: Session whose inbound poll was authorized.
           run: The detached host's name, if the run is one.
-          machine: The run's machine.
+          host: The run's host.
           cwd: The run's working directory.
           cli: The CLI the run is.
           instance: The run's own id.
@@ -291,7 +291,7 @@ class InboundQueue:
             held = self._live(session_id)
             where = PollerRun(
                 run=run,
-                machine=machine,
+                host=host,
                 cwd=cwd,
                 cli=cli,
                 instance=instance,
@@ -305,7 +305,7 @@ class InboundQueue:
                 where=where,
                 account=account,
             )
-            if run is not None or machine is not None or cwd is not None:
+            if run is not None or host is not None or cwd is not None:
                 self._places[session_id] = where
                 self._places.move_to_end(session_id)
                 while len(self._places) > self.max_places:
@@ -378,7 +378,7 @@ class InboundQueue:
           session_id: Session to check.
 
         Returns:
-          where: What the last poll that named a machine, a folder or a host said;
+          where: What the last poll that named a host, a folder or a host said;
             ``None`` when no run of the session ever did, or since a restart.
 
         """
@@ -486,7 +486,7 @@ class InboundQueue:
     ) -> bool:
         """Say whether another run of ``cli`` holds this session's lease.
 
-        A chat has one live run at a time, so a drain by a run other than the one
+        A chat has one agent process at a time, so a drain by a run other than the one
         whose lease is unexpired must be refused. A lease that names no run, or
         another CLI (a run the chat no longer takes lines from), holds no one off.
         A run the server replaced (:meth:`retire_run`) is held off too, whatever
@@ -545,12 +545,12 @@ class InboundQueue:
                     _ = self._retired.popitem(last=False)
             self._revoke(session_id)
 
-    def runs_on(self, machine: str, *, account: str) -> dict[UUID, PollerRun]:
-        """Return the live runs of a CLI that name ``machine``, polled by ``account``.
+    def runs_on(self, host: str, *, account: str) -> dict[UUID, PollerRun]:
+        """Return the live sessions of a CLI that name ``host``, polled by ``account``.
 
         Args:
-          machine: The machine's name, as the runs name it.
-          account: The email of the machine's owner, matched in any case.
+          host: The host's name, as the runs name it.
+          account: The email of the host's owner, matched in any case.
 
         Returns:
           runs: Each run's session and what its last poll said of it.
@@ -562,7 +562,7 @@ class InboundQueue:
                 session_id: lease.where
                 for session_id, lease in self._leases.items()
                 if lease.where.cli is not None
-                and lease.where.machine == machine
+                and lease.where.host == host
                 and lease.account is not None
                 and lease.account.lower() == account.lower()
             }
@@ -570,7 +570,7 @@ class InboundQueue:
     # Unlike a replaced run, which only a chat's next run holds off, a stopped run is
     # refused on every session, so the drain checks it before the session's kind.
     def stop_run(self, session_id: UUID) -> None:
-        """Stop a session's live run: revoke its lease and refuse its drains for good.
+        """Stop a session's agent process: revoke its lease and refuse its drains for good.
 
         Args:
           session_id: The session whose run its owner stopped.

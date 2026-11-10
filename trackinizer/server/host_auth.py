@@ -1,14 +1,14 @@
-"""Machine credentials: minting, parsing, and the dependency host routes use.
+"""Host credentials: minting, parsing, and the dependency host routes use.
 
-A host holds one machine credential, ``trax_machine_<32 hex id>_<43 char secret>``,
+A host holds one host credential, ``trax_machine_<32 hex id>_<43 char secret>``,
 and an admin hands it a one-use enrollment token, ``enr_<32 hex id>_<43 char
 secret>``, to get it. The id names the row and the secret is 256 random bits, of
 which only a SHA-256 digest is stored. A digest of that much entropy cannot be
 brute-forced, so unlike an API key there is no scrypt step and no verified-bearer
 cache: a lookup is one indexed read, and a revoke applies on the next request.
 
-:func:`current_machine` is separate from :func:`auth.require_role` and shares no
-state with it. A machine credential never authenticates a user route (``auth``
+:func:`current_host` is separate from :func:`auth.require_role` and shares no
+state with it. A host credential never authenticates a user route (``auth``
 answers 401 before any lookup), and an API key never authenticates a host route.
 """
 
@@ -28,7 +28,7 @@ from treekle import from_plain
 from trackinizer.server import auth
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.types.errors import NotFoundError
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
@@ -41,24 +41,24 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "MachineIdentity",
+    "HostIdentity",
     "MintedSecret",
     "ParsedSecret",
-    "current_machine",
-    "machine_revoked",
+    "current_host",
+    "host_revoked",
     "mint_secret",
     "parse_credential",
     "parse_enrollment",
-    "request_machine",
+    "request_host",
     "should_bump_last_used",
 ]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class MachineIdentity:
-    """The machine a request's credential belongs to."""
+class HostIdentity:
+    """The host a request's credential belongs to."""
 
-    machine_id: UUID
+    host_id: UUID
     name: str
     credential_id: UUID
 
@@ -81,7 +81,7 @@ class ParsedSecret:
 
 
 # At most this many credential ids are tracked for the ``last_used`` throttle; one
-# live credential exists per machine, so the cap only bounds a long-lived process.
+# live credential exists per host, so the cap only bounds a long-lived process.
 _BUMPED_MAX_ENTRIES: Final = 1_024
 
 _CREDENTIAL: Final = re.compile(
@@ -112,7 +112,7 @@ def mint_secret(prefix: str) -> MintedSecret:
 
 
 def parse_credential(text: str) -> ParsedSecret | None:
-    """Parse a machine credential; ``None`` when it has any other shape."""
+    """Parse a host credential; ``None`` when it has any other shape."""
     return _parse(_CREDENTIAL, text)
 
 
@@ -150,32 +150,32 @@ def should_bump_last_used(
     return True
 
 
-async def current_machine(request: Request, machine_id: UUID) -> MachineIdentity:
-    """Authenticate an HTTP host route by its machine credential; see :func:`request_machine`."""
-    return await request_machine(request, machine_id)
+async def current_host(request: Request, host_id: UUID) -> HostIdentity:
+    """Authenticate an HTTP host route by its host credential; see :func:`request_host`."""
+    return await request_host(request, host_id)
 
 
-# Separate from ``current_machine`` for the reason ``auth.request_user`` is separate from
+# Separate from ``current_host`` for the reason ``auth.request_user`` is separate from
 # ``current_user``: the dependency's annotation must stay importable at runtime.
-async def request_machine(request: HTTPConnection, machine_id: UUID) -> MachineIdentity:
-    """Authenticate a host route or WebSocket by the machine credential in the bearer.
+async def request_host(request: HTTPConnection, host_id: UUID) -> HostIdentity:
+    """Authenticate a host route or WebSocket by the host credential in the bearer.
 
     A malformed, unknown or wrong-secret credential is 401 with one body, so a
     caller learns nothing about which ids exist. Only a credential whose secret
-    matches reaches the revoked check, which is 410 ``machine_revoked``: the answer
+    matches reaches the revoked check, which is 410 ``host_revoked``: the answer
     is for a holder of a once-valid secret and nobody else. A valid credential used
-    on another machine's path is 404, since 403 would confirm the id exists.
+    on another host's path is 404, since 403 would confirm the id exists.
 
     Args:
       request: Request or WebSocket carrying the database engine and the Authorization.
-      machine_id: The machine in the route's path.
+      host_id: The host in the route's path.
 
     Returns:
-      identity: The machine and credential the request authenticated as.
+      identity: The host and credential the request authenticated as.
 
     Raises:
       HTTPException: 401 for an unknown credential; 410 for a revoked one.
-      NotFoundError: The credential belongs to another machine.
+      NotFoundError: The credential belongs to another host.
 
     """
     parsed = parse_credential(auth.extract_bearer(request) or "")
@@ -183,8 +183,8 @@ async def request_machine(request: HTTPConnection, machine_id: UUID) -> MachineI
         raise _unknown()
     async with request_engine(request).acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT c.secret_sha256, c.revoked_at, m.id AS machine_id, m.name "
-            "FROM machine_credentials c JOIN machines m ON m.id = c.machine_id "
+            "SELECT c.secret_sha256, c.revoked_at, m.id AS host_id, m.name "
+            "FROM host_credentials c JOIN hosts m ON m.id = c.host_id "
             "WHERE c.id = $1",
             parsed.id,
         )
@@ -194,25 +194,25 @@ async def request_machine(request: HTTPConnection, machine_id: UUID) -> MachineI
         ):
             raise _unknown()
         if row["revoked_at"] is not None:
-            raise machine_revoked()
-        if from_plain(row["machine_id"], UUID) != machine_id:
-            raise NotFoundError("machine is not registered")
+            raise host_revoked()
+        if from_plain(row["host_id"], UUID) != host_id:
+            raise NotFoundError("host is not registered")
         if should_bump_last_used(
             _bumped(request),
             parsed.id,
             now=auth.monotonic_clock(),
         ):
             await _touch(conn, parsed.id)
-    return MachineIdentity(
-        machine_id=machine_id,
+    return HostIdentity(
+        host_id=host_id,
         name=from_plain(row["name"], str),
         credential_id=parsed.id,
     )
 
 
-def machine_revoked() -> HTTPException:
+def host_revoked() -> HTTPException:
     """Return the 410 a host gets for a credential that was revoked."""
-    return HTTPException(status_code=410, detail="machine_revoked")
+    return HTTPException(status_code=410, detail="host_revoked")
 
 
 def _parse(pattern: re.Pattern[str], text: str) -> ParsedSecret | None:
@@ -230,19 +230,19 @@ def _digest(secret: str) -> bytes:
 
 def _unknown() -> HTTPException:
     """Return the one 401 every unrecognised credential gets."""
-    return HTTPException(status_code=401, detail="invalid machine credential")
+    return HTTPException(status_code=401, detail="invalid host credential")
 
 
 async def _touch(conn: Conn, credential_id: UUID) -> None:
     """Stamp a credential's ``last_used`` with the database clock."""
     await conn.execute(
-        "UPDATE machine_credentials SET last_used = now() WHERE id = $1",
+        "UPDATE host_credentials SET last_used = now() WHERE id = $1",
         credential_id,
     )
 
 
 class _State(Protocol):
-    machine_credential_bumped: dict[UUID, float]
+    host_credential_bumped: dict[UUID, float]
 
 
 class _App(Protocol):
@@ -254,9 +254,9 @@ def _bumped(request: HTTPConnection) -> dict[UUID, float]:
     state = cast("_App", request.app).state
     bumped = cast(
         "dict[UUID, float] | None",
-        getattr(state, "machine_credential_bumped", None),
+        getattr(state, "host_credential_bumped", None),
     )
     if bumped is None:
         bumped = {}
-        state.machine_credential_bumped = bumped
+        state.host_credential_bumped = bumped
     return bumped

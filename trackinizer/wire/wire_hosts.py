@@ -1,8 +1,8 @@
-"""Wire contract for the machines registry: where campaigns may run.
+"""Wire contract for the hosts registry: where campaigns may run.
 
-A machine is a name an admin records, with a role, one line telling an agent
-how to use it, and labels. The registry never reaches a machine; a machine that
-runs a host reports in by heartbeat (``wire_machine_host``), and its status is
+A host is a name an admin records, with a role, one line telling an agent
+how to use it, and labels. The registry never reaches a host; a host that
+runs a host reports in by heartbeat (``wire_daemon``), and its status is
 derived from that. The writer role reads it and the admin role changes it.
 
 This package is part of the publishable client distribution, so it must
@@ -30,14 +30,14 @@ from trackinizer.wire.wire_sessions import RunState
 
 
 __all__ = [
+    "HOSTS_PATH",
+    "HOST_DISCONNECT_PATH",
+    "HOST_LABELS_PATH",
+    "HOST_LOGOUT_PATH",
+    "HOST_PATH",
+    "HOST_RUNS_PATH",
+    "HOST_RUN_STOP_PATH",
     "KNOWHOST_LABEL",
-    "MACHINES_PATH",
-    "MACHINE_DISCONNECT_PATH",
-    "MACHINE_LABELS_PATH",
-    "MACHINE_LOGOUT_PATH",
-    "MACHINE_PATH",
-    "MACHINE_RUNS_PATH",
-    "MACHINE_RUN_STOP_PATH",
     "MAX_FACTS_BYTES",
     "MAX_HOW_CHARS",
     "NAME_PATTERN",
@@ -46,41 +46,41 @@ __all__ = [
     "RESERVED_NAMES",
     "ROLE_PATTERN",
     "Facts",
-    "Machine",
-    "MachineDetail",
-    "MachineLabels",
-    "MachineList",
-    "MachineLogout",
-    "MachinePut",
-    "MachineRun",
-    "MachineRuns",
-    "MachineStatus",
+    "Host",
+    "HostDetail",
+    "HostLabels",
+    "HostList",
+    "HostLogout",
+    "HostPut",
+    "HostRun",
+    "HostRuns",
+    "HostStatus",
 ]
 
 NAME_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,62}$"
-"""A machine name, as the store accepts it."""
+"""A host name, as the store accepts it."""
 
 ROLE_PATTERN: Final = r"^(?:[a-z][a-z0-9-]{0,31})?$"
-"""A machine role; the empty string means none."""
+"""A host role; the empty string means none."""
 
 MAX_HOW_CHARS: Final = 2_000
-"""Longest ``how`` line a machine may hold, in characters."""
+"""Longest ``how`` line a host may hold, in characters."""
 
 RESERVED_NAMES: Final = frozenset(
-    {"enroll", "join", "init", "import", "check", "connect", "leave", "top"},
+    {"enroll", "join", "init", "import", "check", "connect", "leave", "top", "start"},
 )
-"""Names no machine may take: they are, or will be, route segments and CLI words."""
+"""Names no host may take: they are, or will be, route segments and CLI words."""
 
 KNOWHOST_LABEL: Final = "knowhost"
-"""The label of a KnowHost's machine, which the server writes as it enrolls one."""
+"""The label of a KnowHost's host, which the server writes as it enrolls one."""
 
 RESERVED_LABELS: Final = frozenset({KNOWHOST_LABEL})
 """Labels the server alone writes, which no label edit adds or removes: KnowHost's sweep
-reads its own label as which machines are KnowHosts, so an edit would end a real
-machine, or a KnowHost's sandbox."""
+reads its own label as which hosts are KnowHosts, so an edit would end a real
+host, or a KnowHost's sandbox."""
 
 PERSONAL_ROLE: Final = "personal"
-"""The role of a machine a writer enrolled for themselves: only its owner (and an admin)
+"""The role of a host a writer enrolled for themselves: only its owner (and an admin)
 sees it, so no campaign is offered it."""
 
 MAX_FACTS_BYTES: Final = 4_096
@@ -113,33 +113,33 @@ type Facts = Annotated[
 ]
 """What a host reports about itself: OS, CPUs, memory, CLIs found, and so on."""
 
-type MachineStatus = Literal["revoked", "never", "online", "offline"]
+type HostStatus = Literal["revoked", "never", "online", "offline"]
 """Derived, never stored: ``revoked`` when every credential was revoked, ``never``
 before a first heartbeat, ``online`` within 180 s of the last one unless the host
-released the machine since, else ``offline``."""
+released the host since, else ``offline``."""
 
-MACHINES_PATH: Final = "/api/machines"
-MACHINE_PATH: Final = "/api/machines/{name}"
-MACHINE_LABELS_PATH: Final = "/api/machines/{name}/labels"
-MACHINE_RUNS_PATH: Final = "/api/machines/{name}/runs"
-MACHINE_RUN_STOP_PATH: Final = "/api/machines/{name}/runs/{session_id}/stop"
-MACHINE_DISCONNECT_PATH: Final = "/api/machines/{name}/disconnect"
-MACHINE_LOGOUT_PATH: Final = "/api/machines/{name}/logout"
+HOSTS_PATH: Final = "/api/hosts"
+HOST_PATH: Final = "/api/hosts/{name}"
+HOST_LABELS_PATH: Final = "/api/hosts/{name}/labels"
+HOST_RUNS_PATH: Final = "/api/hosts/{name}/runs"
+HOST_RUN_STOP_PATH: Final = "/api/hosts/{name}/runs/{session_id}/stop"
+HOST_DISCONNECT_PATH: Final = "/api/hosts/{name}/disconnect"
+HOST_LOGOUT_PATH: Final = "/api/hosts/{name}/logout"
 
 
-class Machine(BaseModel):
-    """One registered machine, as listed."""
+class Host(BaseModel):
+    """One registered host, as listed."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str = Field(pattern=NAME_PATTERN)
-    """The machine's name."""
+    """The host's name."""
 
     role: str = Field(pattern=ROLE_PATTERN)
-    """What the machine is for; empty when none is recorded."""
+    """What the host is for; empty when none is recorded."""
 
     how: str = Field(max_length=MAX_HOW_CHARS)
-    """One line telling an agent how to use the machine; empty when none."""
+    """One line telling an agent how to use the host; empty when none."""
 
     labels: list[str]
     """Free-form tags, in the order they were added."""
@@ -150,7 +150,7 @@ class Machine(BaseModel):
     updated: datetime
     """When it was last changed."""
 
-    status: MachineStatus = "never"
+    status: HostStatus = "never"
     """Whether a host is connected."""
 
     last_heartbeat: datetime | None = None
@@ -160,26 +160,26 @@ class Machine(BaseModel):
     """The person responsible for it, shown to that person and to admins only."""
 
 
-class MachineDetail(Machine):
-    """One machine with what its host reported about itself."""
+class HostDetail(Host):
+    """One host with what its host reported about itself."""
 
-    host_version: str = ""
+    daemon_version: str = ""
     """The host software's version; empty before the first heartbeat."""
 
     facts: Facts = Field(default_factory=dict)
     """What the host reported: OS, CPUs, memory, CLIs found, and so on."""
 
 
-class MachineList(BaseModel):
-    """Every registered machine, sorted by name."""
+class HostList(BaseModel):
+    """Every registered host, sorted by name."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    machines: list[Machine]
+    hosts: list[Host]
 
 
-class MachinePut(BaseModel):
-    """Create a machine or change its fields; a field left out keeps its value."""
+class HostPut(BaseModel):
+    """Create a host or change its fields; a field left out keeps its value."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -198,7 +198,7 @@ class MachinePut(BaseModel):
         return value
 
 
-class MachineLabels(BaseModel):
+class HostLabels(BaseModel):
     """Add labels, then remove labels; each is a no-op when already so."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -210,14 +210,14 @@ class MachineLabels(BaseModel):
     """Labels to remove."""
 
 
-class MachineRun(BaseModel):
-    """A run of a CLI that names the machine, under its owner's account: live, or past.
+class HostRun(BaseModel):
+    """A run of a CLI that names the host, under its owner's account: live, or past.
 
-    The machine is the run's own word on each poll, shown to the owner and stopped by
+    The host is the run's own word on each poll, shown to the owner and stopped by
     them, never a grant.
     """
 
-    # ``wire_terminals.TerminalMachines`` holds it, which the configured assistant reads
+    # ``wire_terminals.TerminalHosts`` holds it, which the configured assistant reads
     # without the ``Client``: it ignores a field a newer server added, as the listing
     # does.
     model_config = ConfigDict(extra="ignore", frozen=True)
@@ -239,7 +239,7 @@ class MachineRun(BaseModel):
     """What the run last reported of itself."""
 
     last_seen: datetime | None = None
-    """A past run's: when its session last polled; ``None`` for a live run."""
+    """A past run's: when its session last polled; ``None`` for a live session."""
 
     ended: datetime | None = None
     """A past run's: when its session ended; ``None`` while it is open."""
@@ -253,25 +253,25 @@ class MachineRun(BaseModel):
     chat's."""
 
 
-class MachineRuns(BaseModel):
-    """The live runs of one of the caller's machines, and the ones it had before."""
+class HostRuns(BaseModel):
+    """The live sessions of one of the caller's hosts, and the ones it had before."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    runs: list[MachineRun]
+    runs: list[HostRun]
 
-    past: list[MachineRun] = Field(default_factory=list)
+    past: list[HostRun] = Field(default_factory=list)
     """The runs that last said they ran there and are not live, most recently heard
     from first; empty where the route stops runs rather than lists them."""
 
 
-class MachineLogout(BaseModel):
-    """What logging a machine out stopped and revoked."""
+class HostLogout(BaseModel):
+    """What logging a host out stopped and revoked."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    runs: list[MachineRun]
-    """The live runs it stopped."""
+    runs: list[HostRun]
+    """The live sessions it stopped."""
 
     keys: int
     """How many of the caller's keys it revoked: those a device login made for it."""

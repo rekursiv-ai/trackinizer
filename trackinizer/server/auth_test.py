@@ -338,7 +338,7 @@ class TestCurrentUser:
         ],
         ids=["credential", "enrollment", "gpu-box"],
     )
-    async def test_a_machine_secret_is_401_before_any_lookup(
+    async def test_a_host_secret_is_401_before_any_lookup(
         self,
         bearer: str,
     ) -> None:
@@ -1880,7 +1880,7 @@ class TestUserOf:
             "trax_gpubox_" + "0" * 32 + "_" + "A" * 43,
         ],
     )
-    async def test_a_machine_secret_gets_the_unknown_bearer_answer(
+    async def test_a_host_secret_gets_the_unknown_bearer_answer(
         self,
         bearer: str,
     ) -> None:
@@ -2371,7 +2371,7 @@ class TestCreateApiKey:
         conn = make_conn()
         conn.fetchval = AsyncMock(return_value="writer")
         user_id, expected_key = uuid.uuid4(), uuid.uuid4()
-        machine_id = uuid.uuid4() if enrolled else None
+        host_id = uuid.uuid4() if enrolled else None
         monkeypatch.setattr(auth, "uuid", SimpleNamespace(uuid4=lambda: expected_key))
         # A non-binding admin ceiling: the default still caps at the user role.
         key_id, secret, prefix, role = await create_api_key(
@@ -2379,7 +2379,7 @@ class TestCreateApiKey:
             user_id=user_id,
             name="laptop",
             ceiling="admin",
-            machine_id=machine_id,
+            host_id=host_id,
         )
         assert (key_id, role) == (expected_key, "writer")
         assert conn.fetchval.await_args is not None
@@ -2397,7 +2397,7 @@ class TestCreateApiKey:
             prefix,
             "writer",
             None,
-            machine_id,
+            host_id,
         )
 
     @pytest.mark.asyncio

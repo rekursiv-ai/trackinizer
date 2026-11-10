@@ -1,4 +1,4 @@
-"""The pipe hub: offers, waits, the relay between two legs and its ends, on a fake clock."""
+"""The tool connection relay: offers, waits, the relay between two sockets and its ends, on a fake clock."""
 
 from __future__ import annotations
 
@@ -12,14 +12,14 @@ import uuid
 import pytest
 import pytest_asyncio
 
-from trackinizer.server import tool_pipes
+from trackinizer.server import tool_relay
 from trackinizer.server.terminals import SocketClosedError, sweep_loop
-from trackinizer.server.tool_pipes import (
-    Pipe,
-    PipeBusyError,
-    PipeEndError,
-    PipeHub,
-    PipeRevokedError,
+from trackinizer.server.tool_relay import (
+    ToolConnection,
+    ToolConnectionBusyError,
+    ToolConnectionEndError,
+    ToolConnectionRevokedError,
+    ToolRelay,
 )
 from trackinizer.wire import wire_terminals, wire_tools
 from trackinizer.wire.wire_tools import ToolOffer
@@ -28,23 +28,26 @@ from trackinizer.wire.wire_tools import ToolOffer
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Coroutine
 
-    from trackinizer.server.tool_pipes import Inbound
+    from trackinizer.server.tool_relay import Inbound
 
 
 pytestmark = pytest.mark.asyncio
 
-_MACHINE = uuid.UUID(int=1)
+_HOST = uuid.UUID(int=1)
 _OTHER = uuid.UUID(int=2)
 _ASKER = "ada@x.y"
 _KEY = uuid.UUID(int=3)
 _INSTANCE = uuid.UUID(int=4)
 _LINE_BYTES = 256
-"""The longest host line a test hub reads for the call it answers."""
+"""The longest host line a test relay reads for the call it answers."""
 
 
-async def _pass_through(pipe: Pipe, frame: bytes) -> tuple[bytes, bytes]:
+async def _pass_through(
+    connection: ToolConnection,
+    frame: bytes,
+) -> tuple[bytes, bytes]:
     """Let every frame through to the host, and answer the agent nothing."""
-    del pipe
+    del connection
     return frame, b""
 
 
@@ -78,8 +81,8 @@ async def _settle() -> None:
         await asyncio.sleep(0)
 
 
-class _Leg:
-    """One end of a pipe: what the test pushes is read, and what is sent is kept."""
+class _Socket:
+    """One end of a tool connection: what the test pushes is read, and what is sent is kept."""
 
     def __init__(self) -> None:
         self.sent: list[bytes] = []
@@ -116,18 +119,18 @@ class _Leg:
 
 
 class _World:
-    """A hub on a fake clock whose machines hold 16 pipes, each dialed back in 20 s."""
+    """A relay on a fake clock whose hosts hold 16 tool connections, each dialed back in 20 s."""
 
     def __init__(
         self,
         *,
-        pipes_per_machine: int = 16,
+        connections_per_host: int = 16,
         dial_back_sec: float = 20,
     ) -> None:
         self.time = _Time()
-        self.hub = PipeHub(
+        self.relay = ToolRelay(
             alive=self._alive,
-            pipes_per_machine=pipes_per_machine,
+            connections_per_host=connections_per_host,
             dial_back_sec=dial_back_sec,
             line_bytes=_LINE_BYTES,
             clock=self.time,
@@ -138,17 +141,19 @@ class _World:
         self.unknown: set[uuid.UUID] = set()
         self.asked: list[tuple[str, uuid.UUID, uuid.UUID | None]] = []
 
-    async def _alive(self, pipe: Pipe) -> bool:
-        self.asked.append((pipe.asker, pipe.api_key_id, pipe.instance))
-        if pipe.id in self.unknown:
+    async def _alive(self, connection: ToolConnection) -> bool:
+        self.asked.append(
+            (connection.asker, connection.api_key_id, connection.instance),
+        )
+        if connection.id in self.unknown:
             raise OSError("the database is down")
-        return pipe.id not in self.dead
+        return connection.id not in self.dead
 
-    def join(self, machine_id: uuid.UUID = _MACHINE) -> Pipe:
+    def join(self, host_id: uuid.UUID = _HOST) -> ToolConnection:
         """Bring an agent that nothing will serve, to fill a slot or an offer."""
-        return self.hub.join(
-            machine_id,
-            agent=_Leg(),
+        return self.relay.join(
+            host_id,
+            agent=_Socket(),
             asker=_ASKER,
             api_key_id=_KEY,
             inbound=_pass_through,
@@ -162,43 +167,48 @@ class _World:
     async def agent(
         self,
         *,
-        machine_id: uuid.UUID = _MACHINE,
+        host_id: uuid.UUID = _HOST,
         inbound: Inbound = _pass_through,
-    ) -> tuple[Pipe, _Leg]:
-        """Bring an agent to the machine, and let it queue."""
-        leg = _Leg()
-        pipe = self.hub.join(
-            machine_id,
-            agent=leg,
+    ) -> tuple[ToolConnection, _Socket]:
+        """Bring an agent to the host, and let it queue."""
+        socket = _Socket()
+        connection = self.relay.join(
+            host_id,
+            agent=socket,
             asker=_ASKER,
             api_key_id=_KEY,
             inbound=inbound,
         )
-        _ = self.run(self.hub.serve_agent(pipe, leg.read))
+        _ = self.run(self.relay.serve_agent(connection, socket.read))
         await _settle()
-        return pipe, leg
+        return connection, socket
 
-    async def host(self, pipe: Pipe) -> _Leg:
-        """Dial back for an offered pipe, and let it start."""
-        leg = _Leg()
-        attached = self.hub.attach(pipe.machine_id, pipe.id, leg, instance=_INSTANCE)
-        assert attached is pipe
-        _ = self.run(self.hub.serve_host(pipe, leg.read))
+    async def host(self, connection: ToolConnection) -> _Socket:
+        """Dial back for an offered tool connection, and let it start."""
+        socket = _Socket()
+        attached = self.relay.attach(
+            connection.host_id,
+            connection.id,
+            socket,
+            instance=_INSTANCE,
+        )
+        assert attached is connection
+        _ = self.run(self.relay.serve_daemon(connection, socket.read))
         await _settle()
-        return leg
+        return socket
 
     async def paired(
         self,
         *,
         inbound: Inbound = _pass_through,
-    ) -> tuple[_Leg, _Leg]:
-        """Bring up a whole pipe, and return its agent's leg and its host's."""
-        pipe, agent = await self.agent(inbound=inbound)
-        assert await self.take() == ToolOffer(pipe_id=pipe.id)
-        return agent, await self.host(pipe)
+    ) -> tuple[_Socket, _Socket]:
+        """Bring up a whole tool connection, and return its agent's socket and its host's."""
+        connection, agent = await self.agent(inbound=inbound)
+        assert await self.take() == ToolOffer(connection_id=connection.id)
+        return agent, await self.host(connection)
 
-    async def take(self, machine_id: uuid.UUID = _MACHINE) -> ToolOffer | None:
-        return await self.hub.wait(machine_id, wait_sec=0)
+    async def take(self, host_id: uuid.UUID = _HOST) -> ToolOffer | None:
+        return await self.relay.wait(host_id, wait_sec=0)
 
 
 @pytest_asyncio.fixture
@@ -214,19 +224,19 @@ async def world() -> AsyncIterator[_World]:
 
 
 async def test_a_held_wait_returns_the_moment_an_agent_arrives(world: _World) -> None:
-    waiting = world.run(world.hub.wait(_MACHINE, wait_sec=25))
+    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
     await _settle()
     assert not waiting.done()
 
-    pipe, _leg = await world.agent()
+    connection, _socket = await world.agent()
 
-    assert await waiting == ToolOffer(pipe_id=pipe.id)
+    assert await waiting == ToolOffer(connection_id=connection.id)
 
 
 async def test_a_wait_with_no_agent_ends_empty_when_its_time_is_up(
     world: _World,
 ) -> None:
-    waiting = world.run(world.hub.wait(_MACHINE, wait_sec=25))
+    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
     await _settle()
 
     await world.time.advance(24)
@@ -243,13 +253,13 @@ async def test_a_wait_of_no_time_answers_at_once(world: _World) -> None:
 async def test_a_wait_that_lost_its_offer_to_another_wait_keeps_waiting(
     world: _World,
 ) -> None:
-    first = world.run(world.hub.wait(_MACHINE, wait_sec=25))
-    second = world.run(world.hub.wait(_MACHINE, wait_sec=25))
+    first = world.run(world.relay.wait(_HOST, wait_sec=25))
+    second = world.run(world.relay.wait(_HOST, wait_sec=25))
     await _settle()
 
-    pipe, _leg = await world.agent()
+    connection, _socket = await world.agent()
 
-    assert await first == ToolOffer(pipe_id=pipe.id)
+    assert await first == ToolOffer(connection_id=connection.id)
     assert not second.done()
     await world.time.advance(25)
     assert await second is None
@@ -258,62 +268,64 @@ async def test_a_wait_that_lost_its_offer_to_another_wait_keeps_waiting(
 async def test_when_the_woken_wait_goes_before_it_runs_another_wait_gets_the_offer(
     world: _World,
 ) -> None:
-    gone = world.run(world.hub.wait(_MACHINE, wait_sec=25))
-    kept = world.run(world.hub.wait(_MACHINE, wait_sec=25))
+    gone = world.run(world.relay.wait(_HOST, wait_sec=25))
+    kept = world.run(world.relay.wait(_HOST, wait_sec=25))
     await _settle()
 
-    leg = _Leg()
-    pipe = world.hub.join(
-        _MACHINE,
-        agent=leg,
+    socket = _Socket()
+    connection = world.relay.join(
+        _HOST,
+        agent=socket,
         asker=_ASKER,
         api_key_id=_KEY,
         inbound=_pass_through,
     )
-    _ = world.run(world.hub.serve_agent(pipe, leg.read))
+    _ = world.run(world.relay.serve_agent(connection, socket.read))
     _ = gone.cancel()
     await _settle()
 
     assert gone.cancelled()
-    assert await kept == ToolOffer(pipe_id=pipe.id)
+    assert await kept == ToolOffer(connection_id=connection.id)
 
 
 async def test_one_wait_takes_one_offer_oldest_first(world: _World) -> None:
     first, _ = await world.agent()
     second, _ = await world.agent()
 
-    assert await world.take() == ToolOffer(pipe_id=first.id)
-    assert await world.take() == ToolOffer(pipe_id=second.id)
+    assert await world.take() == ToolOffer(connection_id=first.id)
+    assert await world.take() == ToolOffer(connection_id=second.id)
     assert await world.take() is None
 
 
-async def test_only_the_machine_asked_for_is_offered_its_pipes(world: _World) -> None:
-    pipe, _ = await world.agent(machine_id=_OTHER)
+async def test_only_the_host_asked_for_is_offered_its_connections(
+    world: _World,
+) -> None:
+    connection, _ = await world.agent(host_id=_OTHER)
 
     assert await world.take() is None
-    assert await world.take(_OTHER) == ToolOffer(pipe_id=pipe.id)
+    assert await world.take(_OTHER) == ToolOffer(connection_id=connection.id)
 
 
 async def test_a_wait_woken_twice_before_it_runs_takes_one_offer(world: _World) -> None:
-    waiting = world.run(world.hub.wait(_MACHINE, wait_sec=25))
+    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
     await _settle()
 
     first = world.join()
     _ = world.join()
 
-    assert await waiting == ToolOffer(pipe_id=first.id)
+    assert await waiting == ToolOffer(connection_id=first.id)
 
 
 async def test_a_revoke_right_after_an_agent_arrives_is_what_the_wait_hears(
     world: _World,
 ) -> None:
-    waiting = world.run(world.hub.wait(_MACHINE, wait_sec=25))
+    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
     await _settle()
 
-    # The agent woke the wait first, and the revoke found it already woken: the pipe is
+    # The agent woke the wait first, and the revoke found it already woken: the tool connection is
     # gone by the time the wait runs, so it holds on with nothing to take.
     _ = world.join()
-    world.hub.close_machine(_MACHINE)
+    world.relay.close_host(_HOST)
     await _settle()
 
     assert not waiting.done()
@@ -322,18 +334,20 @@ async def test_a_revoke_right_after_an_agent_arrives_is_what_the_wait_hears(
 # -- Dialing back -----------------------------------------------------------------------
 
 
-async def test_a_host_that_never_dials_back_ends_the_pipe_in_20_seconds(
+async def test_a_host_that_never_dials_back_ends_the_connection_in_20_seconds(
     world: _World,
 ) -> None:
-    pipe, agent = await world.agent()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
+    connection, agent = await world.agent()
+    assert await world.take() == ToolOffer(connection_id=connection.id)
 
     await world.time.advance(19)
     assert agent.closed == []
     await world.time.advance(1)
 
-    assert agent.closed == [wire_terminals.CLOSE_HOST_LOST]
-    assert world.hub.attach(_MACHINE, pipe.id, _Leg(), instance=_INSTANCE) is None
+    assert agent.closed == [wire_terminals.CLOSE_DAEMON_LOST]
+    assert (
+        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE) is None
+    )
 
 
 async def test_a_host_that_dials_back_in_time_is_not_ended_by_the_timer(
@@ -346,26 +360,30 @@ async def test_a_host_that_dials_back_in_time_is_not_ended_by_the_timer(
     assert (agent.closed, host.closed) == ([], [])
 
 
-async def test_a_hub_holds_the_pipes_and_waits_the_dial_back_it_is_given() -> None:
-    world = _World(pipes_per_machine=1, dial_back_sec=5)
-    pipe, agent = await world.agent()
+async def test_a_relay_holds_the_connections_and_waits_the_dial_back_it_is_given() -> (
+    None
+):
+    world = _World(connections_per_host=1, dial_back_sec=5)
+    connection, agent = await world.agent()
 
-    with pytest.raises(PipeBusyError) as busy:
+    with pytest.raises(ToolConnectionBusyError) as busy:
         _ = world.join()
     await world.time.advance(4)
     assert agent.closed == []
     await world.time.advance(1)
 
     assert busy.value.limit == 1
-    assert str(busy.value) == "the machine already holds its limit of 1 pipes"
-    assert agent.closed == [wire_terminals.CLOSE_HOST_LOST]
-    assert world.hub.attach(_MACHINE, pipe.id, _Leg(), instance=_INSTANCE) is None
+    assert str(busy.value) == "the host already holds its limit of 1 tool connections"
+    assert agent.closed == [wire_terminals.CLOSE_DAEMON_LOST]
+    assert (
+        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE) is None
+    )
     for task in world.tasks:
         _ = task.cancel()
     _ = await asyncio.gather(*world.tasks, return_exceptions=True)
 
 
-async def test_an_agent_that_leaves_before_a_host_takes_the_pipe_is_never_offered(
+async def test_an_agent_that_leaves_before_a_host_takes_the_connection_is_never_offered(
     world: _World,
 ) -> None:
     _, agent = await world.agent()
@@ -377,33 +395,40 @@ async def test_an_agent_that_leaves_before_a_host_takes_the_pipe_is_never_offere
     assert await world.take() is None
 
 
-async def test_a_pipe_is_attached_only_by_its_own_machine(world: _World) -> None:
-    pipe, _ = await world.agent()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
+async def test_a_connection_is_attached_only_by_its_own_host(world: _World) -> None:
+    connection, _ = await world.agent()
+    assert await world.take() == ToolOffer(connection_id=connection.id)
 
-    assert world.hub.attach(_OTHER, pipe.id, _Leg(), instance=_INSTANCE) is None
     assert (
-        world.hub.attach(_MACHINE, uuid.UUID(int=99), _Leg(), instance=_INSTANCE)
+        world.relay.attach(_OTHER, connection.id, _Socket(), instance=_INSTANCE) is None
+    )
+    assert (
+        world.relay.attach(_HOST, uuid.UUID(int=99), _Socket(), instance=_INSTANCE)
         is None
     )
 
 
-async def test_a_pipe_its_host_was_never_offered_is_not_offered_again_once_attached(
+async def test_a_connection_its_host_was_never_offered_is_not_offered_again_once_attached(
     world: _World,
 ) -> None:
-    """Only an offer names a pipe's id; one attached that way leaves the queue too."""
-    pipe, _ = await world.agent()
-    assert world.hub.attach(_MACHINE, pipe.id, _Leg(), instance=_INSTANCE) is pipe
+    """Only an offer names a tool connection's id; one attached that way leaves the queue too."""
+    connection, _ = await world.agent()
+    assert (
+        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE)
+        is connection
+    )
 
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
+    assert await world.take() == ToolOffer(connection_id=connection.id)
 
 
-async def test_a_pipe_is_attached_once(world: _World) -> None:
-    pipe, _ = await world.agent()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
-    _ = await world.host(pipe)
+async def test_a_connection_is_attached_once(world: _World) -> None:
+    connection, _ = await world.agent()
+    assert await world.take() == ToolOffer(connection_id=connection.id)
+    _ = await world.host(connection)
 
-    assert world.hub.attach(_MACHINE, pipe.id, _Leg(), instance=_INSTANCE) is None
+    assert (
+        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE) is None
+    )
 
 
 # -- The relay --------------------------------------------------------------------------
@@ -420,87 +445,87 @@ async def test_bytes_cross_both_ways_unread(world: _World) -> None:
     assert agent.sent == [b"\x00\xfe anything", b"ne\n"]
 
 
-async def test_a_machine_is_idle_from_the_hub_start_until_a_call(
+async def test_a_host_is_idle_from_the_relay_start_until_a_call(
     world: _World,
 ) -> None:
-    pipe, _, _ = await _live(world)
+    connection, _, _ = await _live(world)
     await world.time.advance(30)
-    assert world.hub.idle_sec(_MACHINE) == 30
-    assert world.hub.idle_sec(_OTHER) == 30
+    assert world.relay.idle_sec(_HOST) == 30
+    assert world.relay.idle_sec(_OTHER) == 30
 
-    world.hub.called(pipe, "c1")
+    world.relay.called(connection, "c1")
 
-    assert world.hub.idle_sec(_MACHINE) == 0
-    assert world.hub.idle_sec(_OTHER) == 30
+    assert world.relay.idle_sec(_HOST) == 0
+    assert world.relay.idle_sec(_OTHER) == 30
 
 
-async def test_a_call_held_open_past_any_idle_time_keeps_its_machine_in_use(
+async def test_a_call_held_open_past_any_idle_time_keeps_its_host_in_use(
     world: _World,
 ) -> None:
-    pipe, _, host = await _live(world)
-    world.hub.called(pipe, "c1")
-    world.hub.called(pipe, "c2")
+    connection, _, host = await _live(world)
+    world.relay.called(connection, "c1")
+    world.relay.called(connection, "c2")
     await world.time.advance(3_000)
-    assert world.hub.idle_sec(_MACHINE) == 0
+    assert world.relay.idle_sec(_HOST) == 0
 
     # The result of c1 comes split across frames, behind a ping; c2 still runs.
     host.push(b'{"py/object": "Ping"}\n{"py/object": "Res', b'ult", "id": "c1"}\n')
     await _settle()
-    assert (set(pipe.running), world.hub.idle_sec(_MACHINE)) == ({"c2"}, 0)
+    assert (set(connection.running), world.relay.idle_sec(_HOST)) == ({"c2"}, 0)
 
     host.push(b'{"py/object": "Result", "id": "c2", "record": {}}\n')
     await _settle()
     await world.time.advance(7)
-    assert (set(pipe.running), world.hub.idle_sec(_MACHINE)) == (set(), 7)
+    assert (set(connection.running), world.relay.idle_sec(_HOST)) == (set(), 7)
 
 
-async def test_a_call_never_answered_keeps_its_machine_in_use_an_hour_no_longer(
+async def test_a_call_never_answered_keeps_its_host_in_use_an_hour_no_longer(
     world: _World,
 ) -> None:
-    pipe, _, _ = await _live(world)
-    world.hub.called(pipe, "hung")
+    connection, _, _ = await _live(world)
+    world.relay.called(connection, "hung")
     await world.time.advance(3_599)
-    in_use = world.hub.idle_sec(_MACHINE)
+    in_use = world.relay.idle_sec(_HOST)
 
     await world.time.advance(1_801)
 
-    assert (in_use, world.hub.idle_sec(_MACHINE)) == (0, 1_800)
-    assert set(pipe.running) == {"hung"}
+    assert (in_use, world.relay.idle_sec(_HOST)) == (0, 1_800)
+    assert set(connection.running) == {"hung"}
 
 
-async def test_an_ack_ends_a_call_whose_result_the_hub_could_not_read(
+async def test_an_ack_ends_a_call_whose_result_the_relay_could_not_read(
     world: _World,
 ) -> None:
-    pipe, agent, host = await _live(world)
-    world.hub.called(pipe, "c1")
+    connection, agent, host = await _live(world)
+    world.relay.called(connection, "c1")
 
     long = b'{"py/object": "Result", "id": "c1", "record": "' + b"x" * _LINE_BYTES
     host.push(long, b'"}\n', b"not json\n")
     await _settle()
-    running = set(pipe.running)
-    world.hub.acked(pipe, "c1")
-    world.hub.acked(pipe, "c9")
+    running = set(connection.running)
+    world.relay.acked(connection, "c1")
+    world.relay.acked(connection, "c9")
 
-    assert (running, set(pipe.running)) == ({"c1"}, set())
+    assert (running, set(connection.running)) == ({"c1"}, set())
     assert len(agent.sent) == 3
 
 
-async def test_a_pipe_that_drops_mid_call_leaves_its_machine_idle_from_the_drop(
+async def test_a_connection_that_drops_mid_call_leaves_its_host_idle_from_the_drop(
     world: _World,
 ) -> None:
-    pipe, agent, _ = await _live(world)
-    world.hub.called(pipe, "c1")
+    connection, agent, _ = await _live(world)
+    world.relay.called(connection, "c1")
     await world.time.advance(600)
 
     agent.drop()
     await _settle()
     await world.time.advance(5)
 
-    assert pipe.ended.done()
-    assert (set(pipe.running), world.hub.idle_sec(_MACHINE)) == (set(), 5)
+    assert connection.ended.done()
+    assert (set(connection.running), world.relay.idle_sec(_HOST)) == (set(), 5)
 
 
-async def test_a_quiet_pipe_that_only_pings_keeps_no_machine_in_use(
+async def test_a_quiet_connection_that_only_pings_keeps_no_host_in_use(
     world: _World,
 ) -> None:
     agent, host = await world.paired()
@@ -510,27 +535,27 @@ async def test_a_quiet_pipe_that_only_pings_keeps_no_machine_in_use(
     agent.push(b'{"py/object": "Ack", "id": "c1"}\n')
     await _settle()
 
-    assert world.hub.idle_sec(_MACHINE) == 60
+    assert world.relay.idle_sec(_HOST) == 60
     assert (len(agent.sent), len(host.sent)) == (1, 1)
 
 
-async def _live(world: _World) -> tuple[Pipe, _Leg, _Leg]:
-    """Bring up a whole pipe; return it, its agent's leg and its host's."""
-    pipe, agent = await world.agent()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
-    return pipe, agent, await world.host(pipe)
+async def _live(world: _World) -> tuple[ToolConnection, _Socket, _Socket]:
+    """Bring up a whole tool connection; return it, its agent's socket and its host's."""
+    connection, agent = await world.agent()
+    assert await world.take() == ToolOffer(connection_id=connection.id)
+    return connection, agent, await world.host(connection)
 
 
 async def test_what_an_agent_sends_before_its_host_dials_back_waits_for_it(
     world: _World,
 ) -> None:
-    pipe, agent = await world.agent()
+    connection, agent = await world.agent()
     agent.push(b"Hello\n", b"Next\n")
     await _settle()
     assert agent.reads == 1
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
+    assert await world.take() == ToolOffer(connection_id=connection.id)
 
-    host = await world.host(pipe)
+    host = await world.host(connection)
 
     assert host.sent == [b"Hello\n", b"Next\n"]
 
@@ -593,17 +618,17 @@ async def test_a_slow_host_slows_the_agent(world: _World) -> None:
     assert host.sent == [b"one", b"two"]
 
 
-# -- How a pipe ends --------------------------------------------------------------------
+# -- How a tool connection ends --------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("dropped", "code"),
     [
         ("agent", wire_terminals.CLOSE_ENDED),
-        ("host", wire_terminals.CLOSE_HOST_LOST),
+        ("host", wire_terminals.CLOSE_DAEMON_LOST),
     ],
 )
-async def test_a_dropped_leg_ends_the_other(
+async def test_a_dropped_socket_ends_the_other(
     world: _World,
     dropped: str,
     code: int,
@@ -616,7 +641,7 @@ async def test_a_dropped_leg_ends_the_other(
     assert (agent.closed, host.closed) == ([code], [code])
 
 
-async def test_a_leg_that_drops_while_the_other_is_stuck_sending_to_it_ends_both(
+async def test_a_socket_that_drops_while_the_other_is_stuck_sending_to_it_ends_both(
     world: _World,
 ) -> None:
     agent, host = await world.paired()
@@ -638,10 +663,10 @@ async def test_a_leg_that_drops_while_the_other_is_stuck_sending_to_it_ends_both
     ("gone", "code"),
     [
         ("agent", wire_terminals.CLOSE_ENDED),
-        ("host", wire_terminals.CLOSE_HOST_LOST),
+        ("host", wire_terminals.CLOSE_DAEMON_LOST),
     ],
 )
-async def test_a_send_that_finds_its_peer_gone_ends_the_pipe(
+async def test_a_send_that_finds_its_peer_gone_ends_the_connection(
     world: _World,
     gone: str,
     code: int,
@@ -659,39 +684,44 @@ async def test_a_send_that_finds_its_peer_gone_ends_the_pipe(
     assert (agent.closed, host.closed) == ([code], [code])
 
 
-async def test_a_serve_cancelled_with_its_server_ends_the_pipe(world: _World) -> None:
-    pipe, agent = await world.agent()
-    leg = _Leg()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
-    assert world.hub.attach(_MACHINE, pipe.id, leg, instance=_INSTANCE) is pipe
-    serving = world.run(world.hub.serve_host(pipe, leg.read))
+async def test_a_serve_cancelled_with_its_server_ends_the_connection(
+    world: _World,
+) -> None:
+    connection, agent = await world.agent()
+    socket = _Socket()
+    assert await world.take() == ToolOffer(connection_id=connection.id)
+    assert (
+        world.relay.attach(_HOST, connection.id, socket, instance=_INSTANCE)
+        is connection
+    )
+    serving = world.run(world.relay.serve_daemon(connection, socket.read))
     await _settle()
 
     _ = serving.cancel()
     await _settle()
 
     assert serving.cancelled()
-    assert (agent.closed, leg.closed) == (
+    assert (agent.closed, socket.closed) == (
         [wire_terminals.CLOSE_ENDED],
         [wire_terminals.CLOSE_ENDED],
     )
 
 
-async def test_the_seventeenth_pipe_on_a_machine_is_refused(world: _World) -> None:
+async def test_the_seventeenth_connection_on_a_host_is_refused(world: _World) -> None:
     joined = [await world.agent() for _ in range(16)]
 
-    with pytest.raises(PipeBusyError) as busy:
+    with pytest.raises(ToolConnectionBusyError) as busy:
         _ = world.join()
     assert busy.value.limit == 16
 
-    # Another machine is not counted against this one.
-    _ = await world.agent(machine_id=_OTHER)
+    # Another host is not counted against this one.
+    _ = await world.agent(host_id=_OTHER)
 
-    # A pipe that ended gives its slot back, so no drop leaks one.
+    # A tool connection that ended gives its slot back, so no drop leaks one.
     joined[0][1].drop()
     await _settle()
     _ = await world.agent()
-    with pytest.raises(PipeBusyError):
+    with pytest.raises(ToolConnectionBusyError):
         _ = world.join()
 
 
@@ -704,7 +734,7 @@ async def test_every_ending_gives_all_sixteen_slots_back(
     waiting = [await world.agent() for _ in range(8)]
 
     if ending == "revoked":
-        world.hub.close_machine(_MACHINE)
+        world.relay.close_host(_HOST)
     elif ending == "timer":
         for agent, _ in agents:
             agent.drop()
@@ -720,17 +750,17 @@ async def test_every_ending_gives_all_sixteen_slots_back(
         _ = world.join()
 
 
-async def test_a_revoked_machine_ends_its_pipes_and_leaves_another_machines(
+async def test_a_revoked_host_ends_its_connections_and_leaves_another_hosts(
     world: _World,
 ) -> None:
     agent, host = await world.paired()
-    waiting_pipe, waiting = await world.agent()
-    other_pipe, other = await world.agent(machine_id=_OTHER)
+    waiting_connection, waiting = await world.agent()
+    other_connection, other = await world.agent(host_id=_OTHER)
 
-    world.hub.close_machine(_MACHINE)
+    world.relay.close_host(_HOST)
     await _settle()
 
-    revoked = wire_terminals.CLOSE_MACHINE_REVOKED
+    revoked = wire_terminals.CLOSE_HOST_REVOKED
     assert (agent.closed, host.closed, waiting.closed) == (
         [revoked],
         [revoked],
@@ -738,42 +768,43 @@ async def test_a_revoked_machine_ends_its_pipes_and_leaves_another_machines(
     )
     assert other.closed == []
     assert (
-        world.hub.attach(_MACHINE, waiting_pipe.id, _Leg(), instance=_INSTANCE) is None
+        world.relay.attach(_HOST, waiting_connection.id, _Socket(), instance=_INSTANCE)
+        is None
     )
-    assert await world.take(_OTHER) == ToolOffer(pipe_id=other_pipe.id)
+    assert await world.take(_OTHER) == ToolOffer(connection_id=other_connection.id)
 
 
-async def test_revoking_a_machine_ends_a_held_wait_and_leaves_another_machines(
+async def test_revoking_a_host_ends_a_held_wait_and_leaves_another_hosts(
     world: _World,
 ) -> None:
-    held = world.run(world.hub.wait(_MACHINE, wait_sec=25))
-    other = world.run(world.hub.wait(_OTHER, wait_sec=25))
+    held = world.run(world.relay.wait(_HOST, wait_sec=25))
+    other = world.run(world.relay.wait(_OTHER, wait_sec=25))
     await _settle()
 
-    world.hub.close_machine(_MACHINE)
+    world.relay.close_host(_HOST)
 
-    with pytest.raises(PipeRevokedError):
+    with pytest.raises(ToolConnectionRevokedError):
         _ = await held
     assert not other.done()
 
 
-async def test_a_machine_that_rejoins_after_a_revoke_takes_new_pipes(
+async def test_a_host_that_rejoins_after_a_revoke_takes_new_connections(
     world: _World,
 ) -> None:
-    world.hub.close_machine(_MACHINE)
+    world.relay.close_host(_HOST)
 
-    pipe, _ = await world.agent()
+    connection, _ = await world.agent()
 
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
+    assert await world.take() == ToolOffer(connection_id=connection.id)
 
 
 # -- Asking the rule again ---------------------------------------------------------------
 
 
-async def test_a_live_pipe_survives_a_sweep(world: _World) -> None:
+async def test_a_live_connection_survives_a_sweep(world: _World) -> None:
     agent, host = await world.paired()
 
-    await world.hub.sweep()
+    await world.relay.sweep()
     await _settle()
 
     assert (agent.closed, host.closed) == ([], [])
@@ -782,28 +813,28 @@ async def test_a_live_pipe_survives_a_sweep(world: _World) -> None:
     assert host.sent == [b"Ping\n"]
 
 
-async def test_the_sweep_asks_about_who_opened_a_pipe_and_who_attached_to_it(
+async def test_the_sweep_asks_about_who_opened_a_connection_and_who_attached_to_it(
     world: _World,
 ) -> None:
     _ = await world.paired()
-    queued, _leg = await world.agent()
+    queued, _socket = await world.agent()
 
-    await world.hub.sweep()
+    await world.relay.sweep()
 
     assert queued.instance is None
     assert world.asked == [(_ASKER, _KEY, _INSTANCE), (_ASKER, _KEY, None)]
 
 
-async def test_a_sweep_refuses_a_pipe_whose_rule_no_longer_holds_and_frees_its_slot(
+async def test_a_sweep_refuses_a_connection_whose_rule_no_longer_holds_and_frees_its_slot(
     world: _World,
 ) -> None:
-    pipe, agent = await world.agent()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
-    host = await world.host(pipe)
+    connection, agent = await world.agent()
+    assert await world.take() == ToolOffer(connection_id=connection.id)
+    host = await world.host(connection)
     _, other = await world.agent()
-    world.dead.add(pipe.id)
+    world.dead.add(connection.id)
 
-    await world.hub.sweep()
+    await world.relay.sweep()
     await _settle()
 
     refused = wire_terminals.CLOSE_REFUSED
@@ -811,24 +842,24 @@ async def test_a_sweep_refuses_a_pipe_whose_rule_no_longer_holds_and_frees_its_s
     assert other.closed == []
     for _ in range(15):
         _ = world.join()
-    with pytest.raises(PipeBusyError):
+    with pytest.raises(ToolConnectionBusyError):
         _ = world.join()
 
 
-async def test_a_sweep_refuses_a_pipe_no_host_has_taken_and_it_is_not_offered(
+async def test_a_sweep_refuses_a_connection_no_host_has_taken_and_it_is_not_offered(
     world: _World,
 ) -> None:
-    pipe, agent = await world.agent()
-    world.dead.add(pipe.id)
+    connection, agent = await world.agent()
+    world.dead.add(connection.id)
 
-    await world.hub.sweep()
+    await world.relay.sweep()
     await _settle()
 
     assert agent.closed == [wire_terminals.CLOSE_REFUSED]
     assert await world.take() is None
 
 
-async def test_a_failing_question_leaves_the_pipe_up_and_asks_about_the_rest(
+async def test_a_failing_question_leaves_the_connection_up_and_asks_about_the_rest(
     world: _World,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -837,7 +868,7 @@ async def test_a_failing_question_leaves_the_pipe_up_and_asks_about_the_rest(
     world.unknown.add(unknown.id)
     world.dead.add(dead.id)
 
-    await world.hub.sweep()
+    await world.relay.sweep()
     await _settle()
 
     assert unknown_agent.closed == []
@@ -845,11 +876,11 @@ async def test_a_failing_question_leaves_the_pipe_up_and_asks_about_the_rest(
     assert "liveness unknown" in caplog.text
 
 
-async def test_the_sweep_loop_sweeps_a_pipe_hub(world: _World) -> None:
-    pipe, agent = await world.agent()
-    world.dead.add(pipe.id)
+async def test_the_sweep_loop_sweeps_a_connection_relay(world: _World) -> None:
+    connection, agent = await world.agent()
+    world.dead.add(connection.id)
 
-    looping = world.run(sweep_loop(world.hub, interval_sec=0))
+    looping = world.run(sweep_loop(world.relay, interval_sec=0))
     await _settle()
 
     assert agent.closed == [wire_terminals.CLOSE_REFUSED]
@@ -866,8 +897,12 @@ class _Rewrite:
         self.shown: list[bytes] = []
         self._answers = list(answers)
 
-    async def __call__(self, pipe: Pipe, frame: bytes) -> tuple[bytes, bytes]:
-        del pipe
+    async def __call__(
+        self,
+        connection: ToolConnection,
+        frame: bytes,
+    ) -> tuple[bytes, bytes]:
+        del connection
         self.shown.append(frame)
         return self._answers.pop(0)
 
@@ -915,12 +950,12 @@ async def test_an_answer_to_the_agent_waits_for_the_end_of_the_hosts_line(
     assert agent.sent == [b"half a li", b"ne\n", b"refused\n"]
 
 
-async def test_a_failing_inbound_ends_the_pipe_and_forwards_nothing(
+async def test_a_failing_inbound_ends_the_connection_and_forwards_nothing(
     world: _World,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    async def failing(pipe: Pipe, frame: bytes) -> tuple[bytes, bytes]:
-        del pipe, frame
+    async def failing(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
+        del connection, frame
         raise ValueError("the line check broke")
 
     agent, host = await world.paired(inbound=failing)
@@ -937,19 +972,19 @@ async def test_a_failing_inbound_ends_the_pipe_and_forwards_nothing(
         agent.reasons
         == host.reasons
         == [
-            "the server could not go on relaying this pipe",
+            "the server could not go on relaying this tool connection",
         ]
     )
-    assert "tool pipe failed" in caplog.text
+    assert "tool connection failed" in caplog.text
 
 
-async def test_an_inbound_refuses_the_pipe_saying_why(
+async def test_an_inbound_refuses_the_connection_saying_why(
     world: _World,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    async def refusing(pipe: Pipe, frame: bytes) -> tuple[bytes, bytes]:
-        del pipe, frame
-        raise PipeEndError("é" * 100)
+    async def refusing(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
+        del connection, frame
+        raise ToolConnectionEndError("é" * 100)
 
     agent, host = await world.paired(inbound=refusing)
 
@@ -963,8 +998,8 @@ async def test_an_inbound_refuses_the_pipe_saying_why(
     )
     # A close frame holds 123 bytes of reason, and a character is cut whole.
     assert agent.reasons == host.reasons == ["é" * 61]
-    assert "tool pipe failed" not in caplog.text
-    assert str(PipeEndError("why")) == "why"
+    assert "tool connection failed" not in caplog.text
+    assert str(ToolConnectionEndError("why")) == "why"
 
 
 # -- What is logged -----------------------------------------------------------------------
@@ -979,13 +1014,16 @@ def _fields(message: str) -> dict[str, str]:
     return {key: quoted or bare for key, quoted, bare in found}
 
 
-def _ended(caplog: pytest.LogCaptureFixture, pipe: Pipe) -> list[dict[str, str]]:
-    """Return the fields of each line saying ``pipe`` ended."""
+def _ended(
+    caplog: pytest.LogCaptureFixture,
+    connection: ToolConnection,
+) -> list[dict[str, str]]:
+    """Return the fields of each line saying ``tool connection`` ended."""
     return [
         _fields(record.getMessage())
         for record in caplog.records
-        if record.getMessage().startswith("tool pipe ended:")
-        and f"pipe={pipe.id}" in record.getMessage()
+        if record.getMessage().startswith("tool connection ended:")
+        and f"connection={connection.id}" in record.getMessage()
     ]
 
 
@@ -993,13 +1031,16 @@ def _ended(caplog: pytest.LogCaptureFixture, pipe: Pipe) -> list[dict[str, str]]
     ("ending", "said"),
     [
         ("agent_leaves", ("agent", wire_terminals.CLOSE_ENDED, "the agent left")),
-        ("host_leaves", ("host", wire_terminals.CLOSE_HOST_LOST, "the host left")),
+        (
+            "daemon_leaves",
+            ("daemon", wire_terminals.CLOSE_DAEMON_LOST, "the daemon left"),
+        ),
         (
             "revoked",
             (
                 "revoke",
-                wire_terminals.CLOSE_MACHINE_REVOKED,
-                "the machine was revoked, or joined again",
+                wire_terminals.CLOSE_HOST_REVOKED,
+                "the host was revoked, or joined again",
             ),
         ),
         (
@@ -1007,47 +1048,47 @@ def _ended(caplog: pytest.LogCaptureFixture, pipe: Pipe) -> list[dict[str, str]]
             (
                 "sweep",
                 wire_terminals.CLOSE_REFUSED,
-                "no longer allowed: what opened this pipe no longer holds",
+                "no longer allowed: what opened this tool connection no longer holds",
             ),
         ),
     ],
 )
-async def test_a_pipe_that_ends_logs_one_line_with_its_leg_code_and_time(
+async def test_a_connection_that_ends_logs_one_line_with_its_socket_code_and_time(
     world: _World,
     caplog: pytest.LogCaptureFixture,
     ending: str,
     said: tuple[str, int, str],
 ) -> None:
     by, code, reason = said
-    caplog.set_level(logging.INFO, logger=tool_pipes.__name__)
-    pipe, agent = await world.agent()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
-    # The offer handed to a host says so, and which pipe it names.
+    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
+    connection, agent = await world.agent()
+    assert await world.take() == ToolOffer(connection_id=connection.id)
+    # The offer handed to a host says so, and which tool connection it names.
     assert [
         _fields(r.getMessage())
         for r in caplog.records
-        if r.getMessage().startswith("tool pipe offered:")
-    ] == [{"pipe": str(pipe.id), "machine_id": str(_MACHINE)}]
-    host = await world.host(pipe)
+        if r.getMessage().startswith("tool connection offered:")
+    ] == [{"connection": str(connection.id), "host_id": str(_HOST)}]
+    host = await world.host(connection)
     await world.time.advance(3)
 
     if ending == "agent_leaves":
         agent.drop()
-    elif ending == "host_leaves":
+    elif ending == "daemon_leaves":
         host.drop()
     elif ending == "revoked":
-        world.hub.close_machine(_MACHINE)
+        world.relay.close_host(_HOST)
     else:
-        world.dead.add(pipe.id)
-        await world.hub.sweep()
+        world.dead.add(connection.id)
+        await world.relay.sweep()
     await _settle()
-    world.hub.close_machine(_MACHINE)
+    world.relay.close_host(_HOST)
     await _settle()
 
-    assert _ended(caplog, pipe) == [
+    assert _ended(caplog, connection) == [
         {
-            "pipe": str(pipe.id),
-            "machine_id": str(_MACHINE),
+            "connection": str(connection.id),
+            "host_id": str(_HOST),
             "by": by,
             "code": str(code),
             "reason": reason,
@@ -1058,12 +1099,12 @@ async def test_a_pipe_that_ends_logs_one_line_with_its_leg_code_and_time(
     ]
 
 
-async def test_a_dial_back_that_times_out_warns_and_ends_the_pipe_once(
+async def test_a_dial_back_that_times_out_warns_and_ends_the_connection_once(
     world: _World,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger=tool_pipes.__name__)
-    pipe, _ = await world.agent()
+    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
+    connection, _ = await world.agent()
 
     await world.time.advance(20)
 
@@ -1073,13 +1114,17 @@ async def test_a_dial_back_that_times_out_warns_and_ends_the_pipe_once(
         if record.levelno == logging.WARNING
     ]
     assert warned == [
-        {"pipe": str(pipe.id), "machine_id": str(_MACHINE), "wait_sec": "20"},
+        {
+            "connection": str(connection.id),
+            "host_id": str(_HOST),
+            "wait_sec": "20",
+        },
     ]
-    (ended,) = _ended(caplog, pipe)
+    (ended,) = _ended(caplog, connection)
     # No host attached, so none is named.
     assert (ended["by"], ended["code"], ended["instance"]) == (
         "dial-back",
-        str(wire_terminals.CLOSE_HOST_LOST),
+        str(wire_terminals.CLOSE_DAEMON_LOST),
         "-",
     )
 
@@ -1087,31 +1132,31 @@ async def test_a_dial_back_that_times_out_warns_and_ends_the_pipe_once(
 @pytest.mark.parametrize(
     ("error", "by", "cause"),
     [
-        (PipeEndError("refused"), "agent", "-"),
+        (ToolConnectionEndError("refused"), "agent", "-"),
         (ValueError("the line check broke"), "server", "ValueError"),
     ],
 )
-async def test_a_pipe_its_line_check_ends_names_the_leg_and_only_the_errors_type(
+async def test_a_connection_its_line_check_ends_names_the_socket_and_only_the_errors_type(
     world: _World,
     caplog: pytest.LogCaptureFixture,
     error: Exception,
     by: str,
     cause: str,
 ) -> None:
-    caplog.set_level(logging.INFO, logger=tool_pipes.__name__)
+    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
 
-    async def failing(pipe: Pipe, frame: bytes) -> tuple[bytes, bytes]:
-        del pipe, frame
+    async def failing(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
+        del connection, frame
         raise error
 
-    pipe, agent = await world.agent(inbound=failing)
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
-    _ = await world.host(pipe)
+    connection, agent = await world.agent(inbound=failing)
+    assert await world.take() == ToolOffer(connection_id=connection.id)
+    _ = await world.host(connection)
 
     agent.push(b"secret-line\n")
     await _settle()
 
-    (ended,) = _ended(caplog, pipe)
+    (ended,) = _ended(caplog, connection)
     assert (ended["by"], ended["cause"]) == (by, cause)
     assert "secret-line" not in caplog.text
 
@@ -1119,32 +1164,32 @@ async def test_a_pipe_its_line_check_ends_names_the_leg_and_only_the_errors_type
 # -- An old host's wait ------------------------------------------------------------------
 
 
-async def test_an_old_hosts_hold_lasts_its_time_and_is_never_offered_a_pipe(
+async def test_an_old_hosts_hold_lasts_its_time_and_is_never_offered_a_connection(
     world: _World,
 ) -> None:
-    holding = world.run(world.hub.hold(_MACHINE, wait_sec=25))
+    holding = world.run(world.relay.hold(_HOST, wait_sec=25))
     await _settle()
 
-    pipe, _ = await world.agent()
+    connection, _ = await world.agent()
     await _settle()
 
     assert not holding.done()
-    assert await world.take() == ToolOffer(pipe_id=pipe.id)
+    assert await world.take() == ToolOffer(connection_id=connection.id)
     await world.time.advance(25)
     assert await holding is None
 
 
 async def test_an_old_hosts_hold_of_no_time_ends_at_once(world: _World) -> None:
-    await world.hub.hold(_MACHINE, wait_sec=0)
+    await world.relay.hold(_HOST, wait_sec=0)
 
 
-async def test_revoking_a_machine_ends_an_old_hosts_hold(world: _World) -> None:
-    holding = world.run(world.hub.hold(_MACHINE, wait_sec=25))
+async def test_revoking_a_host_ends_an_old_hosts_hold(world: _World) -> None:
+    holding = world.run(world.relay.hold(_HOST, wait_sec=25))
     await _settle()
 
-    world.hub.close_machine(_MACHINE)
+    world.relay.close_host(_HOST)
 
-    with pytest.raises(PipeRevokedError):
+    with pytest.raises(ToolConnectionRevokedError):
         _ = await holding
 
 

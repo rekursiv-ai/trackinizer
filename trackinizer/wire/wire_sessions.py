@@ -500,7 +500,7 @@ Values:
   settings: A model or effort change.
   interrupt: Stops the running turn.
   run: A command the agent wrote that the chat's starter clicked Run on: the run
-    runs it on its own machine and tells the agent how it ended. Only a run whose
+    runs it on its own host and tells the agent how it ended. Only a run whose
     drains say it takes runs is sent one.
 
 Payload by kind: ``answer`` is ``{"prompt_id": str, "option": str, "updated_input":
@@ -541,7 +541,7 @@ class InboundEnqueueRequest(BaseModel):
 
     The enqueue **request** carries ``text`` -- the one field the route delivers --
     and, from the configured assistant alone, the ``asker`` it sends for. It names no
-    kind: every other :data:`InboundKind` acts on the run's machine, and comes from a
+    kind: every other :data:`InboundKind` acts on the run's host, and comes from a
     person in Chat (``POST /api/chats``) alone, so a key that leaked from an agent
     sends its owner's run nothing but a line. ``source``
     is attested by the route from the authenticated principal (a client cannot forge
@@ -905,7 +905,7 @@ PROVIDER_IS_OTHER_CLI: Final = "provider_is_other_cli"
 """The canvas answers the chat with one CLI, and a run of the other drained it."""
 
 CHAT_RUN_LIVE: Final = "chat_run_live"
-"""Another run of the chat's CLI holds its lease: a chat has one live run at a time."""
+"""Another run of the chat's CLI holds its lease: a chat has one agent process at a time."""
 
 CLI_REQUIRED: Final = "cli_required"
 """The chat is answered by a CLI and the drain named none, as a ``trax`` older than the
@@ -915,7 +915,7 @@ SESSION_ENDED: Final = "session_ended"
 """The chat's session ended, as when the person closed the chat, and its run still polls."""
 
 RUN_STOPPED: Final = "run_stopped"
-"""The run's owner stopped it, or disconnected its machine, and it still polls."""
+"""The run's owner stopped it, or disconnected its host, and it still polls."""
 
 RUN_NAME_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$"
 """A detached run's name: the server takes it on a drain, and a detached run takes it

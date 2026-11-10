@@ -1,4 +1,4 @@
-"""Machine routes, end to end over PGlite.
+"""Host routes, end to end over PGlite.
 
 The whole app answers each request, so the exception handlers and the request
 logger are on the path, and the table's own checks stand behind the routes'.
@@ -14,21 +14,21 @@ from treekle import from_plain
 
 import pytest
 
-from trackinizer.server.api._deps import machine_changes
+from trackinizer.server.api._deps import host_changes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
 )
-from trackinizer.wire.wire_machines import (
-    MACHINE_LABELS_PATH,
-    MACHINE_PATH,
-    MACHINES_PATH,
+from trackinizer.wire.wire_hosts import (
+    HOST_LABELS_PATH,
+    HOST_PATH,
+    HOSTS_PATH,
     MAX_HOW_CHARS,
     RESERVED_NAMES,
-    MachineDetail,
-    MachineList,
+    HostDetail,
+    HostList,
 )
 
 
@@ -45,7 +45,7 @@ pytestmark = [
 ]
 
 
-async def test_a_writer_lists_and_reads_machines_sorted_by_name(
+async def test_a_writer_lists_and_reads_hosts_sorted_by_name(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -58,7 +58,7 @@ async def test_a_writer_lists_and_reads_machines_sorted_by_name(
     listed = await _listed(client)
     one = await _one(client, "a-box")
 
-    assert [m.name for m in listed.machines] == ["9lives", "a-box", "ab-box", "b-box"]
+    assert [m.name for m in listed.hosts] == ["9lives", "a-box", "ab-box", "b-box"]
     assert (one.role, one.how, one.labels, one.updated_by) == (
         "dev",
         "ssh a-box",
@@ -75,7 +75,7 @@ async def test_a_viewer_cannot_read(
     await client.put(_path("dev-1"), json={})
     _as("viewer")
 
-    assert (await client.get(MACHINES_PATH)).status_code == 403
+    assert (await client.get(HOSTS_PATH)).status_code == 403
     assert (await client.get(_path("dev-1"))).status_code == 403
 
 
@@ -119,7 +119,7 @@ async def test_an_empty_string_clears_a_field_and_a_put_records_who(
     _as("admin")
     await client.put(_path("dev-1"), json={"role": "dev", "how": "ssh dev-1"})
     async with store.engine.acquire() as conn:
-        before = await conn.fetchrow("SELECT id, created, updated FROM machines")
+        before = await conn.fetchrow("SELECT id, created, updated FROM hosts")
     install_identity(
         make_test_identity(role="admin", email="other@example.com", api_key_id=None),
     )
@@ -129,7 +129,7 @@ async def test_an_empty_string_clears_a_field_and_a_put_records_who(
     one = await _one(client, "dev-1")
     assert (one.role, one.how, one.updated_by) == ("dev", "", "other@example.com")
     async with store.engine.acquire() as conn:
-        (after,) = await conn.fetch("SELECT id, created, updated FROM machines")
+        (after,) = await conn.fetch("SELECT id, created, updated FROM hosts")
     assert before is not None
     assert (after["id"], after["created"]) == (before["id"], before["created"])
     assert from_plain(after["updated"], datetime) > from_plain(
@@ -178,7 +178,7 @@ async def test_a_bad_body_is_refused_and_stores_nothing(
     response = await client.put(_path("dev-1"), json=body)
 
     assert response.status_code == 422
-    assert (await _listed(client)).machines == []
+    assert (await _listed(client)).hosts == []
 
 
 @pytest.mark.parametrize(
@@ -198,7 +198,7 @@ async def test_a_malformed_or_reserved_name_is_refused_and_stores_nothing(
     delete = await client.delete(_path(name))
 
     assert [r.status_code for r in (put, labels, get, delete)] == [422] * 4
-    assert (await _listed(client)).machines == []
+    assert (await _listed(client)).hosts == []
 
 
 async def test_labels_are_added_then_removed_idempotently(
@@ -264,7 +264,7 @@ async def test_a_bad_label_is_refused_and_changes_nothing(
     assert (await _one(client, "dev-1")).labels == ["gpu"]
 
 
-async def test_labels_of_an_absent_machine_are_not_found(
+async def test_labels_of_an_absent_host_are_not_found(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -273,10 +273,10 @@ async def test_labels_of_an_absent_machine_are_not_found(
     response = await client.patch(_labels_path("nope"), json={"add": ["gpu"]})
 
     assert response.status_code == 404
-    assert (await _listed(client)).machines == []
+    assert (await _listed(client)).hosts == []
 
 
-async def test_a_machine_is_not_found_until_registered_and_after_delete(
+async def test_a_host_is_not_found_until_registered_and_after_delete(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -291,28 +291,28 @@ async def test_a_machine_is_not_found_until_registered_and_after_delete(
     assert before.status_code == 404
     assert (deleted.status_code, deleted.content) == (204, b"")
     assert (after.status_code, deleted_again.status_code) == (404, 404)
-    assert (await _listed(client)).machines == []
+    assert (await _listed(client)).hosts == []
 
 
-async def test_deleting_an_owned_machine_moves_its_owners_version(
+async def test_deleting_an_owned_host_moves_its_owners_version(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, store = pglite_route_client
     _as("admin")
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO machines (name, updated_by, owner, role) "
+            "INSERT INTO hosts (name, updated_by, owner, role) "
             "VALUES ('laptop', 'ada@x.y', 'ada@x.y', 'personal')",
         )
-    before = machine_changes(app).version("ada@x.y")
+    before = host_changes(app).version("ada@x.y")
 
     deleted = await client.delete(_path("laptop"))
 
     assert deleted.status_code == 204
-    assert machine_changes(app).version("ada@x.y") == before + 1
+    assert host_changes(app).version("ada@x.y") == before + 1
 
 
-async def test_a_machine_can_be_registered_again_after_delete(
+async def test_a_host_can_be_registered_again_after_delete(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
     client, _ = pglite_route_client
@@ -328,27 +328,27 @@ async def test_a_machine_can_be_registered_again_after_delete(
 
 
 def _path(name: str) -> str:
-    return MACHINE_PATH.format(name=quote(name, safe=""))
+    return HOST_PATH.format(name=quote(name, safe=""))
 
 
 def _labels_path(name: str) -> str:
-    return MACHINE_LABELS_PATH.format(name=quote(name, safe=""))
+    return HOST_LABELS_PATH.format(name=quote(name, safe=""))
 
 
 def _as(role: Role) -> None:
     install_identity(make_test_identity(role=role, api_key_id=None))
 
 
-async def _listed(client: httpx2.AsyncClient) -> MachineList:
-    response = await client.get(MACHINES_PATH)
+async def _listed(client: httpx2.AsyncClient) -> HostList:
+    response = await client.get(HOSTS_PATH)
     assert response.status_code == 200
-    return MachineList.model_validate_json(response.text)
+    return HostList.model_validate_json(response.text)
 
 
-async def _one(client: httpx2.AsyncClient, name: str) -> MachineDetail:
+async def _one(client: httpx2.AsyncClient, name: str) -> HostDetail:
     response = await client.get(_path(name))
     assert response.status_code == 200, from_plain(response.text, str)
-    return MachineDetail.model_validate_json(response.text)
+    return HostDetail.model_validate_json(response.text)
 
 
 if __name__ == "__main__":

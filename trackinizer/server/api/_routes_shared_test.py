@@ -42,26 +42,26 @@ def test_a_refusal_carries_its_code_and_message() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("current", [True, False, None])
-async def test_host_instance_requires_an_explicit_match(current: bool | None) -> None:
+async def test_daemon_instance_requires_an_explicit_match(current: bool | None) -> None:
     conn = make_conn()
     conn.fetchval.return_value = current
     request = SimpleNamespace(
         app=SimpleNamespace(state=SimpleNamespace(engine=FakeEngine(conn))),
     )
-    machine, instance = uuid.uuid4(), uuid.uuid4()
+    host, instance = uuid.uuid4(), uuid.uuid4()
     if current is True:
-        await require_instance(cast("Request", request), machine, instance=instance)
+        await require_instance(cast("Request", request), host, instance=instance)
     else:
         with pytest.raises(HTTPException) as refused:
-            await require_instance(cast("Request", request), machine, instance=instance)
+            await require_instance(cast("Request", request), host, instance=instance)
         assert (refused.value.status_code, refused.value.detail) == (
             403,
             "stale host instance",
         )
     assert conn.fetchval.call_args is not None
     assert conn.fetchval.call_args.args == (
-        "SELECT host_instance = $2 FROM machines WHERE id = $1",
-        machine,
+        "SELECT daemon_instance = $2 FROM hosts WHERE id = $1",
+        host,
         instance,
     )
 

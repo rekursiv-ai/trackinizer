@@ -1,14 +1,14 @@
-"""Routes a machine's owner uses to see and stop what still reaches the server from it.
+"""Routes a host's owner uses to see and stop what still reaches the server from it.
 
 A run of a CLI reaches the server with its account's key, through its session's drain,
-not through the machine's host: it stays live after the host stops, while the machine
-reads offline. Each drain names the run's machine (``inbound.PollerRun``), so
-the owner sees here the live runs of their account that name it, and stops them. A
+not through the daemon: it stays live after the host stops, while the host
+reads offline. Each drain names the run's host (``inbound.PollerRun``), so
+the owner sees here the live sessions of their account that name it, and stops them. A
 stopped run's next drain is refused with 403 ``run_stopped``, on which every run ends.
-Disconnecting a machine revokes its host, as the revoke route does, and stops every
+Disconnecting a host revokes its host, as the revoke route does, and stops every
 run that names it. Logging it out also revokes the owner's keys a device login made for
 it, so nothing on the computer acts as them until a person approves a login again.
-Where each session's run last said it ran is kept (``session_liveness``), so a machine's
+Where each session's run last said it ran is kept (``session_liveness``), so a host's
 past runs are listed too, each with its AgentSession's number and the chat it is a
 session of.
 """
@@ -24,20 +24,20 @@ from treekle import from_plain
 from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import get_inbound, get_store, nudge_streams
 from trackinizer.server.api._routes_shared import request_engine
-from trackinizer.server.api.machine_host_routes import revoke_machine
-from trackinizer.server.api.machines_routes import MachineName, refuse_reserved
+from trackinizer.server.api.daemon_routes import revoke_host
+from trackinizer.server.api.hosts_routes import HostName, refuse_reserved
 from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import NotFoundError
-from trackinizer.wire.wire_machines import (
-    MACHINE_DISCONNECT_PATH,
-    MACHINE_LOGOUT_PATH,
-    MACHINE_RUN_STOP_PATH,
-    MACHINE_RUNS_PATH,
-    MachineLogout,
-    MachineRun,
-    MachineRuns,
+from trackinizer.wire.wire_hosts import (
+    HOST_DISCONNECT_PATH,
+    HOST_LOGOUT_PATH,
+    HOST_RUN_STOP_PATH,
+    HOST_RUNS_PATH,
+    HostLogout,
+    HostRun,
+    HostRuns,
 )
 from trackinizer.wire.wire_science_chat import chat_conversation_id
 
@@ -50,52 +50,52 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "disconnect_machine_route",
-    "list_machine_runs_route",
-    "live_runs",
-    "logout_machine_route",
+    "disconnect_host_route",
+    "list_host_runs_route",
+    "live_sessions",
+    "logout_host_route",
     "named_runs",
     "router",
-    "stop_machine_run_route",
+    "stop_host_run_route",
 ]
 
 
 router = APIRouter()
 
 
-@router.get(MACHINE_RUNS_PATH, response_model=MachineRuns)
-async def list_machine_runs_route(
-    name: MachineName,
+@router.get(HOST_RUNS_PATH, response_model=HostRuns)
+async def list_host_runs_route(
+    name: HostName,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     past: Annotated[int, Query(ge=0, le=100)] = 20,
-) -> MachineRuns:
-    """List the caller's live runs that name one of their machines, and its past ones.
+) -> HostRuns:
+    """List the caller's live sessions that name one of their hosts, and its past ones.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       request: Request carrying the database engine and the inbound queue.
-      identity: The machine's owner.
+      identity: The host's owner.
       past: The most past runs to list.
 
     Returns:
-      runs: Each live run, by CLI, then host name, then session; and ``past``, the
+      runs: Each live session, by CLI, then host name, then session; and ``past``, the
         last ``past`` that are not live, most recently heard from first.
 
     Raises:
-      NotFoundError: The caller owns no such machine.
+      NotFoundError: The caller owns no such host.
 
     """
     owner = await _owner(request, identity, name=name)
-    live = live_runs(request, machine=name, owner=owner)
+    live = live_sessions(request, host=name, owner=owner)
     shown = {run.session_id for run in live}
     before = await get_store(request).past_runs(
-        machine=name,
+        host=name,
         account=owner,
         limit=past + len(shown),
     )
     earlier = [
-        MachineRun(
+        HostRun(
             session_id=run.session_id,
             cli=run.cli,
             run=run.run,
@@ -115,111 +115,111 @@ async def list_machine_runs_route(
             policy=get_store(request).access_policy,
             principal=principal,
         )
-    return MachineRuns(runs=named[: len(live)], past=named[len(live) :])
+    return HostRuns(runs=named[: len(live)], past=named[len(live) :])
 
 
-@router.post(MACHINE_RUN_STOP_PATH, status_code=204)
-async def stop_machine_run_route(
-    name: MachineName,
+@router.post(HOST_RUN_STOP_PATH, status_code=204)
+async def stop_host_run_route(
+    name: HostName,
     session_id: UUID,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> Response:
-    """Stop one of the caller's live runs on one of their machines.
+    """Stop one of the caller's live sessions on one of their hosts.
 
     Its lease ends now, and its next drain is refused, so the run ends within one
     drain's hold. Its chat stays, and a new run may take it.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       session_id: The session the run drains.
       request: Request carrying the database engine and the inbound queue.
-      identity: The machine's owner.
+      identity: The host's owner.
 
     Returns:
       empty: 204 with no body.
 
     Raises:
-      NotFoundError: The caller owns no such machine, or no live run of theirs on it
+      NotFoundError: The caller owns no such host, or no live session of theirs on it
         drains that session.
 
     """
     owner = await _owner(request, identity, name=name)
     inbound = get_inbound(request)
     if session_id not in inbound.runs_on(name, account=owner):
-        raise NotFoundError(f"no live run of session {session_id} on {name}")
+        raise NotFoundError(f"no live session {session_id} on {name}")
     inbound.stop_run(session_id)
     # The run's chat lost its partner.
     nudge_streams(request)
     return Response(status_code=204)
 
 
-@router.post(MACHINE_DISCONNECT_PATH, response_model=MachineRuns)
-async def disconnect_machine_route(
-    name: MachineName,
+@router.post(HOST_DISCONNECT_PATH, response_model=HostRuns)
+async def disconnect_host_route(
+    name: HostName,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
-) -> MachineRuns:
-    """Revoke a machine's host and stop every live run of its owner that names it.
+) -> HostRuns:
+    """Revoke a daemon and stop every live session of its owner that names it.
 
     The host learns of it by a 410 on its next request, and its terminals and
     commands are closed, as a revoke does. The host joins it again with the key the
     computer holds, which this leaves untouched.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       request: Request carrying the database engine, the hubs and the inbound queue.
-      identity: Admin principal, or the machine's owner.
+      identity: Admin principal, or the host's owner.
 
     Returns:
       runs: The runs it stopped.
 
     Raises:
-      NotFoundError: No such machine.
-      HTTPException: 403 when a writer names a machine that is not theirs.
+      NotFoundError: No such host.
+      HTTPException: 403 when a writer names a host that is not theirs.
 
     """
-    owner = await revoke_machine(request, name=name, identity=identity)
-    runs = [] if owner is None else live_runs(request, machine=name, owner=owner)
+    owner = await revoke_host(request, name=name, identity=identity)
+    runs = [] if owner is None else live_sessions(request, host=name, owner=owner)
     inbound = get_inbound(request)
     for each in runs:
         inbound.stop_run(each.session_id)
     if runs:
         nudge_streams(request)
-    return MachineRuns(runs=runs)
+    return HostRuns(runs=runs)
 
 
-@router.post(MACHINE_LOGOUT_PATH, response_model=MachineLogout)
-async def logout_machine_route(
-    name: MachineName,
+@router.post(HOST_LOGOUT_PATH, response_model=HostLogout)
+async def logout_host_route(
+    name: HostName,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
-) -> MachineLogout:
-    """Disconnect one of the caller's machines and revoke the keys it logged in with.
+) -> HostLogout:
+    """Disconnect one of the caller's hosts and revoke the keys it logged in with.
 
     Disconnects it as the disconnect route does, then revokes the caller's live keys
-    a device login made for it (``api_keys.machine_id``). A key made another way, or
-    before keys named their machine, is not one: it is revoked in Settings.
+    a device login made for it (``api_keys.host_id``). A key made another way, or
+    before keys named their host, is not one: it is revoked in Settings.
 
     Args:
-      name: The machine's name.
+      name: The host's name.
       request: Request carrying the database engine, the hubs and the inbound queue.
-      identity: The machine's owner.
+      identity: The host's owner.
 
     Returns:
       logout: The runs it stopped and how many keys it revoked.
 
     Raises:
-      NotFoundError: The caller owns no such machine.
+      NotFoundError: The caller owns no such host.
 
     """
     owner = await _owner(request, identity, name=name)
-    stopped = await disconnect_machine_route(name, request, identity)
+    stopped = await disconnect_host_route(name, request, identity)
     async with request_engine(request).acquire() as conn:
         keys = await conn.fetch(
-            "UPDATE api_keys SET revoked_at = clock_timestamp() FROM machines "
-            "WHERE api_keys.machine_id = machines.id AND machines.name = $1 "
-            "AND machines.owner = $2 AND api_keys.user_id = $3 "
+            "UPDATE api_keys SET revoked_at = clock_timestamp() FROM hosts "
+            "WHERE api_keys.host_id = hosts.id AND hosts.name = $1 "
+            "AND hosts.owner = $2 AND api_keys.user_id = $3 "
             "AND api_keys.revoked_at IS NULL RETURNING api_keys.id",
             name,
             owner,
@@ -228,23 +228,23 @@ async def logout_machine_route(
     store = get_store(request)
     for key in keys:
         store.forget_bearer_identity_for_key(from_plain(key["id"], UUID))
-    return MachineLogout(runs=stopped.runs, keys=len(keys))
+    return HostLogout(runs=stopped.runs, keys=len(keys))
 
 
-def live_runs(request: Request, *, machine: str, owner: str) -> list[MachineRun]:
-    """Return ``owner``'s live runs that name ``machine``, by CLI, host name, session.
+def live_sessions(request: Request, *, host: str, owner: str) -> list[HostRun]:
+    """Return ``owner``'s live sessions that name ``host``, by CLI, host name, session.
 
     Args:
       request: Request carrying the inbound queue.
-      machine: The machine's name.
-      owner: The machine owner's email.
+      host: The host's name.
+      owner: The host owner's email.
 
     Returns:
-      runs: Each live run.
+      runs: Each live session.
 
     """
     runs = [
-        MachineRun(
+        HostRun(
             session_id=session_id,
             cli=from_plain(where.cli, str),
             run=where.run,
@@ -252,7 +252,7 @@ def live_runs(request: Request, *, machine: str, owner: str) -> list[MachineRun]
             state=where.state,
         )
         for session_id, where in get_inbound(request)
-        .runs_on(machine, account=owner)
+        .runs_on(host, account=owner)
         .items()
     ]
     return sorted(runs, key=lambda run: (run.cli, run.run or "", str(run.session_id)))
@@ -260,22 +260,22 @@ def live_runs(request: Request, *, machine: str, owner: str) -> list[MachineRun]
 
 async def named_runs(
     conn: Conn,
-    runs: Sequence[MachineRun],
+    runs: Sequence[HostRun],
     *,
     owner: str,
     policy: AccessPolicy | None,
     principal: Principal | None,
-) -> list[MachineRun]:
+) -> list[HostRun]:
     """Name each run's AgentSession and the chat it is a session of, in ``runs``' order.
 
-    A run names its machine on its own word, and drains with its owner's key, so only
+    A run names its host on its own word, and drains with its owner's key, so only
     a session of the owner's account that the caller may read is named; any other run
     is returned as it came, naming no session and no chat.
 
     Args:
       conn: Database connection.
-      runs: The runs, live or past, of ``owner``'s machine.
-      owner: The machine owner's email.
+      runs: The runs, live or past, of ``owner``'s host.
+      owner: The host owner's email.
       policy: Deployment policy; None preserves trusted reads.
       principal: The caller, as the access policy reads them; None preserves
         trusted reads.
@@ -319,15 +319,15 @@ async def named_runs(
 
 
 async def _owner(request: Request, identity: AuthIdentity, *, name: str) -> str:
-    """Return the caller's email when they own the machine; refuse anyone else."""
+    """Return the caller's email when they own the host; refuse anyone else."""
     refuse_reserved(name)
     async with request_engine(request).acquire() as conn:
         owner = from_plain(
-            await conn.fetchval("SELECT owner FROM machines WHERE name = $1", name),
+            await conn.fetchval("SELECT owner FROM hosts WHERE name = $1", name),
             str,
             default=None,
         )
-    # Another person's machine reads as no machine, as the confirm route has it.
+    # Another person's host reads as no host, as the confirm route has it.
     if owner is None or owner.lower() != identity.email.lower():
-        raise NotFoundError(f"no machine {name} of yours")
+        raise NotFoundError(f"no host {name} of yours")
     return owner

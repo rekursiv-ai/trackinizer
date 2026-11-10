@@ -1,6 +1,6 @@
-"""Machine-run routes against a mocked connection and the app's real inbound queue.
+"""Host-run routes against a mocked connection and the app's real inbound queue.
 
-``machine_runs_routes_pglite_test.py`` runs the same routes against a real
+``host_runs_routes_pglite_test.py`` runs the same routes against a real
 database; these pin what each route asks of the connection and the queue, and
 that a refusal stops nothing.
 """
@@ -30,16 +30,16 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
     patch_state,
 )
-from trackinizer.server.api.machine_runs_routes import named_runs
-from trackinizer.wire.wire_machines import (
-    MACHINE_DISCONNECT_PATH,
-    MACHINE_LOGOUT_PATH,
-    MACHINE_RUN_STOP_PATH,
-    MACHINE_RUNS_PATH,
+from trackinizer.server.api.host_runs_routes import named_runs
+from trackinizer.wire.wire_hosts import (
+    HOST_DISCONNECT_PATH,
+    HOST_LOGOUT_PATH,
+    HOST_RUN_STOP_PATH,
+    HOST_RUNS_PATH,
     RESERVED_NAMES,
-    MachineLogout,
-    MachineRun,
-    MachineRuns,
+    HostLogout,
+    HostRun,
+    HostRuns,
 )
 
 
@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
-_MACHINE_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
+_HOST_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
 _CLAUDE = uuid.UUID("00000000-0000-0000-0000-00000000000b")
 _CODEX = uuid.UUID("00000000-0000-0000-0000-00000000000a")
 _THEIRS = uuid.UUID("00000000-0000-0000-0000-00000000000c")
@@ -92,16 +92,16 @@ def test_listing_shows_the_owners_live_runs_sorted_then_the_past_ones(
         ],
     ]
 
-    response = client.get(MACHINE_RUNS_PATH.format(name="box"), params={"past": 1})
+    response = client.get(HOST_RUNS_PATH.format(name="box"), params={"past": 1})
 
     assert response.status_code == 200, response.text
-    runs = MachineRuns.model_validate_json(response.text)
+    runs = HostRuns.model_validate_json(response.text)
     assert [(run.cli, run.session_id) for run in runs.runs] == [
         ("claude", _CLAUDE),
         ("codex", _CODEX),
     ]
     assert runs.runs == [
-        MachineRun(
+        HostRun(
             session_id=_CLAUDE,
             cli="claude",
             run="chat-b",
@@ -110,10 +110,10 @@ def test_listing_shows_the_owners_live_runs_sorted_then_the_past_ones(
             seq=7,
             conversation_id=_CHAT,
         ),
-        MachineRun(session_id=_CODEX, cli="codex"),
+        HostRun(session_id=_CODEX, cli="codex"),
     ]
     assert runs.past == [
-        MachineRun(
+        HostRun(
             session_id=_PAST,
             cli="claude",
             run=None,
@@ -130,7 +130,7 @@ def test_listing_shows_the_owners_live_runs_sorted_then_the_past_ones(
 @pytest.mark.asyncio
 async def test_named_runs_reads_the_owners_sessions_once_and_names_each_found() -> None:
     chat, alone, theirs = [
-        MachineRun(session_id=uuid.uuid4(), cli="claude") for _ in range(3)
+        HostRun(session_id=uuid.uuid4(), cli="claude") for _ in range(3)
     ]
     engine = ExchangeEngine(
         Says(
@@ -169,7 +169,7 @@ async def test_named_runs_reads_the_owners_sessions_once_and_names_each_found() 
 
 @pytest.mark.asyncio
 async def test_named_runs_names_only_a_session_the_callers_policy_reads() -> None:
-    run = MachineRun(session_id=uuid.uuid4(), cli="claude")
+    run = HostRun(session_id=uuid.uuid4(), cli="claude")
     engine = ExchangeEngine(
         Says(
             method="fetch",
@@ -203,15 +203,15 @@ def test_listing_with_no_runs_reads_no_sessions(
     _own(engine, owner=TEST_USER_EMAIL)
     engine.conn.fetch.return_value = []
 
-    response = client.get(MACHINE_RUNS_PATH.format(name="box"))
+    response = client.get(HOST_RUNS_PATH.format(name="box"))
 
     assert response.status_code == 200, response.text
-    assert MachineRuns.model_validate_json(response.text) == MachineRuns(runs=[])
+    assert HostRuns.model_validate_json(response.text) == HostRuns(runs=[])
     assert engine.conn.fetch.call_count == 1
 
 
 @pytest.mark.parametrize("owner", [None, "eve@example.com"], ids=["absent", "theirs"])
-def test_a_machine_that_is_not_the_callers_reads_as_none(
+def test_a_host_that_is_not_the_callers_reads_as_none(
     route_client: tuple[TestClient, Store, FakeEngine],
     owner: str | None,
 ) -> None:
@@ -219,7 +219,7 @@ def test_a_machine_that_is_not_the_callers_reads_as_none(
     _own(engine, owner=owner)
     _live_runs()
 
-    listed = client.get(MACHINE_RUNS_PATH.format(name="box"))
+    listed = client.get(HOST_RUNS_PATH.format(name="box"))
     stopped = client.post(_stop_path("box", _CLAUDE))
 
     assert (listed.status_code, stopped.status_code) == (404, 404)
@@ -233,7 +233,7 @@ def test_a_reserved_name_is_refused_unread(
     client, _, engine = route_client
     reserved = min(RESERVED_NAMES)
 
-    response = client.get(MACHINE_RUNS_PATH.format(name=reserved))
+    response = client.get(HOST_RUNS_PATH.format(name=reserved))
 
     assert response.status_code == 422
     assert engine.conn.fetchval.call_count == 0
@@ -265,8 +265,8 @@ def test_the_assistants_drain_of_a_session_is_no_run_to_stop(
     client, _, engine = route_client
     _own(engine, owner=TEST_USER_EMAIL)
     assistant = uuid.uuid4()
-    # The assistant's poller names no CLI, even where it names the machine.
-    _inbound().mark_poller(assistant, machine="box", account=TEST_USER_EMAIL)
+    # The assistant's poller names no CLI, even where it names the host.
+    _inbound().mark_poller(assistant, host="box", account=TEST_USER_EMAIL)
 
     response = client.post(_stop_path("box", assistant))
 
@@ -280,13 +280,13 @@ def test_disconnect_revokes_the_host_and_stops_every_owner_run(
     hub: _Hub,
 ) -> None:
     client, _, engine = route_client
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
     _live_runs()
 
-    response = client.post(MACHINE_DISCONNECT_PATH.format(name="box"))
+    response = client.post(HOST_DISCONNECT_PATH.format(name="box"))
 
     assert response.status_code == 200, response.text
-    stopped = MachineRuns.model_validate_json(response.text)
+    stopped = HostRuns.model_validate_json(response.text)
     assert [run.session_id for run in stopped.runs] == [_CLAUDE, _CODEX]
     assert stopped.past == []
     assert _inbound().stopped(_CLAUDE, instance="b" * 32)
@@ -303,12 +303,12 @@ def test_disconnect_that_stops_nothing_nudges_nothing(
 ) -> None:
     client, _, engine = route_client
     install_identity(make_test_identity(role="admin"))
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": owner})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": owner})
 
-    response = client.post(MACHINE_DISCONNECT_PATH.format(name="box"))
+    response = client.post(HOST_DISCONNECT_PATH.format(name="box"))
 
     assert response.status_code == 200, response.text
-    assert MachineRuns.model_validate_json(response.text).runs == []
+    assert HostRuns.model_validate_json(response.text).runs == []
     assert hub.nudges == 0
 
 
@@ -318,17 +318,17 @@ def test_logout_disconnects_and_revokes_the_keys_its_logins_made(
 ) -> None:
     client, store, engine = route_client
     _own(engine, owner=TEST_USER_EMAIL)
-    set_field_row(engine.conn, {"id": _MACHINE_ID, "owner": TEST_USER_EMAIL})
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
     _live_runs()
     keys = [uuid.uuid4(), uuid.uuid4()]
     engine.conn.fetch.return_value = [{"id": key} for key in keys]
     forgotten: list[uuid.UUID] = []
     monkeypatch.setattr(store, "forget_bearer_identity_for_key", forgotten.append)
 
-    response = client.post(MACHINE_LOGOUT_PATH.format(name="box"))
+    response = client.post(HOST_LOGOUT_PATH.format(name="box"))
 
     assert response.status_code == 200, response.text
-    logout = MachineLogout.model_validate_json(response.text)
+    logout = HostLogout.model_validate_json(response.text)
     assert ([run.session_id for run in logout.runs], logout.keys) == (
         [_CLAUDE, _CODEX],
         2,
@@ -343,21 +343,21 @@ def test_logout_disconnects_and_revokes_the_keys_its_logins_made(
     assert call.args[1:] == ("box", TEST_USER_EMAIL, TEST_USER_ID)
 
 
-def test_logout_of_a_machine_that_is_not_the_callers_revokes_nothing(
+def test_logout_of_a_host_that_is_not_the_callers_revokes_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
     _own(engine, owner="eve@example.com")
     _live_runs()
 
-    response = client.post(MACHINE_LOGOUT_PATH.format(name="box"))
+    response = client.post(HOST_LOGOUT_PATH.format(name="box"))
 
     assert response.status_code == 404
     assert (engine.conn.fetchrow.call_count, engine.conn.fetch.call_count) == (0, 0)
 
 
 def _own(engine: FakeEngine, *, owner: str | None) -> None:
-    """Answer the machine's owner lookup with ``owner``."""
+    """Answer the host's owner lookup with ``owner``."""
     engine.conn.fetchval.return_value = owner
 
 
@@ -366,7 +366,7 @@ def _live_runs() -> None:
     inbound = _inbound()
     inbound.mark_poller(
         _CODEX,
-        machine="box",
+        host="box",
         cli="codex",
         instance="a" * 32,
         account=TEST_USER_EMAIL,
@@ -374,7 +374,7 @@ def _live_runs() -> None:
     inbound.mark_poller(
         _CLAUDE,
         run="chat-b",
-        machine="box",
+        host="box",
         cwd="~/w",
         cli="claude",
         instance="b" * 32,
@@ -382,14 +382,14 @@ def _live_runs() -> None:
     )
     inbound.mark_poller(
         _THEIRS,
-        machine="box",
+        host="box",
         cli="claude",
         instance="c" * 32,
         account="eve@example.com",
     )
     inbound.mark_poller(
         uuid.uuid4(),
-        machine="gx10",
+        host="gx10",
         cli="claude",
         instance="d" * 32,
         account=TEST_USER_EMAIL,
@@ -439,7 +439,7 @@ def _inbound() -> InboundQueue:
 
 
 def _stop_path(name: str, session_id: uuid.UUID) -> str:
-    return MACHINE_RUN_STOP_PATH.format(name=name, session_id=session_id)
+    return HOST_RUN_STOP_PATH.format(name=name, session_id=session_id)
 
 
 if __name__ == "__main__":

@@ -65,10 +65,10 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 # here, where it says so, rather than reach a daemon for one line.
 _LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run"})
 
-# ``machine`` and ``job`` moved out of trax too; they say so here rather than reach a
+# ``host`` and ``job`` moved out of trax too; they say so here rather than reach a
 # daemon for one line. Judged in verb position only, so ``title to job`` still
 # delegates.
-_MOVED_VERBS: Final[frozenset[str]] = frozenset({"machine", "job"})
+_MOVED_VERBS: Final[frozenset[str]] = frozenset({"host", "job"})
 
 # These verbs print output that grows with the graph. The daemon answers with a verb's
 # whole output in one frame, which ``protocol`` caps, so ``export`` runs in this process
@@ -95,7 +95,7 @@ def should_delegate(argv: Sequence[str]) -> bool:
     """Whether ``argv`` may run in the daemon rather than this process.
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
-    any command whose value is the ``-`` stdin sentinel, ``machine`` and ``job``,
+    any command whose value is the ``-`` stdin sentinel, ``host`` and ``job``,
     ``profile NAME login URL``, and ``export``, whose output outgrows a frame. Each is judged by POSITION rather than
     by presence, so a row whose title happens to be "run" still gets the
     daemon. An invocation with ``TRACKINIZER_URL`` and ``TRACKINIZER_TOKEN`` or

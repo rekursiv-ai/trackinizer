@@ -75,11 +75,11 @@ if TYPE_CHECKING:
 
     from trackinizer.wire import (
         wire_code,
+        wire_daemon,
         wire_exec,
+        wire_host_job,
+        wire_hosts,
         wire_job,
-        wire_machine_host,
-        wire_machine_job,
-        wire_machines,
         wire_metrics,
         wire_metrics_query,
         wire_session_ir,
@@ -90,7 +90,28 @@ if TYPE_CHECKING:
     )
     from trackinizer.wire.filters import Filter
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
+    from trackinizer.wire.wire_daemon import (
+        Claim,
+        EnrollResponse,
+        HeartbeatResponse,
+        JoinResponse,
+    )
     from trackinizer.wire.wire_exec import ExecResult, ExecWait
+    from trackinizer.wire.wire_host_job import (
+        HostJobList,
+        HostJobSubmit,
+        HostJobView,
+        JobReport,
+        ReadReply,
+        WorkOffer,
+    )
+    from trackinizer.wire.wire_hosts import (
+        Facts,
+        Host,
+        HostDetail,
+        HostLogout,
+        HostRun,
+    )
     from trackinizer.wire.wire_job import (
         GrantStatus,
         GrantTicket,
@@ -100,27 +121,6 @@ if TYPE_CHECKING:
         SecretNames,
         StartBody,
         SubmitBody,
-    )
-    from trackinizer.wire.wire_machine_host import (
-        Claim,
-        EnrollResponse,
-        HeartbeatResponse,
-        JoinResponse,
-    )
-    from trackinizer.wire.wire_machine_job import (
-        JobReport,
-        MachineJobList,
-        MachineJobSubmit,
-        MachineJobView,
-        ReadReply,
-        WorkOffer,
-    )
-    from trackinizer.wire.wire_machines import (
-        Facts,
-        Machine,
-        MachineDetail,
-        MachineLogout,
-        MachineRun,
     )
     from trackinizer.wire.wire_metrics import (
         LogMetricsResponse,
@@ -145,9 +145,9 @@ if TYPE_CHECKING:
         SessionStartResponse,
     )
     from trackinizer.wire.wire_terminals import (
-        MachinesVersion,
+        HostsVersion,
         OpenTerminal,
-        TerminalMachines,
+        TerminalHosts,
         TerminalOpened,
         TerminalWait,
     )
@@ -168,9 +168,9 @@ else:
     # touch it, so its pydantic-model build stays off the cold-start path.
     wire_metrics = lazy_import("trackinizer.wire.wire_metrics")
     wire_metrics_query = lazy_import("trackinizer.wire.wire_metrics_query")
-    # Same lazy-bind for ``wire_machines``: only the machine methods touch it.
-    wire_machines = lazy_import("trackinizer.wire.wire_machines")
-    wire_machine_host = lazy_import("trackinizer.wire.wire_machine_host")
+    # Same lazy-bind for ``wire_hosts``: only the host methods touch it.
+    wire_hosts = lazy_import("trackinizer.wire.wire_hosts")
+    wire_daemon = lazy_import("trackinizer.wire.wire_daemon")
     wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
     # Same lazy-bind for ``wire_exec``: only the exec methods touch it.
     wire_exec = lazy_import("trackinizer.wire.wire_exec")
@@ -181,7 +181,7 @@ else:
     wire_code = lazy_import("trackinizer.wire.wire_code")
     # Same lazy-bind for ``wire_job``: only the ``job_*`` methods touch it.
     wire_job = lazy_import("trackinizer.wire.wire_job")
-    wire_machine_job = lazy_import("trackinizer.wire.wire_machine_job")
+    wire_host_job = lazy_import("trackinizer.wire.wire_host_job")
     pydantic = lazy_import("pydantic")
 
 
@@ -1856,7 +1856,7 @@ class Client:
         *,
         wait_sec: float = 0.0,
         run: str | None = None,
-        machine: str | None = None,
+        host: str | None = None,
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
@@ -1866,7 +1866,7 @@ class Client:
 
         Each item carries its kind and payload beside the text, attested sender,
         room and canvas context, so the agent runner delivers each the way its CLI
-        expects. ``run``, ``machine`` and ``cwd`` tell the server where the draining
+        expects. ``run``, ``host`` and ``cwd`` tell the server where the draining
         run is, for Chat to show; ``cli`` and ``instance`` tell it which CLI polls and
         which run it is, by which it routes a chat's lines and refuses a second run;
         ``runs`` says the run takes ``run`` messages. Each is sent only when given.
@@ -1881,7 +1881,7 @@ class Client:
             client aborts the very wait it asked for.
           run: The name of the detached run draining it, which an attach takes; None
             for a run in a terminal of its own.
-          machine: This computer's machine name, as the machine host names it.
+          host: This computer's host name, as the daemon names it.
           cwd: The run's working directory, ``~/...`` under its home.
           cli: The CLI this run is, ``claude`` or ``codex``.
           instance: An id the run minted for itself, the same on each of its drains.
@@ -1901,7 +1901,7 @@ class Client:
             params={
                 "wait_sec": wait_sec or None,
                 "run": run,
-                "machine": machine,
+                "host": host,
                 "cwd": cwd,
                 "cli": cli,
                 "instance": instance,
@@ -2142,46 +2142,46 @@ class Client:
             wire_variables.VARIABLE_PATH.format(name=quote(name, safe="")),
         )
 
-    def list_machines(self) -> list[Machine]:
-        """Return every registered machine, sorted by name."""
-        where = wire_machines.MACHINES_PATH
+    def list_hosts(self) -> list[Host]:
+        """Return every registered host, sorted by name."""
+        where = wire_hosts.HOSTS_PATH
         response = self._request("GET", where)
-        return _validate_model(wire_machines.MachineList, response, where).machines
+        return _validate_model(wire_hosts.HostList, response, where).hosts
 
-    def get_machine(self, name: str) -> MachineDetail:
-        """Return one machine; the server answers 404 when it is not registered."""
-        where = wire_machines.MACHINE_PATH.format(name=quote(name, safe=""))
+    def get_host(self, name: str) -> HostDetail:
+        """Return one host; the server answers 404 when it is not registered."""
+        where = wire_hosts.HOST_PATH.format(name=quote(name, safe=""))
         response = self._request("GET", where)
-        return _validate_model(wire_machines.MachineDetail, response, where)
+        return _validate_model(wire_hosts.HostDetail, response, where)
 
-    def put_machine(
+    def put_host(
         self,
         name: str,
         *,
         role: str | None = None,
         how: str | None = None,
     ) -> None:
-        """Register a machine, or change the fields named; ``""`` clears a field.
+        """Register a host, or change the fields named; ``""`` clears a field.
 
         Args:
-          name: Machine name.
+          name: Host name.
           role: New role, or ``None`` to keep it.
           how: New how line, or ``None`` to keep it.
 
         """
         try:
-            body = wire_machines.MachinePut(role=role, how=how)
+            body = wire_hosts.HostPut(role=role, how=how)
         except pydantic.ValidationError as err:
             # Not chained: only the field and the rule are shown, never the input.
             problems = "; ".join(f"{e['loc'][0]}: {e['msg']}" for e in err.errors())
-            raise ClientError(f"machine {name!r} {problems}") from None
+            raise ClientError(f"host {name!r} {problems}") from None
         self._request(
             "PUT",
-            wire_machines.MACHINE_PATH.format(name=quote(name, safe="")),
+            wire_hosts.HOST_PATH.format(name=quote(name, safe="")),
             body=body.model_dump(mode="json", exclude_none=True),
         )
 
-    def change_machine_labels(
+    def change_host_labels(
         self,
         name: str,
         *,
@@ -2191,74 +2191,74 @@ class Client:
         """Add labels, then remove labels; the server answers 404 when absent.
 
         Args:
-          name: Machine name.
+          name: Host name.
           add: Labels to add.
           remove: Labels to remove.
 
         """
-        body = wire_machines.MachineLabels(add=list(add), remove=list(remove))
+        body = wire_hosts.HostLabels(add=list(add), remove=list(remove))
         self._request(
             "PATCH",
-            wire_machines.MACHINE_LABELS_PATH.format(name=quote(name, safe="")),
+            wire_hosts.HOST_LABELS_PATH.format(name=quote(name, safe="")),
             body=body.model_dump(mode="json"),
         )
 
-    def delete_machine(self, name: str) -> None:
-        """Unregister a machine; the server answers 404 when it is absent."""
+    def delete_host(self, name: str) -> None:
+        """Unregister a host; the server answers 404 when it is absent."""
         self._request(
             "DELETE",
-            wire_machines.MACHINE_PATH.format(name=quote(name, safe="")),
+            wire_hosts.HOST_PATH.format(name=quote(name, safe="")),
         )
 
-    def enroll_machine(self, name: str) -> EnrollResponse:
-        """Register a machine if new and issue a one-use enrollment token.
+    def enroll_host(self, name: str) -> EnrollResponse:
+        """Register a host if new and issue a one-use enrollment token.
 
-        A writer's own new machine is personal: only they and admins see it.
+        A writer's own new host is personal: only they and admins see it.
 
         Args:
-          name: Machine name.
+          name: Host name.
 
         Returns:
           enrolled: The token, shown once, and when it expires.
 
         """
-        where = wire_machine_host.ENROLL_PATH
+        where = wire_daemon.ENROLL_PATH
         response = self._request("POST", where, body={"name": name})
-        return _validate_secret_model(wire_machine_host.EnrollResponse, response, where)
+        return _validate_secret_model(wire_daemon.EnrollResponse, response, where)
 
-    def join_machine(
+    def join_host(
         self,
         name: str,
         *,
         token: str,
         instance: uuid.UUID,
-        host_version: str,
+        daemon_version: str,
         facts: Facts,
     ) -> JoinResponse:
-        """Exchange an enrollment token for a machine credential.
+        """Exchange an enrollment token for a host credential.
 
         The request is sent once: a retry after a lost answer would find the token
         used. No other credential is needed.
 
         Args:
-          name: Machine name the token was issued for.
+          name: Host name the token was issued for.
           token: The enrollment token; never shown in an error.
           instance: The host's id, new each time ``connect`` starts.
-          host_version: The host software's version.
+          daemon_version: The host software's version.
           facts: What the host reports about itself.
 
         Returns:
-          joined: The machine id and the credential, shown once.
+          joined: The host id and the credential, shown once.
 
         """
-        where = wire_machine_host.JOIN_PATH
+        where = wire_daemon.JOIN_PATH
         body = _build_body(
-            wire_machine_host.JoinRequest,
-            f"join of machine {name!r}",
+            wire_daemon.JoinRequest,
+            f"join of host {name!r}",
             name=name,
             token=token,
             instance=instance,
-            host_version=host_version,
+            daemon_version=daemon_version,
             facts=facts,
         )
         response = self._request(
@@ -2267,37 +2267,37 @@ class Client:
             body=body.model_dump(mode="json"),
             retry_attempts=1,
         )
-        return _validate_secret_model(wire_machine_host.JoinResponse, response, where)
+        return _validate_secret_model(wire_daemon.JoinResponse, response, where)
 
-    def heartbeat_machine(
+    def heartbeat_host(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         *,
         instance: uuid.UUID,
-        host_version: str,
+        daemon_version: str,
         facts: Facts | None = None,
         claim: Claim = "keep",
     ) -> HeartbeatResponse:
-        """Report that the host is alive, authenticated by its machine credential.
+        """Report that the host is alive, authenticated by its host credential.
 
         Args:
-          machine_id: The machine's id, from joining.
+          host_id: The host's id, from joining.
           instance: The host's id; ``keep`` refuses a second id until the first is
             silent.
-          host_version: The host software's version.
+          daemon_version: The host software's version.
           facts: What changed about the host, or ``None`` to keep the stored facts.
-          claim: Keep the machine, take it from another instance, or release it.
+          claim: Keep the host, take it from another instance, or release it.
 
         Returns:
           beat: The server's clock at the heartbeat.
 
         """
-        where = wire_machine_host.HEARTBEAT_PATH.format(machine_id=machine_id)
+        where = wire_daemon.HEARTBEAT_PATH.format(host_id=host_id)
         body = _build_body(
-            wire_machine_host.HeartbeatRequest,
-            f"heartbeat of machine {machine_id}",
+            wire_daemon.HeartbeatRequest,
+            f"heartbeat of host {host_id}",
             instance=instance,
-            host_version=host_version,
+            daemon_version=daemon_version,
             facts=facts,
             claim=claim,
         )
@@ -2306,20 +2306,20 @@ class Client:
             where,
             body=body.model_dump(mode="json", exclude_defaults=True),
         )
-        return _validate_model(wire_machine_host.HeartbeatResponse, response, where)
+        return _validate_model(wire_daemon.HeartbeatResponse, response, where)
 
     def wait_terminals(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         *,
         instance: uuid.UUID,
         wait_sec: float,
     ) -> TerminalWait | None:
-        """Hold up to ``wait_sec`` for a terminal to open, as the machine's host.
+        """Hold up to ``wait_sec`` for a terminal to open, as the daemon.
 
         Args:
-          machine_id: The machine's id, from joining.
-          instance: The host's id, which must be the machine's current one.
+          host_id: The host's id, from joining.
+          instance: The host's id, which must be the host's current one.
           wait_sec: How long the server may hold the request; the read timeout
             exceeds it, or the client would abort the very wait it asked for.
 
@@ -2327,7 +2327,7 @@ class Client:
           terminal: The terminal to open, or ``None`` when none came in time.
 
         """
-        where = wire_terminals.MACHINE_TERMINAL_WAIT_PATH.format(machine_id=machine_id)
+        where = wire_terminals.HOST_TERMINAL_WAIT_PATH.format(host_id=host_id)
         return self._consume(
             where,
             scope=f"{where}/{instance}",
@@ -2344,56 +2344,56 @@ class Client:
             ),
         )
 
-    def terminal_machines(
+    def terminal_hosts(
         self,
         *,
         canvas: uuid.UUID | None = None,
         owner: str | None = None,
-    ) -> TerminalMachines:
-        """List the caller's machines, and the live terminals of one canvas.
+    ) -> TerminalHosts:
+        """List the caller's hosts, and the live terminals of one canvas.
 
         The server answers for the signed-in owner only: an API key is refused,
         unless it is the configured assistant's, which names the ``owner``.
 
         Args:
           canvas: The canvas whose live terminals to list; ``None`` lists none.
-          owner: The person whose machines the assistant lists; ``None`` for the
+          owner: The person whose hosts the assistant lists; ``None`` for the
             caller's own.
 
         Returns:
-          machines: The caller's machines, each with whether it can take a terminal
+          hosts: The caller's hosts, each with whether it can take a terminal
             now and the CLIs its facts list.
 
         """
-        where = wire_terminals.TERMINAL_MACHINES_PATH
+        where = wire_terminals.TERMINAL_HOSTS_PATH
         response = self._request(
             "GET",
             where,
             params={"canvas": canvas, "owner": owner},
         )
-        return _validate_model(wire_terminals.TerminalMachines, response, where)
+        return _validate_model(wire_terminals.TerminalHosts, response, where)
 
-    def machines_version(
+    def hosts_version(
         self,
         *,
         since: int | None,
         wait_sec: float,
         owner: str | None = None,
-    ) -> MachinesVersion:
-        """Hold up to ``wait_sec`` for the version of the machine list to move.
+    ) -> HostsVersion:
+        """Hold up to ``wait_sec`` for the version of the host list to move.
 
         Args:
           since: The version held; ``None`` answers at once.
           wait_sec: How long the server may hold the request; the read timeout
             exceeds it, or the client would abort the very wait it asked for.
-          owner: The person whose machines the assistant follows; ``None`` for the
+          owner: The person whose hosts the assistant follows; ``None`` for the
             caller's own.
 
         Returns:
           version: The version now; ``since`` only when the hold ran out.
 
         """
-        where = wire_terminals.TERMINAL_MACHINES_CHANGES_PATH
+        where = wire_terminals.TERMINAL_HOSTS_CHANGES_PATH
         response = self._request(
             "GET",
             where,
@@ -2401,16 +2401,16 @@ class Client:
             retry_attempts=1,
             timeout=wire_sessions.inbound_read_timeout(wait_sec),
         )
-        return _validate_model(wire_terminals.MachinesVersion, response, where)
+        return _validate_model(wire_terminals.HostsVersion, response, where)
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
-        """Queue a terminal, or a detached agent run, on a caller's machine.
+        """Queue a terminal, or a detached agent run, on a caller's host.
 
         The server admits only the owner's browser here: an API key, a service
         account, or a request without the server's own ``Origin`` is refused.
 
         Args:
-          body: The machine, the terminal's size and canvas, and the run to start.
+          body: The host, the terminal's size and canvas, and the run to start.
 
         Returns:
           opened: The terminal's id and its one-use attach ticket.
@@ -2428,16 +2428,16 @@ class Client:
 
     def wait_tools(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         *,
         instance: uuid.UUID,
         wait_sec: float,
     ) -> ToolOffer | None:
-        """Hold up to ``wait_sec`` for an agent to ask for tools, as the machine's host.
+        """Hold up to ``wait_sec`` for an agent to ask for tools, as the daemon.
 
         Args:
-          machine_id: The machine's id, from joining.
-          instance: The host's id, which must be the machine's current one.
+          host_id: The host's id, from joining.
+          instance: The host's id, which must be the host's current one.
           wait_sec: How long the server may hold the request; the read timeout
             exceeds it, or the client would abort the very wait it asked for.
 
@@ -2447,7 +2447,7 @@ class Client:
         """
         # A plain read: the server keeps no receipt of a wait, so a key would buy
         # nothing; an offer whose response is lost is lost, and its dial-back says so.
-        where = wire_tools.MACHINE_TOOLS_WAIT_PATH.format(machine_id=machine_id)
+        where = wire_tools.HOST_TOOLS_WAIT_PATH.format(host_id=host_id)
         response = self._request(
             "GET",
             where,
@@ -2462,16 +2462,16 @@ class Client:
 
     def wait_exec(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         *,
         instance: uuid.UUID,
         wait_sec: float,
     ) -> ExecWait | None:
-        """Hold up to ``wait_sec`` for a command to run, as the machine's host.
+        """Hold up to ``wait_sec`` for a command to run, as the daemon.
 
         Args:
-          machine_id: The machine's id, from joining.
-          instance: The host's id, which must be the machine's current one.
+          host_id: The host's id, from joining.
+          instance: The host's id, which must be the host's current one.
           wait_sec: How long the server may hold the request; the read timeout
             exceeds it, or the client would abort the very wait it asked for.
 
@@ -2479,7 +2479,7 @@ class Client:
           command: The command to run, or ``None`` when none came in time.
 
         """
-        where = wire_exec.MACHINE_EXEC_WAIT_PATH.format(machine_id=machine_id)
+        where = wire_exec.HOST_EXEC_WAIT_PATH.format(host_id=host_id)
         return self._consume(
             where,
             scope=f"{where}/{instance}",
@@ -2494,78 +2494,78 @@ class Client:
 
     def post_exec_result(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         exec_id: uuid.UUID,
         result: ExecResult,
     ) -> None:
-        """Report what a command produced, as the machine's host.
+        """Report what a command produced, as the daemon.
 
         Args:
-          machine_id: The machine's id, from joining.
+          host_id: The host's id, from joining.
           exec_id: The command, from :meth:`wait_exec`.
           result: What running it produced.
 
         Raises:
           ClientError: The server answered 404 when the command ended without a result
-            (its caller timed out or its machine was revoked), so the result is no use.
+            (its caller timed out or its host was revoked), so the result is no use.
             A result sent again after the server accepted it is accepted again.
 
         """
         self._request(
             "POST",
-            wire_exec.MACHINE_EXEC_RESULT_PATH.format(
-                machine_id=machine_id,
+            wire_exec.HOST_EXEC_RESULT_PATH.format(
+                host_id=host_id,
                 exec_id=exec_id,
             ),
             body=result.model_dump(mode="json"),
         )
 
-    def revoke_machine(self, name: str) -> None:
-        """Take a machine out of service (admin or owner); 404 when absent."""
+    def revoke_host(self, name: str) -> None:
+        """Take a host out of service (admin or owner); 404 when absent."""
         self._request(
             "POST",
-            wire_machine_host.REVOKE_PATH.format(name=quote(name, safe="")),
+            wire_daemon.REVOKE_PATH.format(name=quote(name, safe="")),
         )
 
-    def machine_runs(self, name: str) -> list[MachineRun]:
-        """Return the caller's live runs that name their machine; 404 for another's."""
-        where = wire_machines.MACHINE_RUNS_PATH.format(name=quote(name, safe=""))
+    def host_runs(self, name: str) -> list[HostRun]:
+        """Return the caller's live sessions that name their host; 404 for another's."""
+        where = wire_hosts.HOST_RUNS_PATH.format(name=quote(name, safe=""))
         response = self._request("GET", where)
-        return _validate_model(wire_machines.MachineRuns, response, where).runs
+        return _validate_model(wire_hosts.HostRuns, response, where).runs
 
-    def stop_machine_run(self, name: str, session_id: uuid.UUID) -> None:
-        """Stop one of the caller's live runs on one of their machines.
+    def stop_host_run(self, name: str, session_id: uuid.UUID) -> None:
+        """Stop one of the caller's live sessions on one of their hosts.
 
         Its next drain is refused, so the run ends within one drain's hold.
 
         Args:
-          name: The machine the run names.
+          name: The host the run names.
           session_id: The session the run drains.
 
         Raises:
-          ClientError: 404 when the caller owns no such machine, or no live run of
+          ClientError: 404 when the caller owns no such host, or no live session of
             theirs on it drains that session.
 
         """
         self._request(
             "POST",
-            wire_machines.MACHINE_RUN_STOP_PATH.format(
+            wire_hosts.HOST_RUN_STOP_PATH.format(
                 name=quote(name, safe=""),
                 session_id=session_id,
             ),
         )
 
-    def disconnect_machine(self, name: str) -> list[MachineRun]:
-        """Revoke a machine's host and stop its owner's live runs; return those stopped."""
-        where = wire_machines.MACHINE_DISCONNECT_PATH.format(name=quote(name, safe=""))
+    def disconnect_host(self, name: str) -> list[HostRun]:
+        """Revoke a daemon and stop its owner's live sessions; return those stopped."""
+        where = wire_hosts.HOST_DISCONNECT_PATH.format(name=quote(name, safe=""))
         response = self._request("POST", where)
-        return _validate_model(wire_machines.MachineRuns, response, where).runs
+        return _validate_model(wire_hosts.HostRuns, response, where).runs
 
-    def logout_machine(self, name: str) -> MachineLogout:
-        """Disconnect one of the caller's machines and revoke the keys it logged in with."""
-        where = wire_machines.MACHINE_LOGOUT_PATH.format(name=quote(name, safe=""))
+    def logout_host(self, name: str) -> HostLogout:
+        """Disconnect one of the caller's hosts and revoke the keys it logged in with."""
+        where = wire_hosts.HOST_LOGOUT_PATH.format(name=quote(name, safe=""))
         response = self._request("POST", where)
-        return _validate_model(wire_machines.MachineLogout, response, where)
+        return _validate_model(wire_hosts.HostLogout, response, where)
 
     def code_missing(self, owner: str, *, hashes: Sequence[str]) -> list[str]:
         """Return the blob hashes the code store lacks for ``owner``, in the order given.
@@ -2817,76 +2817,76 @@ class Client:
             wire_job.JOB_SECRET_PATH.format(name=quote(name, safe="")),
         )
 
-    # -- Jobs on a person's own machine. The machine fetches the code by git; the
-    # server relays a read's bytes between the machine and the reader and keeps none.
+    # -- Jobs on a person's own host. The host fetches the code by git; the
+    # server relays a read's bytes between the host and the reader and keeps none.
 
-    def machine_job_submit(self, body: MachineJobSubmit) -> MachineJobView:
-        """Queue a job on one of the caller's machines; sent once.
+    def host_job_submit(self, body: HostJobSubmit) -> HostJobView:
+        """Queue a job on one of the caller's hosts; sent once.
 
         A retry after a lost answer would queue the job twice.
 
         Args:
-          body: The machine, the command, its limits, and the pushed commit.
+          body: The host, the command, its limits, and the pushed commit.
 
         Returns:
           job: The job as recorded, in state ``requested``.
 
         """
-        where = wire_machine_job.MACHINE_JOBS_PATH
+        where = wire_host_job.HOST_JOBS_PATH
         response = self._request(
             "POST",
             where,
             body=body.model_dump(mode="json"),
             retry_attempts=1,
         )
-        return _validate_model(wire_machine_job.MachineJobView, response, where)
+        return _validate_model(wire_host_job.HostJobView, response, where)
 
-    def machine_job_list(self) -> MachineJobList:
-        """Return the caller's machine jobs, newest first."""
-        where = wire_machine_job.MACHINE_JOBS_PATH
+    def host_job_list(self) -> HostJobList:
+        """Return the caller's host jobs, newest first."""
+        where = wire_host_job.HOST_JOBS_PATH
         response = self._request("GET", where)
-        return _validate_model(wire_machine_job.MachineJobList, response, where)
+        return _validate_model(wire_host_job.HostJobList, response, where)
 
-    def machine_job_view(self, job_id: int) -> MachineJobView:
-        """Return one machine job of the caller's; 404 for another's or none."""
-        where = wire_machine_job.MACHINE_JOB_PATH.format(job_id=job_id)
+    def host_job_view(self, job_id: int) -> HostJobView:
+        """Return one host job of the caller's; 404 for another's or none."""
+        where = wire_host_job.HOST_JOB_PATH.format(job_id=job_id)
         response = self._request("GET", where)
-        return _validate_model(wire_machine_job.MachineJobView, response, where)
+        return _validate_model(wire_host_job.HostJobView, response, where)
 
-    def machine_job_cancel(self, job_id: int) -> MachineJobView:
-        """Stop a machine job: at once if no host took it, else through its host."""
-        where = wire_machine_job.MACHINE_JOB_CANCEL_PATH.format(job_id=job_id)
+    def host_job_cancel(self, job_id: int) -> HostJobView:
+        """Stop a host job: at once if no host took it, else through its host."""
+        where = wire_host_job.HOST_JOB_CANCEL_PATH.format(job_id=job_id)
         response = self._request("POST", where)
-        return _validate_model(wire_machine_job.MachineJobView, response, where)
+        return _validate_model(wire_host_job.HostJobView, response, where)
 
-    def machine_job_log(self, job_id: int, *, offset: int, wait: float) -> ReadReply:
-        """Read a machine job's log from byte ``offset``, relayed from the machine.
+    def host_job_log(self, job_id: int, *, offset: int, wait: float) -> ReadReply:
+        """Read a host job's log from byte ``offset``, relayed from the host.
 
         Args:
           job_id: The job.
           offset: The first byte wanted.
-          wait: How long the machine may hold for new bytes while the job runs.
+          wait: How long the host may hold for new bytes while the job runs.
 
         Returns:
-          reply: At most 1 MiB of the log, or the machine's refusal.
+          reply: At most 1 MiB of the log, or the host's refusal.
 
         """
-        where = wire_machine_job.MACHINE_JOB_LOG_PATH.format(job_id=job_id)
-        return self._machine_read(where, {"offset": offset, "wait": wait}, wait=wait)
+        where = wire_host_job.HOST_JOB_LOG_PATH.format(job_id=job_id)
+        return self._host_read(where, {"offset": offset, "wait": wait}, wait=wait)
 
-    def machine_job_manifest(self, job_id: int) -> ReadReply:
-        """List a machine job's result files with sizes and digests, or the refusal."""
-        where = wire_machine_job.MACHINE_JOB_MANIFEST_PATH.format(job_id=job_id)
-        return self._machine_read(where, {}, wait=0)
+    def host_job_manifest(self, job_id: int) -> ReadReply:
+        """List a host job's result files with sizes and digests, or the refusal."""
+        where = wire_host_job.HOST_JOB_MANIFEST_PATH.format(job_id=job_id)
+        return self._host_read(where, {}, wait=0)
 
-    def machine_job_file(self, job_id: int, path: str, *, offset: int) -> ReadReply:
+    def host_job_file(self, job_id: int, path: str, *, offset: int) -> ReadReply:
         """Read at most 1 MiB of one result file from ``offset``, or the refusal."""
-        where = wire_machine_job.MACHINE_JOB_FILE_PATH.format(job_id=job_id)
-        return self._machine_read(where, {"path": path, "offset": offset}, wait=0)
+        where = wire_host_job.HOST_JOB_FILE_PATH.format(job_id=job_id)
+        return self._host_read(where, {"path": path, "offset": offset}, wait=0)
 
-    def wait_machine_work(
+    def wait_host_work(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         *,
         instance: uuid.UUID,
         wait_sec: float,
@@ -2894,8 +2894,8 @@ class Client:
         """Hold up to ``wait_sec`` for a job to start or cancel, or a read, as the host.
 
         Args:
-          machine_id: The machine's id, from joining.
-          instance: The host's id, which must be the machine's current one.
+          host_id: The host's id, from joining.
+          instance: The host's id, which must be the host's current one.
           wait_sec: How long the server may hold the request; the read timeout
             exceeds it, or the client would abort the very wait it asked for.
 
@@ -2903,7 +2903,7 @@ class Client:
           offer: The work, or an offer of none when nothing came in time.
 
         """
-        where = wire_machine_job.MACHINE_WORK_PATH.format(machine_id=machine_id)
+        where = wire_host_job.HOST_WORK_PATH.format(host_id=host_id)
         response = self._request(
             "GET",
             where,
@@ -2911,55 +2911,55 @@ class Client:
             retry_attempts=1,
             timeout=wire_sessions.inbound_read_timeout(wait_sec),
         )
-        return _validate_model(wire_machine_job.WorkOffer, response, where)
+        return _validate_model(wire_host_job.WorkOffer, response, where)
 
-    def report_machine_job(
+    def report_host_job(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         job_id: int,
         report: JobReport,
     ) -> None:
-        """Report one of the machine's jobs, as its host; the same report again is 204.
+        """Report one of the host's jobs, as its host; the same report again is 204.
 
         Args:
-          machine_id: The machine.
+          host_id: The host.
           job_id: The job.
           report: The job's new state.
 
         """
         self._request(
             "POST",
-            wire_machine_job.MACHINE_JOB_REPORT_PATH.format(
-                machine_id=machine_id,
+            wire_host_job.HOST_JOB_REPORT_PATH.format(
+                host_id=host_id,
                 job_id=job_id,
             ),
             body=report.model_dump(mode="json"),
         )
 
-    def post_machine_read(
+    def post_host_read(
         self,
-        machine_id: uuid.UUID,
+        host_id: uuid.UUID,
         read_id: uuid.UUID,
         reply: ReadReply,
     ) -> None:
-        """Answer a read the machine's host was handed; 404 once its reader has gone.
+        """Answer a read the daemon was handed; 404 once its reader has gone.
 
         Args:
-          machine_id: The machine.
+          host_id: The host.
           read_id: The read, as the work offer named it.
           reply: The bytes asked for, the listing, or the refusal.
 
         """
         self._request(
             "POST",
-            wire_machine_job.MACHINE_READ_REPLY_PATH.format(
-                machine_id=machine_id,
+            wire_host_job.HOST_READ_REPLY_PATH.format(
+                host_id=host_id,
                 read_id=read_id,
             ),
             body=reply.model_dump(mode="json"),
         )
 
-    def _machine_read(
+    def _host_read(
         self,
         where: str,
         params: Mapping[str, object],
@@ -2967,7 +2967,7 @@ class Client:
         wait: float,
     ) -> ReadReply:
         """Send one relayed read, once: its caller decides whether to ask again."""
-        # The server waits up to 10 s for the machine to take the read, then the hold
+        # The server waits up to 10 s for the host to take the read, then the hold
         # and 15 s more for its answer.
         response = self._request(
             "GET",
@@ -2976,7 +2976,7 @@ class Client:
             retry_attempts=1,
             timeout=wait + 35,
         )
-        return _validate_model(wire_machine_job.ReadReply, response, where)
+        return _validate_model(wire_host_job.ReadReply, response, where)
 
     def _patch_field(
         self,

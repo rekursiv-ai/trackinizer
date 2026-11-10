@@ -43,7 +43,7 @@ from trackinizer.wire.wire_sessions import (
     SessionStart,
     SessionStartResponse,
 )
-from trackinizer.wire.wire_terminals import TerminalMachines, TerminalOpened
+from trackinizer.wire.wire_terminals import TerminalHosts, TerminalOpened
 
 
 if TYPE_CHECKING:
@@ -1020,7 +1020,7 @@ class FakeClient:
         *,
         wait_sec: float = 0.0,
         run: str | None = None,
-        machine: str | None = None,
+        host: str | None = None,
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
@@ -1034,7 +1034,7 @@ class FakeClient:
                 {
                     "wait_sec": wait_sec,
                     "run": run,
-                    "machine": machine,
+                    "host": host,
                     "cwd": cwd,
                     "cli": cli,
                     "instance": instance,
@@ -1044,18 +1044,18 @@ class FakeClient:
         )
         return []
 
-    def terminal_machines(
+    def terminal_hosts(
         self,
         *,
         canvas: uuid.UUID | None = None,
         owner: str | None = None,
-    ) -> TerminalMachines:
-        """Terminal machines."""
+    ) -> TerminalHosts:
+        """Terminal hosts."""
         asked: dict[str, object] = {"canvas": canvas}
         if owner is not None:
             asked["owner"] = owner
-        self.calls.append(("terminal_machines", (), asked))
-        return TerminalMachines(machines=[])
+        self.calls.append(("terminal_hosts", (), asked))
+        return TerminalHosts(hosts=[])
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
         """Open terminal."""

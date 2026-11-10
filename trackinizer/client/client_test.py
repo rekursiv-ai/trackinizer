@@ -37,7 +37,33 @@ from trackinizer.wire.routes import (
 )
 from trackinizer.wire.seq_ranges import SeqRange
 from trackinizer.wire.wire_code import CODE_BLOBS_PATH, CODE_MISSING_PATH
+from trackinizer.wire.wire_daemon import (
+    ENROLL_PATH,
+    HEARTBEAT_PATH,
+    JOIN_PATH,
+)
 from trackinizer.wire.wire_export import EXPORT_API_PATH
+from trackinizer.wire.wire_host_job import (
+    HOST_JOB_CANCEL_PATH,
+    HOST_JOB_FILE_PATH,
+    HOST_JOB_LOG_PATH,
+    HOST_JOB_MANIFEST_PATH,
+    HOST_JOB_PATH,
+    HOST_JOB_REPORT_PATH,
+    HOST_JOBS_PATH,
+    HOST_READ_REPLY_PATH,
+    HOST_WORK_PATH,
+    CancelWork,
+    HostJobSubmit,
+    JobReport,
+    ReadRefused,
+    ReadReply,
+)
+from trackinizer.wire.wire_hosts import (
+    HOST_PATH,
+    HOSTS_PATH,
+    MAX_HOW_CHARS,
+)
 from trackinizer.wire.wire_job import (
     JOB_CANCEL_PATH,
     JOB_GRANT_PATH,
@@ -52,32 +78,6 @@ from trackinizer.wire.wire_job import (
     StartBody,
     SubmitBody,
 )
-from trackinizer.wire.wire_machine_host import (
-    ENROLL_PATH,
-    HEARTBEAT_PATH,
-    JOIN_PATH,
-)
-from trackinizer.wire.wire_machine_job import (
-    MACHINE_JOB_CANCEL_PATH,
-    MACHINE_JOB_FILE_PATH,
-    MACHINE_JOB_LOG_PATH,
-    MACHINE_JOB_MANIFEST_PATH,
-    MACHINE_JOB_PATH,
-    MACHINE_JOB_REPORT_PATH,
-    MACHINE_JOBS_PATH,
-    MACHINE_READ_REPLY_PATH,
-    MACHINE_WORK_PATH,
-    CancelWork,
-    JobReport,
-    MachineJobSubmit,
-    ReadRefused,
-    ReadReply,
-)
-from trackinizer.wire.wire_machines import (
-    MACHINE_PATH,
-    MACHINES_PATH,
-    MAX_HOW_CHARS,
-)
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_metrics_query import MetricMaskClause
 from trackinizer.wire.wire_session_ir import (
@@ -87,17 +87,17 @@ from trackinizer.wire.wire_session_ir import (
 )
 from trackinizer.wire.wire_sessions import SessionStart
 from trackinizer.wire.wire_terminals import (
-    TERMINAL_MACHINES_CHANGES_PATH,
-    TERMINAL_MACHINES_PATH,
+    TERMINAL_HOSTS_CHANGES_PATH,
+    TERMINAL_HOSTS_PATH,
     TERMINALS_PATH,
-    MachinesVersion,
+    HostsVersion,
     OpenTerminal,
 )
 from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
 if TYPE_CHECKING:
-    from trackinizer.wire.wire_machines import Facts
+    from trackinizer.wire.wire_hosts import Facts
 
 
 # ``handler`` receives an ``httpx2.Request`` and returns an ``httpx2.Response``. The
@@ -1545,27 +1545,27 @@ class TestClientMethods:
 # argparse-flag registration, the connection-resolution factory, and the
 # raw HTTP verbs. The fake bypasses HTTP entirely, so these would be dead
 # on the fake. The variable methods are driven through stub clients in
-# ``trax/variables_test.py``, and no ``trax`` command reads machines or jobs, so the
+# ``trax/variables_test.py``, and no ``trax`` command reads hosts or jobs, so the
 # shared fake carries none of them. No ``trax`` command files code, so it holds no
 # code-store method either. The canvas capture is an agent's alone, and no command takes one.
-# The tool and exec waits are a machine host's, which no ``trax`` command is, and
+# The tool and exec waits are a daemon's, which no ``trax`` command is, and
 # ``client/client_exec_test.py`` drives them.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
     {"flags", "from_args", "get", "post", "put", "patch", "delete"}
     | {"list_variables", "put_variable", "delete_variable"}
-    | {"list_machines", "get_machine", "put_machine"}
-    | {"change_machine_labels", "delete_machine"}
-    | {"enroll_machine", "join_machine", "heartbeat_machine", "revoke_machine"}
-    | {"machine_runs", "stop_machine_run", "disconnect_machine", "logout_machine"}
-    | {"wait_terminals", "machines_version"}
+    | {"list_hosts", "get_host", "put_host"}
+    | {"change_host_labels", "delete_host"}
+    | {"enroll_host", "join_host", "heartbeat_host", "revoke_host"}
+    | {"host_runs", "stop_host_run", "disconnect_host", "logout_host"}
+    | {"wait_terminals", "hosts_version"}
     | {"wait_tools", "wait_exec", "post_exec_result"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
     | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
     | {"job_put_secret", "job_delete_secret"}
-    | {"machine_job_submit", "machine_job_list", "machine_job_view"}
-    | {"machine_job_cancel", "machine_job_log", "machine_job_manifest"}
-    | {"machine_job_file", "wait_machine_work", "report_machine_job"}
-    | {"post_machine_read"}
+    | {"host_job_submit", "host_job_list", "host_job_view"}
+    | {"host_job_cancel", "host_job_log", "host_job_manifest"}
+    | {"host_job_file", "wait_host_work", "report_host_job"}
+    | {"post_host_read"}
     | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"},
 )
 
@@ -2593,7 +2593,7 @@ class TestSessionMethods:
             queries.append(
                 {
                     key: request.url.params.get_list(key)[0]
-                    for key in ("wait_sec", "run", "machine", "cwd", "cli", "instance")
+                    for key in ("wait_sec", "run", "host", "cwd", "cli", "instance")
                     if request.url.params.get_list(key)
                 },
             )
@@ -2605,12 +2605,12 @@ class TestSessionMethods:
                 uuid.uuid4(),
                 wait_sec=25.0,
                 run="chat-1a2b3c4d",
-                machine="gx10",
+                host="gx10",
                 cwd="~/work",
                 cli="codex",
                 instance="a" * 32,
             )
-            _ = client.drain_inbound(uuid.uuid4(), machine="gx10")
+            _ = client.drain_inbound(uuid.uuid4(), host="gx10")
             _ = client.drain_inbound(uuid.uuid4(), cli="claude")
             _ = client.drain_inbound(uuid.uuid4())
 
@@ -2618,12 +2618,12 @@ class TestSessionMethods:
             {
                 "wait_sec": "25.0",
                 "run": "chat-1a2b3c4d",
-                "machine": "gx10",
+                "host": "gx10",
                 "cwd": "~/work",
                 "cli": "codex",
                 "instance": "a" * 32,
             },
-            {"machine": "gx10"},
+            {"host": "gx10"},
             {"cli": "claude"},
             {},
         ]
@@ -2980,7 +2980,7 @@ class TestCodeMethods:
         assert err.value.status_code is None
 
 
-_MACHINE_ROW = {
+_HOST_ROW = {
     "name": "gpu-box",
     "role": "dev",
     "how": "ssh gpu-box",
@@ -2990,37 +2990,37 @@ _MACHINE_ROW = {
 }
 
 
-class TestMachineMethods:
-    """The machine methods build the right requests and parse the answers."""
+class TestHostMethods:
+    """The host methods build the right requests and parse the answers."""
 
-    def test_list_machines_parses_the_listing(self) -> None:
+    def test_list_hosts_parses_the_listing(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx2.Response(200, json={"machines": [_MACHINE_ROW]})
+            return httpx2.Response(200, json={"hosts": [_HOST_ROW]})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            machines = client.list_machines()
+            hosts = client.list_hosts()
 
-        assert [(r.method, r.url.path) for r in seen] == [("GET", MACHINES_PATH)]
-        assert [(m.name, m.role, m.labels) for m in machines] == [
+        assert [(r.method, r.url.path) for r in seen] == [("GET", HOSTS_PATH)]
+        assert [(m.name, m.role, m.labels) for m in hosts] == [
             ("gpu-box", "dev", ["gpu", "a100"]),
         ]
 
-    def test_list_machines_wraps_a_malformed_payload(self) -> None:
+    def test_list_hosts_wraps_a_malformed_payload(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx2.Response(200, json={"machines": [{"name": "x"}]})
+            return httpx2.Response(200, json={"hosts": [{"name": "x"}]})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload"):
-                client.list_machines()
+                client.list_hosts()
 
     def test_a_field_a_newer_server_added_is_ignored_at_any_depth(self) -> None:
-        answer = {"machines": [{**_MACHINE_ROW, "rack": "b3"}], "cursor": "c1"}
+        answer = {"hosts": [{**_HOST_ROW, "rack": "b3"}], "cursor": "c1"}
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
@@ -3028,13 +3028,13 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            machines = client.list_machines()
+            hosts = client.list_hosts()
 
-        assert [(m.name, m.labels) for m in machines] == [("gpu-box", ["gpu", "a100"])]
+        assert [(m.name, m.labels) for m in hosts] == [("gpu-box", ["gpu", "a100"])]
 
     def test_a_credential_answer_with_an_added_field_still_parses(self) -> None:
         answer = {
-            "machine_id": str(_MACHINE_ID),
+            "host_id": str(_HOST_ID),
             "credential": _CREDENTIAL,
             "expires_at": None,
         }
@@ -3045,21 +3045,21 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            joined = client.join_machine(
+            joined = client.join_host(
                 "gpu-box",
                 token=_ENROLLMENT_TOKEN,
                 instance=_INSTANCE,
-                host_version="0.1",
+                daemon_version="0.1",
                 facts={},
             )
 
-        assert (joined.machine_id, joined.credential) == (_MACHINE_ID, _CREDENTIAL)
+        assert (joined.host_id, joined.credential) == (_HOST_ID, _CREDENTIAL)
 
-    def test_get_machine_reads_one_and_reports_absence(self) -> None:
+    def test_get_host_reads_one_and_reports_absence(self) -> None:
         answers = iter(
             (
-                httpx2.Response(200, json=_MACHINE_ROW),
-                httpx2.Response(404, json={"detail": "no such machine"}),
+                httpx2.Response(200, json=_HOST_ROW),
+                httpx2.Response(404, json={"detail": "no such host"}),
             ),
         )
         seen: list[httpx2.Request] = []
@@ -3070,17 +3070,17 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            machine = client.get_machine("gpu-box")
+            host = client.get_host("gpu-box")
             with pytest.raises(ClientError) as err:
-                client.get_machine("gpu-box")
+                client.get_host("gpu-box")
 
-        assert (machine.name, machine.how) == ("gpu-box", "ssh gpu-box")
+        assert (host.name, host.how) == ("gpu-box", "ssh gpu-box")
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", MACHINE_PATH.format(name="gpu-box")),
+            ("GET", HOST_PATH.format(name="gpu-box")),
         ] * 2
         assert err.value.status_code == 404
 
-    def test_put_machine_sends_only_the_fields_it_names(self) -> None:
+    def test_put_host_sends_only_the_fields_it_names(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -3089,12 +3089,12 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.put_machine("gpu-box", role="dev") is None
-            client.put_machine("gpu-box", how="")
-            client.put_machine("gpu-box", role="", how="ssh gpu-box")
+            assert client.put_host("gpu-box", role="dev") is None
+            client.put_host("gpu-box", how="")
+            client.put_host("gpu-box", role="", how="ssh gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("PUT", "/api/machines/gpu-box"),
+            ("PUT", "/api/hosts/gpu-box"),
         ] * 3
         assert [json_loads(r.content) for r in seen] == [
             {"role": "dev"},
@@ -3102,7 +3102,7 @@ class TestMachineMethods:
             {"role": "", "how": "ssh gpu-box"},
         ]
 
-    def test_put_machine_escapes_the_name_in_the_path(self) -> None:
+    def test_put_host_escapes_the_name_in_the_path(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -3111,9 +3111,9 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            client.put_machine("a/b", role="dev")
+            client.put_host("a/b", role="dev")
 
-        assert str(seen[0].url).endswith("/api/machines/a%2Fb")
+        assert str(seen[0].url).endswith("/api/hosts/a%2Fb")
 
     @pytest.mark.parametrize(
         ("role", "how", "expected"),
@@ -3124,7 +3124,7 @@ class TestMachineMethods:
         ],
         ids=["role-pattern", "how-too-long", "how-nul"],
     )
-    def test_put_machine_refuses_a_bad_field_before_any_request(
+    def test_put_host_refuses_a_bad_field_before_any_request(
         self,
         role: str | None,
         how: str | None,
@@ -3138,12 +3138,12 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            with pytest.raises(ClientError, match=f"^machine 'gpu-box' {expected}: "):
-                client.put_machine("gpu-box", role=role, how=how)
+            with pytest.raises(ClientError, match=f"^host 'gpu-box' {expected}: "):
+                client.put_host("gpu-box", role=role, how=how)
 
         assert seen == []
 
-    def test_change_machine_labels_patches_both_lists(self) -> None:
+    def test_change_host_labels_patches_both_lists(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -3152,47 +3152,47 @@ class TestMachineMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.change_machine_labels("gpu-box", add=["gpu"]) is None
-            client.change_machine_labels("gpu-box", remove=("a100",))
+            assert client.change_host_labels("gpu-box", add=["gpu"]) is None
+            client.change_host_labels("gpu-box", remove=("a100",))
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("PATCH", "/api/machines/gpu-box/labels"),
+            ("PATCH", "/api/hosts/gpu-box/labels"),
         ] * 2
         assert [json_loads(r.content) for r in seen] == [
             {"add": ["gpu"], "remove": []},
             {"add": [], "remove": ["a100"]},
         ]
 
-    def test_delete_machine_deletes_and_reports_absence(self) -> None:
+    def test_delete_host_deletes_and_reports_absence(self) -> None:
         statuses = iter((204, 404))
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx2.Response(next(statuses), json={"detail": "no such machine"})
+            return httpx2.Response(next(statuses), json={"detail": "no such host"})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.delete_machine("gpu-box") is None
+            assert client.delete_host("gpu-box") is None
             with pytest.raises(ClientError) as err:
-                client.delete_machine("gpu-box")
+                client.delete_host("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("DELETE", "/api/machines/gpu-box"),
+            ("DELETE", "/api/hosts/gpu-box"),
         ] * 2
         assert err.value.status_code == 404
 
 
 _INSTANCE = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-_MACHINE_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_HOST_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _ENROLLMENT_TOKEN = "enr_" + "0" * 32 + "_" + "S" * 43
 _CREDENTIAL = "trax_machine_" + "1" * 32 + "_" + "C" * 43
 
 
-class TestMachineHostMethods:
+class TestHostHostMethods:
     """Enroll, join, heartbeat and revoke build the right requests."""
 
-    def test_enroll_machine_posts_the_name_and_parses_the_token(self) -> None:
+    def test_enroll_host_posts_the_name_and_parses_the_token(self) -> None:
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -3208,14 +3208,14 @@ class TestMachineHostMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            enrolled = client.enroll_machine("gpu-box")
+            enrolled = client.enroll_host("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [("POST", ENROLL_PATH)]
         assert json_loads(seen[0].content) == {"name": "gpu-box"}
         assert enrolled.token == _ENROLLMENT_TOKEN
         assert enrolled.owner == "ada@x.y"
 
-    def test_join_machine_sends_once_and_parses_the_credential(self) -> None:
+    def test_join_host_sends_once_and_parses_the_credential(self) -> None:
         seen: list[httpx2.Request] = []
         statuses = iter((503, 201))
 
@@ -3224,17 +3224,17 @@ class TestMachineHostMethods:
             status = next(statuses)
             return httpx2.Response(
                 status,
-                json={"machine_id": str(_MACHINE_ID), "credential": _CREDENTIAL},
+                json={"host_id": str(_HOST_ID), "credential": _CREDENTIAL},
             )
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as err:
-                client.join_machine(
+                client.join_host(
                     "gpu-box",
                     token=_ENROLLMENT_TOKEN,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts={"os": "linux", "cpus": 8},
                 )
 
@@ -3246,70 +3246,70 @@ class TestMachineHostMethods:
             "name": "gpu-box",
             "token": _ENROLLMENT_TOKEN,
             "instance": str(_INSTANCE),
-            "host_version": "0.1",
+            "daemon_version": "0.1",
             "facts": {"os": "linux", "cpus": 8},
         }
 
-    def test_join_machine_parses_the_machine_id_and_credential(self) -> None:
+    def test_join_host_parses_the_host_id_and_credential(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
             return httpx2.Response(
                 201,
-                json={"machine_id": str(_MACHINE_ID), "credential": _CREDENTIAL},
+                json={"host_id": str(_HOST_ID), "credential": _CREDENTIAL},
             )
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            joined = client.join_machine(
+            joined = client.join_host(
                 "gpu-box",
                 token=_ENROLLMENT_TOKEN,
                 instance=_INSTANCE,
-                host_version="0.1",
+                daemon_version="0.1",
                 facts={},
             )
 
-        assert (joined.machine_id, joined.credential) == (_MACHINE_ID, _CREDENTIAL)
+        assert (joined.host_id, joined.credential) == (_HOST_ID, _CREDENTIAL)
 
-    def test_join_machine_refuses_a_bad_field_without_quoting_the_token(self) -> None:
+    def test_join_host_refuses_a_bad_field_without_quoting_the_token(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError(f"no request expected, got {request.url}")
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="facts") as err:
-                client.join_machine(
+                client.join_host(
                     "gpu-box",
                     token=_ENROLLMENT_TOKEN,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts={"Bad Key": "x"},
                 )
 
         assert _ENROLLMENT_TOKEN not in str(err.value)
         assert "S" * 43 not in repr(err.value.__cause__)
 
-    def test_join_machine_never_quotes_a_malformed_answer(self) -> None:
+    def test_join_host_never_quotes_a_malformed_answer(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
             return httpx2.Response(
                 201,
-                json={"machine_id": "x", "credential": _CREDENTIAL},
+                json={"host_id": "x", "credential": _CREDENTIAL},
             )
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload") as err:
-                client.join_machine(
+                client.join_host(
                     "gpu-box",
                     token=_ENROLLMENT_TOKEN,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts={},
                 )
 
         assert "C" * 43 not in str(err.value)
 
-    def test_heartbeat_machine_posts_to_the_machines_path_with_the_credential(
+    def test_heartbeat_host_posts_to_the_hosts_path_with_the_credential(
         self,
     ) -> None:
         seen: list[httpx2.Request] = []
@@ -3320,33 +3320,33 @@ class TestMachineHostMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            beat = client.heartbeat_machine(
-                _MACHINE_ID,
+            beat = client.heartbeat_host(
+                _HOST_ID,
                 instance=_INSTANCE,
-                host_version="0.1",
+                daemon_version="0.1",
             )
-            client.heartbeat_machine(
-                _MACHINE_ID,
+            client.heartbeat_host(
+                _HOST_ID,
                 instance=_INSTANCE,
-                host_version="0.1",
+                daemon_version="0.1",
                 facts={"cpus": 4},
             )
-            client.heartbeat_machine(
-                _MACHINE_ID,
+            client.heartbeat_host(
+                _HOST_ID,
                 instance=_INSTANCE,
-                host_version="",
+                daemon_version="",
                 claim="take",
             )
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("POST", HEARTBEAT_PATH.format(machine_id=_MACHINE_ID)),
+            ("POST", HEARTBEAT_PATH.format(host_id=_HOST_ID)),
         ] * 3
         assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
         # ``keep`` is the default and stays off the wire; an empty version does not.
         assert [json_loads(r.content) for r in seen] == [
-            {"instance": str(_INSTANCE), "host_version": "0.1"},
-            {"instance": str(_INSTANCE), "host_version": "0.1", "facts": {"cpus": 4}},
-            {"instance": str(_INSTANCE), "host_version": "", "claim": "take"},
+            {"instance": str(_INSTANCE), "daemon_version": "0.1"},
+            {"instance": str(_INSTANCE), "daemon_version": "0.1", "facts": {"cpus": 4}},
+            {"instance": str(_INSTANCE), "daemon_version": "", "claim": "take"},
         ]
         assert beat.server_time.year == 2026
 
@@ -3357,7 +3357,7 @@ class TestMachineHostMethods:
         answers: list[object] = [
             None,
             {
-                "terminal_id": str(_MACHINE_ID),
+                "terminal_id": str(_HOST_ID),
                 "opener": "ada@x.y",
                 "rows": 24,
                 "cols": 80,
@@ -3370,13 +3370,13 @@ class TestMachineHostMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            none = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
-            found = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
+            none = client.wait_terminals(_HOST_ID, instance=_INSTANCE, wait_sec=25)
+            found = client.wait_terminals(_HOST_ID, instance=_INSTANCE, wait_sec=25)
 
         assert none is None
         assert found is not None
         assert (found.opener, found.rows, found.canvas) == ("ada@x.y", 24, None)
-        assert seen[0].url.path == (f"/api/machines/{_MACHINE_ID}/terminals/wait")
+        assert seen[0].url.path == (f"/api/hosts/{_HOST_ID}/terminals/wait")
         assert seen[0].url.params["instance"] == str(_INSTANCE)
         assert seen[0].url.params["wait_sec"] == "25"
         assert seen[0].headers["Authorization"] == f"Bearer {_CREDENTIAL}"
@@ -3386,7 +3386,7 @@ class TestMachineHostMethods:
     ) -> None:
         # Trackinizer 0.1.8 refused every wait once the server added ``canvas``.
         answer = {
-            "terminal_id": str(_MACHINE_ID),
+            "terminal_id": str(_HOST_ID),
             "opener": "ada@x.y",
             "rows": 24,
             "cols": 80,
@@ -3399,61 +3399,61 @@ class TestMachineHostMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            found = client.wait_terminals(_MACHINE_ID, instance=_INSTANCE, wait_sec=25)
+            found = client.wait_terminals(_HOST_ID, instance=_INSTANCE, wait_sec=25)
 
         assert found is not None
-        assert (found.terminal_id, found.opener) == (_MACHINE_ID, "ada@x.y")
+        assert (found.terminal_id, found.opener) == (_HOST_ID, "ada@x.y")
 
-    def test_heartbeat_machine_surfaces_a_revoked_credential_as_410(self) -> None:
+    def test_heartbeat_host_surfaces_a_revoked_credential_as_410(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx2.Response(410, json={"detail": "machine_revoked"})
+            return httpx2.Response(410, json={"detail": "host_revoked"})
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as err:
-                client.heartbeat_machine(
-                    _MACHINE_ID,
+                client.heartbeat_host(
+                    _HOST_ID,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                 )
 
         assert err.value.status_code == 410
 
-    def test_heartbeat_machine_refuses_bad_facts_before_any_request(self) -> None:
+    def test_heartbeat_host_refuses_bad_facts_before_any_request(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             raise AssertionError(f"no request expected, got {request.url}")
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="facts"):
-                client.heartbeat_machine(
-                    _MACHINE_ID,
+                client.heartbeat_host(
+                    _HOST_ID,
                     instance=_INSTANCE,
-                    host_version="0.1",
+                    daemon_version="0.1",
                     facts=cast("Facts", cast("object", {"a": 1.5})),
                 )
 
-    def test_revoke_machine_posts_to_the_name_and_reports_absence(self) -> None:
+    def test_revoke_host_posts_to_the_name_and_reports_absence(self) -> None:
         statuses = iter((204, 404))
         seen: list[httpx2.Request] = []
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx2.Response(next(statuses), json={"detail": "no such machine"})
+            return httpx2.Response(next(statuses), json={"detail": "no such host"})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.revoke_machine("gpu-box") is None
+            assert client.revoke_host("gpu-box") is None
             with pytest.raises(ClientError) as err:
-                client.revoke_machine("gpu-box")
+                client.revoke_host("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("POST", "/api/machines/gpu-box/revoke"),
+            ("POST", "/api/hosts/gpu-box/revoke"),
         ] * 2
         assert err.value.status_code == 404
 
-    def test_a_machines_runs_are_read_and_disconnect_returns_those_it_stopped(
+    def test_a_hosts_runs_are_read_and_disconnect_returns_those_it_stopped(
         self,
     ) -> None:
         run = {
@@ -3471,17 +3471,17 @@ class TestMachineHostMethods:
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            listed = client.machine_runs("gpu-box")
-            stopped = client.disconnect_machine("gpu-box")
+            listed = client.host_runs("gpu-box")
+            stopped = client.disconnect_host("gpu-box")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", "/api/machines/gpu-box/runs"),
-            ("POST", "/api/machines/gpu-box/disconnect"),
+            ("GET", "/api/hosts/gpu-box/runs"),
+            ("POST", "/api/hosts/gpu-box/disconnect"),
         ]
         assert [each.run for each in listed] == [each.run for each in stopped]
         assert listed[0].run == "chat-11111111"
 
-    def test_stopping_a_run_posts_to_its_machine_and_session_and_reports_absence(
+    def test_stopping_a_run_posts_to_its_host_and_session_and_reports_absence(
         self,
     ) -> None:
         session = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -3490,16 +3490,16 @@ class TestMachineHostMethods:
 
         def handler(request: httpx2.Request) -> httpx2.Response:
             seen.append(request)
-            return httpx2.Response(next(statuses), json={"detail": "no live run"})
+            return httpx2.Response(next(statuses), json={"detail": "no live session"})
 
         with Client("https://server") as client:
             _install_mock_transport(client, handler)
-            assert client.stop_machine_run("gpu-box", session) is None
+            assert client.stop_host_run("gpu-box", session) is None
             with pytest.raises(ClientError) as err:
-                client.stop_machine_run("gpu-box", session)
+                client.stop_host_run("gpu-box", session)
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("POST", f"/api/machines/gpu-box/runs/{session}/stop"),
+            ("POST", f"/api/hosts/gpu-box/runs/{session}/stop"),
         ] * 2
         assert err.value.status_code == 404
 
@@ -3507,11 +3507,11 @@ class TestMachineHostMethods:
 class TestTerminalMethods:
     """The terminal methods build the right requests and parse the answers."""
 
-    def test_terminal_machines_asks_for_a_canvas_only_when_named(self) -> None:
+    def test_terminal_hosts_asks_for_a_canvas_only_when_named(self) -> None:
         seen: list[httpx2.Request] = []
         canvas = uuid.UUID("22222222-2222-2222-2222-222222222222")
         listing = {
-            "machines": [
+            "hosts": [
                 {
                     "name": "gx10",
                     "status": "online",
@@ -3529,24 +3529,24 @@ class TestTerminalMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            named = client.terminal_machines(canvas=canvas)
-            bare = client.terminal_machines()
-            asked = client.terminal_machines(owner="ada@x.y")
+            named = client.terminal_hosts(canvas=canvas)
+            bare = client.terminal_hosts()
+            asked = client.terminal_hosts(owner="ada@x.y")
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", TERMINAL_MACHINES_PATH),
+            ("GET", TERMINAL_HOSTS_PATH),
         ] * 3
         assert seen[0].url.params["canvas"] == str(canvas)
         assert "canvas" not in seen[1].url.params
         assert "owner" not in seen[1].url.params
         assert seen[2].url.params["owner"] == "ada@x.y"
-        assert asked.machines[0].tools is False
-        assert [(m.name, m.terminal_ready, m.clis) for m in named.machines] == [
+        assert asked.hosts[0].tools is False
+        assert [(m.name, m.terminal_ready, m.clis) for m in named.hosts] == [
             ("gx10", True, ["claude", "codex"]),
         ]
         assert bare.terminals == []
 
-    def test_machines_version_holds_past_its_wait_and_names_what_it_holds(
+    def test_hosts_version_holds_past_its_wait_and_names_what_it_holds(
         self,
     ) -> None:
         seen: list[httpx2.Request] = []
@@ -3557,26 +3557,26 @@ class TestTerminalMethods:
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
-            first = client.machines_version(owner="ada@x.y", since=None, wait_sec=25)
-            held = client.machines_version(since=7, wait_sec=25)
+            first = client.hosts_version(owner="ada@x.y", since=None, wait_sec=25)
+            held = client.hosts_version(since=7, wait_sec=25)
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", TERMINAL_MACHINES_CHANGES_PATH),
+            ("GET", TERMINAL_HOSTS_CHANGES_PATH),
         ] * 2
         assert dict(seen[0].url.params) == {"owner": "ada@x.y", "wait_sec": "25"}
         assert dict(seen[1].url.params) == {"since": "7", "wait_sec": "25"}
         assert (_read_timeout(seen[1]) or 0) > 25
-        assert (first, held) == (MachinesVersion(version=8), MachinesVersion(version=8))
+        assert (first, held) == (HostsVersion(version=8), HostsVersion(version=8))
 
-    def test_terminal_machines_wraps_a_malformed_payload(self) -> None:
+    def test_terminal_hosts_wraps_a_malformed_payload(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
             del request
-            return httpx2.Response(200, json={"machines": [{"name": "gx10"}]})
+            return httpx2.Response(200, json={"hosts": [{"name": "gx10"}]})
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload"):
-                client.terminal_machines()
+                client.terminal_hosts()
 
     def test_open_terminal_sends_the_run_fields_and_reads_the_ticket(self) -> None:
         seen: list[httpx2.Request] = []
@@ -3586,14 +3586,14 @@ class TestTerminalMethods:
             seen.append(request)
             return httpx2.Response(
                 201,
-                json={"terminal_id": str(_MACHINE_ID), "ticket": "ticket-1"},
+                json={"terminal_id": str(_HOST_ID), "ticket": "ticket-1"},
             )
 
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             opened = client.open_terminal(
                 OpenTerminal(
-                    machine="gx10",
+                    host="gx10",
                     rows=40,
                     cols=120,
                     canvas=canvas,
@@ -3606,7 +3606,7 @@ class TestTerminalMethods:
 
         assert [(r.method, r.url.path) for r in seen] == [("POST", TERMINALS_PATH)]
         assert json_loads(seen[0].content) == {
-            "machine": "gx10",
+            "host": "gx10",
             "rows": 40,
             "cols": 120,
             "canvas": str(canvas),
@@ -3615,7 +3615,7 @@ class TestTerminalMethods:
             "run_name": "campaign-issue-7",
             "cwd": "~/work",
         }
-        assert (opened.terminal_id, opened.ticket) == (_MACHINE_ID, "ticket-1")
+        assert (opened.terminal_id, opened.ticket) == (_HOST_ID, "ticket-1")
 
     def test_open_terminal_surfaces_a_refusal_with_its_status_and_code(self) -> None:
         def handler(request: httpx2.Request) -> httpx2.Response:
@@ -3628,7 +3628,7 @@ class TestTerminalMethods:
         with Client("https://server", api_key=_CREDENTIAL) as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as err:
-                client.open_terminal(OpenTerminal(machine="gx10", rows=40, cols=120))
+                client.open_terminal(OpenTerminal(host="gx10", rows=40, cols=120))
 
         assert (err.value.status_code, err.value.code) == (
             403,
@@ -3976,9 +3976,9 @@ class TestJobMethods:
         assert err.value.__cause__ is None
 
 
-_MACHINE_JOB_VIEW: dict[str, object] = {
+_HOST_JOB_VIEW: dict[str, object] = {
     "id": 8,
-    "machine": "gx10",
+    "host": "gx10",
     "state": "running",
     "gpus": 1,
     "memory_mb": 2_048,
@@ -4006,13 +4006,13 @@ _CHUNK: dict[str, object] = {
 }
 
 
-class TestMachineJobMethods:
-    """Each ``machine_job_*`` method and the host's three calls hit their paths."""
+class TestHostJobMethods:
+    """Each ``host_job_*`` method and the host's three calls hit their paths."""
 
     def test_submit_posts_the_body_once_and_parses_the_job(self) -> None:
         seen: list[httpx2.Request] = []
-        body = MachineJobSubmit(
-            machine="gx10",
+        body = HostJobSubmit(
+            host="gx10",
             argv=["python", "x.py"],
             gpus=1,
             memory_mb=2_048,
@@ -4024,36 +4024,36 @@ class TestMachineJobMethods:
         with _job_client(
             seen,
             httpx2.Response(503, json={}),
-            httpx2.Response(201, json=_MACHINE_JOB_VIEW),
+            httpx2.Response(201, json=_HOST_JOB_VIEW),
         ) as client:
             with pytest.raises(ClientError) as err:
-                _ = client.machine_job_submit(body)
-            job = client.machine_job_submit(body)
+                _ = client.host_job_submit(body)
+            job = client.host_job_submit(body)
 
         # A retry after a lost answer would queue the job twice.
         assert err.value.status_code == 503
         assert [(r.method, r.url.path) for r in seen] == [
-            ("POST", MACHINE_JOBS_PATH),
+            ("POST", HOST_JOBS_PATH),
         ] * 2
         assert json_loads(seen[0].content) == body.model_dump(mode="json")
-        assert (job.id, job.machine, job.state) == (8, "gx10", "running")
+        assert (job.id, job.host, job.state) == (8, "gx10", "running")
 
     def test_list_view_and_cancel_hit_their_paths(self) -> None:
         seen: list[httpx2.Request] = []
         with _job_client(
             seen,
-            httpx2.Response(200, json={"jobs": [_MACHINE_JOB_VIEW]}),
-            httpx2.Response(200, json=_MACHINE_JOB_VIEW),
-            httpx2.Response(200, json=_MACHINE_JOB_VIEW | {"state": "cancelled"}),
+            httpx2.Response(200, json={"jobs": [_HOST_JOB_VIEW]}),
+            httpx2.Response(200, json=_HOST_JOB_VIEW),
+            httpx2.Response(200, json=_HOST_JOB_VIEW | {"state": "cancelled"}),
         ) as client:
-            listing = client.machine_job_list()
-            one = client.machine_job_view(8)
-            cancelled = client.machine_job_cancel(8)
+            listing = client.host_job_list()
+            one = client.host_job_view(8)
+            cancelled = client.host_job_cancel(8)
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", MACHINE_JOBS_PATH),
-            ("GET", MACHINE_JOB_PATH.format(job_id=8)),
-            ("POST", MACHINE_JOB_CANCEL_PATH.format(job_id=8)),
+            ("GET", HOST_JOBS_PATH),
+            ("GET", HOST_JOB_PATH.format(job_id=8)),
+            ("POST", HOST_JOB_CANCEL_PATH.format(job_id=8)),
         ]
         assert [job.id for job in listing.jobs] == [8]
         assert (one.remote, cancelled.state) == (
@@ -4076,17 +4076,17 @@ class TestMachineJobMethods:
             httpx2.Response(200, json={"reply": {"kind": "refused", "reason": "big"}}),
         ) as client:
             with pytest.raises(ClientError) as lost:
-                _ = client.machine_job_log(8, offset=4, wait=20)
-            log = client.machine_job_log(8, offset=4, wait=20)
-            manifest = client.machine_job_manifest(8)
-            refused = client.machine_job_file(8, "a/b.txt", offset=9)
+                _ = client.host_job_log(8, offset=4, wait=20)
+            log = client.host_job_log(8, offset=4, wait=20)
+            manifest = client.host_job_manifest(8)
+            refused = client.host_job_file(8, "a/b.txt", offset=9)
 
         assert lost.value.status_code == 504
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", MACHINE_JOB_LOG_PATH.format(job_id=8)),
-            ("GET", MACHINE_JOB_LOG_PATH.format(job_id=8)),
-            ("GET", MACHINE_JOB_MANIFEST_PATH.format(job_id=8)),
-            ("GET", MACHINE_JOB_FILE_PATH.format(job_id=8)),
+            ("GET", HOST_JOB_LOG_PATH.format(job_id=8)),
+            ("GET", HOST_JOB_LOG_PATH.format(job_id=8)),
+            ("GET", HOST_JOB_MANIFEST_PATH.format(job_id=8)),
+            ("GET", HOST_JOB_FILE_PATH.format(job_id=8)),
         ]
         assert dict(seen[1].url.params) == {"offset": "4", "wait": "20"}
         assert dict(seen[3].url.params) == {"path": "a/b.txt", "offset": "9"}
@@ -4097,23 +4097,23 @@ class TestMachineJobMethods:
 
     def test_the_host_waits_reports_and_answers_on_its_own_paths(self) -> None:
         seen: list[httpx2.Request] = []
-        machine, instance, read_id = uuid.UUID(int=1), uuid.UUID(int=2), uuid.uuid4()
+        host, instance, read_id = uuid.UUID(int=1), uuid.UUID(int=2), uuid.uuid4()
         with _job_client(
             seen,
             httpx2.Response(200, json={"work": {"kind": "cancel", "job_id": 8}}),
             httpx2.Response(204),
             httpx2.Response(204),
         ) as client:
-            offer = client.wait_machine_work(machine, instance=instance, wait_sec=25)
-            client.report_machine_job(machine, 8, JobReport(state="running"))
-            client.post_machine_read(machine, read_id, ReadReply.model_validate(_CHUNK))
+            offer = client.wait_host_work(host, instance=instance, wait_sec=25)
+            client.report_host_job(host, 8, JobReport(state="running"))
+            client.post_host_read(host, read_id, ReadReply.model_validate(_CHUNK))
 
         assert [(r.method, r.url.path) for r in seen] == [
-            ("GET", MACHINE_WORK_PATH.format(machine_id=machine)),
-            ("POST", MACHINE_JOB_REPORT_PATH.format(machine_id=machine, job_id=8)),
+            ("GET", HOST_WORK_PATH.format(host_id=host)),
+            ("POST", HOST_JOB_REPORT_PATH.format(host_id=host, job_id=8)),
             (
                 "POST",
-                MACHINE_READ_REPLY_PATH.format(machine_id=machine, read_id=read_id),
+                HOST_READ_REPLY_PATH.format(host_id=host, read_id=read_id),
             ),
         ]
         assert dict(seen[0].url.params) == {"instance": str(instance), "wait_sec": "25"}
@@ -4132,7 +4132,7 @@ class TestMachineJobMethods:
             _job_client(seen, httpx2.Response(502, json={})) as client,
             pytest.raises(ClientError),
         ):
-            _ = client.wait_machine_work(
+            _ = client.wait_host_work(
                 uuid.UUID(int=1),
                 instance=uuid.UUID(int=2),
                 wait_sec=0,
@@ -4764,14 +4764,14 @@ def test_a_canvas_with_a_malformed_revision_is_refused_before_posting() -> None:
     assert [r.method for r in sent] == ["GET"]
 
 
-def test_logout_machine_reads_what_it_stopped_and_revoked() -> None:
+def test_logout_host_reads_what_it_stopped_and_revoked() -> None:
     sent: list[httpx2.Request] = []
     with _recording(sent, httpx2.Response(200, json={"runs": [], "keys": 2})) as client:
-        logged_out = client.logout_machine("gpu box")
+        logged_out = client.logout_host("gpu box")
 
     assert (logged_out.runs, logged_out.keys) == ([], 2)
     assert [(r.method, str(r.url)) for r in sent] == [
-        ("POST", "https://server/api/machines/gpu%20box/logout"),
+        ("POST", "https://server/api/hosts/gpu%20box/logout"),
     ]
 
 

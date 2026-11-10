@@ -14,9 +14,9 @@ from trackinizer.server.api.replays import Replays
 from trackinizer.server.api.tool_access import tool_access
 from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.config import Config
-from trackinizer.server.machine_changes import MachineChanges
-from trackinizer.server.terminals import Terminal, TerminalHub
-from trackinizer.server.tool_pipes import Pipe, PipeHub
+from trackinizer.server.host_changes import HostChanges
+from trackinizer.server.terminals import Terminal, TerminalRelay
+from trackinizer.server.tool_relay import ToolConnection, ToolRelay
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
@@ -72,7 +72,7 @@ def nudge_streams(request: Request) -> None:
     """Wake the event streams the app holds, if any, to read what changed.
 
     Args:
-      request: The request that changed a session, a run or a machine.
+      request: The request that changed a session, a run or a host.
 
     """
     streams: object = getattr(cast("FastAPI", request.app).state, "hub", None)
@@ -97,151 +97,151 @@ def get_replays(request: Request) -> Replays:
     return replays
 
 
-def terminal_hub(app: FastAPI) -> TerminalHub:
-    """Return the app's terminal hub, made on first use.
+def terminal_relay(app: FastAPI) -> TerminalRelay:
+    """Return the app's terminal relay, made on first use.
 
     Args:
       app: The application, whose state holds the store.
 
     Returns:
-      result: The hub.
+      result: The relay.
 
     """
     held: object = getattr(app.state, "terminals", None)
-    if isinstance(held, TerminalHub):
+    if isinstance(held, TerminalRelay):
         return held
-    hub = TerminalHub(
+    relay = TerminalRelay(
         alive=functools.partial(_alive, store=cast("_State", app.state).store),
         ice_servers=_config(app).terminal_stun,
     )
-    app.state.terminals = hub
-    return hub
+    app.state.terminals = relay
+    return relay
 
 
-def get_terminal_hub(request: HTTPConnection) -> TerminalHub:
-    """Return the terminal hub held on the app state.
+def get_terminal_relay(request: HTTPConnection) -> TerminalRelay:
+    """Return the terminal relay held on the app state.
 
     Args:
       request: Request.
 
     Returns:
-      result: The hub.
+      result: The relay.
 
     """
-    return terminal_hub(cast("FastAPI", request.app))
+    return terminal_relay(cast("FastAPI", request.app))
 
 
-def pipe_hub(app: FastAPI) -> PipeHub:
-    """Return the app's tool pipe hub, made on first use.
+def tool_relay(app: FastAPI) -> ToolRelay:
+    """Return the app's tool connection relay, made on first use.
 
     Args:
       app: The application, whose state holds the store and the configuration.
 
     Returns:
-      result: The hub.
+      result: The relay.
 
     """
-    held: object = getattr(app.state, "tool_pipes", None)
-    if isinstance(held, PipeHub):
+    held: object = getattr(app.state, "tool_relay", None)
+    if isinstance(held, ToolRelay):
         return held
     config = _config(app)
-    hub = PipeHub(
-        alive=functools.partial(_pipe_alive, app=app),
-        pipes_per_machine=config.tool_pipes_per_machine,
+    relay = ToolRelay(
+        alive=functools.partial(_connection_alive, app=app),
+        connections_per_host=config.tool_connections_per_host,
         dial_back_sec=config.tool_dial_back_sec,
         line_bytes=config.tool_line_bytes,
     )
-    app.state.tool_pipes = hub
-    return hub
+    app.state.tool_relay = relay
+    return relay
 
 
-def get_pipe_hub(request: HTTPConnection) -> PipeHub:
-    """Return the tool pipe hub held on the app state.
+def get_tool_relay(request: HTTPConnection) -> ToolRelay:
+    """Return the tool connection relay held on the app state.
 
     Args:
       request: Request.
 
     Returns:
-      result: The hub.
+      result: The relay.
 
     """
-    return pipe_hub(cast("FastAPI", request.app))
+    return tool_relay(cast("FastAPI", request.app))
 
 
-def machine_idle_sec(app: FastAPI, machine_id: uuid.UUID) -> float:
-    """Return how long the machine has had no tool call or result, nor terminal use.
+def host_idle_sec(app: FastAPI, host_id: uuid.UUID) -> float:
+    """Return how long the host has had no tool call or result, nor terminal use.
 
-    The tool pipe hub sees each call and result; the terminal hub each terminal's input
+    The tool connection relay sees each call and result; the terminal relay each terminal's input
     and output, relayed or reported by a direct link's keepalive. Both keep it in memory
-    alone, so after a restart a machine is counted from the restart.
+    alone, so after a restart a host is counted from the restart.
 
     Args:
-      app: The application, whose state holds both hubs.
-      machine_id: The machine.
+      app: The application, whose state holds both relays.
+      host_id: The host.
 
     Returns:
-      idle_sec: Seconds since the later of the two hubs' last sight of use.
+      idle_sec: Seconds since the later of the two relays' last sight of use.
 
     """
     return min(
-        pipe_hub(app).idle_sec(machine_id),
-        terminal_hub(app).idle_sec(machine_id),
+        tool_relay(app).idle_sec(host_id),
+        terminal_relay(app).idle_sec(host_id),
     )
 
 
-async def machine_closed(app: FastAPI, machine_id: uuid.UUID) -> None:
-    """End the tool pipes and terminals of a machine taken out of service.
+async def host_closed(app: FastAPI, host_id: uuid.UUID) -> None:
+    """End the tool connections and terminals of a host taken out of service.
 
     Args:
-      app: The application, whose state holds both hubs.
-      machine_id: The machine.
+      app: The application, whose state holds both relays.
+      host_id: The host.
 
     """
-    pipe_hub(app).close_machine(machine_id)
-    await terminal_hub(app).close_machine(machine_id)
+    tool_relay(app).close_host(host_id)
+    await terminal_relay(app).close_host(host_id)
 
 
-def machine_changes(app: FastAPI) -> MachineChanges:
-    """Return the app's machine-list versions, made on first use.
+def host_changes(app: FastAPI) -> HostChanges:
+    """Return the app's host-list versions, made on first use.
 
     Args:
       app: The application.
 
     Returns:
-      changes: The version of each owner's machine list in this process.
+      changes: The version of each owner's host list in this process.
 
     """
-    held: object = getattr(app.state, "machine_changes", None)
-    if not isinstance(held, MachineChanges):
-        held = app.state.machine_changes = MachineChanges()
+    held: object = getattr(app.state, "host_changes", None)
+    if not isinstance(held, HostChanges):
+        held = app.state.host_changes = HostChanges()
     return held
 
 
-def get_machine_changes(request: HTTPConnection) -> MachineChanges:
-    """Return the machine-list versions held on the app state.
+def get_host_changes(request: HTTPConnection) -> HostChanges:
+    """Return the host-list versions held on the app state.
 
     Args:
       request: Request.
 
     Returns:
-      changes: The version of each owner's machine list in this process.
+      changes: The version of each owner's host list in this process.
 
     """
-    return machine_changes(cast("FastAPI", request.app))
+    return host_changes(cast("FastAPI", request.app))
 
 
 # Called once the write has committed: a follower woken before it would list the
-# machines as they were, and wait again with the change unseen.
-def machines_changed(request: HTTPConnection, *, owner: str | None) -> None:
-    """Bump ``owner``'s machine-list version after a write; a machine none owns has none.
+# hosts as they were, and wait again with the change unseen.
+def hosts_changed(request: HTTPConnection, *, owner: str | None) -> None:
+    """Bump ``owner``'s host-list version after a write; a host none owns has none.
 
     Args:
-      request: The request whose committed write changed a machine.
-      owner: The machine's owner, whose listing it is in.
+      request: The request whose committed write changed a host.
+      owner: The host's owner, whose listing it is in.
 
     """
     if owner is not None:
-        get_machine_changes(request).bump(owner)
+        get_host_changes(request).bump(owner)
 
 
 def get_relay(request: Request) -> CaptureRelay:
@@ -288,7 +288,7 @@ def auth_is_disabled(request: HTTPConnection) -> bool:
 
 
 def get_tool_line_bytes(request: HTTPConnection) -> int:
-    """Return the longest line the server reads from an agent's tool pipe.
+    """Return the longest line the server reads from an agent's tool connection.
 
     Args:
       request: Request.
@@ -465,39 +465,39 @@ def _config(app: FastAPI) -> Config:
 
 
 async def _alive(term: Terminal, *, store: Store) -> bool:
-    """Whether the machine's credential is live and its owner an active writer or admin."""
+    """Whether the host's credential is live and its owner an active writer or admin."""
     async with store.engine.acquire() as conn:
         return bool(
             await conn.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM machines m "
-                "JOIN machine_credentials c ON c.machine_id = m.id "
+                "SELECT EXISTS (SELECT 1 FROM hosts m "
+                "JOIN host_credentials c ON c.host_id = m.id "
                 "JOIN users u ON u.email = m.owner "
                 "WHERE m.id = $1 AND c.revoked_at IS NULL "
                 "AND u.status = 'active' AND u.role IN ('writer', 'admin'))",
-                term.machine_id,
+                term.host_id,
             ),
         )
 
 
-# The rule ``tool_routes`` opens a pipe under, asked again of a pipe that may outlive it.
-# A pipe no host has dialed back for has no instance to compare yet, and its timer is short.
+# The rule ``tool_routes`` opens a tool connection under, asked again of a tool connection that may outlive it.
+# A tool connection no host has dialed back for has no instance to compare yet, and its timer is short.
 # One that does not is logged, naming the check it failed, before the sweep ends it.
-async def _pipe_alive(pipe: Pipe, *, app: FastAPI) -> bool:
-    """Whether the assistant's key, its asker and the attached machine still qualify."""
+async def _connection_alive(connection: ToolConnection, *, app: FastAPI) -> bool:
+    """Whether the assistant's key, its asker and the attached host still qualify."""
     async with cast("_State", app.state).store.engine.acquire() as conn:
         access = await tool_access(
             conn,
             assistant=_assistant(app),
-            api_key_id=pipe.api_key_id,
-            asker=pipe.asker,
-            machine=pipe.machine_id,
-            instance=pipe.instance,
+            api_key_id=connection.api_key_id,
+            asker=connection.asker,
+            host=connection.host_id,
+            instance=connection.instance,
         )
     if access.failed is not None:
         _logger.warning(
-            "tool pipe no longer allowed: pipe=%s machine_id=%s check=%s",
-            pipe.id,
-            pipe.machine_id,
+            "tool connection no longer allowed: connection=%s host_id=%s check=%s",
+            connection.id,
+            connection.host_id,
             access.failed,
         )
     return access.failed is None

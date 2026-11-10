@@ -83,7 +83,7 @@ class _Time:
         self.now += seconds
 
 
-def _approved(*, role: str = "writer", machine_token: str = "") -> DeviceToken:
+def _approved(*, role: str = "writer", host_token: str = "") -> DeviceToken:
     return DeviceToken(
         status="approved",
         issued=IssuedKey.model_validate(
@@ -91,7 +91,7 @@ def _approved(*, role: str = "writer", machine_token: str = "") -> DeviceToken:
                 "api_key": _KEY,
                 "role": role,
                 "email": "jp@example.com",
-                "machine_token": machine_token,
+                "host_token": host_token,
             },
         ),
     )
@@ -115,7 +115,7 @@ def _log_in(
     *,
     url: str = "https://trackinizer.example",
     profile: str = "",
-    machine: str | None = None,
+    host: str | None = None,
     client: str = "trax",
 ) -> LoginResult:
     # The client builds its transport from httpx2's, so the server answers there.
@@ -124,7 +124,7 @@ def _log_in(
         return login(
             url,
             profile=profile,
-            machine=machine,
+            host=host,
             client=client,
             sleep=clock.sleep,
             clock=clock.clock,
@@ -163,12 +163,12 @@ def test_the_request_names_the_program_and_the_computer_and_carries_no_credentia
 ):
     server = _Server([_approved()])
 
-    _log_in(server, _Time(), client="machine-host")
+    _log_in(server, _Time(), client="host-hostname")
 
     first, second = server.requests
     assert "authorization" not in first.headers
     assert server.bodies() == [
-        {"client": "machine-host", "host": "Dev_box", "machine": None},
+        {"client": "host-hostname", "hostname": "Dev_box", "host": None},
         {"device_code": _CODE.device_code},
     ]
     assert second.method == "POST"
@@ -206,7 +206,7 @@ def test_an_existing_profile_keeps_its_actor_when_the_key_is_renewed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("hostname", "host"),
+    ("hostname", "sent"),
     [
         ("_build-7.corp", "build-7"),
         ("--ci-box", "ci-box"),
@@ -216,14 +216,14 @@ def test_an_existing_profile_keeps_its_actor_when_the_key_is_renewed() -> None:
 def test_a_host_name_the_server_would_refuse_is_cleaned_before_it_is_sent(
     monkeypatch: pytest.MonkeyPatch,
     hostname: str,
-    host: str,
+    sent: str,
 ) -> None:
     monkeypatch.setattr(socket, "gethostname", lambda: hostname)
     server = _Server([_approved()])
 
     _log_in(server, _Time())
 
-    assert server.bodies()[0]["host"] == host
+    assert server.bodies()[0]["hostname"] == sent
 
 
 @pytest.mark.parametrize(
@@ -285,21 +285,21 @@ def test_a_pinned_profile_stays_current(monkeypatch: pytest.MonkeyPatch) -> None
     assert current_profile() == "lab"
 
 
-def test_a_login_that_names_a_machine_returns_its_enrollment_token() -> None:
-    server = _Server([_approved(machine_token=_ENROLLMENT)])
+def test_a_login_that_names_a_host_returns_its_enrollment_token() -> None:
+    server = _Server([_approved(host_token=_ENROLLMENT)])
 
-    result = _log_in(server, _Time(), machine="dev-box")
+    result = _log_in(server, _Time(), host="dev-box")
 
-    assert result.machine_token == _ENROLLMENT
-    assert server.bodies()[0]["machine"] == "dev-box"
+    assert result.host_token == _ENROLLMENT
+    assert server.bodies()[0]["host"] == "dev-box"
     assert _ENROLLMENT not in repr(result)
 
 
-def test_a_machine_the_server_did_not_enroll_saves_nothing() -> None:
+def test_a_host_the_server_did_not_enroll_saves_nothing() -> None:
     server = _Server([_approved()])
 
-    with pytest.raises(ClientError, match="enrolled no token for machine 'devbox'"):
-        _log_in(server, _Time(), machine="devbox")
+    with pytest.raises(ClientError, match="enrolled no token for host 'devbox'"):
+        _log_in(server, _Time(), host="devbox")
 
     assert list_profiles() == []
 

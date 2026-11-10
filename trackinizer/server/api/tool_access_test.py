@@ -24,20 +24,20 @@ if TYPE_CHECKING:
 
 
 _KB: Final = Assistant(actor="kb", email="kb@x.y")
-_MACHINE: Final = UUID(int=1)
-_HOST: Final = UUID(int=2)
+_HOST: Final = UUID(int=1)
+_DAEMON: Final = UUID(int=2)
 _KEY: Final = UUID(int=3)
 
 _HOLDS: Final[dict[str, object]] = {
     "key": True,
     "asker": True,
-    "id": _MACHINE,
+    "id": _HOST,
     "facts": {"tools": True},
     "confirmed": True,
-    "host_instance": _HOST,
+    "daemon_instance": _DAEMON,
     "credentialed": True,
 }
-"""The row of a machine whose every check holds."""
+"""The row of a host whose every check holds."""
 
 
 def _answering(row: dict[str, object]) -> MockConnection:
@@ -52,7 +52,7 @@ async def _ask(
     assistant: Assistant | None = _KB,
     api_key_id: UUID | None = _KEY,
     asker: str | None = "ada@x.y",
-    machine: UUID | str = _MACHINE,
+    host: UUID | str = _HOST,
     instance: UUID | None = None,
 ) -> ToolAccess:
     return await tool_access(
@@ -60,7 +60,7 @@ async def _ask(
         assistant=assistant,
         api_key_id=api_key_id,
         asker=asker,
-        machine=machine,
+        host=host,
         instance=instance,
     )
 
@@ -73,12 +73,12 @@ async def _ask(
         ({"key": None, "asker": False}, "key"),
         ({"asker": False}, "asker"),
         ({"asker": False, "id": None}, "asker"),
-        ({"id": None, "credentialed": None, "confirmed": None}, "machine"),
+        ({"id": None, "credentialed": None, "confirmed": None}, "host"),
         ({"credentialed": False, "confirmed": False}, "credential"),
         ({"confirmed": False, "facts": {}}, "confirmed"),
-        ({"facts": {"tools": "true"}, "host_instance": None}, "tools"),
-        ({"host_instance": None}, "instance"),
-        ({"host_instance": uuid4()}, "instance"),
+        ({"facts": {"tools": "true"}, "daemon_instance": None}, "tools"),
+        ({"daemon_instance": None}, "instance"),
+        ({"daemon_instance": uuid4()}, "instance"),
     ],
 )
 @pytest.mark.asyncio
@@ -86,29 +86,29 @@ async def test_the_first_check_that_fails_is_named(
     changed: dict[str, object],
     check: Check | None,
 ) -> None:
-    access = await _ask(_answering(_HOLDS | changed), instance=_HOST)
+    access = await _ask(_answering(_HOLDS | changed), instance=_DAEMON)
     assert access.failed == check
-    assert access.machine_id == (None if "id" in changed else _MACHINE)
+    assert access.host_id == (None if "id" in changed else _HOST)
 
 
 @pytest.mark.asyncio
 async def test_a_pipe_no_host_has_attached_is_not_asked_of_its_host() -> None:
-    access = await _ask(_answering(_HOLDS | {"host_instance": None}))
+    access = await _ask(_answering(_HOLDS | {"daemon_instance": None}))
     assert access.failed is None
 
 
 @pytest.mark.parametrize(
-    ("machine", "by_id", "by_name"),
-    [(_MACHINE, _MACHINE, None), ("gx10", None, "gx10")],
+    ("host", "by_id", "by_name"),
+    [(_HOST, _HOST, None), ("gx10", None, "gx10")],
 )
 @pytest.mark.asyncio
-async def test_one_query_names_the_key_assistant_asker_and_machine(
-    machine: UUID | str,
+async def test_one_query_names_the_key_assistant_asker_and_host(
+    host: UUID | str,
     by_id: UUID | None,
     by_name: str | None,
 ) -> None:
     conn = _answering(_HOLDS)
-    _ = await _ask(conn, asker="Ada@X.Y", machine=machine)
+    _ = await _ask(conn, asker="Ada@X.Y", host=host)
     (asked,) = conn.fetch.await_args_list
     _, *arguments = asked.args
     assert arguments == [_KEY, "kb@x.y", "ada@x.y", by_id, by_name]
@@ -127,7 +127,7 @@ async def test_no_key_or_asker_is_bound_as_none() -> None:
 async def test_a_server_with_no_assistant_fails_at_once_and_asks_nothing() -> None:
     conn = _answering(_HOLDS)
     access = await _ask(conn, assistant=None)
-    assert (access.machine_id, access.failed) == (None, "assistant")
+    assert (access.host_id, access.failed) == (None, "assistant")
     conn.fetch.assert_not_awaited()
 
 

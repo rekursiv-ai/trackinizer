@@ -50,7 +50,7 @@ from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session import RunPlace
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.wire_machines import NAME_PATTERN
+from trackinizer.wire.wire_hosts import NAME_PATTERN
 from trackinizer.wire.wire_sessions import (
     RUN_NAME_PATTERN,
     RUN_STOPPED,
@@ -224,7 +224,7 @@ async def session_inbound_enqueue_route(
             detail=f"session {session_id} has ended; cannot enqueue",
         )
     inbound = get_inbound(request)
-    # A detached campaign's first line is queued before its machine opens the run.
+    # A detached campaign's first line is queued before its host opens the run.
     # Only the configured assistant's opening key may seed that asker's labelled
     # campaign session without a poller; every ordinary enqueue still needs one.
     prestart_campaign = (
@@ -379,7 +379,7 @@ async def session_inbound_drain_route(
     *,
     wait_sec: float = 0.0,
     run: Annotated[str | None, Query(pattern=RUN_NAME_PATTERN)] = None,
-    machine: Annotated[str | None, Query(pattern=NAME_PATTERN)] = None,
+    host: Annotated[str | None, Query(pattern=NAME_PATTERN)] = None,
     cwd: Annotated[
         str | None,
         Query(max_length=1_024, pattern=r"^[^\x00-\x1f\x7f-\x9f]*$"),
@@ -411,7 +411,7 @@ async def session_inbound_drain_route(
     API key so reading chat does not grant graph-write permission.
 
     A science chat's queue has one drainer, the provider its starter's canvas names,
-    and one live run. For ``claude`` or ``codex`` a drain by the configured assistant's
+    and one live session. For ``claude`` or ``codex`` a drain by the configured assistant's
     key is 409 ``provider_is_cli``, and the run that drains it may be under any key a
     chat takes a run from (its opening key or its starter's; 403 otherwise). For
     ``assistant`` a drain by its opening key that is not the assistant's is 409
@@ -431,7 +431,7 @@ async def session_inbound_drain_route(
     is 409 ``session_ended`` and the run stops; a session the reaper closed for silence
     is reopened by the drain instead.
 
-    ``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the
+    ``run``, ``host`` and ``cwd`` say where the draining run is, and the lease the
     drain takes keeps them for Chat to show (a malformed one is 422). They are the
     caller's own word about its own run, shown and never trusted; a run that names
     none is shown as it was before runs named themselves.
@@ -448,7 +448,7 @@ async def session_inbound_drain_route(
         (clamped to [0, 30]; 0 returns queued messages immediately).
       run: The name of the detached run, which an attach takes; absent for a run in
         a terminal of its own.
-      machine: The run's machine, as the machine host names it.
+      host: The run's host, as the daemon names it.
       cwd: The run's working directory, ``~/...`` under its home: at most 1,024
         characters, none of them a control character.
       cli: The CLI the draining run is, as the run names it: a lowercase word of
@@ -487,7 +487,7 @@ async def session_inbound_drain_route(
         inbound.mark_poller(
             session_id,
             run=run,
-            machine=machine,
+            host=host,
             cwd=cwd,
             cli=cli,
             instance=instance,
@@ -498,7 +498,7 @@ async def session_inbound_drain_route(
             session_id,
             at=datetime.now(UTC),
             polled=True,
-            place=RunPlace(machine=machine, run=run, cli=cli, cwd=cwd),
+            place=RunPlace(host=host, run=run, cli=cli, cwd=cwd),
         )
     # Ceiling on how long the inbound drain holds a request open. Long enough that
     # a waiting caller re-arms rarely, short enough to stay under the idle timeout
@@ -662,7 +662,7 @@ async def session_end_route(
     return SessionEndResponse(id=session_id, ended=committed_ended)
 
 
-# The run is its owner's own, under whichever of their keys its machine has.
+# The run is its owner's own, under whichever of their keys its host has.
 #
 # A run's report of its own state is held to the same rule, since it speaks for the same
 # run; it names no CLI (``names_cli``), the lease it reports to already does.

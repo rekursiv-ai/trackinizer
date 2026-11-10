@@ -150,7 +150,7 @@ class ManifestBody(BaseModel):
 
     name: str = Field(min_length=1)
     """The file's basename. Not a path: the same session resumed on another
-    machine must resolve to the same part."""
+    host must resolve to the same part."""
 
     metadata: JSON = Field(default_factory=dict)
     """The ``TurnContext.encoding`` in force for the prefix read so far."""

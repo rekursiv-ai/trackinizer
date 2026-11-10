@@ -5,7 +5,7 @@
 exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Generate grammar.lark with CONCRETE terminals from the live trax tables.
 
-grammar.lark is the single, machine-checked, LLM-facing description of the trax
+grammar.lark is the single, host-checked, LLM-facing description of the trax
 command language. Its STRUCTURE (where tails bind, descent vs ``begin/end``, the
 query/bulk/tail forms) is the hand-written :data:`_STRUCTURE` template below. Its
 TERMINALS -- the concrete keyword inventory (kinds, edge aliases, field names,
@@ -587,7 +587,7 @@ def _semantics_block() -> str:
         "//   recent=audit feed; cost=cost rollup; id=show row by uuid;",
         "//   profile=manage server profiles; send=message a live agent session;",
         f"//   {ENV_WORD}=the org's environment variables (a secret is write-only);",
-        "//   run, machine, job=moved out of trax: agent runs, the machine registry and",
+        "//   run, host, job=moved out of trax: agent runs, the host registry and",
         "//     GPU jobs are no longer trax's.",
         *_verb_lines(),
     ]

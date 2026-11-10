@@ -1,9 +1,9 @@
-"""Bridge a tool pipe's websocket to asyncio streams.
+"""Bridge a tool connection's websocket to asyncio streams.
 
 sagent's ``Link`` dials for a ``(StreamReader, StreamWriter)`` pair and its
 ``Server.adopt`` takes the same pair. :func:`bridged` makes that pair from a websocket
-and :func:`dial_tools` opens the agent's leg of a tool pipe first, so both ends of the
-pipe use one bridge.
+and :func:`dial_tools` opens the agent's socket of a tool connection first, so both ends of the
+tool connection use one bridge.
 """
 
 from __future__ import annotations
@@ -86,22 +86,22 @@ async def dial_tools(
     url: str,
     *,
     api_key: str,
-    machine: str,
+    host: str,
     asker: str,
     limit: int,
 ) -> Streams:
-    """Open the agent's leg of ``machine``'s tool pipe, as streams.
+    """Open the agent's socket of ``host``'s tool connection, as streams.
 
     Args:
         url: The server's ``http://`` or ``https://`` base URL.
         api_key: Sent as a bearer token.
-        machine: The machine whose tools to reach.
-        asker: The email the pipe is opened for.
+        host: The host whose tools to reach.
+        asker: The email the tool connection is opened for.
         limit: The longest line the reader takes: the agent's own, as a ``Read`` of a
             large image needs; the relay caps only the lines it reads, the agent's.
 
     Returns:
-        streams: The pipe's reader and writer; they end when either side closes.
+        streams: The tool connection's reader and writer; they end when either side closes.
 
     Raises:
         ToolsRefusedError: The server refused the handshake; the message names the
@@ -114,7 +114,7 @@ async def dial_tools(
         msg = f"server URL must start with http:// or https://: {url!r}"
         raise ValueError(msg)
     # Letters are always safe, so a mutant's ``safe`` of letters is this same one.
-    path = TOOLS_WS_PATH.format(name=quote(machine, safe=""))  # pragma: no mutate
+    path = TOOLS_WS_PATH.format(name=quote(host, safe=""))  # pragma: no mutate
     try:
         socket_ = await connect(
             f"{base.replace('http', 'ws', 1)}{path}?{urlencode({'asker': asker})}",
@@ -216,7 +216,7 @@ async def _from_websocket(
         # Set before the pump ends, so before the reader can see the end of file.
         if closed.rcvd is not None and closed.rcvd.code not in _CLEAN_CODES:
             reader.refusal = ToolsRefusedError(
-                f"the server closed the tools pipe with {closed.rcvd.code}: "
+                f"the server closed the tools tool connection with {closed.rcvd.code}: "
                 f"{closed.rcvd.reason}",
             )
     except OSError:

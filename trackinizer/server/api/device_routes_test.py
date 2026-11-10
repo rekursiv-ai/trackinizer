@@ -29,7 +29,7 @@ from trackinizer.server.api.device_limits import (
     device_code_requests,
     device_wrong_entries,
 )
-from trackinizer.server.machine_auth import MintedSecret
+from trackinizer.server.host_auth import MintedSecret
 from trackinizer.wire.wire_device import (
     DEVICE_CODE_TTL_SEC,
     DEVICE_POLL_SEC,
@@ -70,8 +70,8 @@ def _row(status: str) -> dict[str, object]:
         "id": _LOGIN,
         "user_code": "BCDFGHJK",
         "client": "trax",
-        "host": "box",
-        "machine": None,
+        "hostname": "box",
+        "host": None,
         "status": status,
     }
 
@@ -108,8 +108,8 @@ async def test_an_open_code_returns_its_login_and_forgives_the_entry() -> None:
     assert login == device_routes._Login(
         id=_LOGIN,
         client="trax",
-        host="box",
-        machine=None,
+        hostname="box",
+        host=None,
         status="pending",
         user_code="BCDFGHJK",
     )
@@ -117,7 +117,7 @@ async def test_an_open_code_returns_its_login_and_forgives_the_entry() -> None:
     assert conn.fetchrow.await_args is not None
     sql, code = conn.fetchrow.await_args.args
     assert sql == (
-        "SELECT id, user_code, client, host, machine, status FROM device_logins "
+        "SELECT id, user_code, client, hostname, host, status FROM device_logins "
         "WHERE user_code = $1 AND expires_at > now() FOR UPDATE"
     )
     assert code == "BCDFGHJK"
@@ -183,10 +183,10 @@ async def test_the_public_address_is_the_deployments_the_sign_ins_or_the_request
     assert device_routes._public_base(request) == expected
 
 
-@pytest.mark.parametrize(("machine", "has_client"), [(None, False), ("gx10", True)])
+@pytest.mark.parametrize(("host", "has_client"), [(None, False), ("gx10", True)])
 async def test_device_code_stores_only_digest_and_returns_public_verification_link(
     monkeypatch: pytest.MonkeyPatch,
-    machine: str | None,
+    host: str | None,
     has_client: bool,
 ) -> None:
     request, engine = _unit_device_request(has_client=has_client)
@@ -199,7 +199,7 @@ async def test_device_code_stores_only_digest_and_returns_public_verification_li
     )
     monkeypatch.setattr(secrets, "choice", Mock(return_value="B"))
     response = Response()
-    body = DeviceCodeRequest(client="trax", host="box", machine=machine)
+    body = DeviceCodeRequest(client="trax", hostname="box", host=host)
 
     code = await device_routes.device_code_route(body, request, response)
 
@@ -213,13 +213,13 @@ async def test_device_code_stores_only_digest_and_returns_public_verification_li
     assert response.headers["Cache-Control"] == "no-store"
     engine.conn.execute.assert_any_await(
         "INSERT INTO device_logins "
-        "(device_sha256, user_code, client, host, machine, expires_at) "
+        "(device_sha256, user_code, client, hostname, host, expires_at) "
         "VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))",
         device_routes._digest("poll-secret"),
         "BBBBBBBB",
         "trax",
         "box",
-        machine,
+        host,
         DEVICE_CODE_TTL_SEC,
     )
     assert executed_sql(engine.conn)[0:2] == [
@@ -337,8 +337,8 @@ async def test_device_lookup_formats_code_and_caps_the_proposed_key_role(
         view.user_code,
         view.account,
         view.client,
+        view.hostname,
         view.host,
-        view.machine,
         view.role,
     ) == (
         "BCDF-GHJK",
@@ -351,41 +351,41 @@ async def test_device_lookup_formats_code_and_caps_the_proposed_key_role(
     assert identity.user_id not in device_wrong_entries(request).failures
 
 
-@pytest.mark.parametrize("machine", [None, "gx10"])
+@pytest.mark.parametrize("host", [None, "gx10"])
 @pytest.mark.parametrize("viewer", [False, True])
-async def test_device_approval_claims_only_a_writers_requested_machine(
+async def test_device_approval_claims_only_a_writers_requested_host(
     monkeypatch: pytest.MonkeyPatch,
-    machine: str | None,
+    host: str | None,
     viewer: bool,
 ) -> None:
     request, engine = _unit_device_request()
-    set_field_row(engine.conn, {**_row("pending"), "machine": machine})
+    set_field_row(engine.conn, {**_row("pending"), "host": host})
     identity = make_test_identity(
         api_key_id=None,
         role="viewer" if viewer else "writer",
     )
     claim = AsyncMock(return_value=UUID(int=3))
-    monkeypatch.setattr(device_routes, "claim_machine", claim)
+    monkeypatch.setattr(device_routes, "claim_host", claim)
     body = DeviceDecision(user_code="BCDF-GHJK")
-    if viewer and machine is not None:
+    if viewer and host is not None:
         with pytest.raises(HTTPException) as refused:
             await device_routes.device_approve_route(body, request, identity)
         assert refused.value.status_code == 403
         assert (
             from_plain(refused.value.detail, _Refusal)["code"]
-            == "device_machine_needs_writer"
+            == "device_host_needs_writer"
         )
         claim.assert_not_awaited()
         assert executed_sql(engine.conn)[-1] == "ROLLBACK"
         assert all("SET status" not in sql for sql in executed_sql(engine.conn))
     else:
         assert await device_routes.device_approve_route(body, request, identity) is None
-        if machine is None:
+        if host is None:
             claim.assert_not_awaited()
         else:
             claim.assert_awaited_once_with(
                 engine.conn,
-                name=machine,
+                name=host,
                 email=identity.email,
                 admin=False,
                 confirmed=True,
@@ -399,10 +399,10 @@ async def test_device_approval_claims_only_a_writers_requested_machine(
         assert executed_sql(engine.conn)[-1] == "COMMIT"
 
 
-async def test_device_denial_records_the_person_without_claiming_a_machine() -> None:
+async def test_device_denial_records_the_person_without_claiming_a_host() -> None:
     request, engine = _unit_device_request()
     identity = make_test_identity(api_key_id=None)
-    set_field_row(engine.conn, {**_row("pending"), "machine": "gx10"})
+    set_field_row(engine.conn, {**_row("pending"), "host": "gx10"})
     assert (
         await device_routes.device_deny_route(
             DeviceDecision(user_code="BCDF-GHJK"),
@@ -453,20 +453,20 @@ async def test_device_person_gate_rejects_untrusted_callers_and_locks_out_guesse
     )
 
 
-@pytest.mark.parametrize(("machine", "host"), [(None, ""), ("gx10", "box")])
+@pytest.mark.parametrize(("host", "hostname"), [(None, ""), ("gx10", "box")])
 async def test_approved_poll_mints_key_and_optional_enrollment_then_consumes_login(
     monkeypatch: pytest.MonkeyPatch,
-    machine: str | None,
-    host: str,
+    host: str | None,
+    hostname: str,
 ) -> None:
     request, engine = _unit_device_request()
     approver = UUID(int=2)
-    machine_id = UUID(int=3)
+    host_id = UUID(int=3)
     engine.conn.fetchrow.side_effect = [
-        {**_row("approved"), "approver": approver, "machine": machine, "host": host},
+        {**_row("approved"), "approver": approver, "host": host, "hostname": hostname},
         {"email": "ada@example.com"},
     ]
-    engine.conn.fetchval.return_value = machine_id
+    engine.conn.fetchval.return_value = host_id
     key = AsyncMock(return_value=(UUID(int=4), "api-secret", "prefix", "viewer"))
     enrollment_secret = secrets.token_hex(16)
     minted = MintedSecret(id=UUID(int=5), token=enrollment_secret, digest=b"digest")
@@ -487,24 +487,24 @@ async def test_approved_poll_mints_key_and_optional_enrollment_then_consumes_log
         "viewer",
         "api-secret",
     )
-    assert token.issued.machine_token == ("" if machine is None else enrollment_secret)
+    assert token.issued.host_token == ("" if host is None else enrollment_secret)
     key.assert_awaited_once_with(
         engine.conn,
         user_id=approver,
-        name="trax@box" if host else "trax",
+        name="trax@box" if hostname else "trax",
         ceiling="writer",
-        machine_id=None if machine is None else machine_id,
+        host_id=None if host is None else host_id,
     )
-    if machine is None:
+    if host is None:
         enrollment.assert_not_awaited()
     else:
         enrollment.assert_awaited_once_with(
             engine.conn,
-            machine_id=machine_id,
+            host_id=host_id,
             created_by="ada@example.com",
         )
         engine.conn.fetchval.assert_awaited_once_with(
-            "SELECT id FROM machines WHERE name = $1 AND owner = $2 FOR UPDATE",
+            "SELECT id FROM hosts WHERE name = $1 AND owner = $2 FOR UPDATE",
             "gx10",
             "ada@example.com",
         )
@@ -526,8 +526,8 @@ async def test_approved_login_with_no_active_approver_expires_and_is_consumed(
         login=device_routes._Login(
             id=_LOGIN,
             client="trax",
-            host="",
-            machine=None,
+            hostname="",
+            host=None,
             status="approved",
             approver=UUID(int=2),
         ),
@@ -541,7 +541,7 @@ async def test_approved_login_with_no_active_approver_expires_and_is_consumed(
     )
 
 
-async def test_approved_login_refuses_a_deleted_machine_before_minting_a_key(
+async def test_approved_login_refuses_a_deleted_host_before_minting_a_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = make_conn()
@@ -555,14 +555,14 @@ async def test_approved_login_refuses_a_deleted_machine_before_minting_a_key(
             login=device_routes._Login(
                 id=_LOGIN,
                 client="trax",
-                host="",
-                machine="gx10",
+                hostname="",
+                host="gx10",
                 status="approved",
                 approver=UUID(int=2),
             ),
         )
     assert refused.value.status_code == 409
-    assert from_plain(refused.value.detail, _Refusal)["code"] == "device_machine_gone"
+    assert from_plain(refused.value.detail, _Refusal)["code"] == "device_host_gone"
     key.assert_not_awaited()
     enrollment.assert_not_awaited()
     conn.execute.assert_not_awaited()

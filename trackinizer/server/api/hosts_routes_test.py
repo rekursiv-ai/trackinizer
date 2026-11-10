@@ -1,6 +1,6 @@
-"""Machine routes against a mocked connection: the SQL each route sends.
+"""Host routes against a mocked connection: the SQL each route sends.
 
-``machines_routes_pglite_test.py`` runs the same routes against a real
+``hosts_routes_pglite_test.py`` runs the same routes against a real
 database; these pin what the routes ask of the connection.
 """
 
@@ -21,11 +21,11 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
-from trackinizer.wire.wire_machine_host import OFFLINE_AFTER_SEC
-from trackinizer.wire.wire_machines import (
-    MACHINE_LABELS_PATH,
-    MACHINE_PATH,
-    MACHINES_PATH,
+from trackinizer.wire.wire_daemon import OFFLINE_AFTER_SEC
+from trackinizer.wire.wire_hosts import (
+    HOST_LABELS_PATH,
+    HOST_PATH,
+    HOSTS_PATH,
     MAX_HOW_CHARS,
     RESERVED_NAMES,
 )
@@ -41,7 +41,7 @@ if TYPE_CHECKING:
 
 
 _UPDATED = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
-_MACHINE_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
+_HOST_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 
 def _row(name: str, *, role: str = "", how: str = "") -> dict[str, object]:
@@ -55,12 +55,12 @@ def _row(name: str, *, role: str = "", how: str = "") -> dict[str, object]:
         "last_heartbeat": None,
         "owner": None,
         "status": "never",
-        "host_version": "",
+        "daemon_version": "",
         "facts": {},
     }
 
 
-def test_listing_asks_for_every_machine_in_byte_order_of_name(
+def test_listing_asks_for_every_host_in_byte_order_of_name(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -69,11 +69,11 @@ def test_listing_asks_for_every_machine_in_byte_order_of_name(
         _row("b-box"),
     ]
 
-    response = client.get(MACHINES_PATH)
+    response = client.get(HOSTS_PATH)
 
     assert response.status_code == 200
     body = from_plain(response.json(), dict[str, list[dict[str, object]]])
-    assert [(m["name"], m["role"], m["labels"]) for m in body["machines"]] == [
+    assert [(m["name"], m["role"], m["labels"]) for m in body["hosts"]] == [
         ("a-box", "dev", ["gpu"]),
         ("b-box", "", ["gpu"]),
     ]
@@ -95,13 +95,11 @@ def test_listing_reports_the_status_the_database_derived(
     ]
 
     body = from_plain(
-        client.get(MACHINES_PATH).json(),
+        client.get(HOSTS_PATH).json(),
         dict[str, list[dict[str, object]]],
     )
 
-    assert [
-        (m["name"], m["status"], m["last_heartbeat"]) for m in body["machines"]
-    ] == [
+    assert [(m["name"], m["status"], m["last_heartbeat"]) for m in body["hosts"]] == [
         ("a-box", "online", "2026-10-06T12:00:00Z"),
         ("b-box", "revoked", None),
     ]
@@ -112,16 +110,16 @@ def test_listing_reports_the_status_the_database_derived(
     assert "revoked_at IS NULL" in sql
 
 
-def test_an_empty_registry_lists_no_machines(
+def test_an_empty_registry_lists_no_hosts(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
     engine.conn.fetch.return_value = list[dict[str, object]]()
 
-    assert client.get(MACHINES_PATH).json() == {"machines": []}
+    assert client.get(HOSTS_PATH).json() == {"hosts": []}
 
 
-def test_getting_one_machine_asks_for_it_by_name(
+def test_getting_one_host_asks_for_it_by_name(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -139,7 +137,7 @@ def test_getting_one_machine_asks_for_it_by_name(
     assert args == [OFFLINE_AFTER_SEC, "dev-1", "personal", TEST_USER_EMAIL]
 
 
-def test_getting_an_absent_machine_is_not_found(
+def test_getting_an_absent_host_is_not_found(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -148,7 +146,7 @@ def test_getting_an_absent_machine_is_not_found(
     response = client.get(_path("nope"))
 
     assert response.status_code == 404
-    assert _detail(response) == "machine 'nope' is not registered"
+    assert _detail(response) == "host 'nope' is not registered"
 
 
 def test_a_viewer_cannot_read_and_a_writer_cannot_change(
@@ -162,7 +160,7 @@ def test_a_viewer_cannot_read_and_a_writer_cannot_change(
         client.delete(_path("dev-1")),
     ]
     _as("viewer")
-    reads = [client.get(MACHINES_PATH), client.get(_path("dev-1"))]
+    reads = [client.get(HOSTS_PATH), client.get(_path("dev-1"))]
 
     assert [r.status_code for r in writes] == [403, 403, 403]
     assert [r.status_code for r in reads] == [403, 403]
@@ -186,8 +184,8 @@ def test_a_put_upserts_and_keeps_a_field_left_out(
     assert call is not None
     sql = from_plain(call.args[0], str)
     assert "ON CONFLICT (name) DO UPDATE" in sql
-    assert "role = COALESCE($2, machines.role)" in sql
-    assert "how = COALESCE($3, machines.how)" in sql
+    assert "role = COALESCE($2, hosts.role)" in sql
+    assert "how = COALESCE($3, hosts.how)" in sql
     assert [c.args[1:] for c in engine.conn.execute.call_args_list] == [
         ("dev-1", "dev", None, TEST_USER_EMAIL),
         ("dev-1", None, "ssh dev-1", TEST_USER_EMAIL),
@@ -195,7 +193,7 @@ def test_a_put_upserts_and_keeps_a_field_left_out(
     ]
 
 
-def test_a_put_with_no_fields_registers_a_bare_machine(
+def test_a_put_with_no_fields_registers_a_bare_host(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -293,7 +291,7 @@ def test_a_reserved_name_is_refused_on_every_route(
     ]
 
     assert [r.status_code for r in responses] == [422] * 4
-    assert _detail(responses[1]) == f"{name!r} is a reserved machine name"
+    assert _detail(responses[1]) == f"{name!r} is a reserved host name"
     _assert_untouched(engine)
 
 
@@ -339,7 +337,7 @@ def test_labels_are_added_then_removed_in_one_statement(
     assert "<> ALL($3::text[])" in sql
 
 
-def test_labels_of_an_absent_machine_are_not_found(
+def test_labels_of_an_absent_host_are_not_found(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -349,7 +347,7 @@ def test_labels_of_an_absent_machine_are_not_found(
     response = client.patch(_labels_path("nope"), json={"add": ["gpu"]})
 
     assert response.status_code == 404
-    assert _detail(response) == "machine 'nope' is not registered"
+    assert _detail(response) == "host 'nope' is not registered"
 
 
 @pytest.mark.parametrize(
@@ -424,7 +422,7 @@ def test_deleting_removes_the_row_by_name_when_no_credential_is_live(
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchrow.side_effect = [{"id": _MACHINE_ID, "owner": None}]
+    engine.conn.fetchrow.side_effect = [{"id": _HOST_ID, "owner": None}]
     engine.conn.fetchval.side_effect = [False]
 
     response = client.delete(_path("dev-1"))
@@ -436,34 +434,34 @@ def test_deleting_removes_the_row_by_name_when_no_credential_is_live(
     # The credential check is its own statement: one that shared the lock's would
     # read the snapshot taken before the lock was granted, and miss a join that
     # committed while it waited.
-    assert "FROM machines WHERE name = $1 FOR UPDATE" in from_plain(lock.args[0], str)
+    assert "FROM hosts WHERE name = $1 FOR UPDATE" in from_plain(lock.args[0], str)
     assert lock.args[1:] == ("dev-1",)
     assert "revoked_at IS NULL" in from_plain(check.args[0], str)
-    assert check.args[1:] == (_MACHINE_ID,)
+    assert check.args[1:] == (_HOST_ID,)
     assert executed_sql(engine.conn)[-2:] == [
-        "DELETE FROM machines WHERE name = $1",
+        "DELETE FROM hosts WHERE name = $1",
         "COMMIT",
     ]
 
 
-def test_deleting_a_machine_in_service_is_refused_and_deletes_nothing(
+def test_deleting_a_host_in_service_is_refused_and_deletes_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
     _as("admin")
-    engine.conn.fetchrow.side_effect = [{"id": _MACHINE_ID, "owner": None}]
+    engine.conn.fetchrow.side_effect = [{"id": _HOST_ID, "owner": None}]
     engine.conn.fetchval.side_effect = [True]
 
     response = client.delete(_path("dev-1"))
 
     assert response.status_code == 409
-    assert from_plain(response.json(), dict[str, str])["code"] == "machine_in_service"
+    assert from_plain(response.json(), dict[str, str])["code"] == "host_in_service"
     sent = executed_sql(engine.conn)
     assert not any("DELETE" in sql for sql in sent)
     assert sent[-1] == "ROLLBACK"
 
 
-def test_deleting_an_absent_machine_is_not_found(
+def test_deleting_an_absent_host_is_not_found(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
     client, _, engine = route_client
@@ -473,7 +471,7 @@ def test_deleting_an_absent_machine_is_not_found(
     response = client.delete(_path("nope"))
 
     assert response.status_code == 404
-    assert _detail(response) == "machine 'nope' is not registered"
+    assert _detail(response) == "host 'nope' is not registered"
 
 
 def _as(role: Role) -> None:
@@ -481,11 +479,11 @@ def _as(role: Role) -> None:
 
 
 def _path(name: str) -> str:
-    return MACHINE_PATH.format(name=name)
+    return HOST_PATH.format(name=name)
 
 
 def _labels_path(name: str) -> str:
-    return MACHINE_LABELS_PATH.format(name=name)
+    return HOST_LABELS_PATH.format(name=name)
 
 
 def _assert_untouched(engine: FakeEngine) -> None:

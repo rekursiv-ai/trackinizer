@@ -8,19 +8,19 @@ from pydantic import TypeAdapter, ValidationError
 
 import pytest
 
-from trackinizer.wire.wire_machines import (
+from trackinizer.wire.wire_hosts import (
     MAX_FACTS_BYTES,
     MAX_HOW_CHARS,
     Facts,
-    Machine,
-    MachineDetail,
-    MachinePut,
-    MachineRun,
-    MachineRuns,
+    Host,
+    HostDetail,
+    HostPut,
+    HostRun,
+    HostRuns,
 )
 
 
-def _machine(**over: object) -> dict[str, object]:
+def _host(**over: object) -> dict[str, object]:
     return {
         "name": "gpu-box",
         "role": "",
@@ -41,22 +41,22 @@ def _machine(**over: object) -> dict[str, object]:
         {"extra": 1},
     ],
 )
-def test_machine_refuses_bad_fields(over: dict[str, object]) -> None:
+def test_host_refuses_bad_fields(over: dict[str, object]) -> None:
     with pytest.raises(ValidationError):
-        Machine.model_validate(_machine(**over))
+        Host.model_validate(_host(**over))
 
 
 def test_detail_facts_validate_and_bound_size() -> None:
-    detail = MachineDetail.model_validate(
-        _machine(facts={"os": "linux", "cpus": 8, "gpu": True, "clis": ["claude"]}),
+    detail = HostDetail.model_validate(
+        _host(facts={"os": "linux", "cpus": 8, "gpu": True, "clis": ["claude"]}),
     )
     assert detail.facts == {"os": "linux", "cpus": 8, "gpu": True, "clis": ["claude"]}
-    assert MachineDetail.model_validate(_machine()).facts == {}
+    assert HostDetail.model_validate(_host()).facts == {}
     too_big = {f"k{i}": "x" * 200 for i in range(MAX_FACTS_BYTES // 200 + 1)}
     with pytest.raises(ValidationError, match=f"facts exceed {MAX_FACTS_BYTES} bytes"):
-        MachineDetail.model_validate(_machine(facts=too_big))
+        HostDetail.model_validate(_host(facts=too_big))
     with pytest.raises(ValidationError):
-        MachineDetail.model_validate(_machine(facts={"Upper": "x"}))
+        HostDetail.model_validate(_host(facts={"Upper": "x"}))
 
 
 def test_facts_accept_the_exact_byte_limit_but_refuse_one_more() -> None:
@@ -67,31 +67,31 @@ def test_facts_accept_the_exact_byte_limit_but_refuse_one_more() -> None:
     values[-1] = "x" * padding
 
     assert len(adapter.dump_json(facts)) == MAX_FACTS_BYTES
-    assert MachineDetail.model_validate(_machine(facts=facts)).facts == facts
+    assert HostDetail.model_validate(_host(facts=facts)).facts == facts
 
     values[-1] += "x"
     with pytest.raises(ValidationError, match="facts exceed"):
-        MachineDetail.model_validate(_machine(facts=facts))
+        HostDetail.model_validate(_host(facts=facts))
 
 
 def test_put_refuses_nul_and_keeps_omitted_fields_none() -> None:
-    put = MachinePut.model_validate({"how": "ssh gpu-box"})
+    put = HostPut.model_validate({"how": "ssh gpu-box"})
     assert (put.role, put.how) == (None, "ssh gpu-box")
-    assert MachinePut.model_validate({}).how is None
+    assert HostPut.model_validate({}).how is None
     with pytest.raises(ValidationError, match="NUL"):
-        MachinePut.model_validate({"how": "a\x00b"})
+        HostPut.model_validate({"how": "a\x00b"})
 
 
 def test_run_ignores_fields_a_newer_server_added() -> None:
     sid = uuid.uuid4()
-    run = MachineRun.model_validate({"session_id": str(sid), "cli": "claude", "x": 1})
+    run = HostRun.model_validate({"session_id": str(sid), "cli": "claude", "x": 1})
     assert run.session_id == sid
     assert run.state == "idle"
-    assert MachineRuns.model_validate({"runs": [run.model_dump()]}).past == []
+    assert HostRuns.model_validate({"runs": [run.model_dump()]}).past == []
 
 
-def test_a_listed_machine_defaults_to_never_connected() -> None:
-    detail = MachineDetail.model_validate(
+def test_a_listed_host_defaults_to_never_connected() -> None:
+    detail = HostDetail.model_validate(
         {
             "name": "dev-1",
             "role": "",

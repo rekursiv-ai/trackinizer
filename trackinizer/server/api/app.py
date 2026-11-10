@@ -33,15 +33,15 @@ from trackinizer.server.api import (
     admin_routes,
     auth_routes,
     code_routes,
+    daemon_routes,
     device_routes,
     edge,
     edit,
     export_routes,
+    host_runs_routes,
+    hosts_routes,
     locks,
     logout_routes,
-    machine_host_routes,
-    machine_runs_routes,
-    machines_routes,
     meta_routes,
     metrics_routes,
     query,
@@ -57,11 +57,11 @@ from trackinizer.server.api import (
     variables_routes,
 )
 from trackinizer.server.api._deps import (
-    machine_changes,
-    machine_closed,
-    machine_idle_sec,
-    pipe_hub,
-    terminal_hub,
+    host_changes,
+    host_closed,
+    host_idle_sec,
+    terminal_relay,
+    tool_relay,
 )
 from trackinizer.server.api.addons_routes import app_deployment
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
@@ -89,7 +89,7 @@ from trackinizer.types.errors import (
     NotFoundError,
     ValidationError,
 )
-from trackinizer.wire.wire_machine_host import JOIN_PATH
+from trackinizer.wire.wire_daemon import JOIN_PATH
 from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
@@ -255,10 +255,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     ask_release_loop(app.state.store, inbound=app.state.inbound),
                 ),
             )
-            tasks.append(asyncio.create_task(sweep_loop(terminal_hub(app))))
+            tasks.append(asyncio.create_task(sweep_loop(terminal_relay(app))))
             tasks.append(
                 asyncio.create_task(
-                    sweep_loop(pipe_hub(app), interval_sec=config.tool_sweep_sec),
+                    sweep_loop(tool_relay(app), interval_sec=config.tool_sweep_sec),
                 ),
             )
             tasks.extend(
@@ -267,9 +267,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     context=ServerContext(
                         store=app.state.store,
                         inbound=app.state.inbound,
-                        machine_idle_sec=partial(machine_idle_sec, app),
-                        machines_changed=machine_changes(app).bump,
-                        machine_closed=partial(machine_closed, app),
+                        host_idle_sec=partial(host_idle_sec, app),
+                        hosts_changed=host_changes(app).bump,
+                        host_closed=partial(host_closed, app),
                     ),
                 ),
             )
@@ -370,9 +370,9 @@ ROUTERS: Final = (
     export_routes.router,
     locks.router,
     logout_routes.router,
-    machine_host_routes.router,
-    machine_runs_routes.router,
-    machines_routes.router,
+    daemon_routes.router,
+    host_runs_routes.router,
+    hosts_routes.router,
     meta_routes.router,
     metrics_routes.router,
     query.router,
@@ -593,7 +593,7 @@ async def request_validation_handler(
     """Answer 422 for a body or parameter that fails its model.
 
     FastAPI's default answer echoes the rejected input in each error. Under
-    ``/api/variables`` that input can be a secret's value, and on the machine join
+    ``/api/variables`` that input can be a secret's value, and on the host join
     route it is an enrollment token, so the answer there names only each error's
     type, location and message. An unexpected body key is also the rejected input,
     so its location names the field as ``extra``. The route is the matched one, not

@@ -29,7 +29,7 @@ test("a read that failed shows the message with Retry, and Copy details beside i
 test("a browser that refuses the clipboard keeps the details for trackinizer.details(), and logs none of them", async () => {
   const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
   render(<ReadFailure error={new ApiError(0, "No response within 15 s.", "timeout")} retry={() => {}} />);
-  // jsdom has no clipboard, as a page over plain http from another machine has none.
+  // jsdom has no clipboard, as a page over plain http from another host has none.
   fireEvent.click(screen.getByRole("button", { name: "Copy details" }));
   await screen.findByRole("button", { name: "Not copied: see the console" });
   expect(warn.mock.calls.flat().join(" ")).not.toContain("No response within 15 s.");
