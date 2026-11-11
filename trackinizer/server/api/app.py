@@ -392,6 +392,23 @@ ROUTERS: Final = (
 
 def _build_app() -> FastAPI:
     """Assemble the application: middleware, then every route module's router."""
+    built = bare_app()
+    for router in ROUTERS:
+        built.include_router(router)
+    return built
+
+
+def bare_app() -> FastAPI:
+    """Return the application's middleware, error handling and state, with no routes.
+
+    Serving an addon's routers on it, as ``attach_deployment`` mounts them, answers
+    them as the whole server does: FastAPI readies each route the first time a
+    request is matched past it, ~1.7 ms for each of the core routes before them.
+
+    Returns:
+      app: The application without a router.
+
+    """
     # No public /docs or /redoc, and the schema is read signed in (`meta_routes`): this
     # server is reachable from the internet, and its full route map need not be.
     built = FastAPI(
@@ -413,8 +430,6 @@ def _build_app() -> FastAPI:
     built.exception_handler(asyncpg.CheckViolationError)(check_violation_handler)
     built.exception_handler(asyncpg.DataError)(data_error_handler)
     built.exception_handler(asyncpg.UniqueViolationError)(unique_violation_handler)
-    for router in ROUTERS:
-        built.include_router(router)
     # The visual routes read the catalog from ``app.state.visual_catalog``, so it
     # is set on every app; ``attach_deployment`` swaps in a configured one.
     built.state.deployment = Deployment.Config().make()

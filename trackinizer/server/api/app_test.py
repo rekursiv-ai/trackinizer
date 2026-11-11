@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
@@ -11,7 +11,7 @@ import logging
 import re
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from treekle import from_plain, json_loads
@@ -19,6 +19,7 @@ from treekle import from_plain, json_loads
 import asyncpg
 import pytest
 
+from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api import app, daemon_routes, meta_routes, query
@@ -40,6 +41,7 @@ from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.secrets import FileSecrets, SecretRef
 from trackinizer.server.terminals import TerminalRelay
 from trackinizer.server.tool_relay import ToolRelay
+from trackinizer.server.visuals.catalog import Canvas, default_canvas
 from trackinizer.types.errors import (
     ChatDeletedError,
     ConflictError,
@@ -208,18 +210,51 @@ _FAILURES: Final[tuple[tuple[Exception, int, str], ...]] = (
 
 @pytest.fixture(scope="module")
 def failing() -> tuple[FastAPI, TestClient]:
-    """Build one fresh app whose ``/test-failure/<n>`` raises the n-th failure.
+    """Build one app whose ``/test-failure/<n>`` raises the n-th failure.
 
-    A fresh app makes each route's handler on the first request that passes it, so
-    the failure routes come first: a request to one passes no other.
+    The server's handling without its routes: a fresh app makes each route's
+    handler on the first request that passes it.
     """
-    built = app._build_app()
+    built = app.bare_app()
     for index, (error, _status, _detail) in enumerate(_FAILURES):
         built.add_api_route(f"/test-failure/{index}", _raising(error))
-    failures = built.router.routes[-len(_FAILURES) :]
-    del built.router.routes[-len(_FAILURES) :]
-    built.router.routes[:0] = failures
     return built, TestClient(built, raise_server_exceptions=False)
+
+
+class _Included(Protocol):
+    """A router ``include_router`` mounted, as FastAPI keeps it whole."""
+
+    original_router: APIRouter
+
+
+def test_the_app_is_the_bare_app_with_every_router_in_order() -> None:
+    built = app._build_app()
+
+    assert built.title == "Trackinizer"
+    expected = [*app.ROUTERS]
+    assert [
+        cast("_Included", route).original_router for route in built.routes
+    ] == expected
+
+
+def test_a_bare_app_has_the_servers_handling_and_state_but_no_route() -> None:
+    built = app.bare_app()
+
+    assert (built.title, built.docs_url, built.redoc_url, built.openapi_url) == (
+        "Trackinizer",
+        None,
+        None,
+        None,
+    )
+    assert built.router.lifespan_context is lifespan
+    assert built.routes == []
+    # Starlette's ``State`` answers any attribute as ``Any``.
+    deployment = cast(object, built.state.deployment)
+    canvas = cast(object, built.state.visual_catalog)
+    assert isinstance(deployment, Deployment)
+    assert deployment.manifests == {}
+    assert isinstance(canvas, Canvas)
+    assert canvas.catalog() == default_canvas().catalog()
 
 
 def _raising(error: Exception) -> Callable[[], Awaitable[None]]:
