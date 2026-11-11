@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING
 
 import os
@@ -569,6 +570,13 @@ class TestShutdown:
     ) -> None:
         slow = _Slow()
         monkeypatch.setattr(server, "handle", slow)
+        bound, unlinked = threading.Event(), threading.Event()
+        monkeypatch.setattr(server, "_bind", partial(_then, bound, server._bind))
+        monkeypatch.setattr(
+            server,
+            "_unlink_if_owned",
+            partial(_then, unlinked, server._unlink_if_owned),
+        )
         sock = socket_address(tmp_path / "s.sock")
         # A daemon thread, so a daemon that never stops fails the test, not hangs it.
         daemon = threading.Thread(
@@ -578,8 +586,9 @@ class TestShutdown:
             daemon=True,
         )
         daemon.start()
-        # The file appears at bind, before the daemon listens: wait until it accepts.
-        _wait_for(lambda: _is_live(sock))
+        # Bound and listening once ``_bind`` has returned its server.
+        assert bound.wait(5)
+        assert _is_live(sock)
         caller = _send(sock, request=make_request(["x"]))
         assert slow.started.wait(timeout=5)
         stale = make_request(["x"])
@@ -588,7 +597,8 @@ class TestShutdown:
         assert Response.from_json(read_frame(_send(sock, request=stale))).exit_code == (
             STALE_EXIT_CODE
         )
-        _wait_for(lambda: not sock.exists())
+        assert unlinked.wait(5)
+        assert not sock.exists()
         daemon.join(timeout=0.05)
         assert daemon.is_alive(), "the daemon exited with a request still running"
         slow.release.set()
@@ -685,13 +695,17 @@ def _send(sock: Path, *, request: Request) -> socket.socket:
     return caller
 
 
-def _wait_for(condition: Callable[[], bool]) -> None:
-    """Poll ``condition`` until it holds, failing after five seconds."""
-    deadline = time.monotonic() + 5
-    while not condition():
-        assert time.monotonic() < deadline, "condition never held"
-        # Polls state the daemon's threads change; nothing signals it.
-        time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
+def _then[**P, R](
+    done: threading.Event,
+    call: Callable[P, R],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    """Make ``call``, then set ``done`` however it ended."""
+    try:
+        return call(*args, **kwargs)
+    finally:
+        done.set()
 
 
 def _exchange(tmp_path: Path, request: Request, *, hang_up: bool) -> Response | None:
