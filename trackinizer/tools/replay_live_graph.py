@@ -274,7 +274,8 @@ def _flush(
     _log.info("[replay]   inserted %d nodes so far", len(id_map))
     pending.clear()
     if delay > 0:
-        time.sleep(delay)
+        # Paces the replay at the requested rate.
+        time.sleep(delay)  # house-ignore[sleep] -- See above.
 
 
 # Interleave discovery with insertion so the graph grows before the crawl finishes.
@@ -568,7 +569,8 @@ def _replay_traversal(
         if (index + 1) % 50 == 0:
             _log.info("[replay]   inserted %d/%d nodes", index + 1, len(order))
         if delay > 0:
-            time.sleep(delay)
+            # Paces the replay at the requested rate.
+            time.sleep(delay)  # house-ignore[sleep] -- See above.
 
 
 # Drops ``id`` and ``kind`` (the route's own discriminators) and ``created`` (server-

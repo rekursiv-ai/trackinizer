@@ -1799,13 +1799,19 @@ async def _probe_frames(
     due_sec = first_after_sec
     seq = 0
     while due_sec < for_sec:
-        await asyncio.sleep(due_sec - (time.monotonic() - start))
+        # Emits test frames on the schedule the route was asked for.
+        await asyncio.sleep(
+            due_sec - (time.monotonic() - start),
+        )  # house-ignore[sleep] -- See above.
         yield f'data: {{"seq": {seq}, "t": {time.monotonic() - start:.3f}}}\n\n'.encode()
         if every_sec == 0:
             break
         seq += 1
         due_sec += every_sec
-    await asyncio.sleep(for_sec - (time.monotonic() - start))
+    # Emits test frames on the schedule the route was asked for.
+    await asyncio.sleep(
+        for_sec - (time.monotonic() - start),
+    )  # house-ignore[sleep] -- See above.
 
 
 # Apps ``attach`` has already mounted; weak, so a discarded test app is freed.

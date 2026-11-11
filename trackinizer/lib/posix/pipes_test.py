@@ -257,7 +257,7 @@ async def test_a_terminate_cancelled_midway_still_ends_the_child(
     await child.start()
     started.append(await written_pid(tmp_path / "shell.pid"))
     terminating = asyncio.create_task(child.terminate())
-    await asyncio.sleep(0.01)
+    await asyncio.sleep(0)
     terminating.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(terminating, timeout=5)

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast, override
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
@@ -398,17 +399,15 @@ class TestReleaseGoneRuns:
     ) -> None:
         session = await _session(store)
         await write_records(store, session, [opened_record(command_ask("a"), at=_AT)])
-        inbound = InboundQueue()
+        inbound = _Passes()
         inbound.mark_poller(session, cli="claude")
         task = asyncio.create_task(
             ask_release_loop(store, inbound=inbound, interval_sec=0.01),
         )
         try:
             inbound.forget_poller(session)
-            deadline = asyncio.get_running_loop().time() + 5.0
-            while await _open(store, session):
-                assert asyncio.get_running_loop().time() < deadline
-                await asyncio.sleep(0.01)
+            # The second pass begins only once the first is done.
+            await inbound.passed(2)
         finally:
             _ = task.cancel()
             _ = await asyncio.gather(task, return_exceptions=True)
@@ -420,15 +419,12 @@ class TestReleaseGoneRuns:
         store: Store,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        inbound = _FailsOnce()
+        inbound = _Passes(fail_first=True)
         task = asyncio.create_task(
             ask_release_loop(store, inbound=inbound, interval_sec=0.01),
         )
         try:
-            deadline = asyncio.get_running_loop().time() + 5.0
-            while inbound.calls < 2:
-                assert asyncio.get_running_loop().time() < deadline
-                await asyncio.sleep(0.01)
+            await inbound.passed(2)
         finally:
             _ = task.cancel()
             _ = await asyncio.gather(task, return_exceptions=True)
@@ -506,19 +502,19 @@ class TestReleaseOrphanedAsks:
     ) -> None:
         orphan = await _session(store, cli="claude", cli_session_id="chat:6")
         await write_records(store, orphan, [opened_record(command_ask("a"), at=_AT)])
+        inbound = _Passes()
+        # Due at once, so the first pass sweeps; when a lease lapses is the fake-clock
+        # test's ``test_release_loop_sweeps_after_its_delay_...``.
         task = asyncio.create_task(
             ask_release_loop(
                 store,
-                inbound=InboundQueue(),
+                inbound=inbound,
                 interval_sec=0.01,
-                sweep_after_sec=0.05,
+                sweep_after_sec=0.0,
             ),
         )
         try:
-            deadline = asyncio.get_running_loop().time() + 5.0
-            while await _open(store, orphan):
-                assert asyncio.get_running_loop().time() < deadline
-                await asyncio.sleep(0.01)
+            await inbound.passed(2)
         finally:
             _ = task.cancel()
             _ = await asyncio.gather(task, return_exceptions=True)
@@ -531,15 +527,12 @@ class TestReleaseOrphanedAsks:
     ) -> None:
         live = await _session(store, cli="claude", cli_session_id="chat:7")
         await write_records(store, live, [opened_record(command_ask("a"), at=_AT)])
-        inbound = _CountsPasses()
+        inbound = _Passes()
         task = asyncio.create_task(
             ask_release_loop(store, inbound=inbound, interval_sec=0.001),
         )
         try:
-            deadline = asyncio.get_running_loop().time() + 5.0
-            while inbound.calls < 5:
-                assert asyncio.get_running_loop().time() < deadline
-                await asyncio.sleep(0.001)
+            await inbound.passed(5)
         finally:
             _ = task.cancel()
             _ = await asyncio.gather(task, return_exceptions=True)
@@ -587,30 +580,30 @@ class _Purged(Store):
         )
 
 
-class _CountsPasses(InboundQueue):
-    """A queue that counts the loop's passes."""
+class _Passes(InboundQueue):
+    """A queue that counts the loop's passes, so a test waits for one to finish."""
 
-    calls: int = 0
-
-    @override
-    def take_gone(self) -> list[UUID]:
-        """Count a pass, answer nothing."""
-        self.calls += 1
-        return []
-
-
-class _FailsOnce(InboundQueue):
-    """A queue whose first ``take_gone`` raises, as a broken pass would."""
-
-    calls: int = 0
+    def __init__(self, *, fail_first: bool = False) -> None:
+        super().__init__()
+        self.calls = 0
+        self._fail_first = fail_first
+        self._passing = asyncio.Event()
 
     @override
     def take_gone(self) -> list[UUID]:
-        """Fail the first time, answer nothing after."""
+        """Count a pass; the first raises, as a broken pass would, if asked to."""
         self.calls += 1
-        if self.calls == 1:
+        self._passing.set()
+        if self._fail_first and self.calls == 1:
             raise RuntimeError("blip")
-        return []
+        return super().take_gone()
+
+    async def passed(self, count: int) -> None:
+        """Return once pass ``count`` has begun, and so every pass before it is done."""
+        async with asyncio.timeout(5):
+            while self.calls < count:
+                self._passing.clear()
+                _ = await self._passing.wait()
 
 
 async def _session(
@@ -844,6 +837,63 @@ async def test_release_loop_retries_errors_and_sweeps_only_once(
     assert sleep.call_args is not None
     assert sleep.call_args.args == (0.01,)
     assert "ask release pass failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_release_loop_sweeps_after_its_delay_with_the_pass_s_store_and_time(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store, _ = make_store()
+    inbound = InboundQueue(poller_ttl_sec=0)
+    passes: list[tuple[str, object, object, datetime]] = []
+
+    async def gone(given: object, *, inbound: object, at: datetime) -> int:
+        passes.append(("gone", given, inbound, at))
+        if len(passes) == 1:
+            raise RuntimeError("pass failed")
+        return 0
+
+    async def orphaned(given: object, *, inbound: object, at: datetime) -> int:
+        passes.append(("orphaned", given, inbound, at))
+        return 0
+
+    monkeypatch.setattr(
+        asyncio,
+        "sleep",
+        AsyncMock(side_effect=[None, None, None, None, asyncio.CancelledError()]),
+    )
+    # Started at 0 with a 5 s delay, the second pass (at 1) is too early and the
+    # third (at 6) sweeps, and the fourth reads no clock: the sweep is done. The
+    # failed first pass reads no clock either. Only ``asks``
+    # sees these readings: the event loop reads the real clock too.
+    monkeypatch.setattr(
+        asks,
+        "time",
+        SimpleNamespace(monotonic=Mock(side_effect=[0.0, 1.0, 6.0])),
+    )
+    monkeypatch.setattr(asks, "release_gone_runs", gone)
+    monkeypatch.setattr(asks, "release_orphaned_asks", orphaned)
+    with pytest.raises(asyncio.CancelledError):
+        await asks.ask_release_loop(
+            store,
+            inbound=inbound,
+            interval_sec=0.01,
+            sweep_after_sec=5.0,
+        )
+    assert [name for name, *_ in passes] == [
+        "gone",
+        "gone",
+        "gone",
+        "orphaned",
+        "gone",
+    ]
+    assert all(given is store and queue is inbound for _, given, queue, _ in passes)
+    assert all(at.tzinfo is UTC for *_, at in passes)
+    assert passes[3][3] is passes[2][3]
+    assert [r.getMessage() for r in caplog.records] == [
+        "ask release pass failed; retrying next cycle",
+    ]
 
 
 if __name__ == "__main__":

@@ -310,7 +310,7 @@ class _Socket:
 
     async def receive(self) -> Message:
         if not self._received:
-            await asyncio.sleep(3600)
+            _ = await asyncio.Event().wait()
         answer = self._received.pop(0)
         if isinstance(answer, BaseException):
             raise answer

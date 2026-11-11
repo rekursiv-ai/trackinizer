@@ -883,7 +883,8 @@ def _link_shared_node_modules(work_dir: Path) -> None:
 
 def _real_sleep(seconds: float) -> None:
     """Block the calling thread; isolated so tests can patch the install wait."""
-    time.sleep(seconds)
+    # The real clock tests replace.
+    time.sleep(seconds)  # house-ignore[sleep] -- See above.
 
 
 # -- Cold-start concurrency gate ------------------------------------------------

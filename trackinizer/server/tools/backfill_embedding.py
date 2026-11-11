@@ -1181,7 +1181,8 @@ async def _run_follow(dsn: str, models: list[str], interval_sec: int) -> int:
                     + (" (full scan)" if stats.full_scan else ""),
                     flush=True,
                 )
-            await asyncio.sleep(interval_sec)
+            # A periodic sweep; the interval is the schedule.
+            await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- See above.
 
 
 # A real model is built for throughput, not as the server builds it to embed one

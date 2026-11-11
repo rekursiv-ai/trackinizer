@@ -280,18 +280,18 @@ async def ask_release_loop(
         lease span by default.
 
     """
-    sweep_at = time.monotonic() + (
+    # None once the one-time sweep has run.
+    sweep_at: float | None = time.monotonic() + (
         inbound.poller_ttl_sec if sweep_after_sec is None else sweep_after_sec
     )
-    swept = False
     while True:
-        await asyncio.sleep(interval_sec)
+        await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- Periodic pass.
         try:
             now = datetime.now(UTC)
             _ = await release_gone_runs(store, inbound=inbound, at=now)
-            if not swept and time.monotonic() >= sweep_at:
+            if sweep_at is not None and time.monotonic() >= sweep_at:
                 _ = await release_orphaned_asks(store, inbound=inbound, at=now)
-                swept = True
+                sweep_at = None
         except Exception:
             # A failed pass must not end the loop: the sessions it took are lost to
             # it, and their cards stay open until their run's session ends.

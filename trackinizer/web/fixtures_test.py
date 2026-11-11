@@ -920,7 +920,8 @@ def _wait_for(url: str, *, server: subprocess.Popen[bytes], log: Path) -> None:
         with suppress(httpx2.TransportError):
             if httpx2.get(f"{url}/api/meta/enums", timeout=1.0).is_success:
                 return
-        time.sleep(0.1)
+        # The server is another process; only its port says it is up.
+        time.sleep(0.1)  # house-ignore[sleep] -- See above.
     pytest.fail(f"The server did not answer within 90 s:\n{log.read_text()}")
 
 

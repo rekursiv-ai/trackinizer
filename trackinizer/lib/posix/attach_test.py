@@ -266,7 +266,8 @@ class TestAttach:
                         if count > seen[-1]:
                             seen.append(count)
                             return True
-                        await asyncio.sleep(0.01)
+                        # Another process writes the file; nothing signals the write.
+                        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
                     return False
 
                 async def arrived() -> None:
@@ -411,7 +412,8 @@ class TestAttach:
                     for _ in range(500):
                         if spec.scrollback.read_bytes().count(b"SIZE") > before:
                             break
-                        await asyncio.sleep(0.01)
+                        # Another process writes the file; nothing signals the write.
+                        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
                     assert spec.scrollback.read_bytes().count(b"SIZE") > before
                 finally:
                     await remote.close()
@@ -1079,7 +1081,8 @@ async def _attach_typing(
         async with asyncio.timeout(5.0):
             while shown not in mirrored:
                 mirrored += _read_available(out_r)
-                await asyncio.sleep(0.01)
+                # The pipe is another process's output; nothing here wakes on it.
+                await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
             if until is not None:
                 await until()
         # Guarded like `typed`: when the child has already exited, the attach has
@@ -1100,7 +1103,8 @@ async def _viewers_reach(address: Path, count: int) -> int | None:
         seen = await viewers(address)
         if seen == count:
             return seen
-        await asyncio.sleep(0.01)
+        # The host is another process; only its socket reports the count.
+        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
     raise TimeoutError(f"viewers never reached {count}")
 
 
@@ -1119,7 +1123,8 @@ async def _wait_for_bytes(path: Path, needle: bytes) -> None:
     while loop.time() < deadline:
         if needle in _read(path):
             return
-        await asyncio.sleep(0.01)
+        # Another process writes the file; nothing signals the write.
+        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
     raise TimeoutError(f"{needle!r} not in {path} within 5s")
 
 

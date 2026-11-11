@@ -8,6 +8,7 @@ unit tests pin what the reaper itself does with the store's answers.
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import TYPE_CHECKING, cast, override
 from uuid import UUID, uuid4
 
@@ -35,6 +36,8 @@ from trackinizer.types.inquiries import AgentSession, Inquiry
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from trackinizer.lib.postgres import PGliteEngine
 
 
@@ -258,17 +261,25 @@ async def test_a_restarted_server_still_closes_and_reopens(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_the_loop_closes_a_silent_session(store: Store) -> None:
+async def test_the_loop_closes_a_silent_session(
+    store: Store,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     session = await polled_session(store, at=datetime.now(UTC) - STALE_AFTER)
+    reaped = asyncio.Event()
+    reap = session_reaper.reap_silent_sessions
 
+    monkeypatch.setattr(
+        session_reaper,
+        "reap_silent_sessions",
+        partial(_reaped_then, reaped, reap),
+    )
     loop = asyncio.create_task(
         session_reaper_loop(store, inbound=InboundQueue(), interval_sec=0.01),
     )
     try:
-        deadline = asyncio.get_running_loop().time() + 5.0
-        while (await _row(store, session)).status == "active":
-            assert asyncio.get_running_loop().time() < deadline, "never closed"
-            await asyncio.sleep(0.01)
+        await asyncio.wait_for(reaped.wait(), 5)
+        assert (await _row(store, session)).status != "active"
     finally:
         _ = loop.cancel()
 
@@ -277,14 +288,16 @@ async def test_the_loop_closes_a_silent_session(store: Store) -> None:
 async def test_the_loop_survives_a_failed_pass(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    broken = _BrokenStore()
     loop = asyncio.create_task(
         session_reaper_loop(
-            cast("Store", _BrokenStore()),
+            cast("Store", broken),
             inbound=InboundQueue(),
             interval_sec=0.01,
         ),
     )
-    await asyncio.sleep(0.05)
+    # A second pass is the loop surviving the first one's failure.
+    await asyncio.wait_for(broken.retried.wait(), timeout=5)
     running = not loop.done()
     _ = loop.cancel()
 
@@ -357,10 +370,17 @@ class _FakeStore:
 
 
 class _BrokenStore:
-    """A store whose database is down."""
+    """A store whose database is down; ``retried`` is set on its second pass."""
+
+    def __init__(self) -> None:
+        self.passes = 0
+        self.retried = asyncio.Event()
 
     async def silent_sessions(self, *, before: datetime) -> list[UUID]:
         del before
+        self.passes += 1
+        if self.passes >= 2:
+            self.retried.set()
         raise RuntimeError("database blip")
 
 
@@ -404,6 +424,21 @@ async def _audit_actors(store: Store, session_id: UUID) -> set[str]:
             session_id,
         )
     return {str(row["actor"]) for row in rows}
+
+
+async def _reaped_then(
+    done: asyncio.Event,
+    reap: Callable[..., Awaitable[int]],
+    store: Store,
+    *,
+    inbound: InboundQueue,
+    now: datetime,
+) -> int:
+    """Run ``reap``'s pass, then set ``done`` however it ended."""
+    try:
+        return await reap(store, inbound=inbound, now=now)
+    finally:
+        done.set()
 
 
 if __name__ == "__main__":

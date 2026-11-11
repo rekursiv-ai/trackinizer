@@ -125,7 +125,8 @@ async def push_changes_to_live_subscribers(
             # Doubling from the base interval, capped: a 12-hour outage costs
             # ~720 attempts instead of ~86,400 per worker.
             delay = min(sweep_interval_sec * (2.0**failures), max_backoff_sec)
-        await asyncio.sleep(delay)
+        # Sweep interval, doubled on failure.
+        await asyncio.sleep(delay)  # house-ignore[sleep] -- See above.
 
 
 # Pages until a short page. The cursor advances past EVERY change, delivered or not

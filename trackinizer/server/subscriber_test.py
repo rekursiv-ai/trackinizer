@@ -66,8 +66,6 @@ def _future(seconds: float = 60.0) -> datetime:
 class _StubStore:
     """The two store methods the sweep consumes, modeling the real contract."""
 
-    query_count: int
-
     # The subject seq the real query's LEFT JOIN resolves; one value
     # suffices for tests (None models a purged subject).
     subject_seq: int | None = 42
@@ -84,7 +82,24 @@ class _StubStore:
         self._live = live_sessions
         self._audiences = audiences or {}
         self._chats = chats
-        self.query_count = 0
+        self.queried = asyncio.Event()
+        """Set at each query; the sweep queries once a pass."""
+        self._queries = 0
+
+    @property
+    def query_count(self) -> int:
+        """How many times the sweep has queried."""
+        return self._queries
+
+    @query_count.setter
+    def query_count(self, count: int) -> None:
+        self._queries = count
+        self.queried.set()
+
+    async def swept(self) -> None:
+        """Return at the sweep's next query."""
+        self.queried.clear()
+        _ = await self.queried.wait()
 
     async def what_changed_for_anyone(
         self,
@@ -141,19 +156,12 @@ async def _run_sweep_until(
         ),
     )
     try:
-        deadline = asyncio.get_running_loop().time() + timeout_sec
-        while not done():
-            assert asyncio.get_running_loop().time() < deadline, (
-                "sweep never produced the expected deliveries"
-            )
-            await asyncio.sleep(0.005)
-        # Observe repeated sweeps, even when scheduling is slower than expected.
-        final_query_count = store.query_count + 5
-        while store.query_count < final_query_count:
-            assert asyncio.get_running_loop().time() < deadline, (
-                "sweep stopped after producing the expected deliveries"
-            )
-            await asyncio.sleep(0.001)
+        async with asyncio.timeout(timeout_sec):
+            while not done():
+                await store.swept()
+            # Five more passes: the sweep goes on after it has delivered.
+            for _ in range(5):
+                await store.swept()
     finally:
         task.cancel()
         with suppress(asyncio.CancelledError):
