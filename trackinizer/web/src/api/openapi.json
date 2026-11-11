@@ -4548,7 +4548,6 @@
    "InputKind": {
     "enum": [
      "UserMessage",
-     "UserDeferredMessage",
      "Halt",
      "Command"
     ],

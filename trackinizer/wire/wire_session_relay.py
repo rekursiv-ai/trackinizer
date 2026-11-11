@@ -160,9 +160,9 @@ keep-alive. A reader that hears nothing for 2.5 times this has lost the stream."
 MAX_REASON_CHARS: Final = 4_096
 """The most of a process's output a daemon reports as why it ended."""
 
-type InputKind = Literal["UserMessage", "UserDeferredMessage", "Halt", "Command"]
-"""What a person may send the root agent: a line now, a line once the queue is
-answered, a stop of the turn, or a slash line."""
+type InputKind = Literal["UserMessage", "Halt", "Command"]
+"""What a person may send the root agent: a line, a stop of the turn, or a slash
+line."""
 
 
 class Hello(BaseModel):
