@@ -17,9 +17,11 @@ import hashlib
 import io
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -28,6 +30,7 @@ from py_pglite import PGliteConfig, PGliteManager
 import asyncpg
 import pytest
 
+from trackinizer.lib.posix.sockets import UNIX_SOCKET_PATH_MAX_BYTES
 from trackinizer.lib.postgres import (
     PGLITE_DATA_DIRNAME,
     PGliteEngine,
@@ -53,6 +56,11 @@ _FAILED_START: Final = r"^PGlite failed to start after 5 attempts$"
 def _cache_under(root: Path) -> Path:
     """Return a PGlite cache root under ``root``, laid out as the default one is."""
     return root / "caches" / "rekursiv-ai" / "pglite"
+
+
+def _socket(root: Path) -> str:
+    """Return a socket path under ``root``; py-pglite's default makes a temp dir."""
+    return str(root / ".s.PGSQL.5432")
 
 
 def _no_sleep(seconds: float) -> None:
@@ -116,6 +124,133 @@ async def test_pglite_defaults_to_a_live_unix_socket(
         dsn = urlsplit(cast(str, connect.await_args.kwargs["dsn"]))
         assert dsn.hostname is None
         assert Path(parse_qs(dsn.query)["host"][0]).is_absolute()
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio
+async def test_a_stopped_engine_leaves_no_socket_directory(tmp_path: Path) -> None:
+    async with PGliteEngine(
+        workdir=tmp_path / "pg",
+        extensions=(),
+        persist=False,
+    ) as engine:
+        assert engine._manager is not None
+        sockets = Path(engine._manager.config.socket_path).parent
+        assert sockets.is_dir()
+
+    assert not sockets.exists()
+
+
+# Each test boots no Node: the start runs up to the config and the claim.
+def _boot_without_node(
+    engine: PGliteEngine,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    scratch: Path,
+) -> list[PGliteConfig]:
+    """Stub every process ``engine`` would start; return the configs it builds."""
+    configs: list[PGliteConfig] = []
+
+    def make_manager(config: PGliteConfig) -> MagicMock:
+        configs.append(config)
+        return MagicMock()
+
+    scratch.mkdir(exist_ok=True)
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    monkeypatch.setattr(substrate, "PGliteManager", make_manager)
+    monkeypatch.setattr(substrate, "_ensure_shared_node_modules", MagicMock())
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    monkeypatch.setattr(substrate, "_acquire_boot_slot", MagicMock())
+    monkeypatch.setattr(substrate, "_release_boot_slot", MagicMock())
+    monkeypatch.setattr(substrate, "_start_node", MagicMock())
+    monkeypatch.setattr(substrate, "_stop_node", MagicMock())
+    monkeypatch.setattr(engine, "_open_conn", AsyncMock(return_value=_make_conn()))
+    return configs
+
+
+@pytest.mark.asyncio
+async def test_a_socket_fits_sun_path_under_macos_default_temp_dir(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """MacOS's default temp dir is ~49 bytes; ``sun_path`` holds 103."""
+    engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
+    scratch = tmp_path / "tmp"
+    configs = _boot_without_node(engine, monkeypatch, scratch=scratch)
+
+    async with engine:
+        (config,) = configs
+        beyond = len(os.fsencode(config.socket_path)) - len(os.fsencode(scratch))
+
+    assert beyond <= UNIX_SOCKET_PATH_MAX_BYTES - 49
+
+
+@pytest.mark.asyncio
+async def test_a_start_that_raises_unretried_releases_its_socket_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``__aexit__`` never runs after a failed ``__aenter__``."""
+    engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
+    scratch = tmp_path / "tmp"
+    _boot_without_node(engine, monkeypatch, scratch=scratch)
+    unretried = ValueError("not a boot fault")
+    monkeypatch.setattr(substrate, "_start_node", MagicMock(side_effect=unretried))
+
+    with pytest.raises(ValueError, match=r"^not a boot fault$"):
+        await engine.__aenter__()
+
+    assert list(scratch.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_exit_releases_the_socket_claim_without_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
+    scratch = tmp_path / "tmp"
+    _boot_without_node(engine, monkeypatch, scratch=scratch)
+    monkeypatch.setattr(engine, "_shutdown", AsyncMock())
+
+    async with engine:
+        assert len(list(scratch.iterdir())) == 2
+
+    assert list(scratch.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_tcp_start_leaves_no_socket_directory_after_shutdown(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = PGliteEngine(workdir=tmp_path, extensions=(), use_tcp=True)
+    configs: list[PGliteConfig] = []
+
+    def make_manager(config: PGliteConfig) -> MagicMock:
+        configs.append(config)
+        return MagicMock()
+
+    link = MagicMock()
+    monkeypatch.setattr(substrate, "PGliteManager", make_manager)
+    monkeypatch.setattr(substrate, "_link_shared_node_modules", link)
+    monkeypatch.setattr(substrate, "_start_node", MagicMock())
+    monkeypatch.setattr(substrate, "_stop_node", MagicMock())
+    monkeypatch.setattr(engine, "_open_conn", AsyncMock(return_value=_make_conn()))
+
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+
+    await engine._start_once(tmp_path)
+    (config,) = configs
+    socket = Path(config.socket_path)
+    assert (socket.parent.parent, socket.name) == (scratch, ".s.PGSQL.5432")
+    assert re.fullmatch(r"pgl-[0-9a-f]{12}", socket.parent.name)
+    link.assert_called_once_with(tmp_path, engine._cache)
+    await engine._shutdown()
+
+    assert list(scratch.iterdir()) == []
 
 
 @pytest.mark.db_pglite
@@ -727,9 +862,6 @@ async def test_pglite_exit_terminates_client_socket(
     stop = MagicMock()
     manager = MagicMock()
     engine._manager = cast(PGliteManager, manager)
-    socket_path = tmp_path / ".s.PGSQL.5432"
-    socket_path.touch()
-    engine._socket_path = socket_path
     monkeypatch.setattr(substrate, "_stop_node", stop)
 
     await engine.__aexit__()
@@ -737,8 +869,7 @@ async def test_pglite_exit_terminates_client_socket(
     terminate.assert_called_once_with()
     close.assert_not_awaited()
     stop.assert_called_once_with(manager)
-    assert (engine._conn, engine._socket_path) == (None, None)
-    assert not socket_path.exists()
+    assert (engine._conn, engine._manager) == (None, None)
 
 
 @pytest.mark.asyncio
@@ -850,7 +981,6 @@ async def test_pglite_start_once_tcp_configures_port_and_manager(
         10,
     )
     assert engine._manager is manager
-    assert engine._socket_path is None
     start.assert_called_once_with(
         manager,
         config=config,
@@ -1403,7 +1533,7 @@ async def test_pglite_start_bounds_a_silent_child_without_opening_a_connection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     output = _BlockedNodeOutput()
-    config = PGliteConfig(work_dir=tmp_path, timeout=1)
+    config = PGliteConfig(work_dir=tmp_path, timeout=1, socket_path=_socket(tmp_path))
     config.timeout = 0
     process = MagicMock(stdout=output, poll=MagicMock(return_value=None))
     monkeypatch.setattr(subprocess, "Popen", MagicMock(return_value=process))
@@ -1445,7 +1575,7 @@ async def test_pglite_shutdown_reaps_only_its_owned_process_group(
         side_effect=[subprocess.TimeoutExpired("node", 5), 0] if force_kill else [0],
     )
     process = MagicMock(pid=12_345, stdout=output, wait=wait)
-    manager = PGliteManager()
+    manager = PGliteManager(PGliteConfig(socket_path=_socket(tmp_path)))
     monkeypatch.setattr(manager, "process", process)
     vendor_stop = MagicMock(side_effect=AssertionError("vendor cleanup must not run"))
     monkeypatch.setattr(manager, "stop", vendor_stop)
@@ -1586,7 +1716,11 @@ def test_node_launch_preserves_environment_and_applies_configured_options(
         "_ensure_shared_node_modules",
         MagicMock(return_value=tmp_path),
     )
-    config = PGliteConfig(work_dir=tmp_path, node_options=node_options)
+    config = PGliteConfig(
+        work_dir=tmp_path,
+        node_options=node_options,
+        socket_path=_socket(tmp_path),
+    )
     manager = PGliteManager(config)
     monkeypatch.setattr(
         os,
@@ -1647,6 +1781,7 @@ async def test_pglite_missing_node_releases_slots_without_signalling_other_proce
 
 @pytest.mark.parametrize("force_kill", [False, True])
 def test_owned_node_cleanup_without_process_group_support(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     force_kill: bool,
@@ -1657,7 +1792,7 @@ def test_owned_node_cleanup_without_process_group_support(
     terminate = MagicMock()
     kill = MagicMock()
     process = MagicMock(wait=wait, terminate=terminate, kill=kill)
-    manager = PGliteManager()
+    manager = PGliteManager(PGliteConfig(socket_path=_socket(tmp_path)))
     monkeypatch.setattr(manager, "process", process)
     monkeypatch.delattr(os, "killpg", raising=False)
 
@@ -1673,11 +1808,12 @@ def test_owned_node_cleanup_without_process_group_support(
 
 
 def test_owned_node_cleanup_reaps_an_already_exited_child(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     wait = MagicMock(return_value=13)
     process = MagicMock(pid=12_345, wait=wait)
-    manager = PGliteManager()
+    manager = PGliteManager(PGliteConfig(socket_path=_socket(tmp_path)))
     monkeypatch.setattr(manager, "process", process)
     monkeypatch.setattr(os, "killpg", MagicMock(side_effect=ProcessLookupError))
 
@@ -1771,7 +1907,6 @@ async def test_a_start_over_a_unix_socket_listens_where_its_config_says(
     (config,) = configs
     assert (config.work_dir, config.use_tcp, config.extensions) == (tmp_path, False, [])
     assert (config.log_level, config.timeout) == ("ERROR", 10)
-    assert engine._socket_path == Path(config.socket_path)
     script = (tmp_path / "pglite_manager.js").read_text().splitlines()
     listen = '{"path": ' + json.dumps(config.socket_path) + "}"
     assert f"const LISTEN = {listen};" in script
