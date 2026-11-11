@@ -196,12 +196,18 @@ def test_an_input_carries_what_the_relay_stamped_on_a_persons_post() -> None:
     "body",
     [
         {"kind": "Quit", "payload": {}},
+        {"kind": "UserDeferredMessage", "payload": {"text": "later"}},
         {"kind": "Halt", "payload": {}, "author": "mallory@example.com"},
         {"kind": "Halt"},
     ],
-    ids=["a kind no person may send", "a field only the relay sets", "no payload"],
+    ids=[
+        "a kind no person may send",
+        "a line held for later, which only a terminal sends",
+        "a field only the relay sets",
+        "no payload",
+    ],
 )
-def test_a_persons_post_is_refused_outside_the_four_kinds_and_two_fields(
+def test_a_persons_post_is_refused_outside_the_three_kinds_and_two_fields(
     body: dict[str, object],
 ) -> None:
     with pytest.raises(pydantic.ValidationError):
