@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime
+from functools import partial
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast, override
 from unittest.mock import AsyncMock, Mock
@@ -848,16 +849,6 @@ async def test_release_loop_sweeps_after_its_delay_with_the_pass_s_store_and_tim
     inbound = InboundQueue(poller_ttl_sec=0)
     passes: list[tuple[str, object, object, datetime]] = []
 
-    async def gone(given: object, *, inbound: object, at: datetime) -> int:
-        passes.append(("gone", given, inbound, at))
-        if len(passes) == 1:
-            raise RuntimeError("pass failed")
-        return 0
-
-    async def orphaned(given: object, *, inbound: object, at: datetime) -> int:
-        passes.append(("orphaned", given, inbound, at))
-        return 0
-
     monkeypatch.setattr(
         asyncio,
         "sleep",
@@ -872,8 +863,12 @@ async def test_release_loop_sweeps_after_its_delay_with_the_pass_s_store_and_tim
         "time",
         SimpleNamespace(monotonic=Mock(side_effect=[0.0, 1.0, 6.0])),
     )
-    monkeypatch.setattr(asks, "release_gone_runs", gone)
-    monkeypatch.setattr(asks, "release_orphaned_asks", orphaned)
+    monkeypatch.setattr(asks, "release_gone_runs", partial(_pass, passes, "gone"))
+    monkeypatch.setattr(
+        asks,
+        "release_orphaned_asks",
+        partial(_pass, passes, "orphaned"),
+    )
     with pytest.raises(asyncio.CancelledError):
         await asks.ask_release_loop(
             store,
@@ -894,6 +889,21 @@ async def test_release_loop_sweeps_after_its_delay_with_the_pass_s_store_and_tim
     assert [r.getMessage() for r in caplog.records] == [
         "ask release pass failed; retrying next cycle",
     ]
+
+
+async def _pass(
+    passes: list[tuple[str, object, object, datetime]],
+    name: str,
+    given: object,
+    *,
+    inbound: object,
+    at: datetime,
+) -> int:
+    """Note one release pass; the very first one fails, as a broken pass would."""
+    passes.append((name, given, inbound, at))
+    if len(passes) == 1:
+        raise RuntimeError("pass failed")
+    return 0
 
 
 if __name__ == "__main__":
