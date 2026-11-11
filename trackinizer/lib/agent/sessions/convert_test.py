@@ -649,7 +649,8 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
         # the death-watch went green here.
         if len(children) >= 2 and list((tmp_path / "out").glob("*.json")):
             break
-        time.sleep(0.1)
+        # The pool is other processes; only the process table and disk say when it works.
+        time.sleep(0.1)  # house-ignore[sleep] -- See above.
     assert started.poll() is None, "the run ended before it could be killed"
     assert children, "the pool never started"
     assert list((tmp_path / "out").glob("*.json")), "the pool never did any work"

@@ -551,7 +551,8 @@ async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
     now = await version("ada@x.y")
     bob_now = await version("bob@x.y")
     held = asyncio.ensure_future(version("ada@x.y", f"&since={now}"))
-    await asyncio.sleep(0.05)
+    # Proves absence: the held poll must not answer before a change.
+    await asyncio.sleep(0.05)  # house-ignore[sleep] -- See above.
     assert not held.done()
     await world.join(world.cookie(ada), name="laptop")
     async with asyncio.timeout(5):
@@ -1073,7 +1074,8 @@ async def test_the_host_socket_refuses_an_unknown_credential_a_stale_instance_an
     claimed = _daemon_peer(world, terminal_id)
     holder = _daemon_peer(world, terminal_id)
     task = asyncio.create_task(_run_host(holder, world, terminal_id))
-    await asyncio.sleep(0.05)
+    # Lets the host attach; the relay signals no attach.
+    await asyncio.sleep(0.05)  # house-ignore[sleep] -- See above.
     codes = [
         await code(unknown),
         await code(stale, uuid.uuid4()),
@@ -1138,7 +1140,8 @@ async def test_attach_mints_a_ticket_for_the_opener_and_close_stops_the_shell(
     terminal_id, _ = _opened(await world.open(cookie))
     daemon = _daemon_peer(world, terminal_id)
     task = asyncio.create_task(_run_host(daemon, world, terminal_id))
-    await asyncio.sleep(0.05)
+    # Lets the host attach; the relay signals no attach.
+    await asyncio.sleep(0.05)  # house-ignore[sleep] -- See above.
     attach = wire_terminals.TERMINAL_ATTACH_PATH.format(terminal_id=terminal_id)
     close = wire_terminals.TERMINAL_CLOSE_PATH.format(terminal_id=terminal_id)
 

@@ -90,6 +90,8 @@ if TYPE_CHECKING:
 
 
 _CWD: Final = Path(__file__).resolve().parent
+# How often the live CLI's session log is read; it is the only signal there is.
+_POLL_SEC: Final = 0.5
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -331,7 +333,8 @@ def _drive(
         print(f"  turn {index}/{len(script)}: {step.line[:48]}", file=sys.stderr)
         if step.escape:
             _await_marks(logs, tool_call, above=calls, deadline_sec=turn_sec)
-            time.sleep(2.0)
+            # The tool must be running when Esc lands; the TUI signals no start.
+            time.sleep(2.0)  # house-ignore[sleep] -- See above.
             relay.write(b"\x1b")
         done = _await_turn(logs, done=done, quiet_sec=20.0, deadline_sec=turn_sec)
     relay.submit("/exit")
@@ -377,9 +380,9 @@ def _await_logs(root: Path, *, deadline_sec: float) -> None:
         if _log_size(root) > 0:
             # The file exists, but the TUI draws its prompt slightly after
             # opening the log; submitting into that gap loses the first turn.
-            time.sleep(3.0)
+            time.sleep(3.0)  # house-ignore[sleep] -- See above.
             return
-        time.sleep(0.5)
+        time.sleep(_POLL_SEC)  # house-ignore[sleep] -- A live CLI's log is polled.
     print(f"  no session log under {root} yet; proceeding", file=sys.stderr)
 
 
@@ -399,7 +402,7 @@ def _await_turn(root: Path, *, done: int, quiet_sec: float, deadline_sec: float)
     size = _log_size(root)
     settled = time.monotonic()
     while time.monotonic() < deadline:
-        time.sleep(0.5)
+        time.sleep(_POLL_SEC)  # house-ignore[sleep] -- A live CLI's log is polled.
         completed = _completed_turns(root)
         if completed > done:
             return completed
@@ -441,7 +444,7 @@ def _await_marks(root: Path, marker: str, *, above: int, deadline_sec: float) ->
     while time.monotonic() < deadline:
         if _marks(root, marker) > above:
             return
-        time.sleep(0.5)
+        time.sleep(_POLL_SEC)  # house-ignore[sleep] -- A live CLI's log is polled.
     print(f"  no {marker} under {root} yet; proceeding", file=sys.stderr)
 
 

@@ -57,7 +57,8 @@ def test_an_edit_while_the_daemon_starts_restarts_it(
     deadline = time.monotonic() + 30
     while not _accepts(socket_path()):
         assert time.monotonic() < deadline, "the daemon never accepted"
-        time.sleep(0.01)
+        # The daemon is another process; only its socket says it is up.
+        time.sleep(0.01)  # house-ignore[sleep] -- See above.
 
     entry.main(["help"])
 

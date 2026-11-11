@@ -601,7 +601,8 @@ async def waited_on_locks(store: Store, *, count: int, wait_sec: float = 5) -> b
             )
             if from_plain(waiting, int) >= count:
                 return True
-            await asyncio.sleep(0.005)
+            # Lock waits live in Postgres; only pg_stat_activity and pg_locks report them.
+            await asyncio.sleep(0.005)  # house-ignore[sleep] -- See above.
     return False
 
 

@@ -947,7 +947,7 @@ def test_lifespan_cancels_the_embedder_warm_up_at_shutdown(
 
     def resolve(fastapi_app: FastAPI, config: Config) -> asyncio.Task[None]:
         del fastapi_app, config
-        warming.append(asyncio.create_task(asyncio.sleep(3600)))
+        warming.append(asyncio.create_task(_forever()))
         return warming[0]
 
     monkeypatch.setattr(app, "_resolve_session_embedder", resolve)
@@ -1006,6 +1006,11 @@ def _lifespan_secrets(
     fastapi_app = fastapi_app or FastAPI()
     fastapi_app.state.config = Config(secrets=spec)
     return _lifespan_state(monkeypatch, fastapi_app, "secrets")
+
+
+async def _forever() -> None:
+    """Stand-in warm task that runs until cancelled."""
+    _ = await asyncio.Event().wait()
 
 
 if __name__ == "__main__":

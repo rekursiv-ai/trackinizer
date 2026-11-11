@@ -445,7 +445,8 @@ async def _crash_late(*, attempts: list[int], fifth_attempt: asyncio.Event) -> N
     """Crash every attempt; attempt 3 runs long enough to reset the backoff."""
     attempts.append(len(attempts))
     if len(attempts) == 3:
-        await asyncio.sleep(0.03)
+        # Outlasts the backoff reset, the timer under test.
+        await asyncio.sleep(0.03)  # house-ignore[sleep] -- See above.
     if len(attempts) == 5:
         fifth_attempt.set()
     raise RuntimeError("boom")

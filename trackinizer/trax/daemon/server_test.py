@@ -340,7 +340,8 @@ class TestConcurrentRequests:
                         with lock:
                             contaminated.append((expected, seen))
                         return
-                    time.sleep(_POLL_INTERVAL_SEC)
+                    # Spreads each thread's reads across the others' runs, to catch a leak.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
 
             return run
 
@@ -372,7 +373,8 @@ class TestConcurrentRequests:
                         with lock:
                             contaminated.append((expected, seen))
                         return
-                    time.sleep(_POLL_INTERVAL_SEC)
+                    # Spreads each thread's reads across the others' runs, to catch a leak.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
 
             return run
 
@@ -398,7 +400,8 @@ class TestConcurrentRequests:
                 started.wait(timeout=5)
                 for _ in range(20):
                     echo(name, nl=False)
-                    time.sleep(_POLL_INTERVAL_SEC)
+                    # Spreads each thread's reads across the others' runs, to catch a leak.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
 
             return run
 
@@ -687,7 +690,8 @@ def _wait_for(condition: Callable[[], bool]) -> None:
     deadline = time.monotonic() + 5
     while not condition():
         assert time.monotonic() < deadline, "condition never held"
-        time.sleep(_POLL_INTERVAL_SEC)
+        # Polls state the daemon's threads change; nothing signals it.
+        time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
 
 
 def _exchange(tmp_path: Path, request: Request, *, hang_up: bool) -> Response | None:

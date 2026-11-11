@@ -542,7 +542,8 @@ def _die_with_parent(launcher: int, poll_sec: float) -> None:
 def _watch_launcher(launcher: int, poll_sec: float) -> None:
     """Poll ``launcher`` every ``poll_sec`` and exit the process once it is gone."""
     while True:
-        time.sleep(poll_sec)
+        # No portable event marks the launcher's exit; see above.
+        time.sleep(poll_sec)  # house-ignore[sleep] -- See above.
         try:
             os.kill(launcher, 0)
         except OSError:

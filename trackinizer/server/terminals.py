@@ -862,7 +862,8 @@ async def sweep_loop(
 
     """
     while True:
-        await asyncio.sleep(interval_sec)
+        # A periodic sweep; the interval is the schedule.
+        await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- See above.
         try:
             await relay.sweep()
         except Exception:

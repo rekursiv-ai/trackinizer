@@ -212,7 +212,8 @@ async def supervise(
             return
         if time.monotonic() - started_sec > max_backoff_sec:
             delay_sec = backoff_sec
-        await asyncio.sleep(delay_sec)
+        # Restart backoff for a crashing service.
+        await asyncio.sleep(delay_sec)  # house-ignore[sleep] -- See above.
         delay_sec = min(delay_sec * 2, max_backoff_sec)
 
 

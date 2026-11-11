@@ -1190,7 +1190,8 @@ async def test_a_queued_connection_is_not_ended_for_a_takeover_so_the_successor_
     for _ in range(2_000):
         if tool_relay(app)._connections:
             break
-        await asyncio.sleep(0.005)
+        # Relay state follows database I/O; nothing signals it.
+        await asyncio.sleep(0.005)  # house-ignore[sleep] -- See above.
     successor = await _take_over(world, host)
 
     await tool_relay(app).sweep()
@@ -1214,7 +1215,8 @@ async def test_a_queued_connection_is_ended_when_its_key_is_revoked(
     for _ in range(2_000):
         if tool_relay(app)._connections:
             break
-        await asyncio.sleep(0.005)
+        # Relay state follows database I/O; nothing signals it.
+        await asyncio.sleep(0.005)  # house-ignore[sleep] -- See above.
 
     async with world.store.engine.acquire() as conn:
         await conn.execute("UPDATE api_keys SET revoked_at = now()")
@@ -1293,7 +1295,8 @@ async def test_an_offer_a_superseded_host_claims_costs_one_dial_back_and_a_redia
     for _ in range(2_000):
         if host.id in tool_relay(app)._waiters:
             break
-        await asyncio.sleep(0.005)
+        # Relay state follows database I/O; nothing signals it.
+        await asyncio.sleep(0.005)  # house-ignore[sleep] -- See above.
     successor = await _take_over(world, host)
 
     assistant = await world.assistant()
@@ -1354,7 +1357,8 @@ async def test_an_old_hosts_exec_wait_is_held_so_it_does_not_spin(
     for _ in range(2_000):
         if host.id in tool_relay(app)._waiters:
             break
-        await asyncio.sleep(0.005)
+        # Relay state follows database I/O; nothing signals it.
+        await asyncio.sleep(0.005)  # house-ignore[sleep] -- See above.
 
     assert host.id in tool_relay(app)._waiters
     assert not waiting.done()
