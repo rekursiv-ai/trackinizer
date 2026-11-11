@@ -199,19 +199,35 @@ def test_an_input_carries_what_the_relay_stamped_on_a_persons_post() -> None:
         {"kind": "UserDeferredMessage", "payload": {"text": "later"}},
         {"kind": "Halt", "payload": {}, "author": "mallory@example.com"},
         {"kind": "Halt"},
+        {"kind": "Command", "payload": {"line": "model opus"}},
+        {"kind": "Command", "payload": {}},
     ],
     ids=[
         "a kind no person may send",
         "a line held for later, which only a terminal sends",
         "a field only the relay sets",
         "no payload",
+        "a command that is no slash line",
+        "a command with no line",
     ],
 )
-def test_a_persons_post_is_refused_outside_the_three_kinds_and_two_fields(
+def test_a_persons_post_is_refused_outside_its_three_kinds_and_three_fields(
     body: dict[str, object],
 ) -> None:
     with pytest.raises(pydantic.ValidationError):
         NewInput.model_validate(body)
+
+
+def test_a_post_keeps_its_senders_id_and_is_given_one_when_it_names_none() -> None:
+    named = NewInput.model_validate(
+        {"id": str(UUID(int=7)), "kind": "Halt", "payload": {}},
+    )
+    first = NewInput(kind="Halt", payload={})
+    second = NewInput(kind="Halt", payload={})
+
+    assert named.id == UUID(int=7)
+    assert first.id != second.id
+    assert NewInput.model_validate_json(first.model_dump_json()) == first
 
 
 def test_a_commands_body_is_one_slash_line() -> None:
@@ -222,8 +238,13 @@ def test_a_commands_body_is_one_slash_line() -> None:
 
 @pytest.mark.parametrize(
     "body",
-    [{"line": ""}, {"line": "/halt", "to": "child_1"}, {"text": "/halt"}],
-    ids=["an empty line", "a second field", "no line"],
+    [
+        {"line": ""},
+        {"line": "halt"},
+        {"line": "/halt", "to": "child_1"},
+        {"text": "/halt"},
+    ],
+    ids=["an empty line", "a line with no slash", "a second field", "no line"],
 )
 def test_a_commands_body_is_refused_without_exactly_its_line(
     body: dict[str, str],
@@ -236,11 +257,11 @@ def test_a_process_spec_names_no_place_by_default() -> None:
     """The server's own host runs the agent, on that host's login, from its home."""
     spec = ProcessSpec.model_validate({})
 
-    assert (spec.host, spec.login, spec.cwd, spec.args) == ("", "", "~", ())
+    assert (spec.host, spec.login_host, spec.cwd, spec.args) == ("", "", "~", ())
 
 
 @pytest.mark.parametrize(
-    ("host", "login"),
+    ("host", "login_host"),
     [("", ""), ("lab-box", ""), ("", "laptop"), ("lab-box", "laptop")],
     ids=[
         "the server's host, on its own login",
@@ -251,11 +272,11 @@ def test_a_process_spec_names_no_place_by_default() -> None:
 )
 def test_where_an_agent_runs_and_whose_login_it_uses_are_named_apart(
     host: str,
-    login: str,
+    login_host: str,
 ) -> None:
-    spec = ProcessSpec(host=host, login=login, args=("--model", "opus"))
+    spec = ProcessSpec(host=host, login_host=login_host, args=("--model", "opus"))
 
-    assert (spec.host, spec.login) == (host, login)
+    assert (spec.host, spec.login_host) == (host, login_host)
     assert ProcessSpec.model_validate_json(spec.model_dump_json()) == spec
 
 
@@ -265,11 +286,13 @@ def test_where_an_agent_runs_and_whose_login_it_uses_are_named_apart(
         ({"host": "lab-box", "cwd": "relative/path"}, "cwd"),
         ({"host": "lab-box", "model": "opus"}, "model"),
         ({"provider": "rai"}, "provider"),
+        ({"login": "laptop"}, "login"),
     ],
     ids=[
         "a relative folder",
         "a field that is a sagent flag now",
         "a field this wire does not have",
+        "the login host under its old name, which read as a command to log in",
     ],
 )
 def test_a_process_spec_is_refused_for_a_bad_folder_or_an_unknown_field(
@@ -283,9 +306,9 @@ def test_a_process_spec_is_refused_for_a_bad_folder_or_an_unknown_field(
 
 
 def test_a_process_says_whose_login_it_uses_when_not_its_own_hosts() -> None:
-    elsewhere = _SERVING.model_copy(update={"login": "laptop"})
+    elsewhere = _SERVING.model_copy(update={"login_host": "laptop"})
 
-    assert _SERVING.login == ""
+    assert _SERVING.login_host == ""
     assert AgentProcess.model_validate_json(elsewhere.model_dump_json()) == elsewhere
 
 

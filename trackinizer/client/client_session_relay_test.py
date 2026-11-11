@@ -144,7 +144,7 @@ def test_starting_a_process_puts_the_spec_and_returns_the_process() -> None:
 
 def test_a_start_sends_only_the_places_that_were_named() -> None:
     """An older server refuses a key it does not know, so a default is not sent."""
-    elsewhere = _SERVING.model_copy(update={"login": "laptop"})
+    elsewhere = _SERVING.model_copy(update={"login_host": "laptop"})
     recorder = _Recorder(
         httpx2.Response(200, json=_SERVING.model_dump(mode="json")),
         httpx2.Response(200, json=elsewhere.model_dump(mode="json")),
@@ -153,11 +153,14 @@ def test_a_start_sends_only_the_places_that_were_named() -> None:
     with _client(recorder) as found:
         started = (
             found.start_process(_SESSION, ProcessSpec()),
-            found.start_process(_SESSION, ProcessSpec(login="laptop")),
+            found.start_process(_SESSION, ProcessSpec(login_host="laptop")),
         )
 
     assert started == (_SERVING, elsewhere)
-    assert [_sent(each)[2] for each in recorder.requests] == [{}, {"login": "laptop"}]
+    assert [_sent(each)[2] for each in recorder.requests] == [
+        {},
+        {"login_host": "laptop"},
+    ]
 
 
 def test_reading_and_stopping_a_process_return_it_or_none() -> None:
@@ -190,7 +193,7 @@ def test_sending_an_input_posts_it_once_and_returns_its_id(
 ) -> None:
     """An input is delivered at most once, so a lost answer is not sent again."""
     monkeypatch.setattr(time, "sleep", _no_sleep)
-    new = NewInput(kind="Command", payload={"line": "/model opus"})
+    new = NewInput(id=UUID(int=7), kind="Command", payload={"line": "/model opus"})
     answered = _Recorder(httpx2.Response(200, json={"id": str(UUID(int=7))}))
     lost = _Recorder(httpx2.ReadError("response lost"))
 
@@ -203,7 +206,11 @@ def test_sending_an_input_posts_it_once_and_returns_its_id(
     assert _sent(answered.requests[0]) == (
         "POST",
         f"/api/sessions/{_SESSION}/inputs",
-        {"kind": "Command", "payload": {"line": "/model opus"}},
+        {
+            "id": str(UUID(int=7)),
+            "kind": "Command",
+            "payload": {"line": "/model opus"},
+        },
     )
     assert len(lost.requests) == 1
 

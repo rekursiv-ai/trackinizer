@@ -70,9 +70,9 @@
       "title": "Host",
       "type": "string"
      },
-     "login": {
+     "login_host": {
       "default": "",
-      "title": "Login",
+      "title": "Login Host",
       "type": "string"
      },
      "process_id": {
@@ -5434,6 +5434,11 @@
     "additionalProperties": false,
     "description": "What a person posts for the session's root agent.",
     "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
      "kind": {
       "$ref": "#/components/schemas/InputKind"
      },
@@ -6069,9 +6074,9 @@
       "title": "Host",
       "type": "string"
      },
-     "login": {
+     "login_host": {
       "default": "",
-      "title": "Login",
+      "title": "Login Host",
       "type": "string"
      }
     },
