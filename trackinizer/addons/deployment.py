@@ -199,6 +199,7 @@ async def supervise(
     delay_sec = backoff_sec
     while True:
         started_sec = time.monotonic()
+        _logger.info("addon service %s started", name)
         try:
             await run()
         except Exception:

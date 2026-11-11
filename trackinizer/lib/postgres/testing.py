@@ -43,6 +43,7 @@ import pytest
 import pytest_asyncio
 
 from trackinizer.lib.postgres import PGliteEngine
+from trackinizer.lib.userdirs import cache_dir
 
 
 if TYPE_CHECKING:
@@ -220,6 +221,10 @@ async def pglite_engine_cache(pglite_workdir: Path) -> AsyncGenerator[_EngineCac
     """Session-lived cache of one started engine per extension set.
 
     Consumed by :func:`pglite_engine`, which is what a test should ask for.
+    Its engines boot during whichever test first asks, under that test's own cache
+    directory, and outlive it; so they keep this host's, read here before any test
+    repoints it. What they keep there, the node modules and the database each new one
+    starts from, is keyed by content.
 
     Args:
       pglite_workdir: Session temp directory for database files.
@@ -228,7 +233,10 @@ async def pglite_engine_cache(pglite_workdir: Path) -> AsyncGenerator[_EngineCac
       cache: Call ``get(extensions)`` for a started engine.
 
     """
-    cache = _EngineCache(pglite_workdir)
+    cache = _EngineCache(
+        pglite_workdir,
+        cache=cache_dir() / "rekursiv-ai" / "pglite",
+    )
     try:
         yield cache
     finally:
@@ -244,8 +252,9 @@ class _EngineCache:
     not available``.
     """
 
-    def __init__(self, workdir: Path) -> None:
+    def __init__(self, workdir: Path, *, cache: Path) -> None:
         self._workdir = workdir
+        self._cache = cache
         self._engines: dict[tuple[str, ...], PGliteEngine] = {}
 
     async def get(self, extensions: tuple[str, ...]) -> PGliteEngine:
@@ -264,7 +273,8 @@ class _EngineCache:
             # Each engine owns a DISTINCT directory: PGlite does not lock its
             # dataDir, so two live engines over one would corrupt it.
             slot = "-".join(key) or "bare"
-            engine = PGliteEngine(workdir=self._workdir / f"pg-{slot}", extensions=key)
+            workdir = self._workdir / f"pg-{slot}"
+            engine = PGliteEngine(workdir=workdir, extensions=key, cache=self._cache)
             _ = await engine.__aenter__()
             self._engines[key] = engine
         return engine

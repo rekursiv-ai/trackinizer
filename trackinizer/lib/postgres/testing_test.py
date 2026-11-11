@@ -18,6 +18,7 @@ import asyncpg
 import pytest
 
 from trackinizer.lib.postgres import PGliteEngine, testing
+from trackinizer.lib.userdirs import cache_dir
 
 
 if TYPE_CHECKING:
@@ -84,9 +85,16 @@ class _Connection:
 
 
 class _CachedEngine(PGliteEngine):
-    def __init__(self, *, workdir: Path, extensions: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        workdir: Path,
+        extensions: tuple[str, ...],
+        cache: Path,
+    ) -> None:
         self.workdir = workdir
         self.extensions = extensions
+        self.cache = cache
         self.entered = False
         self.exited = False
 
@@ -118,7 +126,7 @@ async def test_pglite_engine_resolves_optional_extensions(
     monkeypatch: pytest.MonkeyPatch,
     request: pytest.FixtureRequest,
 ) -> None:
-    cache = testing._EngineCache(Path("unused"))
+    cache = testing._EngineCache(Path("unused"), cache=Path("unused"))
     requested: list[tuple[str, ...]] = []
 
     async def fake_get(extensions: tuple[str, ...]) -> PGliteEngine:
@@ -182,7 +190,7 @@ async def test_pglite_engine_cache_sorts_extensions_and_reuses_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(testing, "PGliteEngine", _CachedEngine)
-    cache = testing._EngineCache(tmp_path)
+    cache = testing._EngineCache(tmp_path, cache=tmp_path / "pglite")
 
     first = await cache.get(("zeta", "alpha"))
     again = await cache.get(("alpha", "zeta"))
@@ -192,6 +200,7 @@ async def test_pglite_engine_cache_sorts_extensions_and_reuses_engine(
     assert first is again
     assert first.extensions == ("alpha", "zeta")
     assert first.workdir == tmp_path / "pg-alpha-zeta"
+    assert first.cache == tmp_path / "pglite"
     assert first.entered
     assert first.exited
     assert cache._engines == {}
@@ -204,7 +213,7 @@ async def test_pglite_engine_cache_uses_bare_slot_name(
 ) -> None:
     monkeypatch.setattr(testing, "PGliteEngine", _CachedEngine)
 
-    engine = await testing._EngineCache(tmp_path).get(())
+    engine = await testing._EngineCache(tmp_path, cache=tmp_path).get(())
     assert isinstance(engine, _CachedEngine)
     assert engine.workdir == tmp_path / "pg-bare"
 
@@ -431,9 +440,10 @@ async def test_pglite_engine_cache_fixture_closes_cache(tmp_path: Path) -> None:
     fixture = testing.pglite_engine_cache
     assert isinstance(fixture, _CacheFixture)
     generator = fixture._fixture_function(tmp_path)
-    await anext(generator)
+    cache = await anext(generator)
 
     await generator.aclose()
+    assert cache._cache == cache_dir() / "rekursiv-ai" / "pglite"
 
 
 def _started(name: str) -> Path:

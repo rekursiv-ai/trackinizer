@@ -67,8 +67,11 @@ _TIME: Final = re.compile(
 )
 
 
+# Real user dirs: the server's PGlite reuses this host's node modules and initialized
+# database. In a test's own empty cache each run installed both afresh, ~1.6 s.
 @pytest.mark.cli_python_subprocess
 @pytest.mark.db_pglite
+@pytest.mark.real_user_dirs
 def test_every_call_answers_as_its_fixture_says(tmp_path: Path) -> None:
     with _server(tmp_path) as url, httpx2.Client(base_url=url, timeout=30.0) as http:
         recorder = _Recorder(http=http)

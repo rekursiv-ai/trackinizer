@@ -32,7 +32,7 @@ import httpx2
 import pytest
 import pytest_asyncio
 
-from trackinizer.conftest import FakeEngine, make_conn, make_store, restore_pglite
+from trackinizer.conftest import FakeEngine, make_conn, make_store, restore
 from trackinizer.sagent.session.types import UserMessage
 from trackinizer.server.api.app import app
 from trackinizer.server.api.session_access import (
@@ -222,7 +222,7 @@ async def pglite_route_client(
     ``@pytest.mark.asyncio(loop_scope="session")``. Asks only for the root plugin's
     ``pglite_engine``, so another package's conftest can import it alone.
     """
-    await restore_pglite(pglite_engine)
+    await restore(pglite_engine)
     store = Store(pglite_engine, embed=StubEmbedder())
     # Not raising app exceptions, so a crash reads as the 500 a client gets.
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)
