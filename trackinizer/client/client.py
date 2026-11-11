@@ -83,6 +83,7 @@ if TYPE_CHECKING:
         wire_metrics,
         wire_metrics_query,
         wire_session_ir,
+        wire_session_relay,
         wire_sessions,
         wire_terminals,
         wire_tools,
@@ -137,6 +138,14 @@ if TYPE_CHECKING:
         RecordBody,
         SlashCommandBody,
     )
+    from trackinizer.wire.wire_session_relay import (
+        AgentProcess,
+        NewInput,
+        ProcessEnded,
+        ProcessSpec,
+        ServeSession,
+        ViewerFrame,
+    )
     from trackinizer.wire.wire_sessions import (
         InboundDrainItem,
         SessionEnd,
@@ -164,6 +173,8 @@ else:
     # Same lazy-bind for the IR bodies: only ``append_records`` touches them,
     # so their pydantic-model build stays off the cold-start path.
     wire_session_ir = lazy_import("trackinizer.wire.wire_session_ir")
+    # Same lazy-bind for the relay's bodies: only the process calls touch them.
+    wire_session_relay = lazy_import("trackinizer.wire.wire_session_relay")
     # Same lazy-bind for ``wire_metrics``: only ``log_metrics`` / ``read_metrics``
     # touch it, so its pydantic-model build stays off the cold-start path.
     wire_metrics = lazy_import("trackinizer.wire.wire_metrics")
@@ -2460,6 +2471,176 @@ class Client:
             else _validate_model(wire_tools.ToolOffer, response, where)
         )
 
+    def start_process(self, session_id: uuid.UUID, spec: ProcessSpec) -> AgentProcess:
+        """Bring up a session's agent process: on any host, with any host's login.
+
+        Args:
+          session_id: The session to serve.
+          spec: The agent's host, its login's host, and the agent's flags.
+
+        Returns:
+          process: The process, starting; the one already serving when there is one.
+
+        """
+        where = wire_session_relay.SESSION_PROCESS_PATH.format(session_id=session_id)
+        response = self._request(
+            "PUT",
+            where,
+            # A server on an older wire refuses a key it does not know, so a field
+            # left at its default, such as an unnamed login, is not sent.
+            body=spec.model_dump(
+                mode="json",  # pragma: no mutate -- each field is JSON in either mode.
+                exclude_defaults=True,
+            ),
+        )
+        return _validate_model(wire_session_relay.AgentProcess, response, where)
+
+    def read_process(self, session_id: uuid.UUID) -> AgentProcess | None:
+        """Return the agent process serving a session, or the last that did.
+
+        Args:
+          session_id: The session.
+
+        Returns:
+          process: The process; ``None`` for a session that has had none.
+
+        """
+        where = wire_session_relay.SESSION_PROCESS_PATH.format(session_id=session_id)
+        response = self._request("GET", where)
+        return (
+            None
+            if response is None
+            else _validate_model(wire_session_relay.AgentProcess, response, where)
+        )
+
+    def stop_process(self, session_id: uuid.UUID) -> AgentProcess | None:
+        """Stop a session's agent process.
+
+        Args:
+          session_id: The session.
+
+        Returns:
+          process: The process, stopped; ``None`` for a session that has had none.
+
+        """
+        where = wire_session_relay.SESSION_PROCESS_PATH.format(session_id=session_id)
+        response = self._request("DELETE", where)
+        return (
+            None
+            if response is None
+            else _validate_model(wire_session_relay.AgentProcess, response, where)
+        )
+
+    def send_input(self, session_id: uuid.UUID, new: NewInput) -> uuid.UUID:
+        """Send a session's root agent a line, a stop or a slash line; return its id.
+
+        Args:
+          session_id: The session whose agent process takes it.
+          new: What to send.
+
+        Returns:
+          input_id: The id the input's effect is told back under.
+
+        Raises:
+          ClientError: 409 ``not_live`` when no process serves the session.
+
+        """
+        where = wire_session_relay.SESSION_INPUTS_PATH.format(session_id=session_id)
+        # One attempt: an input is delivered at most once, and a retry after a lost
+        # answer would say the line to the agent a second time.
+        response = self._request(
+            "POST",
+            where,
+            body=new.model_dump(
+                mode="json",  # pragma: no mutate -- each field is JSON in either mode.
+            ),
+            retry_attempts=1,
+        )
+        return _validate_model(wire_session_relay.InputSent, response, where).id
+
+    def open_lines(self, session_id: uuid.UUID) -> Iterator[ViewerFrame]:
+        """Stream a session's lines as a viewer reads them, where it stands first.
+
+        Not retried, unlike :meth:`_request`: the stream has no cursor, so a new
+        connection starts again from where the session stands then.
+
+        Args:
+          session_id: The session to watch.
+
+        Yields:
+          frame: An ``Opened``, then each line as the server sends it.
+
+        Raises:
+          ClientError: The server refused the stream, it broke, or a frame was
+            not one.
+
+        """
+        where = wire_session_relay.SESSION_LINES_PATH.format(session_id=session_id)
+        frames = pydantic.TypeAdapter(wire_session_relay.ViewerFrame)
+        try:
+            with self._http.stream(
+                "GET",  # pragma: no mutate -- httpx upper-cases the method.
+                where,
+                # The read outlasts the server's keep-alive, or a quiet session
+                # would end it.
+                timeout=2.5 * wire_session_relay.LINES_PING_SEC,
+            ) as response:
+                if response.status_code >= 400:
+                    _ = response.read()
+                    raise ClientError(
+                        f"GET {where} -> {response.status_code}: "
+                        f"{_truncate(response.text)}",
+                        status_code=response.status_code,
+                    )
+                for data in _sse_data(response.iter_lines()):
+                    yield frames.validate_json(data)
+        except httpx2.TransportError as err:
+            raise ClientError(f"GET {where} failed: {err}") from err
+        except pydantic.ValidationError as err:
+            raise ClientError(f"{where} returned a malformed payload: {err}") from err
+
+    def wait_session(
+        self,
+        host_id: uuid.UUID,
+        *,
+        instance: uuid.UUID,
+        wait_sec: float,
+    ) -> ServeSession | None:
+        """Hold up to ``wait_sec`` for a session to start here, as the daemon.
+
+        Args:
+          host_id: The host's id, from joining.
+          instance: The daemon's id, which must be the host's current one.
+          wait_sec: How long the server may hold the request; the read timeout
+            exceeds it, or the client would abort the very wait it asked for.
+
+        Returns:
+          serve: The start to run, or ``None`` when none came in time.
+
+        """
+        # A plain read, as the tool wait is: the server hands a start once, so one
+        # whose response is lost is lost, and its process stays ``starting``.
+        where = wire_session_relay.HOST_SESSIONS_WAIT_PATH.format(host_id=host_id)
+        response = self._request(
+            "GET",
+            where,
+            params={"instance": str(instance), "wait_sec": wait_sec},
+            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+        )
+        return (
+            None
+            if response is None
+            else _validate_model(wire_session_relay.ServeSession, response, where)
+        )
+
+    def report_process_ended(self, host_id: uuid.UUID, ended: ProcessEnded) -> None:
+        """Report that an agent process this daemon started exited, or never ran."""
+        self._request(
+            "POST",
+            wire_session_relay.HOST_SESSIONS_ENDED_PATH.format(host_id=host_id),
+            body=ended.model_dump(mode="json"),
+        )
+
     def wait_exec(
         self,
         host_id: uuid.UUID,
@@ -3194,6 +3375,19 @@ def _error_code(response: httpx2.Response) -> str:
         else None
     )
     return code if isinstance(code, str) else ""
+
+
+def _sse_data(lines: Iterator[str]) -> Iterator[str]:
+    """Yield the data of each unnamed server-sent event in ``lines``."""
+    # A named event is the keep-alive, which carries nothing; a comment has no field.
+    named = False  # pragma: no mutate -- read for truth; None is as false.
+    for line in lines:
+        if line.startswith("event:"):
+            named = True
+        elif not line:
+            named = False  # pragma: no mutate -- read for truth; None is as false.
+        elif line.startswith("data:") and not named:
+            yield line.removeprefix("data:").strip()
 
 
 def _require_mapping(payload: object, where: str) -> Mapping[str, PlainTree]:

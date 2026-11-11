@@ -63,6 +63,96 @@
     "title": "AddonDescription",
     "type": "object"
    },
+   "AgentProcess": {
+    "description": "The agent process serving a session, or the last one that did.",
+    "properties": {
+     "host": {
+      "title": "Host",
+      "type": "string"
+     },
+     "login": {
+      "default": "",
+      "title": "Login",
+      "type": "string"
+     },
+     "process_id": {
+      "format": "uuid",
+      "title": "Process Id",
+      "type": "string"
+     },
+     "reason": {
+      "default": "",
+      "title": "Reason",
+      "type": "string"
+     },
+     "session_id": {
+      "format": "uuid",
+      "title": "Session Id",
+      "type": "string"
+     },
+     "since": {
+      "format": "date-time",
+      "title": "Since",
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "starting",
+       "attached",
+       "detached"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "version": {
+      "default": "",
+      "title": "Version",
+      "type": "string"
+     }
+    },
+    "required": [
+     "session_id",
+     "process_id",
+     "host",
+     "state",
+     "since"
+    ],
+    "title": "AgentProcess",
+    "type": "object"
+   },
+   "AgentState": {
+    "description": "What the root agent is doing now: the whole source of a viewer's status line.",
+    "properties": {
+     "busy": {
+      "title": "Busy",
+      "type": "boolean"
+     },
+     "line": {
+      "title": "Line",
+      "type": "string"
+     },
+     "pending": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/JSON-Output"
+      },
+      "title": "Pending",
+      "type": "array"
+     },
+     "since": {
+      "format": "date-time",
+      "title": "Since",
+      "type": "string"
+     }
+    },
+    "required": [
+     "line",
+     "busy",
+     "since"
+    ],
+    "title": "AgentState",
+    "type": "object"
+   },
    "AllowlistAddBody": {
     "description": "Request body for adding an allowlist entry.\n\n``email_or_pattern`` is either a literal address (``user@example.com``)\nor a domain wildcard (``*@example.com``), matched on each OAuth\ncallback. ``role`` is the role granted to users onboarded through\nthis entry.",
     "properties": {
@@ -2274,6 +2364,31 @@
     "title": "EnrollResponse",
     "type": "object"
    },
+   "EventLine": {
+    "description": "One event the runtime published, or what a slash command said. Never stored.",
+    "properties": {
+     "kind": {
+      "minLength": 1,
+      "title": "Kind",
+      "type": "string"
+     },
+     "payload": {
+      "$ref": "#/components/schemas/JSON-Output"
+     },
+     "type": {
+      "const": "event",
+      "default": "event",
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "kind",
+     "payload"
+    ],
+    "title": "EventLine",
+    "type": "object"
+   },
    "EvidenceKind": {
     "enum": [
      "Artifact",
@@ -4430,6 +4545,30 @@
     ],
     "type": "string"
    },
+   "InputKind": {
+    "enum": [
+     "UserMessage",
+     "UserDeferredMessage",
+     "Halt",
+     "Command"
+    ],
+    "type": "string"
+   },
+   "InputSent": {
+    "description": "The answer to a posted input: the id its effect is told back under.",
+    "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     }
+    },
+    "required": [
+     "id"
+    ],
+    "title": "InputSent",
+    "type": "object"
+   },
    "InquiryKind": {
     "enum": [
      "Issue",
@@ -5292,6 +5431,24 @@
      }
     ]
    },
+   "NewInput": {
+    "additionalProperties": false,
+    "description": "What a person posts for the session's root agent.",
+    "properties": {
+     "kind": {
+      "$ref": "#/components/schemas/InputKind"
+     },
+     "payload": {
+      "$ref": "#/components/schemas/JSON-Input"
+     }
+    },
+    "required": [
+     "kind",
+     "payload"
+    ],
+    "title": "NewInput",
+    "type": "object"
+   },
    "OpenTerminal": {
     "additionalProperties": false,
     "description": "Open a terminal on one of the caller's hosts.",
@@ -5405,6 +5562,47 @@
      "cols"
     ],
     "title": "OpenTerminal",
+    "type": "object"
+   },
+   "Opened": {
+    "description": "The first frame of a viewer's stream: where the session stands as it opens.",
+    "properties": {
+     "process": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AgentProcess"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "settings": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/Setting"
+      },
+      "title": "Settings",
+      "type": "array"
+     },
+     "state": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/AgentState"
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "type": {
+      "const": "opened",
+      "default": "opened",
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "title": "Opened",
     "type": "object"
    },
    "PartBody": {
@@ -5832,6 +6030,55 @@
    "Priority-Output": {
     "type": "integer"
    },
+   "ProcessLine": {
+    "description": "The process serving the session changed state.",
+    "properties": {
+     "process": {
+      "$ref": "#/components/schemas/AgentProcess"
+     },
+     "type": {
+      "const": "process",
+      "default": "process",
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "process"
+    ],
+    "title": "ProcessLine",
+    "type": "object"
+   },
+   "ProcessSpec": {
+    "additionalProperties": false,
+    "description": "Where to bring up a session's agent process, and with which sagent flags.\n\nThe two places it names are independent: any host that runs agents, with any\nhost's login.",
+    "properties": {
+     "args": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Args",
+      "type": "array"
+     },
+     "cwd": {
+      "$ref": "#/components/schemas/RunFolder",
+      "default": "~"
+     },
+     "host": {
+      "default": "",
+      "title": "Host",
+      "type": "string"
+     },
+     "login": {
+      "default": "",
+      "title": "Login",
+      "type": "string"
+     }
+    },
+    "title": "ProcessSpec",
+    "type": "object"
+   },
    "PublicationType": {
     "enum": [
      "article",
@@ -6244,6 +6491,30 @@
      "kind"
     ],
     "title": "RecordBody",
+    "type": "object"
+   },
+   "RecordLine": {
+    "description": "A record the server has stored, as ``GET .../records`` returns it.",
+    "properties": {
+     "part": {
+      "title": "Part",
+      "type": "integer"
+     },
+     "record": {
+      "$ref": "#/components/schemas/RecordBody-Output"
+     },
+     "type": {
+      "const": "record",
+      "default": "record",
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "part",
+     "record"
+    ],
+    "title": "RecordLine",
     "type": "object"
    },
    "RelationTarget": {
@@ -7137,6 +7408,89 @@
     "title": "SessionUsage",
     "type": "object"
    },
+   "Setting": {
+    "description": "One thing a slash line can name: sagent's own ``Setting``, as data.",
+    "properties": {
+     "flags": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Flags",
+      "type": "array"
+     },
+     "help_long": {
+      "default": "",
+      "title": "Help Long",
+      "type": "string"
+     },
+     "help_short": {
+      "title": "Help Short",
+      "type": "string"
+     },
+     "name": {
+      "items": {
+       "type": "string"
+      },
+      "minItems": 1,
+      "title": "Name",
+      "type": "array"
+     },
+     "options": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Options",
+      "type": "array"
+     },
+     "usage": {
+      "default": "",
+      "title": "Usage",
+      "type": "string"
+     },
+     "value": {
+      "anyOf": [
+       {
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Value"
+     }
+    },
+    "required": [
+     "name",
+     "help_short"
+    ],
+    "title": "Setting",
+    "type": "object"
+   },
+   "SettingsLine": {
+    "description": "Every setting a slash line can name now, replacing the last a viewer held.",
+    "properties": {
+     "settings": {
+      "items": {
+       "$ref": "#/components/schemas/Setting"
+      },
+      "title": "Settings",
+      "type": "array"
+     },
+     "type": {
+      "const": "settings",
+      "default": "settings",
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "settings"
+    ],
+    "title": "SettingsLine",
+    "type": "object"
+   },
    "SlashCommandBody": {
     "description": "One slash command the human typed, as the wire carries it.\n\nIt is NOT a record: a slash command is handled inside the CLI's TUI and\nnever written to the session log, so it cannot be re-derived and cannot\nhold an ``idx``. It carries no ``seq`` either -- the server assigns one,\nbecause a sink counter restarts at 0 on a resumed run and would collide.",
     "properties": {
@@ -7683,6 +8037,25 @@
      }
     },
     "title": "Snapshot",
+    "type": "object"
+   },
+   "StateLine": {
+    "description": "The agent's state, replacing the last one a viewer held.",
+    "properties": {
+     "state": {
+      "$ref": "#/components/schemas/AgentState"
+     },
+     "type": {
+      "const": "state",
+      "default": "state",
+      "title": "Type",
+      "type": "string"
+     }
+    },
+    "required": [
+     "state"
+    ],
+    "title": "StateLine",
     "type": "object"
    },
    "Status": {
@@ -10260,6 +10633,39 @@
     ],
     "title": "ViewRequest",
     "type": "object"
+   },
+   "ViewerFrame": {
+    "discriminator": {
+     "mapping": {
+      "event": "#/components/schemas/EventLine",
+      "opened": "#/components/schemas/Opened",
+      "process": "#/components/schemas/ProcessLine",
+      "record": "#/components/schemas/RecordLine",
+      "settings": "#/components/schemas/SettingsLine",
+      "state": "#/components/schemas/StateLine"
+     },
+     "propertyName": "type"
+    },
+    "oneOf": [
+     {
+      "$ref": "#/components/schemas/Opened"
+     },
+     {
+      "$ref": "#/components/schemas/EventLine"
+     },
+     {
+      "$ref": "#/components/schemas/StateLine"
+     },
+     {
+      "$ref": "#/components/schemas/SettingsLine"
+     },
+     {
+      "$ref": "#/components/schemas/RecordLine"
+     },
+     {
+      "$ref": "#/components/schemas/ProcessLine"
+     }
+    ]
    },
    "WebView": {
     "additionalProperties": true,
@@ -18359,6 +18765,98 @@
     "summary": "Session Inbound Enqueue Route"
    }
   },
+  "/api/sessions/{session_id}/inputs": {
+   "post": {
+    "description": "Send a session's root agent a line, a stop or a slash line.\n\nArgs:\n  session_id: The session whose agent process takes it.\n  body: What to send.\n  request: Request carrying the relay.\n  identity: Whoever may send the session an input.\n\nReturns:\n  sent: The id the input's effect is told back under.\n\nRaises:\n  HTTPException: 501 until the relay is built.",
+    "operationId": "send_input_route_api_sessions__session_id__inputs_post",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/NewInput"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/InputSent"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Send Input Route"
+   }
+  },
+  "/api/sessions/{session_id}/lines": {
+   "get": {
+    "description": "Stream a session's lines to a viewer as server-sent frames.\n\nEach frame is ``data: <json>``, one :data:`ViewerFrame` told apart by its\n``type``: an ``Opened`` first, then each line as it arrives.\n\nArgs:\n  session_id: The session to watch.\n  request: Request carrying the relay.\n  identity: A viewer who may read the session.\n\nReturns:\n  stream: Server-sent frames.\n\nRaises:\n  HTTPException: 501 until the relay is built.",
+    "operationId": "session_lines_route_api_sessions__session_id__lines_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/ViewerFrame"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Session Lines Route"
+   }
+  },
   "/api/sessions/{session_id}/parts": {
    "get": {
     "description": "List the files this session was captured from, in ``part`` order.\n\nArgs:\n  session_id: AgentSession ID to list parts from.\n  request: FastAPI request (carries auth and store).\n  identity: Authenticated reader.\n  asker: The account the configured assistant reads for.\n  chat: The conversation the configured assistant reads into.\n\nReturns:\n  result: ReadPartsResponse with manifest info for each part.",
@@ -18431,6 +18929,151 @@
      }
     },
     "summary": "Read Session Parts Route"
+   }
+  },
+  "/api/sessions/{session_id}/process": {
+   "delete": {
+    "description": "Stop a session's agent process.\n\nArgs:\n  session_id: The session.\n  request: Request carrying the relay.\n  identity: The session's account.\n\nReturns:\n  process: The process, ``detached``; ``None`` for a session that has had none.\n\nRaises:\n  HTTPException: 501 until the relay is built.",
+    "operationId": "stop_process_route_api_sessions__session_id__process_delete",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/AgentProcess"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "title": "Response Stop Process Route Api Sessions  Session Id  Process Delete"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Stop Process Route"
+   },
+   "get": {
+    "description": "Return the agent process serving a session, or the last that did.\n\nArgs:\n  session_id: The session.\n  request: Request carrying the relay.\n  identity: A viewer who may read the session.\n\nReturns:\n  process: The process; ``None`` for a session that has had none.\n\nRaises:\n  HTTPException: 501 until the relay is built.",
+    "operationId": "read_process_route_api_sessions__session_id__process_get",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "anyOf": [
+          {
+           "$ref": "#/components/schemas/AgentProcess"
+          },
+          {
+           "type": "null"
+          }
+         ],
+         "title": "Response Read Process Route Api Sessions  Session Id  Process Get"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Read Process Route"
+   },
+   "put": {
+    "description": "Bring up a session's agent process: on any host, with any host's login.\n\nArgs:\n  session_id: The session to serve.\n  body: The agent's host, its login's host, and the agent's flags.\n  request: Request carrying the relay.\n  identity: The session's account.\n\nReturns:\n  process: The process, ``starting``; the one already serving when there is one.\n\nRaises:\n  HTTPException: 501 until the relay is built.",
+    "operationId": "start_process_route_api_sessions__session_id__process_put",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "session_id",
+      "required": true,
+      "schema": {
+       "format": "uuid",
+       "title": "Session Id",
+       "type": "string"
+      }
+     }
+    ],
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/ProcessSpec"
+       }
+      }
+     },
+     "required": true
+    },
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/AgentProcess"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Start Process Route"
    }
   },
   "/api/sessions/{session_id}/records": {

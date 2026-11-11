@@ -39,6 +39,7 @@ from trackinizer.server.api._deps import (
     get_relay,
     get_replays,
     get_secrets,
+    get_session_relay,
     get_staff,
     get_store,
     get_terminal_relay,
@@ -57,6 +58,7 @@ from trackinizer.server.api._deps import (
 from trackinizer.server.api.tool_access import ToolAccess
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.terminals import Terminal, TerminalRelay
 from trackinizer.server.tool_lines import ResultIds
 from trackinizer.server.tool_relay import (
@@ -281,6 +283,20 @@ def test_get_relay_makes_one_relay_and_keeps_it() -> None:
     relay = get_relay(_request(app))
 
     assert get_relay(_request(app)) is relay
+
+
+def test_get_session_relay_makes_one_relay_keeps_it_and_replaces_a_stranger() -> None:
+    app = FastAPI()
+
+    relay = get_session_relay(_request(app))
+    kept = get_session_relay(_request(app))
+    app.state.session_relay = object()
+    replaced = get_session_relay(_request(app))
+
+    assert type(relay) is SessionRelay
+    assert kept is relay
+    assert type(replaced) is SessionRelay
+    assert replaced is not relay
 
 
 def test_get_secrets_is_the_apps_backend_or_none() -> None:
