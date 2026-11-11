@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlsplit
 
 import asyncio
+import gc
 import hashlib
 import io
 import json
@@ -142,13 +143,13 @@ async def test_a_stopped_engine_leaves_no_socket_directory(tmp_path: Path) -> No
 
 
 # Each test boots no Node: the start runs up to the config and the claim.
+# Patched on the class: a patch on an instance keeps it alive to teardown.
 def _boot_without_node(
-    engine: PGliteEngine,
     monkeypatch: pytest.MonkeyPatch,
     *,
     scratch: Path,
 ) -> list[PGliteConfig]:
-    """Stub every process ``engine`` would start; return the configs it builds."""
+    """Stub every process an engine would start; return the configs it builds."""
     configs: list[PGliteConfig] = []
 
     def make_manager(config: PGliteConfig) -> MagicMock:
@@ -164,7 +165,11 @@ def _boot_without_node(
     monkeypatch.setattr(substrate, "_release_boot_slot", MagicMock())
     monkeypatch.setattr(substrate, "_start_node", MagicMock())
     monkeypatch.setattr(substrate, "_stop_node", MagicMock())
-    monkeypatch.setattr(engine, "_open_conn", AsyncMock(return_value=_make_conn()))
+    monkeypatch.setattr(
+        PGliteEngine,
+        "_open_conn",
+        AsyncMock(return_value=_make_conn()),
+    )
     return configs
 
 
@@ -176,7 +181,7 @@ async def test_a_socket_fits_sun_path_under_macos_default_temp_dir(
     """MacOS's default temp dir is ~49 bytes; ``sun_path`` holds 103."""
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
     scratch = tmp_path / "tmp"
-    configs = _boot_without_node(engine, monkeypatch, scratch=scratch)
+    configs = _boot_without_node(monkeypatch, scratch=scratch)
 
     async with engine:
         (config,) = configs
@@ -193,7 +198,7 @@ async def test_a_start_that_raises_unretried_releases_its_socket_claim(
     """``__aexit__`` never runs after a failed ``__aenter__``."""
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
     scratch = tmp_path / "tmp"
-    _boot_without_node(engine, monkeypatch, scratch=scratch)
+    _boot_without_node(monkeypatch, scratch=scratch)
     unretried = ValueError("not a boot fault")
     monkeypatch.setattr(substrate, "_start_node", MagicMock(side_effect=unretried))
 
@@ -210,11 +215,29 @@ async def test_exit_releases_the_socket_claim_without_shutdown(
 ) -> None:
     engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
     scratch = tmp_path / "tmp"
-    _boot_without_node(engine, monkeypatch, scratch=scratch)
+    _boot_without_node(monkeypatch, scratch=scratch)
     monkeypatch.setattr(engine, "_shutdown", AsyncMock())
 
     async with engine:
         assert len(list(scratch.iterdir())) == 2
+
+    assert list(scratch.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_an_engine_dropped_unexited_releases_its_socket_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A claim held for an engine nothing exits goes with the engine."""
+    engine = PGliteEngine(workdir=tmp_path / "pg", extensions=())
+    scratch = tmp_path / "tmp"
+    _boot_without_node(monkeypatch, scratch=scratch)
+    await engine._start_once(tmp_path)
+    assert len(list(scratch.iterdir())) == 2
+
+    del engine
+    gc.collect()
 
     assert list(scratch.iterdir()) == []
 
@@ -1965,8 +1988,11 @@ async def test_a_start_cancelled_while_its_child_fails_still_reaps_it(
 
     monkeypatch.setattr(substrate, "_start_node", start)
     monkeypatch.setattr(substrate, "_link_shared_node_modules", MagicMock())
+    scratch = tmp_path / "tmp"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
     engine = PGliteEngine(workdir=tmp_path, extensions=())
-    shutdown = AsyncMock()
+    shutdown = AsyncMock(wraps=engine._shutdown)
     monkeypatch.setattr(engine, "_shutdown", shutdown)
     task = asyncio.create_task(engine._start_once(tmp_path))
     try:
@@ -1980,6 +2006,7 @@ async def test_a_start_cancelled_while_its_child_fails_still_reaps_it(
         await task
 
     shutdown.assert_awaited_once_with()
+    assert list(scratch.iterdir()) == []
 
 
 def test_npm_ci_installs_the_vendored_lockfile_whole(
