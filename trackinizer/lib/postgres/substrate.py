@@ -16,7 +16,7 @@ NOTIFY; PostgresEngine bridges the dedicated listener into the same bus).
 
 from __future__ import annotations
 
-from contextlib import AbstractAsyncContextManager, suppress
+from contextlib import AbstractAsyncContextManager, ExitStack, suppress
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
@@ -30,6 +30,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -40,6 +41,7 @@ from py_pglite import PGliteConfig, PGliteManager
 
 import asyncpg
 
+from trackinizer.lib.files import tempclaim
 from trackinizer.lib.userdirs import cache_dir
 
 
@@ -227,14 +229,22 @@ class PGliteEngine:
         # (mitigated by the boot retry in ``_start_with_retries``).
         self._use_tcp = use_tcp
         self._manager: PGliteManager | None = None
-        self._socket_path: Path | None = None
+        self._sockets = ExitStack()
         self._conn: asyncpg.Connection[asyncpg.Record] | None = None
         self._lock = asyncio.Lock()
         self._bus = _LocalBus()
 
     async def __aenter__(self) -> Self:
         """Start PGlite and open one persistent asyncpg connection."""
-        await self._start_with_retries()
+        try:
+            await self._start_with_retries()
+        except BaseException:
+            # ``__aexit__`` does not run when ``__aenter__`` raises (PEP 343).
+            try:
+                await self._shutdown()
+            finally:
+                await asyncio.to_thread(self._sockets.close)
+            raise
         return self
 
     # The PGlite listener is a per-engine Unix socket (unique path), so there is no port
@@ -282,11 +292,26 @@ class PGliteEngine:
 
     # Concurrency: ``pglite_manager.js`` is rewritten in place under ``workdir``; each
     # engine must own its own ``workdir`` (not guarded with a lock). In Unix-socket mode
-    # (default) the listener path is unique per engine (py-pglite bakes PID+UUID in), so
-    # two engines never contend. In TCP mode the port is picked free per attempt and the
-    # boot retry covers a lost ephemeral-port race.
+    # (default) the listener path is unique per start attempt (a fresh claimed
+    # directory), so two engines never contend. In TCP mode the port is picked free per
+    # attempt and the boot retry covers a lost ephemeral-port race.
+    #
+    # Every ``PGliteConfig`` gets an explicit ``socket_path``, in TCP mode too: the
+    # field's default factory makes a ``py-pglite-*`` directory in the temp dir that
+    # nothing removes, one per start. The claim instead goes with ``_shutdown`` and
+    # ``__aexit__``, and a killed process's claim is swept by the next one. Not under
+    # ``workdir``: a pytest ``tmp_path`` there overruns the 103-byte ``sun_path`` on
+    # macOS. Twelve hex digits keep its own default temp dir (~49 bytes) in bounds.
     async def _start_once(self, workdir: Path) -> None:
         """One PGlite start attempt; raises on startup or connect failure."""
+        sockets = self._sockets.enter_context(
+            tempclaim.claimed_directory(
+                Path(tempfile.gettempdir()),
+                prefix="pgl-",
+                id_length=12,
+            ),
+        )
+        socket_path = str(sockets / ".s.PGSQL.5432")
         if self._use_tcp:
             # TCP (opt-in): pick a free ephemeral port. Best-effort -- the kernel
             # may hand it to another process between our close and the Node's
@@ -296,6 +321,7 @@ class PGliteEngine:
                 work_dir=workdir,
                 use_tcp=True,
                 tcp_port=port,
+                socket_path=socket_path,
                 extensions=self._extensions,
                 log_level="ERROR",
                 timeout=10,
@@ -307,11 +333,12 @@ class PGliteEngine:
             # by construction.
             config = PGliteConfig(
                 work_dir=workdir,
+                socket_path=socket_path,
                 extensions=self._extensions,
                 log_level="ERROR",
                 timeout=10,
             )
-            listen = {"path": config.socket_path}
+            listen = {"path": socket_path}
         data_dir = workdir / PGLITE_DATA_DIRNAME if self._persist else None
         new = data_dir is None or not data_dir.exists()
         seed = _template(self._cache, self._extensions) if new else None
@@ -330,7 +357,6 @@ class PGliteEngine:
         # Symlink the shared node_modules so py-pglite skips its per-workdir
         # ``npm install`` (a ~20 MB install per fresh tmp dir otherwise).
         await asyncio.to_thread(_link_shared_node_modules, workdir, self._cache)
-        self._socket_path = None if config.use_tcp else Path(config.socket_path)
         self._manager = PGliteManager(config)
         start = asyncio.create_task(
             asyncio.to_thread(
@@ -359,26 +385,29 @@ class PGliteEngine:
     # client socket is the correct boundary here: the Node process is stopped
     # immediately afterwards and owns durable flushes.
     async def _shutdown(self) -> None:
-        """Terminate the asyncpg connection then stop the Node subprocess."""
+        """Terminate the connection, stop the Node subprocess, release its socket."""
         if self._conn is not None:
             self._conn.terminate()
             self._conn = None
-        if self._manager is not None:
-            proc = self._manager.process
-            try:
-                await asyncio.to_thread(_stop_node, self._manager)
-            finally:
-                if proc is not None and proc.stdout is not None:
-                    proc.stdout.close()
-                self._manager = None
-                if self._socket_path is not None:
-                    self._socket_path.unlink(missing_ok=True)
-                    self._socket_path = None
+        try:
+            if self._manager is not None:
+                proc = self._manager.process
+                try:
+                    await asyncio.to_thread(_stop_node, self._manager)
+                finally:
+                    if proc is not None and proc.stdout is not None:
+                        proc.stdout.close()
+                    self._manager = None
+        finally:
+            await asyncio.to_thread(self._sockets.close)
 
     async def __aexit__(self, *exc: object) -> None:
         """Close the connection, stop Node, and discard an owned scratch workdir."""
         del exc
-        await self._shutdown()
+        try:
+            await self._shutdown()
+        finally:
+            await asyncio.to_thread(self._sockets.close)
         if self._own_workdir:
             # Engine-owned ephemeral scratch: remove the whole directory now,
             # inside the graceful (SIGTERM) shutdown, since ``atexit`` would not
