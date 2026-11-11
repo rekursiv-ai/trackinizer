@@ -359,6 +359,9 @@ async def test_supervise_restarts_a_crashed_service_until_it_finishes(
     assert attempts == [0, 1, 2]
     messages = [record.getMessage() for record in caplog.records]
     assert sum("crashed" in message for message in messages) == 2
+    # Each attempt says it began: what a box check reads as the service being up.
+    assert messages.count("addon service test.flaky started") == 3
+    assert messages[0] == "addon service test.flaky started"
     assert messages[-1] == "addon service test.flaky finished"
 
 

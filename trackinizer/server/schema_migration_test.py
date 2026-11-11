@@ -43,7 +43,7 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from trackinizer.conftest import restore_pglite, savepoint
+from trackinizer.conftest import restore, savepoint
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import tx
 from trackinizer.server.preferences import stored_preferences
@@ -1940,7 +1940,7 @@ async def fresh_install(
     Every build is the same bootstrap of the same files, so one read serves the session.
     """
     engine = await pglite_engine_cache.get(pglite_extensions)
-    await restore_pglite(engine)
+    await restore(engine)
     async with engine.acquire() as conn:
         return await _catalog_names_aside(conn)
 
