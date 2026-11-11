@@ -41,7 +41,7 @@ _ROUTES: Final[tuple[tuple[str, str, dict[str, object] | None], ...]] = (
     ("POST", SESSION_INPUTS_PATH, {"kind": "Halt", "payload": {}}),
     ("PUT", SESSION_PROCESS_PATH, {"host": "lab-box"}),
     ("PUT", SESSION_PROCESS_PATH, {}),
-    ("PUT", SESSION_PROCESS_PATH, {"host": "lab-box", "login": "laptop"}),
+    ("PUT", SESSION_PROCESS_PATH, {"host": "lab-box", "login_host": "laptop"}),
     ("GET", SESSION_PROCESS_PATH, None),
     ("DELETE", SESSION_PROCESS_PATH, None),
 )

@@ -60,10 +60,10 @@ Typical usage example:
 
 from __future__ import annotations
 
-from typing import Annotated, Final, Literal
-from uuid import UUID
+from typing import Annotated, Final, Literal, Self
+from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
 from trackinizer.wire.wire_session_ir import RecordBody
@@ -209,7 +209,7 @@ class AgentProcess(BaseModel):
     host: str
     """The name of the host it runs on."""
 
-    login: str = ""
+    login_host: str = ""
     """The name of the host whose login makes its model calls; empty for its own."""
 
     state: Literal["starting", "attached", "detached"]
@@ -330,22 +330,36 @@ type ProcessFrame = Annotated[
 """One frame an agent process sends: a :class:`Hello` first, then its lines."""
 
 
-class NewInput(BaseModel):
-    """What a person posts for the session's root agent."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    kind: InputKind
-    payload: JSON
-    """That sagent message in the events' codec; for ``Command``, a :class:`Command`."""
-
-
 class Command(BaseModel):
     """What a ``Command`` input carries: one slash line, as typed at the agent's prompt."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    line: str = Field(min_length=1)
+    line: str = Field(pattern="^/")
+    """It starts with ``/``: the agent's prompt takes any other line for a user's own
+    message, which names no sender."""
+
+
+class NewInput(BaseModel):
+    """What a person posts for the session's root agent."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: UUID = Field(default_factory=uuid4)
+    """The sender's own id for it, which the answer and the line it is stored as
+    repeat, so a sender whose answer is lost still knows it; a fresh one when the
+    body names none."""
+
+    kind: InputKind
+    payload: JSON
+    """That sagent message in the events' codec; for ``Command``, a :class:`Command`."""
+
+    @model_validator(mode="after")
+    def _a_command_is_a_slash_line(self) -> Self:
+        """Refuse a ``Command`` whose payload is not one slash line."""
+        if self.kind == "Command":
+            _ = Command.model_validate(self.payload)
+        return self
 
 
 class InputSent(BaseModel):
@@ -383,7 +397,7 @@ class ProcessSpec(BaseModel):
     """The name of the host the agent runs on; empty for the one the server runs
     agents on."""
 
-    login: str = ""
+    login_host: str = ""
     """The name of the host whose model login the agent uses, and which sends its
     model calls; empty for the agent's own host."""
 
