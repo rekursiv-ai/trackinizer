@@ -15,6 +15,7 @@ from trackinizer.server.api.tool_access import tool_access
 from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.config import Config
 from trackinizer.server.host_changes import HostChanges
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.terminals import Terminal, TerminalRelay
 from trackinizer.server.tool_relay import ToolConnection, ToolRelay
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
@@ -258,6 +259,23 @@ def get_relay(request: Request) -> CaptureRelay:
     relay: object = getattr(app.state, "relay", None)
     if not isinstance(relay, CaptureRelay):
         relay = app.state.relay = CaptureRelay()
+    return relay
+
+
+def get_session_relay(request: HTTPConnection) -> SessionRelay:
+    """Return the live-session relay held on the app state, made on first use.
+
+    Args:
+      request: Request or websocket.
+
+    Returns:
+      result: The relay.
+
+    """
+    app = cast("FastAPI", request.app)
+    relay = cast(object, getattr(app.state, "session_relay", None))
+    if not isinstance(relay, SessionRelay):
+        relay = app.state.session_relay = SessionRelay()
     return relay
 
 

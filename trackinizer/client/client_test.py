@@ -1549,7 +1549,8 @@ class TestClientMethods:
 # shared fake carries none of them. No ``trax`` command files code, so it holds no
 # code-store method either. The canvas capture is an agent's alone, and no command takes one.
 # The tool and exec waits are a daemon's, which no ``trax`` command is, and
-# ``client/client_exec_test.py`` drives them.
+# ``client/client_exec_test.py`` drives them. The session relay's calls are an agent
+# process's and a daemon's, and ``client/client_session_relay_test.py`` drives those.
 _FAKE_EXEMPT: frozenset[str] = frozenset(
     {"flags", "from_args", "get", "post", "put", "patch", "delete"}
     | {"list_variables", "put_variable", "delete_variable"}
@@ -1559,6 +1560,8 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"host_runs", "stop_host_run", "disconnect_host", "logout_host"}
     | {"wait_terminals", "hosts_version"}
     | {"wait_tools", "wait_exec", "post_exec_result"}
+    | {"start_process", "read_process", "stop_process", "send_input"}
+    | {"open_lines", "wait_session", "report_process_ended"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
     | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
     | {"job_put_secret", "job_delete_secret"}
