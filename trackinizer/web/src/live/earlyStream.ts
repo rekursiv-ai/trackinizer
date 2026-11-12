@@ -35,6 +35,15 @@ export function openEarlyStream(): void {
 }
 
 /**
+ * Close the stream main.tsx opened, for a page whose live layer will not take
+ * it: one that shows `AccountChanged` in place of the app.
+ */
+export function closeEarlyStream(): void {
+  early?.close();
+  early = null;
+}
+
+/**
  * Hand the live stream to `listener`: the one main.tsx opened, the first time;
  * otherwise a stream of its own, as in a remount. Returns the function that
  * closes it.

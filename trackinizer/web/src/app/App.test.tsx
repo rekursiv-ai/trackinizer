@@ -2,10 +2,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { Profiler } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
+import { SIGNED_IN_KEY } from "../api/signedIn";
 import { stubFetch } from "../api/testing";
 import { logRenderError } from "../debug/install";
 import { recentEvents } from "../debug/log";
 import { stubClipboard } from "../debug/testing";
+import { openEarlyStream } from "../live/earlyStream";
 import { FakeEventSource } from "../live/testing";
 import { ActivityView, GraphView, SearchView } from "../router/views";
 import { App } from "./App";
@@ -307,4 +309,96 @@ test("a link straight to the create form opens it over the graph, the home view"
   // Hidden from the accessibility tree once the form's dialog has opened over it.
   expect((await screen.findByRole("heading", { level: 1, hidden: true })).textContent).toBe("Graph");
   expect(currentRoute()).toBe("#/new/Issue");
+});
+
+/** Ada, whose this tab is, and Sam, whom another tab of the same browser signs in as. */
+const ADA = "ada@example.com";
+const SAM = "sam@example.com";
+
+/**
+ * A site this tab and another share one session with, Ada's until the other tab signs in as Sam (`session.email`):
+ * it answers that account's profile, and refuses a request from a page read as another account, 409, as the server
+ * does (`auth.py`).
+ */
+function sharedSession() {
+  const session = { email: ADA };
+  const sent = stubFetch((request) => {
+    const path = new URL(request.url).pathname;
+    const page = request.headers.get("X-Page-Account");
+    if (page !== null && page !== session.email) {
+      return Response.json({ detail: { code: "other_account", message: `This page was read as ${page}.` } }, { status: 409 });
+    }
+    if (path === "/api/me/profile") return Response.json({ ...BODIES[path] as object, email: session.email });
+    return Response.json(BODIES[path] ?? {});
+  });
+  return { session, sent };
+}
+
+/** Another tab signs the browser in as `email`, or out with "", which it says in this browser's storage. */
+function anotherTabSays(email: string) {
+  localStorage.setItem(SIGNED_IN_KEY, email);
+  dispatchEvent(new StorageEvent("storage", { key: SIGNED_IN_KEY, newValue: email }));
+}
+
+test("a tab left open as Ada stops showing her once another tab signs the browser in as Sam, and Reload reloads", async () => {
+  const { session, sent } = sharedSession();
+  const reload = vi.fn();
+  render(<App assign={vi.fn()} reload={reload} />);
+  await screen.findByRole("group", { name: "Signed in" });
+  const before = sent.length;
+  act(() => {
+    session.email = SAM;
+    anotherTabSays(SAM);
+  });
+  expect(screen.getByRole("heading", { name: "Signed in as another account" })).toBeTruthy();
+  expect(screen.getByRole("alert").textContent)
+    .toBe(`This tab was opened as ${ADA}, and this browser is signed in as ${SAM} now. Nothing more is sent from it.`);
+  expect(screen.queryByRole("group", { name: "Signed in" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+  expect(reload).toHaveBeenCalledOnce();
+  expect(sent.slice(before)).toEqual([]);
+});
+
+test("a tab left open as Ada says so once another tab signs the browser out", async () => {
+  sharedSession();
+  render(<App assign={vi.fn()} />);
+  await screen.findByRole("group", { name: "Signed in" });
+  act(() => anotherTabSays(""));
+  expect(screen.getByRole("heading", { name: "No longer signed in" })).toBeTruthy();
+  expect(screen.getByRole("alert").textContent)
+    .toBe(`This tab was opened as ${ADA}, and this browser is no longer signed in as it. Nothing more is sent from it.`);
+});
+
+test("a read from a tab left open as Ada, before any tab says the browser is Sam's, is refused and shows the notice", async () => {
+  const { session, sent } = sharedSession();
+  render(<App assign={vi.fn()} />);
+  const user = userEvent.setup();
+  await screen.findByRole("group", { name: "Signed in" });
+  // The other tab's word has not come, as when the browser signed in where no tab of the app booted.
+  session.email = SAM;
+  await user.click(sidebar().getByRole("link", { name: "Issues" }));
+  expect(await screen.findByRole("heading", { name: "No longer signed in" })).toBeTruthy();
+  const after = sent.filter(({ path }) => path !== "/api/me/profile" && !(path in BODIES));
+  expect(after.length).toBeGreaterThan(0);
+  expect(new Set(after.map(({ headers }) => headers["x-page-account"]))).toEqual(new Set([ADA]));
+});
+
+test("a tab whose browser signs in as Sam before its shell mounts closes the stream main.tsx opened", async () => {
+  localStorage.clear();
+  FakeEventSource.reset();
+  openEarlyStream();
+  const early = FakeEventSource.last;
+  // One boot read never lands, so the live layer, which would take the stream, has not mounted yet.
+  stubFetch((request) => {
+    const path = new URL(request.url).pathname;
+    return path === "/api/meta/edges" ? new Promise<Response>(() => {}) : Response.json(BODIES[path]);
+  });
+  render(<App assign={vi.fn()} />);
+  await waitFor(() => expect(localStorage.getItem(SIGNED_IN_KEY)).toBe(ADA));
+  act(() => anotherTabSays(SAM));
+  expect(screen.getByRole("heading", { name: "Signed in as another account" })).toBeTruthy();
+  expect(early.readyState).toBe(2);
+  // Open, it would reconnect as the browser dropped it, naming Ada, and be refused for good.
+  early.drop();
+  expect(FakeEventSource.made).toEqual([early]);
 });

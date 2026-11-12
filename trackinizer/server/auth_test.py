@@ -43,6 +43,7 @@ from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
     PAGE_ACCOUNT_HEADER,
+    PAGE_USER_PARAM,
     TOKEN_PREFIX_LEN,
     AudienceCeilingError,
     AuthIdentity,
@@ -298,6 +299,7 @@ def _request_with(
     method: str = "GET",
     origin: str | None = None,
     page_account: str | None = None,
+    page_user: str | None = None,
 ) -> Request:
     """Build a fake :class:`fastapi.Request` carrying its headers + the engine."""
     request = MagicMock()
@@ -320,6 +322,8 @@ def _request_with(
     if page_account is not None:
         headers[PAGE_ACCOUNT_HEADER] = page_account
     request.headers = headers
+    query: dict[str, str] = {} if page_user is None else {PAGE_USER_PARAM: page_user}
+    request.query_params = query
     request.cookies = cookies or {}
     return cast(Request, request)
 
@@ -1068,9 +1072,11 @@ async def _session_identity(
     hosted_domain: str | None = None,
     staff: tuple[str, ...] = (),
     page_account: str | None = None,
+    page_user: str | None = None,
+    user_id: uuid.UUID | None = None,
 ) -> AuthIdentity:
     """Resolve a signed session cookie for a canned active ``users`` row."""
-    user_id = uuid.uuid4()
+    user_id = uuid.uuid4() if user_id is None else user_id
     signing_key = "session-signing-x"
     engine = FakeEngine()
     engine.conn.fetchrow = AsyncMock(
@@ -1089,6 +1095,7 @@ async def _session_identity(
             cookies={SESSION_COOKIE_NAME: _session_cookie_value(user_id, signing_key)},
             config=replace(_config_with_session_secret(signing_key), staff=staff),
             page_account=page_account,
+            page_user=page_user,
         ),
     )
 
@@ -1147,8 +1154,16 @@ class TestPageAccount:
         }
 
     @pytest.mark.asyncio
-    async def test_a_bearer_is_not_a_page(self) -> None:
-        """A token names its own account: the header is a browser page's alone."""
+    @pytest.mark.parametrize(
+        ("page_account", "page_user"),
+        [("ada@example.com", None), (None, str(uuid.UUID(int=7)))],
+    )
+    async def test_a_bearer_is_not_a_page(
+        self,
+        page_account: str | None,
+        page_user: str | None,
+    ) -> None:
+        """A token names its own account: the header and ``page_user`` are a page's."""
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [
@@ -1157,9 +1172,37 @@ class TestPageAccount:
         request = _request_with(
             engine,
             f"Bearer {secret}",
-            page_account="ada@example.com",
+            page_account=page_account,
+            page_user=page_user,
         )
         assert (await current_user(request)).email == "sam@example.com"
+
+    @pytest.mark.asyncio
+    async def test_a_stream_of_the_signed_in_user_passes(self) -> None:
+        """A stream names its page's user by id, as an ``EventSource`` sends no header."""
+        user_id = uuid.uuid4()
+        identity = await _session_identity(
+            email="ada@example.com",
+            user_id=user_id,
+            page_user=str(user_id),
+        )
+        assert identity.user_id == user_id
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("page_user", [str(uuid.UUID(int=7)), "not-an-id"])
+    async def test_a_stream_of_another_user_is_refused_with_409(
+        self,
+        page_user: str,
+    ) -> None:
+        with pytest.raises(HTTPException) as refused:
+            await _session_identity(email="sam@example.com", page_user=page_user)
+        assert refused.value.status_code == 409
+        assert refused.value.detail == {
+            "code": "other_account",
+            "message": "Nothing was sent: this page was read as another account, "
+            "and you are signed in as sam@example.com now. Reload it to see "
+            "sam@example.com's.",
+        }
 
 
 # ---- service accounts -----------------------------------------------------

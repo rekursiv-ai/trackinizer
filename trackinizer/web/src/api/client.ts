@@ -2,6 +2,7 @@ import createClient from "openapi-fetch";
 import { type Fields, log } from "../debug/log";
 import type { paths } from "./generated/schema";
 import { newUuid } from "./idempotency";
+import { PAGE_ACCOUNT_HEADER, pageAccount, refused } from "./signedIn";
 
 /** How long a request may take before it fails as a timeout, by kind of request. */
 export const TIMEOUT_MS = { read: 15_000, search: 6_000, write: 30_000 } as const;
@@ -14,6 +15,9 @@ export type CallOptions = {
 
 /**
  * The one typed client the API modules call through. Nothing else calls `fetch`.
+ *
+ * Each request names the account its page was read as (`signedIn.ts`), once the profile is read: the server refuses
+ * it, 409, once the browser is signed in as another account, so a tab left open across a switch acts as nobody.
  *
  * `tsc` checks every call's path, verb, parameters and body against the server's
  * schema (`openapi.json`, dumped by `scripts/openapi_dump.py`).
@@ -32,6 +36,8 @@ client.use({
   // hook is openapi-fetch's documented way to add a header to every call.
   onRequest({ request }) {
     request.headers.set("X-Request-ID", newUuid());
+    const account = pageAccount();
+    if (account !== null) request.headers.set(PAGE_ACCOUNT_HEADER, account);
   },
   // `send` sees only the response or the error, so each is mapped to its
   // request, for the failure's id, method and path.
@@ -144,7 +150,12 @@ export async function send<T>(
     clearTimeout(timer);
   }
   const sent = requestOf(result.response);
-  if (!result.response.ok && !redirectNotFollowed(result.response)) throw failed(apiError(result.response, result.error), sent, started);
+  if (!result.response.ok && !redirectNotFollowed(result.response)) {
+    const error = apiError(result.response, result.error);
+    // The browser signed in as another account than the page's: every view of it goes, not this request's alone.
+    if (error.code === "other_account") refused();
+    throw failed(error, sent, started);
+  }
   if (sent) {
     failing.delete(attemptKey(sent));
     log("debug", "request", { method: sent.method, path: pathOf(sent), status: result.response.status, ms: sinceMs(started), request_id: idOf(sent) });
