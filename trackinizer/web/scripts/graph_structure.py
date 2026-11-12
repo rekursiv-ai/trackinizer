@@ -43,7 +43,7 @@ from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.web.scripts.mirror_local import ReadOnlySource, source_token
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -127,7 +127,13 @@ def scrub(graph: Mapping[str, object]) -> Structure:
 
     """
     rows = sorted(
-        enumerate(from_plain(graph.get("nodes"), list[dict[str, object]], default=[])),
+        enumerate(
+            from_plain(
+                graph.get("nodes"),
+                list[dict[str, object]],
+                default=list[dict[str, object]](),
+            ),
+        ),
         key=lambda row: (from_plain(row[1].get("created"), str, default=""), row[0]),
     )
     index = {
@@ -152,7 +158,7 @@ def scrub(graph: Mapping[str, object]) -> Structure:
                 for edge in from_plain(
                     graph.get("edges"),
                     list[dict[str, object]],
-                    default=[],
+                    default=list[dict[str, object]](),
                 )
             ),
             key=lambda link: (link.to_index, link.from_index, link.kind),
@@ -209,9 +215,9 @@ def load(text: str) -> Structure:
 
     """
     columns = json_loads(text, dict[str, object])
-    kinds = from_plain(columns.get("kinds"), list[str], default=[])
-    statuses = from_plain(columns.get("statuses"), list[str], default=[])
-    edge_kinds = from_plain(columns.get("edge_kinds"), list[str], default=[])
+    kinds = from_plain(columns.get("kinds"), list[str], default=list[str]())
+    statuses = from_plain(columns.get("statuses"), list[str], default=list[str]())
+    edge_kinds = from_plain(columns.get("edge_kinds"), list[str], default=list[str]())
     nodes = tuple(
         Node(
             kind=_known(_at(kinds, kind, of="kinds"), _KINDS),

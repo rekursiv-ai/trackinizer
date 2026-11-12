@@ -49,7 +49,7 @@ from trackinizer.wire.filters import FILTER_OPS
 from trackinizer.wire.refs import SeqRef, UuidRef
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _EXAMPLE_PATTERN = re.compile(
     r"^```trax\n(.*?)^```$",

@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from trackinizer.inquiry_readers_test_support import Class
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _READERS: Final[dict[str, tuple[Class, str]]] = {
     "server/access_policy.py": ("policy", "inquiry_read_filter: the filter itself"),

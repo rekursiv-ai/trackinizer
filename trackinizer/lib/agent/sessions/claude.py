@@ -334,7 +334,7 @@ def _stated_cwd(records: Sequence[SessionRecord]) -> str:
             payload = from_plain(
                 record.extra.get("payload"),
                 dict[str, object],
-                default={},
+                default=dict[str, object](),
             )
             stated = payload.get("cwd")
             if isinstance(stated, str):
@@ -483,8 +483,16 @@ class _Emitter:
         call = self._calls.get(record.call_id)
         if call is None:
             return
-        message = from_plain(call.get("message"), dict[str, object], default={})
-        content = from_plain(message.get("content"), list[object], default=[])
+        message = from_plain(
+            call.get("message"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        content = from_plain(
+            message.get("content"),
+            list[object],
+            default=list[object](),
+        )
         for block in (
             cast(dict[str, object], value)
             for value in content
@@ -498,7 +506,11 @@ class _Emitter:
                 or (from_plain(block.get("id"), str, default="")) != record.call_id
             ):
                 continue
-            arguments = from_plain(block.get("input"), dict[str, object], default={})
+            arguments = from_plain(
+                block.get("input"),
+                dict[str, object],
+                default=dict[str, object](),
+            )
             command = arguments.get("command")
             if not isinstance(command, str):
                 continue
@@ -628,8 +640,8 @@ def _stored(
     fallback: Sequence[str],
 ) -> tuple[Sequence[str], dict[str, MutablePlainTree]]:
     """Return source key order and replay state without mutating ``extra``."""
-    trailing = set(from_plain(extra.get("$trailing"), list[str], default=[]))
-    stored = from_plain(extra.get("$keys"), list[str], default=[])
+    trailing = set(from_plain(extra.get("$trailing"), list[str], default=list[str]()))
+    stored = from_plain(extra.get("$keys"), list[str], default=list[str]())
     replay_extra = {key: value for key, value in extra.items() if key != "$keys"}
     if stored:
         replay_extra["$source_order"] = True
@@ -651,8 +663,8 @@ def _splice(
     # the line's keys, so it never reaches the output -- unless it is a line's
     # own ``$`` key, which the reader escaped as ``$wire$``. A kept key is one
     # of the two, so dropping the escape leaves an unescaped key as it was.
-    trailing = set(from_plain(extra.get("$trailing"), list[str], default=[]))
-    nulls = set(from_plain(extra.get("$nulls"), list[str], default=[]))
+    trailing = set(from_plain(extra.get("$trailing"), list[str], default=list[str]()))
+    nulls = set(from_plain(extra.get("$nulls"), list[str], default=list[str]()))
     keys = {
         key.removeprefix("$wire"): value
         for key, value in extra.items()
@@ -679,7 +691,7 @@ def _splice(
             record[key] = extra[f"${key}"]
         elif key in settings:
             record[key] = settings[key]
-    for key in from_plain(extra.get("$trailing"), list[str], default=[]):
+    for key in from_plain(extra.get("$trailing"), list[str], default=list[str]()):
         if key in extra:
             # A wire ``$`` key is stored ``$wire$...``, so no other key starts so.
             record[key.removeprefix("$wire")] = extra[key]
@@ -791,9 +803,13 @@ def _is_image(block: Mapping[str, object]) -> bool:
     """Whether a stencil or a whole block describes an inline image."""
     if _read_attachment(block) is not None:
         return True
-    source = from_plain(block.get("source"), dict[str, object], default={})
+    source = from_plain(
+        block.get("source"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     return block.get("type") == "image" and bool(
-        from_plain(source.get("$held"), list[str], default=[]),
+        from_plain(source.get("$held"), list[str], default=list[str]()),
     )
 
 
@@ -804,7 +820,11 @@ def _write_attachment_shape(
     """Replay one image's field presence and key order."""
     if attachment is None:
         return _bare(block)
-    source = from_plain(block.get("source"), dict[str, object], default={})
+    source = from_plain(
+        block.get("source"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     if _restored(source, "data"):
         source = _replace_key(
             source,
@@ -855,7 +875,11 @@ def _user_stencil(
     if block.get("type") == "tool_result":
         return _stencil(block, "content")
     if attachment is not None:
-        source = from_plain(block.get("source"), dict[str, object], default={})
+        source = from_plain(
+            block.get("source"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         return _stencil(block, "text") | {
             "source": _stencil(source, "data", "media_type"),
         }
@@ -910,7 +934,7 @@ def _stencil(block: Mapping[str, object], *held: str) -> dict[str, PlainTree]:
 # too; a bare ``null`` does not, since claude writes those and no field represents one.
 def _restored(block: Mapping[str, object], key: str) -> bool:
     """Whether ``key`` is a slot the record's own field fills."""
-    if key in from_plain(block.get("$held"), list[str], default=[]):
+    if key in from_plain(block.get("$held"), list[str], default=list[str]()):
         return True
     return isinstance(block.get(key), str)
 
@@ -986,7 +1010,11 @@ def _write_result(
         text_index = 0
         rebuilt: list[object] = []
         for value in content_shape:
-            candidate = from_plain(value, dict[str, object], default={})
+            candidate = from_plain(
+                value,
+                dict[str, object],
+                default=dict[str, object](),
+            )
             owner = siblings.get(
                 from_plain(candidate.get("tool_use_id"), str, default=""),
             )
@@ -1037,7 +1065,11 @@ def _result_text(item: ToolResult) -> str:
 
 def _write_result_block(item: ToolResult) -> dict[str, object]:
     """Return the ``tool_result`` block one result record came from."""
-    shape = from_plain(item.extra.get("$result"), dict[str, object], default={})
+    shape = from_plain(
+        item.extra.get("$result"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     neutral_content = (
         item.content
         if isinstance(
@@ -1054,7 +1086,7 @@ def _write_result_block(item: ToolResult) -> dict[str, object]:
     content = (
         _write_result_content(
             item,
-            from_plain(shape.get("content"), list[object], default=[]),
+            from_plain(shape.get("content"), list[object], default=list[object]()),
         )
         if "content" in shape and isinstance(item, UncategorizedToolResult)
         else shape["content"]
@@ -1067,9 +1099,13 @@ def _write_result_block(item: ToolResult) -> dict[str, object]:
         "type": "tool_result",
         "tool_use_id": item.call_id,
         "content": content,
-        **from_plain(shape.get("block"), dict[str, object], default={}),
+        **from_plain(
+            shape.get("block"),
+            dict[str, object],
+            default=dict[str, object](),
+        ),
     }
-    keys = from_plain(shape.get("keys"), list[str], default=[]) or [
+    keys = from_plain(shape.get("keys"), list[str], default=list[str]()) or [
         "type",
         "tool_use_id",
         "content",
@@ -1153,7 +1189,7 @@ def _write_tool_payload(
         # splice holds, so an edited splice makes it stale. It is dropped
         # rather than re-rendered: rebuilding it needs the file's surrounding
         # lines, which the transcript never carried.
-        stated = from_plain(shape.get("splice"), list[object], default=[])
+        stated = from_plain(shape.get("splice"), list[object], default=list[object]())
         splice = item.edits[0] if item.edits else None
         current = [
             splice.before if splice is not None else None,
@@ -1235,7 +1271,7 @@ def _write_search_groups(
     rows = list(item.content)
     out: list[object] = []
     taken = 0
-    groups = from_plain(shape.get("rows"), list[object], default=[])
+    groups = from_plain(shape.get("rows"), list[object], default=list[object]())
     for index, entry in enumerate(groups):
         if not isinstance(entry, Mapping):
             out.append(entry)
@@ -1248,9 +1284,13 @@ def _write_search_groups(
         template = from_plain(
             group_shape.get("template"),
             dict[str, object],
-            default={},
+            default=dict[str, object](),
         )
-        original_content = from_plain(template.get("content"), list[object], default=[])
+        original_content = from_plain(
+            template.get("content"),
+            list[object],
+            default=list[object](),
+        )
         originals = [
             from_plain(cast(Mapping[str, object], value), dict[str, object])
             for value in original_content
@@ -1305,13 +1345,13 @@ def _write_agent_blocks(
     shape: Mapping[str, object],
 ) -> list[object]:
     """Replay agent prose blocks while preserving their boundaries."""
-    stored = from_plain(shape.get("agent_blocks"), list[object], default=[])
+    stored = from_plain(shape.get("agent_blocks"), list[object], default=list[object]())
     if not stored:
         return [{"type": "text", "text": item.content}]
     originals = [
         from_plain(block.get("text"), str, default="")
         for value in stored
-        if (block := from_plain(value, dict[str, object], default={}))
+        if (block := from_plain(value, dict[str, object], default=dict[str, object]()))
         and block.get("type") == "text"
     ]
     texts = iter(_split_like(item.content, originals))
@@ -1321,7 +1361,7 @@ def _write_agent_blocks(
             "text",
             next(texts, from_plain(block.get("text"), str, default="")),
         )
-        if (block := from_plain(value, dict[str, object], default={}))
+        if (block := from_plain(value, dict[str, object], default=dict[str, object]()))
         and block.get("type") == "text"
         else value
         for value in stored
@@ -1544,7 +1584,7 @@ def _write_tool_call_shape(
     if isinstance(block.get("input"), Mapping) or "input" in from_plain(
         block.get("$held"),
         list[str],
-        default=[],
+        default=list[str](),
     ):
         out = _replace_key(out, "input", mutable(item.arguments))
     return out
@@ -2001,7 +2041,11 @@ def _read_line_context(
     for key in (*envelope_keys(), *settings_keys()):
         if key in record:
             prior_extra[key] = mutable(record[key])
-    message = read_or_default(record.get("message"), dict[str, object], default={})
+    message = read_or_default(
+        record.get("message"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     model = previous.model if previous is not None else None
     if "model" in message:
         model = from_plain(message.get("model"), str, default=None)
@@ -2037,7 +2081,11 @@ def _update_tools(
     tools: dict[str, tuple[str, str | None]],
 ) -> None:
     """Record calls after preceding results have consumed the prior mapping."""
-    message = read_or_default(record.get("message"), dict[str, object], default={})
+    message = read_or_default(
+        record.get("message"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     content = message.get("content")
     blocks = (
         [
@@ -2057,7 +2105,7 @@ def _update_tools(
             arguments = read_or_default(
                 block.get("input"),
                 dict[str, object],
-                default={},
+                default=dict[str, object](),
             )
             tools[call_id] = (
                 read_or_default(block.get("name"), str, default=""),
@@ -2070,7 +2118,11 @@ def _read_record(
     tools: Mapping[str, tuple[str, str | None]],
 ) -> list[SessionRecord]:
     """Read one parsed line into the records it carries."""
-    message = read_or_default(record.get("message"), dict[str, object], default={})
+    message = read_or_default(
+        record.get("message"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     record_type = read_or_default(record.get("type"), str, default="")
     spoke = (
         record_type in {"user", "assistant"}
@@ -2284,11 +2336,15 @@ def _read_assistant(
     if list(message) != list(_ordered_message(dict(message), extra)):
         extra["$message_keys"] = list(message)
     content_value = message.get("content")
-    content_blocks = from_plain(content_value, list[object], default=[])
+    content_blocks = from_plain(content_value, list[object], default=list[object]())
     canonical_text = (
         len(content_blocks) == 1
         and (
-            block := read_or_default(content_blocks[0], dict[str, object], default={})
+            block := read_or_default(
+                content_blocks[0],
+                dict[str, object],
+                default=dict[str, object](),
+            )
         ).keys()
         == {"type", "text"}
         and isinstance(block.get("text"), str)
@@ -2297,7 +2353,11 @@ def _read_assistant(
         extra["$content_shape"] = [
             _assistant_stencil(value) for value in content_blocks
         ]
-    usage = read_or_default(message.get("usage"), dict[str, object], default={})
+    usage = read_or_default(
+        message.get("usage"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     if "usage" in message and not usage:
         extra["$usage"] = cast(PlainTree, message["usage"])
     acts: list[AssistantMessage | Thinking | ToolCall] = []
@@ -2420,7 +2480,11 @@ def _read_system(record: Mapping[str, object]) -> SystemMessage:
 
 def _read_attachment_record(record: Mapping[str, object]) -> ContextState:
     """Read context the harness injected for the model to read."""
-    state = from_plain(record.get("attachment"), dict[str, object], default={})
+    state = from_plain(
+        record.get("attachment"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     # Which key holds the prose. ``content`` is not always prose -- a task
     # reminder writes a LIST there -- so only a string is taken. A message
     # queued while the agent worked (``queued_command``) holds it under
@@ -2472,7 +2536,7 @@ def _read_tool_result(
     else:
         # Only the object members are parts; anything else in the list is kept
         # by the result's stored ``content`` and carries no text to read here.
-        for value in from_plain(content, list[object], default=[]):
+        for value in from_plain(content, list[object], default=list[object]()):
             part = read_or_default(value, dict[str, object], default=None)
             if part is None:
                 continue
@@ -2486,7 +2550,11 @@ def _read_tool_result(
     # A failed call's payload is a bare string and an MCP tool's a block list: a
     # non-object is "no structured result", not a malformed line. ``convert``
     # would raise on either and abort the whole session read.
-    result = read_or_default(record.get("toolUseResult"), dict[str, object], default={})
+    result = read_or_default(
+        record.get("toolUseResult"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     residual_block = extract_unmodeled_fields(block, {"type", "tool_use_id", "content"})
     shape: dict[str, PlainTree] = {
         "block": residual_block,
@@ -2550,7 +2618,11 @@ def _rendered(name: str, result: Mapping[str, object]) -> str | None:
         )
     if name == "Read":
         content = (
-            read_or_default(result.get("file"), dict[str, object], default={})
+            read_or_default(
+                result.get("file"),
+                dict[str, object],
+                default=dict[str, object](),
+            )
         ).get(
             "content",
         )
@@ -2725,13 +2797,13 @@ def _typed_result(
             for group in read_or_default(
                 result.get("results"),
                 list[object],
-                default=[],
+                default=list[object](),
             )
             if isinstance(group, dict)
             for row in from_plain(
                 cast(dict[str, object], group).get("content"),
                 list[object],
-                default=[],
+                default=list[object](),
             )
             if isinstance(row, dict)
         ]
@@ -2743,7 +2815,11 @@ def _typed_result(
         # group's id and how many of the flattened rows it owns -- so the rows
         # go back inside the group they came from.
         groups: list[PlainTree] = []
-        for group in read_or_default(result.get("results"), list[object], default=[]):
+        for group in read_or_default(
+            result.get("results"),
+            list[object],
+            default=list[object](),
+        ):
             if isinstance(group, Mapping):
                 group = cast(Mapping[str, object], group)
                 found = from_plain(group, dict[str, object])
@@ -2755,7 +2831,7 @@ def _typed_result(
                             for row in from_plain(
                                 found.get("content"),
                                 list[object],
-                                default=[],
+                                default=list[object](),
                             )
                         ),
                     },
@@ -2840,7 +2916,7 @@ def _typed_result(
             for value in read_or_default(
                 result.get("content"),
                 list[object],
-                default=[],
+                default=list[object](),
             )
             if (block := read_or_default(value, dict[str, object], default=None))
             is not None
@@ -2955,7 +3031,11 @@ def _read_attachment(block: Mapping[str, object]) -> Attachment | None:
     """Read an image block, which is the only binary claude inlines."""
     if block.get("type") != "image":
         return None
-    source = read_or_default(block.get("source"), dict[str, object], default={})
+    source = read_or_default(
+        block.get("source"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     if source.get("type") != "base64":
         return None
     try:
@@ -2973,6 +3053,10 @@ def _read_attachment(block: Mapping[str, object]) -> Attachment | None:
 
 def _media_first(block: Mapping[str, object]) -> bool:
     """Whether the source named the media type before the base64 payload."""
-    source = read_or_default(block.get("source"), dict[str, object], default={})
+    source = read_or_default(
+        block.get("source"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     keys = [key for key in source if key in {"media_type", "data"}]
     return keys[:1] == ["media_type"]

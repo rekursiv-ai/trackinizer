@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _CLI_MODULE: Final = __name__.rsplit(".", maxsplit=2)[0]
 """The ``trax`` package -- this module's own name minus ``daemon.client``.

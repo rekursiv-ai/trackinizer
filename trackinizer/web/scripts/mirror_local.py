@@ -176,7 +176,11 @@ def tally(events: Iterable[Mapping[str, object]]) -> list[Activity]:
             session_id=session_id,
             cli=from_plain(last[session_id].get("cli"), str, default=""),
             rooms=tuple(
-                from_plain(last[session_id].get("rooms"), list[str], default=[]),
+                from_plain(
+                    last[session_id].get("rooms"),
+                    list[str],
+                    default=list[str](),
+                ),
             ),
             events=count,
         )
@@ -535,7 +539,11 @@ def _sample(source: ReadOnlySource, *, now: datetime, hours: float) -> list[Acti
             dict[str, object],
         )
         events.extend(
-            from_plain(page.get("events"), list[dict[str, object]], default=[]),
+            from_plain(
+                page.get("events"),
+                list[dict[str, object]],
+                default=list[dict[str, object]](),
+            ),
         )
     return tally(events)
 
@@ -565,7 +573,11 @@ def _read_graph(source: ReadOnlySource) -> tuple[list[SourceNode], list[SourceEd
     """Read the graph's nodes as whole rows, and its edges."""
     graph = from_plain(source.get("/api/web/graph", limit=1000), dict[str, object])
     seqs: dict[str, list[int]] = {}
-    for node in from_plain(graph.get("nodes"), list[dict[str, object]], default=[]):
+    for node in from_plain(
+        graph.get("nodes"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    ):
         seqs.setdefault(from_plain(node.get("kind"), str), []).append(
             from_plain(node.get("seq"), int),
         )
@@ -581,7 +593,11 @@ def _read_graph(source: ReadOnlySource) -> tuple[list[SourceNode], list[SourceEd
             edge_kind=from_plain(edge.get("edge_kind"), str),
             valence=from_plain(edge["valence"], float) if "valence" in edge else None,
         )
-        for edge in from_plain(graph.get("edges"), list[dict[str, object]], default=[])
+        for edge in from_plain(
+            graph.get("edges"),
+            list[dict[str, object]],
+            default=list[dict[str, object]](),
+        )
     ]
     return nodes, edges
 
@@ -713,7 +729,7 @@ def _open(target: Client, node: SourceNode) -> tuple[UUID, bool, bool]:
             title=from_plain(row.get("title"), str, default="") or None,
             started=from_plain(row.get("started"), datetime, default=None),
             actor=from_plain(row.get("owner"), str, default="") or None,
-            rooms=from_plain(row.get("rooms"), list[str], default=[]) or None,
+            rooms=from_plain(row.get("rooms"), list[str], default=list[str]()) or None,
             idempotency_key=key,
         ),
     )
@@ -810,7 +826,11 @@ def _add_edges(
             target.post("/api/edges/batch", body={"items": chunk}),
             dict[str, object],
         )
-        results = from_plain(response.get("items"), list[dict[str, object]], default=[])
+        results = from_plain(
+            response.get("items"),
+            list[dict[str, object]],
+            default=list[dict[str, object]](),
+        )
         done = len(
             list(itertools.takewhile(lambda r: from_plain(r.get("ok"), bool), results)),
         )

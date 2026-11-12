@@ -768,7 +768,7 @@ def _host_clis(facts: object) -> list[str]:
         return from_plain(
             from_plain(facts, dict[str, object]).get("clis"),
             list[str],
-            default=[],
+            default=list[str](),
         )
     except ReadError:
         return []

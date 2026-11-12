@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from trackinizer.types.inquiries import Inquiry
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 K1: uuid.UUID = uuid.UUID("33333333-3333-3333-3333-333333333333")

@@ -544,7 +544,7 @@ class _Source:
 
     def _event(self, session: uuid.UUID) -> dict[str, object]:
         row = self.rows[session]
-        rooms = from_plain(row["rooms"], list[str], default=[])
+        rooms = from_plain(row["rooms"], list[str], default=list[str]())
         return {"session_id": str(session), "cli": row["cli"], "rooms": rooms}
 
 

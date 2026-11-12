@@ -307,7 +307,11 @@ def moved(
     """
     before = {
         from_plain(old.get("name"), str): old
-        for old in from_plain(baseline.get("rows"), list[dict[str, object]], default=[])
+        for old in from_plain(
+            baseline.get("rows"),
+            list[dict[str, object]],
+            default=list[dict[str, object]](),
+        )
     }
     changes: list[tuple[str, str, float, float]] = []
     for row in rows:
@@ -525,7 +529,7 @@ def _hub_id(
         for parent in from_plain(
             row.get("narrows"),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         )
     )
     return parents.most_common(1)[0][0] if parents else ""

@@ -582,7 +582,11 @@ def _node_body(node: dict[str, object]) -> dict[str, object]:
 
 def _peer_map(detail: Mapping[str, object], key: str) -> _PeerMap:
     """Return one detail's ``edges``/``backlinks`` peer map (empty when absent)."""
-    raw = from_plain(detail.get(key), dict[str, list[dict[str, object]]], default={})
+    raw = from_plain(
+        detail.get(key),
+        dict[str, list[dict[str, object]]],
+        default=dict[str, list[dict[str, object]]](),
+    )
     return {
         edge_kind: tuple(
             from_plain(peer, dict[str, object])

@@ -602,7 +602,11 @@ def stored_preferences(stored: object) -> Preferences:
     """
     known = {
         key: value
-        for key, value in from_plain(stored, dict[str, object], default={}).items()
+        for key, value in from_plain(
+            stored,
+            dict[str, object],
+            default=dict[str, object](),
+        ).items()
         if key in Preferences.model_fields
     }
     return Preferences.model_validate(known)

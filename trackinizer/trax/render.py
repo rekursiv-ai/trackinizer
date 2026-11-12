@@ -293,7 +293,11 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
     lines.append("")
     lines.append("edge:")
     lines.extend(_format_selected_edge(edge))
-    change_rows = from_plain(view.get("changes"), list[dict[str, object]], default=[])
+    change_rows = from_plain(
+        view.get("changes"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     if changes and change_rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -331,9 +335,9 @@ def format_show(
     lines.append(f"  title:       {self_view.get('title') or ''}")
     if self_view.get("description"):
         lines.append(f"  description: {self_view['description']}")
-    if labels := from_plain(self_view.get("labels"), list[str], default=[]):
+    if labels := from_plain(self_view.get("labels"), list[str], default=list[str]()):
         lines.append(f"  labels:      {','.join(labels)}")
-    if subs := from_plain(self_view.get("subscribers"), list[str], default=[]):
+    if subs := from_plain(self_view.get("subscribers"), list[str], default=list[str]()):
         lines.append(f"  subscribers: {','.join(subs)}")
     lines.extend(
         f"  {extra + ':':12} {value}"
@@ -370,7 +374,11 @@ def format_show(
         ids = from_plain(self_view["codechanges"], list[str])
         lines.append(f"  codechanges: {len(ids)} entries")
         lines.extend(f"    - {cid}" for cid in ids)
-    cost = from_plain(self_view.get("marginal_cost"), dict[str, object], default={})
+    cost = from_plain(
+        self_view.get("marginal_cost"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     agent_cost = from_plain(cost.get("agent_usd"), float, default=0.0)
     resource_cost = from_plain(cost.get("resource_usd"), float, default=0.0)
     if agent_cost:
@@ -384,7 +392,7 @@ def format_show(
     if selected_edge := from_plain(
         view.get("selected_edge"),
         dict[str, object],
-        default={},
+        default=dict[str, object](),
     ):
         lines.append("")
         lines.append("Selected edge:")
@@ -395,7 +403,11 @@ def format_show(
         lines.append("")
         lines.extend(_format_relations(edges, inbound=False))
         lines.extend(_format_relations(backlinks, inbound=True))
-    rows = from_plain(view.get("changes"), list[dict[str, object]], default=[])
+    rows = from_plain(
+        view.get("changes"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     if changes and rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -567,7 +579,11 @@ def _row_value(value: object, depth: int = 0) -> str:
 
 def _row_cost(row: Mapping[str, object], key: str) -> str:
     value = from_plain(
-        from_plain(row.get("marginal_cost"), dict[str, object], default={}).get(key),
+        from_plain(
+            row.get("marginal_cost"),
+            dict[str, object],
+            default=dict[str, object](),
+        ).get(key),
         float,
         default=0.0,
     )
@@ -622,8 +638,8 @@ _CHANGE_DELTA_HIDDEN_KEYS: frozenset[str] = frozenset(
 
 
 def _format_change_delta(change: Mapping[str, object]) -> list[str]:
-    old = from_plain(change.get("old"), dict[str, object], default={})
-    new = from_plain(change.get("new"), dict[str, object], default={})
+    old = from_plain(change.get("old"), dict[str, object], default=dict[str, object]())
+    new = from_plain(change.get("new"), dict[str, object], default=dict[str, object]())
     return [
         f"{key}: {old_text or '∅'} -> {new_text or '∅'}"
         for key in tuple(dict.fromkeys((*old.keys(), *new.keys())))
@@ -687,7 +703,7 @@ def _edge_annotation(peer: Mapping[str, object]) -> str:
         parts.append(f"prio={peer['priority']}")
     if "valence" in peer:
         parts.append(f"val={peer['valence']}")
-    if labels := from_plain(peer.get("labels"), list[str], default=[]):
+    if labels := from_plain(peer.get("labels"), list[str], default=list[str]()):
         parts.append("labels=" + ",".join(labels))
     if note := peer.get("note"):
         parts.append(str(note))

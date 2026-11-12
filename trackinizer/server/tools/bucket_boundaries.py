@@ -308,7 +308,7 @@ def derive_rows(
     return max(1, int(budget / per_row))
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # The corpus histogram is pre-grouped to the pad multiple in the fixture. The
 # loader still clamps the tail and accepts ungrouped inputs; see

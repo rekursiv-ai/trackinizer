@@ -720,7 +720,7 @@ def edge_metadata(
             # this branch handling every remaining valid field.
             if op not in ("to", "add", "del"):
                 raise ClientError("edge label uses to, add, or del")
-            labels = from_plain(metadata.get("labels"), list[str], default=[])
+            labels = from_plain(metadata.get("labels"), list[str], default=list[str]())
             if op == "to":
                 labels = resolve_labels((value,))
             elif op == "add":

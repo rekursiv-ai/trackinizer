@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _LEGACY_TABLE: Final = """
 CREATE TABLE IF NOT EXISTS agent_session_events (

@@ -17,7 +17,7 @@ from trackinizer.lib.testing.wheel import project_root
 from trackinizer.web.hatch_build import web_lock
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _WEB: Final = _CWD
 

@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 META = '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/workspace"}}\n'

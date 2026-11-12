@@ -23,7 +23,7 @@ from treekle import json_dumps, json_loads
 from trackinizer.lib.posix.rename import rename_noreplace
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 __all__ = [
     "TARGETS",

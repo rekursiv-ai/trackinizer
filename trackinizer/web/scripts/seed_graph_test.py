@@ -139,16 +139,28 @@ def test_every_person_is_an_example_address() -> None:
 def test_roots_take_written_titles_and_the_showcase_its_own_text() -> None:
     client, _ = _seeded()
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
-    written = from_plain(contents.get("roots"), list[str], default=[])
-    shown = from_plain(contents.get("showcase"), dict[str, object], default={})
+    written = from_plain(contents.get("roots"), list[str], default=list[str]())
+    shown = from_plain(
+        contents.get("showcase"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     titles = [body["title"] for _, body in client.items]
     assert titles[6] == written[0]
     assert (
-        from_plain(shown.get("root"), dict[str, object], default={}).items()
+        from_plain(
+            shown.get("root"),
+            dict[str, object],
+            default=dict[str, object](),
+        ).items()
         <= client.items[0][1].items()
     )
     assert (
-        from_plain(shown.get("belief"), dict[str, object], default={}).items()
+        from_plain(
+            shown.get("belief"),
+            dict[str, object],
+            default=dict[str, object](),
+        ).items()
         <= client.items[3][1].items()
     )
     assert all(titles)
@@ -219,12 +231,20 @@ def test_no_kind_repeats_a_built_title_before_it_has_used_every_one(
     # reads as a placeholder.
     client, _ = committed_seed
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
-    shown = from_plain(contents.get("showcase"), dict[str, object], default={})
+    shown = from_plain(
+        contents.get("showcase"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     written = {
-        *from_plain(contents.get("roots"), list[str], default=[]),
+        *from_plain(contents.get("roots"), list[str], default=list[str]()),
         *(
             from_plain(
-                from_plain(shown.get(part), dict[str, object], default={}).get("title"),
+                from_plain(
+                    shown.get(part),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ).get("title"),
                 str,
                 default="",
             )
@@ -361,7 +381,9 @@ def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root(
     picked = showcase(committed, found)
     assert found.home[picked.belief] == picked.root
     contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
-    assert len(from_plain(contents.get("roots"), list[str], default=[])) >= len(
+    assert len(
+        from_plain(contents.get("roots"), list[str], default=list[str]()),
+    ) >= len(
         found.roots,
     )
 

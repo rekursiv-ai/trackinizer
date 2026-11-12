@@ -125,7 +125,7 @@ if TYPE_CHECKING:
     from trackinizer.types.embedder import QueryEmbedder
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 _DEFAULT_APP_NAME: Final = "Trackinizer"
 """What the sign-in page calls the app when the served build names none."""
 

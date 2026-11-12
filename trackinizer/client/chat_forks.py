@@ -187,7 +187,11 @@ def _fork_line(record: RecordBody) -> ForkLine | None:
             created=record.timestamp,
         )
     if record.kind == "UserMessage":
-        extra = from_plain(record.payload.get("extra"), dict[str, object], default={})
+        extra = from_plain(
+            record.payload.get("extra"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         delivery = attested_delivery(extra)
         if delivery is None:
             author = from_plain(extra.get("author"), str, default="")

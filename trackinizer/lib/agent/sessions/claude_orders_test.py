@@ -183,7 +183,9 @@ def _governed(
     # A user line's content may be a string, which holds no blocks.
     content = message.get("content")
     said = None if isinstance(content, str) else content
-    blocks = [_object(b) for b in from_plain(said, list[object], default=[])]
+    blocks = [
+        _object(b) for b in from_plain(said, list[object], default=list[object]())
+    ]
     if kind == "assistant":
         for block in blocks:
             if block.get("type") == "tool_use":
@@ -203,7 +205,7 @@ def _governed(
 def _object(value: object) -> dict[str, object]:
     """Return ``value`` as a JSON object; ``{}`` for anything else."""
     try:
-        return from_plain(value, dict[str, object], default={})
+        return from_plain(value, dict[str, object], default=dict[str, object]())
     except ReadError:
         return {}
 

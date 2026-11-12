@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from subprocess import Popen
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 type Conn = PoolConnectionProxy[Record] | Connection[Record]
 

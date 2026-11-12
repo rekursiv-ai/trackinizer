@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # The package this test lives in; the monorepo and the export name it differently.
 _BASE: Final = __name__.rpartition(".")[0]
