@@ -125,7 +125,7 @@ PRIMARY KEY (session_id, part)
 UNIQUE (session_id, name)
 ```
 
-`name` is a basename because a path differs across machines and the same
+`name` is a basename because a path differs across hosts and the same
 session resumed elsewhere must resolve to the same part. The `UNIQUE`
 serializes part assignment: two appends racing on an unseen file both compute
 `max(part)+1`, and the loser re-reads the winner's.

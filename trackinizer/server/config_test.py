@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from typing import TYPE_CHECKING, cast
+from pathlib import Path
+from typing import cast
 
 import argparse
+import os
+import re
+import time
 
 import pytest
 
@@ -16,6 +20,7 @@ from trackinizer.server.config import (
     Config,
     ConfigError,
     ConfigFlags,
+    ServiceKeys,
     _prune_stale_ephemeral_dirs,
     auth_disabled_from_env,
     build_embedder,
@@ -25,14 +30,14 @@ from trackinizer.server.config import (
     parse_chat_streaming,
     parse_compute,
     parse_engine,
+    parse_service_keys,
     parse_staff,
     parse_terminal_stun,
+    session_secret_from_file,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
-
-
-if TYPE_CHECKING:
-    from pathlib import Path
+from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.wire.wire_terminals import MAX_ICE_SERVERS
 
 
 class TestPureFunctions:
@@ -104,6 +109,8 @@ class TestPureFunctions:
             == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata-ephemeral"
         )
         assert a._persist is False
+        assert a._own_workdir is True
+        assert b._own_workdir is True
 
     def test_ephemeral_explicit_datadir_wins(
         self,
@@ -116,6 +123,7 @@ class TestPureFunctions:
         engine = build_engine(Config(ephemeral=True, datadir=chosen))
         assert isinstance(engine, PGliteEngine)
         assert engine._workdir == chosen
+        assert engine._own_workdir is False
 
     def test_persistent_uses_shared_default_datadir(
         self,
@@ -128,12 +136,15 @@ class TestPureFunctions:
         assert isinstance(engine, PGliteEngine)
         assert engine._workdir == tmp_path / "rekursiv-ai" / "trackinizer" / "pgdata"
         assert engine._persist is True
+        assert engine._own_workdir is False
 
     def testbuild_engine_pg(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pg")
         monkeypatch.setenv("TRACKINIZER_DSN", "postgresql:///x")
         engine = build_engine()
         assert isinstance(engine, PostgresEngine)
+        assert engine._dsn == "postgresql:///x"
+        assert engine.listen_channel == NOTIFY_CHANNEL
 
     def testbuild_engine_pg_missing_dsn(
         self,
@@ -141,7 +152,10 @@ class TestPureFunctions:
     ) -> None:
         monkeypatch.setenv("TRACKINIZER_ENGINE", "pg")
         monkeypatch.setenv("TRACKINIZER_DSN", "")
-        with pytest.raises(ConfigError):
+        with pytest.raises(
+            ConfigError,
+            match=r"^--engine pg requires --dsn \(or \$TRACKINIZER_DSN\)\.$",
+        ):
             build_engine()
 
     def testbuild_engine_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -297,6 +311,50 @@ class TestFromEnv:
             chat_streaming=False,
         )
 
+    def test_every_flag_reaches_its_field(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        for name in self._VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        assert Config.from_args(_server_args()).session_secret == ""
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET", "s3cret")
+        flags = _server_args(
+            engine="pg",
+            datadir=tmp_path,
+            ephemeral=True,
+            pglite_tcp=True,
+            dsn="postgresql://h/db",
+            embedder="other",
+            session_embedder="m@1024",
+            session_embedder_dim=7,
+            session_embedders="a, b ,,c",
+            web=True,
+            session_max_age_seconds=99,
+            auth=False,
+            assistant="kb=KB@Service.Invalid",
+            staff="a@x.y",
+        )
+        config = Config.from_args(flags)
+        assert config.session_secret == os.environ["TRACKINIZER_SESSION_SECRET"]
+        assert replace(config, session_secret="") == Config(
+            engine="pg",
+            datadir=tmp_path,
+            ephemeral=True,
+            pglite_tcp=True,
+            dsn="postgresql://h/db",
+            embedder="other",
+            session_embedder="m@1024",
+            session_embedder_dim=7,
+            session_embedders=("a", "b", "c"),
+            web=True,
+            session_max_age_seconds=99,
+            auth_disabled=True,
+            assistant=Assistant(actor="kb", email="kb@service.invalid"),
+            staff=("a@x.y",),
+        )
+
 
 class TestParsers:
     def test_parse_engine_names_the_engine_or_refuses_it(self) -> None:
@@ -338,6 +396,67 @@ class TestParsers:
 
     def test_pruning_a_missing_root_is_a_no_op(self, tmp_path: Path) -> None:
         _prune_stale_ephemeral_dirs(tmp_path / "missing")
+
+    def test_pruning_reclaims_only_old_dirs_of_dead_owners(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Past any pid_max, so no process owns it; kill(2) answers ESRCH.
+        dead = 2**30
+        old = time.time() - 2 * 60 * 60
+        names = {
+            "dead_old": f"{dead}-a",
+            "dead_fresh": f"{dead}-b",
+            "alive_old": f"{os.getpid()}-c",
+            "no_pid_old": "scratch-d",
+        }
+        for key, name in names.items():
+            (tmp_path / name).mkdir()
+            if key != "dead_fresh":
+                os.utime(tmp_path / name, (old, old))
+        (tmp_path / "loose-file").write_text("")
+
+        _prune_stale_ephemeral_dirs(tmp_path)
+
+        assert sorted(p.name for p in tmp_path.iterdir()) == sorted(
+            [
+                names["dead_fresh"],
+                names["alive_old"],
+                names["no_pid_old"],
+                "loose-file",
+            ],
+        )
+
+    def test_a_dir_owned_by_another_users_process_is_kept(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def refuse(pid: int, signal: int) -> None:
+            del pid, signal
+            raise PermissionError
+
+        monkeypatch.setattr(os, "kill", refuse)
+        owned = tmp_path / "4242-e"
+        owned.mkdir()
+        old = time.time() - 2 * 60 * 60
+        os.utime(owned, (old, old))
+
+        _prune_stale_ephemeral_dirs(tmp_path)
+
+        assert owned.is_dir()
+
+
+class TestMaintainedEmbedders:
+    def test_an_explicit_list_wins_over_the_serving_embedder(self) -> None:
+        config = Config(session_embedder="a@1024", session_embedders=("b", "c"))
+        assert config.maintained_embedders() == ("b", "c")
+
+    def test_the_serving_embedder_alone_is_maintained_by_default(self) -> None:
+        assert Config(session_embedder="a@1024").maintained_embedders() == ("a@1024",)
+
+    def test_no_serving_embedder_maintains_nothing(self) -> None:
+        assert Config().maintained_embedders() == ()
 
 
 class TestChatOrgs:
@@ -421,7 +540,13 @@ class TestAssistant:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Every key of the account is the assistant's, so it must be a program's."""
-        with pytest.raises(ConfigError, match=r"service account.*@service\.invalid"):
+        with pytest.raises(
+            ConfigError,
+            match=(
+                r"^--assistant \(TRACKINIZER_ASSISTANT\) must name a service account, "
+                r"NAME@service\.invalid, got "
+            ),
+        ):
             Config.from_args(_server_args(assistant=raw))
         monkeypatch.setenv("TRACKINIZER_ASSISTANT", raw)
         with pytest.raises(ConfigError, match="TRACKINIZER_ASSISTANT"):
@@ -593,6 +718,10 @@ class TestTerminalStun:
         )
         assert Config().terminal_stun == ()
 
+    def test_the_maximum_number_of_stun_servers_is_allowed(self) -> None:
+        servers = tuple(f"stun:host{index}" for index in range(MAX_ICE_SERVERS))
+        assert parse_terminal_stun(", ".join(servers)) == servers
+
     @pytest.mark.parametrize(
         "value",
         [
@@ -603,7 +732,11 @@ class TestTerminalStun:
         ],
     )
     def test_anything_but_a_few_stun_urls_is_a_config_error(self, value: str) -> None:
-        with pytest.raises(ConfigError, match="TRACKINIZER_TERMINAL_STUN"):
+        expected = (
+            f"TRACKINIZER_TERMINAL_STUN takes at most {MAX_ICE_SERVERS} "
+            f"comma separated stun:HOST[:PORT] URLs, got {value!r}"
+        )
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
             parse_terminal_stun(value)
 
     def test_both_ways_to_build_a_config_read_the_environment(
@@ -618,7 +751,7 @@ class TestTerminalStun:
 
 
 class TestCompute:
-    """``$TRACKINIZER_COMPUTE``: what this server provides, for the Machines menu."""
+    """``$TRACKINIZER_COMPUTE``: what this server provides, for the Hosts menu."""
 
     def test_unset_or_an_empty_list_means_no_notes(self) -> None:
         assert parse_compute("") == ()
@@ -669,6 +802,159 @@ class TestCompute:
         monkeypatch.setenv("TRACKINIZER_COMPUTE", "not json")
         with pytest.raises(ConfigError, match="TRACKINIZER_COMPUTE"):
             Config.from_env()
+
+
+class TestServiceKeys:
+    """``$TRACKINIZER_SERVICE_KEYS`` names the service accounts the server keys."""
+
+    def test_pairs_are_read_in_order_with_their_directory(self, tmp_path: Path) -> None:
+        assert parse_service_keys(
+            " chat:writer, ,gpu-broker:viewer ",
+            f" {tmp_path} ",
+        ) == ServiceKeys(
+            accounts=(("chat", "writer"), ("gpu-broker", "viewer")),
+            directory=tmp_path,
+        )
+
+    def test_none_named_needs_no_directory(self) -> None:
+        assert parse_service_keys(" , ", "") is None
+        assert Config().service_keys is None
+
+    @pytest.mark.parametrize(
+        ("accounts", "says"),
+        [
+            ("chat", "'chat' is not NAME:viewer or NAME:writer"),
+            ("chat:admin", "'chat:admin' is not NAME:viewer or NAME:writer"),
+            ("Chat:writer", "'Chat:writer' is not NAME:viewer or NAME:writer"),
+            ("chat:writer,chat:viewer", "'chat' is named twice"),
+        ],
+    )
+    def test_a_malformed_pair_is_a_config_error(self, accounts: str, says: str) -> None:
+        expected = f"TRACKINIZER_SERVICE_KEYS: {says}"
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            parse_service_keys(accounts, "/srv/keys")
+
+    def test_accounts_without_a_directory_are_a_config_error(self) -> None:
+        expected = (
+            "TRACKINIZER_SERVICE_KEYS names accounts; set TRACKINIZER_SERVICE_KEY_DIR"
+        )
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            parse_service_keys("chat:writer", "  ")
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SERVICE_KEYS", "chat:writer")
+        monkeypatch.setenv("TRACKINIZER_SERVICE_KEY_DIR", str(tmp_path))
+        keys = ServiceKeys(accounts=(("chat", "writer"),), directory=tmp_path)
+        assert Config.from_env().service_keys == keys
+        assert Config.from_args(_server_args()).service_keys == keys
+        monkeypatch.delenv("TRACKINIZER_SERVICE_KEY_DIR")
+        with pytest.raises(ConfigError, match=r"set TRACKINIZER_SERVICE_KEY_DIR$"):
+            Config.from_env()
+        with pytest.raises(ConfigError, match=r"set TRACKINIZER_SERVICE_KEY_DIR$"):
+            Config.from_args(_server_args())
+
+
+class TestSessionSecretFile:
+    """``$TRACKINIZER_SESSION_SECRET_FILE``: a key the first start makes and later ones keep."""
+
+    def test_the_first_start_makes_it_and_a_later_one_reads_it(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+
+        made = session_secret_from_file(str(path))
+
+        assert re.fullmatch(r"[0-9a-f]{64}", made)
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert list(tmp_path.iterdir()) == [path]
+        assert session_secret_from_file(str(path)) == made
+
+    def test_a_stage_a_crashed_start_left_does_not_stop_the_next(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+        left = tmp_path / f".session-secret.{os.getpid()}"
+        left.write_text("partial\n")
+
+        made = session_secret_from_file(str(path))
+
+        assert re.fullmatch(r"[0-9a-f]{64}", made)
+        assert sorted(tmp_path.iterdir()) == [left, path]
+
+    def test_a_start_that_loses_the_race_keeps_the_winners(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "session-secret"
+        staged: list[Path] = []
+
+        def link(source: str, target: Path) -> None:
+            # Another first start links its own secret in between.
+            staged.append(Path(source))
+            target.write_text("won\n")
+            raise FileExistsError(target)
+
+        monkeypatch.setattr(os, "link", link)
+
+        assert session_secret_from_file(str(path)) == "won"
+        assert [(s.parent, s.name.startswith(".session-secret.")) for s in staged] == [
+            (tmp_path, True),
+        ]
+        assert list(tmp_path.iterdir()) == [path]
+
+    def test_a_kept_one_is_read_as_written(self, tmp_path: Path) -> None:
+        path = tmp_path / "session-secret"
+        path.write_text(" kept \n")
+
+        assert session_secret_from_file(f" {path} ") == "kept"
+
+    def test_none_named_is_none(self) -> None:
+        assert session_secret_from_file("  ") == ""
+
+    def test_both_ways_to_build_a_config_read_it(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_SESSION_SECRET", raising=False)
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET_FILE", str(tmp_path / "s"))
+
+        made = Config.from_env().session_secret
+
+        assert made == (tmp_path / "s").read_text().strip()
+        assert Config.from_args(_server_args()).session_secret == made
+
+    def test_the_secret_and_its_file_together_are_a_config_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET", "typed")
+        monkeypatch.setenv("TRACKINIZER_SESSION_SECRET_FILE", str(tmp_path / "s"))
+        expected = "set TRACKINIZER_SESSION_SECRET or TRACKINIZER_SESSION_SECRET_FILE, not both"
+
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            Config.from_env()
+        with pytest.raises(ConfigError, match=f"^{re.escape(expected)}$"):
+            Config.from_args(_server_args())
+        assert not (tmp_path / "s").exists()
+
+
+def test_a_host_holds_16_tool_connections_each_dialed_back_in_20_seconds() -> None:
+    config = Config()
+
+    assert (
+        config.tool_connections_per_host,
+        config.tool_dial_back_sec,
+        config.tool_sweep_sec,
+    ) == (16, 20.0, 60.0)
 
 
 if __name__ == "__main__":

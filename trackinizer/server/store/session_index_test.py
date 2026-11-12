@@ -11,11 +11,12 @@ the index is actually eligible.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import pytest
 
+from trackinizer.conftest import executed_sql, make_conn
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.session_embed import sweep_session_embeddings
@@ -26,6 +27,7 @@ from trackinizer.server.store.session_index import (
 
 
 if TYPE_CHECKING:
+    from trackinizer.lib.postgres import Conn
     from trackinizer.server.store.core import Store
 
 
@@ -50,6 +52,29 @@ def test_index_name_rejects_an_unsafe_slug() -> None:
     """A slug with quotes/spaces is a programming error, not a runtime input."""
     with pytest.raises(ValueError, match="not a valid index-name source"):
         index_name("bad'; DROP TABLE session_embeddings; --")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "dim", "message"),
+    [
+        ("bad'; DROP TABLE x; --", 8, "not a valid index source"),
+        ("stub-1024", 0, "dim must be positive, got 0"),
+    ],
+    ids=["unsafe-slug", "zero-dim"],
+)
+async def test_ensure_refuses_bad_input_before_any_ddl(
+    model: str,
+    dim: int,
+    message: str,
+) -> None:
+    """Neither can be bound as a parameter, so the guard is all that keeps the DDL safe."""
+    conn = make_conn()
+
+    with pytest.raises(ValueError, match=message):
+        await ensure_model_index(cast("Conn", conn), model, dim)
+
+    assert executed_sql(conn) == []
 
 
 @pytest.fixture
@@ -160,6 +185,20 @@ async def test_dimensionless_column_holds_the_seeded_vectors(store: Store) -> No
     # A round-trip sanity check: the stored vector parses back to 1024 floats.
     assert isinstance(stored, str)
     assert stored.count(",") == _DIM - 1
+
+
+@pytest.mark.asyncio
+async def test_a_valid_model_creates_its_named_dimensioned_partial_index() -> None:
+    conn = make_conn()
+
+    await ensure_model_index(cast("Conn", conn), "Model-X@2", 2)
+
+    conn.execute.assert_awaited_once_with(
+        "CREATE INDEX IF NOT EXISTS idx_session_embeddings_hnsw_model_x_2 "
+        "ON session_embeddings USING hnsw "
+        "((embedding::halfvec(2)) halfvec_cosine_ops) "
+        "WHERE model = 'Model-X@2'",
+    )
 
 
 if __name__ == "__main__":

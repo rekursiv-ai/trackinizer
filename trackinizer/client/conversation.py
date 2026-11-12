@@ -76,7 +76,7 @@ __all__ = [
 
 
 # The provider a part's format names, as a person would name it in the conversation:
-# the assistant's own parts are the bot's; a machine's sagent run is ``sagent``.
+# the assistant's own parts are the bot's; a host's sagent run is ``sagent``.
 _PROVIDER_OF_FORMAT: Final = {
     "assistant": "bot",
     "claude": "claude",
@@ -453,7 +453,11 @@ def attested_delivery(extra: Mapping[str, object]) -> Delivery | None:
         stamp.
 
     """
-    stamp = from_plain(extra.get("$inbound"), dict[str, object], default={})
+    stamp = from_plain(
+        extra.get("$inbound"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     if not stamp:
         return None
     return Delivery(
@@ -745,5 +749,9 @@ def _stamped(records: Sequence[SessionRecord]) -> list[SessionRecord]:
 
 def _provider(record: SessionRecord) -> str:
     """Return the provider a neutral record was tagged with, or an empty string."""
-    extra = from_plain(getattr(record, "extra", None), dict[str, object], default={})
+    extra = from_plain(
+        getattr(record, "extra", None),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     return from_plain(extra.get("provider"), str, default="")

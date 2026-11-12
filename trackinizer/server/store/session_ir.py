@@ -108,7 +108,7 @@ class SessionManifest:
     """Which file, assigned server-side by basename."""
 
     name: str
-    """The file's basename. Not its path -- that differs across machines, and
+    """The file's basename. Not its path -- that differs across hosts, and
     the same session resumed elsewhere must resolve to the same part."""
 
     metadata: Mapping[str, PlainTree]
@@ -271,7 +271,13 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 # Purged in the window between the caller's check and this
                 # insert: gone is a 404, not a constraint name leaked as a 409.
                 raise NotFoundError(f"session {session_id} not found") from exc
-            encrypted = [row for row in rows if row.ciphertext is not None]
+            # Claude writes standard base64 and codex base64url, so one decode/encode
+            # pair cannot round-trip both: the base64 ASCII is stored verbatim.
+            encrypted = [
+                (row, row.ciphertext.encode())
+                for row in rows
+                if row.ciphertext is not None
+            ]
             if encrypted:
                 await conn.execute(
                     "INSERT INTO session_ciphertext (session_id, part, idx, bytes) "
@@ -279,10 +285,10 @@ class _SessionIRMixin(_CascadeAuditMixin):
                     "$4::bytea[]) "
                     "ON CONFLICT (session_id, part, idx) "
                     "DO UPDATE SET bytes = EXCLUDED.bytes",
-                    [row.session_id for row in encrypted],
-                    [row.part for row in encrypted],
-                    [row.idx for row in encrypted],
-                    [_encoded(row.ciphertext) for row in encrypted],
+                    [row.session_id for row, _ in encrypted],
+                    [row.part for row, _ in encrypted],
+                    [row.idx for row, _ in encrypted],
+                    [sealed for _, sealed in encrypted],
                 )
             stored = await self._append_slash_commands(conn, session_id, slash_commands)
             if written or stored:
@@ -649,34 +655,32 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 )
                 assert isinstance(next_part, int)
                 part = next_part
-            try:
-                written: object = await conn.fetchval(
-                    vetted_sql(
-                        "INSERT INTO session_manifests (session_id, part, name, "
-                        "metadata, ir_id, format, records, opened_by_api_key_id) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
-                        "ON CONFLICT (session_id, name) DO UPDATE SET "
-                        "metadata = EXCLUDED.metadata, ir_id = EXCLUDED.ir_id, "
-                        "format = EXCLUDED.format, records = EXCLUDED.records",
-                        guard,
-                        " RETURNING part",
-                    ),
-                    session_id,
-                    part,
-                    name,
-                    encoded,
-                    ir_id,
-                    format,
-                    records,
-                    api_key_id,
+            # No foreign-key handler: the session row is held ``FOR UPDATE`` above, so
+            # it cannot be purged before this insert, the table's one foreign key.
+            written: object = await conn.fetchval(
+                vetted_sql(
+                    "INSERT INTO session_manifests (session_id, part, name, "
+                    "metadata, ir_id, format, records, opened_by_api_key_id) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+                    "ON CONFLICT (session_id, name) DO UPDATE SET "
+                    "metadata = EXCLUDED.metadata, ir_id = EXCLUDED.ir_id, "
+                    "format = EXCLUDED.format, records = EXCLUDED.records",
+                    guard,
+                    " RETURNING part",
+                ),
+                session_id,
+                part,
+                name,
+                encoded,
+                ir_id,
+                format,
+                records,
+                api_key_id,
+            )
+            if written is None:
+                raise ConflictError(
+                    f"part {part} of session {session_id} was opened by another key",
                 )
-                if written is None:
-                    raise ConflictError(
-                        f"part {part} of session {session_id} was opened by another "
-                        "key",
-                    )
-            except asyncpg.ForeignKeyViolationError as exc:
-                raise NotFoundError(f"session {session_id} not found") from exc
         return part
 
     # Audience: gated -- audience_audit_test requires every server caller to call
@@ -880,13 +884,3 @@ def _decoded_payload(raw: str) -> Mapping[str, PlainTree]:
     if not isinstance(payload, dict):
         raise TypeError(f"stored payload is not a JSON object: {raw[:80]!r}")
     return immutable(payload)
-
-
-# Claude writes standard base64 and codex base64url, so one decode/encode pair cannot
-# round-trip both -- the text is kept exactly as the provider wrote it and re-emitted
-# unchanged.
-def _encoded(ciphertext: str | None) -> bytes:
-    """Return the base64 ASCII as bytes, stored verbatim rather than decoded."""
-    if ciphertext is None:
-        raise ValueError("Expected ciphertext is not None.")
-    return ciphertext.encode()

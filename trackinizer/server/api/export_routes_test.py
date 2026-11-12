@@ -162,6 +162,13 @@ def test_a_non_finite_float_is_refused() -> None:
         list(export_lines(graph))
 
 
+def test_a_column_type_with_no_json_form_is_refused_by_name() -> None:
+    graph = replace(_graph(), tables=(("inquiries", ({"tags": {"a"}},)),))
+
+    with pytest.raises(TypeError, match="no JSON form for set"):
+        list(export_lines(graph))
+
+
 def test_a_viewer_may_export(export_client: TestClient) -> None:
     install_identity(make_test_identity(role="viewer"))
 
@@ -201,14 +208,14 @@ def test_clauses_arrive_in_the_order_they_were_sent(
                 EXPORT_FILTER_PARAM,
                 '{"field":"labels","op":"is","value":"org:rekursiv"}',
             ),
-            (EXPORT_FILTER_PARAM, '{"field":"labels","op":"nre","value":"^machine:"}'),
+            (EXPORT_FILTER_PARAM, '{"field":"labels","op":"nre","value":"^host:"}'),
         ],
     )
 
     header = json_loads(r.text.splitlines()[0], dict[str, object])
     assert header["selector"] == [
         {"field": "labels", "op": "is", "value": "org:rekursiv"},
-        {"field": "labels", "op": "nre", "value": "^machine:"},
+        {"field": "labels", "op": "nre", "value": "^host:"},
     ]
 
 

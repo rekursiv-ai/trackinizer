@@ -16,7 +16,9 @@ import subprocess
 import pytest
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
+
+pytestmark = pytest.mark.cli_bash
 
 
 def test_the_shim_takes_the_umask_not_mktemps_owner_only_mode(tmp_path: Path) -> None:

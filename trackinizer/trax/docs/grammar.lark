@@ -158,14 +158,14 @@ group_create: KIND (inline_field | cost_action | safe_meta | EDGE edge_meta)+ (e
 
 // ---- terminals (keyword sets; spellings overlap across classes, e.g.
 // codechange is KIND+REF_LIST_FIELD, resolved by position) ----
-VERB: "search-sessions" | "confidence" | "authority" | "blocked" | "machine" | "profile" | "version" | "canvas" | "doctor" | "export" | "recent" | "board" | "graph" | "cost" | "help" | "next" | "send" | "env" | "job" | "run" | "id"
+VERB: "search-sessions" | "confidence" | "authority" | "blocked" | "profile" | "version" | "canvas" | "doctor" | "export" | "recent" | "board" | "graph" | "cost" | "help" | "host" | "next" | "send" | "env" | "job" | "run" | "id"
 KIND: "agentsession" | "accessgroup" | "codechange" | "experiment" | "webresult" | "websearch" | "artifact" | "belief" | "issue" | "paper"
 EDGE_KEYWORD: "disfavored_by" | "superseded_by" | "broadened_by" | "disproved_by" | "narrowed_by" | "produced_by" | "required_by" | "blocked_by" | "favored_by" | "supersedes" | "disfavors" | "disproves" | "proved_by" | "broadens" | "cited_by" | "produced" | "produces" | "requires" | "narrows" | "blocks" | "favors" | "proves" | "cites"
 FIELD: "google_scholar_cluster_id" | "google_scholar_cites_id" | "publication_type" | "cli_session_id" | "publish_date" | "description" | "confidence" | "validation" | "judgement" | "abstract" | "priority" | "provider" | "subvenue" | "account" | "outcome" | "started" | "config" | "source" | "status" | "owner" | "query" | "title" | "venue" | "app" | "cli" | "sha" | "url"
 LIST_FIELD: "subscribers" | "issue_kind" | "subscriber" | "issuekind" | "authors" | "author" | "labels" | "label" | "kind"
 REF_LIST_FIELD: "codechanges" | "codechange"
 COST_FIELD: "resource-cost" | "agent-cost"
-FILTER_FIELD: "google_scholar_cluster_id" | "uncategorized_tool_result" | "google_scholar_cites_id" | "agent_to_agent_message" | "background_task_result" | "paper_details_result" | "paper_author_result" | "paper_search_result" | "agent_spawn_result" | "context_compaction" | "paper_fetch_result" | "remote_tool_result" | "agent_self_result" | "agent_send_result" | "assistant_message" | "incomplete_record" | "play_audio_result" | "tool_error_result" | "web_search_result" | "publication_type" | "web_fetch_result" | "function_result" | "cli_session_id" | "session_result" | "system_message" | "context_state" | "memory_result" | "resource-cost" | "publish_date" | "skill_result" | "user_message" | "write_result" | "bash_result" | "codechanges" | "description" | "edit_result" | "glob_result" | "grep_result" | "list_result" | "read_result" | "subscribers" | "tool_result" | "agent-cost" | "codechange" | "confidence" | "issue_kind" | "mcp_result" | "subscriber" | "validation" | "issuekind" | "judgement" | "tool_call" | "abstract" | "modified" | "priority" | "provider" | "subvenue" | "thinking" | "account" | "authors" | "created" | "outcome" | "started" | "author" | "labels" | "source" | "status" | "stderr" | "stdout" | "label" | "owner" | "query" | "stdin" | "title" | "venue" | "kind" | "cli" | "seq" | "sha" | "url" | "id"
+FILTER_FIELD: "google_scholar_cluster_id" | "uncategorized_tool_result" | "google_scholar_cites_id" | "agent_to_agent_message" | "background_task_result" | "paper_details_result" | "paper_author_result" | "paper_search_result" | "agent_spawn_result" | "context_compaction" | "paper_fetch_result" | "remote_tool_result" | "web_browser_result" | "agent_self_result" | "agent_send_result" | "assistant_message" | "incomplete_record" | "play_audio_result" | "tool_error_result" | "web_search_result" | "publication_type" | "web_fetch_result" | "function_result" | "cli_session_id" | "session_result" | "system_message" | "context_state" | "memory_result" | "resource-cost" | "publish_date" | "skill_result" | "user_message" | "write_result" | "bash_result" | "codechanges" | "description" | "edit_result" | "glob_result" | "grep_result" | "list_result" | "read_result" | "subscribers" | "tool_result" | "agent-cost" | "codechange" | "confidence" | "issue_kind" | "mcp_result" | "subscriber" | "validation" | "issuekind" | "judgement" | "tool_call" | "abstract" | "modified" | "priority" | "provider" | "subvenue" | "thinking" | "account" | "authors" | "created" | "outcome" | "started" | "author" | "labels" | "source" | "status" | "stderr" | "stdout" | "label" | "owner" | "query" | "stdin" | "title" | "venue" | "kind" | "cli" | "seq" | "sha" | "url" | "id"
 FILTER_OP: "nre" | "ge" | "gt" | "is" | "le" | "lt" | "ne" | "re"
 VALUELESS_OP: "notnull" | "isnull"
 TO: "to"
@@ -197,7 +197,7 @@ VERB_ARG: /\S+/
 // ==== SEMANTICS: rules the shape accepts but the tool enforces (generated) ====
 // ENUM VALUES (a set to one of these fields must use a listed value;
 // all other fields take free text -- title, description, validation, etc.):
-//   status: active complete abandoned invalid   judgement: proven disproven unproven undecidable
+//   status: active complete stopped abandoned invalid   judgement: proven disproven unproven undecidable
 //   issue_kind/kind: feature bug task question   publication_type: article inproceedings book thesis techreport misc
 //   priority: an int, or critical=0 high=10 medium=20 low=30 backlog=40
 //   confidence/valence: a float (valence in [-1,1], sign = for/against)
@@ -227,7 +227,7 @@ VERB_ARG: /\S+/
 //   recent=audit feed; cost=cost rollup; id=show row by uuid;
 //   profile=manage server profiles; send=message a live agent session;
 //   env=the org's environment variables (a secret is write-only);
-//   run, machine, job=moved out of trax: agent runs, the machine registry and
+//   run, host, job=moved out of trax: agent runs, the host registry and
 //     GPU jobs are no longer trax's.
 //   authority issue|artifact|experiment|paper|belief|codechange|webresult|websearch|agentsession|accessgroup SEQ [--format text|json]
 //   blocked
@@ -240,9 +240,9 @@ VERB_ARG: /\S+/
 //   export [SELECTOR]
 //   graph [--open-only]
 //   help [TOPIC]
+//   host [ARGS...]    (moved out of trax)
 //   id UUID [--format table|json] [--changes]
 //   job [ARGS...]    (moved out of trax)
-//   machine [ARGS...]    (moved out of trax)
 //   next [CLAIM] [--format text|json|ids] [--as/--actor V] [--reason V]
 //   profile [NAME] [ url|actor|token [to V] | current NAME | login URL | del ]
 //   recent [--limit V] [--format text|json]

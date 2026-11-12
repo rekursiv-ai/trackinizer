@@ -1,7 +1,7 @@
 """A user's preferences: every key, its type, its default, and what it means.
 
 They are kept on the user's row (``users.preferences``), so they follow the user to
-any browser or machine, and an agent the user works with can change them. The
+any browser or host, and an agent the user works with can change them. The
 stored object holds only the keys the user set; a read fills in the defaults.
 Each field's description is the comment Settings shows beside the key.
 
@@ -57,8 +57,9 @@ ASSISTANT_KEYS: Final = frozenset(
         "chat_provider",
         "assistant_prompt",
         "cli_folder",
-        "chat_tool_calls",
+        "chat_view",
         "autofix",
+        "automerge",
     },
 )
 """The preferences a canvas's assistant may read and change for its owner: the
@@ -313,6 +314,40 @@ _GREEN_ON_BLACK: Final = TerminalColors(
 """GNOME Terminal's "Green on black" over its GNOME palette, bold drawn bright."""
 
 
+class ChatView(_Strict):
+    """How Chat draws a chat: which view, and what each view shows of it.
+
+    A write replaces the whole object, as it does any top-level key.
+    """
+
+    view: Literal["chat", "terminal"] = "chat"
+    """Chat's own lines, or the rows sagent's terminal UI prints."""
+
+    density: Literal["auto", "verbose", "compact", "minimal"] = "auto"
+    """How much of the tool calls shows: each one whole, folded, or none; ``auto``
+    is the view's own, folded in Chat and whole in the terminal."""
+
+    thinking: bool = False
+    """Whether the reasoning an agent stored shows."""
+
+    output_lines: (
+        Literal["tool", "all"]
+        | Annotated[
+            list[Annotated[int, Field(ge=0)]],
+            Field(min_length=2, max_length=2),
+        ]
+    ) = "tool"
+    """How much of a tool's output shows: as its tool says, all of it, or the lines
+    kept from its head and its tail."""
+
+    times: bool = False
+    """Whether each line shows when it was written."""
+
+
+_CHAT_VIEW: Final = ChatView()
+"""Chat's own lines, with each option at its default."""
+
+
 class CreateDraft(_Strict):
     """The create form's unsent inquiry."""
 
@@ -432,16 +467,15 @@ class Preferences(_Strict):
         default="assistant",
         description=(
             "The provider a new chat starts on: the assistant, or claude or codex run on "
-            "a machine of yours."
+            "a host of yours."
         ),
         json_schema_extra=SETTING,
     )
     assistant_prompt: AssistantPrompt = Field(
-        default="lead",
+        default="sagent",
         description=(
-            "The assistant's system prompt in a chat you start: its own lead prompt, "
-            "or sagent's with a note of the canvas, as claude and codex are told of it. "
-            "A chat keeps the one it started on."
+            "The native sagent prompt and canvas environment for science chats. "
+            "Hosted assistant code ignores this legacy-compatible field."
         ),
         json_schema_extra=SETTING,
     )
@@ -453,16 +487,18 @@ class Preferences(_Strict):
         default="",
         description=(
             "The folder a claude or codex run that Chat starts works in, on whichever "
-            "machine it starts: ~/... under your home, or a full path. Empty for your "
+            "host it starts: ~/... under your home, or a full path. Empty for your "
             "home directory."
         ),
         json_schema_extra=SETTING,
     )
-    chat_tool_calls: bool = Field(
-        default=True,
+    chat_view: ChatView = Field(
+        default=_CHAT_VIEW,
         description=(
-            "Show the tool calls an agent makes in Chat between the lines, each run of "
-            "them folded into one line that opens on what it ran and what came back."
+            "How Chat draws a chat: its own lines or the terminal's rows (view), how "
+            "much of the tool calls shows (density), whether reasoning shows "
+            "(thinking), how much of a tool's output shows (output_lines), and when "
+            "each line was written (times)."
         ),
         json_schema_extra=SETTING,
     )
@@ -474,6 +510,23 @@ class Preferences(_Strict):
             "each pull request."
         ),
         json_schema_extra=SETTING,
+    )
+    automerge: bool = Field(
+        default=False,
+        description=(
+            "Turn on GitHub's auto-merge for each pull request your agents open or "
+            "push: GitHub merges it once its required checks pass and its reviews "
+            "allow, a draft once it is marked ready. Chat switches it for each pull "
+            "request."
+        ),
+        json_schema_extra=SETTING,
+    )
+    hide_closed_pulls: bool = Field(
+        default=True,
+        description=(
+            "The Pull requests page and the command bar's PRs tab leave out the pull "
+            "requests that are merged or closed."
+        ),
     )
     stars: Annotated[list[_Id], Field(max_length=2_000)] = Field(
         default=list[_Id](),
@@ -506,6 +559,13 @@ class Preferences(_Strict):
     dismissed: Annotated[list[_Id], Field(max_length=200)] = Field(
         default=list[_Id](),
         description="The notes you dismissed, by key: each stays hidden wherever it would show.",
+    )
+    unread_tabs: Annotated[list[_Id], Field(max_length=500)] = Field(
+        default=list[_Id](),
+        description=(
+            "The tabs whose session finished since you looked, or that you marked "
+            "unread, by canvas id: each shows a dot until you open it."
+        ),
     )
     lens: _Id | None = Field(
         default=None,
@@ -542,7 +602,11 @@ def stored_preferences(stored: object) -> Preferences:
     """
     known = {
         key: value
-        for key, value in from_plain(stored, dict[str, object], default={}).items()
+        for key, value in from_plain(
+            stored,
+            dict[str, object],
+            default=dict[str, object](),
+        ).items()
         if key in Preferences.model_fields
     }
     return Preferences.model_validate(known)
@@ -594,6 +658,7 @@ async def write_preferences(
         [
             *sorted(key for key, value in change.items() if value is None),
             "chat_style",
+            "chat_tool_calls",
         ],
         user_id,
     )

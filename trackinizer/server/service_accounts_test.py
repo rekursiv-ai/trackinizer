@@ -7,10 +7,13 @@ import uuid
 import pytest
 
 from trackinizer.server.auth import AudienceCeilingError, AuthIdentity
+from trackinizer.server.config import Assistant
 from trackinizer.server.service_accounts import (
+    require_assistant_grant,
     require_grantable,
     service_token_pin,
 )
+from trackinizer.wire.audience import AUDIENCES
 
 
 _OPEN = frozenset({"open"})
@@ -94,6 +97,34 @@ class TestServiceTokenPin:
             _ = service_token_pin(_BOTH, minter=pinned, open_into="staff")
 
 
+class TestRequireAssistantGrant:
+    _ASSISTANT = Assistant(actor="scout", email="scout@example.com")
+
+    def test_handing_on_the_assistant_needs_every_audience(self) -> None:
+        require_assistant_grant(
+            _caller(reads=AUDIENCES),
+            email="scout@example.com",
+            assistant=self._ASSISTANT,
+        )
+        with pytest.raises(AudienceCeilingError, match="reads"):
+            require_assistant_grant(
+                _caller(reads=_BOTH),
+                email="scout@example.com",
+                assistant=self._ASSISTANT,
+            )
+
+    @pytest.mark.parametrize("assistant", [None, _ASSISTANT])
+    def test_another_account_or_no_assistant_asks_nothing(
+        self,
+        assistant: Assistant | None,
+    ) -> None:
+        require_assistant_grant(
+            _caller(reads=frozenset()),
+            email="campaign@service.invalid" if assistant else "scout@example.com",
+            assistant=assistant,
+        )
+
+
 class TestRequireGrantable:
     def test_a_caller_may_grant_what_it_holds(self) -> None:
         require_grantable(_caller(reads=_BOTH), reads=_BOTH, opens=_BOTH)
@@ -109,6 +140,32 @@ class TestRequireGrantable:
         caller = _caller(reads=_BOTH, opens=_OPEN)
         with pytest.raises(AudienceCeilingError, match="opens"):
             require_grantable(caller, reads=_OPEN, opens=_BOTH)
+
+
+def test_assistant_grant_requires_every_read_and_open_audience() -> None:
+    assistant = Assistant(actor="scout", email="scout@service.invalid")
+    all_audiences = frozenset({"open", "private", "staff"})
+    require_assistant_grant(
+        _caller(reads=all_audiences),
+        email=assistant.email,
+        assistant=assistant,
+    )
+    for caller, message in (
+        (_caller(reads=_OPEN, opens=all_audiences), "reads"),
+        (_caller(reads=all_audiences, opens=_OPEN), "opens"),
+    ):
+        with pytest.raises(AudienceCeilingError, match=message):
+            require_assistant_grant(caller, email=assistant.email, assistant=assistant)
+    require_assistant_grant(
+        _caller(reads=_OPEN),
+        email="other@service.invalid",
+        assistant=assistant,
+    )
+    require_assistant_grant(
+        _caller(reads=_OPEN),
+        email=assistant.email,
+        assistant=None,
+    )
 
 
 if __name__ == "__main__":

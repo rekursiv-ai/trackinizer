@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from trackinizer.server.api._deps import get_store
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api.query import parse_filter
-from trackinizer.server.api.session_access import request_principal
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.wire.column_shapes import lowers_into_sql
 from trackinizer.wire.routes import (

@@ -90,6 +90,18 @@ def test_relation_edges_unweighted_is_unit() -> None:
     assert edges[0].weight == 1.0
 
 
+def test_relation_edges_rejects_a_non_numeric_valence() -> None:
+    rows = [{"from_id": _uuid(1), "to_id": _uuid(0), "valence": "0.5"}]
+    with pytest.raises(TypeError, match="numeric valence, got str"):
+        relation_edges(rows, weighted=True)
+
+
+def test_relation_edges_rejects_a_non_uuid_id() -> None:
+    rows = [{"from_id": str(_uuid(1)), "to_id": _uuid(0), "valence": 1.0}]
+    with pytest.raises(TypeError, match="UUID id, got str"):
+        relation_edges(rows, weighted=True)
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

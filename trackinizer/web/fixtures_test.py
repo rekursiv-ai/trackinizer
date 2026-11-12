@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from treekle import MutablePlainTree
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 _FIXTURES: Final = _CWD / "test" / "testdata"
 _UPDATE: Final = "TRACKINIZER_WEB_FIXTURES_UPDATE"
 # A second admin, as playwright.config.ts seeds one: the --no-auth admin cannot
@@ -67,8 +67,11 @@ _TIME: Final = re.compile(
 )
 
 
+# Real user dirs: the server's PGlite reuses this host's node modules and initialized
+# database. In a test's own empty cache each run installed both afresh, ~1.6 s.
 @pytest.mark.cli_python_subprocess
 @pytest.mark.db_pglite
+@pytest.mark.real_user_dirs
 def test_every_call_answers_as_its_fixture_says(tmp_path: Path) -> None:
     with _server(tmp_path) as url, httpx2.Client(base_url=url, timeout=30.0) as http:
         recorder = _Recorder(http=http)
@@ -920,7 +923,8 @@ def _wait_for(url: str, *, server: subprocess.Popen[bytes], log: Path) -> None:
         with suppress(httpx2.TransportError):
             if httpx2.get(f"{url}/api/meta/enums", timeout=1.0).is_success:
                 return
-        time.sleep(0.1)
+        # The server is another process; only its port says it is up.
+        time.sleep(0.1)  # house-ignore[sleep] -- See above.
     pytest.fail(f"The server did not answer within 90 s:\n{log.read_text()}")
 
 

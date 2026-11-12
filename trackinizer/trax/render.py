@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, cast
 
 import json
+import re
 import shutil
 import sys
 
@@ -41,6 +42,31 @@ def show_ids() -> bool:
     return SHOW_IDS.get()
 
 
+# C0 but tab and newline, DEL and C1, bidi marks and controls, the language tag block.
+_UNSAFE_OUTPUT = re.compile(
+    "[\\x00-\\x08\\x0b-\\x1f\\x7f-\\x9f\\u061c\\u200e\\u200f"
+    "\\u202a-\\u202e\\u2066-\\u2069\\U000e0000-\\U000e007f]",
+)
+
+
+def terminal_safe(text: str) -> str:
+    """Drop what a terminal would act on, or a reader could not see, from ``text``.
+
+    Rows hold text from outside, such as a signup's address. ANSI and OSC sequences could
+    hide or forge rows, set a title or reach a clipboard, in their 7-bit or C1 forms, and
+    bidi and tag characters hide what a person reads. Tabs and newlines stay; JSON output
+    escapes all of these anyway.
+
+    Args:
+      text: What is about to be written.
+
+    Returns:
+      text: The same, without those characters.
+
+    """
+    return _UNSAFE_OUTPUT.sub("", text)
+
+
 def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
     """Write one message to stdout (or stderr when ``err``).
 
@@ -56,7 +82,7 @@ def echo(message: object = "", *, err: bool = False, nl: bool = True) -> None:
 
     """
     stream = err_stream() if err else out_stream()
-    stream.write(str(message))
+    stream.write(terminal_safe(str(message)))
     if nl:
         stream.write("\n")
 
@@ -267,7 +293,11 @@ def format_edge(view: Mapping[str, object], *, changes: bool = False) -> str:
     lines.append("")
     lines.append("edge:")
     lines.extend(_format_selected_edge(edge))
-    change_rows = from_plain(view.get("changes"), list[dict[str, object]], default=[])
+    change_rows = from_plain(
+        view.get("changes"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     if changes and change_rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -305,9 +335,9 @@ def format_show(
     lines.append(f"  title:       {self_view.get('title') or ''}")
     if self_view.get("description"):
         lines.append(f"  description: {self_view['description']}")
-    if labels := from_plain(self_view.get("labels"), list[str], default=[]):
+    if labels := from_plain(self_view.get("labels"), list[str], default=list[str]()):
         lines.append(f"  labels:      {','.join(labels)}")
-    if subs := from_plain(self_view.get("subscribers"), list[str], default=[]):
+    if subs := from_plain(self_view.get("subscribers"), list[str], default=list[str]()):
         lines.append(f"  subscribers: {','.join(subs)}")
     lines.extend(
         f"  {extra + ':':12} {value}"
@@ -344,7 +374,11 @@ def format_show(
         ids = from_plain(self_view["codechanges"], list[str])
         lines.append(f"  codechanges: {len(ids)} entries")
         lines.extend(f"    - {cid}" for cid in ids)
-    cost = from_plain(self_view.get("marginal_cost"), dict[str, object], default={})
+    cost = from_plain(
+        self_view.get("marginal_cost"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     agent_cost = from_plain(cost.get("agent_usd"), float, default=0.0)
     resource_cost = from_plain(cost.get("resource_usd"), float, default=0.0)
     if agent_cost:
@@ -358,7 +392,7 @@ def format_show(
     if selected_edge := from_plain(
         view.get("selected_edge"),
         dict[str, object],
-        default={},
+        default=dict[str, object](),
     ):
         lines.append("")
         lines.append("Selected edge:")
@@ -369,7 +403,11 @@ def format_show(
         lines.append("")
         lines.extend(_format_relations(edges, inbound=False))
         lines.extend(_format_relations(backlinks, inbound=True))
-    rows = from_plain(view.get("changes"), list[dict[str, object]], default=[])
+    rows = from_plain(
+        view.get("changes"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     if changes and rows:
         lines.append("")
         lines.append("Recent changes:")
@@ -508,8 +546,6 @@ def _table_widths(
             for index, natural_width in enumerate(natural)
             if widths[index] < natural_width
         ]
-        if not candidates:
-            break
         index = max(
             candidates,
             key=lambda candidate: natural[candidate] - widths[candidate],
@@ -543,7 +579,11 @@ def _row_value(value: object, depth: int = 0) -> str:
 
 def _row_cost(row: Mapping[str, object], key: str) -> str:
     value = from_plain(
-        from_plain(row.get("marginal_cost"), dict[str, object], default={}).get(key),
+        from_plain(
+            row.get("marginal_cost"),
+            dict[str, object],
+            default=dict[str, object](),
+        ).get(key),
         float,
         default=0.0,
     )
@@ -598,8 +638,8 @@ _CHANGE_DELTA_HIDDEN_KEYS: frozenset[str] = frozenset(
 
 
 def _format_change_delta(change: Mapping[str, object]) -> list[str]:
-    old = from_plain(change.get("old"), dict[str, object], default={})
-    new = from_plain(change.get("new"), dict[str, object], default={})
+    old = from_plain(change.get("old"), dict[str, object], default=dict[str, object]())
+    new = from_plain(change.get("new"), dict[str, object], default=dict[str, object]())
     return [
         f"{key}: {old_text or '∅'} -> {new_text or '∅'}"
         for key in tuple(dict.fromkeys((*old.keys(), *new.keys())))
@@ -663,7 +703,7 @@ def _edge_annotation(peer: Mapping[str, object]) -> str:
         parts.append(f"prio={peer['priority']}")
     if "valence" in peer:
         parts.append(f"val={peer['valence']}")
-    if labels := from_plain(peer.get("labels"), list[str], default=[]):
+    if labels := from_plain(peer.get("labels"), list[str], default=list[str]()):
         parts.append("labels=" + ",".join(labels))
     if note := peer.get("note"):
         parts.append(str(note))

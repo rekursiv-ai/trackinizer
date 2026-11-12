@@ -31,7 +31,7 @@ from typing import (
     override,
 )
 
-from treekle import PlainTree, from_plain, immutable, to_plain
+from treekle import PlainTree, ReadError, from_plain, immutable, to_plain
 
 from trackinizer.sagent.model.capability import SummaryKind, ThinkingEffort
 
@@ -71,6 +71,7 @@ __all__ = [
     "PlayAudioResult",
     "ReadResult",
     "RemoteToolResult",
+    "RequestMeasurement",
     "SessionRecord",
     "SessionResult",
     "SkillResult",
@@ -86,6 +87,7 @@ __all__ = [
     "UncategorizedRecord",
     "UncategorizedToolResult",
     "UserMessage",
+    "WebBrowserResult",
     "WebFetchResult",
     "WebSearchHit",
     "WebSearchResult",
@@ -262,6 +264,12 @@ class ToolResult:
     context_id: int | None = None
     timestamp: str | None = None
     call_id: str
+    wire_id: str = ""
+    """The id a call run on another machine went by on the wire, which a relay
+    between logs it by; ``""`` for a call run here. Not ``call_id``: the model's ids
+    are unique only within one agent's window, and a machine serves every agent of
+    a session."""
+
     is_error: bool | None = None
     stub: (
         Literal[
@@ -449,6 +457,18 @@ class WebFetchResult(ToolResult):
     @override
     def body(self) -> str:
         return self.content or ""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class WebBrowserResult(ToolResult):
+    """A browser action and its inspection or interaction output."""
+
+    action: str = ""
+    content: str = ""
+
+    @override
+    def body(self) -> str:
+        return self.content
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -698,6 +718,21 @@ class SystemMessage:
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class RequestMeasurement:
+    """A measured prompt and optional appended group, identified without storing text."""
+
+    tokenizer: str
+    model: str
+    frame: str
+    prefix: str
+    records: int
+    prompt: int
+    block: str = ""
+    block_records: int = 0
+    block_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class TokenUsage:
     """Token accounting and rate limits a provider reported."""
 
@@ -706,6 +741,7 @@ class TokenUsage:
     info: Mapping[str, PlainTree] = field(default_factory=_no_json)
     rate_limits: Mapping[str, PlainTree] = field(default_factory=_no_json)
     extra: Mapping[str, PlainTree] = field(default_factory=_no_json)
+    measurement: RequestMeasurement | None = None
 
     def __post_init__(self) -> None:
         _freeze(self, "info", "rate_limits", "extra")
@@ -805,6 +841,7 @@ type AnyToolResult = (
     | EditResult
     | WebSearchResult
     | WebFetchResult
+    | WebBrowserResult
     | AgentSpawnResult
     | GrepResult
     | GlobResult
@@ -900,8 +937,10 @@ def record_classes() -> dict[str, type]:
             WebSearchHit,
             WebSearchResult,
             WebFetchResult,
+            WebBrowserResult,
             AgentSpawnResult,
             SystemMessage,
+            RequestMeasurement,
             TokenUsage,
             ContextState,
             ContextCompaction,
@@ -1011,12 +1050,17 @@ def stored_record(
       ReadError: ``plain`` does not read as ``target``.
 
     """
-    return from_plain(
-        _renamed(plain),
-        target,
-        classes=classes or record_classes(),
-        default_concrete_types=CONCRETE_TYPES,
-    )
+    try:
+        return from_plain(
+            _renamed(plain),
+            target,
+            classes=classes or record_classes(),
+            default_concrete_types=CONCRETE_TYPES,
+        )
+    # Treekle sets each field a tagged record holds, so one its class lacks fails
+    # on the class's slots; it does not read, as a field of no tagged record.
+    except AttributeError as error:
+        raise ReadError(str(error)) from error
 
 
 # ``WebSearchResults`` is now ``WebSearchResult``, which named one of its hits; a hit is

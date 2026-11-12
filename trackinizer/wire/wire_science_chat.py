@@ -21,7 +21,7 @@ A line goes to ``POST /api/chats``. Who answers it is the canvas's provider
 conversation's own session while the assistant keeps one open, and for the
 assistant's service session otherwise, which opens or resumes the conversation's
 session before it answers. For ``claude`` or ``codex`` it queues it for the
-conversation's session, which the person's own run on a machine of theirs drains.
+conversation's session, which the person's own run on a host of theirs drains.
 The answer to a post is the conversation id at once; ``GET /api/chats/{id}`` answers
 404 until some session carries the conversation.
 
@@ -45,6 +45,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    StringConstraints,
     ValidationError,
     field_validator,
     model_validator,
@@ -140,7 +141,7 @@ type ChatProvider = Literal["assistant", "claude", "codex", "sagent"]
 
 Values:
   assistant: The server's shared assistant.
-  claude: The person's own claude agent run on a machine of theirs, attached to
+  claude: The person's own claude agent run on a host of theirs, attached to
     the chat's session.
   codex: The same with codex.
   sagent: The same with sagent.
@@ -252,7 +253,7 @@ class ChatModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     id: str
-    """What ``/model`` takes: claude's family alias, codex's wire id."""
+    """What ``/model`` takes: the model's wire id, as ``claude-fable-5-2``."""
 
     label: str
     """Its name on a person's screen, as ``Opus 5.5``."""
@@ -444,7 +445,10 @@ class ChatSend(BaseModel):
 
 
 class ChatPartial(BaseModel):
-    """The answer a chat's assistant is writing, as far as it has written it."""
+    """What a chat's assistant is doing on a turn, as far as it has done it.
+
+    Each text is vetted for secrets, as a stored answer is, and clipped.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -453,11 +457,22 @@ class ChatPartial(BaseModel):
     stored shows no partial of it again."""
 
     text: str = Field(max_length=CHAT_PARTIAL_CHARS)
-    """The answer so far, as a reader is shown it: vetted for secrets, without the
-    notes the model keeps, and clipped."""
+    """The answer so far, without the notes the model keeps."""
 
     done: bool = False
     """Whether ``text`` is the whole answer, which the assistant is now storing."""
+
+    thinking: str = Field(default="", max_length=CHAT_PARTIAL_CHARS)
+    """The reasoning the model's call is writing, as its provider summarizes it."""
+
+    calls: list[Annotated[str, StringConstraints(max_length=1_000)]] = Field(
+        default_factory=list[str],
+        max_length=50,
+    )
+    """The tool calls running now, each by its label."""
+
+    status: str = Field(default="", max_length=200)
+    """The status line sagent's terminal UI shows: time, tokens, spend, the wait."""
 
 
 class ChatPartialState(BaseModel):

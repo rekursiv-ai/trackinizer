@@ -97,7 +97,10 @@ def test_a_slot_is_an_absolute_box_path_and_an_https_link(
     [
         ("/home/user/uploads/a.png", True),
         ("/home/user/uploads/My File (1).md", True),
+        ("/" + "a" * 511, True),
         ("home/user/a.png", False),
+        ("/../a", False),
+        ("//home/user/a", False),
         ("/home/user/../a", False),
         ("/home/user/./a", False),
         ("/home/user//a", False),

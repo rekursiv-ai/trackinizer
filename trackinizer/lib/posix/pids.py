@@ -49,7 +49,8 @@ async def written_pid(path: Path, *, timeout_sec: float = 5.0) -> int:
             text = _text(path)
             if text:
                 return int(text)
-            await asyncio.sleep(0.01)
+            # Another process writes the file; no portable event says when.
+            await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
 
 
 # A zombie has exited and waits only for its parent to collect it; ``kill(pid,
@@ -69,8 +70,9 @@ def running(pid: int, *, proc: Path = Path("/proc")) -> bool:
     stat = proc / str(pid) / "stat"
     if proc.is_dir():
         try:
+            # A reaped zombie can briefly remain visible as dead (X or x).
             # From the last ``) ``: the name before it may hold one.
-            return stat.read_text().rsplit(") ", 1)[1][0] != "Z"
+            return stat.read_text().rsplit(") ", 1)[1][0] not in {"Z", "X", "x"}
         # Gone before the open, or reaped between the open and the read.
         except (FileNotFoundError, ProcessLookupError):
             return False
@@ -98,7 +100,8 @@ async def gone_within(pids: list[int], *, seconds: float = 3.0) -> bool:
     while any(running(pid) for pid in pids):
         if time.monotonic() > deadline:
             return False
-        await asyncio.sleep(0.01)
+        # No portable event marks the exit of a process that is not our child.
+        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
     return True
 
 
@@ -185,7 +188,8 @@ def unlocked_within(path: Path, *, seconds: float) -> bool:
     while locked(path):
         if time.monotonic() > deadline:
             return False
-        time.sleep(0.005)
+        # No event marks an flock's release by another process.
+        time.sleep(0.005)  # house-ignore[sleep] -- See above.
     return True
 
 

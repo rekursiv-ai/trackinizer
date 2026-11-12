@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import AsyncMock, Mock
 
 import uuid
 
@@ -12,6 +13,7 @@ from treekle import immutable
 import pytest
 import pytest_asyncio
 
+from trackinizer.conftest import FakeEngine, RecordingPolicy
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -20,17 +22,32 @@ from trackinizer.sagent.session.types import (
     UncategorizedRecord,
     UserMessage,
 )
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
-from trackinizer.server.visuals.session_lines import LINE_CHARS, LastLine
-from trackinizer.server.visuals.session_list import SessionList, list_own_sessions
+from trackinizer.server.visuals import session_list
+from trackinizer.server.visuals.session_lines import (
+    LINE_CHARS,
+    LastLine,
+    SessionLines,
+)
+from trackinizer.server.visuals.session_list import (
+    SessionList,
+    _placed,
+    _Places,
+    list_own_sessions,
+)
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire import wire_science_chat
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from asyncpg import Record
+
+    from trackinizer.lib.postgres import DatabaseEngine
     from trackinizer.sagent.session.types import SessionRecord
     from trackinizer.server.store.core import Store
 
@@ -39,7 +56,7 @@ _USER: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _EMAIL: Final = "ada@example.com"
 _KEY: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
 _OPEN: Final = SessionReader(audiences=frozenset({"open"}), email=_EMAIL)
-_NOW: Final = datetime.now(UTC)
+_NOW: Final[datetime] = datetime.now(UTC)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -222,7 +239,7 @@ async def test_a_session_the_caller_does_not_read_is_left_out(store: Store) -> N
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_a_live_run_says_its_machine_and_a_lapsed_one_where_it_last_ran(
+async def test_a_live_run_says_its_host_and_a_lapsed_one_where_it_last_ran(
     store: Store,
 ) -> None:
     now = [0.0]
@@ -230,22 +247,22 @@ async def test_a_live_run_says_its_machine_and_a_lapsed_one_where_it_last_ran(
     live = await _session(store, records=[_turn(_NOW)])
     lapsed = await _session(store, records=[_turn(_NOW - timedelta(hours=1))])
     never = await _session(store, records=[_turn(_NOW - timedelta(hours=2))])
-    inbound.mark_poller(lapsed, machine="build-box", cli="codex")
+    inbound.mark_poller(lapsed, host="build-box", cli="codex")
     now[0] = 60.0
-    inbound.mark_poller(live, machine="workstation", cli="claude", instance="a" * 32)
+    inbound.mark_poller(live, host="workstation", cli="claude", instance="a" * 32)
     _ = inbound.report_state(live, instance="a" * 32, state="running")
 
     sessions = {
         each.id: each for each in (await _list(store, inbound=inbound)).sessions
     }
 
-    assert (sessions[live].live, sessions[live].machine, sessions[live].state) == (
+    assert (sessions[live].live, sessions[live].host, sessions[live].state) == (
         True,
         "workstation",
         "running",
     )
-    assert (sessions[lapsed].live, sessions[lapsed].machine) == (False, "build-box")
-    assert (sessions[lapsed].state, sessions[never].machine) == ("idle", None)
+    assert (sessions[lapsed].live, sessions[lapsed].host) == (False, "build-box")
+    assert (sessions[lapsed].state, sessions[never].host) == ("idle", None)
 
 
 @pytest.mark.db_pglite
@@ -341,6 +358,18 @@ async def test_the_last_line_is_the_last_said_on_one_line_by_whom_and_no_tool_ou
     assert sessions[quiet] is None
 
 
+def test_a_placed_session_sits_on_the_first_of_the_callers_canvases_it_names() -> None:
+    mine, other = uuid.uuid4(), uuid.uuid4()
+    places = _Places(workspace={mine: None})
+
+    def placed(*labels: str) -> uuid.UUID | None:
+        return _placed(cast("Record", {"labels": list(labels)}), places=places)
+
+    assert placed("git:o@main", "canvas:not-a-uuid", f"canvas:{other}") is None
+    assert placed(f"canvas:{other}", "canvas:bad", f"canvas:{mine}") == mine
+    assert _placed(cast("Record", {"labels": None}), places=places) is None
+
+
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_campaign_sessions_name_their_issues_and_each_issue_its_parents(
@@ -366,6 +395,170 @@ async def test_campaign_sessions_name_their_issues_and_each_issue_its_parents(
         (meta, []),
         (campaign, [meta]),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("predicate", ["TRUE", "FALSE"])
+async def test_own_session_listing_joins_places_issues_and_live_state_without_a_database(
+    monkeypatch: pytest.MonkeyPatch,
+    predicate: str,
+) -> None:
+    chat, placed, foreign, overflow = (uuid.uuid4() for _ in range(4))
+    conversation, placed_canvas, issue, parent = (uuid.uuid4() for _ in range(4))
+    engine = FakeEngine()
+    rows = [
+        _listing_row(chat, chat=wire_science_chat.chat_session_id(conversation)),
+        _listing_row(
+            placed,
+            labels=[
+                "git:main",
+                "canvas:invalid",
+                f"canvas:{uuid.uuid4()}",
+                f"canvas:{placed_canvas}",
+            ],
+        ),
+        _listing_row(foreign, labels=["canvas:invalid", f"canvas:{uuid.uuid4()}"]),
+        _listing_row(overflow),
+    ]
+    engine.conn.fetch.side_effect = [
+        rows,
+        [{"from_id": chat, "to_id": issue}, {"from_id": placed, "to_id": issue}],
+        [
+            {
+                "id": parent,
+                "seq": 1,
+                "title": "Meta",
+                "status": "active",
+                "parents": [],
+            },
+            {
+                "id": issue,
+                "seq": 2,
+                "title": "Work",
+                "status": "complete",
+                "parents": [parent],
+            },
+        ],
+    ]
+    line = LastLine(author=None, text="Done")
+    lines = AsyncMock(
+        return_value={
+            chat: SessionLines(
+                goal="Ship",
+                first_line="Please fix",
+                last_line=line,
+            ),
+        },
+    )
+    states = AsyncMock(return_value={chat: "running"})
+    monkeypatch.setattr(session_list, "session_lines", lines)
+    monkeypatch.setattr(session_list, "live_run_states", states)
+    policy = RecordingPolicy()
+    monkeypatch.setattr(RecordingPolicy, "read_filter", Mock(return_value=predicate))
+    inbound = InboundQueue()
+    inbound.mark_poller(placed, host="old-box")
+    inbound.forget_poller(placed)
+    inbound.mark_poller(chat, host="live-box")
+    before = datetime.now(UTC)
+
+    listed = await list_own_sessions(
+        cast("DatabaseEngine", engine),
+        email=_EMAIL,
+        reader=_OPEN,
+        inbound=inbound,
+        days=2,
+        limit=3,
+        policy=policy,
+        principal=Principal(email=_EMAIL, role="viewer"),
+    )
+
+    assert listed.more
+    assert [each.id for each in listed.sessions] == [chat, placed, foreign]
+    first, second, third = listed.sessions
+    assert first.conversation_id == conversation
+    assert (first.goal, first.first_line, first.last_line) == (
+        "Ship",
+        "Please fix",
+        line,
+    )
+    assert (first.live, first.state, first.host) == (True, "running", "live-box")
+    assert second.produced_by == [issue]
+    assert (second.live, second.state, second.host) == (False, "idle", "old-box")
+    assert (third.canvas_id, third.workspace_id, third.host) == (None, None, None)
+    assert (third.goal, third.first_line, third.last_line, third.produced_by) == (
+        None,
+        None,
+        None,
+        [],
+    )
+    assert [(each.id, each.parent_ids) for each in listed.issues] == [
+        (parent, []),
+        (issue, [parent]),
+    ]
+    lines.assert_awaited_once_with(
+        engine.conn,
+        session_ids=[chat, placed, foreign],
+        account=_EMAIL,
+    )
+    states.assert_awaited_once_with(
+        engine.conn,
+        inbound=inbound,
+        session_ids=[chat, placed, foreign],
+    )
+    calls = engine.conn.fetch.await_args_list
+    recent = calls[0]
+    produced, issues = calls[-2:]
+    assert recent.args[1] == _EMAIL
+    since = recent.args[2]
+    assert isinstance(since, datetime)
+    assert before - timedelta(days=2) <= since <= datetime.now(UTC) - timedelta(days=2)
+    assert recent.args[3] == 4
+    assert "ORDER BY active DESC, s.id DESC LIMIT $3" in str(recent.args[0])
+    assert produced.args[1:] == ([chat, placed, foreign],)
+    assert issues.args[1:] == ([issue],)
+    for call in (produced, issues):
+        assert (
+            "EXISTS (SELECT 1 FROM inquiries readable_inquiry" in str(call.args[0])
+        ) == (predicate == "FALSE")
+        assert "ARRAY['workspace']" in str(call.args[0])
+
+
+@pytest.mark.asyncio
+async def test_no_matching_sessions_returns_empty_lists_without_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = FakeEngine()
+    monkeypatch.setattr(session_list, "session_lines", AsyncMock(return_value={}))
+    monkeypatch.setattr(session_list, "live_run_states", AsyncMock(return_value={}))
+    listed = await list_own_sessions(
+        cast("DatabaseEngine", engine),
+        email=_EMAIL,
+        reader=_OPEN,
+        inbound=InboundQueue(),
+        days=1,
+        limit=1,
+    )
+    assert listed == SessionList(sessions=[], issues=[], more=False)
+
+
+def _listing_row(
+    session_id: uuid.UUID,
+    *,
+    chat: str | None = None,
+    labels: Sequence[str] = (),
+) -> dict[str, object]:
+    return {
+        "id": session_id,
+        "seq": 1,
+        "title": "Session",
+        "status": "active",
+        "cli": "claude",
+        "created": _NOW,
+        "ended": None,
+        "active": _NOW,
+        "chat": chat,
+        "labels": list(labels),
+    }
 
 
 if __name__ == "__main__":

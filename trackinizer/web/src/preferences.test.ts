@@ -21,6 +21,8 @@ function server(stored: Preferences = DEFAULTS) {
 const patches = (sent: ReturnType<typeof stubFetch>) => sent.map(({ method, path, body }) => [method, path, body]);
 
 test("the defaults show until the profile brings the user's; a profile without them, from an older server, leaves them", () => {
+  expect(DEFAULTS.chat_provider).toBe("assistant");
+  expect(DEFAULTS.assistant_prompt).toBe("sagent");
   expect(preferences()).toEqual(DEFAULTS);
   receivePreferences(undefined);
   expect(preferences()).toEqual(DEFAULTS);

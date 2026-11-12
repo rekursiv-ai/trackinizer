@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, _Call
+from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock
 
 import uuid
 
@@ -12,7 +12,13 @@ from treekle import from_plain
 
 import pytest
 
+from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.server.api.app import app
+from trackinizer.server.api.conftest import (
+    TEST_API_KEY_ID,
+    install_identity,
+    make_test_identity,
+)
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
 
 
@@ -22,6 +28,7 @@ if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.mock_test_support import MockCall
     from trackinizer.server.store.core import Store
 
 
@@ -511,13 +518,13 @@ class TestSetTokenRole:
 _WHEN = datetime(2026, 10, 9, 8, 0, tzinfo=UTC)
 
 
-def user_row(row: dict[str, object] | None) -> AsyncMock:
+def user_row(row: dict[str, object] | None) -> AsyncMockProtocol[object]:
     """Fake ``fetchrow``: ``row`` for the profile's read of the user, None for any other."""
 
     async def fetchrow(sql: str, *_args: object) -> dict[str, object] | None:
         return row if sql.startswith("SELECT name, last_login, preferences ") else None
 
-    return AsyncMock(side_effect=fetchrow)
+    return cast(AsyncMockProtocol[object], AsyncMock(side_effect=fetchrow))
 
 
 class TestProfile:
@@ -575,10 +582,18 @@ class TestProfile:
             "terminal_placement": "bottom",
             "home": "graph",
             "chat_provider": "assistant",
-            "assistant_prompt": "lead",
+            "assistant_prompt": "sagent",
             "cli_folder": "",
-            "chat_tool_calls": True,
+            "chat_view": {
+                "view": "chat",
+                "density": "auto",
+                "thinking": False,
+                "output_lines": "tool",
+                "times": False,
+            },
             "autofix": True,
+            "automerge": False,
+            "hide_closed_pulls": True,
             **_EMPTY_USER_DATA,
         }
 
@@ -604,6 +619,7 @@ _EMPTY_USER_DATA: dict[str, object] = {
     "read": {"boundary": None, "marks": []},
     "collapsed": [],
     "dismissed": [],
+    "unread_tabs": [],
     "lens": None,
     "drafts": {},
     "create_draft": None,
@@ -617,6 +633,90 @@ _EMPTY_USER_DATA: dict[str, object] = {
     },
     "settings_artifact_id": None,
 }
+
+
+class TestProfileRoute:
+    def test_returns_identity(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.fetchrow = user_row(
+            {
+                "name": "Alice",
+                "last_login": datetime(2026, 1, 1, tzinfo=UTC),
+                "preferences": None,
+            },
+        )
+        r = client.get("/api/me/profile")
+        assert r.status_code == 200, r.text
+        body = from_plain(r.json(), dict[str, object])
+        assert body["email"]
+        assert body["role"] == "admin"
+        assert body["name"] == "Alice"
+        last_login = body["last_login"]
+        assert isinstance(last_login, str)
+        assert last_login.startswith("2026")
+
+    @pytest.mark.parametrize("key", [TEST_API_KEY_ID, None])
+    def test_names_the_key_the_caller_used(
+        self,
+        key: uuid.UUID | None,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(api_key_id=key))
+        engine.conn.fetchrow = user_row(
+            {"name": "Alice", "last_login": None, "preferences": None},
+        )
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        assert body["api_key_id"] == (None if key is None else str(key))
+
+    @pytest.mark.parametrize(
+        ("read", "opening", "pinned"),
+        [
+            ({"open"}, {"open"}, None),
+            ({"staff", "open"}, {"open", "staff"}, None),
+            ({"open"}, {"staff"}, "staff"),
+        ],
+    )
+    def test_lists_what_the_credential_reads_and_opens(
+        self,
+        read: set[str],
+        opening: set[str],
+        pinned: str | None,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        base = make_test_identity()
+        install_identity(
+            AuthIdentity(
+                user_id=base.user_id,
+                api_key_id=base.api_key_id,
+                email=base.email,
+                role=base.role,
+                read_audiences=frozenset(read),
+                open_audiences=frozenset(opening),
+                pinned_audience=pinned,
+            ),
+        )
+        engine.conn.fetchrow = user_row(
+            {"name": "Alice", "last_login": None, "preferences": None},
+        )
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        assert body["read_audiences"] == sorted(read)
+        assert body["open_audiences"] == sorted(opening)
+        assert body["pinned_audience"] == pinned
+
+    def test_401_without_auth(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        app.dependency_overrides.pop(current_user, None)
+        r = client.get("/api/me/profile")
+        assert r.status_code == 401
 
 
 class TestPreferences:
@@ -671,10 +771,18 @@ class TestPreferences:
             "terminal_placement": "bottom",
             "home": "graph",
             "chat_provider": "assistant",
-            "assistant_prompt": "lead",
+            "assistant_prompt": "sagent",
             "cli_folder": "",
-            "chat_tool_calls": True,
+            "chat_view": {
+                "view": "chat",
+                "density": "auto",
+                "thinking": False,
+                "output_lines": "tool",
+                "times": False,
+            },
             "autofix": True,
+            "automerge": False,
+            "hide_closed_pulls": True,
             **_EMPTY_USER_DATA,
         }
         call = engine.conn.fetchrow.call_args
@@ -685,7 +793,7 @@ class TestPreferences:
         )
         assert call.args[1:] == (
             {"theme": "light"},
-            ["chat_side", "chat_style"],
+            ["chat_side", "chat_style", "chat_tool_calls"],
             uuid.UUID("11111111-1111-1111-1111-111111111111"),
         )
 
@@ -700,7 +808,7 @@ class TestPreferences:
         assert r.status_code == 200, r.text
         assert engine.conn.fetchrow.call_args.args[1:3] == (
             {"read": read},
-            ["lens", "chat_style"],
+            ["lens", "chat_style", "chat_tool_calls"],
         )
 
     @pytest.mark.parametrize(
@@ -827,7 +935,7 @@ class TestRouteRequiresAuth:
         assert r.status_code == 401
 
 
-def _sql(call: _Call) -> str:
+def _sql(call: MockCall) -> str:
     """Narrow a recorded mock argument to the SQL string passed by production."""
     sql = call.args[0]
     assert isinstance(sql, str)

@@ -19,6 +19,7 @@ from trackinizer.wire.wire_job import (
     TERMINAL_STATES,
     Grant,
     GrantStatus,
+    JobView,
     NodeAddress,
     ReadGrantBody,
     SubmitBody,
@@ -201,6 +202,11 @@ def test_a_node_name_outside_the_pattern_is_refused(name: str) -> None:
         {"user": "rai-ext-job-1234567890123"},
         {"user": "gj7"},
         {"user": "rai-ext-owner-7"},
+        {"user": "rai-ext-staging-owner-7"},
+        {"user": "rai-ext-Staging-job-7"},
+        {"user": "rai-ext-a-b-job-7"},
+        {"user": "rai-ext-a2345678901-job-7"},
+        {"user": "rai-ext-staging-job-1234567890123"},
         {"port": 0},
         {"port": 65_536},
         {"host": ""},
@@ -216,6 +222,13 @@ def test_a_node_address_refuses_a_bad_field(fields: dict[str, object]) -> None:
 def test_a_jobs_node_user_is_one_a_node_address_accepts(job_id: int) -> None:
     assert job_user(job_id) == f"rai-ext-job-{job_id}"
     assert _node(user=job_user(job_id)).user == job_user(job_id)
+
+
+def test_a_tagged_servers_job_user_is_one_a_node_address_accepts() -> None:
+    user = job_user(7, tag="staging")
+
+    assert user == "rai-ext-staging-job-7"
+    assert _node(user=user).user == user
 
 
 def _grant(**fields: object) -> dict[str, object]:
@@ -262,6 +275,39 @@ def test_a_read_grant_body_validates_the_key_like_a_submit() -> None:
     assert ReadGrantBody(public_key=f"{_KEY} c").public_key == _KEY
     with pytest.raises(pydantic.ValidationError):
         ReadGrantBody(public_key=_RSA)
+
+
+@pytest.mark.parametrize(
+    ("gpu_seconds", "gpu_minutes"),
+    [(None, None), (0, 0), (1, 1), (60, 1), (61, 2), (480, 8)],
+)
+def test_a_job_view_sends_its_gpu_seconds_rounded_up_to_the_minute(
+    gpu_seconds: int | None,
+    gpu_minutes: int | None,
+) -> None:
+    view = JobView.model_validate(
+        {
+            "id": 7,
+            "state": "completed",
+            "node": None,
+            "gpus": 1,
+            "minutes": 5,
+            "label": "",
+            "argv": ["python", "x.py"],
+            "commit": _COMMIT,
+            "bundle_sha256": None,
+            "created_at": "2026-10-21T12:00:00Z",
+            "started_at": None,
+            "ended_at": None,
+            "gpu_seconds": gpu_seconds,
+            "gpu_minutes": 999,
+            "usd": None,
+            "reason": "",
+            "upload_serial": None,
+        },
+    )
+
+    assert view.model_dump(mode="json")["gpu_minutes"] == gpu_minutes
 
 
 def test_the_read_verbs_are_a_subset_of_the_upload_verbs() -> None:

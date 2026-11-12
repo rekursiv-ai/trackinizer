@@ -9,11 +9,15 @@ from trackinizer.lib.agent.sessions.provider_fields import read_or_default
 
 @pytest.mark.parametrize("value", [None, "failed", ["a"], 3])
 def test_a_missing_or_mistyped_object_reads_as_the_default(value: object) -> None:
-    assert read_or_default(value, dict[str, object], default={}) == {}
+    assert read_or_default(value, dict[str, object], default=dict[str, object]()) == {}
 
 
 def test_a_present_value_of_the_target_type_is_read() -> None:
-    assert read_or_default({"a": 1}, dict[str, object], default={}) == {"a": 1}
+    assert read_or_default(
+        {"a": 1},
+        dict[str, object],
+        default=dict[str, object](),
+    ) == {"a": 1}
     assert read_or_default("x", str, default=None) == "x"
 
 

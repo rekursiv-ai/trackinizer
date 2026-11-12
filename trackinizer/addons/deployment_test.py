@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import field
 from functools import partial
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 import asyncio
@@ -14,6 +15,7 @@ from fastapi import APIRouter
 
 import pytest
 
+from trackinizer.addons import deployment
 from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import (
     Deployment,
@@ -359,15 +361,21 @@ async def test_supervise_restarts_a_crashed_service_until_it_finishes(
     assert attempts == [0, 1, 2]
     messages = [record.getMessage() for record in caplog.records]
     assert sum("crashed" in message for message in messages) == 2
+    # Each attempt says it began: what a box check reads as the service being up.
+    assert messages.count("addon service test.flaky started") == 3
+    assert messages[0] == "addon service test.flaky started"
     assert messages[-1] == "addon service test.flaky finished"
 
 
 @pytest.mark.asyncio
 async def test_supervise_resets_the_delay_after_a_long_run(
     caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     attempts: list[int] = []
     fifth_attempt = asyncio.Event()
+    clock = _Clock()
+    monkeypatch.setattr(deployment, "time", SimpleNamespace(monotonic=clock))
 
     with caplog.at_level(logging.INFO):
         task = asyncio.create_task(
@@ -377,6 +385,7 @@ async def test_supervise_resets_the_delay_after_a_long_run(
                     _crash_late,
                     attempts=attempts,
                     fifth_attempt=fifth_attempt,
+                    clock=clock,
                 ),
                 backoff_sec=0.001,
                 max_backoff_sec=0.02,
@@ -441,14 +450,29 @@ class _IdleStandalone:
         await asyncio.Event().wait()
 
 
-async def _crash_late(*, attempts: list[int], fifth_attempt: asyncio.Event) -> None:
+async def _crash_late(
+    *,
+    attempts: list[int],
+    fifth_attempt: asyncio.Event,
+    clock: _Clock,
+) -> None:
     """Crash every attempt; attempt 3 runs long enough to reset the backoff."""
     attempts.append(len(attempts))
     if len(attempts) == 3:
-        await asyncio.sleep(0.03)
+        clock.now += 0.03
     if len(attempts) == 5:
         fifth_attempt.set()
     raise RuntimeError("boom")
+
+
+class _Clock:
+    """A monotonic clock that moves only when a test moves it."""
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
 
 
 if __name__ == "__main__":

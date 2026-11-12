@@ -35,8 +35,13 @@ from trackinizer.sagent.session.types import (
     BashResult,
     ContextClear,
     ContextCompaction,
+    EditResult,
+    Splice,
+    Thinking,
     ToolCall,
     UserMessage,
+    WebSearchHit,
+    WebSearchResult,
 )
 
 
@@ -313,6 +318,77 @@ class TestTheCut:
             "q10 later",
         ]
 
+    def test_the_retrieval_command_ends_at_the_last_omitted_part(self) -> None:
+        seen = window(
+            [
+                _segment(
+                    0,
+                    "assistant",
+                    [UserMessage(timestamp=_at(1), content="old")],
+                ),
+                _segment(1, "codex", [UserMessage(timestamp=_at(2), content="recent")]),
+                _segment(
+                    2,
+                    "claude",
+                    [
+                        ContextClear(timestamp=_at(3), summary="Earlier questions"),
+                        UserMessage(timestamp=_at(4), content="continue"),
+                    ],
+                ),
+            ],
+        )
+
+        loaded = cli_records(seen, "claude", seq=_seven)
+
+        assert loaded.skipped == 2
+        assert "trax agentsession 7 records --to 1:0" in _users(loaded.records)[0]
+        assert _users(loaded.records)[-1] == "the terminal user: continue"
+
+    @pytest.mark.parametrize("tool", [False, True], ids=["answer", "tool"])
+    def test_the_first_new_provider_is_named_after_the_carried_history(
+        self,
+        tool: bool,
+    ) -> None:
+        last = (
+            ToolCall(call_id="t", name="Read", arguments={})
+            if tool
+            else AssistantMessage(content="old answer")
+        )
+        seen = window(
+            [
+                _segment(
+                    0,
+                    "codex",
+                    [
+                        ContextClear(
+                            timestamp=_at(1),
+                            summary="Earlier work",
+                            history=(last, UserMessage(content="pending question")),
+                        ),
+                    ],
+                ),
+                _segment(
+                    1,
+                    "claude",
+                    [AssistantMessage(timestamp=_at(2), content="new answer")],
+                ),
+            ],
+        )
+
+        loaded = cli_records(seen, "claude", seq=_seven)
+
+        switches = [
+            text for text in _users(loaded.records) if "Provider switch:" in text
+        ]
+        assert len(switches) == 1
+        assert "assistant turns above were answered by codex." in switches[0]
+        assert "From here claude answers -- that is you." in switches[0]
+        assert any(
+            isinstance(record, AssistantMessage)
+            and "new answer" in (record.content or "")
+            for record in loaded.records
+        )
+
     def test_session_opening_clears_and_a_codex_fork_never_cut(self) -> None:
         """A fork's ``cleared_session_id`` would otherwise drop every earlier part."""
         parts = [
@@ -387,25 +463,26 @@ class TestTheCut:
         assert window([_segment(0, "claude", part)]).opening is None
 
 
+def _sealed_codex_parts() -> list[Segment]:
+    return [
+        _segment(
+            0,
+            "codex",
+            _codex(
+                _codex_item("user", "F1 is apples", at=1),
+                _codex_item("assistant", "noted F1", at=2),
+                *_codex_compacted(at=3),
+                _codex_item("user", "F4 is figs", at=4),
+            ),
+        ),
+    ]
+
+
 class TestASealedCodexSummary:
     """Codex's summary is ciphertext: only codex reads it; the kept turns cross."""
 
-    def _parts(self) -> list[Segment]:
-        return [
-            _segment(
-                0,
-                "codex",
-                _codex(
-                    _codex_item("user", "F1 is apples", at=1),
-                    _codex_item("assistant", "noted F1", at=2),
-                    *_codex_compacted(at=3),
-                    _codex_item("user", "F4 is figs", at=4),
-                ),
-            ),
-        ]
-
     def test_codex_gets_its_compaction_back_natively(self) -> None:
-        loaded = cli_records(window(self._parts()), "codex", seq=_seven)
+        loaded = cli_records(window(_sealed_codex_parts()), "codex", seq=_seven)
 
         compaction, clear = loaded.records[:2]
         assert isinstance(compaction, ContextCompaction)
@@ -419,7 +496,7 @@ class TestASealedCodexSummary:
         assert not any("F1 is apples" in text for text in _users(loaded.records))
 
     def test_another_target_gets_the_kept_turns_and_never_the_ciphertext(self) -> None:
-        loaded = cli_records(window(self._parts()), "claude", seq=_seven)
+        loaded = cli_records(window(_sealed_codex_parts()), "claude", seq=_seven)
 
         said = [
             record.content or ""
@@ -585,6 +662,50 @@ class TestTheBudget:
         assert _users(loaded.records)[0].startswith("[trax]") is noted
         assert (loaded.skipped > 0) is noted
 
+    @pytest.mark.parametrize(
+        ("fit", "most", "compact"),
+        [(9, 11, False), (8, 9, True), (9, 9, False)],
+        ids=["at-fit", "at-max", "at-both"],
+    )
+    def test_exact_byte_limits_preserve_the_whole_window(
+        self,
+        fit: int,
+        most: int,
+        compact: bool,
+    ) -> None:
+        seen = window(
+            [
+                _segment(
+                    0,
+                    "codex",
+                    [
+                        UserMessage(timestamp=_at(1), content="é"),
+                        AssistantMessage(timestamp=_at(2), content="hello!!"),
+                    ],
+                ),
+            ],
+        )
+
+        loaded = cli_records(
+            seen,
+            "codex",
+            seq=_seven,
+            budget=Budget(fit_bytes=fit, max_bytes=most),
+        )
+
+        assert _users(loaded.records) == ["the terminal user: é"]
+        assert [
+            r.content for r in loaded.records if isinstance(r, AssistantMessage)
+        ] == [
+            "hello!!",
+        ]
+        assert (loaded.loaded_records, loaded.skipped, loaded.estimated_tokens) == (
+            2,
+            0,
+            2,
+        )
+        assert loaded.compact_after_load is compact
+
     def test_sagent_loads_past_codexs_budget_whole_and_is_not_asked_to_compact(
         self,
     ) -> None:
@@ -637,17 +758,176 @@ def test_a_text_at_the_cap_is_kept_whole() -> None:
     assert cut_text("x" * CUT_ABOVE) == "x" * CUT_ABOVE
 
 
-def test_a_claude_target_reads_the_summary_as_claude_flags_its_own() -> None:
+def test_a_utf8_cut_discards_partial_characters_at_both_edges() -> None:
+    text = "x" * 9_999 + "é" + "m" * 2_000 + "é" + "z" * 3_999
+
+    assert cut_text(text) == "x" * 9_999 + "[... 2002 bytes cut ...]" + "z" * 3_999
+
+
+@pytest.mark.parametrize("shell", [False, True], ids=["answer", "stderr"])
+def test_loading_shortens_each_oversized_text_without_changing_the_original(
+    shell: bool,
+) -> None:
+    text = "h" * 10_000 + "m" * (CUT_ABOVE - 14_000 + 1) + "t" * 4_000
+    record = (
+        BashResult(call_id="t", stdout="ok", stderr=text)
+        if shell
+        else AssistantMessage(content=text)
+    )
+    seen = window([_segment(0, "codex", [record])])
+
+    loaded = cli_records(seen, "codex", seq=_seven)
+
+    [shortened] = loaded.records
+    expected = "h" * 10_000 + "[... 2001 bytes cut ...]" + "t" * 4_000
+    if shell:
+        assert isinstance(shortened, BashResult)
+        assert (shortened.stdout, shortened.stderr) == ("ok", expected)
+        assert isinstance(record, BashResult)
+        assert record.stderr == text
+    else:
+        assert isinstance(shortened, AssistantMessage)
+        assert shortened.content == expected
+        assert isinstance(record, AssistantMessage)
+        assert record.content == text
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            EditResult(
+                call_id="e1",
+                edits=(Splice(before="ab", after="cde"), Splice(after="f")),
+            ),
+            6,
+        ),
+        (
+            WebSearchResult(
+                call_id="w1",
+                content=(
+                    WebSearchHit(url="https://a.b", title="AB", snippet="xyz"),
+                    WebSearchHit(title="C"),
+                ),
+            ),
+            17,
+        ),
+        (ContextClear(summary="four"), 4),
+        (ContextClear(), 0),
+        (Thinking(content="not read by a target"), 0),
+        (ToolCall(call_id="t", name="Bash", arguments={"n": 123}), 14),
+        (AssistantMessage(content="é字"), 5),
+        (AssistantMessage(), 0),
+    ],
+    ids=[
+        "edit",
+        "web-search",
+        "clear",
+        "clear-without-summary",
+        "thinking",
+        "call-arguments",
+        "utf8",
+        "empty-answer",
+    ],
+)
+def test_weight_counts_the_text_a_target_reads(
+    record: SessionRecord,
+    expected: int,
+) -> None:
+    assert weight(record) == expected
+
+
+@pytest.mark.parametrize(("most", "first"), [(5, 2), (6, 1)])
+def test_native_history_uses_the_cumulative_budget_after_the_summary(
+    most: int,
+    first: int,
+) -> None:
+    history = (
+        UserMessage(content="aa"),
+        AssistantMessage(content="bb"),
+        UserMessage(content="c"),
+        AssistantMessage(content="d"),
+    )
+    original = ContextClear(timestamp=_at(1), summary="Σ", history=history)
+    seen = window(
+        [
+            _segment(
+                0,
+                "codex",
+                [
+                    original,
+                    UserMessage(timestamp=_at(2), content="x"),
+                ],
+            ),
+        ],
+    )
+
+    loaded = cli_records(
+        seen,
+        "codex",
+        seq=_seven,
+        budget=Budget(fit_bytes=most, max_bytes=most),
+    )
+
+    [clear] = [r for r in loaded.records if isinstance(r, ContextClear)]
+    assert clear.history == history[first:]
+    assert original.history == history
+    assert (loaded.loaded_records, loaded.skipped, loaded.estimated_tokens) == (
+        len(history) - first + 1,
+        first,
+        1,
+    )
+    note = _users(loaded.records)[0]
+    assert f"{first} earlier records are not loaded" in note
+    assert "trax agentsession 7 records --to 0:0" in note
+    assert _users(loaded.records)[-1] == "the terminal user: x"
+    assert loaded.compact_after_load
+
+
+def test_past_max_the_newest_kept_turns_of_the_opening_fit_first() -> None:
+    """Room left after the summary goes to the opening's newest kept turns."""
+    seen = window(_sealed_codex_parts())
+    kept = [each.record for each in seen.history]
+    newest = weight(kept[-1])
+    assert newest > 0
+    assert all(weight(record) > 0 for record in kept[:-1])
+
+    loaded = cli_records(
+        seen,
+        "claude",
+        seq=_seven,
+        budget=Budget(fit_bytes=newest, max_bytes=newest),
+    )
+
+    said = [
+        record.content or ""
+        for record in loaded.records
+        if isinstance(record, UserMessage | AssistantMessage)
+    ]
+    assert any("kept: europe-west4" in text for text in said)
+    assert not any("kept: which bucket?" in text for text in said)
+    assert loaded.compact_after_load
+
+
+@pytest.mark.parametrize("target", ["claude", "codex"])
+def test_a_target_reads_the_summary_with_its_own_flags_and_original_time(
+    target: str,
+) -> None:
     """Its own turn, flagged, then an acknowledgement the next line cannot fold into."""
-    loaded = cli_records(window([_claude_compacting_part()]), "claude", seq=_seven)
+    loaded = cli_records(window([_claude_compacting_part()]), target, seq=_seven)
 
     opening, ack = loaded.records[:2]
     assert isinstance(opening, UserMessage)
     assert opening.extra == immutable(
-        {"isCompactSummary": True, "isVisibleInTranscriptOnly": True},
+        {"isCompactSummary": True, "isVisibleInTranscriptOnly": True}
+        if target == "claude"
+        else {},
     )
     assert isinstance(ack, AssistantMessage)
     assert ack.content == "Understood."
+    expected = datetime.fromisoformat(_at(3))
+    assert datetime.fromisoformat(opening.timestamp or "") == expected
+    assert datetime.fromisoformat(ack.timestamp or "") == expected
 
 
 def test_a_summary_of_the_bot_opens_the_window_by_its_provider() -> None:

@@ -4,7 +4,7 @@
 
 [project]
 name = "trackinizer"
-version = "0.1.12"
+version = "0.1.13"
 description = "Centralized agent database for Inquiries (Issues + Artifacts)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -64,46 +64,94 @@ dependencies = [
     "pyyaml>=6.0.3",
 ]
 
+[project.scripts]
+trackinizer = "trackinizer.server.entry:main"
+trax = "trackinizer.trax.cli:main"
+
+[dependency-groups]
+
+# Requirements are floors; uv.lock fixes versions. Never cap a dependency.
+# Public package deltas replace project.dependencies; these groups are monorepo-only.
+
+cuda = [
+    "torch",
+    "torchao",
+    "torchvision",
+]
+
+lint = [
+    "codespell>=2.4.3",
+    "ruff>=0.17.3",
+]
+test = [
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "pytest>=9.2.0",
+    "pytest-cov>=7.1.0",
+    "nodejs-wheel-binaries>=24.19.0",
+    "hypothesis>=6.170.14",
+    "pytest-asyncio>=1.4.1",
+    # Bundles libpq, so pytest-postgresql's autoloaded plugin imports everywhere.
+    "psycopg[binary]>=3.3.6",
+    "pytest-postgresql>=9.1.1",
+    # The server's tests import its packages; CI syncs groups, never extras.
+    "trackinizer[server]",
+    # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
+    "hatchling>=1.33.0",
+]
+typecheck = [
+    "basedpyright>=1.40.2",
+    "pyrefly>=1.4.0",
+    "ty>=0.0.101",
+    "rekursiv-ai-typings>=0.1.11",
+    "hatchling>=1.33.0",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
+]
+"pre-commit" = [
+    "pre-commit>=4.7.0",
+    "ruamel-yaml>=0.18.6",
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "typecheck"},
+    "codedoctor[coverage,mutation,notebook]",
+]
+dev = [
+    {include-group = "pre-commit"},
+    {include-group = "debug"},
+]
+debug = [
+    "ipython>=9.18.0",
+    "tqdm>=4.70.1",
+]
+
 [project.optional-dependencies]
 cpu = [
     "torch",
     "torchao",
-    "torchaudio",
     "torchvision",
 ]
 cu126 = [
-    "jax[cuda12] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torch",
     "torchao",
-    "torchaudio",
     "torchvision",
 ]
 cu128 = [
-    "jax[cuda12] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torch",
     "torchao",
-    "torchaudio",
     "torchvision",
 ]
 cu130 = [
-    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torch",
     "torchao",
-    "torchaudio",
     "torchvision",
 ]
 cu132 = [
-    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torch",
     "torchao",
-    "torchaudio",
     "torchvision",
 ]
 cu134 = [
-    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "torch",
     "torchao",
-    "torchaudio",
     "torchvision",
 ]
 # The server: `pip install 'trackinizer[server]'` provides the `trackinizer`
@@ -156,66 +204,6 @@ server = [
     "peft>=0.21.2",
 ]
 
-[project.scripts]
-trackinizer = "trackinizer.server.entry:main"
-trax = "trackinizer.trax.cli:main"
-
-[dependency-groups]
-# NEVER ADD MORE DEPENDENCIES!
-
-cuda = [
-    "jax[cuda13] ; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "torch",
-    "torchao",
-    "torchaudio",
-    "torchvision",
-]
-
-debug = [
-    "ipython>=9.18.0",
-    "tqdm>=4.70.1",
-]
-lint = [
-    "codespell>=2.4.3",
-    "ruff>=0.17.3",
-]
-test = [
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.8.0",
-    "pytest>=9.2.0",
-    "pytest-cov>=7.1.0",
-    "nodejs-wheel-binaries>=24.19.0",
-    "hypothesis>=6.170.14",
-    "pytest-asyncio>=1.4.1",
-    # Bundles libpq, so pytest-postgresql's autoloaded plugin imports everywhere.
-    "psycopg[binary]>=3.3.6",
-    "pytest-postgresql>=9.1.1",
-    # The server's tests import its packages; CI syncs groups, never extras.
-    "trackinizer[server]",
-    # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
-    "hatchling>=1.33.0",
-]
-typecheck = [
-    "basedpyright>=1.40.2",
-    "pyrefly>=1.4.0",
-    "ty>=0.0.95",
-    "rekursiv-ai-typings>=0.1.11",
-    "asyncpg-stubs>=0.32.0",
-    "hatchling>=1.33.0",  # web/hatch_build.py subscripts its one-parameter BuildHookInterface.
-]
-"pre-commit" = [
-    "pre-commit>=4.7.0",
-    {include-group = "lint"},
-    {include-group = "test"},
-    {include-group = "typecheck"},
-]
-dev = [
-    {include-group = "pre-commit"},
-    {include-group = "debug"},
-]
-
-# NEVER ADD MORE DEPENDENCY GROUPS!
-
 [project.urls]
 Homepage = "https://www.rekursiv.ai"
 Repository = "https://github.com/rekursiv-ai/trackinizer"
@@ -249,7 +237,7 @@ exclude = [
     "trackinizer/server/asks_test_support.py",
     "trackinizer/server/embedders/qwen_fakes.py",
 ]
-artifacts = ["trackinizer/web/dist/**"]
+artifacts = ["trackinizer/web/dist/**", "trackinizer/py.typed"]
 
 [tool.hatch.build.targets.wheel.hooks.custom]
 path = "trackinizer/web/hatch_build.py"
@@ -338,7 +326,7 @@ markers = [
 # `-p no:py_pglite`: its auto-loaded plugin marks any test whose PATH contains
 # "benchmark"/"performance"/"integration", and the filter above then silently
 # deselected 82 unit tests. PGlite fixtures come from a conftest-registered plugin.
-addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=0 --durations-min=0.600 --dist=worksteal -p no:py_pglite"
+addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=0 --durations-min=0.100 --dist=worksteal -p no:py_pglite"
 timeout = 60
 # "error" = treat all warnings as errors (same as -Werror).
 # Using filterwarnings instead of addopts so we can add exceptions.
@@ -379,6 +367,34 @@ do_not_mutate_patterns = [
     '^\s*help=("[^"]*"\s*)+,?\s*$',
     '^\s*(description|formatter_class)=[\w.]+,?\s*$',
 ]
+
+[tool.codedoctor.lint]
+# Each key defaults the `codedoctor lint` flag of that name;
+# the command line overrides it. Globs are relative to this file's directory, and a
+# glob without `/` names a basename in any directory. `GLOBS = RULES` is ruff's
+# per-file-ignores; a bare glob skips the file for every rule unopened.
+select = "ALL"
+fix = "ALL"
+# Each export sets its own package and directory policy.
+set = ["import-alias.first-party=trackinizer", "test-footer.runner=trackinizer.lib.testing.runner", "xdg-literal.helper=trackinizer.lib.userdirs", "userdirs-namespace.namespace=rekursiv-ai"]
+exclude = [
+    "**/third_party/** typings/** **/.export/typings/** **/torch-types/shed/**",
+    """*_test.py **/tests/test*.py =
+    args-section assert cache-kwarg def-order final-inline globals
+    lazy-import-cost mkdir-mode module-side-effects nested-def returns-named
+    returns-section single-use-helper tempfile-prefix tensor-value-guard
+    tmp-literal xdg-literal""",
+    """conftest.py =
+    args-section def-order lazy-import-cost module-side-effects returns-section""",
+    "experiments.py experiments_*.py = returns-section",
+    "**/private/testdata/** = globals",
+]
+
+[tool.coverage-floor]
+# Each key defaults the `coverage_floor` flag of that name. A
+# changed source under a prefix must be covered to PERCENT by its own sidecar
+# tests; `=PERCENT`, with no prefix, floors every path. Each export sets its own.
+floor = ["=100"]
 
 [tool.coverage.run]
 # sys.monitoring, the default from Python 3.14 on. 3.12's default, ctrace,
@@ -741,7 +757,7 @@ ignore = [
     # NEVER ADD MORE IGNORES! SUPPRESS IN FILE!
     "**/typings/",
 ]
-pythonPlatform = "Linux"
+pythonPlatform = "All"
 pythonVersion = "3.12"  # Intentional; test at 3.12 for exports.
 
 reportCallInDefaultInitializer = false     # Immutable constructors (e.g. NamedTuple) in defaults are safe.
@@ -786,13 +802,13 @@ all = "warn"
 # https://github.com/astral-sh/ty/issues/4711 (fix: astral-sh/ruff#29346).
 # Re-enable once a ty release includes the fix; pyrefly's bad-override still
 # checks overrides meanwhile.
-invalid-attribute-override = "ignore"
+incompatible-attribute-override = "ignore"
 
 [[tool.ty.overrides]]
 include = ["*_test.py"]
 
 [tool.ty.overrides.rules]
-invalid-key = "ignore"
+invalid-typed-dict-key = "ignore"
 
 [tool.ty.terminal]
 error-on-warning = true
@@ -903,3 +919,4 @@ torch = [
     { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
 rekursiv-ai-typings = { git = "https://github.com/rekursiv-ai/typings", branch = "main" }
+codedoctor = { git = "https://github.com/rekursiv-ai/codedoctor", branch = "main" }

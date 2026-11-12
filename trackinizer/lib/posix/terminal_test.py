@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING
 from unittest import mock
 
 import asyncio
 import contextlib
+import errno
+import fcntl
 import importlib
 import os
 import pty
 import select
 import signal
+import struct
 import subprocess
 import sys
+import termios
 
 import pytest
 
@@ -30,7 +35,7 @@ from trackinizer.lib.posix.terminal import (
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Buffer, Callable
     from pathlib import Path
 
 
@@ -55,6 +60,7 @@ class TestEncodePaste:
         assert out.count(PASTE_END) == 1
         assert out.endswith(PASTE_END)
         assert encode_paste("a\x1b[200~b").count(PASTE_START) == 1
+        assert encode_paste("a\x1b[200~b") == PASTE_START + b"ab" + PASTE_END
 
     def test_encodes_unicode(self) -> None:
         assert "café".encode() in encode_paste("café")
@@ -126,15 +132,26 @@ class TestResetTerminalModes:
             os.close(master)
             os.close(slave)
         assert seen == TERMINAL_RESET
+        assert b"\x1b[?1049l" not in seen
         for disable in (
             b"\x1b[?1004l",  # Focus reporting: the reported ``\x1b[I`` symptom.
             b"\x1b[?1003l",  # any-motion mouse reporting.
             b"\x1b[?1006l",  # SGR mouse encoding.
-            b"\x1b[?1049l",  # Alternate screen.
             b"\x1b[?2004l",  # Bracketed paste.
             b"\x1b[?25h",  # Cursor visible.
         ):
             assert disable in seen
+
+    @pytest.mark.parametrize("mode", [47, 1047, 1049])
+    def test_leaves_the_selected_alternate_screen(self, mode: int) -> None:
+        master, slave = pty.openpty()
+        try:
+            assert reset_terminal_modes(slave, alternate_screen=mode)
+            seen = os.read(master, 4096)
+        finally:
+            os.close(master)
+            os.close(slave)
+        assert seen == f"\x1b[?{mode}l".encode() + TERMINAL_RESET
 
     def test_is_written_only_to_a_real_terminal(self) -> None:
         """A redirected destination must not collect escape junk it cannot use."""
@@ -202,7 +219,8 @@ class TestPlainLineSubmit:
 
         assert b"secret-echo-probe" not in asyncio.run(run())
 
-    def test_interior_newlines_become_one_read(self) -> None:
+    @pytest.mark.parametrize("separator", ["\n", "\r", "\r\n"])
+    def test_interior_newlines_become_one_read(self, separator: str) -> None:
         """One submission is one child read, however many newlines it carries.
 
         A literal newline would split the message into several input records,
@@ -220,11 +238,11 @@ class TestPlainLineSubmit:
                 [sys.executable, "-u", "-c", child],
                 bracketed_paste=False,
             ) as term:
-                _ = await term.submit("alpha\nbeta")
-                return await _read_until(term, b"GOT:", 5.0)
+                assert await term.submit(f"alpha{separator}beta") is True
+                return await _read_until(term, b"beta\r\n", 5.0)
 
         seen = asyncio.run(run())
-        assert b"GOT:alpha beta" in seen
+        assert seen == b"GOT:alpha" + b" " * len(separator) + b"beta\r\n"
 
     def test_survives_a_line_past_the_canonical_limit(self) -> None:
         """A submission longer than ``MAX_CANON`` arrives whole.
@@ -254,10 +272,12 @@ class TestPlainLineSubmit:
     def test_counts_a_plain_submission(self) -> None:
         async def run() -> int:
             async with Terminal(["cat"], bracketed_paste=False) as term:
-                _ = await term.submit("one")
+                assert await term.submit("one") is True
+                assert term.submitted == 1
+                assert await term.submit("two") is True
                 return term.submitted
 
-        assert asyncio.run(run()) == 1
+        assert asyncio.run(run()) == 2
 
     def test_reports_failure_on_a_dead_child(self) -> None:
         async def run() -> bool:
@@ -305,7 +325,7 @@ class TestSubmit:
         async def run() -> bytes:
             async with _cat() as term:
                 _ = await term.submit("hello")
-                return await _read_until(term, b"hello", 5.0)
+                return await _read_until(term, b"^[[201~", 5.0)
 
         seen = asyncio.run(run())
         assert b"^[[200~" in seen
@@ -424,6 +444,32 @@ class TestSubmit:
 class TestWrite:
     """Raw byte delivery, unwrapped."""
 
+    def test_positive_short_writes_deliver_the_complete_payload(self) -> None:
+        child = (
+            "import sys; "
+            "line = sys.stdin.buffer.readline(); "
+            "sys.stdout.write(line.hex()); sys.stdout.flush()"
+        )
+        payload = b"short-write-payload\n"
+
+        async def run() -> bytes:
+            async with Terminal(
+                [sys.executable, "-u", "-c", child],
+                bracketed_paste=False,
+            ) as term:
+                real_write = os.write
+
+                def short_write(fd: int, data: Buffer) -> int:
+                    capped = memoryview(data)[:3] if fd == term.master_fd else data
+                    return real_write(fd, capped)
+
+                with pytest.MonkeyPatch.context() as patch:
+                    patch.setattr(os, "write", short_write)
+                    assert await term.write(payload) is True
+                return b"".join([chunk async for chunk in term.output()])
+
+        assert asyncio.run(asyncio.wait_for(run(), 5.0)) == payload.hex().encode()
+
     def test_write_sends_raw_bytes(self) -> None:
         """Escape is what a TUI reads as "stop"; a paste would deliver text."""
 
@@ -451,6 +497,56 @@ class TestWrite:
 class TestOutput:
     """Reading what the child paints."""
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", [ValueError, OSError])
+    async def test_cancelled_reader_survives_removal_errors_and_can_read_again(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        error: type[ValueError | OSError],
+    ) -> None:
+        """Keep cancellation intact when the external reader cleanup races closure."""
+        child = (
+            "import select,sys\n"
+            "if not select.select([sys.stdin], [], [], 3)[0]:\n"
+            "    raise SystemExit(2)\n"
+            "print(sys.stdin.readline(), end='', flush=True)\n"
+        )
+        async with asyncio.timeout(10):
+            async with Terminal(
+                [sys.executable, "-u", "-c", child],
+                bracketed_paste=False,
+            ) as term:
+                loop = asyncio.get_running_loop()
+                remove_reader = loop.remove_reader
+                stream = term.output()
+                pending = asyncio.ensure_future(anext(stream))
+                try:
+                    await asyncio.sleep(0)
+                    with monkeypatch.context() as patch:
+                        patch.setattr(
+                            loop,
+                            "remove_reader",
+                            partial(
+                                _remove_reader_then_raise,
+                                remove_reader=remove_reader,
+                                master_fd=term.master_fd,
+                                error=error,
+                            ),
+                        )
+                        _ = pending.cancel()
+                        with pytest.raises(asyncio.CancelledError):
+                            _ = await pending
+                    assert remove_reader(term.master_fd) is False
+                    assert await term.write(b"after-cancellation\n")
+                    assert b"".join([chunk async for chunk in term.output()]) == (
+                        b"after-cancellation\r\n"
+                    )
+                    assert await term.wait() == 0
+                finally:
+                    _ = pending.cancel()
+                    _ = await asyncio.gather(pending, return_exceptions=True)
+                    _ = remove_reader(term.master_fd)
+
     def test_output_streams_before_exit(self) -> None:
         async def run() -> bytes:
             async with _cat() as term:
@@ -471,6 +567,40 @@ class TestOutput:
 
 class TestLifecycle:
     """Spawn, exit status, teardown."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ["write", "output", "close"])
+    async def test_descriptor_zero_is_a_real_owned_master(self, operation: str) -> None:
+        """Exercise descriptor zero and restore pytest's stdin afterwards."""
+        stdin_fd = os.dup(0)
+        try:
+            async with asyncio.timeout(10):
+                await _descriptor_zero_operation(operation)
+        finally:
+            os.dup2(stdin_fd, 0)
+            os.close(stdin_fd)
+
+    def test_context_exit_reaps_the_owned_child(self) -> None:
+        async def run() -> None:
+            term = _cat()
+            try:
+                async with term:
+                    pid = term.pid
+                    assert pid is not None
+                with pytest.raises(ChildProcessError):
+                    _ = await asyncio.to_thread(os.waitpid, pid, os.WNOHANG)
+            finally:
+                _ = await term.wait()
+                await term.close()
+
+        asyncio.run(run())
+
+    def test_master_is_nonblocking(self) -> None:
+        async def run() -> None:
+            async with _cat() as term:
+                assert os.get_blocking(term.master_fd) is False
+
+        asyncio.run(run())
 
     def test_exit_code_is_reported(self) -> None:
         async def run() -> int:
@@ -540,6 +670,41 @@ class TestLifecycle:
         status, survived = asyncio.run(run())
         assert status == 128 + signal.SIGKILL
         assert not survived
+
+    @pytest.mark.asyncio
+    async def test_terminate_kills_descendants_after_a_cooperative_leader_exits(
+        self,
+    ) -> None:
+        """Finish the output stream even when only the shell honors TERM."""
+        # Leader exit sends HUP too; ignoring it isolates process-group escalation.
+        descendant = (
+            "import signal,time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "signal.signal(signal.SIGHUP, signal.SIG_IGN)\n"
+            "print('descendant-ready', flush=True)\n"
+            "time.sleep(3)\n"
+            "print('descendant-survived', flush=True)\n"
+        )
+        async with asyncio.timeout(10):
+            async with Terminal(
+                [
+                    "bash",
+                    "-c",
+                    'trap "exit 0" TERM; "$@" & wait',
+                    "leader",
+                    sys.executable,
+                    "-u",
+                    "-c",
+                    descendant,
+                ],
+                bracketed_paste=False,
+            ) as term:
+                assert await _read_until(term, b"descendant-ready\r\n", 5.0) == (
+                    b"descendant-ready\r\n"
+                )
+                await term.terminate()
+                assert b"".join([chunk async for chunk in term.output()]) == b""
+                assert await term.wait() == 0
 
     def test_terminate_escalation_is_bounded_by_the_grace(self) -> None:
         """The KILL lands after the grace, not after the child's own lifetime."""
@@ -711,6 +876,32 @@ class TestLifecycle:
         assert asyncio.run(run()) == 0
         assert out.read_text() == "scientist"
 
+    def test_clean_env_excludes_inherited_names_and_keeps_explicit_values(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        out = tmp_path / "clean-env.txt"
+        monkeypatch.setenv("TERMINAL_PARENT_MARKER", "inherited")
+        monkeypatch.setenv("TERMINAL_EXPLICIT_MARKER", "parent")
+        child = (
+            "import os,pathlib;"
+            f"pathlib.Path({str(out)!r}).write_text(repr(("
+            "os.environ.get('TERMINAL_PARENT_MARKER'),"
+            "os.environ.get('TERMINAL_EXPLICIT_MARKER'))))"
+        )
+
+        async def run() -> int:
+            async with Terminal(
+                [sys.executable, "-c", child],
+                clean_env=True,
+                env={"TERMINAL_EXPLICIT_MARKER": "explicit"},
+            ) as term:
+                return await term.wait()
+
+        assert asyncio.run(run()) == 0
+        assert out.read_text() == repr((None, "explicit"))
+
     def test_dropped_env_never_reaches_the_child(
         self,
         tmp_path: Path,
@@ -843,8 +1034,67 @@ class TestLifecycle:
     def test_set_winsize_on_a_released_terminal_is_harmless(self) -> None:
         Terminal(["cat"]).set_winsize(40, 120)
 
+    def test_set_winsize_keeps_unsigned_geometry_on_descriptor_zero(self) -> None:
+        term = Terminal(["true"])
+        term._master_fd = 0
+        with mock.patch.object(fcntl, "ioctl") as ioctl:
+            term.set_winsize(40_000, 50_000)
+        ioctl.assert_called_once_with(
+            0,
+            termios.TIOCSWINSZ,
+            struct.pack("HHHH", 40_000, 50_000, 0, 0),
+        )
+        assert term._winsize == (40_000, 50_000)
+
+    def test_set_winsize_tolerates_a_closed_master(self) -> None:
+        term = Terminal(["true"])
+        term._master_fd = 0
+        with mock.patch.object(fcntl, "ioctl", side_effect=OSError("closed")):
+            term.set_winsize(40, 120)
+        assert term._winsize == (40, 120)
+
     def test_silence_line_discipline_on_a_released_terminal_is_harmless(self) -> None:
         Terminal(["cat"]).silence_line_discipline()
+
+    def test_silence_preserves_other_flags_on_descriptor_zero(self) -> None:
+        term = Terminal(["true"])
+        term._master_fd = 0
+        attributes = [
+            0,
+            0,
+            0,
+            termios.ECHO | termios.ICANON | termios.ISIG,
+            0,
+            0,
+            [b"\x00"],
+        ]
+        with (
+            mock.patch.object(termios, "tcgetattr", return_value=attributes) as get,
+            mock.patch.object(termios, "tcsetattr") as set_attributes,
+        ):
+            term.silence_line_discipline()
+        get.assert_called_once_with(0)
+        set_attributes.assert_called_once_with(
+            0,
+            termios.TCSANOW,
+            [0, 0, 0, termios.ISIG, 0, 0, [b"\x00"]],
+        )
+
+    @pytest.mark.parametrize("operation", ["tcgetattr", "tcsetattr"])
+    def test_silence_tolerates_a_closed_master(self, operation: str) -> None:
+        term = Terminal(["true"])
+        term._master_fd = 0
+        with (
+            mock.patch.object(termios, "tcgetattr", return_value=[0] * 7),
+            mock.patch.object(termios, "tcsetattr"),
+            mock.patch.object(
+                termios,
+                operation,
+                side_effect=termios.error("closed"),
+            ) as failed,
+        ):
+            term.silence_line_discipline()
+        failed.assert_called_once()
 
     def test_wait_on_a_terminal_that_never_spawned_is_zero(self) -> None:
         async def run() -> int:
@@ -1194,6 +1444,59 @@ class TestTerminalBranchEdges:
         assert term._reap() == 0
         assert proc.returncode == 0
         assert term.pid is None
+
+
+async def _descriptor_zero_operation(operation: str) -> None:
+    """Exercise public lifecycle methods after a subprocess releases its stdin."""
+    child = (
+        "import select,sys\n"
+        "if not select.select([sys.stdin], [], [], 3)[0]:\n"
+        "    raise SystemExit(2)\n"
+        "print(sys.stdin.readline(), end='', flush=True)\n"
+        if operation == "write"
+        else "print('owned-fd-zero', flush=True)"
+    )
+    os.close(0)
+    term = Terminal([sys.executable, "-u", "-c", child], bracketed_paste=False)
+    try:
+        await term.start()
+        assert term.master_fd == 0
+        if operation == "close":
+            assert await term.wait() == 0
+            await term.close()
+            assert term.master_fd == -1
+            with pytest.raises(
+                OSError,
+                check=lambda error: error.errno == errno.EBADF,
+            ) as closed:
+                _ = os.fstat(0)
+            assert closed.value.errno == errno.EBADF
+            await term.close()
+        else:
+            if operation == "write":
+                assert await term.write(b"owned-fd-zero\n")
+            assert b"".join([chunk async for chunk in term.output()]) == (
+                b"owned-fd-zero\r\n"
+            )
+            assert await term.wait() == 0
+    finally:
+        await term.terminate()
+        _ = await term.wait()
+        await term.close()
+
+
+def _remove_reader_then_raise(
+    fd: int,
+    *,
+    remove_reader: Callable[[int], bool],
+    master_fd: int,
+    error: type[ValueError | OSError],
+) -> bool:
+    """Remove the real loop registration before reporting the external race."""
+    removed = remove_reader(fd)
+    if fd == master_fd:
+        raise error("reader closed during removal")
+    return removed
 
 
 class _UnspawnedPopen(subprocess.Popen[bytes]):

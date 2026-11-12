@@ -13,8 +13,8 @@ import pytest
 
 from trackinizer.trax import cli
 from trackinizer.trax.daemon import entry
-from trackinizer.trax.daemon.client import _accepts
-from trackinizer.trax.daemon.protocol import socket_path
+from trackinizer.trax.daemon.client import DaemonRequestLostError, _accepts
+from trackinizer.trax.daemon.protocol import Response, socket_path
 from trackinizer.trax.daemon.server import _Server
 
 
@@ -57,13 +57,78 @@ def test_an_edit_while_the_daemon_starts_restarts_it(
     deadline = time.monotonic() + 30
     while not _accepts(socket_path()):
         assert time.monotonic() < deadline, "the daemon never accepted"
-        time.sleep(0.01)
+        # The daemon is another process; only its socket says it is up.
+        time.sleep(0.01)  # house-ignore[sleep] -- See above.
 
     entry.main(["help"])
 
     daemon.join(timeout=5)
     assert ran_in_process == [["help"]], "the daemon served code older than its tree"
     assert not daemon.is_alive(), "a daemon serving stale code kept running"
+
+
+def test_a_daemons_answer_is_printed_and_its_exit_code_returned(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.delenv("TRAX_NO_DAEMON", raising=False)
+    sent: list[Sequence[str]] = []
+
+    def answered(argv: Sequence[str], *, source_version: str) -> Response:
+        assert source_version
+        sent.append(argv)
+        return Response(stdout="out\n", stderr="err\n", exit_code=3)
+
+    monkeypatch.setattr(entry, "delegate", answered)
+    monkeypatch.setattr(cli, "main", _never_in_process)
+
+    assert entry.main(["issue", "list"]) == 3
+
+    assert sent == [["issue", "list"]]
+    assert capsys.readouterr() == ("out\n", "err\n")
+
+
+def test_a_lost_answer_is_reported_and_never_rerun_in_process(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The daemon may have applied the command; a rerun would duplicate it."""
+    monkeypatch.delenv("TRAX_NO_DAEMON", raising=False)
+
+    def lost(argv: Sequence[str], *, source_version: str) -> Response:
+        del argv, source_version
+        raise DaemonRequestLostError("the daemon hung up mid-reply")
+
+    monkeypatch.setattr(entry, "delegate", lost)
+    monkeypatch.setattr(cli, "main", _never_in_process)
+
+    assert entry.main(["issue", "list"]) == 75
+
+    assert capsys.readouterr().err == "trax: the daemon hung up mid-reply\n"
+
+
+@pytest.mark.parametrize("value", ["1", "true", "yes"])
+def test_the_escape_hatch_runs_every_command_in_process(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("TRAX_NO_DAEMON", value)
+    monkeypatch.setattr(entry, "delegate", _never_delegated)
+    ran: list[Sequence[str]] = []
+    monkeypatch.setattr(cli, "main", ran.append)
+
+    _ = entry.main(["issue", "list"])
+
+    assert ran == [["issue", "list"]]
+
+
+def _never_in_process(argv: Sequence[str]) -> int:
+    raise AssertionError(f"ran in-process: {argv}")
+
+
+def _never_delegated(argv: Sequence[str], *, source_version: str) -> Response:
+    del source_version
+    raise AssertionError(f"delegated: {argv}")
 
 
 def _serve_forever_quickly(server: _Server, poll_interval: float = 0.5) -> None:

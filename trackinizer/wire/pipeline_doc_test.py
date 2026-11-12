@@ -49,6 +49,12 @@ def test_a_pipeline_document_reads_back_as_written() -> None:
     assert load_pipeline(dump_pipeline(doc)) == doc
 
 
+def test_a_pipeline_can_hold_one_stage_without_a_flow() -> None:
+    doc = PipelineDoc(base="iter-00", stages=(_stage("data"),), flows=())
+
+    assert load_pipeline(dump_pipeline(doc)) == doc
+
+
 def test_the_json_is_compact_sorted_and_holds_exactly_the_contract_keys() -> None:
     text = dump_pipeline(replace(_doc(), flows=(Flow(source="data", target="train"),)))
 
@@ -150,6 +156,14 @@ def test_a_document_past_a_bound_or_with_a_broken_reference_is_refused(
 def test_a_flow_label_past_its_bound_is_refused() -> None:
     with pytest.raises(ValueError, match="label holds 41"):
         _ = Flow(source="data", target="train", label="l" * 41)
+
+
+def test_a_loaded_flow_label_past_its_bound_is_refused() -> None:
+    tree = json_loads(dump_pipeline(_doc()), dict[str, object])
+    tree["flows"] = [{"source": "data", "target": "train", "label": "l" * 41}]
+
+    with pytest.raises(ValueError, match="label holds 41"):
+        load_pipeline(json.dumps(tree))
 
 
 @pytest.mark.parametrize(

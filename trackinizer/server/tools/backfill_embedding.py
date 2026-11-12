@@ -1136,7 +1136,7 @@ def _update_rate(
     instant = records / interval_sec
     if prev <= 0:
         return instant
-    weight = float(0.5 ** (interval_sec / halflife_sec))
+    weight = float(cast(float, 0.5 ** (interval_sec / halflife_sec)))
     return weight * prev + (1 - weight) * instant
 
 
@@ -1181,7 +1181,8 @@ async def _run_follow(dsn: str, models: list[str], interval_sec: int) -> int:
                     + (" (full scan)" if stats.full_scan else ""),
                     flush=True,
                 )
-            await asyncio.sleep(interval_sec)
+            # A periodic sweep; the interval is the schedule.
+            await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- See above.
 
 
 # A real model is built for throughput, not as the server builds it to embed one

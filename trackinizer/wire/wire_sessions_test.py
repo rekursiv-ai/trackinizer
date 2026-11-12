@@ -24,12 +24,15 @@ from trackinizer.wire.wire_sessions import (
     SessionEnd,
     SessionRunState,
     SessionStart,
+    campaign_asker_label,
     inbound_read_timeout,
     session_audience_path,
     session_end_path,
     session_inbound_path,
+    session_place_path,
     session_reattach_path,
     session_records_path,
+    session_run_output_path,
     session_run_state_path,
 )
 
@@ -255,6 +258,9 @@ class TestRoomValidation:
         for bad in (["a,b"], ["ok", "x,y"], [","]):
             with pytest.raises(ValidationError):
                 SessionStart(cli="codex", rooms=bad)
+        for blank in ([""], ["ok", "  "]):
+            with pytest.raises(ValidationError, match="rooms must be non-empty"):
+                SessionStart(cli="codex", rooms=blank)
         # Comma-free rooms (single and several) still pass.
         assert SessionStart(cli="codex", rooms=["lab", "sear"]).rooms == ["lab", "sear"]
         assert SessionStart(cli="codex", rooms=None).rooms is None
@@ -270,36 +276,32 @@ class TestRoomValidation:
 
 
 class TestInboundKind:
-    def test_each_of_the_five_kinds_is_accepted(self) -> None:
-        for kind in ("line", "command", "answer", "settings", "interrupt"):
-            request = InboundEnqueueRequest.model_validate({"text": "hi", "kind": kind})
-            assert request.kind == kind
+    def test_each_kind_is_drained(self) -> None:
+        for kind in ("line", "command", "answer", "settings", "interrupt", "run"):
+            item = InboundDrainItem.model_validate({"text": "hi", "kind": kind})
+            assert item.kind == kind
 
-    def test_enqueue_kind_defaults_to_a_line_with_no_payload(self) -> None:
-        request = InboundEnqueueRequest(text="hi")
-        assert (request.kind, request.payload) == ("line", None)
+    @pytest.mark.parametrize(
+        "extra",
+        [{"kind": "line"}, {"kind": "run"}, {"payload": {}}],
+        ids=["line", "run", "payload"],
+    )
+    def test_an_enqueue_names_no_kind_and_no_payload(
+        self,
+        extra: dict[str, object],
+    ) -> None:
+        with pytest.raises(ValidationError):
+            InboundEnqueueRequest.model_validate({"text": "hi", **extra})
 
     def test_drain_kind_defaults_to_a_line_with_no_payload(self) -> None:
         item = InboundDrainItem(text="hi")
         assert (item.kind, item.payload) == ("line", None)
 
-    def test_a_kind_outside_the_five_is_refused(self) -> None:
+    def test_a_kind_outside_them_is_refused(self) -> None:
         good = {"text": "/compact", "kind": "command"}
-        assert InboundEnqueueRequest.model_validate(good).kind == "command"
         assert InboundDrainItem.model_validate(good).kind == "command"
-        bad = {**good, "kind": "keys"}
         with pytest.raises(ValidationError):
-            InboundEnqueueRequest.model_validate(bad)
-        with pytest.raises(ValidationError):
-            InboundDrainItem.model_validate(bad)
-
-    def test_a_command_travels_verbatim_with_no_payload(self) -> None:
-        request = InboundEnqueueRequest(text="/compact", kind="command")
-        assert (request.text, request.kind, request.payload) == (
-            "/compact",
-            "command",
-            None,
-        )
+            InboundDrainItem.model_validate({**good, "kind": "keys"})
 
     def test_an_answer_carries_its_prompt_and_decision_in_the_payload(self) -> None:
         payload: dict[str, object] = {
@@ -308,13 +310,8 @@ class TestInboundKind:
             "updated_input": None,
             "message": "use the other file",
         }
-        request = InboundEnqueueRequest(
-            text="No: use the other file",
-            kind="answer",
-            payload=payload,
-        )
         drained = InboundDrainItem.model_validate(
-            {"text": request.text, "kind": request.kind, "payload": request.payload},
+            {"text": "No: use the other file", "kind": "answer", "payload": payload},
         )
         assert drained.payload == payload
         assert (
@@ -435,6 +432,20 @@ class TestRunState:
 
         assert session_run_state_path(session) == f"/api/sessions/{session}/run-state"
         assert session_reattach_path(session) == f"/api/sessions/{session}/reattach"
+
+    def test_a_clicked_commands_output_and_a_placement_have_paths_of_the_session(
+        self,
+    ) -> None:
+        session = uuid.UUID(int=7)
+
+        assert session_run_output_path(session, "r1") == (
+            f"/api/sessions/{session}/runs/r1/output"
+        )
+        assert session_place_path(session) == f"/api/sessions/{session}/place"
+
+
+def test_a_campaigns_asker_label_joins_its_slug_and_lowercased_email() -> None:
+    assert campaign_asker_label("lab", "Ann@Lab.Example") == "lab:asker:ann@lab.example"
 
 
 if __name__ == "__main__":

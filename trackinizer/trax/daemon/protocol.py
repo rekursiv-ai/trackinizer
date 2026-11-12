@@ -15,19 +15,17 @@ from typing import TYPE_CHECKING, Final, Self, cast, override
 
 import hashlib
 import json
-import os
 
+from trackinizer.lib.files.source_version import source_version
 from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.lib.userdirs import config_dir, state_dir
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     import socket
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 PROTOCOL_VERSION: Final = 1
@@ -67,6 +65,9 @@ KEY_ENV: Final = "TRACKINIZER_TOKEN"
 cross the socket, so the client runs in-process only when it is set with
 ``TRACKINIZER_URL``, the one case that reads it, and the daemon claims the name
 without a value."""
+
+KEY_FILE_ENV: Final = "TRACKINIZER_TOKEN_FILE"
+"""The file a key is read from when ``KEY_ENV`` is unset; held to ``KEY_ENV``'s rule."""
 
 
 class Request:
@@ -360,69 +361,6 @@ def daemon_source_version() -> str:
         root,
         outside=(),
     )
-
-
-def source_version(root: Path, *, outside: Sequence[str] = ()) -> str:
-    """Fingerprint a source tree, for stale-daemon detection.
-
-    A daemon outliving an edit keeps serving the old behavior, which looks
-    like correct output and is the sharpest failure mode this design
-    introduces. Every delegated ``trax`` call pays for this, so it must stay
-    cheap and import nothing.
-
-    Size and mtime catch an edit without reading the file, except a same-size
-    rewrite within one timestamp tick: a filesystem stamping whole seconds
-    (or kernel ticks) gives both writes the same mtime. Any write after a
-    fingerprint lands in the tree's newest tick or a later one, so only the
-    modules sharing the newest mtime are read and hashed -- git's racy-clean
-    rule, measured from that mtime rather than the clock. A clock-relative
-    window would read a module on one call and not the next as it aged, and
-    the changed value would restart a daemon for nothing. Test modules are
-    left out: the daemon imports none, so editing one must not restart it.
-
-    Args:
-      root: Package root directory; its non-test modules are walked.
-      outside: Further modules, as paths relative to ``root``.
-
-    Returns:
-      version: 128-bit hex digest of each module's path relative to ``root``,
-        size, and mtime, plus the contents of those in the newest tick.
-
-    """
-    prefix = len(str(root)) + 1
-    walked = sorted(
-        os.path.join(directory, name)[prefix:]  # noqa: PTH118 -- pathlib adds 0.4ms to every trax call.
-        for directory, _, files in os.walk(root)
-        for name in files
-        if name.endswith(".py")
-        and not name.endswith("_test.py")
-        and name != "conftest.py"
-    )
-    modules: list[tuple[str, os.stat_result]] = []
-    for name in (*walked, *outside):
-        try:
-            status = os.stat(os.path.join(root, name))  # noqa: PTH116, PTH118 -- pathlib adds 0.4ms to every trax call.
-        except OSError:
-            continue  # Deleted between the listing and the stat.
-        modules.append((name, status))
-    newest = max((status.st_mtime_ns for _, status in modules), default=None)
-    digest = hashlib.blake2b(digest_size=16)
-    for name, status in modules:
-        contents = _read(root / name) if status.st_mtime_ns == newest else b""
-        record = (name, status.st_size, status.st_mtime_ns, len(contents))
-        digest.update(repr(record).encode())
-        digest.update(contents)
-    return digest.hexdigest()
-
-
-# A module deleted or locked between its ``stat`` and this read falls back to that stat
-# alone. Raising would fail the ``trax`` call over a race the next call no longer sees.
-def _read(path: Path) -> bytes:
-    """Return the file's bytes, or none if it can no longer be read."""
-    try:
-        return path.read_bytes()
-    except OSError:
-        return b""
 
 
 # The shared typed-JSON extractor is the house tool for this, but it pulls in the import

@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 import asyncio
 import contextlib
 import fcntl
+import inspect
 import os
 import pty
-import select
 import shutil
 import signal
 import struct
+import subprocess
 import sys
 import tempfile
 import termios
@@ -38,6 +39,8 @@ from trackinizer.lib.posix.host import (
 )
 from trackinizer.lib.posix.terminal import Terminal
 
+
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from collections.abc import (
@@ -263,7 +266,8 @@ class TestAttach:
                         if count > seen[-1]:
                             seen.append(count)
                             return True
-                        await asyncio.sleep(0.01)
+                        # Another process writes the file; nothing signals the write.
+                        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
                     return False
 
                 async def arrived() -> None:
@@ -408,7 +412,8 @@ class TestAttach:
                     for _ in range(500):
                         if spec.scrollback.read_bytes().count(b"SIZE") > before:
                             break
-                        await asyncio.sleep(0.01)
+                        # Another process writes the file; nothing signals the write.
+                        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
                     assert spec.scrollback.read_bytes().count(b"SIZE") > before
                 finally:
                     await remote.close()
@@ -509,24 +514,35 @@ def _shell(address: Path, follower: int, go: int) -> int:
 class _Shell:
     """The attach as a job of :func:`_shell` on a pty this test types into.
 
-    Forked from this process, not a new interpreter, and before any event loop
-    runs: the job's ``asyncio.run`` would refuse a loop the fork copied. It waits
-    for :meth:`start`, once the host it attaches to is listening.
+    A fresh interpreter keeps the job-control fork independent of the pytest
+    process's size after torch imports. It waits for :meth:`start`, once the
+    host it attaches to is listening.
     """
 
     def __init__(self, address: Path) -> None:
         self._leader, follower = pty.openpty()
         go, self._go = os.pipe()
         self.seen = bytearray()
-        self.pid = os.fork()
-        if self.pid == 0:
-            code = 1
-            try:
-                os.close(self._leader)
-                os.close(self._go)
-                code = _shell(address, follower, go)
-            finally:
-                os._exit(code)
+        source = "\n".join(inspect.getsource(fn) for fn in (_Fd, _say, _cooked, _shell))
+        self._process = subprocess.Popen(  # noqa: S603 -- Only this test's helper source and descriptors.
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import asyncio, os, signal, sys, termios\n"
+                    "from pathlib import Path\n"
+                    "from trackinizer.lib.posix.attach import attach\n"
+                    f"{source}\n"
+                    "os._exit(_shell(Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])))"
+                ),
+                str(address),
+                str(follower),
+                str(go),
+            ],
+            cwd=_CWD.parents[2],
+            pass_fds=(follower, go),
+        )
+        self.pid = self._process.pid
         os.close(follower)
         os.close(go)
 
@@ -537,17 +553,23 @@ class _Shell:
     async def until(self, wanted: bytes, *, timeout_sec: float = 10.0) -> bytes:
         """Read the screen until ``wanted`` shows; return what showed since the call."""
         start = len(self.seen)
-        async with asyncio.timeout(timeout_sec):
-            while wanted not in self.seen[start:]:
-                nothing: list[int] = []
-                readable, _, _ = select.select([self._leader], nothing, nothing, 0)
-                if readable:
+        loop = asyncio.get_running_loop()
+        ready = asyncio.Event()
+        os.set_blocking(self._leader, False)
+        loop.add_reader(self._leader, ready.set)
+        try:
+            async with asyncio.timeout(timeout_sec):
+                while wanted not in self.seen[start:]:
+                    await ready.wait()
+                    ready.clear()
                     try:
                         self.seen += os.read(self._leader, 65_536)
+                    except BlockingIOError:
+                        continue
                     except OSError:
                         raise AssertionError(bytes(self.seen)) from None
-                else:
-                    await asyncio.sleep(0.01)
+        finally:
+            loop.remove_reader(self._leader)
         return bytes(self.seen[start:])
 
     async def line(self, marker: bytes) -> bytes:
@@ -584,7 +606,7 @@ class _Shell:
             os.killpg(self.pid, signal.SIGKILL)
         with contextlib.suppress(ProcessLookupError):
             os.kill(self.pid, signal.SIGKILL)
-        _ = os.waitpid(self.pid, 0)
+        _ = self._process.wait()
         os.close(self._go)
         os.close(self._leader)
 
@@ -673,10 +695,12 @@ class TestTheTerminalBehavesAsBeforeHosting:
                 shell.start()
                 _ = await shell.until(b"early")
                 _ = serving.cancel()
-                return await shell.until(b"cooked")
+                return await shell.line(b"EXIT")
 
         with _shell_on(short_dir) as shell:
-            assert b"EXIT" in asyncio.run(run(shell))
+            ended = asyncio.run(run(shell))
+        assert b"EXIT" in ended
+        assert b"cooked" in ended
 
     def test_a_terminated_attach_leaves_the_terminal_cooked_and_the_session_up(
         self,
@@ -1057,7 +1081,8 @@ async def _attach_typing(
         async with asyncio.timeout(5.0):
             while shown not in mirrored:
                 mirrored += _read_available(out_r)
-                await asyncio.sleep(0.01)
+                # The pipe is another process's output; nothing here wakes on it.
+                await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
             if until is not None:
                 await until()
         # Guarded like `typed`: when the child has already exited, the attach has
@@ -1078,7 +1103,8 @@ async def _viewers_reach(address: Path, count: int) -> int | None:
         seen = await viewers(address)
         if seen == count:
             return seen
-        await asyncio.sleep(0.01)
+        # The host is another process; only its socket reports the count.
+        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
     raise TimeoutError(f"viewers never reached {count}")
 
 
@@ -1097,7 +1123,8 @@ async def _wait_for_bytes(path: Path, needle: bytes) -> None:
     while loop.time() < deadline:
         if needle in _read(path):
             return
-        await asyncio.sleep(0.01)
+        # Another process writes the file; nothing signals the write.
+        await asyncio.sleep(0.01)  # house-ignore[sleep] -- See above.
     raise TimeoutError(f"{needle!r} not in {path} within 5s")
 
 

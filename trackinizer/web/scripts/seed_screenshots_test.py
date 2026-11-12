@@ -3,19 +3,26 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from contextlib import nullcontext
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
 
 import itertools
+import json
 import re
+import sys
 import uuid
 
 from treekle import from_plain
 
+import pytest
+
+from trackinizer.sagent.session.types import BashResult, ToolCall, UserMessage
 from trackinizer.types.edges import EDGE_POLICIES, kind_group_members
 from trackinizer.types.inquiries import Inquiry
-from trackinizer.web.scripts.graph_structure import Link, Node, Structure
+from trackinizer.web.scripts import seed_screenshots
+from trackinizer.web.scripts.graph_structure import Link, Node, Structure, dump
 from trackinizer.web.scripts.seed_screenshots import Shots, seed
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_session_ir import RecordBody
@@ -23,6 +30,8 @@ from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from treekle import PlainTree
 
     from trackinizer.wire.wire_session_ir import ManifestBody
@@ -42,6 +51,10 @@ def test_the_structure_is_seeded_first_and_its_showcase_named() -> None:
     first = list(client.kinds)[: len(_STRUCTURE.nodes)]
     assert [client.kinds[node] for node in first] == [n.kind for n in _STRUCTURE.nodes]
     assert (shots.root, shots.cited) == (first[0], first[1])
+    assert client.kinds[shots.issue] == "Issue"
+    assert client.bodies[shots.issue]["title"] == "Make the tokenizer twice as fast"
+    batches = [call for call in client.calls if call[0] == "submit_batch"]
+    assert {call[3] for call in batches} == {"ada@example.com"}
 
 
 def test_the_artifact_is_an_html_report_produced_by_the_cache_issue() -> None:
@@ -49,6 +62,7 @@ def test_the_artifact_is_an_html_report_produced_by_the_cache_issue() -> None:
     published = client.artifacts[shots.artifact]
     assert published["format"] == "html"
     assert "<svg" in from_plain(published["html"], str)
+    assert published["citations"] == [{"record_id": str(shots.experiment)}]
     issue = uuid.UUID(from_plain(published["issue_id"], str))
     assert client.bodies[issue]["title"] == "Cache merge ranks between calls"
 
@@ -177,6 +191,10 @@ def test_each_session_is_a_conversation_in_a_room() -> None:
         kinds = [record.kind for record in records]
         assert {"UserMessage", "AssistantMessage"} <= set(kinds)
         assert [record.idx for record in records] == list(range(len(records)))
+        assert records[0].timestamp is not None
+        assert start.started == records[0].timestamp
+    links = [call for call in client.calls if call[0] == "add_edge"]
+    assert {call[4] for call in links} == {"ada@example.com"}
 
 
 def test_turns_reach_the_server_in_the_order_they_happened_across_sessions() -> None:
@@ -207,11 +225,197 @@ def test_the_last_turn_is_stamped_when_the_seed_runs() -> None:
     assert max(stamp for stamp in stamps if stamp) == _NOW
 
 
+def test_main_seeds_the_server_at_url_and_prints_what_to_open(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _FakeClient()
+    opened: list[tuple[str, str, float]] = []
+
+    def connect(
+        url: str,
+        *,
+        author: str,
+        timeout_sec: float,
+    ) -> nullcontext[_FakeClient]:
+        opened.append((url, author, timeout_sec))
+        return nullcontext(client)
+
+    structure = tmp_path / "graph_structure.json"
+    structure.write_text(dump(_STRUCTURE))
+    monkeypatch.setattr(seed_screenshots, "GRAPH_STRUCTURE", structure)
+    monkeypatch.setattr(seed_screenshots, "Client", connect)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["seed_screenshots", "--url", "http://127.0.0.1:9"],
+    )
+
+    assert seed_screenshots.main() == 0
+
+    assert opened == [("http://127.0.0.1:9", "ada@example.com", 600.0)]
+    _, shots = _seeded()
+    assert json.loads(capsys.readouterr().out) == {
+        "belief": str(shots.belief),
+        "paper": str(shots.paper),
+        "experiment": str(shots.experiment),
+        "issue": str(shots.issue),
+        "artifact": str(shots.artifact),
+        "root": str(shots.root),
+        "cited": str(shots.cited),
+        "session": str(shots.session),
+        "agent": shots.agent,
+    }
+
+
+def test_an_unstamped_turn_is_a_bug_in_the_seed() -> None:
+    with pytest.raises(ValueError, match="every seeded turn is stamped"):
+        seed_screenshots._stamp(UserMessage(content="hi"))
+
+
+def test_a_session_starts_with_its_title_routing_and_first_turn_time() -> None:
+    session = seed_screenshots._Session(
+        actor="benchmark",
+        room="tokenizer",
+        title="Measure the cache",
+        produced_by="cache-issue",
+        turns=(
+            UserMessage(timestamp=_NOW.isoformat(), content="Run the benchmark"),
+            UserMessage(
+                timestamp=(_NOW + timedelta(seconds=1)).isoformat(),
+                content="Report the results",
+            ),
+        ),
+    )
+
+    assert seed_screenshots._start(session) == SessionStart(
+        cli="claude",
+        title="Measure the cache",
+        actor="benchmark",
+        rooms=["tokenizer"],
+        started=_NOW,
+    )
+
+
 def test_two_seeds_write_the_same() -> None:
     first, first_shots = _seeded()
     second, second_shots = _seeded()
     assert first.calls == second.calls
     assert first_shots == second_shots
+
+
+@pytest.mark.parametrize("described", [False, True])
+def test_artifacts_forward_their_metadata_with_example_address_attribution(
+    *,
+    described: bool,
+) -> None:
+    labels = ["retrieval", "survey"] if described else []
+    description = "Measured retrieval across windows." if described else ""
+    assert seed_screenshots._artifact(
+        "retrieval",
+        "Belief",
+        "Windows preserve retrieval",
+        owner="dee",
+        status="complete",
+        labels=labels,
+        description=description,
+        judgement="disproven",
+        confidence=0.2,
+    ) == (
+        "retrieval",
+        "Belief",
+        {
+            "title": "Windows preserve retrieval",
+            "status": "complete",
+            "owner": "dee@example.com",
+            "actor": "dee@example.com",
+            "judgement": "disproven",
+            "confidence": 0.2,
+            **({"labels": labels, "description": description} if described else {}),
+        },
+    )
+
+
+@pytest.mark.parametrize("subscribed", [False, True])
+def test_issues_forward_their_classification_and_subscribers(
+    *,
+    subscribed: bool,
+) -> None:
+    subscribers = ["eli@example.com", "fay@example.com"] if subscribed else []
+    assert seed_screenshots._issue(
+        "rerun",
+        "Repeat retrieval measurements",
+        owner="gus",
+        kind="bug",
+        priority=30,
+        status="complete",
+        labels=["retrieval"],
+        subscribers=subscribers,
+        description="Repeat after changing the window.",
+    ) == (
+        "rerun",
+        "Issue",
+        {
+            "title": "Repeat retrieval measurements",
+            "status": "complete",
+            "owner": "gus@example.com",
+            "actor": "gus@example.com",
+            "labels": ["retrieval"],
+            "description": "Repeat after changing the window.",
+            "priority": 30,
+            "issue_kind": ["bug"],
+            **({"subscribers": subscribers} if subscribed else {}),
+        },
+    )
+
+
+def test_papers_forward_bibliography_and_expand_the_publication_date() -> None:
+    assert seed_screenshots._paper(
+        "retrieval-windows",
+        "Retrieval through narrow windows",
+        authors=["Dee Placeholder", "Eli Sample"],
+        publication_type="article",
+        venue="Sequence Journal",
+        published="2025-08-17",
+    ) == (
+        "retrieval-windows",
+        "Paper",
+        {
+            "title": "Retrieval through narrow windows",
+            "status": "active",
+            "owner": "ben@example.com",
+            "actor": "ben@example.com",
+            "authors": ["Dee Placeholder", "Eli Sample"],
+            "publication_type": "article",
+            "venue": "Sequence Journal",
+            "publish_date": "2025-08-17T00:00:00Z",
+            "source": "https://example.com/papers/retrieval-windows",
+        },
+    )
+
+
+def test_shell_records_pair_the_command_with_its_timestamped_output() -> None:
+    assert seed_screenshots._shell(
+        "11:22:33",
+        "11:22:36",
+        "retrieval-run",
+        "measure retrieval --window 16",
+        "matched: 12\n",
+    ) == (
+        ToolCall(
+            timestamp=seed_screenshots._when("11:22:33"),
+            call_id="retrieval-run",
+            name="Bash",
+            arguments={"command": "measure retrieval --window 16"},
+        ),
+        BashResult(
+            timestamp=seed_screenshots._when("11:22:36"),
+            call_id="retrieval-run",
+            stdout="matched: 12\n",
+            exit_code=0,
+        ),
+    )
 
 
 _NOW = datetime(2026, 10, 2, 22, 37, tzinfo=UTC)
@@ -328,6 +532,8 @@ class _FakeClient:
         held = self.sessions[session_id][1]
         held.extend(records)
         assert manifest is not None
+        assert name == manifest.name
+        assert manifest.format == self.sessions[session_id][0].cli
         assert manifest.records == len(held), "a manifest counts all the part holds"
 
     def add_edge(

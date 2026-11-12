@@ -282,15 +282,23 @@ def _replayed_command(native: str) -> str:
     """Return the Bash command a rewritten claude transcript carries."""
     for line in native.splitlines():
         record = json_loads(line, dict[str, object])
-        message = from_plain(record.get("message"), dict[str, object], default={})
+        message = from_plain(
+            record.get("message"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         for block in from_plain(
             message.get("content"),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         ):
             if from_plain(block.get("name"), str, default="") == "Bash":
                 return from_plain(
-                    from_plain(block.get("input"), dict[str, object], default={}).get(
+                    from_plain(
+                        block.get("input"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ).get(
                         "command",
                     ),
                     str,

@@ -30,12 +30,14 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.api.session_access import (
     granted_audience,
-    request_principal,
     require_attributable,
-    require_session,
     require_session_access,
     require_session_write_access,
     resolve_asker,
+)
+from trackinizer.server.api.session_identity import (
+    request_principal,
+    require_session,
 )
 from trackinizer.server.asks import release_open_asks
 from trackinizer.server.auth import (
@@ -48,7 +50,7 @@ from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session import RunPlace
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.wire_machines import NAME_PATTERN
+from trackinizer.wire.wire_hosts import NAME_PATTERN
 from trackinizer.wire.wire_sessions import (
     RUN_NAME_PATTERN,
     RUN_STOPPED,
@@ -172,6 +174,7 @@ async def session_start_route(
         seq=next_seq,
         cli_session_id=row.cli_session_id,
         actor=row.owner,
+        account=row.account,
         audience=row.audience,
     )
 
@@ -183,7 +186,7 @@ async def session_inbound_enqueue_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
 ) -> InboundEnqueueResponse:
-    """Enqueue a message to inject into a live session's input.
+    """Enqueue a line to inject into a live session's input.
 
     The sender is **attested by the route**, never trusted from the body: the
     stored ``source`` is always the authenticated principal, so an agent
@@ -191,9 +194,9 @@ async def session_inbound_enqueue_route(
     carries no ``source`` at all -- a client that sends one gets 422, not a
     silently-ignored field. The session must exist and have a recent inbound
     poll; an ended or stale session is rejected (409) because no poller will
-    drain it. A session whose audience the sender does not read is 403
-    ``session_audience``, unless the sender is the configured assistant sending for
-    an ``asker`` who is that session's account or a writer who holds its audience.
+    drain it. Only the session's account or opening key may send input; everyone
+    else is 403 ``session_audience``, even if they read the transcript. The configured
+    assistant may relay for a writer ``asker`` whose account holds the session.
 
     Args:
       session_id: UUID of the session to message.
@@ -221,7 +224,7 @@ async def session_inbound_enqueue_route(
             detail=f"session {session_id} has ended; cannot enqueue",
         )
     inbound = get_inbound(request)
-    # A detached campaign's first line is queued before its machine opens the run.
+    # A detached campaign's first line is queued before its host opens the run.
     # Only the configured assistant's opening key may seed that asker's labelled
     # campaign session without a poller; every ordinary enqueue still needs one.
     prestart_campaign = (
@@ -232,7 +235,6 @@ async def session_inbound_enqueue_route(
         and identity.api_key_id == session.opened_by_api_key_id
         and (session.cli_session_id or "").startswith("campaign:")
         and "campaign" in (session.labels or ())
-        and body.kind == "line"
     )
     if not inbound.has_poller(session_id) and not prestart_campaign:
         raise HTTPException(status_code=409, detail="No active inbound poller")
@@ -247,8 +249,6 @@ async def session_inbound_enqueue_route(
                 session_id,
                 Inbound(
                     text=body.text,
-                    kind=body.kind,
-                    payload=body.payload,
                     source=identity.email,
                     source_role=identity.role,
                 ),
@@ -273,13 +273,11 @@ async def send_message_route(
     drop-if-absent -- the response lists the sessions enqueued; an empty list
     means no live session matched.
 
-    Policy: any ``writer`` may message the agent of any session whose audience it
-    reads. The configured assistant may message one it does not read only for an
-    ``asker`` it names, who is that session's account or a writer who holds its
-    audience: it relays a user's line and passes on that user's rights, not its own.
-    Sessions are a shared canvas and cross-agent messaging is the feature, so there
-    is no per-opener ownership gate here (or on the direct ``/inbound`` route). The
-    sender is always truthfully attested. When any live session the name resolves to
+    Policy: only the session's account or opening key may send input. The configured
+    assistant may relay for a writer ``asker`` whose account holds the session, on
+    that user's rights alone. Reading a session, sharing an organisation or being
+    an admin grants no input rights. Same-account cross-agent messaging remains.
+    The sender is always truthfully attested. When any live session the name resolves to
     is one the sender may not message, the whole send is 403 ``session_audience`` and
     nothing is queued, so a send never reports a delivery that did not happen.
 
@@ -381,7 +379,7 @@ async def session_inbound_drain_route(
     *,
     wait_sec: float = 0.0,
     run: Annotated[str | None, Query(pattern=RUN_NAME_PATTERN)] = None,
-    machine: Annotated[str | None, Query(pattern=NAME_PATTERN)] = None,
+    host: Annotated[str | None, Query(pattern=NAME_PATTERN)] = None,
     cwd: Annotated[
         str | None,
         Query(max_length=1_024, pattern=r"^[^\x00-\x1f\x7f-\x9f]*$"),
@@ -404,17 +402,16 @@ async def session_inbound_drain_route(
     a proxy that would otherwise cut it. Ending the session ends the hold, so
     the run that ends it as it exits is not kept waiting on its own poller.
 
-    The drain is 403 ``session_audience`` unless the caller opened the session or reads
-    its audience.
+    The drain is 403 ``session_audience`` unless the caller opened the session or is
+    its account and reads it: a drain takes the lines its run was sent.
 
-    Writers retain shared access to the drains of ordinary sessions, but a science
-    chat and the assistant's service session are drained by their opening key alone
-    (403 otherwise), save a chat a CLI began that its starter's canvas switched to the
-    assistant, which the assistant drains. Viewer access is scoped to the opening API
-    key so reading chat does not grant graph-write permission.
+    A science chat and the assistant's service session are drained by their opening
+    key alone (403 otherwise), save a chat a CLI began that its starter's canvas switched
+    to the assistant, which the assistant drains. Viewer access is scoped to the opening
+    API key so reading chat does not grant graph-write permission.
 
     A science chat's queue has one drainer, the provider its starter's canvas names,
-    and one live run. For ``claude`` or ``codex`` a drain by the configured assistant's
+    and one live session. For ``claude`` or ``codex`` a drain by the configured assistant's
     key is 409 ``provider_is_cli``, and the run that drains it may be under any key a
     chat takes a run from (its opening key or its starter's; 403 otherwise). For
     ``assistant`` a drain by its opening key that is not the assistant's is 409
@@ -434,7 +431,7 @@ async def session_inbound_drain_route(
     is 409 ``session_ended`` and the run stops; a session the reaper closed for silence
     is reopened by the drain instead.
 
-    ``run``, ``machine`` and ``cwd`` say where the draining run is, and the lease the
+    ``run``, ``host`` and ``cwd`` say where the draining run is, and the lease the
     drain takes keeps them for Chat to show (a malformed one is 422). They are the
     caller's own word about its own run, shown and never trusted; a run that names
     none is shown as it was before runs named themselves.
@@ -451,7 +448,7 @@ async def session_inbound_drain_route(
         (clamped to [0, 30]; 0 returns queued messages immediately).
       run: The name of the detached run, which an attach takes; absent for a run in
         a terminal of its own.
-      machine: The run's machine, as the machine host names it.
+      host: The run's host, as the daemon names it.
       cwd: The run's working directory, ``~/...`` under its home: at most 1,024
         characters, none of them a control character.
       cli: The CLI the draining run is, as the run names it: a lowercase word of
@@ -490,7 +487,7 @@ async def session_inbound_drain_route(
         inbound.mark_poller(
             session_id,
             run=run,
-            machine=machine,
+            host=host,
             cwd=cwd,
             cli=cli,
             instance=instance,
@@ -501,7 +498,7 @@ async def session_inbound_drain_route(
             session_id,
             at=datetime.now(UTC),
             polled=True,
-            place=RunPlace(machine=machine, run=run, cli=cli, cwd=cwd),
+            place=RunPlace(host=host, run=run, cli=cli, cwd=cwd),
         )
     # Ceiling on how long the inbound drain holds a request open. Long enough that
     # a waiting caller re-arms rarely, short enough to stay under the idle timeout
@@ -594,7 +591,7 @@ async def session_end_route(
     ``status`` non-terminal -- and the inbound queue is drained only after
     the close commits, so a failed end never silently discards undelivered
     steering messages. A second end on an already-closed session is a 409. A
-    session whose audience the caller neither reads nor opened is 403
+    session the caller neither opened nor holds the account of is 403
     ``session_audience``. A science chat is closed by a key that may run on it: its
     opening key, the assistant's or its starter's (403 otherwise); its starter may also
     close it from a browser, which has no key. An end that names
@@ -665,7 +662,7 @@ async def session_end_route(
     return SessionEndResponse(id=session_id, ended=committed_ended)
 
 
-# The run is its owner's own, under whichever of their keys its machine has.
+# The run is its owner's own, under whichever of their keys its host has.
 #
 # A run's report of its own state is held to the same rule, since it speaks for the same
 # run; it names no CLI (``names_cli``), the lease it reports to already does.
@@ -797,8 +794,7 @@ async def _require_attach(
 def _idempotency_key(request: Request) -> UUID | None:
     """Return the request's already-parsed ``Idempotency-Key``, or ``None``."""
     key = getattr(request.state, "idempotency_key", None)
-    if key is not None and not isinstance(key, UUID):
-        raise ValueError("Expected key is None or isinstance(key, UUID).")
+    assert isinstance(key, UUID | None)
     return key
 
 

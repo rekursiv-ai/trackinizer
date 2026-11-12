@@ -23,6 +23,7 @@ from treekle import ReadError, from_plain, mutable
 import pytest
 import pytest_asyncio
 
+from trackinizer.conftest import FakeEngine
 from trackinizer.server.store import legacy_retype_runner
 from trackinizer.server.store.legacy_retype_runner import (
     retype_all,
@@ -33,11 +34,11 @@ from trackinizer.server.store.legacy_retype_runner import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from trackinizer.lib.postgres import Conn
+    from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.store.core import Store
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _LEGACY_TABLE: Final = """
 CREATE TABLE IF NOT EXISTS agent_session_events (
@@ -68,7 +69,8 @@ async def store(integ_store: Store) -> AsyncIterator[Store]:
         await conn.execute("DROP TABLE IF EXISTS agent_session_events")
 
 
-async def _legacy_session(store: Store) -> UUID:
+# ``commands=False`` leaves out the slash command, so nothing routes to its table.
+async def _legacy_session(store: Store, *, commands: bool = True) -> UUID:
     """One session through the REAL 020 backfill: the runner's true input."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
@@ -104,6 +106,12 @@ async def _legacy_session(store: Store) -> UUID:
             {"command": "model", "args": "opus"},
             {"raw": {"weird": True}},
         )
+        if not commands:
+            await conn.execute(
+                "DELETE FROM agent_session_events WHERE session_id = $1 "
+                "AND kind = 'SlashCommand'",
+                session_id,
+            )
         await conn.execute(
             (_CWD.parent.parent / "server" / "assets" / "schema.020.sql").read_text(
                 encoding="utf-8",
@@ -284,6 +292,36 @@ async def test_retype_all_processes_every_shard_disjointly(store: Store) -> None
     for shard in range(2):
         second_pass += (await retype_all(store.engine, shards=2, shard=shard)).rewritten
     assert second_pass == 0
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_session_without_slash_commands_writes_none(store: Store) -> None:
+    session_id = await _legacy_session(store, commands=False)
+
+    async with store.engine.acquire() as conn:
+        stats = await retype_session(conn, session_id)
+        stored = await conn.fetchval(
+            "SELECT count(*) FROM session_slash_commands WHERE session_id = $1",
+            session_id,
+        )
+
+    assert (stats.rewritten, stats.records_in, stats.slash_commands) == (1, 4, 0)
+    assert stored == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("shards", "shard"), [(2, 2), (2, -1), (1, 1)])
+async def test_a_shard_outside_the_count_is_refused_before_any_read(
+    shards: int,
+    shard: int,
+) -> None:
+    engine = FakeEngine()
+
+    with pytest.raises(ValueError, match=rf"shard {shard} outside \[0, {shards}\)"):
+        await retype_all(cast("DatabaseEngine", engine), shards=shards, shard=shard)
+
+    assert engine.conn.mock_calls == []
 
 
 class _Rows:

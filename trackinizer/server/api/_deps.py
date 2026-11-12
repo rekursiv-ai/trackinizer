@@ -7,13 +7,17 @@ from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 import dataclasses
 import datetime as dt
 import functools
+import logging
 import uuid
 
 from trackinizer.server.api.replays import Replays
+from trackinizer.server.api.tool_access import tool_access
 from trackinizer.server.capture_relay import CaptureRelay
 from trackinizer.server.config import Config
-from trackinizer.server.execs import ExecHub
-from trackinizer.server.terminals import Terminal, TerminalHub
+from trackinizer.server.host_changes import HostChanges
+from trackinizer.server.session_relay import SessionRelay
+from trackinizer.server.terminals import Terminal, TerminalRelay
+from trackinizer.server.tool_relay import ToolConnection, ToolRelay
 from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
@@ -28,13 +32,16 @@ if TYPE_CHECKING:
     from trackinizer.types.inquiries import Inquiry
 
 
+_logger = logging.getLogger(__name__)
+
+
 class _State(Protocol):
     store: Store
     inbound: InboundQueue
     secrets: SecretBackend | None
 
 
-def get_store(request: Request) -> Store:
+def get_store(request: HTTPConnection) -> Store:
     """Return the Store held on the FastAPI app state.
 
     Args:
@@ -66,7 +73,7 @@ def nudge_streams(request: Request) -> None:
     """Wake the event streams the app holds, if any, to read what changed.
 
     Args:
-      request: The request that changed a session, a run or a machine.
+      request: The request that changed a session, a run or a host.
 
     """
     streams: object = getattr(cast("FastAPI", request.app).state, "hub", None)
@@ -91,56 +98,151 @@ def get_replays(request: Request) -> Replays:
     return replays
 
 
-def terminal_hub(app: FastAPI) -> TerminalHub:
-    """Return the app's terminal hub, made on first use.
+def terminal_relay(app: FastAPI) -> TerminalRelay:
+    """Return the app's terminal relay, made on first use.
 
     Args:
       app: The application, whose state holds the store.
 
     Returns:
-      result: The hub.
+      result: The relay.
 
     """
     held: object = getattr(app.state, "terminals", None)
-    if isinstance(held, TerminalHub):
+    if isinstance(held, TerminalRelay):
         return held
-    config: object = getattr(app.state, "config", None)
-    hub = TerminalHub(
+    relay = TerminalRelay(
         alive=functools.partial(_alive, store=cast("_State", app.state).store),
-        ice_servers=config.terminal_stun if isinstance(config, Config) else (),
+        ice_servers=_config(app).terminal_stun,
     )
-    app.state.terminals = hub
-    return hub
+    app.state.terminals = relay
+    return relay
 
 
-def get_terminal_hub(request: HTTPConnection) -> TerminalHub:
-    """Return the terminal hub held on the app state.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The hub.
-
-    """
-    return terminal_hub(cast("FastAPI", request.app))
-
-
-def get_exec_hub(request: HTTPConnection) -> ExecHub:
-    """Return the exec hub held on the app state, made on first use.
+def get_terminal_relay(request: HTTPConnection) -> TerminalRelay:
+    """Return the terminal relay held on the app state.
 
     Args:
       request: Request.
 
     Returns:
-      result: The hub.
+      result: The relay.
 
     """
-    app = cast("FastAPI", request.app)
-    hub: object = getattr(app.state, "execs", None)
-    if not isinstance(hub, ExecHub):
-        hub = app.state.execs = ExecHub()
-    return hub
+    return terminal_relay(cast("FastAPI", request.app))
+
+
+def tool_relay(app: FastAPI) -> ToolRelay:
+    """Return the app's tool connection relay, made on first use.
+
+    Args:
+      app: The application, whose state holds the store and the configuration.
+
+    Returns:
+      result: The relay.
+
+    """
+    held: object = getattr(app.state, "tool_relay", None)
+    if isinstance(held, ToolRelay):
+        return held
+    config = _config(app)
+    relay = ToolRelay(
+        alive=functools.partial(_connection_alive, app=app),
+        connections_per_host=config.tool_connections_per_host,
+        dial_back_sec=config.tool_dial_back_sec,
+        line_bytes=config.tool_line_bytes,
+    )
+    app.state.tool_relay = relay
+    return relay
+
+
+def get_tool_relay(request: HTTPConnection) -> ToolRelay:
+    """Return the tool connection relay held on the app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The relay.
+
+    """
+    return tool_relay(cast("FastAPI", request.app))
+
+
+def host_idle_sec(app: FastAPI, host_id: uuid.UUID) -> float:
+    """Return how long the host has had no tool call or result, nor terminal use.
+
+    The tool connection relay sees each call and result; the terminal relay each terminal's input
+    and output, relayed or reported by a direct link's keepalive. Both keep it in memory
+    alone, so after a restart a host is counted from the restart.
+
+    Args:
+      app: The application, whose state holds both relays.
+      host_id: The host.
+
+    Returns:
+      idle_sec: Seconds since the later of the two relays' last sight of use.
+
+    """
+    return min(
+        tool_relay(app).idle_sec(host_id),
+        terminal_relay(app).idle_sec(host_id),
+    )
+
+
+async def host_closed(app: FastAPI, host_id: uuid.UUID) -> None:
+    """End the tool connections and terminals of a host taken out of service.
+
+    Args:
+      app: The application, whose state holds both relays.
+      host_id: The host.
+
+    """
+    tool_relay(app).close_host(host_id)
+    await terminal_relay(app).close_host(host_id)
+
+
+def host_changes(app: FastAPI) -> HostChanges:
+    """Return the app's host-list versions, made on first use.
+
+    Args:
+      app: The application.
+
+    Returns:
+      changes: The version of each owner's host list in this process.
+
+    """
+    held: object = getattr(app.state, "host_changes", None)
+    if not isinstance(held, HostChanges):
+        held = app.state.host_changes = HostChanges()
+    return held
+
+
+def get_host_changes(request: HTTPConnection) -> HostChanges:
+    """Return the host-list versions held on the app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      changes: The version of each owner's host list in this process.
+
+    """
+    return host_changes(cast("FastAPI", request.app))
+
+
+# Called once the write has committed: a follower woken before it would list the
+# hosts as they were, and wait again with the change unseen.
+def hosts_changed(request: HTTPConnection, *, owner: str | None) -> None:
+    """Bump ``owner``'s host-list version after a write; a host none owns has none.
+
+    Args:
+      request: The request whose committed write changed a host.
+      owner: The host's owner, whose listing it is in.
+
+    """
+    if owner is not None:
+        get_host_changes(request).bump(owner)
 
 
 def get_relay(request: Request) -> CaptureRelay:
@@ -160,7 +262,24 @@ def get_relay(request: Request) -> CaptureRelay:
     return relay
 
 
-def get_assistant(request: Request) -> Assistant | None:
+def get_session_relay(request: HTTPConnection) -> SessionRelay:
+    """Return the live-session relay held on the app state, made on first use.
+
+    Args:
+      request: Request or websocket.
+
+    Returns:
+      result: The relay.
+
+    """
+    app = cast("FastAPI", request.app)
+    relay = cast(object, getattr(app.state, "session_relay", None))
+    if not isinstance(relay, SessionRelay):
+        relay = app.state.session_relay = SessionRelay()
+    return relay
+
+
+def get_assistant(request: HTTPConnection) -> Assistant | None:
     """Return the configured assistant; none without a Config.
 
     Args:
@@ -170,8 +289,7 @@ def get_assistant(request: Request) -> Assistant | None:
       result: The configured assistant, if any.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.assistant if isinstance(config, Config) else None
+    return _assistant(cast("FastAPI", request.app))
 
 
 def auth_is_disabled(request: HTTPConnection) -> bool:
@@ -184,11 +302,23 @@ def auth_is_disabled(request: HTTPConnection) -> bool:
       disabled: True when every caller resolves to a synthetic admin.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return isinstance(config, Config) and config.auth_disabled
+    return _config(cast("FastAPI", request.app)).auth_disabled
 
 
-def get_staff(request: Request) -> tuple[str, ...]:
+def get_tool_line_bytes(request: HTTPConnection) -> int:
+    """Return the longest line the server reads from an agent's tool connection.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The Config's cap, or its default without a Config.
+
+    """
+    return _config(cast("FastAPI", request.app)).tool_line_bytes
+
+
+def get_staff(request: HTTPConnection) -> tuple[str, ...]:
     """Return the configured staff patterns; none without a Config.
 
     Args:
@@ -198,8 +328,7 @@ def get_staff(request: Request) -> tuple[str, ...]:
       result: The staff patterns, empty when nobody is staff.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.staff if isinstance(config, Config) else ()
+    return _config(cast("FastAPI", request.app)).staff
 
 
 def get_chat_orgs(request: Request) -> ChatOrgs:
@@ -212,8 +341,7 @@ def get_chat_orgs(request: Request) -> ChatOrgs:
       result: ``single``, ``domain`` or ``individual``.
 
     """
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    return config.chat_orgs if isinstance(config, Config) else "individual"
+    return _config(cast("FastAPI", request.app)).chat_orgs
 
 
 def get_secrets(request: Request) -> SecretBackend | None:
@@ -342,19 +470,55 @@ class _App(Protocol):
     state: _State
 
 
+def _assistant(app: FastAPI) -> Assistant | None:
+    """Return the app's configured assistant; none without a Config."""
+    return _config(app).assistant
+
+
+# An app the lifespan has not started, as in a route test, has no Config of its own.
+def _config(app: FastAPI) -> Config:
+    """Return the app's Config, or the default one when it holds none."""
+    config: object = getattr(app.state, "config", None)
+    return config if isinstance(config, Config) else Config()
+
+
 async def _alive(term: Terminal, *, store: Store) -> bool:
-    """Whether the machine's credential is live and its owner an active user."""
+    """Whether the host's credential is live and its owner an active writer or admin."""
     async with store.engine.acquire() as conn:
         return bool(
             await conn.fetchval(
-                "SELECT EXISTS (SELECT 1 FROM machines m "
-                "JOIN machine_credentials c ON c.machine_id = m.id "
+                "SELECT EXISTS (SELECT 1 FROM hosts m "
+                "JOIN host_credentials c ON c.host_id = m.id "
                 "JOIN users u ON u.email = m.owner "
                 "WHERE m.id = $1 AND c.revoked_at IS NULL "
                 "AND u.status = 'active' AND u.role IN ('writer', 'admin'))",
-                term.machine_id,
+                term.host_id,
             ),
         )
+
+
+# The rule ``tool_routes`` opens a tool connection under, asked again of a tool connection that may outlive it.
+# A tool connection no host has dialed back for has no instance to compare yet, and its timer is short.
+# One that does not is logged, naming the check it failed, before the sweep ends it.
+async def _connection_alive(connection: ToolConnection, *, app: FastAPI) -> bool:
+    """Whether the assistant's key, its asker and the attached host still qualify."""
+    async with cast("_State", app.state).store.engine.acquire() as conn:
+        access = await tool_access(
+            conn,
+            assistant=_assistant(app),
+            api_key_id=connection.api_key_id,
+            asker=connection.asker,
+            host=connection.host_id,
+            instance=connection.instance,
+        )
+    if access.failed is not None:
+        _logger.warning(
+            "tool connection no longer allowed: connection=%s host_id=%s check=%s",
+            connection.id,
+            connection.host_id,
+            access.failed,
+        )
+    return access.failed is None
 
 
 @runtime_checkable

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from pathlib import Path
+from unittest.mock import MagicMock, Mock, call
 
 import errno
 import os
@@ -12,6 +13,7 @@ from treekle import MutablePlainTree, json_loads
 
 import pytest
 
+from trackinizer.lib.userdirs import base_dir_variables
 from trackinizer.sagent.session import jsonl
 from trackinizer.sagent.session.jsonl import (
     JournalInUseError,
@@ -301,6 +303,24 @@ async def test_an_unreadable_line_is_kept_as_incomplete(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_record_with_a_field_this_sagent_lacks_is_kept_as_incomplete(
+    tmp_path: Path,
+) -> None:
+    """A newer sagent's record is kept whole, never read with a field dropped."""
+    path = tmp_path / "s.jsonl"
+    newer = '{"py/object": "UserMessage", "content": "hi", "added_later": 1}'
+    async with JsonlJournal(path) as journal:
+        journal.append(UserMessage(content="a"))
+    with path.open("a") as file:
+        file.write(newer + "\n")
+    async with JsonlJournal(path) as journal:
+        assert list(journal) == [
+            UserMessage(content="a"),
+            IncompleteRecord(text=newer),
+        ]
+
+
+@pytest.mark.asyncio
 async def test_a_line_read_alone_is_the_record_the_journal_wrote(
     tmp_path: Path,
 ) -> None:
@@ -334,17 +354,22 @@ async def test_a_record_line_is_the_line_the_journal_writes(tmp_path: Path) -> N
     assert [read_record(record_line(each)) for each in records] == records
 
 
-@pytest.mark.asyncio
-async def test_a_window_larger_than_one_read_is_read_whole(tmp_path: Path) -> None:
-    """The backward read takes 1 MiB at a time; lines cross its seams."""
-    path = tmp_path / "s.jsonl"
-    clear = ContextClear(summary="start")
-    big = [UserMessage(content=letter * 700_000) for letter in "ab"]
-    async with JsonlJournal(path) as journal:
-        journal.append(UserMessage(content="before"), clear, *big)
-    assert path.stat().st_size > 1 << 20
-    async with JsonlJournal(path) as journal:
-        assert list(journal) == [clear, *big]
+def test_reversed_lines_join_chunk_seams_and_preserve_utf8() -> None:
+    reading = Mock(side_effect=[b"\xa9\nb\n \n", b"a\n\xc3"])
+    seeking = Mock(return_value=(1 << 20) + 3)
+    stream = Mock(read=reading, seek=seeking)
+    entering, leaving = Mock(return_value=stream), Mock(return_value=False)
+    opened = Mock(
+        return_value=MagicMock(__enter__=entering, __exit__=leaving),
+    )
+    path = Mock(spec=Path, open=opened)
+
+    assert list(jsonl._reversed_lines(path)) == [b"b", "é".encode(), b"a"]
+    opened.assert_called_once_with("rb")
+    assert seeking.call_args_list == [call(0, os.SEEK_END), call(3), call(0)]
+    assert reading.call_args_list == [call(1 << 20), call(3)]
+    entering.assert_called_once_with()
+    leaving.assert_called_once_with(None, None, None)
 
 
 @pytest.mark.asyncio
@@ -363,6 +388,7 @@ async def test_a_short_write_is_finished_not_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``os.write`` may write less than asked, on a full disk or a signal."""
+    isolated = base_dir_variables()
     path = tmp_path / "s.jsonl"
     write = os.write
 
@@ -371,20 +397,22 @@ async def test_a_short_write_is_finished_not_dropped(
 
     records = [UserMessage(content="a" * 100), UserMessage(content="b")]
     async with JsonlJournal(path) as journal:
-        monkeypatch.setattr(os, "write", halfway)
-        journal.append(*records)
-        monkeypatch.undo()
+        with monkeypatch.context() as local:
+            local.setattr(os, "write", halfway)
+            journal.append(*records)
+    assert base_dir_variables() == isolated
     async with JsonlJournal(path) as journal:
         assert list(journal) == records
 
 
 @pytest.mark.parametrize(
-    ("batch", "kept"),
+    ("batch", "kept", "torn"),
     [
-        ([UserMessage(content="torn" * 10)], 1),
-        ([UserMessage(content="x"), UserMessage(content="y" * 200)], 2),
+        ([UserMessage(content="t")], 1, True),
+        ([UserMessage(content="x"), UserMessage(content="yyy")], 2, True),
+        ([UserMessage(content="x"), UserMessage(content="y")], 2, False),
     ],
-    ids=["torn-line", "whole-line-then-torn"],
+    ids=["torn-line", "whole-line-then-torn", "whole-line-only"],
 )
 @pytest.mark.asyncio
 async def test_a_write_that_fails_partway_leaves_later_records_numbered(
@@ -392,14 +420,16 @@ async def test_a_write_that_fails_partway_leaves_later_records_numbered(
     monkeypatch: pytest.MonkeyPatch,
     batch: list[UserMessage],
     kept: int,
+    torn: bool,
 ) -> None:
     """A full disk can take part of a batch before it raises; the rest still reads."""
     path = tmp_path / "s.jsonl"
     write = os.write
 
-    def half_then_full(fd: int, data: bytes | memoryview) -> int:
+    def part_then_full(fd: int, data: bytes | memoryview) -> int:
         monkeypatch.setattr(os, "write", full)
-        return write(fd, bytes(data[: len(data) // 2]))
+        stop = len(data) // 2 if torn else len(record_line(batch[0]))
+        return write(fd, bytes(data[:stop]))
 
     def full(fd: int, data: bytes | memoryview) -> int:
         del fd, data
@@ -407,7 +437,7 @@ async def test_a_write_that_fails_partway_leaves_later_records_numbered(
 
     async with JsonlJournal(path) as journal:
         journal.append(UserMessage(content="before"))
-        monkeypatch.setattr(os, "write", half_then_full)
+        monkeypatch.setattr(os, "write", part_then_full)
         with pytest.raises(OSError, match="No space"):
             journal.append(*batch)
         monkeypatch.setattr(os, "write", write)
@@ -416,8 +446,14 @@ async def test_a_write_that_fails_partway_leaves_later_records_numbered(
 
         assert whole[0] == UserMessage(content="before")
         assert whole[1:kept] == batch[: kept - 1]
-        assert isinstance(whole[kept], IncompleteRecord)
-        assert whole[kept + 1 :] == [UserMessage(content="a"), UserMessage(content="b")]
+        if torn:
+            assert isinstance(whole[kept], IncompleteRecord)
+        else:
+            assert path.read_bytes() == b"".join(map(record_line, whole))
+        assert whole[kept + int(torn) :] == [
+            UserMessage(content="a"),
+            UserMessage(content="b"),
+        ]
         assert len(journal) == len(whole)
         assert [list(journal.history(start=n)) for n in range(len(whole))] == [
             whole[n:] for n in range(len(whole))
@@ -429,15 +465,18 @@ async def test_a_write_that_makes_no_progress_raises(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    isolated = base_dir_variables()
+
     def stuck(fd: int, data: bytes | memoryview) -> int:
         del fd, data
         return 0
 
     async with JsonlJournal(tmp_path / "s.jsonl") as journal:
-        monkeypatch.setattr(os, "write", stuck)
-        with pytest.raises(OSError, match="wrote nothing"):
-            journal.append(UserMessage(content="a"))
-        monkeypatch.undo()
+        with monkeypatch.context() as local:
+            local.setattr(os, "write", stuck)
+            with pytest.raises(OSError, match="wrote nothing"):
+                journal.append(UserMessage(content="a"))
+    assert base_dir_variables() == isolated
 
 
 @pytest.mark.asyncio

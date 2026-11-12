@@ -197,7 +197,7 @@ def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, object]]:
     by_kind: dict[str, list[dict[str, object]]] = {}
     for kind in cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(Inquiry.InquiryKind.__value__),
+        get_args(cast(object, Inquiry.InquiryKind.__value__)),
     ):
         rows = source.list_kind_all(kind)
         by_kind[kind] = [_node_from_row(row, kind) for row in rows]
@@ -221,16 +221,12 @@ def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, object]]:
 # insert); ``_node_body`` drops it.
 def _node_from_row(row: Mapping[str, PlainTree], kind: str) -> dict[str, object]:
     """Trim a live inquiry row to the graph-relevant fields."""
-    node: dict[str, object] = {
+    return {
         "id": from_plain(row["id"], str),
         "kind": kind,
         "created": row.get("created"),
+        **_graph_fields(row, kind),
     }
-    for field in _KIND_FIELDS[kind]:
-        value = row.get(field)
-        if value is not None:
-            node[field] = value
-    return node
 
 
 # Only the outbound ``edges`` projection is read (the inbound ``backlinks`` would re-
@@ -241,7 +237,7 @@ def _pull_edges(
     node_ids: list[str],
 ) -> list[tuple[str, str, str, float | None]]:
     """Outbound edges for each node, as ``(from_id, to_id, kind, valence)``."""
-    valid_kinds = set(get_args(Edge.Kind.__value__))
+    valid_kinds = set(get_args(cast(object, Edge.Kind.__value__)))
     known = set(node_ids)
     out: list[tuple[str, str, str, float | None]] = []
     for index, node_id in enumerate(node_ids):
@@ -278,7 +274,8 @@ def _flush(
     _log.info("[replay]   inserted %d nodes so far", len(id_map))
     pending.clear()
     if delay > 0:
-        time.sleep(delay)
+        # Paces the replay at the requested rate.
+        time.sleep(delay)  # house-ignore[sleep] -- See above.
 
 
 # Interleave discovery with insertion so the graph grows before the crawl finishes.
@@ -296,7 +293,7 @@ def _crawl_and_insert(
     chunk: int = 5,
 ) -> int:
     """Crawl the connected subgraph from ``seeds`` and stream it in, in order."""
-    valid_kinds = set(get_args(Edge.Kind.__value__))
+    valid_kinds = set(get_args(cast(object, Edge.Kind.__value__)))
     seen: dict[str, dict[str, object]] = {}
     id_map: dict[str, str] = {}
 
@@ -455,13 +452,18 @@ def _detail_peers(detail: dict[str, object]) -> list[str]:
 
 def _node_from_detail(self_view: dict[str, object]) -> dict[str, object]:
     """Return a submit body from a ``web_get`` ``self`` view: graph-relevant fields."""
-    kind = from_plain(self_view["kind"], str)
-    body: dict[str, object] = {}
-    for field in _KIND_FIELDS.get(kind, ("title", "status")):
-        value = self_view.get(field)
-        if value is not None:
-            body[field] = value
-    return body
+    return _graph_fields(self_view, from_plain(self_view["kind"], str))
+
+
+# A kind without its own entry (``AccessGroup``, or one a newer server added) still
+# replays as a titled node; indexing ``_KIND_FIELDS`` directly aborted the whole pull.
+def _graph_fields(view: Mapping[str, object], kind: str) -> dict[str, object]:
+    """Return the fields of ``view`` the graph renders for ``kind``, unset ones left out."""
+    return {
+        field: view[field]
+        for field in _KIND_FIELDS.get(kind, ("title", "status"))
+        if view.get(field) is not None
+    }
 
 
 # Nodes are created first (in chunks) to learn their new target ids; edges then
@@ -567,7 +569,8 @@ def _replay_traversal(
         if (index + 1) % 50 == 0:
             _log.info("[replay]   inserted %d/%d nodes", index + 1, len(order))
         if delay > 0:
-            time.sleep(delay)
+            # Paces the replay at the requested rate.
+            time.sleep(delay)  # house-ignore[sleep] -- See above.
 
 
 # Drops ``id`` and ``kind`` (the route's own discriminators) and ``created`` (server-
@@ -579,7 +582,11 @@ def _node_body(node: dict[str, object]) -> dict[str, object]:
 
 def _peer_map(detail: Mapping[str, object], key: str) -> _PeerMap:
     """Return one detail's ``edges``/``backlinks`` peer map (empty when absent)."""
-    raw = from_plain(detail.get(key), dict[str, list[dict[str, object]]], default={})
+    raw = from_plain(
+        detail.get(key),
+        dict[str, list[dict[str, object]]],
+        default=dict[str, list[dict[str, object]]](),
+    )
     return {
         edge_kind: tuple(
             from_plain(peer, dict[str, object])

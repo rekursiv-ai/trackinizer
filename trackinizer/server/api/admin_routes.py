@@ -58,6 +58,7 @@ __all__ = [
     "admin_list_users_route",
     "admin_remove_allowlist_route",
     "admin_remove_user_route",
+    "admin_reset_preferences_route",
     "admin_set_allowlist_role_route",
     "admin_set_user_role_route",
     "user_entry",

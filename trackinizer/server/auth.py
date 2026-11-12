@@ -1,7 +1,7 @@
 """Authentication: secret hashing, bearer tokens, session cookies, bootstrap.
 
 Two credential flows share one :class:`AuthIdentity` dataclass so route
-handlers never branch on credential type: bearer tokens (machine clients)
+handlers never branch on credential type: bearer tokens (host clients)
 and Google-OAuth browser session cookies (interactive users).
 
 The pieces:
@@ -14,7 +14,8 @@ The pieces:
   hash carries its own parameters: ``scrypt$n$r$p$saltB64$keyB64``.
 * :func:`current_user` -- the FastAPI dependency. Bearer header wins;
   otherwise the signed session cookie. 401 on no/bad credential or
-  disabled user.
+  disabled user; 409 when a browser page's ``X-Page-Account`` names another
+  account than its session's (:data:`PAGE_ACCOUNT_HEADER`).
 * :func:`allowlist_match` -- matches an email against the allowlist for
   the OAuth callback; literal match wins over a ``*@domain`` wildcard.
 * :func:`bootstrap_admin` -- seeds the first admin when ``users`` is empty.
@@ -39,15 +40,16 @@ import uuid
 from fastapi import Depends, HTTPException, Request
 
 from trackinizer.lib.userdirs import data_dir
+from trackinizer.server.api._origin import require_own_page_write
 from trackinizer.server.audience import key_audiences, person_audiences
 from trackinizer.server.notify import tx
 from trackinizer.server.session import read_session_cookie
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
-from trackinizer.wire.wire_job import BOX_CREDENTIAL_PREFIX
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLLMENT_PREFIX,
 )
+from trackinizer.wire.wire_job import BOX_CREDENTIAL_PREFIX
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
@@ -65,12 +67,14 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "BOOTSTRAP_ADMIN_ENV",
     "BOOTSTRAP_TOKEN_FILE_ENV",
+    "PAGE_ACCOUNT_HEADER",
     "ROLE_ORDER",
     "TOKEN_PREFIX_LEN",
     "AudienceCeilingError",
     "AuthIdentity",
     "Role",
     "RoleCeilingError",
+    "UserObserver",
     "UserStatus",
     "allowlist_match",
     "bootstrap_admin",
@@ -85,11 +89,13 @@ __all__ = [
     "list_api_keys",
     "lookup_user_by_id",
     "mint_open_into",
+    "publish_token_file",
     "request_user",
     "require_role",
     "revoke_api_key",
     "seed_no_auth_user",
     "set_api_key_role",
+    "stage_token_file",
     "verify_secret",
 ]
 
@@ -107,6 +113,9 @@ _TOKEN_BYTES: int = 32  # house-ignore[globals] -- Token entropy size (security 
 # Visible prefix stored per api_keys row. Drives UI display and scopes
 # scrypt-verify to the rows sharing that prefix.
 TOKEN_PREFIX_LEN: Final[int] = 12
+
+PAGE_ACCOUNT_HEADER: Final[str] = "X-Page-Account"
+"""The header a browser page sends with the email of the account it was read as."""
 
 BOOTSTRAP_ADMIN_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_ADMIN"
 BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.
@@ -306,7 +315,7 @@ def generate_token() -> tuple[str, str]:
 
     """
     secret = "trax_" + secrets.token_urlsafe(_TOKEN_BYTES)
-    # A machine or campaign-box credential starts ``trax_machine_`` or
+    # A host or campaign-box credential starts ``trax_machine_`` or
     # ``trax_gpubox_``; an API key that did would be mistaken for one by
     # ``current_user``'s early 401. Odds 2^-48 per mint.
     while secret.startswith((CREDENTIAL_PREFIX, BOX_CREDENTIAL_PREFIX)):
@@ -331,6 +340,13 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
     are present so an operator with a live browser session and a token in a
     curl wrapper sees the token's identity; the audit row records the
     credential actually presented.
+
+    A session cookie on a request that changes state (any method but ``GET``,
+    ``HEAD`` and ``OPTIONS``) must come from this server's own pages
+    (:func:`~trackinizer.server.api._origin.require_own_page_write`), else 403:
+    the browser sends the cookie with any same-site page's form, so every write
+    a cookie authenticates is guarded here, once, whatever its route. A bearer
+    is never sent by a browser on its own, so it needs no such check.
 
     ``request.app.state.store`` must hold the live :class:`Store` (it owns the
     engine and the ``last_used_at`` throttle). Raises 401 when no credential
@@ -363,7 +379,7 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
     # The Store carries the per-process ``last_used_at`` throttle.
     store = state.store
     bearer = extract_bearer(request)
-    # A machine credential, enrollment token or campaign-box credential is not a user
+    # A host credential, enrollment token or campaign-box credential is not a user
     # credential: refuse it before any lookup, with the answer an unknown bearer gets.
     if bearer is not None and bearer.startswith(
         (CREDENTIAL_PREFIX, ENROLLMENT_PREFIX, BOX_CREDENTIAL_PREFIX),
@@ -381,12 +397,14 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
         return identity
     session_user_id = _try_read_session_user_id(request)
     if session_user_id is not None:
+        require_own_page_write(request)
         identity = await _resolve_session_identity(
             store.engine,
             session_user_id,
             staff=staff,
         )
         if identity is not None:
+            _refuse_another_page(request, identity)
             return identity
     raise HTTPException(status_code=401, detail="not authenticated")
 
@@ -471,7 +489,7 @@ async def create_api_key(
     ceiling: Role,
     open_into: str | None = None,
     minter: AuthIdentity | None = None,
-    machine_id: uuid.UUID | None = None,
+    host_id: uuid.UUID | None = None,
 ) -> tuple[uuid.UUID, str, str, Role]:
     """Insert a fresh ``api_keys`` row; return ``(key_id, secret, prefix, role)``.
 
@@ -498,8 +516,8 @@ async def create_api_key(
       open_into: The one audience the key opens sessions into; ``None`` for no pin.
       minter: The identity that presented the request, or ``None`` for the
         bootstrap seed.
-      machine_id: The machine a device login enrolled with the key, which logging
-        that machine out revokes it with; ``None`` for any other key.
+      host_id: The host a device login enrolled with the key, which logging
+        that host out revokes it with; ``None`` for any other key.
 
     Returns:
       result: Tuple of (key_id, secret, prefix, role) for the new key.
@@ -524,7 +542,7 @@ async def create_api_key(
     secret_hash = hash_secret(secret)
     await conn.execute(
         "INSERT INTO api_keys "
-        "(id, user_id, name, secret_hash, prefix, role, open_into, machine_id) "
+        "(id, user_id, name, secret_hash, prefix, role, open_into, host_id) "
         "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         key_id,
         user_id,
@@ -533,7 +551,7 @@ async def create_api_key(
         prefix,
         final_role,
         open_into,
-        machine_id,
+        host_id,
     )
     return key_id, secret, prefix, final_role
 
@@ -862,7 +880,7 @@ async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
         )
 
 
-async def bootstrap_admin(conn: Conn, *, policy: _UserObserver) -> None:
+async def bootstrap_admin(conn: Conn, *, policy: UserObserver) -> None:
     """Seed the first admin (allowlist + user + api_key) when ``users`` is empty.
 
     Takes a fresh deployment to "operator can call the API immediately":
@@ -942,12 +960,16 @@ async def bootstrap_admin(conn: Conn, *, policy: _UserObserver) -> None:
                 name="bootstrap",
                 ceiling="admin",
             )
-            _stage_bootstrap_token(token_path, secret)
+            stage_token_file(token_path, secret)
     if seeded:
-        _publish_bootstrap_token(token_path)
+        publish_token_file(token_path)
+        logger.warning(
+            "bootstrap admin token written to %s (read once, then rotate)",
+            token_path,
+        )
 
 
-async def seed_no_auth_user(conn: Conn, *, policy: _UserObserver) -> None:
+async def seed_no_auth_user(conn: Conn, *, policy: UserObserver) -> None:
     """Seed the synthetic ``--no-auth`` principal as an active admin user.
 
     ``--no-auth`` collapses every request to a synthetic admin identity
@@ -975,20 +997,16 @@ async def seed_no_auth_user(conn: Conn, *, policy: _UserObserver) -> None:
             await policy.on_user(conn, email=_NO_AUTH_EMAIL, role="admin")
 
 
-def _bootstrap_token_path() -> Path:
-    """Resolve the final bootstrap-token path from env override or default."""
-    override = os.environ.get(BOOTSTRAP_TOKEN_FILE_ENV, "").strip()
-    return (
-        Path(override)
-        if override
-        else data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
-    )
-
-
 # An ``OSError`` here propagates so ``tx(conn)`` rolls back. ``O_TRUNC`` overwrites any
 # ``.tmp`` orphan from a prior crash so re-bootstrap can't inherit a stale plaintext.
-def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
-    """Stage the secret: fsync it to ``<final>.tmp`` inside the DB transaction."""
+def stage_token_file(token_path: Path, secret: str) -> None:
+    """Stage the secret: fsync it to ``<final>.tmp`` inside the DB transaction.
+
+    Args:
+      token_path: Where the secret is published once the transaction commits.
+      secret: The plaintext key, written with a trailing newline, mode 0600.
+
+    """
     token_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = token_path.with_name(token_path.name + ".tmp")
     fd = os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -1006,8 +1024,13 @@ def _stage_bootstrap_token(token_path: Path, secret: str) -> None:
 # visible) and the dir fsync makes it crash-durable. A failure here is a real outage --
 # the commit landed but the secret never materialized -- so the ``.tmp`` is left for
 # manual recovery.
-def _publish_bootstrap_token(token_path: Path) -> None:
-    """Publish the staged secret: rename ``.tmp`` to final and fsync the dir."""
+def publish_token_file(token_path: Path) -> None:
+    """Publish the staged secret: rename ``.tmp`` to final and fsync the dir.
+
+    Args:
+      token_path: The path :func:`stage_token_file` staged it for.
+
+    """
     tmp_path = token_path.with_name(token_path.name + ".tmp")
     tmp_path.replace(token_path)
     dir_fd = os.open(token_path.parent, os.O_RDONLY)
@@ -1015,10 +1038,6 @@ def _publish_bootstrap_token(token_path: Path) -> None:
         os.fsync(dir_fd)
     finally:
         os.close(dir_fd)
-    logger.warning(
-        "bootstrap admin token written to %s (read once, then rotate)",
-        token_path,
-    )
 
 
 # The session path is off when ``app.state.config`` is absent (tests that skip the
@@ -1040,6 +1059,25 @@ def _try_read_session_user_id(request: HTTPConnection) -> uuid.UUID | None:
         return uuid.UUID(raw)
     except ValueError:
         return None
+
+
+# One browser shares one session cookie across its tabs. A tab left open while another
+# tab signs in as someone else would otherwise show the first account and act as the
+# second: its ``X-Page-Account`` names whom it shows. A request without the header, a
+# WebSocket or another client's, is the session's own.
+def _refuse_another_page(request: HTTPConnection, identity: AuthIdentity) -> None:
+    """Refuse a request from a page read as another account than the session's."""
+    page = request.headers.get(PAGE_ACCOUNT_HEADER)
+    if page is None or page.casefold() == identity.email.casefold():
+        return
+    raise HTTPException(
+        status_code=409,
+        detail={
+            "code": "other_account",
+            "message": f"Nothing was sent: this page was read as {page}, and you are "
+            f"signed in as {identity.email} now. Reload it to see {identity.email}'s.",
+        },
+    )
 
 
 async def _resolve_session_identity(
@@ -1259,8 +1297,12 @@ class _ConfigLike(Protocol):
 # The part of ``access_policy.AccessPolicy`` the seeds call, named here instead of
 # imported: a service that imports this module and not the policy is redeployed only
 # when a file it imports changes, so that import would leave it on a stale copy.
-class _UserObserver(Protocol):
-    async def on_user(self, conn: Conn, *, email: str, role: Role) -> None: ...
+class UserObserver(Protocol):
+    """What is told of each account a seed makes: the access policy, or a stand-in."""
+
+    async def on_user(self, conn: Conn, *, email: str, role: Role) -> None:
+        """Hear of ``email``, made at ``role`` on ``conn``, inside its transaction."""
+        ...
 
 
 class _StoreLike(Protocol):
@@ -1315,3 +1357,13 @@ async def _fetch_user_role(conn: Conn, user_id: uuid.UUID) -> Role:
     if user_role_raw is None:
         raise LookupError(f"unknown user {user_id}")
     return user_role_raw
+
+
+def _bootstrap_token_path() -> Path:
+    """Resolve the final bootstrap-token path from env override or default."""
+    override = os.environ.get(BOOTSTRAP_TOKEN_FILE_ENV, "").strip()
+    return (
+        Path(override)
+        if override
+        else data_dir() / "rekursiv-ai" / "trackinizer" / "bootstrap_token"
+    )

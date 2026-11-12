@@ -49,6 +49,7 @@
       "status": [
         "active",
         "complete",
+        "stopped",
         "abandoned",
         "invalid"
       ]

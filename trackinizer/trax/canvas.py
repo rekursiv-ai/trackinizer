@@ -370,13 +370,17 @@ def _canvas_param_value(*, key: str, value: str, kind: str) -> str | int | bool:
 def _visual_parameters(client: Client, *, visual_type: str) -> dict[str, str]:
     """Return the parameters a visual takes, by name, with their catalog types."""
     catalog = from_plain(client.get("/api/visuals"), dict[str, object])
-    visuals = from_plain(catalog.get("visuals"), list[dict[str, object]], default=[])
+    visuals = from_plain(
+        catalog.get("visuals"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     for visual in visuals:
         if visual.get("type") == visual_type:
             schemas = from_plain(
                 visual.get("parameter_schema"),
                 dict[str, dict[str, object]],
-                default={},
+                default=dict[str, dict[str, object]](),
             )
             return {
                 name: from_plain(schema.get("type"), str, default="")
@@ -392,7 +396,11 @@ def _print_canvas(payload: object) -> None:
     revision = from_plain(state.get("revision"), int, default=0)
     focused = from_plain(state.get("focused_instance"), str, default="none")
     echo(f"canvas {canvas_id} revision {revision} focused {focused}")
-    preferences = from_plain(state.get("preferences"), dict[str, object], default={})
+    preferences = from_plain(
+        state.get("preferences"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     if preferences:
         echo(
             "  preferences "
@@ -401,7 +409,11 @@ def _print_canvas(payload: object) -> None:
                 for key, value in sorted(preferences.items())
             ),
         )
-    visuals = from_plain(state.get("visuals"), list[dict[str, object]], default=[])
+    visuals = from_plain(
+        state.get("visuals"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     if not visuals:
         echo("  (no visuals)")
     for visual in visuals:
@@ -416,9 +428,21 @@ def _print_canvas(payload: object) -> None:
 
 def _print_marks(state: Mapping[str, object]) -> None:
     """Print every box with its id, page and what it covers."""
-    labels = from_plain(state.get("record_labels"), dict[str, str], default={})
-    for mark in from_plain(state.get("marks"), list[dict[str, object]], default=[]):
-        covers = from_plain(mark.get("covers"), dict[str, list[str]], default={})
+    labels = from_plain(
+        state.get("record_labels"),
+        dict[str, str],
+        default=dict[str, str](),
+    )
+    for mark in from_plain(
+        state.get("marks"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    ):
+        covers = from_plain(
+            mark.get("covers"),
+            dict[str, list[str]],
+            default=dict[str, list[str]](),
+        )
         named = [labels.get(each, each) for each in covers.get("records", [])]
         named += covers.get("instances", [])
         over = " over the window" if mark.get("window") is True else ""

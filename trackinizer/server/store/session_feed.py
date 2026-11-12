@@ -554,7 +554,11 @@ def _actor_facet(
         actor=from_plain(session.get("owner"), str, default=""),
         session_id=session_id,
         cli=from_plain(session.get("agentsession_cli"), str, default="") or None,
-        rooms=from_plain(session.get("agentsession_rooms"), list[str], default=[]),
+        rooms=from_plain(
+            session.get("agentsession_rooms"),
+            list[str],
+            default=list[str](),
+        ),
         count=from_plain(counted["records"], int),
         conversation=from_plain(counted["conversation"], int),
         last=last,

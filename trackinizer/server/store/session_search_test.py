@@ -25,6 +25,7 @@ from trackinizer.server.store.session_search import (
     RRF_K,
     SessionSearchHit,
     _ArmHit,
+    _fts_arm,
     _merge,
     _semantic_arm,
     _semantic_scan,
@@ -272,6 +273,39 @@ async def test_empty_query_raises(store: Store) -> None:
             model=_MODEL,
             dim=_DIM,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("limit", "dim", "vector", "message"),
+    [
+        (0, 4, None, r"limit must be in \[1, 200\]"),
+        (201, 4, None, r"limit must be in \[1, 200\]"),
+        (5, 0, None, "dim must be positive, got 0"),
+        (5, 4, [1.0, 0.0], "query_vector has 2 dims, expected 4"),
+    ],
+    ids=["limit-zero", "limit-over", "dim-zero", "vector-length"],
+)
+async def test_a_malformed_search_is_refused_before_any_read(
+    limit: int,
+    dim: int,
+    vector: list[float] | None,
+    message: str,
+) -> None:
+    engine = FakeEngine()
+
+    with pytest.raises(ValueError, match=message):
+        _ = await search_session_records(
+            cast("DatabaseEngine", engine),
+            query_vector=vector,
+            query_text="deadlock",
+            mapper=_MAPPER,
+            model=_MODEL,
+            dim=dim,
+            limit=limit,
+        )
+
+    assert engine.conn.mock_calls == []
 
 
 def _hit(idx: int, *, field: str = "content", chunk: int = 0) -> _ArmHit:
@@ -713,6 +747,58 @@ async def test_the_search_scans_each_reader_as_what_it_reads_calls_for(
 
     assert executed_sql(conn) == statements
     assert len(hits) == 3
+
+
+@pytest.mark.asyncio
+async def test_blank_search_is_refused_without_acquiring_a_connection() -> None:
+    engine = FakeEngine()
+    with pytest.raises(ValueError, match="at least one arm"):
+        await search_session_records(
+            cast("DatabaseEngine", engine),
+            query_vector=None,
+            query_text=" \n ",
+            mapper="m",
+            model="e",
+            dim=2,
+        )
+    assert engine.conn.mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_full_text_arm_projects_a_record_hit_and_binds_scope_before_limit() -> (
+    None
+):
+    conn = make_conn()
+    conn.fetch.return_value = [
+        {
+            "session_id": UUID(int=3),
+            "part": 2,
+            "idx": 4,
+            "snippet": "a <b>lock</b>",
+            "title": "debugging",
+        },
+    ]
+    scope = FeedScope(actors=("agent",), reader=_OPEN_READER)
+
+    hits = await _fts_arm(cast("Conn", conn), "lock", limit=2, scope=scope)
+
+    assert hits == [
+        _ArmHit(
+            session_id=UUID(int=3),
+            part=2,
+            idx=4,
+            field="",
+            chunk=0,
+            snippet="a <b>lock</b>",
+            title="debugging",
+        ),
+    ]
+    assert conn.fetch.await_args is not None
+    sql, *params = conn.fetch.await_args.args
+    assert "r.idx < m.records" in str(sql)
+    assert "i.owner = ANY($3::text[])" in str(sql)
+    assert "ORDER BY ts_rank(r.search, q) DESC" in str(sql)
+    assert params[:3] == ["lock", 2, ["agent"]]
 
 
 if __name__ == "__main__":

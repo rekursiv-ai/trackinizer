@@ -40,7 +40,7 @@ from trackinizer.server.route_iter import iter_routes
 from trackinizer.wire.audience import SESSION_CONTENT_ROUTES
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -75,7 +75,7 @@ _NAMES_A_TABLE: Final = re.compile(
 # walk itself decides.
 _DYNAMIC_TABLE: Final = re.compile(
     r"\b(?:FROM|JOIN|INTO|UPDATE)\s*(?:\{|%s|[\"']\s*(?:[,)+]|$))",
-    re.IGNORECASE,
+    re.IGNORECASE | re.MULTILINE,
 )
 # An unindented line that opens a function, a class or a decorator.
 _CUT: Final = re.compile(r"^(?:@|(?:async[ \t]+)?def\b|class\b)", re.MULTILINE)
@@ -241,6 +241,8 @@ class _Reader:
 @functools.cache
 def _classified(source: str) -> tuple[_Reader, ...]:
     """Return each scope of ``source`` with SQL on a session table, classified."""
+    if _TABLE_NAME.search(source) is None and _DYNAMIC_TABLE.search(source) is None:
+        return ()
     lines = source.split("\n")
     # Only a scope with a line that could name a table is walked: most of a module
     # does not, and walking all of it dominates the cost of the audit.
@@ -461,15 +463,6 @@ def _repository_scopes() -> tuple[tuple[str, _Reader], ...]:
         gc.enable()
 
 
-def _repository_readers() -> frozenset[tuple[str, str]]:
-    """Return ``(path, name)`` for each unmarked reader anywhere in the package."""
-    return frozenset(
-        (path, reader.name)
-        for path, reader in _repository_scopes()
-        if not reader.marked
-    )
-
-
 def _repository_gated() -> frozenset[tuple[str, str]]:
     """Return ``(path, name)`` for each reader marked gated anywhere in the package."""
     return frozenset(
@@ -498,14 +491,24 @@ def _repository_callers() -> frozenset[tuple[str, str]]:
     return frozenset(found)
 
 
-def test_every_function_on_session_tables_says_how_it_is_gated() -> None:
-    unclassified = _repository_readers()
+def _relative_id(path: Path) -> str:
+    """Name a scanned module by its path under the package."""
+    return path.relative_to(_TRACKINIZER).as_posix()
+
+
+@pytest.mark.parametrize(
+    "path",
+    list(_modules(_TRACKINIZER)),
+    ids=_relative_id,
+)
+def test_every_function_on_session_tables_says_how_it_is_gated(path: Path) -> None:
+    unclassified = unmarked_readers(path.read_text(encoding="utf-8"))
 
     assert not unclassified, (
         "functions with SQL on a session-content table and no marker; add "
         "'# Audience: gated' if the caller checks the viewer's audience, or "
         "'# Audience: internal' if nothing they return reaches a caller:\n"
-        + "\n".join(f"  {path}  {name}" for path, name in sorted(unclassified))
+        + "\n".join(f"  {path}  {name}" for name in unclassified)
     )
 
 

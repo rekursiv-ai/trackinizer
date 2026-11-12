@@ -77,7 +77,7 @@ export function useToast(): ShowToast {
 /**
  * Copy text to the clipboard and say how it went: `done` when it worked, a
  * failure toast when the browser refused, or has no clipboard to offer (a page
- * served over plain http from anywhere but this machine).
+ * served over plain http from anywhere but this host).
  */
 export function useCopy(): (text: string, done: string) => Promise<void> {
   const toast = useToast();

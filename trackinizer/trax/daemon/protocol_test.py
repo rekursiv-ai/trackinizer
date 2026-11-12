@@ -17,6 +17,7 @@ import time
 
 import pytest
 
+from trackinizer.lib.files.source_version import source_version
 from trackinizer.lib.userdirs import state_dir
 from trackinizer.trax.daemon.protocol import (
     PROTOCOL_VERSION,
@@ -28,7 +29,6 @@ from trackinizer.trax.daemon.protocol import (
     package_root,
     read_frame,
     socket_path,
-    source_version,
     write_frame,
 )
 
@@ -37,7 +37,31 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
+
+
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    if "outside_path" not in metafunc.fixturenames:
+        return
+    stated: list[str] = []
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(os, "stat", partial(_recorded_stat, os.stat, stated=stated))
+        daemon_source_version()
+    inside = f"{package_root()}{os.sep}"
+    outside = sorted(
+        {
+            os.path.normpath(path)
+            for path in stated
+            if not os.path.normpath(path).startswith(inside)
+        }
+        | {os.path.realpath(inspect.getfile(state_dir))},
+    )
+    metafunc.parametrize("outside_path", outside, ids=outside)
+
+
+@pytest.fixture(scope="module")
+def daemon_source_version_baseline() -> str:
+    return daemon_source_version()
 
 
 class _FragmentedSocket:
@@ -54,6 +78,22 @@ class _FragmentedSocket:
         chunk = self._framed[:take]
         self._framed = self._framed[take:]
         return chunk
+
+
+def _request(
+    *,
+    argv: tuple[str, ...] = ("issue",),
+    env: dict[str, str] | None = None,
+) -> Request:
+    return Request(
+        argv=argv,
+        cwd="/home/agent",
+        env=env or {},
+        isatty=False,
+        columns=0,
+        protocol_version=PROTOCOL_VERSION,
+        source_version="v1",
+    )
 
 
 class TestFraming:
@@ -126,8 +166,36 @@ class TestFraming:
             left.close()
             right.close()
 
+    def test_accepts_the_maximum_frame_length_before_reading_its_body(self) -> None:
+        left, right = socket.socketpair()
+        try:
+            left.sendall((64 * 1024 * 1024).to_bytes(4, "big"))
+            left.shutdown(socket.SHUT_WR)
+            with pytest.raises(ConnectionError):
+                read_frame(right)
+        finally:
+            left.close()
+            right.close()
+
 
 class TestRequestPayload:
+    @pytest.mark.parametrize("isatty", [False, True])
+    def test_construction_preserves_the_callers_terminal_state(
+        self,
+        isatty: bool,
+    ) -> None:
+        request = Request(
+            argv=("issue",),
+            cwd="/caller",
+            env={},
+            isatty=isatty,
+            columns=80,
+            protocol_version=PROTOCOL_VERSION,
+            source_version="source",
+        )
+
+        assert request.isatty is isatty
+
     def test_rejects_unknown_protocol_version(self) -> None:
         raw = json.dumps({"protocol_version": PROTOCOL_VERSION + 1, "argv": []})
         with pytest.raises(ProtocolVersionError, match="protocol version"):
@@ -178,6 +246,54 @@ class TestRequestPayload:
         ):
             Request.from_json(raw.encode())
 
+    @pytest.mark.parametrize(
+        ("field", "value", "message"),
+        [
+            ("argv", "issue list", r"expected a list, got 'issue list'"),
+            ("argv", ["issue", 7], r"expected a string, got 7"),
+            ("cwd", None, r"expected a string, got None"),
+        ],
+    )
+    def test_rejects_a_field_of_the_wrong_type(
+        self,
+        field: str,
+        value: object,
+        message: str,
+    ) -> None:
+        payload: dict[str, object] = {
+            "protocol_version": PROTOCOL_VERSION,
+            "argv": [],
+            "cwd": "/",
+            "env": {},
+            "columns": 0,
+            "source_version": "",
+            field: value,
+        }
+        with pytest.raises(MalformedFrameError, match=message):
+            Request.from_json(json.dumps(payload).encode())
+
+
+class TestEquality:
+    def test_requests_equal_field_wise_and_hash_on_their_identity(self) -> None:
+        one, same = _request(env={"USER": "a"}), _request(env={"USER": "a"})
+        other_env = _request(env={"USER": "b"})
+
+        assert one == same
+        assert hash(one) == hash(same) == hash(other_env)
+        assert one != other_env
+        assert one != _request(argv=("issue", "list"))
+        assert one.__eq__("not a request") is NotImplemented
+
+    def test_responses_equal_field_wise_and_hash_on_every_field(self) -> None:
+        one = Response(stdout="o", stderr="e", exit_code=0)
+        same = Response(stdout="o", stderr="e", exit_code=0)
+
+        assert one == same
+        assert hash(one) == hash(same)
+        assert {one, same} == {one}
+        assert one != Response(stdout="o", stderr="e", exit_code=1)
+        assert one.__eq__(("o", "e", 0)) is NotImplemented
+
 
 class TestResponsePayload:
     def test_rejects_a_frame_missing_the_exit_code(self) -> None:
@@ -195,31 +311,26 @@ class TestResponsePayload:
 
 
 class TestSocketPath:
-    def test_lives_under_the_user_state_dir(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_lives_under_the_user_state_dir(self) -> None:
         """The socket is per-user session state, not scratch or config."""
-        monkeypatch.setenv("XDG_STATE_HOME", "/s")
-        path = socket_path()
+        path = socket_path().resolve()
         assert "rekursiv-ai" in path.parts
         assert "traxd" in path.parts
 
     def test_is_stable_across_calls(self) -> None:
         assert socket_path() == socket_path()
 
-    def test_resolves_through_the_shared_userdirs_helper(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
+    def test_resolves_through_the_shared_userdirs_helper(self) -> None:
         """Re-deriving the XDG layout gets the wrong answer off Linux.
 
         ``state_dir`` resolves under ``Library/Application Support`` on macOS
         and ``LOCALAPPDATA`` on Windows; a hand-rolled ``~/.local/state``
         silently puts the socket somewhere else on those platforms.
         """
-        monkeypatch.setenv("XDG_STATE_HOME", "/s")
-        assert socket_path().parent == state_dir() / "rekursiv-ai" / "traxd"
+        assert (
+            socket_path().resolve().parent
+            == (state_dir() / "rekursiv-ai" / "traxd").resolve()
+        )
 
     def test_differs_when_the_config_directory_differs(
         self,
@@ -233,9 +344,15 @@ class TestSocketPath:
         that caller never chose -- the wrong profiles, under the wrong token.
         Keying the socket on the config directory routes them apart instead.
         """
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "one"))
+        monkeypatch.setattr(
+            "trackinizer.trax.daemon.protocol.config_dir",
+            lambda: tmp_path / "one",
+        )
         first = socket_path()
-        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "two"))
+        monkeypatch.setattr(
+            "trackinizer.trax.daemon.protocol.config_dir",
+            lambda: tmp_path / "two",
+        )
 
         assert socket_path() != first
 
@@ -248,7 +365,10 @@ class TestSocketPath:
         state_root = tmp_path / ("long-state-segment-" * 12)
         logical_parent = state_root / "rekursiv-ai" / "traxd"
         logical_parent.mkdir(parents=True)
-        monkeypatch.setenv("XDG_STATE_HOME", str(state_root))
+        monkeypatch.setattr(
+            "trackinizer.trax.daemon.protocol.state_dir",
+            lambda: state_root,
+        )
         path = socket_path()
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 
@@ -310,17 +430,11 @@ class TestSourceVersionCoverage:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Each module it reads beside the root, and ``userdirs``, must move it.
-
-        The fast half of the drift guard below: a listed path naming no file
-        is skipped without a word, and ``userdirs`` -- which this module
-        imports -- must count in either layout. Names are matched exactly,
-        since a case-insensitive filesystem would stat a miscased one.
-        """
+        """Each path it lists exists; per-path digest checks run separately."""
         stated: list[str] = []
         with monkeypatch.context() as patch:
             patch.setattr(os, "stat", partial(_recorded_stat, os.stat, stated=stated))
-            before = daemon_source_version()
+            daemon_source_version()
         listings = {
             directory: {entry.name for entry in directory.glob("*")}
             for directory in {Path(path).parent for path in stated}
@@ -330,23 +444,24 @@ class TestSourceVersionCoverage:
             for path in stated
             if Path(path).name not in listings[Path(path).parent]
         ]
-        inside = f"{package_root()}{os.sep}"
-        beside = {
-            os.path.normpath(path)
-            for path in stated
-            if not os.path.normpath(path).startswith(inside)
-        }
-        unmoved: list[str] = []
-        for path in sorted(beside | {os.path.realpath(inspect.getfile(state_dir))}):
-            with monkeypatch.context() as patch:
-                patch.setattr(os, "stat", partial(_grown_stat, os.stat, grown=path))
-                if daemon_source_version() == before:
-                    unmoved.append(path)
 
         assert not unnamed, (
             f"the fingerprint lists modules that do not exist: {unnamed}"
         )
-        assert not unmoved, f"growing these left the fingerprint unchanged: {unmoved}"
+
+    def test_each_listed_external_path_changes_the_fingerprint(
+        self,
+        outside_path: str,
+        daemon_source_version_baseline: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                os,
+                "stat",
+                partial(_grown_stat, os.stat, grown=outside_path),
+            )
+            assert daemon_source_version() != daemon_source_version_baseline
 
     def test_covers_modules_outside_the_root(self, tmp_path: Path) -> None:
         """A module imported from beside the package root is source too.
@@ -599,7 +714,7 @@ class TestImportPurity:
         The property that matters is WHICH modules load, not how many
         milliseconds they take: import time swings several fold with the CPU
         governor, page-cache warmth, and parallel-test load, so a wall-clock
-        budget fails on a busy machine while the module set it stands in for
+        budget fails on a busy host while the module set it stands in for
         is unchanged. Naming the modules asserts the same thing
         deterministically.
         """

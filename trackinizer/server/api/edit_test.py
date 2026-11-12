@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock, patch
 
 import asyncio
 import dataclasses
@@ -13,7 +14,7 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, new_uuid, set_field_row
-from trackinizer.server.api.conftest import TEST_USER_EMAIL
+from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.wire.bodies import FieldSet
@@ -568,6 +569,100 @@ class TestRoutes:
         )
         assert update.args[1] is None
 
+    @pytest.mark.parametrize("method", ["PUT", "DELETE"])
+    def test_only_the_opening_key_changes_a_sessions_cli_session_id(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        method: str,
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(
+            engine.conn,
+            {
+                "kind": "AgentSession",
+                "account": TEST_USER_EMAIL,
+                "audience": "open",
+                "opener": new_uuid(),
+                "cli_session_id": "claude:abc",
+            },
+        )
+        path = inquiry_field_path("cli_session_id").format(target_id=new_uuid())
+        r = client.request(method, path, json={"value": "claude:def", "actor": "u"})
+        assert r.status_code == 403, r.text
+        assert from_plain(r.json(), dict[str, str])["detail"] == (
+            "A session's cli_session_id is changed by the key that opened it"
+        )
+
+    def test_put_and_delete_of_a_cost_axis_overwrite_it(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        target = new_uuid()
+        set_axis = AsyncMock(return_value=new_uuid())
+        with patch.object(store, "set_cost_axis", set_axis):
+            path = inquiry_field_path("marginal_cost_agent_usd").format(
+                target_id=target,
+            )
+            put = client.put(path, json={"value": 1.25, "actor": "u", "reason": "r"})
+            deleted = client.request("DELETE", path, json={"actor": "u"})
+        assert (put.status_code, deleted.status_code) == (200, 200)
+        assert [c.args for c in set_axis.await_args_list] == [
+            (target, "agent_usd", 1.25),
+            (target, "agent_usd", 0.0),
+        ]
+        assert [c.kwargs["reason"] for c in set_axis.await_args_list] == ["r", ""]
+
+    def test_cas_on_a_column_without_a_transition_is_400(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"title": "old", "kind": "Issue"})
+        r = client.put(
+            f"/api/inquiries/{new_uuid()}/title",
+            json={"value": "new", "mode": "cas", "expected": "old", "actor": "u"},
+        )
+        assert r.status_code == 400, r.text
+        assert from_plain(r.json(), dict[str, str])["detail"] == (
+            "expected is not valid for field 'title'"
+        )
+
+    def test_transition_judgement_route(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        target = new_uuid()
+        transition = AsyncMock(return_value=new_uuid())
+        with patch.object(store, "transition_judgement", transition):
+            r = client.put(
+                inquiry_field_path("judgement").format(target_id=target),
+                json={
+                    "value": "proven",
+                    "mode": "cas",
+                    "expected": "unproven",
+                    "actor": "u",
+                },
+            )
+        assert r.status_code == 200, r.text
+        assert transition.await_args is not None
+        assert transition.await_args.args == (target,)
+        assert transition.await_args.kwargs["expected_from"] == "unproven"
+        assert transition.await_args.kwargs["to"] == "proven"
+
+
+def test_every_list_patch_route_has_both_element_methods() -> None:
+    """A PATCH on a non-cost field dispatches ``add``/``sub`` to a named Store method."""
+    gaps = [
+        route.column
+        for route in inquiry_field_routes()
+        if route.patch
+        and route.cost_axis is None
+        and None in (route.add_method, route.sub_method)
+    ]
+    assert gaps == []
+
 
 class TestCoverageRoutesAndCli:
     def test_submit_and_edit_routes_more_kinds(
@@ -657,6 +752,40 @@ class TestCoverageRoutesAndCli:
             ).status_code
             == 200
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("changed", [False, True])
+async def test_app_compare_and_set_preserves_objects_audit_and_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    changed: bool,
+) -> None:
+    route = next(route for route in inquiry_field_routes() if route.column == "app")
+    previous = {"notes": {"text": "before"}}
+    updated = {"notes": {"text": "after"}}
+    body: FieldSet[object] = FieldSet(
+        value=updated,
+        expected=previous,
+        mode="cas",
+        actor="editor",
+        reason="correct",
+    )
+    store, _engine = make_store()
+    change = new_uuid() if changed else None
+    transition = AsyncMock(return_value=change)
+    monkeypatch.setattr(store, "transition_app", transition)
+    target = new_uuid()
+    identity = make_test_identity()
+    assert await _run_compare_and_set(route, target, body, store, identity) == change
+    transition.assert_awaited_once_with(
+        target,
+        expected_from=previous,
+        to=updated,
+        api_key_id=identity.api_key_id,
+        actor="editor",
+        reason="correct",
+    )
 
 
 if __name__ == "__main__":

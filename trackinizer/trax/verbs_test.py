@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, ClassVar, cast, get_args, override
 
 import argparse
 import io
+import json
+import re
 import uuid
 
 from treekle import from_plain, json_loads
@@ -1990,14 +1992,14 @@ def test_export_writes_each_line_to_stdout(
 def test_export_sends_its_selector_clauses_in_order(client: FakeClient) -> None:
     """``labels is x labels nre y`` reaches the client as two ANDed clauses."""
     run(
-        ["export", "labels", "is", "org:rekursiv", "labels", "nre", "^machine:"],
+        ["export", "labels", "is", "org:rekursiv", "labels", "nre", "^host:"],
         client,
     )
 
     assert client.calls[0][2] == {
         "selector": (
             Filter(field="labels", op="is", value="org:rekursiv"),
-            Filter(field="labels", op="nre", value="^machine:"),
+            Filter(field="labels", op="nre", value="^host:"),
         ),
     }
 
@@ -2427,11 +2429,35 @@ def test_bulk_apply_multi_match_with_flag_edits_each(client: FakeClient) -> None
     assert all(c[1][1:] == ("owner", "Josh") for c in edits)
 
 
-def test_bulk_apply_range_selects_each_matched_row(client: FakeClient) -> None:
-    """A seq range applies to every row in the window."""
+def test_bulk_apply_preview_prints_the_matched_rows_in_the_asked_format(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["issue", "4..5", "priority", "to", "low", "--format", "ids"], client)
+
+    assert capsys.readouterr().out.splitlines() == [
+        "would apply to 2 rows; pass --makeitso to proceed:",
+        str(client.child_low_id),
+        str(client.child_high_id),
+    ]
+
+
+def test_bulk_apply_range_selects_each_matched_row(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A seq range applies to every row in the window, each addressed by its seq."""
     run(["issue", "4..5", "priority", "to", "low", "--makeitso"], client)
     edits = [c for c in client.calls if c[0] == "edit"]
     assert len(edits) == 2
+    resolved = [c[1][0] for c in client.calls if c[0] == "resolve_id"]
+    assert resolved == [SeqRef(kind="Issue", seq=4), SeqRef(kind="Issue", seq=5)]
+    assert [
+        line.split(" priority")[0] for line in capsys.readouterr().out.splitlines()
+    ] == [
+        "set: Issue#4",
+        "set: Issue#5",
+    ]
 
 
 def test_bulk_apply_list_add_per_row(client: FakeClient) -> None:
@@ -2695,7 +2721,7 @@ def test_edge_labels_dict_is_pinned_to_edge_kind() -> None:
     extra key is dead code. Pin the constant's keys to the closed ``Edge.Kind``
     literal so adding a kind forces a label entry.
     """
-    assert set(LABELS_BY_EDGE_KIND) == set(get_args(Edge.Kind.__value__))
+    assert set(LABELS_BY_EDGE_KIND) == set(get_args(cast(object, Edge.Kind.__value__)))
 
 
 def test_blocked_render_builds_seq_index_once_no_nested_scan() -> None:
@@ -3063,11 +3089,54 @@ def test_metric_bareword_key_write(client: FakeClient) -> None:
 
 
 def test_metric_write_requires_step_mask(client: FakeClient) -> None:
-    with pytest.raises(ClientError, match="must mask 'step'"):
+    with pytest.raises(
+        ClientError,
+        match=r"^a metric write must mask 'step' \(no default step\)$",
+    ):
         run(
             ["experiment", "2", "metric", "at", "key", "is", "loss", "to", "0.5"],
             client,
         )
+
+
+def test_a_metric_write_cannot_reduce_its_step(client: FakeClient) -> None:
+    refusal = "reduction max/min is a read-only step selection; a write cannot reduce"
+    with pytest.raises(ClientError, match=f"^{re.escape(refusal)}$"):
+        run(["experiment", "2", "metric", "at", "step", "max", "to", "0.5"], client)
+
+    assert not [c for c in client.calls if c[0] == "write_metrics_masked"]
+
+
+def test_a_metric_bulk_write_with_makeitso_writes_without_a_dry_read(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(
+        [
+            *["experiment", "2", "metric", "at", "step", "gt", "3", "to", "0.5"],
+            "--makeitso",
+        ],
+        client,
+    )
+
+    assert not [c for c in client.calls if c[0] == "query_metrics"]
+    assert capsys.readouterr().out == "written: 1\n"
+
+
+def test_a_metric_write_without_makeitso_dry_reads_the_resolved_experiment(
+    client: FakeClient,
+) -> None:
+    run(["experiment", "2", "metric", "at", "step", "gt", "3", "to", "0.5"], client)
+
+    [(_, args, _)] = [c for c in client.calls if c[0] == "query_metrics"]
+    assert args == (_exp_id(client),)
+
+
+def test_a_metric_read_queries_the_resolved_experiment(client: FakeClient) -> None:
+    run(["experiment", "2", "metric", "at", "loss"], client)
+
+    [(_, args, _)] = [c for c in client.calls if c[0] == "query_metrics"]
+    assert args == (_exp_id(client),)
 
 
 def test_metric_write_rejects_non_finite(client: FakeClient) -> None:
@@ -3106,7 +3175,10 @@ def test_metric_bulk_write_needs_makeitso(
         ]
 
     monkeypatch.setattr(client, "query_metrics", _two_hits)
-    with pytest.raises(ClientError, match="would write 2 cells"):
+    with pytest.raises(
+        ClientError,
+        match=r"^would write 2 cells; pass --makeitso for a bulk write$",
+    ):
         run(
             [
                 "experiment",
@@ -3587,8 +3659,13 @@ def test_an_unresumable_target_reports_why_rather_than_raising(
     a resume is refused by design. A user asking for one has made an ordinary
     mistake and must get the sentence naming the resumable targets.
     """
-    with pytest.raises(ClientError, match="Resumable: claude, codex"):
+    with pytest.raises(ClientError) as refused:
         run(["agentsession", "1", "run", "gemini"], client)
+
+    assert str(refused.value) == (
+        "'gemini' cannot resume a stored session: it has no stable "
+        "per-session id to re-enter with. Resumable: claude, codex, sagent."
+    )
 
 
 @pytest.mark.parametrize(
@@ -3825,6 +3902,527 @@ def test_an_added_cost_carries_its_actor_and_reason(
     ) in client.calls
     assert ("resolve_id", (ref,), {}) in client.calls
     assert capsys.readouterr().out == "added: Issue#7 agent-cost -0.500000\n"
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["agentsession", "1", "run", "claude"],
+        # A flag first leaves the split to the kind's own ``run``, after parsing.
+        ["agentsession", "--lossy", "1", "run", "claude"],
+    ],
+)
+def test_resuming_a_stored_session_says_it_moved(
+    argv: list[str],
+    client: FakeClient,
+) -> None:
+    with pytest.raises(SystemExit) as stopped:
+        run(argv, client)
+
+    assert stopped.value.code == 2
+    assert client.calls == []
+
+
+def test_run_needs_a_target_cli(client: FakeClient) -> None:
+    with pytest.raises(ClientError, match=r"^run needs a target CLI"):
+        run(["agentsession", "1", "run"], client)
+
+    assert client.calls == []
+
+
+def test_a_cross_experiment_read_as_json_tags_each_cell_with_its_run(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = uuid.uuid4()
+    point = MetricPoint(key="loss", step=3, value=0.25)
+
+    def ranked(*_args: object, **_kwargs: object) -> list[MetricRankRow]:
+        return [MetricRankRow(experiment_id=run_id, point=point)]
+
+    monkeypatch.setattr(client, "rank_metrics", ranked)
+
+    run(["experiment", "metric", "at", "loss", "--format", "json"], client)
+
+    assert json_loads(capsys.readouterr().out, list[dict[str, object]]) == [
+        {"experiment_id": str(run_id), **point.model_dump(mode="json")},
+    ]
+
+
+def test_one_relation_row_shows_as_json(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["issue", "1", "blocks", "1", "--format", "json"], client)
+
+    shown = json_loads(capsys.readouterr().out, dict[str, object])
+    assert shown["title"] == "requires"
+    assert "must land first" in json.dumps(shown["edge"])
+
+
+@pytest.mark.parametrize(
+    ("sort", "titles"),
+    [
+        ("seq", ["strong evidence", "weak evidence"]),
+        ("recent", ["weak evidence", "strong evidence"]),
+        ("oldest", ["strong evidence", "weak evidence"]),
+    ],
+)
+def test_relation_rows_sort_by_seq_or_by_when_they_were_created(
+    sort: str,
+    titles: list[str],
+) -> None:
+    rows: list[dict[str, object]] = [
+        {"seq": 4, "title": "weak evidence", "created": "2026-05-18T00:00:02"},
+        {"seq": 2, "title": "strong evidence", "created": "2026-05-18T00:00:01"},
+    ]
+
+    sorted_rows = verbs.Kind._sort_relation_rows(rows, sort)
+
+    assert [row["title"] for row in sorted_rows] == titles
+
+
+def test_a_relation_index_past_the_rows_is_refused(client: FakeClient) -> None:
+    with pytest.raises(ClientError, match="relation index 9 out of range; 1 requires"):
+        run(["issue", "1", "blocks", "9"], client)
+
+
+def test_a_citation_spellings_default_valence_leaves_an_existing_edge_alone(
+    client: FakeClient,
+) -> None:
+    """A note on an edge that exists keeps its stored valence; a fresh one takes 0.5."""
+    run(
+        ["issue", "1", "proves", "paper", "4", "edge", "note", "to", "why"],
+        client,
+    )
+
+    [(_, _, keywords)] = [call for call in client.calls if call[0] == "add_edge"]
+    assert keywords["valence"] is None
+    assert keywords["note"] == "why"
+
+
+def test_a_create_cannot_add_to_a_ref_list(client: FakeClient) -> None:
+    with pytest.raises(ClientError, match="create does not support codechange add"):
+        run(["experiment", "title", "to", "x", "codechange", "add", "1"], client)
+
+
+def test_a_create_drops_a_list_value_it_named_then_deleted(client: FakeClient) -> None:
+    run(
+        [
+            "issue",
+            "title",
+            "to",
+            "x",
+            "label",
+            "add",
+            "a",
+            "label",
+            "add",
+            "b",
+            "label",
+            "del",
+            "a",
+        ],
+        client,
+    )
+
+    assert _batch_items(client)[0][1]["labels"] == ("b",)
+
+
+def test_bare_ids_print_each_created_row_and_skip_a_linked_one(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(
+        ["issue", "title", "to", "x", "requires", "issue", "4", "--format", "ids"],
+        client,
+    )
+
+    assert capsys.readouterr().out == f"{client.target_id}\n"
+
+
+def test_an_inline_child_created_from_an_edit_takes_its_cost_after_it_exists(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(
+        [
+            "issue",
+            "1",
+            "produces",
+            "issue",
+            "title",
+            "to",
+            "kid",
+            "agent-cost",
+            "add",
+            "0.5",
+            "--format",
+            "ids",
+        ],
+        client,
+    )
+
+    [(_, args, _)] = [call for call in client.calls if call[0] == "add_cost"]
+    assert args[1:] == ("marginal_cost_agent_usd", 0.5)
+    assert capsys.readouterr().out == f"{client.target_id}\n"
+
+
+@pytest.mark.parametrize(
+    ("tokens", "usage"),
+    [
+        (["title"], "trax issue"),
+        (["3", "title"], "trax issue 3 title [to VALUE]"),
+        (["3", "title", "to"], "trax issue 3 title to VALUE"),
+    ],
+)
+def test_kind_help_narrows_to_a_field_as_the_tokens_get_longer(
+    tokens: list[str],
+    usage: str,
+) -> None:
+    assert usage in verbs.kind_help("Issue", tokens)
+
+
+def test_a_bulk_apply_at_the_row_ceiling_warns_that_more_may_match(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(verbs, "MAX_LIST_LIMIT", 1)
+
+    run(["issue", "1..", "priority", "to", "high"], client)
+
+    assert "matched the 1-row ceiling" in capsys.readouterr().err
+
+
+def test_show_as_json_prints_the_whole_payload(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["issue", "1", "--format", "json"], client)
+
+    shown = json_loads(capsys.readouterr().out, dict[str, object])
+    assert from_plain(shown["self"], dict[str, object])["title"] == "row"
+
+
+def test_reading_a_field_the_row_lacks_is_refused(client: FakeClient) -> None:
+    with pytest.raises(ClientError, match="field 'description' not present on Issue#1"):
+        run(["issue", "1", "description"], client)
+
+
+def test_setting_a_field_to_empty_text_unsets_it(client: FakeClient) -> None:
+    run(["issue", "1", "description", "to", ""], client)
+
+    [(_, args, _)] = [call for call in client.calls if call[0] == "edit"]
+    assert args[1:] == ("description", None)
+
+
+def test_recent_as_json_lists_each_change(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["recent", "--format", "json"], client)
+
+    assert json_loads(capsys.readouterr().out, list[dict[str, object]]) == (
+        client.changes
+    )
+
+
+def test_next_with_nothing_active_says_so(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client.next_payload = None
+
+    run(["next"], client)
+    run(["next", "owner", "to", "worker"], client)
+
+    assert capsys.readouterr().out == (
+        "(no active issues)\n(nothing claimable right now)\n"
+    )
+
+
+def test_next_owner_to_claims_the_issue_for_that_owner(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["next", "owner", "to", "worker", "--as", "ada"], client)
+
+    [(_, _, keywords)] = [c for c in client.calls if c[0] == "claim_next_issue"]
+    assert keywords == {"owner": "worker", "actor": "ada", "reason": ""}
+    assert "next issue" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("tail", "message"),
+    [
+        (["owner", "worker"], "accepts only `owner to ACTOR`"),
+        (["status", "to", "x"], "accepts only `owner to ACTOR`"),
+        (["owner", "to", " "], "claim owner must not be blank"),
+    ],
+)
+def test_next_refuses_any_other_tail(
+    tail: list[str],
+    message: str,
+    client: FakeClient,
+) -> None:
+    with pytest.raises(ClientError, match=message):
+        run(["next", *tail], client)
+
+    assert not [c for c in client.calls if c[0] == "claim_next_issue"]
+
+
+def test_blocked_skips_a_row_that_is_not_active(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gate = str(uuid.uuid4())
+    verbs.Blocked.render(
+        [
+            {"id": gate, "seq": 1, "status": "active", "title": "gate"},
+            {
+                "id": str(uuid.uuid4()),
+                "seq": 2,
+                "status": "complete",
+                "title": "done",
+                "requires": [{"id": gate}],
+            },
+        ],
+    )
+
+    assert "done" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("command", [Graph, Board])
+def test_an_empty_issue_list_renders_as_none(
+    command: type[Graph | Board],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    command.render([])
+
+    assert capsys.readouterr().out == "(no issues)\n"
+
+
+@pytest.mark.parametrize(
+    ("argv", "attribute"),
+    [
+        (["cost", "issue", "1", "--format", "json"], "cost_payload"),
+        (["authority", "issue", "1", "--format", "json"], "authority_payload"),
+    ],
+)
+def test_cost_and_authority_as_json_print_the_scores(
+    argv: list[str],
+    attribute: str,
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(argv, client)
+
+    assert json_loads(capsys.readouterr().out, dict[str, float]) == getattr(
+        client,
+        attribute,
+    )
+
+
+def test_an_inline_child_edits_nest_an_annotated_edge_to_an_existing_row(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The child's own edge to issue 5 keeps its note and echoes after the child."""
+    run(
+        [
+            "issue",
+            "1",
+            "produces",
+            "issue",
+            "title",
+            "to",
+            "kid",
+            "requires",
+            "issue",
+            "5",
+            "edge",
+            "note",
+            "to",
+            "first",
+        ],
+        client,
+    )
+
+    nested = [edge for edge in _batch_edges(client) if edge.get("note") == "first"]
+    assert len(nested) == 1
+    assert (nested[0]["edge_kind"], nested[0]["to_id"]) == (
+        "requires",
+        str(client.child_high_id),
+    )
+    assert capsys.readouterr().out.splitlines()[-1].endswith("requires Issue#5")
+
+
+def test_a_kinds_help_is_its_own_page() -> None:
+    assert Kind.verb_help_text("issue") == verbs.inquiry_help_text("issue")
+    assert "trax issue" in Kind.verb_help_text("issue")
+
+
+def test_graph_open_only_hides_closed_issues(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    finished: dict[str, object] = {
+        "id": str(uuid.uuid4()),
+        "kind": "Issue",
+        "seq": 9,
+        "status": "complete",
+        "title": "finished work",
+    }
+    client.rows.append(finished)
+
+    run(["graph", "--open-only"], client)
+
+    out = capsys.readouterr().out
+    assert "finished work" not in out
+    assert "low child" in out
+
+
+def test_an_at_sign_with_no_path_is_refused(client: FakeClient) -> None:
+    with pytest.raises(ClientError, match="@ value requires a path"):
+        run(["issue", "title", "to", "@"], client)
+
+
+def test_a_multi_kind_query_spends_one_limit_across_its_kinds(
+    client: FakeClient,
+) -> None:
+    run(["issue", "experiment", "status", "is", "active", "--limit", "1"], client)
+
+    assert [c[1][0] for c in client.calls if c[0] == "list_kind"] == ["Issue"]
+
+
+def test_a_metric_word_after_a_malformed_clause_is_a_field_not_a_grid(
+    client: FakeClient,
+) -> None:
+    with pytest.raises(ClientError, match="unexpected token"):
+        run(["experiment", "bogus", "metric", "at", "loss"], client)
+
+    assert not [c for c in client.calls if "metric" in c[0]]
+
+
+def test_backfill_on_a_command_that_creates_nothing_is_refused(
+    client: FakeClient,
+) -> None:
+    with pytest.raises(ClientError, match="--backfill requires a create command"):
+        run(["issue", "1", "--backfill", "2020-01-01T00:00:00+00:00"], client)
+
+    assert client.calls == []
+
+
+def test_a_backfilled_create_carries_its_time_and_reason(client: FakeClient) -> None:
+    run(
+        [
+            "issue",
+            "title",
+            "to",
+            "x",
+            "--backfill",
+            "2020-01-01T00:00:00+00:00",
+            "--reason",
+            "import",
+        ],
+        client,
+    )
+
+    body = _batch_items(client)[0][1]
+    assert (body["created"], body["reason"]) == ("2020-01-01T00:00:00+00:00", "import")
+
+
+@pytest.mark.parametrize(
+    ("op", "method", "past"),
+    [("add", "add_label", "added"), ("del", "remove_label", "removed")],
+)
+def test_a_list_mutation_names_its_actor_and_echoes_what_it_did(
+    op: str,
+    method: str,
+    past: str,
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["issue", "1", "label", op, "hot", "--as", "ada"], client)
+
+    assert (method, (client.target_id, "hot"), {"actor": "ada"}) in client.calls
+    assert capsys.readouterr().out == f"{past}: Issue#1 label hot\n"
+
+
+@pytest.mark.parametrize(
+    ("op", "method", "past"),
+    [("add", "add_codechange", "added"), ("del", "remove_codechange", "removed")],
+)
+def test_a_ref_list_mutation_sends_the_refs_id_and_echoes_the_ref(
+    op: str,
+    method: str,
+    past: str,
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    exp = SeqRef(kind="Experiment", seq=2)
+    run(["experiment", "2", "codechange", op, "issue", "4", "--as", "ada"], client)
+
+    [(_, args, keywords)] = [c for c in client.calls if c[0] == method]
+    assert args == (client.resolve_id(exp)[1], client.child_low_id)
+    assert keywords == {"actor": "ada"}
+    assert capsys.readouterr().out == f"{past}: Experiment#2 codechange Issue#4\n"
+
+
+def _crossed_evidence(client: FakeClient) -> None:
+    """Rank the two proving rows one way by valence and the other by seq."""
+    client.detail["edges"] = {
+        "proves": [
+            {"id": str(client.evidence_low_id), "seq": 4, "valence": 0.9},
+            {"id": str(client.evidence_high_id), "seq": 2, "valence": -0.3},
+        ],
+    }
+
+
+@pytest.mark.parametrize(
+    ("sort", "first"),
+    [("valence", "weak evidence"), ("seq", "strong evidence")],
+)
+def test_a_relation_listing_takes_its_sort(
+    sort: str,
+    first: str,
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _crossed_evidence(client)
+
+    run(["belief", "3", "proves", f"--sort={sort}"], client)
+
+    out = capsys.readouterr().out
+    others = {"weak evidence", "strong evidence"} - {first}
+    assert out.index(first) < out.index(others.pop())
+
+
+def test_a_dis_spelling_lists_only_the_against_citations(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _crossed_evidence(client)
+
+    run(["belief", "3", "disproves", "--format", "json"], client)
+
+    shown = json_loads(capsys.readouterr().out, list[dict[str, object]])
+    assert [row["title"] for row in shown] == ["strong evidence"]
+
+
+def test_a_relation_listing_takes_its_width(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["belief", "3", "proves", "--width", "30"], client)
+    narrow = capsys.readouterr().out.splitlines()
+    run(["belief", "3", "proves", "--width", "200"], client)
+    wide = capsys.readouterr().out.splitlines()
+
+    # The wide table is the natural one; the narrow one is cut to fit.
+    assert "…" in "".join(narrow)
+    assert "…" not in "".join(wide)
 
 
 if __name__ == "__main__":

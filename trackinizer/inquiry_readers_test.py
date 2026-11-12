@@ -20,11 +20,15 @@ if TYPE_CHECKING:
     from trackinizer.inquiry_readers_test_support import Class
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _READERS: Final[dict[str, tuple[Class, str]]] = {
     "server/access_policy.py": ("policy", "inquiry_read_filter: the filter itself"),
     "server/api/locks.py": ("trusted", "lock authorization lookups"),
+    "server/api/host_runs_routes.py": (
+        "policy",
+        "the seq and chat of the owner's own sessions its host's runs drain",
+    ),
     "server/api/query.py": ("policy", "by-seq lookup"),
     "server/api/session_access.py": ("audience", "session authorization"),
     "server/api/sessions_routes.py": ("audience", "session rows by audience"),

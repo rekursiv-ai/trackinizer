@@ -17,6 +17,7 @@ from treekle import from_plain, json_loads
 
 import pytest
 
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.api.export_routes import export_lines
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.export import _SCOPE_COLUMNS
@@ -52,20 +53,16 @@ _LEFT_OUT: Final = frozenset(
         "applied_migrations",
         "code_blobs",
         "code_snapshots",
-        "credit_entries",
-        "credit_grace",
         "device_logins",
         "gpu_box_credentials",
-        "gpu_allowance_resets",
         "gpu_issuances",
         "gpu_jobs",
         "gpu_owners",
         "inquiry_embeddings",
-        "inquiry_lock_log",
-        "machine_credentials",
-        "machine_enrollments",
-        "machine_jobs",
-        "machines",
+        "host_credentials",
+        "host_enrollments",
+        "host_jobs",
+        "hosts",
         "science_chat_shares",
         "science_chat_tombstones",
         "session_bodies",
@@ -86,9 +83,9 @@ _LEFT_OUT: Final = frozenset(
 
 ``variables`` is also left out: its secret rows name values that live outside
 the database, so a restored export could not carry them, and its plain values
-are launch configuration, not graph records. ``machines`` is the same: it names
+are launch configuration, not graph records. ``hosts`` is the same: it names
 where campaigns may run, which belongs to the deployment, not the graph.
-``machine_enrollments`` and ``machine_credentials`` hold hashes of the secrets a
+``host_enrollments`` and ``host_credentials`` hold hashes of the secrets a
 host joins with, which is access control, as ``api_keys`` is. So is ``device_logins``,
 the short-lived codes a program polls with to be given a key.
 """
@@ -206,6 +203,34 @@ async def test_the_export_carries_every_seeded_row(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_the_export_leaves_out_lock_events_for_every_reader(store: Store) -> None:
+    """Lock history is protected: not even an admin's export carries it."""
+    ids = await _seed(store)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind) "
+            "SELECT gen_random_uuid(), 'admin@example.com', $1, 'Issue', kind "
+            "FROM unnest(ARRAY['locked', 'unlocked']) AS kind",
+            ids["broad"],
+        )
+
+    exported = [
+        {row["kind"] for row in _rows(graph, "change_log")}
+        for graph in [
+            await store.export_graph(reader=_ANYONE),
+            await store.export_graph(
+                reader=_ANYONE,
+                principal=Principal(email="admin@example.com", role="admin"),
+            ),
+        ]
+    ]
+
+    assert all("created" in kinds for kinds in exported)
+    assert not any(kinds & {"locked", "unlocked"} for kinds in exported)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_the_header_names_the_applied_migrations(store: Store) -> None:
     """A reader learns which schema wrote the rows from the first line alone."""
     graph = await store.export_graph(reader=_ANYONE)
@@ -283,7 +308,7 @@ async def _seed_partitioned(store: Store) -> dict[str, UUID]:
         SubmitIssue(
             account="tester@example.com",
             title="Ours, device scoped",
-            labels=["org:rekursiv", "machine:laptop-1"],
+            labels=["org:rekursiv", "host:laptop-1"],
         ),
     )
     for child in (ours_child, device):
@@ -329,14 +354,14 @@ async def test_a_selector_exports_only_the_inquiries_it_matches(store: Store) ->
 async def test_clauses_and_together_the_way_the_request_spells_it(
     store: Store,
 ) -> None:
-    """``org:rekursiv AND NOT machine:*`` is two clauses, and drops the device row."""
+    """``org:rekursiv AND NOT host:*`` is two clauses, and drops the device row."""
     ids = await _seed_partitioned(store)
 
     graph = await store.export_graph(
         reader=_ANYONE,
         selector=(
             Filter(field="labels", op="is", value="org:rekursiv"),
-            Filter(field="labels", op="nre", value="^machine:"),
+            Filter(field="labels", op="nre", value="^host:"),
         ),
     )
 
@@ -356,7 +381,7 @@ async def test_an_edge_rides_along_only_when_both_ends_do(store: Store) -> None:
         reader=_ANYONE,
         selector=(
             Filter(field="labels", op="is", value="org:rekursiv"),
-            Filter(field="labels", op="nre", value="^machine:"),
+            Filter(field="labels", op="nre", value="^host:"),
         ),
     )
 

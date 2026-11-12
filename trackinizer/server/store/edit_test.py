@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import partial
 from typing import TYPE_CHECKING, Protocol, cast
-from unittest.mock import AsyncMock, _Call
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import asyncio
@@ -12,14 +13,18 @@ import asyncio
 import pytest
 
 from trackinizer.conftest import (
+    RecordingPolicy,
     executed_sql,
     make_conn,
     make_store,
     new_uuid,
+    queue_field_rows,
     set_field_row,
 )
 from trackinizer.lib.postgres import Conn
+from trackinizer.server.access_policy import Resource
 from trackinizer.server.setter_dispatch import COLUMN_SPECS
+from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.types.columns import storage_name
 from trackinizer.types.cost import Cost
 from trackinizer.types.errors import ConflictError, NotFoundError
@@ -27,6 +32,10 @@ from trackinizer.wire.routes import InquiryFieldRoute, inquiry_field_routes
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from trackinizer.mock_test_support import MockCall, MockConnection
+    from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
 
 
@@ -57,6 +66,172 @@ class TestStatusEdits:
         store, _engine = make_store(conn)
         with pytest.raises(ConflictError):
             await store.set_status(new_uuid(), "complete", actor="user")
+
+
+class TestTransitionStatus:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("given", [True, False])
+    async def test_moves_the_status_and_audits_both_sides(self, *, given: bool) -> None:
+        """The row read under its lock moves; the audit row keeps the key and the reason."""
+        conn = make_conn()
+        set_field_row(conn, {"status": "active", "kind": "Issue"})
+        store, _engine = make_store(conn)
+        target, key = new_uuid(), new_uuid()
+        change = (
+            await store.transition_status(
+                target,
+                expected_from="active",
+                to="stopped",
+                api_key_id=key,
+                actor="meter",
+                reason="budget_stop",
+            )
+            if given
+            else await store.transition_status(
+                target,
+                expected_from="active",
+                to="stopped",
+                actor="meter",
+            )
+        )
+        read = conn.fetchrow.call_args_list[0]
+        update = next(
+            c for c in conn.execute.call_args_list if "UPDATE inquiries SET" in _sql(c)
+        )
+        audit = next(
+            c
+            for c in conn.execute.call_args_list
+            if "INSERT INTO change_log" in _sql(c)
+        )
+        columns = _sql(audit).split("(", 1)[1].split(")", 1)[0].split(", ")
+        logged = dict(zip(columns, audit.args[1:], strict=True))
+        assert read.args == (
+            "SELECT status, kind FROM inquiries WHERE id = $1 FOR UPDATE",
+            target,
+        )
+        assert "SET status" in _sql(update)
+        assert update.args[1:3] == ("stopped", target)
+        assert {
+            name: logged[name]
+            for name in (
+                "id",
+                "api_key_id",
+                "actor",
+                "subject_id",
+                "subject_kind",
+                "kind",
+                "reason",
+                "old_status",
+                "new_status",
+            )
+        } == {
+            "id": change,
+            "api_key_id": key if given else None,
+            "actor": "meter",
+            "subject_id": target,
+            "subject_kind": "Issue",
+            "kind": "status",
+            "reason": "budget_stop" if given else "",
+            "old_status": "active",
+            "new_status": "stopped",
+        }
+
+    @pytest.mark.asyncio
+    async def test_refuses_a_status_other_than_the_expected_one(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"status": "complete", "kind": "Issue"})
+        store, _engine = make_store(conn)
+        with pytest.raises(
+            ConflictError,
+            match=r"^status transition rejected: expected 'active', found 'complete'$",
+        ):
+            await store.transition_status(
+                new_uuid(),
+                expected_from="active",
+                to="stopped",
+                actor="meter",
+            )
+        assert not any("UPDATE inquiries SET" in s for s in executed_sql(conn))
+
+    @pytest.mark.asyncio
+    async def test_the_status_it_already_has_changes_nothing(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"status": "stopped", "kind": "Issue"})
+        store, _engine = make_store(conn)
+        change = await store.transition_status(
+            new_uuid(),
+            expected_from="stopped",
+            to="stopped",
+            actor="meter",
+        )
+        sqls = executed_sql(conn)
+        assert change is None
+        assert not any("UPDATE inquiries SET" in s for s in sqls)
+        assert not any("INSERT INTO change_log" in s for s in sqls)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("committed_before_the_read", [True, False])
+    async def test_a_retry_replays_its_committed_change(
+        self,
+        *,
+        committed_before_the_read: bool,
+    ) -> None:
+        """A retry's key returns its change, found before or after the status read."""
+        conn = make_conn()
+        target, key = new_uuid(), new_uuid()
+        committed = {"actor": "meter", "subject_id": target, "kind": "status"}
+        row = {"status": "active", "kind": "Issue"}
+        queue_field_rows(
+            conn,
+            *((committed,) if committed_before_the_read else (None, row, committed)),
+        )
+        store, _engine = make_store(conn)
+        set_client_change_id(key)
+        try:
+            change = await store.transition_status(
+                target,
+                expected_from="active",
+                to="stopped",
+                actor="meter",
+            )
+        finally:
+            set_client_change_id(None)
+        assert change == key
+        assert not any("UPDATE inquiries SET" in s for s in executed_sql(conn))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "same_subject",
+        [True, False],
+        ids=["other-field", "other-subject"],
+    )
+    async def test_a_key_used_for_another_operation_is_refused(
+        self,
+        *,
+        same_subject: bool,
+    ) -> None:
+        conn = make_conn()
+        target = new_uuid()
+        queue_field_rows(
+            conn,
+            {
+                "actor": "meter",
+                "subject_id": target if same_subject else new_uuid(),
+                "kind": "title" if same_subject else "status",
+            },
+        )
+        store, _engine = make_store(conn)
+        set_client_change_id(new_uuid())
+        try:
+            with pytest.raises(ConflictError, match="already used"):
+                await store.transition_status(
+                    target,
+                    expected_from="active",
+                    to="stopped",
+                    actor="meter",
+                )
+        finally:
+            set_client_change_id(None)
 
 
 class TestCLIHelpers:
@@ -611,7 +786,303 @@ class TestAddCostZeroDelta:
             await store.add_cost(new_uuid(), Cost(), actor="alice")
 
 
-def _sql(call: _Call) -> str:
+class TestReplayProbes:
+    """A keyed retry replays its committed change, and only that change."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("existing", "outcome"),
+        [
+            ({"actor": "alice", "kind": "issue_priority"}, "replay"),
+            ({"actor": "bob", "kind": "issue_priority"}, ConflictError),
+            ({"actor": "alice", "kind": "labels"}, ConflictError),
+        ],
+        ids=["same-edit", "other-actor", "other-kind"],
+    )
+    async def test_a_field_key_names_its_one_edit(
+        self,
+        existing: dict[str, object],
+        outcome: str | type[Exception],
+    ) -> None:
+        target, key = new_uuid(), new_uuid()
+        conn = make_conn()
+        set_field_row(conn, {**existing, "subject_id": target})
+        store, _engine = make_store(conn)
+        set_client_change_id(key)
+        try:
+            if outcome == "replay":
+                assert await _replayed(store, conn, target) == key
+            else:
+                assert isinstance(outcome, type)
+                with pytest.raises(outcome, match="different operation"):
+                    await _replayed(store, conn, target)
+        finally:
+            set_client_change_id(None)
+
+    @pytest.mark.asyncio
+    async def test_a_sibling_that_consumed_the_key_first_replays_nothing(self) -> None:
+        """Gather siblings share one key; only the one that consumes it replays."""
+        target, key = new_uuid(), new_uuid()
+        conn = make_conn()
+        row: dict[str, object] = {
+            "actor": "alice",
+            "kind": "issue_priority",
+            "subject_id": target,
+        }
+        conn.fetchrow = AsyncMock(side_effect=partial(_consumed_then, row))
+        store, _engine = make_store(conn)
+        set_client_change_id(key)
+
+        assert await _replayed(store, conn, target) is None
+        set_client_change_id(key)
+        async with store.engine.acquire() as acquired:
+            claimed = await store._replay_claim(
+                acquired,
+                owner="w",
+                actor="alice",
+                principal=None,
+            )
+        set_client_change_id(None)
+
+        assert claimed is None
+
+
+class TestNoOpAndRefusedEdits:
+    @pytest.mark.asyncio
+    async def test_an_unchanged_title_writes_nothing(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"title": "same", "kind": "Issue"})
+        store, _engine = make_store(conn)
+
+        assert await store.set_title(new_uuid(), "same", actor="alice") is None
+        assert not [s for s in executed_sql(conn) if "UPDATE inquiries" in s]
+
+    @pytest.mark.asyncio
+    async def test_a_column_of_another_kind_is_refused(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"issue_priority": None, "kind": "Belief"})
+        store, _engine = make_store(conn)
+
+        with pytest.raises(ConflictError, match=r"is a Belief; issue_priority is only"):
+            await store.set_priority(new_uuid(), 2, actor="alice")
+
+    @pytest.mark.asyncio
+    async def test_an_immutable_column_is_refused_at_both_write_paths(self) -> None:
+        column = "agentsession_opened_by_api_key_id"
+        conn = make_conn()
+        store, _engine = make_store(conn)
+
+        with pytest.raises(ConflictError, match="is immutable"):
+            await store._set_field(
+                new_uuid(),
+                new_uuid(),
+                column=column,
+                api_key_id=None,
+                actor="alice",
+            )
+        async with store.engine.acquire() as acquired:
+            with pytest.raises(ConflictError, match="is immutable"):
+                await store._update_field(acquired, new_uuid(), column, new_uuid())
+
+        assert not [s for s in executed_sql(conn) if "UPDATE inquiries" in s]
+
+    @pytest.mark.asyncio
+    async def test_an_account_move_locks_and_validates_through_the_policy(
+        self,
+    ) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"account": "old@example.com", "kind": "Issue"})
+        conn.fetchval.return_value = 1
+        store, _engine = make_store(conn)
+        policy = RecordingPolicy()
+        store.access_policy = policy
+        target = new_uuid()
+
+        await store.set_account(target, "new@example.com", actor="admin")
+
+        assert [name for name, _ in policy.calls] == [
+            "prepare_account_change",
+            "validate",
+        ]
+        assert all(
+            resource
+            == Resource(kind="inquiry", id=str(target), account="new@example.com")
+            for resource in (
+                *policy.of("prepare_account_change"),
+                *policy.of("validate"),
+            )
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_blank_claimant_is_refused_before_any_read(self) -> None:
+        store, engine = make_store()
+
+        with pytest.raises(ConflictError, match="owner cannot be empty"):
+            await store.claim_next_issue(owner="  ", actor="alice")
+
+        assert engine.conn.mock_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_transition_to_where_it_stands_writes_nothing(self) -> None:
+        owner_conn, status_conn, judged_conn = make_conn(), make_conn(), make_conn()
+        set_field_row(owner_conn, {"owner": "w", "kind": "Issue"})
+        set_field_row(status_conn, {"status": "active", "kind": "Issue"})
+        set_field_row(judged_conn, {"belief_judgement": None, "kind": "Belief"})
+        owners, _ = make_store(owner_conn)
+        statuses, _ = make_store(status_conn)
+        judgements, _ = make_store(judged_conn)
+        target = new_uuid()
+
+        assert (
+            await owners.transition_owner(target, expected_from="w", to="w", actor="w")
+            is None
+        )
+        assert (
+            await statuses.transition_status(
+                target,
+                expected_from="active",
+                to="active",
+                actor="w",
+            )
+            is None
+        )
+        assert (
+            await judgements.transition_judgement(
+                target,
+                expected_from=None,
+                to=None,
+                actor="w",
+            )
+            is None
+        )
+        for conn in (owner_conn, status_conn, judged_conn):
+            assert not [s for s in executed_sql(conn) if "UPDATE inquiries" in s]
+
+    @pytest.mark.asyncio
+    async def test_a_judgement_transition_from_another_state_is_refused(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"belief_judgement": "proven", "kind": "Belief"})
+        store, _engine = make_store(conn)
+
+        with pytest.raises(ConflictError, match="expected None, found 'proven'"):
+            await store.transition_judgement(
+                new_uuid(),
+                expected_from=None,
+                to="disproven",
+                actor="w",
+            )
+
+    @pytest.mark.asyncio
+    async def test_removing_an_absent_label_writes_nothing(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"labels": ["a"], "kind": "Issue"})
+        store, _engine = make_store(conn)
+
+        assert await store.remove_label(new_uuid(), "b", actor="alice") is None
+        assert not [s for s in executed_sql(conn) if "UPDATE inquiries" in s]
+
+
+class TestListFieldForwarding:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("given", [False, True])
+    @pytest.mark.parametrize(
+        ("method", "column", "include"),
+        [
+            ("add_author", "paper_authors", True),
+            ("remove_author", "paper_authors", False),
+            ("add_subscriber", "subscribers", True),
+            ("remove_subscriber", "subscribers", False),
+            ("add_label", "labels", True),
+            ("remove_label", "labels", False),
+            ("add_issue_kind", "issue_kind", True),
+            ("remove_issue_kind", "issue_kind", False),
+            ("add_codechange", "experiment_codechanges", True),
+            ("remove_codechange", "experiment_codechanges", False),
+            ("add_room", "agentsession_rooms", True),
+            ("remove_room", "agentsession_rooms", False),
+        ],
+    )
+    async def test_each_list_edit_names_its_column_and_direction(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        method: str,
+        column: str,
+        *,
+        include: bool,
+        given: bool,
+    ) -> None:
+        store, _engine = make_store()
+        change = new_uuid()
+        mutate = AsyncMock(return_value=change)
+        monkeypatch.setattr(store, "_mutate_list_field", mutate)
+        target, key = new_uuid(), new_uuid()
+        item = new_uuid() if column == "experiment_codechanges" else "bug"
+
+        edit = cast("Callable[..., Awaitable[UUID | None]]", getattr(store, method))
+        returned = (
+            await edit(target, item, api_key_id=key, actor="alice", reason="r")
+            if given
+            else await edit(target, item, actor="alice")
+        )
+        assert returned == change
+
+        call = mutate.await_args
+        assert call is not None
+        assert call.args == (target, item)
+        assert (call.kwargs["column"], call.kwargs["include"]) == (column, include)
+        assert (
+            call.kwargs["api_key_id"],
+            call.kwargs["actor"],
+            call.kwargs["reason"],
+        ) == (key if given else None, "alice", "r" if given else "")
+
+
+class TestSetCostAxis:
+    @pytest.mark.asyncio
+    async def test_an_unknown_row_is_not_found(self) -> None:
+        conn = make_conn()
+        set_field_row(conn, None)
+        store, _engine = make_store(conn)
+
+        with pytest.raises(NotFoundError, match="inquiry not found"):
+            await store.set_cost_axis(new_uuid(), "agent_usd", 1.0, actor="alice")
+
+    @pytest.mark.asyncio
+    async def test_a_negative_total_is_refused_and_the_same_total_writes_nothing(
+        self,
+    ) -> None:
+        conn = make_conn()
+        set_field_row(conn, {"kind": "Issue", "current": 2.5})
+        store, _engine = make_store(conn)
+
+        with pytest.raises(ConflictError, match="agent_usd cannot be negative"):
+            await store.set_cost_axis(new_uuid(), "agent_usd", -1.0, actor="alice")
+        assert (
+            await store.set_cost_axis(new_uuid(), "agent_usd", 2.5, actor="a") is None
+        )
+        assert not [s for s in executed_sql(conn) if "INSERT INTO change_log" in s]
+
+
+async def _replayed(store: Store, conn: MockConnection, target: UUID) -> UUID | None:
+    """Probe ``target``'s priority edit for a committed replay on ``conn``."""
+    del conn
+    async with store.engine.acquire() as acquired:
+        return await store._replay_field_change(
+            acquired,
+            target,
+            "issue_priority",
+            actor="alice",
+        )
+
+
+async def _consumed_then(row: dict[str, object], sql: str, *args: object) -> object:
+    """Answer ``row`` after a gather sibling has consumed the shared key."""
+    del sql, args
+    set_client_change_id(None)
+    return row
+
+
+def _sql(call: MockCall) -> str:
     """Narrow a recorded mock argument to the SQL statements under test."""
     sql = call.args[0]
     assert isinstance(sql, str)

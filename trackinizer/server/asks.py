@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.inbound import InboundQueue
-    from trackinizer.server.store.core import Store
+    from trackinizer.server.store.session_ir import _SessionIRMixin
 
 
 __all__ = [
@@ -129,7 +129,7 @@ async def waiting_sessions(conn: Conn, *, session_ids: Sequence[UUID]) -> set[UU
 # Audience: internal -- the server's own sweep: it writes the end of asks that nobody
 # can answer, and what it returns is ids.
 async def release_open_asks(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     session_id: UUID,
     at: datetime,
@@ -181,7 +181,7 @@ async def release_open_asks(
 
 
 async def release_gone_runs(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     inbound: InboundQueue,
     at: datetime,
@@ -214,7 +214,7 @@ async def release_gone_runs(
 # one. A run that is alive polls within its lease's span, so a chat still without one
 # after that span has no run.
 async def release_orphaned_asks(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     inbound: InboundQueue,
     at: datetime,
@@ -261,7 +261,7 @@ async def release_orphaned_asks(
 
 
 async def ask_release_loop(
-    store: Store,
+    store: _SessionIRMixin,
     *,
     inbound: InboundQueue,
     interval_sec: float = RELEASE_INTERVAL_SEC,
@@ -280,18 +280,18 @@ async def ask_release_loop(
         lease span by default.
 
     """
-    sweep_at = time.monotonic() + (
+    # None once the one-time sweep has run.
+    sweep_at: float | None = time.monotonic() + (
         inbound.poller_ttl_sec if sweep_after_sec is None else sweep_after_sec
     )
-    swept = False
     while True:
-        await asyncio.sleep(interval_sec)
+        await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- Periodic pass.
         try:
             now = datetime.now(UTC)
             _ = await release_gone_runs(store, inbound=inbound, at=now)
-            if not swept and time.monotonic() >= sweep_at:
+            if sweep_at is not None and time.monotonic() >= sweep_at:
                 _ = await release_orphaned_asks(store, inbound=inbound, at=now)
-                swept = True
+                sweep_at = None
         except Exception:
             # A failed pass must not end the loop: the sessions it took are lost to
             # it, and their cards stay open until their run's session ends.

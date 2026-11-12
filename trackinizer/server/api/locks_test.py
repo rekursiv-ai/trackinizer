@@ -13,6 +13,7 @@ from treekle import from_plain
 
 import pytest
 
+from trackinizer.mock_test_support import MockConnection
 from trackinizer.server.access_policy import DefaultPolicy
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.server.api.locks import referenced_ids, require_writable
@@ -43,14 +44,14 @@ class _Engine:
     """An engine whose one connection answers ``fetch`` with ``rows``, finding no hidden row."""
 
     def __init__(self, rows: list[dict[str, object]]) -> None:
-        self.conn = AsyncMock()
-        self.conn.fetch = AsyncMock(return_value=rows)
-        self.conn.fetchval = AsyncMock(return_value=None)
+        self.conn = cast(MockConnection, AsyncMock())
+        self.conn.fetch.return_value = rows
+        self.conn.fetchval.return_value = None
 
     def acquire(self) -> _Engine:
         return self
 
-    async def __aenter__(self) -> AsyncMock:
+    async def __aenter__(self) -> MockConnection:
         return self.conn
 
     async def __aexit__(self, *exc: object) -> None:
@@ -121,9 +122,10 @@ async def test_no_rows_means_no_question() -> None:
 @pytest.mark.asyncio
 async def test_a_row_the_caller_may_not_read_is_absent_to_an_admin_too() -> None:
     request, engine = _request([], policy=_IssuesOnly())
-    engine.conn.fetchval = AsyncMock(return_value=_B)
+    engine.conn.fetchval.return_value = _B
     with pytest.raises(NotFoundError, match=f"inquiry {_B} not found"):
         await require_writable(request, _who("admin"), [_A, _B])
+    assert engine.conn.fetchval.call_args is not None
     sql, ids, kinds = engine.conn.fetchval.call_args.args
     assert (ids, kinds) == ([_A, _B], ["Issue"])
     assert "WHERE NOT EXISTS" in from_plain(sql, str)
@@ -150,6 +152,7 @@ async def test_a_locked_row_refuses_a_writer_naming_it_only_if_readable(
 async def test_no_locked_row_lets_a_writer_through() -> None:
     request, engine = _request([])
     await require_writable(request, _who("writer"), (_A, _B))
+    assert engine.conn.fetch.call_args is not None
     ids, peers = engine.conn.fetch.call_args.args[1:]
     assert (ids, peers) == ([_A, _B], False)
 
@@ -158,6 +161,7 @@ async def test_no_locked_row_lets_a_writer_through() -> None:
 async def test_a_purge_asks_about_the_rows_it_is_linked_to() -> None:
     request, engine = _request([])
     await require_writable(request, _who("viewer"), [_A], include_peers=True)
+    assert engine.conn.fetch.call_args is not None
     assert engine.conn.fetch.call_args.args[2] is True
     assert "FROM edges" in from_plain(engine.conn.fetch.call_args.args[0], str)
 
@@ -224,6 +228,7 @@ class TestSetLock:
             _A,
             True,
             make_test_identity().email,
+            make_test_identity().api_key_id,
         )
 
     def test_a_writer_is_refused(

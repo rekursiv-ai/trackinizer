@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from argparse import Namespace
 from collections.abc import Callable, Sequence
+from functools import partial
 from typing import TYPE_CHECKING
 
 import os
@@ -299,6 +300,23 @@ class TestTokenIsNeverTheDaemons:
 
         assert targets == [Target(url="http://caller:1", author="", api_key="")]
 
+    def test_the_daemons_key_file_is_never_read(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        key_file = tmp_path / "key"
+        key_file.write_text("daemon-file-token\n")
+        monkeypatch.delenv("TRACKINIZER_TOKEN", raising=False)
+        monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(key_file))
+        targets: list[Target] = []
+        handle(
+            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            run=lambda _argv: targets.append(connection.resolve_target(Namespace())),
+        )
+
+        assert targets == [Target(url="http://caller:1", author="", api_key="")]
+
 
 class TestConcurrentRequests:
     """The daemon is threaded, so per-request state must be per-THREAD.
@@ -323,7 +341,8 @@ class TestConcurrentRequests:
                         with lock:
                             contaminated.append((expected, seen))
                         return
-                    time.sleep(_POLL_INTERVAL_SEC)
+                    # Spreads each thread's reads across the others' runs, to catch a leak.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
 
             return run
 
@@ -355,7 +374,8 @@ class TestConcurrentRequests:
                         with lock:
                             contaminated.append((expected, seen))
                         return
-                    time.sleep(_POLL_INTERVAL_SEC)
+                    # Spreads each thread's reads across the others' runs, to catch a leak.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
 
             return run
 
@@ -381,7 +401,8 @@ class TestConcurrentRequests:
                 started.wait(timeout=5)
                 for _ in range(20):
                     echo(name, nl=False)
-                    time.sleep(_POLL_INTERVAL_SEC)
+                    # Spreads each thread's reads across the others' runs, to catch a leak.
+                    time.sleep(_POLL_INTERVAL_SEC)  # house-ignore[sleep] -- See above.
 
             return run
 
@@ -432,6 +453,106 @@ class TestConnection:
         """A caller gone before the answer must not take the handler with it."""
         assert _exchange(tmp_path, make_request(["help"]), hang_up=True) is None
 
+    def test_answers_a_caller_on_another_protocol_rather_than_hanging_up(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A silent close reads as no daemon, and the mismatch would go unseen."""
+        request = make_request(["help"])
+        request.protocol_version = PROTOCOL_VERSION + 1
+
+        reply = _exchange(tmp_path, request, hang_up=False)
+
+        assert reply is not None
+        assert reply.exit_code == 70
+        assert reply.stdout == ""
+        assert reply.stderr.startswith("trax: unsupported protocol version")
+
+
+class TestExitStatus:
+    def test_a_bare_exit_is_success(self) -> None:
+        def done(argv: Sequence[str]) -> None:
+            del argv
+            raise SystemExit
+
+        response = handle(make_request(["x"]), run=done)
+
+        assert (response.exit_code, response.stderr) == (0, "")
+
+    def test_an_integer_exit_is_the_status(self) -> None:
+        def bail(argv: Sequence[str]) -> None:
+            del argv
+            raise SystemExit(4)
+
+        assert handle(make_request(["x"]), run=bail).exit_code == 4
+
+
+class TestBind:
+    """Of the daemons racing for one socket, the loser leaves the winner alone."""
+
+    def test_a_second_daemon_on_a_live_socket_exits_at_once(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        sock = socket_address(tmp_path / "s.sock")
+        winner = _Server(str(sock), version="v1")
+        try:
+            server.serve(tmp_path / "s.sock", version="v1")
+
+            assert _is_live(sock)
+            assert server._bind(sock, "v1") is None
+        finally:
+            winner.server_close()
+
+    def test_a_killed_daemons_socket_file_is_cleared_and_bound(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        sock = socket_address(tmp_path / "s.sock")
+        dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        dead.bind(str(sock))
+        dead.close()
+        assert sock.exists()
+        assert not _is_live(sock)
+
+        bound = server._bind(sock, "v1")
+
+        assert bound is not None
+        try:
+            assert _is_live(sock)
+        finally:
+            bound.server_close()
+
+    def test_a_path_that_cannot_be_cleared_binds_nothing(self, tmp_path: Path) -> None:
+        sock = socket_address(tmp_path / "s.sock")
+        sock.mkdir()
+
+        assert server._bind(sock, "v1") is None
+        assert sock.is_dir()
+
+
+def test_an_idle_daemon_begins_its_own_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    stopping: list[_Server] = []
+
+    def begin_shutdown(server: _Server) -> None:
+        stopping.append(server)
+
+    monkeypatch.setattr(_Server, "begin_shutdown", begin_shutdown)
+    daemon = _Server(str(socket_address(tmp_path / "s.sock")), version="v1")
+    try:
+        daemon.service_actions()
+        assert stopping == []
+        monkeypatch.setattr(server, "_IDLE_TIMEOUT_SEC", -1)
+
+        daemon.service_actions()
+
+        assert stopping == [daemon]
+    finally:
+        daemon.server_close()
+
 
 class TestShutdown:
     """A daemon leaving must answer every caller it already has.
@@ -449,6 +570,13 @@ class TestShutdown:
     ) -> None:
         slow = _Slow()
         monkeypatch.setattr(server, "handle", slow)
+        bound, unlinked = threading.Event(), threading.Event()
+        monkeypatch.setattr(server, "_bind", partial(_then, bound, server._bind))
+        monkeypatch.setattr(
+            server,
+            "_unlink_if_owned",
+            partial(_then, unlinked, server._unlink_if_owned),
+        )
         sock = socket_address(tmp_path / "s.sock")
         # A daemon thread, so a daemon that never stops fails the test, not hangs it.
         daemon = threading.Thread(
@@ -458,8 +586,9 @@ class TestShutdown:
             daemon=True,
         )
         daemon.start()
-        # The file appears at bind, before the daemon listens: wait until it accepts.
-        _wait_for(lambda: _is_live(sock))
+        # Bound and listening once ``_bind`` has returned its server.
+        assert bound.wait(5)
+        assert _is_live(sock)
         caller = _send(sock, request=make_request(["x"]))
         assert slow.started.wait(timeout=5)
         stale = make_request(["x"])
@@ -468,7 +597,8 @@ class TestShutdown:
         assert Response.from_json(read_frame(_send(sock, request=stale))).exit_code == (
             STALE_EXIT_CODE
         )
-        _wait_for(lambda: not sock.exists())
+        assert unlinked.wait(5)
+        assert not sock.exists()
         daemon.join(timeout=0.05)
         assert daemon.is_alive(), "the daemon exited with a request still running"
         slow.release.set()
@@ -565,12 +695,17 @@ def _send(sock: Path, *, request: Request) -> socket.socket:
     return caller
 
 
-def _wait_for(condition: Callable[[], bool]) -> None:
-    """Poll ``condition`` until it holds, failing after five seconds."""
-    deadline = time.monotonic() + 5
-    while not condition():
-        assert time.monotonic() < deadline, "condition never held"
-        time.sleep(_POLL_INTERVAL_SEC)
+def _then[**P, R](
+    done: threading.Event,
+    call: Callable[P, R],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    """Make ``call``, then set ``done`` however it ended."""
+    try:
+        return call(*args, **kwargs)
+    finally:
+        done.set()
 
 
 def _exchange(tmp_path: Path, request: Request, *, hang_up: bool) -> Response | None:

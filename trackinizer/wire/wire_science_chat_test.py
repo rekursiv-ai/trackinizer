@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import get_args
+from typing import cast, get_args
 
 import uuid
 
@@ -19,7 +19,9 @@ from trackinizer.wire.wire_science_chat import (
     ChatPartialState,
     ChatSend,
     chat_actor,
+    chat_conversation_id,
     chat_session_id,
+    fork_point_label,
     poster_label,
     run_refusal,
 )
@@ -45,6 +47,25 @@ def test_a_poster_label_names_the_attested_email() -> None:
     assert poster_label("ada@example.com") == "poster:ada@example.com"
 
 
+def test_a_chat_sessions_id_reads_back_as_its_conversation() -> None:
+    conversation = uuid.uuid4()
+
+    assert chat_conversation_id(chat_session_id(conversation)) == conversation
+
+
+@pytest.mark.parametrize(
+    "cli_session_id",
+    [None, "0b3c2f7e-1d4a-4f5e-9a1b-2c3d4e5f6a7b", "chat:not-a-uuid", "chat:"],
+    ids=["none", "another-cli", "malformed", "empty"],
+)
+def test_any_other_session_id_names_no_conversation(cli_session_id: str | None) -> None:
+    assert chat_conversation_id(cli_session_id) is None
+
+
+def test_a_fork_point_label_names_the_records_part_and_position() -> None:
+    assert fork_point_label(part=2, idx=17) == "fork-at:2:17"
+
+
 def test_a_post_is_a_persons_line_by_default() -> None:
     sent = ChatSend(canvas_id=_CANVAS, text="hello")
     assert (sent.kind, sent.payload, sent.conversation_id) == ("line", None, None)
@@ -52,7 +73,9 @@ def test_a_post_is_a_persons_line_by_default() -> None:
 
 def test_the_post_kinds_are_the_inbound_kinds() -> None:
     """A post's kind is handed on as the queued message's, so the sets match."""
-    assert get_args(ChatLineKind.__value__) == get_args(InboundKind.__value__)
+    assert get_args(cast(object, ChatLineKind.__value__)) == get_args(
+        cast(object, InboundKind.__value__),
+    )
 
 
 def test_a_browser_that_still_sends_science_posts_a_line() -> None:
@@ -66,6 +89,8 @@ def test_a_browser_that_still_sends_science_posts_a_line() -> None:
     ("command", "refused"),
     [
         ("git status --short && echo 'done'", ""),
+        ("echo ~", ""),
+        ("echo \x7f", "one line of printable ASCII"),
         ("x" * RUN_COMMAND_CHARS, ""),
         ("x" * (RUN_COMMAND_CHARS + 1), "at most 2,000 characters"),
         ("echo one\necho two", "one line of printable ASCII"),
@@ -86,7 +111,7 @@ def test_a_run_command_is_one_line_of_printable_ascii(
 
 
 def test_a_run_post_refuses_a_command_it_would_not_run() -> None:
-    run = {"run_id": "a" * 32}
+    run: dict[str, object] = {"run_id": "a" * 32}
     with pytest.raises(ValidationError, match="one line of printable ASCII"):
         _ = ChatSend(canvas_id=_CANVAS, text="a\nb", kind="run", payload=run)
     stop = ChatSend(
@@ -193,6 +218,15 @@ def test_a_fork_starts_from_a_line_only() -> None:
                 "fork": fork,
             },
         )
+    with pytest.raises(ValidationError, match="cannot name one"):
+        ChatSend.model_validate(
+            {
+                "canvas_id": str(_CANVAS),
+                "text": "hi",
+                "fork": fork,
+                "conversation_id": str(uuid.uuid4()),
+            },
+        )
 
 
 def test_a_line_carries_up_to_twenty_box_paths_and_no_other_kind_any() -> None:
@@ -251,6 +285,33 @@ def test_a_partials_turn_is_a_short_word_that_fits_a_path(turn: str) -> None:
     assert ChatPartial(turn="ab_C-9" + "x" * 58, text="").turn
     with pytest.raises(ValidationError):
         ChatPartial(turn=turn, text="")
+
+
+def test_a_partial_from_a_writer_that_sends_only_text_has_no_frame_beside_it() -> None:
+    partial = ChatPartial.model_validate({"turn": "t1", "text": "so far"})
+    assert (partial.thinking, partial.calls, partial.status) == ("", [], "")
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        {"thinking": "x" * 16_385},
+        {"calls": ["Bash"] * 51},
+        {"calls": ["x" * 1_001]},
+        {"status": "x" * 201},
+    ],
+)
+def test_a_partials_frame_is_bounded(field: dict[str, object]) -> None:
+    """Each part of the frame the server holds in memory is bounded, as its text is."""
+    assert ChatPartial(
+        turn="t1",
+        text="",
+        thinking="x" * 16_384,
+        calls=["x" * 1_000] * 50,
+        status="x" * 200,
+    ).calls
+    with pytest.raises(ValidationError):
+        ChatPartial.model_validate({"turn": "t1", "text": "", **field})
 
 
 def test_a_partial_and_its_state_name_no_unknown_field() -> None:

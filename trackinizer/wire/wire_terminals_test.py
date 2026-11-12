@@ -12,8 +12,8 @@ from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_terminals import (
     DirectSignal,
     OpenTerminal,
-    TerminalMachine,
-    TerminalMachines,
+    TerminalHost,
+    TerminalHosts,
     TerminalOpened,
     TerminalTicket,
     TerminalWait,
@@ -41,29 +41,29 @@ def test_close_codes_are_distinct_and_final_ones_are_a_subset() -> None:
         wire_terminals.CLOSE_TAKEN_OVER,
         wire_terminals.CLOSE_IDLE,
         wire_terminals.CLOSE_LIFETIME,
-        wire_terminals.CLOSE_HOST_LOST,
+        wire_terminals.CLOSE_DAEMON_LOST,
         wire_terminals.CLOSE_REFUSED,
-        wire_terminals.CLOSE_MACHINE_REVOKED,
+        wire_terminals.CLOSE_HOST_REVOKED,
     ]
     assert len(set(codes)) == len(codes)
     assert set(codes) > wire_terminals.FINAL_CLOSE_CODES
-    assert wire_terminals.CLOSE_HOST_LOST not in wire_terminals.FINAL_CLOSE_CODES
+    assert wire_terminals.CLOSE_DAEMON_LOST not in wire_terminals.FINAL_CLOSE_CODES
 
 
 @pytest.mark.parametrize(
     "body",
     [
-        {"machine": "gx10", "rows": 0, "cols": 80},
-        {"machine": "gx10", "rows": 24, "cols": 1_001},
-        {"machine": "Bad Name", "rows": 24, "cols": 80},
-        {"machine": "gx10", "rows": 24, "cols": 80, "host": "x"},
-        {"machine": "gx10", "rows": 24, "cols": 80, "requested_by": "x" * 64},
-        {"machine": "gx10", "rows": 24, "cols": 80, "requested_by": "a\nb"},
-        {"machine": "gx10", "rows": 24, "cols": 80, "requested_by": "\x1b[31mred"},
-        {"machine": "gx10", "rows": 24, "cols": 80, "requested_by": "calf\u00e9"},
-        {"machine": "gx10", "rows": 24, "cols": 80, "surface": "has space"},
-        {"machine": "gx10", "rows": 24, "cols": 80, "surface": "s" * 65},
-        {"machine": "gx10", "rows": 24, "cols": 80, "surface": ""},
+        {"host": "gx10", "rows": 0, "cols": 80},
+        {"host": "gx10", "rows": 24, "cols": 1_001},
+        {"host": "Bad Name", "rows": 24, "cols": 80},
+        {"host": "gx10", "rows": 24, "cols": 80, "hostname": "x"},
+        {"host": "gx10", "rows": 24, "cols": 80, "requested_by": "x" * 64},
+        {"host": "gx10", "rows": 24, "cols": 80, "requested_by": "a\nb"},
+        {"host": "gx10", "rows": 24, "cols": 80, "requested_by": "\x1b[31mred"},
+        {"host": "gx10", "rows": 24, "cols": 80, "requested_by": "calf\u00e9"},
+        {"host": "gx10", "rows": 24, "cols": 80, "surface": "has space"},
+        {"host": "gx10", "rows": 24, "cols": 80, "surface": "s" * 65},
+        {"host": "gx10", "rows": 24, "cols": 80, "surface": ""},
     ],
 )
 def test_open_body_refuses_out_of_range_and_unknown_fields(
@@ -75,7 +75,7 @@ def test_open_body_refuses_out_of_range_and_unknown_fields(
 
 @pytest.mark.parametrize("surface", ["chat", str(uuid.UUID(int=7))])
 def test_open_body_takes_a_surface_key(surface: str) -> None:
-    body = {"machine": "gx10", "rows": 24, "cols": 80, "surface": surface}
+    body = {"host": "gx10", "rows": 24, "cols": 80, "surface": surface}
     assert OpenTerminal.model_validate(body).surface == surface
 
 
@@ -101,27 +101,40 @@ def test_a_signal_round_trips_and_an_abandon_needs_no_description() -> None:
     assert DirectSignal(gen=2, type="abandon").sdp == ""
 
 
-def test_a_route_payload_round_trips_and_refuses_the_wrong_shape() -> None:
-    payload = wire_terminals.encode_route(wire_terminals.ROUTE_DIRECT, 2**56 + 300)
+@pytest.mark.parametrize(
+    "route",
+    [wire_terminals.ROUTE_RELAY, wire_terminals.ROUTE_DIRECT],
+)
+def test_a_route_payload_round_trips_and_refuses_the_wrong_shape(route: int) -> None:
+    payload = wire_terminals.encode_route(route, 2**57 + 300)
 
-    assert payload == b"\x01" + (2**56 + 300).to_bytes(8)
-    assert wire_terminals.decode_route(payload) == (
-        wire_terminals.ROUTE_DIRECT,
-        2**56 + 300,
-    )
+    assert payload == bytes([route]) + (2**57 + 300).to_bytes(8)
+    assert wire_terminals.decode_route(payload) == (route, 2**57 + 300)
     for bad in (b"", payload[:-1], b"\x02" + (0).to_bytes(8)):
         with pytest.raises(ValueError, match="ROUTE"):
             wire_terminals.decode_route(bad)
 
 
-def test_a_keepalive_payload_is_the_idle_milliseconds() -> None:
-    assert wire_terminals.encode_keepalive(1_500) == (1_500).to_bytes(4)
-    assert wire_terminals.encode_keepalive(2**32 - 2) == b"\xff\xff\xff\xfe"
-    assert wire_terminals.encode_keepalive(2**32 - 1) == b"\xff\xff\xff\xff"
-    assert wire_terminals.encode_keepalive(2**40) == b"\xff\xff\xff\xff"
-    assert wire_terminals.decode_keepalive((1_500).to_bytes(4)) == 1_500
-    with pytest.raises(ValueError, match="KEEPALIVE"):
-        wire_terminals.decode_keepalive(b"\x00")
+def test_a_keepalive_payload_is_the_input_then_the_output_idle_milliseconds() -> None:
+    payload = wire_terminals.encode_keepalive(1_500, output_idle_ms=7)
+    assert payload == (1_500).to_bytes(4) + (7).to_bytes(4)
+    assert wire_terminals.decode_keepalive(payload) == (1_500, 7)
+    assert wire_terminals.encode_keepalive(2**32 - 2, output_idle_ms=0)[:4] == (
+        b"\xff\xff\xff\xfe"
+    )
+    assert wire_terminals.encode_keepalive(2**32 - 1, output_idle_ms=2**40) == (
+        b"\xff\xff\xff\xff" * 2
+    )
+    assert wire_terminals.encode_keepalive(2**40, output_idle_ms=0)[:4] == (
+        b"\xff\xff\xff\xff"
+    )
+
+
+def test_a_keepalive_from_a_host_before_output_idle_time_names_input_alone() -> None:
+    assert wire_terminals.decode_keepalive((1_500).to_bytes(4)) == (1_500, None)
+    for bad in (b"\x00", b"\x00" * 5, b"\x00" * 9):
+        with pytest.raises(ValueError, match="KEEPALIVE"):
+            wire_terminals.decode_keepalive(bad)
 
 
 def test_the_ice_servers_default_to_none_and_are_stun_only() -> None:
@@ -141,14 +154,14 @@ def test_the_ice_servers_default_to_none_and_are_stun_only() -> None:
 
 
 def test_an_open_is_a_login_shell_unless_it_names_a_command() -> None:
-    opened = OpenTerminal(machine="gx10", rows=24, cols=80)
+    opened = OpenTerminal(host="gx10", rows=24, cols=80)
     assert (opened.command, opened.attach, opened.run_name) == (None, None, None)
 
 
 def test_an_open_starts_a_trax_run_of_an_allowed_cli() -> None:
     session_id = uuid.UUID(int=21_056)
     opened = OpenTerminal(
-        machine="gx10",
+        host="gx10",
         rows=24,
         cols=80,
         command="claude",
@@ -160,7 +173,7 @@ def test_an_open_starts_a_trax_run_of_an_allowed_cli() -> None:
         session_id,
         "chat-21056",
     )
-    codex = OpenTerminal(machine="gx10", rows=24, cols=80, command="codex")
+    codex = OpenTerminal(host="gx10", rows=24, cols=80, command="codex")
     assert codex.command == "codex"
 
 
@@ -175,7 +188,7 @@ def test_an_open_starts_a_trax_run_of_an_allowed_cli() -> None:
 def test_an_attach_a_run_name_or_a_folder_without_a_command_is_refused(
     extra: dict[str, object],
 ) -> None:
-    base = {"machine": "gx10", "rows": 24, "cols": 80}
+    base = {"host": "gx10", "rows": 24, "cols": 80}
     assert OpenTerminal.model_validate({**base, "command": "claude", **extra})
     with pytest.raises(pydantic.ValidationError):
         OpenTerminal.model_validate({**base, **extra})
@@ -188,7 +201,7 @@ def test_an_attach_a_run_name_or_a_folder_without_a_command_is_refused(
 def test_a_run_folder_is_absolute_or_home_relative_and_takes_1024_characters(
     folder: str,
 ) -> None:
-    base = {"machine": "gx10", "rows": 24, "cols": 80, "command": "claude"}
+    base = {"host": "gx10", "rows": 24, "cols": 80, "command": "claude"}
     assert OpenTerminal.model_validate({**base, "cwd": folder}).cwd == folder
 
 
@@ -199,21 +212,21 @@ def test_a_run_folder_is_absolute_or_home_relative_and_takes_1024_characters(
 def test_a_run_folder_that_is_relative_empty_or_has_a_control_is_refused(
     folder: str,
 ) -> None:
-    base = {"machine": "gx10", "rows": 24, "cols": 80, "command": "claude"}
+    base = {"host": "gx10", "rows": 24, "cols": 80, "command": "claude"}
     with pytest.raises(pydantic.ValidationError):
         OpenTerminal.model_validate({**base, "cwd": folder})
 
 
 @pytest.mark.parametrize("command", ["bash", "sh", "Claude", ""])
 def test_a_command_outside_the_two_clis_is_refused(command: str) -> None:
-    base = {"machine": "gx10", "rows": 24, "cols": 80}
+    base = {"host": "gx10", "rows": 24, "cols": 80}
     assert OpenTerminal.model_validate({**base, "command": "codex"})
     with pytest.raises(pydantic.ValidationError):
         OpenTerminal.model_validate({**base, "command": command})
 
 
 def test_an_open_is_a_shell_unless_it_asks_for_files() -> None:
-    base = {"machine": "gx10", "rows": 24, "cols": 80}
+    base = {"host": "gx10", "rows": 24, "cols": 80}
     assert OpenTerminal.model_validate(base).kind == "shell"
     assert OpenTerminal.model_validate({**base, "kind": "files"}).kind == "files"
     with pytest.raises(pydantic.ValidationError):
@@ -225,15 +238,15 @@ def test_an_open_is_a_shell_unless_it_asks_for_files() -> None:
     [{"command": "claude"}, {"canvas": str(uuid.UUID(int=1))}],
 )
 def test_a_files_open_names_no_command_or_canvas(extra: dict[str, object]) -> None:
-    base = {"machine": "gx10", "rows": 24, "cols": 80, **extra}
+    base = {"host": "gx10", "rows": 24, "cols": 80, **extra}
     assert OpenTerminal.model_validate(base)
     with pytest.raises(pydantic.ValidationError):
         OpenTerminal.model_validate({**base, "kind": "files"})
 
 
 @pytest.mark.parametrize("run_name", ["Bad Name", "-leading", "x" * 64, ""])
-def test_a_run_name_matches_the_machine_name_pattern(run_name: str) -> None:
-    base = {"machine": "gx10", "rows": 24, "cols": 80, "command": "claude"}
+def test_a_run_name_matches_the_host_name_pattern(run_name: str) -> None:
+    base = {"host": "gx10", "rows": 24, "cols": 80, "command": "claude"}
     assert OpenTerminal.model_validate({**base, "run_name": "chat-1"})
     with pytest.raises(pydantic.ValidationError):
         OpenTerminal.model_validate({**base, "run_name": run_name})
@@ -282,16 +295,16 @@ def test_only_a_files_wait_names_its_kind() -> None:
         TerminalWait.model_validate({**wait, "kind": "shell"})
 
 
-def test_a_machine_lists_the_clis_its_facts_name_and_defaults_to_none() -> None:
-    machine = {"name": "gx10", "status": "online", "terminal_ready": True}
-    assert TerminalMachine.model_validate({**machine, "confirmed": True}).clis == []
-    listed = {**machine, "confirmed": True, "clis": ["claude", "codex"]}
-    assert TerminalMachine.model_validate(listed).clis == ["claude", "codex"]
+def test_a_host_lists_the_clis_its_facts_name_and_defaults_to_none() -> None:
+    host = {"name": "gx10", "status": "online", "terminal_ready": True}
+    assert TerminalHost.model_validate({**host, "confirmed": True}).clis == []
+    listed = {**host, "confirmed": True, "clis": ["claude", "codex"]}
+    assert TerminalHost.model_validate(listed).clis == ["claude", "codex"]
 
 
 def test_a_listing_and_an_open_ignore_a_field_a_newer_server_added() -> None:
     run = {"session_id": str(uuid.UUID(int=3)), "cli": "claude", "lane": 1}
-    machine = {
+    host = {
         "name": "gx10",
         "status": "online",
         "terminal_ready": True,
@@ -299,16 +312,16 @@ def test_a_listing_and_an_open_ignore_a_field_a_newer_server_added() -> None:
         "runs": [run],
         "lane": 1,
     }
-    live = {"terminal_id": str(uuid.UUID(int=2)), "machine": "gx10", "lane": 1}
-    listing = TerminalMachines.model_validate(
-        {"machines": [machine], "terminals": [live], "lane": 1},
+    live = {"terminal_id": str(uuid.UUID(int=2)), "host": "gx10", "lane": 1}
+    listing = TerminalHosts.model_validate(
+        {"hosts": [host], "terminals": [live], "lane": 1},
     )
     opened = TerminalOpened.model_validate(
         {"terminal_id": str(uuid.UUID(int=1)), "ticket": "t", "lane": 1},
     )
 
-    assert [run.cli for run in listing.machines[0].runs] == ["claude"]
-    assert [term.machine for term in listing.terminals] == ["gx10"]
+    assert [run.cli for run in listing.hosts[0].runs] == ["claude"]
+    assert [term.host for term in listing.terminals] == ["gx10"]
     assert opened.ticket == "t"
 
 

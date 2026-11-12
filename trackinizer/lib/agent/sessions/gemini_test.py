@@ -573,9 +573,9 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write() -> None:
     """A document field of the wrong type reads as absent, as a missing one does."""
     document = json_loads(_nested(), dict[str, object])
     failed: list[str] = []
+    missing_counts: dict[str, int] = {}
     for path, changed in mistyped(document):
         records = list(gemini.normalize(StringIO(json.dumps(changed))))
-        missing = json.dumps(without(document, path))
         try:
             gemini.denormalize(records, StringIO())
         except TypeError as error:
@@ -584,10 +584,14 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write() -> None:
         # than read as absent: reading it so would lose the value when the
         # document is written back.
         kept_whole = path.startswith("messages") and not path.endswith(".type")
-        if not kept_whole and unread(records) > unread(
-            gemini.normalize(StringIO(missing)),
-        ):
-            failed.append(f"{path}: the document reads worse than without the field")
+        if not kept_whole:
+            if path not in missing_counts:
+                missing = json.dumps(without(document, path))
+                missing_counts[path] = unread(gemini.normalize(StringIO(missing)))
+            if unread(records) > missing_counts[path]:
+                failed.append(
+                    f"{path}: the document reads worse than without the field",
+                )
 
     assert failed == [], "\n".join(failed)
 

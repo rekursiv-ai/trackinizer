@@ -13,21 +13,21 @@ from starlette.testclient import TestClient
 
 import pytest
 
-from trackinizer.conftest import make_store, set_field_row
+from trackinizer.conftest import FakeEngine, make_store, set_field_row
 from trackinizer.server.api import sessions_routes, terminal_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.auth import current_user
 from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.store.core import Store
-from trackinizer.server.terminals import Opening, Terminal, TerminalHub
+from trackinizer.server.terminals import Opening, Terminal, TerminalRelay
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire import wire_terminals
 from trackinizer.wire.wire_sessions import DrainInboundResponse
 from trackinizer.wire.wire_terminals import TerminalOpened, TerminalWait
 
 
-_MACHINE = UUID(int=1)
+_HOST = UUID(int=1)
 _INSTANCE = UUID(int=2)
 _SESSION = UUID(int=3)
 _IDENTITY = make_test_identity(api_key_id=None)
@@ -50,8 +50,9 @@ class _Clock:
 class _Server:
     app: FastAPI
     store: Store
+    engine: FakeEngine
     inbound: InboundQueue
-    hub: TerminalHub
+    relay: TerminalRelay
     clock: _Clock
 
 
@@ -63,6 +64,7 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
         AsyncMock(
             return_value=AgentSession(
                 id=_SESSION,
+                account=_IDENTITY.email,
                 owner="scientist",
                 cli="claude",
                 opened_by_api_key_id=_IDENTITY.api_key_id,
@@ -70,9 +72,9 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
         ),
     )
     monkeypatch.setattr(store, "record_session_seen", AsyncMock())
-    set_field_row(engine.conn, {"id": _MACHINE, "facts": {}, "confirmed": True})
+    set_field_row(engine.conn, {"id": _HOST, "facts": {}, "confirmed": True})
     engine.conn.fetchval.return_value = True
-    monkeypatch.setattr(terminal_routes, "current_machine", AsyncMock())
+    monkeypatch.setattr(terminal_routes, "current_host", AsyncMock())
     app = FastAPI()
     app.add_middleware(ChangeIdMiddleware)
     app.include_router(sessions_routes.router)
@@ -82,9 +84,16 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
     app.state.store = store
     app.state.inbound = inbound = InboundQueue()
     clock = _Clock()
-    app.state.terminals = hub = TerminalHub(alive=_alive, clock=clock)
-    asyncio.run(hub.wait(_MACHINE, wait_sec=0))
-    return _Server(app=app, store=store, inbound=inbound, hub=hub, clock=clock)
+    app.state.terminals = relay = TerminalRelay(alive=_alive, clock=clock)
+    asyncio.run(relay.wait(_HOST, wait_sec=0))
+    return _Server(
+        app=app,
+        store=store,
+        engine=engine,
+        inbound=inbound,
+        relay=relay,
+        clock=clock,
+    )
 
 
 def _headers(key: UUID) -> dict[str, str]:
@@ -122,11 +131,11 @@ def test_terminal_wait_retry_returns_the_original_offer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = _server(monkeypatch)
-    term = server.hub.open(
+    term = server.relay.open(
         Opening(
             user=_IDENTITY.email,
-            machine_id=_MACHINE,
-            machine="gx10",
+            host_id=_HOST,
+            host="gx10",
             rows=24,
             cols=80,
         ),
@@ -134,13 +143,13 @@ def test_terminal_wait_retry_returns_the_original_offer(
     headers = _headers(uuid4())
     with TestClient(server.app) as browser:
         first = browser.get(
-            f"/api/machines/{_MACHINE}/terminals/wait",
+            f"/api/hosts/{_HOST}/terminals/wait",
             params={"instance": str(_INSTANCE), "wait_sec": 0},
             headers=headers,
         )
         assert first.status_code == 200, first.text
         retried = browser.get(
-            f"/api/machines/{_MACHINE}/terminals/wait",
+            f"/api/hosts/{_HOST}/terminals/wait",
             params={"instance": str(_INSTANCE), "wait_sec": 0},
             headers=headers,
         )
@@ -156,49 +165,49 @@ def test_terminal_open_retry_creates_one_terminal_with_a_fresh_attach_ticket(
     with TestClient(server.app) as browser:
         first = browser.post(
             "/api/terminals",
-            json={"machine": "gx10", "rows": 24, "cols": 80},
+            json={"host": "gx10", "rows": 24, "cols": 80},
             headers=headers,
         )
         assert first.status_code == 201, first.text
         opened = TerminalOpened.model_validate(first.json())
         changed = browser.post(
             "/api/terminals",
-            json={"machine": "gx10", "rows": 24, "cols": 81},
+            json={"host": "gx10", "rows": 24, "cols": 81},
             headers=headers,
         )
         assert changed.status_code == 409
         server.clock.now += wire_terminals.TICKET_TTL_SEC + 1
         retried = browser.post(
             "/api/terminals",
-            json={"machine": "gx10", "rows": 24, "cols": 80},
+            json={"host": "gx10", "rows": 24, "cols": 80},
             headers=headers,
         )
         assert retried.status_code == 201, retried.text
         again = TerminalOpened.model_validate(retried.json())
         assert again.terminal_id == opened.terminal_id
         assert again.ticket != opened.ticket
-        assert not server.hub.redeem(
+        assert not server.relay.redeem(
             opened.ticket,
             user=_IDENTITY.email,
             terminal_id=opened.terminal_id,
         )
-        assert server.hub.redeem(
+        assert server.relay.redeem(
             again.ticket,
             user=_IDENTITY.email,
             terminal_id=again.terminal_id,
         )
-        offered = asyncio.run(server.hub.wait(_MACHINE, wait_sec=0))
+        offered = asyncio.run(server.relay.wait(_HOST, wait_sec=0))
         assert offered is not None
         assert offered.id == opened.terminal_id
-        assert asyncio.run(server.hub.wait(_MACHINE, wait_sec=0)) is None
-        asyncio.run(server.hub.end(offered, code=wire_terminals.CLOSE_ENDED))
+        assert asyncio.run(server.relay.wait(_HOST, wait_sec=0)) is None
+        asyncio.run(server.relay.end(offered, code=wire_terminals.CLOSE_ENDED))
         ended = browser.post(
             "/api/terminals",
-            json={"machine": "gx10", "rows": 24, "cols": 80},
+            json={"host": "gx10", "rows": 24, "cols": 80},
             headers=headers,
         )
         assert ended.status_code == 410
-        assert asyncio.run(server.hub.wait(_MACHINE, wait_sec=0)) is None
+        assert asyncio.run(server.relay.wait(_HOST, wait_sec=0)) is None
 
 
 def test_a_retried_run_open_replays_its_terminal_and_a_new_open_is_refused(
@@ -206,11 +215,11 @@ def test_a_retried_run_open_replays_its_terminal_and_a_new_open_is_refused(
 ) -> None:
     server = _server(monkeypatch)
     set_field_row(
-        server.app.state.engine.conn,
-        {"id": _MACHINE, "facts": {"clis": ["claude"]}, "confirmed": True},
+        server.engine.conn,
+        {"id": _HOST, "facts": {"clis": ["claude"]}, "confirmed": True},
     )
     run = {
-        "machine": "gx10",
+        "host": "gx10",
         "rows": 24,
         "cols": 80,
         "command": "claude",
@@ -236,7 +245,7 @@ def test_a_retried_run_open_replays_its_terminal_and_a_new_open_is_refused(
                 "message": "another run is attached to this session; stop it first",
             },
         }
-    assert len(server.hub.attached_to(_SESSION)) == 1
+    assert len(server.relay.attached_to(_SESSION)) == 1
 
 
 @pytest.mark.asyncio

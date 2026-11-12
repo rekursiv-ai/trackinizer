@@ -2,8 +2,8 @@
 
 The configured assistant reads ``open`` only, so a ``staff`` session is beyond it. It
 may still be sent a line the assistant relays for a signed-in user, on that user's
-rights and none of its own: the user is the session's account, or a writer who reads
-it. Each send test goes through the real routes, by the direct enqueue and by name,
+rights and none of its own: the user must be a writer whose account holds the
+session. Each send test goes through the real routes, by direct enqueue and by name,
 and reads what reached the session's queue. The assistant reads a session's
 transcript for a user into the chat it answers them in, through each route that reads
 one by id, exactly when the user reads both; a ``staff`` session only once the chat
@@ -304,28 +304,29 @@ async def test_it_is_refused_a_staff_session_when_it_names_no_asker(
 
 
 @pytest.mark.parametrize("route", _ROUTES)
-async def test_it_relays_for_an_asker_who_holds_the_audience_and_may_write(
+async def test_it_refuses_an_asker_who_only_holds_the_audience(
     served: _Served,
     route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    sent = await served.send(route, served.others, asker=_STAFF)
+    refused = await served.send(route, served.others, asker=_STAFF)
 
-    assert sent.status_code == 200, sent.text
-    assert served.queued(served.others) == 1
+    assert refused.status_code == 403, refused.text
+    assert served.queued(served.others) == 0
 
 
 @pytest.mark.parametrize("route", _ROUTES)
-async def test_it_relays_for_an_admin_who_holds_the_audience(
+async def test_an_admin_asker_does_not_control_someone_elses_session(
     served: _Served,
     route: _Route,
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    sent = await served.send(route, served.others, asker=_STAFF_ADMIN)
+    refused = await served.send(route, served.others, asker=_STAFF_ADMIN)
 
-    assert sent.status_code == 200, sent.text
+    assert refused.status_code == 403, refused.text
+    assert served.queued(served.others) == 0
 
 
 @pytest.mark.parametrize("route", _ROUTES)
@@ -381,7 +382,7 @@ async def test_it_finds_the_asker_whatever_the_case_it_writes_the_account_in(
 ) -> None:
     served.act_as(_ASSISTANT)
 
-    sent = await served.send(route, served.others, asker=_STAFF.upper())
+    sent = await served.send(route, served.wes_own, asker=_OPEN_WRITER.upper())
 
     assert sent.status_code == 200, sent.text
 
@@ -402,17 +403,16 @@ async def test_naming_an_asker_gives_another_sender_nothing(
 
 
 @pytest.mark.parametrize("route", _ROUTES)
-async def test_it_needs_no_asker_for_a_session_it_reads_itself(
+async def test_reading_an_open_session_grants_the_assistant_no_input_rights(
     served: _Served,
     route: _Route,
 ) -> None:
-    """An open session is any writer's to message, the assistant's included."""
     served.act_as(_ASSISTANT)
 
-    sent = await served.send(route, served.public)
+    refused = await served.send(route, served.public)
 
-    assert sent.status_code == 200, sent.text
-    assert served.queued(served.public) == 1
+    assert refused.status_code == 403, refused.text
+    assert served.queued(served.public) == 0
 
 
 @pytest.mark.parametrize("route", _ROUTES)
@@ -498,20 +498,20 @@ async def test_naming_an_asker_reads_nothing_for_another_caller(
     )
 
 
-async def test_a_read_for_an_admin_asker_holds_no_oversight(
+async def test_a_read_for_an_admin_asker_keeps_their_human_access(
     served: _Served,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An admin reads every session, but nothing of it goes into a chat for them."""
+    """The admin's own private chat reaches no one beyond that authorized reader."""
     patch_state(monkeypatch, "config", replace(_CONFIG, chat_orgs="individual"))
-    chat = await served.chat(starter=_OPEN_ADMIN)
+    chat = await served.chat(starter=_OPEN_ADMIN, audience="private")
     served.act_as(_OPEN_ADMIN, role="admin")
     themselves = await served.reads(served.public)
     served.act_as(_ASSISTANT)
 
     read = await served.reads(served.public, asker=_OPEN_ADMIN, chat=chat.conversation)
 
-    assert (themselves, read) == ([200] * 3, [403] * 3)
+    assert (themselves, read) == ([200] * 3, [200] * 3)
 
 
 async def test_an_open_read_leaves_the_chat_open(served: _Served) -> None:

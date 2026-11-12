@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from queue import Full, SimpleQueue
 from subprocess import CompletedProcess
@@ -783,7 +784,7 @@ def test_update_rate_uses_the_configured_half_life_and_additive_ema() -> None:
 
 def test_update_rate_handles_subsecond_intervals_and_unit_prev_rate() -> None:
     observed = backfill_embedding._update_rate(1.0, 3, 0.5)
-    expected_weight = 0.5 ** (0.5 / 300.0)
+    expected_weight = cast(float, 0.5 ** (0.5 / 300.0))
     assert observed == pytest.approx(expected_weight + (1 - expected_weight) * 6.0)
 
 
@@ -1540,24 +1541,36 @@ class _FullQueue:
         raise Full
 
 
-def test_put_aborts_when_every_consumer_has_exited() -> None:
+@pytest.mark.asyncio
+@pytest.mark.parametrize("closing", [False, True])
+async def test_put_aborts_when_every_consumer_has_exited(closing: bool) -> None:
     """A put blocked on a full queue re-checks liveness and aborts on all-dead.
 
     The old untimed ``queue.put`` blocked forever once every worker died.
     """
     queue = _FullQueue()
+    source = cast("Queue[backfill_embedding.PageTask | None]", queue)
     liveness = iter([True, True, False])
 
-    with pytest.raises(
-        backfill_embedding._NoLiveWorkersError,
-        match=r"^every embed worker exited; aborting the scan$",
-    ):
-        backfill_embedding._put(
-            cast("Queue[backfill_embedding.PageTask | None]", queue),
-            None,
-            alive=lambda: next(liveness),
-            poll_sec=0.0,
-        )
+    if closing:
+        with pytest.raises(backfill_embedding._NoLiveWorkersError):
+            await backfill_embedding._close_feed(
+                source,
+                1,
+                alive=lambda: next(liveness),
+                poll_sec=0.0,
+            )
+    else:
+        with pytest.raises(
+            backfill_embedding._NoLiveWorkersError,
+            match=r"^every embed worker exited; aborting the scan$",
+        ):
+            backfill_embedding._put(
+                source,
+                None,
+                alive=lambda: next(liveness),
+                poll_sec=0.0,
+            )
 
     assert queue.attempts == 3
 
@@ -2049,9 +2062,9 @@ async def test_run_follow_ensures_indexes_then_sweeps_every_model_per_round(
     fake_asyncio = _FakeAsyncio(rounds=1)
     printed = _PrintRecorder()
     stats = {
-        "a": SweepStats(records_embedded=3, units_written=5, full_scan=True),
-        "b": SweepStats(),
-        "c": SweepStats(busy=True),
+        "a": SweepStats(busy=True),
+        "b": SweepStats(records_embedded=3, units_written=5, full_scan=True),
+        "c": SweepStats(),
     }
 
     async def ensure(conn: object, model: str, dim: int) -> None:
@@ -2090,12 +2103,12 @@ async def test_run_follow_ensures_indexes_then_sweeps_every_model_per_round(
         (engine, mapper, "c"),
     ]
     assert printed.calls == [
-        (("follow: model=a embedded=3 units=5 (full scan)",), {"flush": True}),
-        (("follow: model=b embedded=0 units=0",), {"flush": True}),
         (
-            ("follow: model=c skipped: another process is embedding it",),
+            ("follow: model=a skipped: another process is embedding it",),
             {"flush": True},
         ),
+        (("follow: model=b embedded=3 units=5 (full scan)",), {"flush": True}),
+        (("follow: model=c embedded=0 units=0",), {"flush": True}),
     ]
     assert fake_asyncio.sleeps == [11]
 
@@ -2214,6 +2227,31 @@ def test_main_follow_with_no_model_configured_exits_cleanly(
     assert "semantic search is off" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("cpu_count", [4, 7])
+def test_main_follow_defaults_to_one_integer_omp_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    cpu_count: int,
+) -> None:
+    _clear_embedder_env(monkeypatch)
+    monkeypatch.setattr(os, "cpu_count", lambda: cpu_count)
+    monkeypatch.setattr(registry, "build_backfill_embedder", _stop_follow_build)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["backfill", "dsn", "--follow", "--model", "qwen3-embedding-0.6b"],
+    )
+
+    with pytest.raises(_StopFollowError):
+        backfill_embedding.main()
+
+    assert os.environ["OMP_NUM_THREADS"] == "1"
+
+
+def _stop_follow_build(name: str, *, device: str, batch_size: int) -> StubEmbedder:
+    del name, device, batch_size
+    raise _StopFollowError
+
+
 def test_main_follow_caps_the_cpu_threads_after_the_gpu_backfill(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2252,6 +2290,272 @@ def test_main_follow_caps_the_cpu_threads_after_the_gpu_backfill(
     assert events == ["gpus ['0', '1'] ['m@4']", "follow"]
     assert gpu_env == [("unset-by-test", "unset-by-test")]
     assert (follow.threads, follow.gpus) == ("5", "")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.usefixtures("store")
+def test_main_follow_reaches_the_cpu_loop_after_an_idle_gpu_check(
+    pg_dsn: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_embedder_env(monkeypatch)
+    monkeypatch.setattr(subprocess, "run", _smi("0, GPU-a, 0\n", ""))
+    built: list[tuple[str, str, int]] = []
+
+    def build(name: str, *, device: str, batch_size: int) -> StubEmbedder:
+        built.append((name, device, batch_size))
+        return StubEmbedder(dim=1024)
+
+    sleep = asyncio.sleep
+
+    async def stop_after_round(delay: float) -> None:
+        if delay == 17:
+            raise _StopFollowError
+        await sleep(delay)
+
+    monkeypatch.setattr(registry, "build_backfill_embedder", build)
+    monkeypatch.setattr(asyncio, "sleep", stop_after_round)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backfill",
+            pg_dsn,
+            "--follow",
+            "--gpu-backfill",
+            "--model",
+            "qwen3-embedding-0.6b",
+            "--gpus",
+            "0",
+            "--interval-sec",
+            "17",
+        ],
+    )
+
+    with pytest.raises(_StopFollowError):
+        backfill_embedding.main()
+
+    assert built == [("qwen3-embedding-0.6b", "cpu", 8)]
+
+
+def test_main_follow_preserves_the_gpu_snapshot_and_embeds_catchup_changes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A successful GPU catch-up leaves concurrent changes for the CPU sweep."""
+    _clear_embedder_env(monkeypatch)
+    conn = _CatchupConn()
+    engines = _EngineFactory(*[conn] * 7)
+    queue = _FakeQueue()
+    stopper = _FakeAsyncio(rounds=1)
+
+    def build(name: str, *, device: str, batch_size: int) -> _NamedEmbedder:
+        assert (name, device, batch_size) == ("qwen3-embedding-0.6b", "cpu", 8)
+        return _NamedEmbedder("qwen3-embedding-0.6b@1024", 1024)
+
+    def make_queue(maxsize: int) -> _FakeQueue:
+        del maxsize
+        return queue
+
+    monkeypatch.setattr(backfill_embedding, "PostgresEngine", engines)
+    monkeypatch.setattr(subprocess, "run", _smi("0, GPU-a, 0\n", ""))
+    monkeypatch.setattr(multiprocessing, "Process", partial(_CatchupProcess, conn=conn))
+    monkeypatch.setattr(multiprocessing, "Queue", make_queue)
+    monkeypatch.setattr(registry, "build_backfill_embedder", build)
+    monkeypatch.setattr(asyncio, "sleep", stopper.sleep)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backfill",
+            "postgresql://catchup",
+            "--follow",
+            "--gpu-backfill",
+            "--gpu-backfill-min-records",
+            "1",
+            "--model",
+            "qwen3-embedding-0.6b",
+            "--interval-sec",
+            "17",
+            "--compile-cache",
+            str(tmp_path / "compile.bin"),
+        ],
+    )
+
+    with pytest.raises(_StopFollowError):
+        backfill_embedding.main()
+
+    assert engines.opened == [("postgresql://catchup", NOTIFY_CHANNEL)] * 6
+    assert conn.scalar_queries[0] == ("SELECT pg_current_snapshot()::text", ())
+    count_sql, count_args = conn.scalar_queries[1]
+    assert count_sql.startswith("SELECT count(*) FROM session_records r ")
+    assert count_args == (
+        "footprint-v1",
+        "qwen3-embedding-0.6b@1024",
+        sorted(FootprintMapper().embedded_kinds),
+    )
+    assert conn.worker_runs == 1
+    assert queue.put_items == [(_queued(0), _queued(0)), None]
+    assert conn.cursor_writes == [
+        ("footprint-v1", "qwen3-embedding-0.6b@1024", "10:12:11"),
+        ("footprint-v1", "qwen3-embedding-0.6b@1024", "12:14:"),
+    ]
+    assert conn.marker_writes == [
+        (
+            [_SID],
+            [0],
+            [0],
+            "footprint-v1",
+            "qwen3-embedding-0.6b@1024",
+            [_md5("changed during GPU catch-up")],
+        ),
+    ]
+    assert stopper.sleeps == [17]
+
+
+@pytest.mark.parametrize(
+    "models",
+    [
+        pytest.param(["qwen3-embedding-0.6b"], id="exactly_1000"),
+        pytest.param(
+            ["qwen3-embedding-4b", "qwen3-embedding-0.6b"],
+            id="small_first_model",
+        ),
+    ],
+)
+def test_main_follow_gpu_backfills_the_eligible_model_at_the_default_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    models: list[str],
+) -> None:
+    _clear_embedder_env(monkeypatch)
+    conn = _BacklogConn()
+    queue = _FakeQueue()
+
+    def make_queue(maxsize: int) -> _FakeQueue:
+        del maxsize
+        return queue
+
+    engines = _EngineFactory(*[conn] * (2 * len(models) + 3))
+    monkeypatch.setattr(backfill_embedding, "PostgresEngine", engines)
+    monkeypatch.setattr(subprocess, "run", _smi("0, GPU-a, 0\n", ""))
+    monkeypatch.setattr(multiprocessing, "Process", partial(_CatchupProcess, conn=conn))
+    monkeypatch.setattr(multiprocessing, "Queue", make_queue)
+    monkeypatch.setattr(registry, "build_backfill_embedder", _stop_follow_build)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backfill",
+            "postgresql://backlog",
+            "--follow",
+            "--gpu-backfill",
+            "--model",
+            ",".join(models),
+            "--compile-cache",
+            str(tmp_path / "compile.bin"),
+        ],
+    )
+
+    with pytest.raises(_StopFollowError):
+        backfill_embedding.main()
+
+    assert conn.worker_runs == 1
+    assert queue.put_items == [(_queued(0), _queued(0)), None]
+    assert [
+        args[1] for sql, args in conn.scalar_queries if "SELECT count(*)" in sql
+    ] == [f"{model}@1024" for model in models]
+    assert conn.fetches[0][1][1] == "qwen3-embedding-0.6b@1024"
+    assert conn.cursor_writes == [
+        ("footprint-v1", "qwen3-embedding-0.6b@1024", "10:12:11"),
+    ]
+
+
+class _CatchupConn(_ScriptedConn):
+    """SQL boundary with one backlog row changed as the GPU process finishes."""
+
+    def __init__(self) -> None:
+        self.row = {
+            **_record(0, "UserMessage", "before GPU catch-up"),
+            "created": _CREATED,
+            "changed_xid": "9",
+        }
+        super().__init__([self.row.copy()], [])
+        self.snapshot = "10:12:11"
+        self.worker_runs = 0
+        self.scalar_queries: list[tuple[str, tuple[object, ...]]] = []
+        self.cursor_writes: list[tuple[object, ...]] = []
+        self.marker_writes: list[tuple[object, ...]] = []
+        self._cursors: dict[tuple[object, object], object] = {}
+
+    async def fetchval(self, query: str, *args: object) -> object:
+        self.scalar_queries.append((query, args))
+        if query == "SELECT pg_current_snapshot()::text":
+            return self.snapshot
+        if query.startswith("SELECT count(*) FROM session_records"):
+            return 1
+        if query.startswith("SELECT pg_try_advisory_lock"):
+            return True
+        assert query.startswith("SELECT snapshot::text FROM session_index_cursor")
+        return self._cursors.get((args[0], args[1]))
+
+    @override
+    async def fetch(
+        self,
+        query: str,
+        *args: object,
+    ) -> Sequence[Mapping[str, object]]:
+        if "r.changed_xid::text" not in query:
+            return await super().fetch(query, *args)
+        assert "NOT pg_visible_in_snapshot" in query
+        assert args[3:5] == ("10:12:11", "12:14:")
+        return list[dict[str, object]]() if self.marker_writes else [self.row.copy()]
+
+    async def execute(self, query: str, *args: object) -> None:
+        if query.startswith("INSERT INTO session_index_cursor"):
+            self.cursor_writes.append(args)
+            mapper, model, snapshot = args
+            self._cursors[mapper, model] = snapshot
+        elif query.startswith("INSERT INTO session_index_state"):
+            self.marker_writes.append(args)
+
+
+class _BacklogConn(_CatchupConn):
+    """Answer the default threshold and a smaller backlog at the SQL boundary."""
+
+    @override
+    async def fetchval(self, query: str, *args: object) -> object:
+        if query.startswith("SELECT count(*) FROM session_records"):
+            self.scalar_queries.append((query, args))
+            return 999 if args[1] == "qwen3-embedding-4b@1024" else 1_000
+        return await super().fetchval(query, *args)
+
+
+class _CatchupProcess:
+    """Finish a GPU run while another transaction changes its scanned row."""
+
+    def __init__(
+        self,
+        *,
+        target: object,
+        args: tuple[object, ...],
+        name: str,
+        conn: _CatchupConn,
+    ) -> None:
+        del target, args, name
+        self.exitcode = 0
+        self._conn = conn
+
+    def start(self) -> None:
+        self._conn.worker_runs += 1
+
+    def join(self) -> None:
+        self._conn.row["text"] = "changed during GPU catch-up"
+        self._conn.row["changed_xid"] = "13"
+        self._conn.snapshot = "12:14:"
+
+    def is_alive(self) -> bool:
+        return False
 
 
 def test_main_follow_skips_the_gpus_unless_asked(
@@ -2425,6 +2729,107 @@ def test_main_aborts_with_failure_when_every_worker_dies_mid_scan(
     assert liveness == [False]
     assert queue.cancelled
     assert [args[0] for args, _kwargs in printed.calls][-1] != "ALL DONE"
+
+
+def test_main_aborts_a_full_scanner_feed_after_its_consumer_exits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A dead consumer fails the real scanner and releases all run resources."""
+    _clear_embedder_env(monkeypatch)
+    conn = _BlockedFeedConn()
+    queue = _BoundedMainQueue(maxsize=2)
+    events: list[str] = []
+
+    def make_queue(maxsize: int) -> _BoundedMainQueue:
+        assert maxsize == queue.maxsize
+        return queue
+
+    monkeypatch.setattr(
+        backfill_embedding,
+        "PostgresEngine",
+        _EngineFactory(*[conn] * 4),
+    )
+    monkeypatch.setattr(
+        multiprocessing,
+        "Process",
+        partial(_FakeProcess, exitcode=0, events=events),
+    )
+    monkeypatch.setattr(multiprocessing, "Queue", make_queue)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "backfill",
+            "postgresql://full-feed",
+            "--model",
+            "qwen3-embedding-0.6b",
+            "--page",
+            "1",
+            "--compile-cache",
+            str(tmp_path / "compile.bin"),
+        ],
+    )
+
+    assert backfill_embedding.main() == 1
+    assert queue.put_items == [
+        (_queued(0), _queued(0)),
+        (_queued(1), _queued(1)),
+    ]
+    assert queue.attempts == 3
+    assert queue.cancelled
+    assert events == ["start embed-worker-0-gpu0", "join embed-worker-0-gpu0"]
+    assert conn.lock_events == ["lock", "unlock"]
+    assert len(conn.fetches) == 3
+    assert conn.counts == 2
+
+
+class _BlockedFeedConn(_ScriptedConn):
+    """Supply three pending pages and record the real writer lock lifecycle."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            *[
+                [{"created": _CREATED, "session_id": _SID, "part": 0, "idx": idx}]
+                for idx in range(3)
+            ],
+        )
+        self.lock_events: list[str] = []
+        self.counts = 0
+
+    async def fetchval(self, query: str, *args: object) -> object:
+        del args
+        if query.startswith("SELECT count(*) FROM session_records"):
+            self.counts += 1
+            return 3
+        assert query == "SELECT pg_try_advisory_lock(hashtext($1))"
+        self.lock_events.append("lock")
+        return True
+
+    async def execute(self, query: str, *args: object) -> None:
+        del args
+        assert query == "SELECT pg_advisory_unlock(hashtext($1))"
+        self.lock_events.append("unlock")
+
+
+class _BoundedMainQueue(_FakeQueue):
+    """Keep accepted pages until capacity, with no consumer draining them."""
+
+    def __init__(self, *, maxsize: int) -> None:
+        super().__init__()
+        self.maxsize = maxsize
+        self.attempts = 0
+        self.cancelled = False
+
+    @override
+    def put(self, item: backfill_embedding.PageTask | None, *, timeout: float) -> None:
+        self.attempts += 1
+        if len(self.put_items) >= self.maxsize:
+            raise Full
+        super().put(item, timeout=timeout)
+
+    def cancel_join_thread(self) -> None:
+        self.cancelled = True
 
 
 def test_main_reports_a_model_another_process_is_embedding(
@@ -2649,8 +3054,20 @@ def _smi(cards: str, apps: str) -> Callable[..., CompletedProcess[str]]:
     """Return a ``subprocess.run`` answering nvidia-smi's two queries."""
 
     def run(argv: list[str], **kwargs: object) -> CompletedProcess[str]:
-        del kwargs
-        out = cards if argv[1].startswith("--query-gpu") else apps
+        assert argv in [
+            [
+                "nvidia-smi",
+                "--query-gpu=index,uuid,memory.used",
+                "--format=csv,noheader,nounits",
+            ],
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid",
+                "--format=csv,noheader,nounits",
+            ],
+        ]
+        assert kwargs == {"capture_output": True, "text": True, "check": True}
+        out = cards if argv[1] == "--query-gpu=index,uuid,memory.used" else apps
         return CompletedProcess(argv, 0, stdout=out, stderr="")
 
     return run

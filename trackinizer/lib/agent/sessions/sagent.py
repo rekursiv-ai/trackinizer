@@ -237,7 +237,11 @@ class _Reader:
                 (
                     _str(c.get("id")),
                     _str(c.get("name")),
-                    from_plain(c.get("args"), dict[str, object], default={}),
+                    from_plain(
+                        c.get("args"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
                 )
                 for c in _mappings(record.get("tool_calls"))
             ]
@@ -316,8 +320,16 @@ class _Reader:
                     ),
                 ),
             )
-        tokens = from_plain(record.get("tokens"), dict[str, object], default={})
-        spend = from_plain(record.get("spend"), dict[str, object], default={})
+        tokens = from_plain(
+            record.get("tokens"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        spend = from_plain(
+            record.get("spend"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         cost = from_plain(record.get("total_cost_usd"), float, default=None) or sum(
             from_plain(v, float, default=0.0) for v in spend.values()
         )
@@ -470,7 +482,11 @@ class _Reader:
                 kind = _str(part.get("descriptor"))
                 body = part.get("content")
                 if kind.startswith("application/x-thinking"):
-                    block = from_plain(body, dict[str, object], default={})
+                    block = from_plain(
+                        body,
+                        dict[str, object],
+                        default=dict[str, object](),
+                    )
                     thoughts.append(
                         (
                             _str(block.get("thinking")),
@@ -528,7 +544,7 @@ class _Reader:
                     from_plain(
                         (c.get("input") or c.get("args")),
                         dict[str, object],
-                        default={},
+                        default=dict[str, object](),
                     ),
                 )
                 for c in _mappings(record.get("tool_calls"))
@@ -576,7 +592,11 @@ def _legacy_call(
         elif kind.startswith("application/x-tool-"):
             tail = kind.removeprefix("application/x-tool-")
             name = compound.get(tail, tail.capitalize())
-            arguments = from_plain(part.get("content"), dict[str, object], default={})
+            arguments = from_plain(
+                part.get("content"),
+                dict[str, object],
+                default=dict[str, object](),
+            )
     return call_id, name, arguments
 
 
@@ -621,7 +641,7 @@ def _mappings(value: object) -> list[dict[str, object]]:
     # A part's ``content`` is a string or a list of parts; only the list has any.
     if isinstance(value, str):
         return []
-    return from_plain(value, list[dict[str, object]], default=[])
+    return from_plain(value, list[dict[str, object]], default=list[dict[str, object]]())
 
 
 def _scalars(record: Mapping[str, object]) -> dict[str, object]:

@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS inquiries (
     -- never a DB-side stand-in.
     account        TEXT NOT NULL,
     status         TEXT NOT NULL DEFAULT 'active' CHECK (status IN (
-                       'active', 'complete', 'abandoned', 'invalid'
+                       'active', 'complete', 'stopped', 'abandoned', 'invalid'
                    )),
     title          TEXT NOT NULL,
     description    TEXT,
@@ -631,17 +631,6 @@ CREATE TABLE IF NOT EXISTS users (
     preferences JSONB CHECK (jsonb_typeof(preferences) = 'object')
 );
 
--- Who set or cleared an inquiry's ``locked`` flag, and when (``api/locks.py``).
--- ``inquiry_id`` is FK-free like ``change_log.subject_id``, so a purged row keeps its
--- history.
-CREATE TABLE IF NOT EXISTS inquiry_lock_log (
-    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    inquiry_id UUID NOT NULL,
-    locked     BOOLEAN NOT NULL,
-    actor      TEXT NOT NULL,
-    created    TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-);
-
 CREATE TABLE IF NOT EXISTS api_keys (
     id            UUID PRIMARY KEY,
     user_id       UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -988,24 +977,24 @@ CREATE TABLE IF NOT EXISTS session_slash_commands (
 -- dies while the server restarts must still be closed, and one closed for
 -- silence (``reaped``) must still be reopened if it comes back. A session that
 -- never polls has no row: with no poller, its silence means nothing. Added in 032.
--- Where its run last said it ran (its machine, detached host, CLI and folder, each
--- the run's own word), so a machine's past runs outlive the server's memory; added
+-- Where its run last said it ran (its host, detached host, CLI and folder, each
+-- the run's own word), so a host's past runs outlive the server's memory; added
 -- in 060.
 CREATE TABLE IF NOT EXISTS session_liveness (
     session_id  UUID PRIMARY KEY REFERENCES inquiries(id) ON DELETE CASCADE,
     last_seen   TIMESTAMPTZ NOT NULL,
     reaped      BOOLEAN NOT NULL DEFAULT FALSE,
-    machine     TEXT,
+    host     TEXT,
     run         TEXT,
     cli         TEXT,
     cwd         TEXT
 );
 
--- The environment variables an agent launch exports, by layer (org, machine,
+-- The environment variables an agent launch exports, by layer (org, host,
 -- user). A secret's value is never stored here: ``value`` is NULL and the
 -- server's secret backend holds it. Added in 034.
 CREATE TABLE IF NOT EXISTS variables (
-    layer       TEXT NOT NULL CHECK (layer IN ('org', 'machine', 'user')),
+    layer       TEXT NOT NULL CHECK (layer IN ('org', 'host', 'user')),
     owner       TEXT NOT NULL DEFAULT '',
     name        TEXT NOT NULL CHECK (name ~ '^[A-Za-z_][A-Za-z0-9_]{0,127}$'),
     secret      BOOLEAN NOT NULL,
@@ -1016,9 +1005,9 @@ CREATE TABLE IF NOT EXISTS variables (
     CHECK (secret = (value IS NULL))
 );
 
--- The machines a campaign may run on: a name, a role, one line telling an agent
--- how to use the machine, and labels. Added in 035; the owner in 049.
-CREATE TABLE IF NOT EXISTS machines (
+-- The hosts a campaign may run on: a name, a role, one line telling an agent
+-- how to use the host, and labels. Added in 035; the owner in 049.
+CREATE TABLE IF NOT EXISTS hosts (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name        TEXT NOT NULL UNIQUE CHECK (name ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
     role        TEXT NOT NULL DEFAULT ''
@@ -1029,8 +1018,8 @@ CREATE TABLE IF NOT EXISTS machines (
     updated_by  TEXT NOT NULL,
     updated     TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_heartbeat TIMESTAMPTZ,
-    host_instance  UUID,
-    host_version   TEXT NOT NULL DEFAULT '' CHECK (char_length(host_version) <= 64),
+    daemon_instance  UUID,
+    daemon_version   TEXT NOT NULL DEFAULT '' CHECK (char_length(daemon_version) <= 64),
     facts          JSONB NOT NULL DEFAULT '{}'
                    CHECK (jsonb_typeof(facts) = 'object' AND octet_length(facts::text) <= 8192),
     owner          TEXT,
@@ -1038,36 +1027,36 @@ CREATE TABLE IF NOT EXISTS machines (
     last_run_cwd   TEXT
 );
 
--- The machine a device login enrolled with the key it made, so logging the machine out
+-- The host a device login enrolled with the key it made, so logging the host out
 -- revokes the keys it logged in with. Here, not in ``api_keys``, which is made before
--- ``machines``. Added in 060.
-ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS machine_id UUID REFERENCES machines(id) ON DELETE SET NULL;
+-- ``hosts``. Added in 060.
+ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS host_id UUID REFERENCES hosts(id) ON DELETE SET NULL;
 
--- One-use tokens that let a host join as a machine, and the credentials it joins
+-- One-use tokens that let a host join as a host, and the credentials it joins
 -- with. A revoked credential row is kept so the server answers it 410, not 401.
 -- Added in 036.
-CREATE TABLE IF NOT EXISTS machine_enrollments (
+CREATE TABLE IF NOT EXISTS host_enrollments (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    machine_id    UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    host_id    UUID NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
     secret_sha256 BYTEA NOT NULL CHECK (octet_length(secret_sha256) = 32),
     created_by    TEXT NOT NULL,
     created       TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at    TIMESTAMPTZ NOT NULL,
     used_at       TIMESTAMPTZ
 );
-CREATE INDEX IF NOT EXISTS idx_machine_enrollments_open
-    ON machine_enrollments (machine_id) WHERE used_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_host_enrollments_open
+    ON host_enrollments (host_id) WHERE used_at IS NULL;
 
-CREATE TABLE IF NOT EXISTS machine_credentials (
+CREATE TABLE IF NOT EXISTS host_credentials (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    machine_id    UUID NOT NULL REFERENCES machines(id) ON DELETE CASCADE,
+    host_id    UUID NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
     secret_sha256 BYTEA NOT NULL CHECK (octet_length(secret_sha256) = 32),
     created       TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_used     TIMESTAMPTZ,
     revoked_at    TIMESTAMPTZ
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uq_machine_credentials_live
-    ON machine_credentials (machine_id) WHERE revoked_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_host_credentials_live
+    ON host_credentials (host_id) WHERE revoked_at IS NULL;
 
 -- Per-user canvas state. A canvas is a named canvas, and a user has many. Its
 -- metadata is one optional JSON object, ``metadata``, that only the workbench
@@ -1144,40 +1133,6 @@ CREATE TABLE IF NOT EXISTS science_chat_tombstones (
     deleted_at      TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
--- What each person has been given, has bought and has spent: one row per entry, each
--- applied once by ``idem`` (Stripe's event id, or a charge's own key), and one
--- purchase per payment. A refund or dispute that names no purchase has no email.
--- Entries are kept under the lowercase email, with no FK to ``users``: a deleted
--- account that signs in again keeps its debt and gets no second grant. Added in 045.
-CREATE TABLE IF NOT EXISTS credit_entries (
-    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    email      TEXT CHECK (email = lower(email)),
-    kind       TEXT NOT NULL
-               CHECK (kind IN ('grant', 'purchase', 'chat', 'campaign', 'release', 'refund', 'dispute')),
-    usd        NUMERIC(14, 6) NOT NULL CHECK (usd >= 0),
-    ref        TEXT NOT NULL,
-    idem       TEXT NOT NULL UNIQUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    CHECK (email IS NOT NULL OR kind IN ('refund', 'dispute'))
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS credit_entries_one_purchase_per_payment
-    ON credit_entries (ref) WHERE kind = 'purchase';
-
-CREATE INDEX IF NOT EXISTS credit_entries_user_created
-    ON credit_entries (email, created_at);
-
--- A period in which a person is not held to their credit: the last day, a note, who set
--- it and when. It ends by itself after its last day. No FK to ``users``, as in
--- ``credit_entries``. Added in 053.
-CREATE TABLE IF NOT EXISTS credit_grace (
-    email  TEXT PRIMARY KEY CHECK (email = lower(email)),
-    until  DATE NOT NULL,
-    note   TEXT NOT NULL DEFAULT '',
-    set_by TEXT NOT NULL,
-    set_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
-);
-
 -- One text file of code, stored once per owner by the sha256 of its UTF-8 bytes and
 -- kept zstd-compressed. Dedupe never crosses owners: a store shared between owners
 -- would let anyone learn whether a file exists. Added in 048.
@@ -1208,16 +1163,6 @@ CREATE TABLE IF NOT EXISTS code_snapshots (
 
 -- Direct GPU jobs and the certificates and tokens issued for them: see
 -- ``schema.054.sql`` for what each table keeps. Added in 054.
-CREATE TABLE IF NOT EXISTS gpu_allowance_resets (
-    id BIGSERIAL PRIMARY KEY,
-    email TEXT NOT NULL,
-    reset_by UUID REFERENCES users(id) ON DELETE SET NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
-    job_ids BIGINT[] NOT NULL
-);
-CREATE INDEX IF NOT EXISTS gpu_allowance_resets_email
-    ON gpu_allowance_resets (email);
-
 CREATE TABLE IF NOT EXISTS gpu_owners (
     id         BIGSERIAL PRIMARY KEY,
     email      TEXT NOT NULL UNIQUE,
@@ -1280,6 +1225,7 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     ended_at           TIMESTAMPTZ,
     sealed_at          TIMESTAMPTZ,
     elapsed_s          BIGINT,
+    -- Whole minutes charged, read only by builds before 070; see gpu_seconds.
     gpu_minutes        BIGINT,
     usd                NUMERIC(12, 4),
     files              BIGINT,
@@ -1291,7 +1237,8 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     box_credential_id  UUID REFERENCES gpu_box_credentials(id),
     requested_node     TEXT,
     usd_per_gpu_minute DOUBLE PRECISION,
-    campaign_ref       TEXT NOT NULL DEFAULT ''
+    campaign_ref       TEXT NOT NULL DEFAULT '',
+    gpu_seconds        BIGINT
 );
 
 CREATE INDEX IF NOT EXISTS gpu_jobs_email_created
@@ -1336,8 +1283,8 @@ CREATE TABLE IF NOT EXISTS device_logins (
     device_sha256  BYTEA NOT NULL UNIQUE CHECK (octet_length(device_sha256) = 32),
     user_code      TEXT NOT NULL UNIQUE CHECK (user_code ~ '^[A-Z]{8}$'),
     client         TEXT NOT NULL CHECK (client ~ '^[a-z][a-z0-9-]{0,31}$'),
-    host           TEXT NOT NULL DEFAULT '' CHECK (char_length(host) <= 63),
-    machine        TEXT CHECK (machine ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
+    hostname       TEXT NOT NULL DEFAULT '' CHECK (char_length(hostname) <= 63),
+    host           TEXT CHECK (host ~ '^[a-z0-9][a-z0-9-]{0,62}$'),
     status         TEXT NOT NULL DEFAULT 'pending'
                    CHECK (status IN ('pending', 'approved', 'denied')),
     approver       UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -1350,13 +1297,13 @@ CREATE TABLE IF NOT EXISTS device_logins (
 CREATE INDEX IF NOT EXISTS idx_device_logins_expires
     ON device_logins (expires_at);
 
--- Jobs on a person's own machine: see ``schema.057.sql`` for what the table keeps. Its
+-- Jobs on a person's own host: see ``schema.057.sql`` for what the table keeps. Its
 -- ids come from ``gpu_jobs_id_seq``. Added in 057.
-CREATE TABLE IF NOT EXISTS machine_jobs (
+CREATE TABLE IF NOT EXISTS host_jobs (
     id               BIGINT PRIMARY KEY DEFAULT nextval('gpu_jobs_id_seq'),
     email            TEXT NOT NULL,
-    machine_id       UUID REFERENCES machines(id) ON DELETE SET NULL,
-    machine          TEXT NOT NULL,
+    host_id       UUID REFERENCES hosts(id) ON DELETE SET NULL,
+    host          TEXT NOT NULL,
     state            TEXT NOT NULL
                      CHECK (state IN ('requested', 'queued', 'running', 'completed',
                                       'failed', 'cancelled', 'timeout')),
@@ -1379,9 +1326,9 @@ CREATE TABLE IF NOT EXISTS machine_jobs (
     ended_at         TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS machine_jobs_email_created
-    ON machine_jobs (email, created_at DESC);
+CREATE INDEX IF NOT EXISTS host_jobs_email_created
+    ON host_jobs (email, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS machine_jobs_live
-    ON machine_jobs (machine_id)
+CREATE INDEX IF NOT EXISTS host_jobs_live
+    ON host_jobs (host_id)
     WHERE state NOT IN ('completed', 'failed', 'cancelled', 'timeout');

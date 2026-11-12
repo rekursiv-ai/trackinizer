@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.agent.sessions.convert import _Adapter
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # ``unfuse`` yields one ITERATOR per part and they are consumed in order, so a test that

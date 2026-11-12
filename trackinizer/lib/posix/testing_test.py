@@ -67,6 +67,41 @@ def test_with_writes_a_write_is_reported(
     assert asyncio.run(run()) == {held}
 
 
+@pytest.mark.asyncio
+async def test_with_writes_an_unchanged_file_is_not_reported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    held = tmp_path / "held"
+    _ = held.write_text("history\n")
+    sentinel = tmp_path / "sentinel"
+    poll_fsevents(monkeypatch, writes=True)
+
+    async with follow_dir(tmp_path) as changed:
+        _ = sentinel.write_text("")
+        wakes = await asyncio.wait_for(_through(changed, sentinel), 5.0)
+
+    assert set().union(*wakes) == {sentinel}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("writes", [False, True])
+async def test_polling_reports_consecutive_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writes: bool,
+) -> None:
+    poll_fsevents(monkeypatch, writes=writes)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    async with follow_dir(tmp_path) as changed:
+        _ = first.write_text("first\n")
+        assert await asyncio.wait_for(anext(changed), 5.0) == {first}
+        _ = second.write_text("second\n")
+        assert await asyncio.wait_for(anext(changed), 5.0) == {second}
+
+
 def test_with_writes_a_same_size_rewrite_in_one_tick_is_reported(
     tmp_path: Path,
 ) -> None:
@@ -92,14 +127,22 @@ def test_stamps_skips_a_file_deleted_during_stat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     file_path = tmp_path / "vanishing"
+    kept = tmp_path / "remaining"
     _ = file_path.write_text("gone")
+    _ = kept.write_text("still here")
+    real_stat = Path.stat
 
-    def missing(path: Path) -> object:
-        del path
-        raise FileNotFoundError(file_path)
+    def missing(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        if path == file_path:
+            raise FileNotFoundError(path)
+        return real_stat(path, follow_symlinks=follow_symlinks)
 
+    def listing(root: Path) -> list[tuple[str, list[str], list[str]]]:
+        return [(str(root), [], [file_path.name, kept.name])]
+
+    monkeypatch.setattr(os, "walk", listing)
     monkeypatch.setattr(Path, "stat", missing)
-    assert _stamps(tmp_path, contents=False) == {}
+    assert set(_stamps(tmp_path, contents=False)) == {kept}
 
 
 def test_a_symlinked_root_keeps_the_callers_spelling(

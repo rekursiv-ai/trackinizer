@@ -4,18 +4,19 @@ Who reads a session's transcript is one rule,
 :func:`~trackinizer.server.audience.visible_sql`, which every reader of session
 content takes: its audience, and as the server's organisation mode
 (``TRACKINIZER_CHAT_ORGS``) says, its owner, its organisation, the people who oversee
-and, for a science chat, its members. Whoever reads a session may also write, drain
-and end it, and the key that opened a session always may, whatever the audience, so a
-key whose owner lost ``staff`` can still run the ``staff`` session it opened. Only
-the transcript is gated: a hidden session still has an open envelope, and the rows it
-files stay open.
+and, for a science chat, its members. Reading a session controls nothing, since a run
+keeps its input, its records and its life there: only its account or opening key sends
+it input, regardless of transcript visibility, and only they write, drain or end it. The
+opening key always passes, whatever the audience, so a key whose owner lost ``staff`` can
+still run the session it opened; its account must read it too. Only the transcript is
+gated: a hidden session still has an open envelope, and the rows it files stay open.
 
 The configured assistant acts for the person it answers, the ``asker`` it names, on
 that person's rights and none of its own, and the server finds them in its own
-tables. It relays a line to a session it cannot read for an asker who is a writer and
-is the session's account or reads it. It reads a session for an asker into the chat
-it answers them in, the ``chat`` it names, when the asker reads both. What it reads
-lands in the chat, so it reads no chat and no ``private`` session for anyone; a
+tables. It relays input only for a writer whose account holds the target session,
+even when its own key opened that session. It reads a session for an asker into the
+chat it answers them in, the ``chat`` it names, when the asker reads both. What it reads
+lands in the chat, so every destination reader must be allowed to read it; a
 ``staff`` session only once the chat is ``staff`` too
 (:func:`~trackinizer.server.private.chat_audience.raise_chat_audience`), which
 only the chat's starter makes it; and any other session only when everyone who
@@ -34,9 +35,10 @@ longer holds instead of lowering the session to ``open``. A caller asks for
 
 A viewer key mutates only the session it opened. A science chat is stricter: only the
 key that opened it, or the assistant on a chat it runs, edits its row, and only that
-key or an admin purges it by id,
-where any other row is purged, and moved to another account, by its account or an
-admin. Its lines name their poster, and its labels and account say who started it and
+key or an admin purges it by id. Other rows are purged by their account or an admin.
+Only a session's account may reassign it, since the account controls its input;
+other rows may also be reassigned by an admin. A chat's lines name their poster,
+and its labels and account say who started it and
 who posted, so a second writer's write would forge a poster or hide the chat from
 History. Its transcript is one part per run that answered in it: a new part, or a run
 attaching to it, comes from its opening key, the configured assistant's or its
@@ -71,18 +73,23 @@ from trackinizer.server.api._deps import (
     get_staff,
     get_store,
 )
+from trackinizer.server.api.session_identity import (
+    Asker,
+    asker_reader,
+    hidden_session,
+    is_the_assistant,
+    request_principal,
+)
 from trackinizer.server.audience import (
     SessionReader,
     caller_reader,
     person_audiences,
     reads_session,
 )
-from trackinizer.server.auth import ROLE_ORDER, Role
 from trackinizer.server.config import Config
 from trackinizer.server.notify import tx
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import NotFoundError
-from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
 from trackinizer.wire.wire_service_accounts import is_service_address
 
@@ -91,29 +98,23 @@ if TYPE_CHECKING:
     from collections.abc import Collection
 
     from fastapi import FastAPI, Request
+    from starlette.requests import HTTPConnection
 
     from trackinizer.lib.postgres import Conn
     from trackinizer.server.access_policy import AccessPolicy
-    from trackinizer.server.auth import AuthIdentity
-    from trackinizer.server.config import Assistant
-    from trackinizer.server.store.core import Store
+    from trackinizer.server.auth import AuthIdentity, Role
+    from trackinizer.types.inquiries import AgentSession
 
 
 __all__ = [
-    "Asker",
     "SessionAccess",
-    "asker_reader",
     "check_row_write",
     "granted_audience",
-    "hidden_session",
-    "is_the_assistant",
-    "request_principal",
     "require_attributable",
     "require_readable",
     "require_row_account",
     "require_row_purge",
     "require_row_write",
-    "require_session",
     "require_session_access",
     "require_session_id_change",
     "require_session_row_write",
@@ -128,31 +129,8 @@ type SessionAccess = Literal["read", "write", "drain", "input"]
 inbound queue, or send it input."""
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
-class Asker:
-    """The person the configured assistant acts for, as the server finds them.
-
-    An account no active user holds is found holding nothing: no audience, and the
-    least role, which writes nowhere.
-
-    Attributes:
-      email: Their account.
-      role: Their role as a person, which no key narrows.
-      read_audiences: The audiences they hold as a person, which no key narrows.
-      hosted_domain: Google's ``hd`` claim from their last login, if any.
-      chat: The conversation the assistant reads into for them, if it names one.
-
-    """
-
-    email: str
-    role: Role
-    read_audiences: frozenset[str]
-    hosted_domain: str | None = None
-    chat: uuid.UUID | None = None
-
-
 async def resolve_asker(
-    request: Request,
+    request: HTTPConnection,
     identity: AuthIdentity,
     *,
     email: str | None,
@@ -252,26 +230,6 @@ def require_session_write_access(identity: AuthIdentity, session: AgentSession) 
         raise HTTPException(status_code=403, detail="Own session key required")
 
 
-async def require_session(store: Store, session_id: uuid.UUID) -> AgentSession:
-    """Fetch an AgentSession row or raise 404; reject non-session ids.
-
-    Args:
-      store: The store to read from.
-      session_id: The id a route was given.
-
-    Returns:
-      session: The session row.
-
-    Raises:
-      HTTPException: 404: ``session_id`` is no session.
-
-    """
-    row = await store.get_inquiry(session_id)
-    if not isinstance(row, AgentSession):
-        raise HTTPException(status_code=404, detail=f"unknown session {session_id}")
-    return row
-
-
 def granted_audience(identity: AuthIdentity, *, private: bool = False) -> str:
     """Return the audience a session this caller opens is placed in.
 
@@ -304,22 +262,6 @@ def granted_audience(identity: AuthIdentity, *, private: bool = False) -> str:
     raise _not_held(PRIVATE)
 
 
-def hidden_session(audience: str | None) -> HTTPException:
-    """Build the refusal for a session whose transcript the caller does not read.
-
-    Args:
-      audience: The session's audience, named in the body so a caller knows why.
-
-    Returns:
-      refusal: A 403 whose detail carries ``code: session_audience``.
-
-    """
-    return HTTPException(
-        status_code=403,
-        detail={"code": "session_audience", "audience": audience},
-    )
-
-
 async def require_session_access(
     request: Request,
     identity: AuthIdentity,
@@ -330,15 +272,17 @@ async def require_session_access(
 ) -> None:
     """Refuse a caller who may not do ``mode`` to this session.
 
-    A session with no audience reads as hidden from everyone but its opening key,
-    so a row that lost its audience fails closed rather than open. Any other caller
-    is asked of the database, by :func:`session_reader`.
+    Input requires the session's account or opening key; transcript visibility,
+    organisation membership and admin status grant no input rights. When the
+    assistant names an asker, only a writer whose account holds the session passes.
+    Reading asks the database's transcript rule, with the opening key exempt; writing
+    and draining ask it of the session's account, for the reason input does. A science
+    chat's own rules (:mod:`~trackinizer.server.api.private.chat_sessions`) narrow
+    a reader's writes and drains instead.
 
     The configured assistant acts for an ``asker`` on the asker's rights alone: it
-    reads a session for one only if they read it, and relays a line to a session it
-    cannot read for an asker who is a writer, and is the session's account or reads
-    it. On its own rights it reads a chat it opened, and reads, writes and drains a
-    chat a CLI began that its starter gave it
+    reads a session for one only if they read it. On its own rights it reads a chat
+    it opened, and reads, writes and drains a chat a CLI began that its starter gave it
     (:func:`~trackinizer.server.api.private.chat_sessions.assistant_runs_chat`).
 
     Args:
@@ -351,13 +295,15 @@ async def require_session_access(
         nothing to a caller that is not the assistant.
 
     Raises:
-      HTTPException: 403 ``session_audience``: the caller neither opened the session
-        nor reads it, and is not the assistant acting for an asker who may do
-        ``mode`` there either.
+      HTTPException: 403 ``session_audience``: the caller may not do ``mode`` there,
+        either on its own rights or for the asker it names.
 
     """
     assistant = get_assistant(request)
     lender = asker if is_the_assistant(identity, assistant) else None
+    if mode == "input":
+        _require_input(identity, session=session, asker=lender)
+        return
     if mode == "read" and lender is not None:
         await _require_asker_reads(
             request,
@@ -368,24 +314,12 @@ async def require_session_access(
     if _opened_by(identity, session.opened_by_api_key_id):
         return
     async with get_store(request).engine.acquire() as conn:
-        if await reads_session(
+        if (
+            mode == "read" or _holds(identity, account=session.account)
+        ) and await reads_session(
             conn,
             reader=session_reader(request, identity),
             session_id=session.id,
-        ):
-            return
-        if (
-            mode == "input"
-            and lender is not None
-            and ROLE_ORDER.index(lender.role) >= ROLE_ORDER.index("writer")
-            and (
-                session.account == lender.email
-                or await reads_session(
-                    conn,
-                    reader=asker_reader(request, lender, delegated=False),
-                    session_id=session.id,
-                )
-            )
         ):
             return
     raise hidden_session(session.audience)
@@ -431,43 +365,6 @@ def session_reader(
         hosted_domain=identity.hosted_domain,
         hidden=hidden,
     )
-
-
-async def request_principal(request: Request, identity: AuthIdentity) -> Principal:
-    """Describe ``identity`` as the access policy sees it, once per request.
-
-    The policy's :meth:`~trackinizer.server.access_policy.AccessPolicy.groups`
-    runs on the first call and its answer is kept on ``request.state``, so every
-    later check in the same request reads the same groups without a query.
-
-    Args:
-      request: The request, which carries the store and its policy.
-      identity: Authenticated caller.
-
-    Returns:
-      principal: Its lowercase email, its role, the policy's groups for it and the
-        API key it used.
-
-    """
-    held: object = getattr(request.state, "access_principal", None)
-    if isinstance(held, Principal):
-        return held
-    store = get_store(request)
-    asking = Principal(
-        email=identity.email.lower(),
-        role=identity.role,
-        api_key_id=identity.api_key_id,
-    )
-    async with store.engine.acquire() as conn:
-        groups = await store.access_policy.groups(conn, asking)
-    principal = Principal(
-        email=asking.email,
-        role=asking.role,
-        groups=groups,
-        api_key_id=asking.api_key_id,
-    )
-    request.state.access_principal = principal
-    return principal
 
 
 async def require_row_write(
@@ -585,31 +482,6 @@ async def check_row_write(
     )
 
 
-def asker_reader(request: Request, asker: Asker, *, delegated: bool) -> SessionReader:
-    """Describe the person the assistant acts for as the transcript test reads them.
-
-    Args:
-      request: The request, which carries the configuration.
-      asker: The person, as :func:`resolve_asker` finds them.
-      delegated: The assistant reads for them into a chat, which takes away their
-        oversight and the every-chat grant.
-
-    Returns:
-      reader: Their reader on this server.
-
-    """
-    assistant = get_assistant(request)
-    return caller_reader(
-        asker.email,
-        audiences=asker.read_audiences,
-        admin=asker.role == "admin",
-        orgs=get_chat_orgs(request),
-        assistant="" if assistant is None else assistant.email,
-        hosted_domain=asker.hosted_domain,
-        delegated=delegated,
-    )
-
-
 async def require_session_row_write(
     request: Request,
     identity: AuthIdentity,
@@ -667,7 +539,7 @@ async def require_row_purge(
         _require_audience(identity, row=row)
     if identity.role == "admin":
         return
-    if not _holds(identity, row=row):
+    if not _holds(identity, account=row.account):
         raise HTTPException(
             status_code=403,
             detail="A row is purged by its account or an admin",
@@ -679,12 +551,10 @@ async def require_row_account(
     identity: AuthIdentity,
     target_id: uuid.UUID,
 ) -> None:
-    """Refuse moving a row to another account by anyone but its account or an admin.
+    """Require the current account to reassign a session; other rows also allow admins.
 
-    A writer who could name themselves a row's account could then purge it, so the
-    purge rule holds only while this one does. A ``private`` session's account is
-    moved by that account alone: its account is an owner, who reads it and may show
-    it again, so an admin who moved it to themselves could undo its owner's hide.
+    A session's account controls its input and visibility, so even an admin may not
+    take it by changing its account. Other rows keep the account-or-admin rule.
 
     Args:
       request: The request, which carries the store.
@@ -692,17 +562,17 @@ async def require_row_account(
       target_id: The row whose ``account`` a route is about to change.
 
     Raises:
-      HTTPException: 403: the caller is neither the row's account nor an admin, or
-        the row is a ``private`` session and the caller is not its account.
+      HTTPException: 403: the caller does not hold the session's account, or is
+        neither the account nor an admin for another kind of row.
 
     """
     row = await _read_row(request, target_id=target_id)
-    if row is None or _holds(identity, row=row):
+    if row is None or _holds(identity, account=row.account):
         return
-    if row.kind == "AgentSession" and row.audience == PRIVATE:
+    if row.kind == "AgentSession":
         raise HTTPException(
             status_code=403,
-            detail="A hidden session's account is changed by that account alone",
+            detail="A session's account is changed by that account alone",
         )
     if identity.role != "admin":
         raise HTTPException(
@@ -756,11 +626,6 @@ class _Row:
     audience: str | None
 
 
-def is_the_assistant(identity: AuthIdentity, assistant: Assistant | None) -> bool:
-    """Say whether ``identity`` is the configured assistant's account."""
-    return assistant is not None and identity.email == assistant.email
-
-
 def _not_held(audience: str) -> HTTPException:
     """Build the refusal of a session opened into an audience the caller may not."""
     return HTTPException(
@@ -779,7 +644,7 @@ async def _require_asker_reads(
     async with get_store(request).engine.acquire() as conn:
         if not await reads_session(
             conn,
-            reader=asker_reader(request, asker, delegated=True),
+            reader=asker_reader(request, asker),
             session_id=session.id,
         ):
             raise hidden_session(session.audience)
@@ -813,9 +678,30 @@ def _require_audience(identity: AuthIdentity, *, row: _Row) -> None:
         raise hidden_session(row.audience)
 
 
-def _holds(identity: AuthIdentity, *, row: _Row) -> bool:
+def _holds(identity: AuthIdentity, *, account: str) -> bool:
     """Say whether ``identity`` is the account a row is held under."""
-    return row.account.lower() == identity.email.lower()
+    return account.lower() == identity.email.lower()
+
+
+def _require_input(
+    identity: AuthIdentity,
+    *,
+    session: AgentSession,
+    asker: Asker | None,
+) -> None:
+    """Allow input only from the account, its delegated writer, or the opening key."""
+    # Reading a transcript grants no control of the host that consumes its input.
+    if asker is not None:
+        if asker.role in {"writer", "admin"} and (
+            asker.email.lower() == session.account.lower()
+        ):
+            return
+    elif _opened_by(identity, session.opened_by_api_key_id) or _holds(
+        identity,
+        account=session.account,
+    ):
+        return
+    raise hidden_session(session.audience)
 
 
 def _opened_by(identity: AuthIdentity, opener: uuid.UUID | None) -> bool:

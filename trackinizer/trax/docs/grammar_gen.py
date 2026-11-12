@@ -5,7 +5,7 @@
 exec uv --quiet --project "$(dirname "$0")" run --frozen --no-sync python3 -P "$0" "$@"
 Generate grammar.lark with CONCRETE terminals from the live trax tables.
 
-grammar.lark is the single, machine-checked, LLM-facing description of the trax
+grammar.lark is the single, host-checked, LLM-facing description of the trax
 command language. Its STRUCTURE (where tails bind, descent vs ``begin/end``, the
 query/bulk/tail forms) is the hand-written :data:`_STRUCTURE` template below. Its
 TERMINALS -- the concrete keyword inventory (kinds, edge aliases, field names,
@@ -59,7 +59,7 @@ from trackinizer.trax.grammar import (
     VALID_KINDS,
     WRITE_FIELDS_CLI,
 )
-from trackinizer.trax.profile import Profiles
+from trackinizer.trax.profiles import Profiles
 from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.types.inquiries import (
     Belief,
@@ -85,7 +85,7 @@ if TYPE_CHECKING:
     from trackinizer.trax.commands import Command
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # The hand-written structural body: the productions and the binding-rule prose.
@@ -542,7 +542,7 @@ def _semantics_block() -> str:
     status = " ".join(
         get_args(
             cast(
-                Literal["active", "complete", "abandoned", "invalid"],
+                Literal["active", "complete", "stopped", "abandoned", "invalid"],
                 Inquiry.Status.__value__,
             ),
         ),
@@ -587,7 +587,7 @@ def _semantics_block() -> str:
         "//   recent=audit feed; cost=cost rollup; id=show row by uuid;",
         "//   profile=manage server profiles; send=message a live agent session;",
         f"//   {ENV_WORD}=the org's environment variables (a secret is write-only);",
-        "//   run, machine, job=moved out of trax: agent runs, the machine registry and",
+        "//   run, host, job=moved out of trax: agent runs, the host registry and",
         "//     GPU jobs are no longer trax's.",
         *_verb_lines(),
     ]

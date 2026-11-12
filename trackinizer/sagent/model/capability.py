@@ -232,6 +232,9 @@ class ModelCapability:
     model_id: str = ""
     wire_model_id: str = ""
     knowledge_cutoff: str | None = None
+    tokenizer: str | None = None
+    """Declared tokenizer identity; omitted identities are local to provider/model."""
+
     approx_chars_per_token: float = 4.0
     limits: ModelLimits = field(default_factory=ModelLimits)
     prices: PriceCatalog = field(default_factory=PriceCatalog)
@@ -386,7 +389,7 @@ def literal_members[T](alias: object) -> tuple[T, ...]:
 
 def model_setting_names() -> tuple[ModelSettingName, ...]:
     """Return each ``ModelSettings`` field a model offers a choice of, in order."""
-    return cast(tuple[ModelSettingName, ...], literal_members(ModelSettingName))
+    return literal_members(ModelSettingName)
 
 
 def typed_text(value: object) -> str:

@@ -15,7 +15,7 @@ from trackinizer.lib.agent.sessions.codex_orders import payload_orders
 def _object(value: object) -> dict[str, object]:
     """Return ``value`` as a JSON object; ``{}`` for anything else."""
     try:
-        return from_plain(value, dict[str, object], default={})
+        return from_plain(value, dict[str, object], default=dict[str, object]())
     except ReadError:
         return {}
 
@@ -37,7 +37,7 @@ def _ordered_objects(line: dict[str, object]) -> list[tuple[str, dict[str, objec
     rows = from_plain(
         None if isinstance(results, str) else results,
         list[object],
-        default=[],
+        default=list[object](),
     )
     out.extend(("result_row", _object(row)) for row in rows)
     return out

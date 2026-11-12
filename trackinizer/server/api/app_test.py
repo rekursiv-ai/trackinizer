@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID, uuid4
 
@@ -11,7 +11,7 @@ import logging
 import re
 import time
 
-from fastapi import FastAPI, Request
+from fastapi import APIRouter, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 from treekle import from_plain, json_loads
@@ -19,9 +19,10 @@ from treekle import from_plain, json_loads
 import asyncpg
 import pytest
 
+from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import FakeEngine, make_store
 from trackinizer.server.access_policy import AccessDeniedError
-from trackinizer.server.api import app
+from trackinizer.server.api import app, daemon_routes, meta_routes, query
 from trackinizer.server.api.app import (
     RequestLoggingMiddleware,
     _RequestLogSpan,
@@ -34,17 +35,20 @@ from trackinizer.server.api.app import (
     unique_violation_handler,
     validation_handler,
 )
-from trackinizer.server.config import Config, ConfigError
-from trackinizer.server.embedders import qwen3_4b, registry
+from trackinizer.server.config import Config, ConfigError, ServiceKeys
+from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.secrets import FileSecrets, SecretRef
+from trackinizer.server.terminals import TerminalRelay
+from trackinizer.server.tool_relay import ToolRelay
+from trackinizer.server.visuals.catalog import Canvas, default_canvas
 from trackinizer.types.errors import (
     ChatDeletedError,
     ConflictError,
     NotFoundError,
     ValidationError,
 )
-from trackinizer.wire.wire_machine_host import JOIN_PATH
+from trackinizer.wire.wire_daemon import JOIN_PATH
 
 
 if TYPE_CHECKING:
@@ -206,18 +210,51 @@ _FAILURES: Final[tuple[tuple[Exception, int, str], ...]] = (
 
 @pytest.fixture(scope="module")
 def failing() -> tuple[FastAPI, TestClient]:
-    """Build one fresh app whose ``/test-failure/<n>`` raises the n-th failure.
+    """Build one app whose ``/test-failure/<n>`` raises the n-th failure.
 
-    A fresh app makes each route's handler on the first request that passes it, so
-    the failure routes come first: a request to one passes no other.
+    The server's handling without its routes: a fresh app makes each route's
+    handler on the first request that passes it.
     """
-    built = app._build_app()
+    built = app.bare_app()
     for index, (error, _status, _detail) in enumerate(_FAILURES):
         built.add_api_route(f"/test-failure/{index}", _raising(error))
-    failures = built.router.routes[-len(_FAILURES) :]
-    del built.router.routes[-len(_FAILURES) :]
-    built.router.routes[:0] = failures
     return built, TestClient(built, raise_server_exceptions=False)
+
+
+class _Included(Protocol):
+    """A router ``include_router`` mounted, as FastAPI keeps it whole."""
+
+    original_router: APIRouter
+
+
+def test_the_app_is_the_bare_app_with_every_router_in_order() -> None:
+    built = app._build_app()
+
+    assert built.title == "Trackinizer"
+    expected = [*app.ROUTERS]
+    assert [
+        cast("_Included", route).original_router for route in built.routes
+    ] == expected
+
+
+def test_a_bare_app_has_the_servers_handling_and_state_but_no_route() -> None:
+    built = app.bare_app()
+
+    assert (built.title, built.docs_url, built.redoc_url, built.openapi_url) == (
+        "Trackinizer",
+        None,
+        None,
+        None,
+    )
+    assert built.router.lifespan_context is lifespan
+    assert built.routes == []
+    # Starlette's ``State`` answers any attribute as ``Any``.
+    deployment = cast(object, built.state.deployment)
+    canvas = cast(object, built.state.visual_catalog)
+    assert isinstance(deployment, Deployment)
+    assert deployment.manifests == {}
+    assert isinstance(canvas, Canvas)
+    assert canvas.catalog() == default_canvas().catalog()
 
 
 def _raising(error: Exception) -> Callable[[], Awaitable[None]]:
@@ -255,13 +292,21 @@ def test_fresh_apps_serve_all_exception_handlers(
     assert "Infinity" not in response.text
 
 
+@pytest.fixture
+def logging_client() -> TestClient:
+    """Keep production middleware and the store-free routes logging exercises."""
+    built = FastAPI(middleware=app.app.user_middleware)
+    built.include_router(meta_routes.router)
+    return TestClient(built)
+
+
 class TestRequestLogging:
     def test_request_completion_is_correlated_and_timed(
         self,
-        route_client: tuple[TestClient, Store, FakeEngine],
+        logging_client: TestClient,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        client, _store, _engine = route_client
+        client = logging_client
         request_id = uuid4()
 
         with caplog.at_level(logging.INFO):
@@ -293,10 +338,10 @@ class TestRequestLogging:
 
     def test_invalid_request_id_is_replaced_and_rejection_is_classified(
         self,
-        route_client: tuple[TestClient, Store, FakeEngine],
+        logging_client: TestClient,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        client, _store, _engine = route_client
+        client = logging_client
 
         with caplog.at_level(logging.INFO):
             response = client.get(
@@ -586,7 +631,8 @@ class TestSessionEmbedderResolution:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """Weights absent -> embedder None (degrade), prep command logged, NO download."""
-        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: False)
+        check = Mock(return_value=False)
+        monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
         fastapi_app = FastAPI()
         with caplog.at_level(logging.ERROR):
             task = app._resolve_session_embedder(
@@ -596,13 +642,15 @@ class TestSessionEmbedderResolution:
         assert task is None
         assert cast(object, fastapi_app.state.session_embedder) is None
         assert "prep_models" in caplog.text
+        check.assert_called_once_with()
 
     def test_qwen_with_weights_sets_embedder_and_schedules_warm(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Weights present -> embedder set + a warm task scheduled (no query embed here)."""
-        monkeypatch.setattr(qwen3_4b, "weights_present", lambda: True)
+        check = Mock(return_value=True)
+        monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
         warmed: list[str] = []
 
         async def _fake_warm(embedder: QueryEmbedder) -> None:
@@ -627,6 +675,7 @@ class TestSessionEmbedderResolution:
         embedder, _task = asyncio.run(_drive())
         assert embedder is not None
         assert warmed == ["warmed"]  # The warm task ran, without downloading.
+        check.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -665,11 +714,53 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
     assert engine.exited
 
 
-def test_a_validation_error_outside_variables_keeps_its_input(
+@pytest.mark.asyncio
+async def test_lifespan_sweeps_the_terminals_and_the_tool_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+    sweeping = AsyncMock()
+    monkeypatch.setattr(app, "sweep_loop", sweeping)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(tool_sweep_sec=7.0)
+
+    async with lifespan(fastapi_app):
+        await asyncio.sleep(0)
+
+    relays: list[object] = [call.args[0] for call in sweeping.call_args_list]
+    assert [type(relay) for relay in relays] == [TerminalRelay, ToolRelay]
+    # The tool connections are swept as the configuration says; the terminals as they were.
+    assert [call.kwargs for call in sweeping.call_args_list] == [
+        {},
+        {"interval_sec": 7.0},
+    ]
+
+
+@pytest.fixture
+def validation_client(
     route_client: tuple[TestClient, Store, FakeEngine],
+) -> TestClient:
+    """Keep the real handlers and the two routers whose bodies are validated."""
+    _, store, engine = route_client
+    built = FastAPI(middleware=app.app.user_middleware)
+    built.exception_handlers.update(app.app.exception_handlers)
+    built.state.store = store
+    built.state.engine = engine
+    built.dependency_overrides.update(app.app.dependency_overrides)
+    built.include_router(query.router)
+    built.include_router(daemon_routes.router)
+    return TestClient(built)
+
+
+def test_a_validation_error_outside_variables_keeps_its_input(
+    validation_client: TestClient,
 ) -> None:
     """Only the variables family drops the rejected input from its 422."""
-    client, _, _ = route_client
+    client = validation_client
 
     response = client.post("/api/inquiries/lookup", json=["not-a-uuid"])
 
@@ -679,10 +770,10 @@ def test_a_validation_error_outside_variables_keeps_its_input(
 
 
 def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
-    route_client: tuple[TestClient, Store, FakeEngine],
+    validation_client: TestClient,
 ) -> None:
     """``Infinity`` parses, but cannot be echoed back, so its 422 drops the input."""
-    client, _, _ = route_client
+    client = validation_client
 
     response = client.post(
         "/api/inquiries/lookup",
@@ -701,7 +792,7 @@ def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
     [
         {"instance": None},
         {"instance": "not-a-uuid"},
-        {"host_version": 3},
+        {"daemon_version": 3},
         {"facts": {"Bad Key": "x"}},
         {"token": "SECRETMARKER" * 12},
         {"unexpected": "x"},
@@ -709,17 +800,17 @@ def test_a_validation_error_whose_input_json_cannot_carry_is_422_not_500(
     ids=["missing", "uuid", "type", "facts", "long", "extra"],
 )
 def test_join_422_does_not_echo_the_token(
-    route_client: tuple[TestClient, Store, FakeEngine],
+    validation_client: TestClient,
     overrides: dict[str, object],
 ) -> None:
     """A rejected join body names each error's type, location and message only."""
-    client, _, _ = route_client
+    client = validation_client
     token = "enr_" + "0" * 32 + "_" + "SECRETMARKER" * 3 + "x" * 7
     body: dict[str, object] = {
         "name": "dev-1",
         "token": token,
         "instance": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        "host_version": "0.1",
+        "daemon_version": "0.1",
         "facts": {},
         **overrides,
     }
@@ -801,6 +892,139 @@ def test_lifespan_refuses_secret_schemes_that_are_not_a_mapping(
         )
 
 
+@pytest.mark.asyncio
+async def test_a_non_http_scope_passes_through_unlogged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seen: list[str] = []
+
+    async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+        del receive, send
+        seen.append(from_plain(scope.get("type"), str))
+
+    with caplog.at_level(logging.INFO):
+        await RequestLoggingMiddleware(endpoint)(
+            {"type": "websocket"},
+            AsyncMock(),
+            AsyncMock(),
+        )
+
+    assert seen == ["websocket"]
+    assert not [r for r in caplog.records if getattr(r, "event", "")]
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_request_is_logged_as_cancelled_and_reraised(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def endpoint(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive, send
+        raise asyncio.CancelledError
+
+    with caplog.at_level(logging.INFO), pytest.raises(asyncio.CancelledError):
+        await RequestLoggingMiddleware(endpoint)(
+            {"type": "http", "method": "GET", "path": "/api/x", "headers": []},
+            AsyncMock(),
+            AsyncMock(),
+        )
+
+    (record,) = (
+        r
+        for r in caplog.records
+        if getattr(r, "event", "") == "trackinizer_request_completed"
+    )
+    fields = from_plain(record.__dict__, dict[str, object])
+    assert from_plain(fields.get("outcome"), str) == "cancelled"
+    assert from_plain(fields.get("error_type"), str) == "CancelledError"
+
+
+def test_lifespan_reads_the_environment_when_the_app_holds_no_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fastapi_app = FastAPI()
+    config = Config(secrets="none")
+    from_env = Mock(return_value=config)
+    monkeypatch.setattr(Config, "from_env", from_env)
+
+    assert _lifespan_state(monkeypatch, fastapi_app, "config") is config
+    from_env.assert_called_once_with()
+
+
+@pytest.mark.parametrize("named", [True, False])
+def test_lifespan_keeps_the_service_keys_it_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    named: bool,
+) -> None:
+    told: list[tuple[object, object]] = []
+
+    async def ensure(conn: object, *, keys: object, policy: object) -> None:
+        del conn
+        told.append((keys, policy))
+
+    monkeypatch.setattr(app, "ensure_service_keys", ensure)
+    keys = ServiceKeys(accounts=(("chat", "writer"),), directory=tmp_path)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config(
+        secrets="none",
+        service_keys=keys if named else None,
+    )
+
+    policy = _lifespan_state(monkeypatch, fastapi_app, "access_policy")
+
+    assert told == ([(keys, policy)] if named else [])
+
+
+def test_lifespan_cancels_the_embedder_warm_up_at_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    warming: list[asyncio.Task[None]] = []
+
+    def resolve(fastapi_app: FastAPI, config: Config) -> asyncio.Task[None]:
+        del fastapi_app, config
+        warming.append(asyncio.create_task(_forever()))
+        return warming[0]
+
+    monkeypatch.setattr(app, "_resolve_session_embedder", resolve)
+    fastapi_app = FastAPI()
+    fastapi_app.state.config = Config()
+
+    _ = _lifespan_state(monkeypatch, fastapi_app, "config")
+
+    (task,) = warming
+    assert task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_warming_the_session_embedder_embeds_one_query() -> None:
+    embed_query = AsyncMock(return_value=[0.0])
+
+    await app._warm_session_embedder(
+        cast("QueryEmbedder", Mock(embed_query=embed_query)),
+    )
+
+    embed_query.assert_awaited_once_with("warm")
+
+
+def _lifespan_state(
+    monkeypatch: pytest.MonkeyPatch,
+    fastapi_app: FastAPI,
+    name: str,
+) -> object:
+    """Drive the real ``lifespan`` with a stubbed engine; return ``state.<name>``."""
+    store, engine = make_store()
+    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
+    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
+    monkeypatch.setattr(app, "Store", Mock(return_value=store))
+    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
+
+    async def _drive() -> object:
+        async with lifespan(fastapi_app):
+            return cast(object, getattr(fastapi_app.state, name))
+
+    return asyncio.run(_drive())
+
+
 async def _record_warm(embedder: object, sink: list[str]) -> None:
     """Stand-in warm coroutine: records that it ran, embeds nothing."""
     del embedder
@@ -814,19 +1038,14 @@ def _lifespan_secrets(
     fastapi_app: FastAPI | None = None,
 ) -> object:
     """Drive the real ``lifespan`` with a stubbed engine; return ``state.secrets``."""
-    store, engine = make_store()
-    monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
-    monkeypatch.setattr(app, "Store", Mock(return_value=store))
-    monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     fastapi_app = fastapi_app or FastAPI()
     fastapi_app.state.config = Config(secrets=spec)
+    return _lifespan_state(monkeypatch, fastapi_app, "secrets")
 
-    async def _drive() -> object:
-        async with lifespan(fastapi_app):
-            return cast(object, fastapi_app.state.secrets)
 
-    return asyncio.run(_drive())
+async def _forever() -> None:
+    """Stand-in warm task that runs until cancelled."""
+    _ = await asyncio.Event().wait()
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
+import asyncio
 import json
 import logging
 import time
@@ -24,7 +25,7 @@ from hypothesis import (
     settings,
     strategies as st,
 )
-from treekle import from_plain, json_loads
+from treekle import from_plain, json_loads, to_plain
 
 import httpx2
 import pytest
@@ -37,7 +38,7 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.server import web
-from trackinizer.server.api import query
+from trackinizer.server.api import conftest, edit, query
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
@@ -47,32 +48,34 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.auth import AuthIdentity, current_user
+from trackinizer.server.auth import AuthIdentity, Role, current_user
+from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
-from trackinizer.wire.bodies import (
-    SubmitAgentSession,
-    SubmitArtifact,
-    SubmitBelief,
-    SubmitCodeChange,
-    SubmitExperiment,
-    SubmitIssue,
-    SubmitPaper,
-    SubmitWebResult,
-    SubmitWebSearch,
-)
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Iterator, Mapping
 
     from fastapi.testclient import TestClient
 
     from trackinizer.server.store.core import Store
-    from trackinizer.types.edges import Edge
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _query_app() -> Iterator[None]:
+    scoped_app = FastAPI()
+    scoped_app.user_middleware = app.user_middleware.copy()
+    scoped_app.exception_handlers = app.exception_handlers.copy()
+    scoped_app.include_router(query.router)
+    scoped_app.include_router(edit.router)
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(conftest, "app", scoped_app)
+        monkeypatch.setattr(f"{__name__}.app", scoped_app)
+        yield
 
 
 class TestRoutes:
@@ -242,7 +245,7 @@ class TestRoutes:
                 )
                 assert client.get("/api/inquiries", params={"kind": "Issue"}).is_success
                 assert mock.await_args is not None
-                reader = mock.await_args.kwargs["reader"]
+                reader = cast(object, mock.await_args.kwargs["reader"])
                 assert isinstance(reader, SessionReader)
                 asked.append((reader.audiences, reader.email))
 
@@ -1041,6 +1044,110 @@ class TestMissingResourceIs404:
         assert r.status_code == 200
         assert from_plain(r.json(), dict[str, object]) == {"proves_authority": 0.42}
 
+    def test_change_unknown_or_hidden_is_404(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        change_id = new_uuid()
+        with patch.object(store, "get_change", AsyncMock(return_value=None)) as get:
+            r = client.get(f"/api/change_log/{change_id}")
+        assert r.status_code == 404
+        assert from_plain(r.json(), dict[str, str])["detail"] == "change not found"
+        assert get.await_args is not None
+        assert get.await_args.args == (change_id,)
+
+    def test_a_visible_change_is_returned(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        change = Change(
+            kind="description",
+            subject_id=new_uuid(),
+            subject_kind="Issue",
+            old=Snapshot(description="d"),
+            new=Snapshot(description="e"),
+        )
+        with patch.object(store, "get_change", AsyncMock(return_value=change)):
+            r = client.get(f"/api/change_log/{change.id}")
+        assert r.status_code == 200, r.text
+        body = from_plain(r.json(), dict[str, object])
+        assert body["id"] == str(change.id)
+        assert body["subject_id"] == str(change.subject_id)
+
+
+class TestClaimNextIssue:
+    def test_a_claim_without_an_idempotency_key_is_refused_unclaimed(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        with patch.object(store, "claim_next_issue", AsyncMock()) as claim:
+            r = client.post("/api/inquiries/next_issue", json={"owner": "worker"})
+        assert r.status_code == 400
+        assert "Idempotency-Key" in from_plain(r.json(), dict[str, str])["detail"]
+        claim.assert_not_awaited()
+
+    def test_a_keyed_claim_names_the_owner_and_the_caller_as_actor(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        with patch.object(
+            store,
+            "claim_next_issue",
+            AsyncMock(return_value=None),
+        ) as claim:
+            r = client.post(
+                "/api/inquiries/next_issue",
+                json={"owner": "worker"},
+                headers={"Idempotency-Key": str(uuid.uuid4())},
+            )
+        assert r.status_code == 200, r.text
+        assert r.json() is None
+        assert claim.await_args is not None
+        assert claim.await_args.kwargs["owner"] == "worker"
+        assert claim.await_args.kwargs["actor"] == TEST_USER_EMAIL
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_list_query_is_logged_cancelled_and_reraised(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _client, store, engine = route_client
+    # Without the app's ``BaseHTTPMiddleware``, which turns a cancelled body into
+    # "No response returned".
+    bare = FastAPI()
+    bare.include_router(query.router)
+    bare.state.store, bare.state.engine = store, engine
+    bare.dependency_overrides.update(app.dependency_overrides)
+    transport = httpx2.ASGITransport(app=bare)
+    with (
+        patch.object(
+            store,
+            "list_kind",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+        caplog.at_level(logging.INFO),
+    ):
+        async with httpx2.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as http:
+            with pytest.raises(asyncio.CancelledError):
+                await http.get("/api/inquiries", params={"kind": "Issue"})
+
+    record = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", "") == "trackinizer_query_completed"
+    )
+    fields = from_plain(record.__dict__, dict[str, object])
+    assert from_plain(fields.get("outcome"), str) == "cancelled"
+    assert from_plain(fields.get("error_type"), str) == "CancelledError"
+
 
 # -- Property: the list endpoint never 500s on malformed query params ----------
 # The route parses ``seq_range`` / ``filter`` / ``limit`` / ``offset`` BEFORE the
@@ -1119,351 +1226,455 @@ def test_list_endpoint_never_500s_on_bad_params(
             app.state.store = prev_store
 
 
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_fields_keep_the_named_values_on_a_real_engine(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+@pytest.mark.parametrize("kind", sorted(KIND_TO_CLASS))
+def test_fields_keep_the_named_values_through_the_real_store(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    kind: Inquiry.InquiryKind,
 ) -> None:
-    """Each named key keeps the full row's value, and no other key comes back.
-
-    Every key a row of any kind carries is a name ``fields`` takes, relations
-    included, so naming all of a row's keys returns the whole row.
-    """
-    http, store = pglite_route_client
-    account = "alice@example.com"
-    parent, child, artifact, belief, *_ = await store.submit_batch(
+    client, _store, engine = route_client
+    target, parent, evidence = new_uuid(), new_uuid(), new_uuid()
+    row = TestCoverageRoutesAndCli()._row(target, kind=kind)
+    outbound = (
         [
-            SubmitIssue(account=account, title="parent", priority=10),
-            SubmitIssue(account=account, title="child", description="long"),
-            SubmitArtifact(account=account, title="evidence"),
-            SubmitBelief(account=account, title="claim", judgement="unproven"),
-            SubmitExperiment(account=account, title="run"),
-            SubmitPaper(account=account, title="paper", authors=["a"]),
-            SubmitCodeChange(account=account, title="commit"),
-            SubmitWebResult(account=account, title="page"),
-            SubmitWebSearch(account=account, title="query"),
-            SubmitAgentSession(account=account, title="session"),
-        ],
-        session_audience="open",
+            {
+                "from_id": target,
+                "to_id": parent,
+                "to_kind": "Issue",
+                "edge_kind": "narrows",
+                "priority": 10,
+                "note": "parent",
+                "valence": None,
+                "labels": ["context"],
+            },
+        ]
+        if kind == "Issue"
+        else []
     )
-    edges: tuple[tuple[uuid.UUID, Edge.Kind, uuid.UUID], ...] = (
-        (child, "narrows", parent),
-        (artifact, "proves", belief),
+    inbound = (
+        [
+            {
+                "to_id": target,
+                "from_id": evidence,
+                "from_kind": "Artifact",
+                "edge_kind": "proves",
+                "priority": None,
+                "note": "evidence",
+                "valence": 0.75,
+                "labels": ["proof"],
+            },
+        ]
+        if kind == "Belief"
+        else []
     )
-    for from_id, edge_kind, to_id in edges:
-        await store.add_edge(
-            from_id=from_id,
-            to_id=to_id,
-            edge_kind=edge_kind,
-            actor="alice",
-        )
-    kinds = [("kind", kind) for kind in sorted(KIND_TO_CLASS)]
-    full = from_plain(
-        (await http.get("/api/inquiries", params=kinds)).json(),
-        list[dict[str, object]],
-    )
-    assert len(full) == 10
-    for row in full:
-        seq = f"{row['seq']}..{row['seq']}"
-        named = await http.get(
-            "/api/inquiries",
-            params=[
-                ("kind", from_plain(row["kind"], str)),
-                ("seq_range", seq),
-                *(("fields", key) for key in row),
-            ],
-        )
-        assert from_plain(named.json(), list[dict[str, object]]) == [row], row["kind"]
-    subset = ("id", "title", "priority", "judgement", "proved_by", "narrows")
-    named = await http.get(
+    engine.conn.fetch.side_effect = [[row], outbound, inbound] * 3
+    whole = client.get("/api/inquiries", params={"kind": kind})
+    assert whole.status_code == 200, whole.text
+    [full] = json_loads(whole.content, list[dict[str, object]])
+    named = client.get(
         "/api/inquiries",
-        params=[*kinds, *(("fields", name) for name in subset)],
+        params=[
+            ("kind", kind),
+            ("seq_range", "1..1"),
+            *(("fields", key) for key in full),
+        ],
     )
     assert named.status_code == 200, named.text
-    rows = from_plain(named.json(), list[dict[str, object]])
-    assert rows == [{k: v for k, v in row.items() if k in subset} for row in full]
-    # The relations are real when named: the edges were read.
-    assert any(row.get("narrows") for row in rows)
-    assert any(row.get("proved_by") for row in rows)
+    assert json_loads(named.content, list[dict[str, object]]) == [full]
+    subset = ("id", "title", "priority", "judgement", "proved_by", "narrows")
+    named = client.get(
+        "/api/inquiries",
+        params=[("kind", kind), *(("fields", key) for key in subset)],
+    )
+    assert named.status_code == 200, named.text
+    assert json_loads(named.content, list[dict[str, object]]) == [
+        {key: value for key, value in full.items() if key in subset},
+    ]
+    if kind == "Issue":
+        assert full["narrows"] == [
+            {
+                "id": str(parent),
+                "kind": "Issue",
+                "note": "parent",
+                "labels": ["context"],
+                "priority": 10,
+            },
+        ]
+    if kind == "Belief":
+        assert full["proved_by"] == [
+            {
+                "id": str(evidence),
+                "kind": "Artifact",
+                "note": "evidence",
+                "labels": ["proof"],
+                "valence": 0.75,
+            },
+        ]
+    sql, *params = engine.conn.fetch.call_args_list[3].args
+    assert (
+        sql
+        == "SELECT * FROM inquiries WHERE kind = $1 AND ((seq >= $2 AND seq <= $3)) ORDER BY created DESC, id DESC LIMIT $4 OFFSET $5"
+    )
+    assert params == [kind, 1, 1, 50, 0]
 
 
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_row_is_purged_by_its_account_or_an_admin_and_no_other_writer(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+@pytest.mark.parametrize(
+    ("email", "role", "status"),
+    [
+        ("bob@example.com", "writer", 403),
+        ("Ada@Example.com", "writer", 200),
+        ("root@example.com", "admin", 200),
+    ],
+)
+def test_a_row_is_purged_by_its_account_or_an_admin_and_no_other_writer(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    email: str,
+    role: Role,
+    status: int,
 ) -> None:
-    http, store = pglite_route_client
-    ada = "ada@example.com"
-    mine, by_admin, kept = await store.submit_batch(
-        [SubmitIssue(account=ada, title=title) for title in ("mine", "admin", "kept")],
-    )
-
-    install_identity(make_test_identity(api_key_id=None, email="bob@example.com"))
-    other = await http.request("DELETE", f"/api/inquiries/{kept}", json={})
-    install_identity(make_test_identity(api_key_id=None, email="Ada@Example.com"))
-    own = await http.request("DELETE", f"/api/inquiries/{mine}", json={})
-    install_identity(
-        make_test_identity(api_key_id=None, email="root@example.com", role="admin"),
-    )
-    admin = await http.request("DELETE", f"/api/inquiries/{by_admin}", json={})
-
-    assert (other.status_code, own.status_code, admin.status_code) == (403, 200, 200)
-    assert json_loads(other.content, dict[str, object])["detail"] == (
-        "A row is purged by its account or an admin"
-    )
-    assert await store.get_inquiry(kept) is not None
-    assert await store.get_inquiry(mine) is None
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_writer_cannot_take_a_row_by_its_account_and_then_purge_it(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    http, store = pglite_route_client
-    ada, bob = "ada@example.com", "bob@example.com"
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO users (id, email, name, role, status) "
-            "SELECT gen_random_uuid(), email, 'Test', 'writer', 'active' "
-            "FROM unnest($1::text[]) AS email",
-            [ada, bob],
+    client, _store, engine = route_client
+    target = new_uuid()
+    set_field_row(engine.conn, {"kind": "Issue", "account": "ada@example.com"})
+    engine.conn.fetch.return_value = []
+    install_identity(make_test_identity(api_key_id=None, email=email, role=role))
+    response = client.request("DELETE", f"/api/inquiries/{target}", json={})
+    assert response.status_code == status, response.text
+    deletes = [
+        call.args
+        for call in engine.conn.execute.call_args_list
+        if str(call.args[0]).startswith("DELETE FROM inquiries")
+    ]
+    if status == 403:
+        assert (
+            json_loads(response.content, dict[str, str])["detail"]
+            == "A row is purged by its account or an admin"
         )
-    taken, given = await store.submit_batch(
-        [SubmitIssue(account=ada, title=title) for title in ("taken", "given")],
-    )
-
-    install_identity(make_test_identity(api_key_id=None, email=bob))
-    take = await http.put(f"/api/inquiries/{taken}/account", json={"value": bob})
-    purge = await http.request("DELETE", f"/api/inquiries/{taken}", json={})
-    install_identity(make_test_identity(api_key_id=None, email=ada))
-    give = await http.put(f"/api/inquiries/{given}/account", json={"value": bob})
-    install_identity(
-        make_test_identity(api_key_id=None, email="root@example.com", role="admin"),
-    )
-    moved = await http.put(f"/api/inquiries/{taken}/account", json={"value": bob})
-
-    assert (take.status_code, purge.status_code) == (403, 403)
-    assert (give.status_code, moved.status_code) == (200, 200)
-    held = [await store.get_inquiry(row) for row in (taken, given)]
-    assert [row.account for row in held if row is not None] == [bob, bob]
+        assert deletes == []
+    else:
+        assert deletes == [("DELETE FROM inquiries WHERE id = $1", target)]
+        assert json_loads(response.content, dict[str, object])["id"] == str(target)
 
 
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_brief_changes_drop_unset_keys_and_cut_text_on_a_real_engine(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+def test_a_writer_cannot_take_a_row_by_its_account_and_then_purge_it(
+    route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
-    """``brief`` drops each snapshot's unset keys and cuts its free text short.
+    client, _store, engine = route_client
+    target = new_uuid()
+    ada, bob = "ada@example.com", "bob@example.com"
+    set_field_row(engine.conn, {"kind": "Issue", "account": ada})
+    engine.conn.fetch.return_value = []
+    install_identity(make_test_identity(api_key_id=None, email=bob))
+    take = client.put(f"/api/inquiries/{target}/account", json={"value": bob})
+    purge = client.request("DELETE", f"/api/inquiries/{target}", json={})
+    assert (take.status_code, purge.status_code) == (403, 403)
+    assert not any(
+        "UPDATE inquiries" in str(call.args[0])
+        or "DELETE FROM inquiries" in str(call.args[0])
+        for call in engine.conn.execute.call_args_list
+    )
+    identities: tuple[tuple[str, Role], ...] = (
+        (ada, "writer"),
+        ("root@example.com", "admin"),
+    )
+    for email, role in identities:
+        install_identity(make_test_identity(api_key_id=None, email=email, role=role))
+        response = client.put(f"/api/inquiries/{target}/account", json={"value": bob})
+        assert response.status_code == 200, response.text
+    updates = [
+        call.args
+        for call in engine.conn.execute.call_args_list
+        if str(call.args[0]).startswith("UPDATE inquiries SET account")
+    ]
+    assert len(updates) == 2
+    assert all(call[1:3] == (bob, target) for call in updates)
 
-    Activity's Edits tab only asks whether a description is set, yet a page sent
-    both sides of every edit whole: 5.2 MB for 50 description edits on
-    production. Ids, statuses and the other values stay whole, so an edge pair
-    still matches on its peers.
-    """
-    http, store = pglite_route_client
-    account = "alice@example.com"
+
+def test_brief_changes_drop_unset_keys_and_cut_text_through_the_real_store(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _store, engine = route_client
+    parent, child = new_uuid(), new_uuid()
     first, second = "First draft. " * 20, "Second draft. " * 20
-    parent = await store.submit_issue(
-        SubmitIssue(
-            account=account,
-            title="A parent whose title runs on past the cut",
-            description=first,
-        ),
-    )
-    child = await store.submit_issue(SubmitIssue(account=account, title="child"))
-    await store.set_description(parent, second, actor="alice")
-    await store.set_status(parent, "complete", actor="alice")
-    await store.add_edge(
-        from_id=child,
-        to_id=parent,
-        edge_kind="narrows",
-        actor="alice",
-    )
-    full = from_plain(
-        (await http.get("/api/change_log")).json(),
-        list[dict[str, object]],
-    )
-    brief = await http.get("/api/change_log", params={"brief": "true"})
-    assert brief.status_code == 200, brief.text
-    rows = from_plain(brief.json(), list[dict[str, object]])
+    base = {
+        "created": datetime(2026, 1, 1, tzinfo=UTC),
+        "actor": "alice",
+        "reason": "",
+        "subject_kind": "Issue",
+        "subject_id": parent,
+    }
+    engine.conn.fetch.return_value = [
+        {
+            **base,
+            "id": new_uuid(),
+            "kind": "description",
+            "old_description": first,
+            "new_description": second,
+        },
+        {
+            **base,
+            "id": new_uuid(),
+            "kind": "status",
+            "old_status": "active",
+            "new_status": "complete",
+        },
+        {
+            **base,
+            "id": new_uuid(),
+            "kind": "edge_added",
+            "new_peer_id": child,
+            "new_peer_kind": "Issue",
+            "new_peer_edge_kind": "narrows",
+        },
+        {
+            **base,
+            "id": new_uuid(),
+            "subject_id": child,
+            "kind": "edge_added",
+            "new_peer_id": parent,
+            "new_peer_kind": "Issue",
+            "new_peer_edge_kind": "narrows",
+        },
+    ]
+    whole = client.get("/api/change_log")
+    brief = client.get("/api/change_log", params={"brief": "true"})
+    assert (whole.status_code, brief.status_code) == (200, 200)
+    full = json_loads(whole.content, list[dict[str, object]])
+    rows = json_loads(brief.content, list[dict[str, object]])
     assert rows == [_briefed(row) for row in full]
-    (edit,) = (row for row in rows if row["kind"] == "description")
-    assert from_plain(edit["old"], dict[str, object])["description"] == first[:32]
-    assert from_plain(edit["new"], dict[str, object])["description"] == second[:32]
-    peers = {
+    assert rows[0]["old"] == {"description": first[:32]}
+    assert rows[0]["new"] == {"description": second[:32]}
+    assert {
         from_plain(row["new"], dict[str, object]).get("peer_id")
         for row in rows
         if row["kind"] == "edge_added"
+    } == {str(child), str(parent)}
+    assert engine.conn.fetch.call_args_list[0].args == (
+        (
+            "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+            "ORDER BY created DESC, id DESC LIMIT $1"
+        ),
+        200,
+    )
+
+
+def test_change_log_takes_several_kinds_before_its_limit_through_the_real_store(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _store, engine = route_client
+    base = {
+        "created": datetime(2026, 1, 1, tzinfo=UTC),
+        "actor": "alice",
+        "reason": "",
+        "subject_kind": "Issue",
+        "subject_id": new_uuid(),
     }
-    assert {str(child), str(parent)} <= peers
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_change_log_takes_several_kinds_before_its_limit_on_a_real_engine(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
-) -> None:
-    """A repeated ``kind`` keeps changes of any of them, filtered before ``limit``.
-
-    An Activity tab shows several change kinds, and one request per kind would
-    break its live budget of a few requests a second. Newer changes of other
-    kinds must not crowd the page out.
-    """
-    http, store = pglite_route_client
-    issue = await store.submit_issue(
-        SubmitIssue(account="alice@example.com", title="t0"),
+    title = {
+        **base,
+        "id": new_uuid(),
+        "kind": "title",
+        "old_title": "t0",
+        "new_title": "t1",
+    }
+    status = {
+        **base,
+        "id": new_uuid(),
+        "kind": "status",
+        "old_status": "active",
+        "new_status": "complete",
+    }
+    engine.conn.fetch.side_effect = [[title, status], [status]]
+    many = client.get(
+        "/api/change_log",
+        params=[("kind", "status"), ("kind", "title"), ("limit", "2")],
     )
-    await store.set_status(issue, "complete", actor="alice")
-    await store.set_title(issue, "t1", actor="alice")
-    for step in range(3):
-        await store.set_description(issue, f"d{step}", actor="alice")
+    one = client.get("/api/change_log", params={"kind": "status"})
+    invalid = client.get("/api/change_log", params=[("kind", "status"), ("kind", "x")])
+    assert (many.status_code, one.status_code, invalid.status_code) == (200, 200, 422)
+    assert [
+        row["kind"] for row in json_loads(many.content, list[dict[str, object]])
+    ] == ["title", "status"]
+    assert [
+        row["kind"] for row in json_loads(one.content, list[dict[str, object]])
+    ] == ["status"]
+    assert [call.args for call in engine.conn.fetch.call_args_list] == [
+        (
+            (
+                "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+                "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
+            ),
+            ["status", "title"],
+            2,
+        ),
+        (
+            (
+                "SELECT * FROM change_log WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+                "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
+            ),
+            ["status"],
+            200,
+        ),
+    ]
 
-    async def kinds(*query: tuple[str, str]) -> list[object]:
-        r = await http.get("/api/change_log", params=query)
-        assert r.status_code == 200, r.text
-        return [row["kind"] for row in from_plain(r.json(), list[dict[str, object]])]
 
-    many = await kinds(("kind", "status"), ("kind", "title"), ("limit", "2"))
-    assert many == ["title", "status"]
-    assert await kinds(("kind", "status")) == ["status"]
-    r = await http.get("/api/change_log", params=[("kind", "status"), ("kind", "x")])
-    assert r.status_code == 422, r.text
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_narrows_filters_roots_and_children_on_a_real_engine(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+@pytest.mark.parametrize(
+    ("op", "value", "predicate", "bindings"),
+    [
+        (
+            "isnull",
+            "",
+            "NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows')",
+            ["Issue", 50, 0],
+        ),
+        (
+            "notnull",
+            "",
+            "EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows')",
+            ["Issue", 50, 0],
+        ),
+        (
+            "is",
+            "parent-id",
+            "EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $2)",
+            ["Issue", "parent-id", 50, 0],
+        ),
+        (
+            "ne",
+            "parent-id",
+            "NOT EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $2)",
+            ["Issue", "parent-id", 50, 0],
+        ),
+        (
+            "is",
+            "not-an-id",
+            "EXISTS (SELECT 1 FROM edges e WHERE e.from_id = inquiries.id AND e.edge_kind = 'narrows' AND e.to_id::text = $2)",
+            ["Issue", "not-an-id", 50, 0],
+        ),
+    ],
+)
+def test_narrows_filters_lower_at_the_real_store_sql_boundary(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    op: str,
+    value: str,
+    predicate: str,
+    bindings: list[object],
 ) -> None:
-    """``narrows`` filters on an Issue's parents, which live in ``edges``.
-
-    A list of root goals is ``narrows isnull``; one parent's children is
-    ``narrows is <id>``. Both answered "unknown filter field" before.
-    """
-    http, store = pglite_route_client
-    account = "alice@example.com"
-    root, mid, leaf, _ = await store.submit_batch(
-        [SubmitIssue(account=account, title=t) for t in ("root", "mid", "leaf", "x")],
+    client, _store, engine = route_client
+    engine.conn.fetch.return_value = []
+    clause = {"field": "narrows", "op": op} | ({"value": value} if value else {})
+    response = client.get(
+        "/api/inquiries",
+        params=[("kind", "Issue"), ("filter", json.dumps(to_plain(clause)))],
     )
-    for child, parent in ((mid, root), (leaf, mid)):
-        await store.add_edge(
-            from_id=child,
-            to_id=parent,
-            edge_kind="narrows",
-            actor="alice",
-        )
-    assert await _titles_where(http, "isnull") == ["root", "x"]
-    assert await _titles_where(http, "notnull") == ["leaf", "mid"]
-    assert await _titles_where(http, "is", str(root)) == ["mid"]
-    assert await _titles_where(http, "ne", str(root)) == ["leaf", "root", "x"]
-    # Text no id equals matches nothing, rather than failing a uuid cast.
-    assert await _titles_where(http, "is", "not-an-id") == []
-    for kind, clause, status in (
-        # No SQL orders or matches a set of parents; the store refuses the op,
-        # as it does on any column without one.
+    assert response.status_code == 200, response.text
+    assert response.json() == []
+    count = len(bindings)
+    engine.conn.fetch.assert_awaited_once_with(
+        vetted_sql(
+            "SELECT * FROM inquiries WHERE kind = $1 AND ",
+            predicate,
+            " ORDER BY created DESC, id DESC LIMIT $",
+            str(count - 1),
+            " OFFSET $",
+            str(count),
+        ),
+        *bindings,
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "clause", "status"),
+    [
         ("Issue", {"field": "narrows", "op": "re", "value": "x"}, 422),
         ("Issue", {"field": "narrows", "op": "gt", "value": "x"}, 422),
-        # Only an Issue narrows.
         ("Belief", {"field": "narrows", "op": "isnull"}, 400),
-    ):
-        r = await http.get(
-            "/api/inquiries",
-            params=[("kind", kind), ("filter", json.dumps(clause))],
-        )
-        assert r.status_code == status, (kind, clause, r.text)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_ancestors_walk_up_to_the_roots_on_a_real_engine(
-    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    ],
+)
+def test_narrows_filters_refuse_unsupported_ops_before_sql(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    kind: str,
+    clause: dict[str, str],
+    status: int,
 ) -> None:
-    """``ancestors=narrows`` adds each row's ancestry, capped, cycles included."""
-    http, store = pglite_route_client
-    await _check_ancestry(http, store)
-
-
-@pytest.mark.db_postgres
-@pytest.mark.asyncio(loop_scope="session")
-async def test_ancestors_walk_up_to_the_roots_on_postgres(integ_store: Store) -> None:
-    """The same walk on Postgres, whose recursive CTE PGlite only mirrors."""
-    served = FastAPI()
-    served.include_router(query.router)
-    served.state.store = integ_store
-    served.dependency_overrides[current_user] = _viewer
-    transport = httpx2.ASGITransport(app=served, raise_app_exceptions=False)
-    async with httpx2.AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-    ) as http:
-        await _check_ancestry(http, integ_store)
-
-
-async def _check_ancestry(http: httpx2.AsyncClient, store: Store) -> None:
-    """Assert the ancestry of rows shaped to hit each rule of the walk."""
-    account = "alice@example.com"
-    names = (
-        *("g", "p1", "p2", "r"),
-        *(f"c{i}" for i in range(11)),
-        *("a", "b", "r2", "x", "y"),
-        *("w", "gp"),
-        *(f"q{i}" for i in range(201)),
+    client, _store, engine = route_client
+    response = client.get(
+        "/api/inquiries",
+        params=[("kind", kind), ("filter", json.dumps(to_plain(clause)))],
     )
-    made = await store.submit_batch(
-        [SubmitIssue(account=account, title=name) for name in names],
-    )
-    n = dict(zip(names, made, strict=True))
-    # Through the store, so the inferred ``produced_by`` edges exist too and the
-    # walk is seen to follow ``narrows`` alone.
-    for child, parent in (("p1", "g"), ("p2", "g"), ("r", "p1"), ("r", "p2")):
-        await store.add_edge(
-            from_id=n[child],
-            to_id=n[parent],
-            edge_kind="narrows",
-            actor="alice",
-        )
-    # Written directly, as legacy rows hold them: the store refuses a cycle, and
-    # 202 edges through it would run its dependency cascade 202 times.
-    await _insert_narrows(
-        store,
-        [
-            *((f"c{i}", f"c{i + 1}") for i in range(10)),
-            ("a", "b"),
-            ("b", "a"),
-            ("r2", "x"),
-            ("x", "y"),
-            ("y", "x"),
-            *(("w", f"q{i}") for i in range(201)),
-            ("q0", "gp"),
-        ],
-        n,
-    )
-    # Nearest first; a level in id order; every parent of a multi-parent row.
-    p1, p2 = sorted(("p1", "p2"), key=lambda name: str(n[name]))
-    assert await _ancestry(http, n, "r") == [
-        (p1, ["r"]),
-        (p2, ["r"]),
-        ("g", [p1, p2]),
+    assert response.status_code == status, response.text
+    engine.conn.fetch.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("pairs", "expected"),
+    [
+        ([(1, 3), (3, 4), (1, 2), (2, 4)], [(2, [1]), (3, [1]), (4, [2, 3])]),
+        ([], []),
+        ([(1, 2), (2, 1)], [(2, [1])]),
+        ([(1, 2), (2, 3), (3, 2)], [(2, [1, 3]), (3, [2])]),
+        ([(i, i + 1) for i in range(1, 9)], [(i, [i - 1]) for i in range(2, 10)]),
+        ([(1, i) for i in range(2, 202)], [(i, [1]) for i in range(2, 202)]),
+    ],
+)
+def test_ancestors_materialize_real_store_rows_and_bind_exact_recursive_bounds(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    pairs: list[tuple[int, int]],
+    expected: list[tuple[int, list[int]]],
+) -> None:
+    client, _store, engine = route_client
+    target = uuid.UUID(int=1)
+    row = TestCoverageRoutesAndCli()._row(target)
+    found = [
+        {
+            "child": uuid.UUID(int=child),
+            "id": uuid.UUID(int=parent),
+            "kind": "Issue",
+            "seq": parent,
+            "title": f"node-{parent}",
+            "status": "active",
+        }
+        for child, parent in pairs
     ]
-    assert await _ancestry(http, n, "g") == []
-    # At most 8 levels up.
-    assert await _ancestry(http, n, "c0") == [
-        (f"c{i}", [f"c{i - 1}"]) for i in range(1, 9)
-    ]
-    # A cycle ends: a row is never its own ancestor, and each ancestor shows once.
-    assert await _ancestry(http, n, "a") == [("b", ["a"])]
-    assert await _ancestry(http, n, "r2") == [("x", ["r2", "y"]), ("y", ["x"])]
-    # At most 200 ancestors, the nearest kept.
-    capped = await _ancestry(http, n, "w")
-    assert len(capped) == 200
-    assert "gp" not in {title for title, _ in capped}
-    # Without the param, a row is as it was.
-    plain = await http.get("/api/inquiries", params={"kind": "Issue", "limit": 5})
-    assert all(
-        "ancestors" not in row
-        for row in from_plain(plain.json(), list[dict[str, object]])
+    engine.conn.fetch.side_effect = [[row], found, [row]]
+    response = client.get(
+        "/api/inquiries",
+        params=[("kind", "Issue"), ("fields", "id"), ("ancestors", "narrows")],
     )
+    assert response.status_code == 200, response.text
+    assert json_loads(response.content, list[dict[str, object]]) == [
+        {
+            "id": str(target),
+            "ancestors": [
+                {
+                    "id": str(uuid.UUID(int=parent)),
+                    "kind": "Issue",
+                    "seq": parent,
+                    "title": f"node-{parent}",
+                    "status": "active",
+                    "child_ids": [str(uuid.UUID(int=child)) for child in children],
+                }
+                for parent, children in expected
+            ],
+        },
+    ]
+    recursive = (
+        "WITH RECURSIVE up(child, parent, depth) AS ("
+        "    SELECT e.from_id, e.to_id, 1 FROM edges e "
+        "    WHERE e.edge_kind = 'narrows' AND e.from_id = ANY($1::uuid[]) "
+        "    UNION "
+        "    SELECT e.from_id, e.to_id, up.depth + 1 FROM edges e "
+        "    JOIN up ON e.from_id = up.parent "
+        "    WHERE e.edge_kind = 'narrows' AND up.depth < $2"
+        "), kept AS ("
+        "    SELECT parent FROM up GROUP BY parent "
+        "    ORDER BY min(depth), parent LIMIT $3"
+        ") SELECT DISTINCT up.child, t.id, t.kind, t.seq, t.title, t.status "
+        "FROM up JOIN kept ON kept.parent = up.parent "
+        "JOIN inquiries t ON t.id = up.parent"
+    )
+    assert engine.conn.fetch.call_args_list[1].args == (recursive, [target], 8, 200)
+    plain = client.get("/api/inquiries", params=[("kind", "Issue"), ("fields", "id")])
+    assert plain.status_code == 200
+    assert json_loads(plain.content, list[dict[str, object]]) == [{"id": str(target)}]
+    assert engine.conn.fetch.await_count == 3
 
 
 def _briefed(row: Mapping[str, object]) -> dict[str, object]:
@@ -1489,74 +1700,6 @@ def _rows_then_no_edges(row: dict[str, object]) -> Callable[..., list[object]]:
         return [] if "FROM edges WHERE" in sql else [row]
 
     return fetch
-
-
-async def _titles_where(
-    http: httpx2.AsyncClient,
-    op: str,
-    value: str = "",
-) -> list[str]:
-    """Return the sorted titles of the Issues the ``narrows <op> <value>`` filter keeps."""
-    clause = {"field": "narrows", "op": op} | ({"value": value} if value else {})
-    r = await http.get(
-        "/api/inquiries",
-        params=[("kind", "Issue"), ("filter", json.dumps(clause))],
-    )
-    assert r.status_code == 200, r.text
-    return sorted(
-        from_plain(row["title"], str)
-        for row in from_plain(r.json(), list[dict[str, object]])
-    )
-
-
-async def _ancestry(
-    http: httpx2.AsyncClient,
-    ids: Mapping[str, uuid.UUID],
-    name: str,
-) -> list[tuple[str, list[str]]]:
-    """Return row ``name``'s ancestors as ``(title, child titles)``, as sent."""
-    by_id = json.dumps({"field": "id", "op": "is", "value": str(ids[name])})
-    r = await http.get(
-        "/api/inquiries",
-        params=[
-            ("kind", "Issue"),
-            ("filter", by_id),
-            ("fields", "id"),
-            ("ancestors", "narrows"),
-        ],
-    )
-    assert r.status_code == 200, r.text
-    (row,) = from_plain(r.json(), list[dict[str, object]])
-    names = {made: title for title, made in ids.items()}
-    out: list[tuple[str, list[str]]] = []
-    for entry in from_plain(row.get("ancestors"), list[dict[str, object]], default=[]):
-        assert set(entry) == {"id", "kind", "seq", "title", "status", "child_ids"}
-        assert entry["kind"] == "Issue"
-        title = names[uuid.UUID(from_plain(entry["id"], str))]
-        assert entry["title"] == title
-        children = from_plain(entry["child_ids"], list[str])
-        out.append((title, [names[uuid.UUID(child)] for child in children]))
-    return out
-
-
-async def _insert_narrows(
-    store: Store,
-    pairs: Sequence[tuple[str, str]],
-    ids: Mapping[str, uuid.UUID],
-) -> None:
-    """Insert ``narrows`` edges child -> parent straight into ``edges``."""
-    async with store.engine.acquire() as conn:
-        await conn.execute(
-            "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind) "
-            "SELECT c, 'Issue', p, 'Issue', 'narrows' "
-            "FROM unnest($1::uuid[], $2::uuid[]) AS t(c, p)",
-            [ids[child] for child, _ in pairs],
-            [ids[parent] for _, parent in pairs],
-        )
-
-
-async def _viewer() -> AuthIdentity:
-    return make_test_identity(role="viewer")
 
 
 if __name__ == "__main__":

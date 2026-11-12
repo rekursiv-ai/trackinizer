@@ -2,28 +2,30 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import asyncio
 import uuid
 
 from treekle import json_loads
 
-import httpx2
 import pytest
 
 from trackinizer.conftest import make_store
 from trackinizer.server.api import session_test_support
+from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
     TEST_USER_ID,
+    RecordingServer,
+    run_on,
 )
 from trackinizer.server.api.session_test_support import (
     KB_EMAIL,
     KB_KEY_ID,
     KB_USER_ID,
+    OTHER_AGENT,
     OTHER_EMAIL,
     OTHER_KEY_ID,
     OTHER_USER_ID,
@@ -33,13 +35,11 @@ from trackinizer.server.api.session_test_support import (
     browser,
     drain,
     seed_accounts,
+    seed_session,
     start_session,
 )
 from trackinizer.server.auth import AuthIdentity
-
-
-if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+from trackinizer.server.inbound import InboundQueue
 
 
 @pytest.fixture
@@ -143,6 +143,58 @@ def test_seeding_makes_three_active_writers_each_with_one_writer_key() -> None:
     ]
 
 
+def test_a_seeded_session_is_the_agents_live_and_polled_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    seen = AsyncMock()
+    monkeypatch.setattr(store, "record_session_seen", seen)
+    inbound = InboundQueue()
+    monkeypatch.setattr(app.state, "inbound", inbound, raising=False)
+
+    session_id = asyncio.run(
+        seed_session(store, OTHER_AGENT, cli="claude", drained_by="claude"),
+    )
+
+    assert engine.conn.execute.await_args is not None
+    inserted = engine.conn.execute.await_args.args
+    assert inserted[1:3] == (session_id, "AgentSession")
+    assert {"claude session", OTHER_EMAIL, OTHER_KEY_ID, "open", "claude"} <= {
+        value for value in inserted if isinstance(value, str | uuid.UUID)
+    }
+    assert inbound.has_poller(session_id)
+    assert seen.await_args is not None
+    assert seen.await_args.args == (session_id,)
+    assert seen.await_args.kwargs["polled"] is True
+
+
+def test_an_unpolled_seeded_session_takes_the_given_actor_and_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, engine = make_store()
+    seen = AsyncMock()
+    monkeypatch.setattr(store, "record_session_seen", seen)
+    inbound = InboundQueue()
+    monkeypatch.setattr(app.state, "inbound", inbound, raising=False)
+
+    session_id = asyncio.run(
+        seed_session(
+            store,
+            OTHER_AGENT,
+            actor="ranger",
+            account="lead@example.com",
+            polled=False,
+        ),
+    )
+
+    assert engine.conn.execute.await_args is not None
+    inserted = engine.conn.execute.await_args.args
+    assert {"ranger", "lead@example.com"} <= set(inserted)
+    assert OTHER_EMAIL not in inserted
+    assert not inbound.has_poller(session_id)
+    seen.assert_not_awaited()
+
+
 def test_a_started_session_is_polled_once_so_it_is_live() -> None:
     session_id = uuid.uuid4()
     server = RecordingServer(
@@ -211,34 +263,6 @@ def test_draining_reads_the_session_inbound_queue() -> None:
     assert [(each.method, each.url.path) for each in server.asked] == [
         ("GET", f"/api/sessions/{session_id}/inbound"),
     ]
-
-
-@dataclass(slots=True, kw_only=True)
-class RecordingServer:
-    """The app, as the helpers see it: canned answers by method and path."""
-
-    answers: dict[tuple[str, str], tuple[int, object]]
-    asked: list[httpx2.Request] = field(default_factory=list)
-
-    def __call__(self, request: httpx2.Request) -> httpx2.Response:
-        """Record ``request`` and answer it with its canned answer."""
-        self.asked.append(request)
-        status, body = self.answers[(request.method, request.url.path)]
-        return httpx2.Response(status, json=body)
-
-
-def run_on[T](
-    server: RecordingServer,
-    *,
-    call: Callable[[httpx2.AsyncClient], Awaitable[T]],
-) -> T:
-    """Run one helper against ``server``."""
-
-    async def run() -> T:
-        async with httpx2.AsyncClient(transport=httpx2.MockTransport(server)) as client:
-            return await call(client)
-
-    return asyncio.run(run())
 
 
 if __name__ == "__main__":

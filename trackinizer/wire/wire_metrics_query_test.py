@@ -15,6 +15,7 @@ from trackinizer.wire.wire_metrics_query import (
     MetricMaskClause,
     MetricQueryRequest,
     MetricRankRequest,
+    RankFilter,
 )
 
 
@@ -188,6 +189,79 @@ class TestMetricRankRequest:
         assert MetricRankRequest(experiment_ids=ids[:-1], query=MetricQueryRequest())
         with pytest.raises(ValidationError):
             MetricRankRequest(experiment_ids=ids, query=MetricQueryRequest())
+
+    def test_filters_name_the_experiments(self) -> None:
+        req = MetricRankRequest(
+            filters=[RankFilter(field="status", op="is", value="open")],
+            query=MetricQueryRequest(),
+        )
+        assert req.experiment_ids is None
+        assert req.filters == [RankFilter(field="status", op="is", value="open")]
+
+    @pytest.mark.parametrize(
+        "selection",
+        [
+            pytest.param({}, id="neither"),
+            pytest.param(
+                {
+                    "experiment_ids": [str(uuid.uuid4())],
+                    "filters": [{"field": "status", "op": "is", "value": "open"}],
+                },
+                id="both",
+            ),
+        ],
+    )
+    def test_requires_exactly_one_selection(
+        self,
+        selection: dict[str, object],
+    ) -> None:
+        with pytest.raises(ValidationError, match="by experiment_ids or by filters"):
+            MetricRankRequest.model_validate({"query": {}} | selection)
+
+
+def test_paths_name_the_experiment() -> None:
+    experiment_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    base = "/api/experiments/12345678-1234-5678-1234-567812345678/metrics"
+    assert wire_metrics_query.experiment_metric_query_path(experiment_id) == (
+        f"{base}/query"
+    )
+    assert wire_metrics_query.experiment_metric_write_path(experiment_id) == (
+        f"{base}/write"
+    )
+
+
+@pytest.mark.parametrize("both", [False, True])
+def test_rank_requires_exactly_one_experiment_selector(*, both: bool) -> None:
+    selection = {
+        "experiment_ids": [uuid.UUID(int=1)],
+        "filters": [{"field": "title", "op": "is", "value": "run"}],
+    }
+    with pytest.raises(ValidationError, match="experiment_ids or by filters"):
+        MetricRankRequest.model_validate(
+            {"query": {}} | (selection if both else {}),
+        )
+
+
+def test_rank_accepts_filter_selection_without_explicit_ids() -> None:
+    request = MetricRankRequest.model_validate(
+        {"query": {}, "filters": [{"field": "title", "op": "is", "value": "run"}]},
+    )
+    assert request.experiment_ids is None
+    assert request.filters is not None
+    assert [(clause.field, clause.op, clause.value) for clause in request.filters] == [
+        ("title", "is", "run"),
+    ]
+
+
+def test_metric_query_and_write_paths_are_distinct_and_experiment_scoped() -> None:
+    experiment_id = uuid.UUID(int=1)
+    prefix = "/api/experiments/00000000-0000-0000-0000-000000000001/metrics"
+    assert wire_metrics_query.experiment_metric_query_path(experiment_id) == (
+        f"{prefix}/query"
+    )
+    assert wire_metrics_query.experiment_metric_write_path(experiment_id) == (
+        f"{prefix}/write"
+    )
 
 
 if __name__ == "__main__":

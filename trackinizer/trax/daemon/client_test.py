@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import TYPE_CHECKING, cast, override
+from unittest.mock import Mock
 
 import contextlib
 import functools
@@ -16,10 +17,12 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 
 import pytest
 
 from trackinizer.lib.posix.sockets import socket_address
+from trackinizer.trax.daemon import client
 from trackinizer.trax.daemon.client import (
     DaemonRequestLostError,
     _request,
@@ -55,6 +58,7 @@ def no_ambient_token(monkeypatch: pytest.MonkeyPatch) -> None:
     delegation off.
     """
     monkeypatch.delenv("TRACKINIZER_TOKEN", raising=False)
+    monkeypatch.delenv("TRACKINIZER_TOKEN_FILE", raising=False)
 
 
 @contextlib.contextmanager
@@ -121,6 +125,10 @@ class TestShouldDelegate:
     def test_refuses_the_serve_flag(self) -> None:
         assert not should_delegate(["--__serve"])
 
+    def test_delegates_global_flags_with_no_verb(self) -> None:
+        """No verb is none of the local-only ones; the CLI answers it with help."""
+        assert should_delegate(["--profile", "admin"])
+
     def test_delegates_a_row_whose_value_is_the_word_run(self) -> None:
         """``run`` is the PTY verb only in verb position, never as a value.
 
@@ -139,6 +147,10 @@ class TestShouldDelegate:
     def test_refuses_run_in_verb_position_after_global_flags(self) -> None:
         """Global flags precede the verb, so the scan cannot just read argv[0]."""
         assert not should_delegate(["--profile", "origin", "run", "claude"])
+        assert not should_delegate(["--profile", "origin", "--host", "run", "export"])
+        assert not should_delegate(["--host=origin", "export"])
+        assert not should_delegate(["--host=origin", "--verbose", "export"])
+        assert not should_delegate(["agentsession", "run", "codex"])
 
     def test_refuses_the_resume_tail(self) -> None:
         """``agentsession 42 run codex`` spawns a PTY too, under another verb.
@@ -165,6 +177,25 @@ class TestShouldDelegate:
         assert should_delegate(["issue", "7", "title", "to", "run"])
         assert should_delegate(["agentsession", "title", "re", "run"])
 
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["issue", "title", "to", "run", "--help"],
+            ["-", "to"],
+            ["issue", "-", "title", "to", "plain"],
+            ["--profile=run", "issue"],
+            ["--host=run", "issue"],
+        ],
+    )
+    def test_delegates_flag_values_and_nonterminal_run_tails(
+        self,
+        argv: list[str],
+    ) -> None:
+        assert should_delegate(argv)
+
+    def test_refuses_a_stdin_sentinel_immediately_after_the_verb(self) -> None:
+        assert not should_delegate(["to", "-"])
+
 
 class TestTokenNeverCrossesTheSocket:
     """``TRACKINIZER_TOKEN`` is a key: in-process with a URL, never forwarded.
@@ -181,6 +212,19 @@ class TestTokenNeverCrossesTheSocket:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
+        monkeypatch.setenv("TRACKINIZER_URL", "https://trackinizer.example")
+
+        assert not should_delegate(["issue", "status", "is", "active"])
+
+    def test_runs_in_process_when_a_key_file_comes_with_a_url(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_TOKEN")
+        monkeypatch.setenv(
+            "TRACKINIZER_TOKEN_FILE",
+            "/run/credentials/chat.service/key",
+        )
         monkeypatch.setenv("TRACKINIZER_URL", "https://trackinizer.example")
 
         assert not should_delegate(["issue", "status", "is", "active"])
@@ -234,34 +278,34 @@ class TestTokenNeverCrossesTheSocket:
         assert b"tok-SENTINEL-93f1c7" not in seen[0].to_json()
 
 
-class TestMachineCommands:
-    """Every ``machine`` form says it moved out of trax, in-process."""
+class TestHostCommands:
+    """Every ``host`` form says it moved out of trax, in-process."""
 
     @pytest.mark.parametrize(
         "argv",
         [
-            ["machine"],
-            ["machine", "gpu-box"],
-            ["machine", "gpu-box", "role", "to", "dev"],
-            ["machine", "gpu-box", "connect"],
-            ["machine", "gpu-box", "CONNECT"],
-            ["--profile", "origin", "machine", "gpu-box", "connect"],
-            ["--port=9", "machine", "connect", "--sandbox"],
-            ["MACHINE", "gpu-box", "label", "add", "gpu"],
+            ["host"],
+            ["host", "gpu-box"],
+            ["host", "gpu-box", "role", "to", "dev"],
+            ["host", "gpu-box", "connect"],
+            ["host", "gpu-box", "CONNECT"],
+            ["--profile", "origin", "host", "gpu-box", "connect"],
+            ["--port=9", "host", "connect", "--sandbox"],
+            ["HOST", "gpu-box", "label", "add", "gpu"],
         ],
     )
-    def test_refuses_every_machine_form(self, argv: list[str]) -> None:
+    def test_refuses_every_host_form(self, argv: list[str]) -> None:
         assert not should_delegate(argv)
 
     @pytest.mark.parametrize(
         "argv",
         [
-            ["issue", "7", "title", "to", "machine"],
-            ["issue", "7", "label", "add", "machine"],
-            ["issue", "machine", "connect"],
+            ["issue", "7", "title", "to", "host"],
+            ["issue", "7", "label", "add", "host"],
+            ["issue", "host", "connect"],
         ],
     )
-    def test_delegates_a_value_that_is_the_word_machine(
+    def test_delegates_a_value_that_is_the_word_host(
         self,
         argv: list[str],
     ) -> None:
@@ -514,6 +558,47 @@ class TestDelegate:
 
         assert received, "the daemon received the request before the connection died"
 
+    def test_falls_back_when_the_request_could_not_be_written(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A write that failed delivered nothing, so running locally is safe."""
+        sock = tmp_path / "traxd.sock"
+        monkeypatch.setattr(client, "write_frame", _broken_pipe)
+        with serving(sock) as seen:
+            response = delegate(
+                ["issue"],
+                socket_override=sock,
+                source_version="v1",
+                spawn=False,
+            )
+
+        assert response is None
+        assert seen == []
+
+    def test_falls_back_when_a_spawned_daemon_never_accepts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        spawned: list[object] = []
+        monkeypatch.setattr(
+            subprocess,
+            "Popen",
+            functools.partial(_spawn_nothing, spawned),
+        )
+        monkeypatch.setattr(client, "_SPAWN_TIMEOUT_SEC", 0.05)
+
+        response = delegate(
+            ["issue"],
+            socket_override=tmp_path / "never.sock",
+            source_version="v1",
+        )
+
+        assert response is None
+        assert len(spawned) == 1
+
     def test_falls_back_when_the_connection_never_opened(self, tmp_path: Path) -> None:
         """Nothing was delivered, so re-running locally cannot duplicate work."""
         assert (
@@ -602,6 +687,10 @@ class TestDelegate:
             "--__serve",
             "v1",
         ]
+        assert spawned[0]["stdin"] == subprocess.DEVNULL
+        assert spawned[0]["stdout"] == subprocess.DEVNULL
+        assert spawned[0]["stderr"] == subprocess.DEVNULL
+        assert spawned[0]["start_new_session"] is True
 
     def test_spawned_daemon_imports_the_clients_source(
         self,
@@ -651,8 +740,108 @@ class TestDelegate:
         )
         assert (
             Path(probe.stdout.strip()).resolve()
-            == Path(inspect.getfile(delegate)).resolve()
+            == Path(inspect.getfile(client)).resolve()
         )
+
+
+class TestSpawnReadiness:
+    def test_spawn_failure_is_not_reported_as_ready(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        monkeypatch.setattr(subprocess, "Popen", Mock(side_effect=OSError))
+
+        assert client._spawn(tmp_path / "traxd.sock", source_version="v1") is False
+
+    def test_the_default_socket_returns_the_freshly_spawned_daemons_response(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "traxd.sock"
+        reply = Response(stdout="created issue 7", stderr="", exit_code=0)
+        payload = reply.to_json()
+        connect = Mock()
+        send = Mock()
+        refused = Mock(connect=Mock(side_effect=ConnectionRefusedError))
+        ready = Mock()
+        answering = Mock(
+            connect=connect,
+            sendall=send,
+            recv=Mock(side_effect=[len(payload).to_bytes(4, "big"), payload]),
+        )
+        monkeypatch.setattr(client, "socket_path", Mock(return_value=path))
+        monkeypatch.setattr(
+            socket,
+            "socket",
+            Mock(side_effect=[refused, ready, answering]),
+        )
+        monkeypatch.setattr(subprocess, "Popen", Mock())
+
+        assert delegate(["issue"], source_version="v1") == reply
+
+        connect.assert_called_once_with(str(path))
+        send.assert_called_once()
+
+    def test_waits_for_a_successful_connection_and_secures_the_parent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "daemon" / "private" / "traxd.sock"
+        connect = Mock(side_effect=[ConnectionRefusedError, None])
+        close = Mock()
+        probe = Mock(connect=connect, close=close)
+        pause = Mock()
+        monkeypatch.setattr(subprocess, "Popen", Mock())
+        monkeypatch.setattr(socket, "socket", Mock(return_value=probe))
+        monkeypatch.setattr(time, "monotonic", Mock(return_value=0.0))
+        monkeypatch.setattr(time, "sleep", pause)
+
+        assert client._spawn(path, source_version="v1") is True
+
+        assert path.parent.is_dir()
+        assert path.parent.stat().st_mode & 0o077 == 0
+        connect.assert_called_with(str(path))
+        assert connect.call_count == 2
+        assert close.call_count == 2
+        pause.assert_called_once()
+
+    def test_stops_waiting_when_the_deadline_passes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        path = tmp_path / "traxd.sock"
+        connect = Mock(side_effect=ConnectionRefusedError)
+        close = Mock()
+        probe = Mock(connect=connect, close=close)
+        monkeypatch.setattr(subprocess, "Popen", Mock())
+        monkeypatch.setattr(socket, "socket", Mock(return_value=probe))
+        monkeypatch.setattr(
+            time,
+            "monotonic",
+            Mock(side_effect=[0.0, 0.0, client._SPAWN_TIMEOUT_SEC + 1.0]),
+        )
+        monkeypatch.setattr(time, "sleep", Mock())
+
+        assert client._spawn(path, source_version="v1") is False
+
+        connect.assert_called_once_with(str(path))
+        close.assert_called_once_with()
+
+
+def _broken_pipe(conn: socket.socket, payload: bytes) -> None:
+    """Fail a write as a peer that hung up would."""
+    del conn, payload
+    raise BrokenPipeError("peer hung up")
+
+
+def _spawn_nothing(spawned: list[object], *args: object, **kwargs: object) -> None:
+    """Record a spawn that succeeds but starts no daemon."""
+    del kwargs
+    spawned.append(args[0])
 
 
 def _refuse_spawn(

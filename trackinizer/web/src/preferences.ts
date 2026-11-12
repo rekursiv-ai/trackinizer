@@ -8,7 +8,7 @@ import { sameJson } from "./state/value";
  * The user's preferences: theme, skin and the like, and the
  * user's own data: stars, saved views, names, read marks and unsent drafts. They
  * live on the server (`server/preferences.py`), on the user's row, so any browser
- * or machine finds them and an agent the user works with can change them; this
+ * or host finds them and an agent the user works with can change them; this
  * page keeps none of them. The server always answers every key, its default filled
  * in. A change replaces a top-level key whole.
  */
@@ -34,10 +34,12 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminal_placement: "bottom",
   home: "graph",
   chat_provider: "assistant",
-  assistant_prompt: "lead",
+  assistant_prompt: "sagent",
   cli_folder: "",
-  chat_tool_calls: false,
+  chat_view: { view: "chat", density: "auto", thinking: false, output_lines: "tool", times: false },
   autofix: true,
+  automerge: false,
+  hide_closed_pulls: true,
   stars: [],
   views: [],
   console_views: [],
@@ -46,6 +48,7 @@ export const DEFAULT_PREFERENCES: Preferences = {
   read: { boundary: null, marks: [] },
   collapsed: [],
   dismissed: [],
+  unread_tabs: [],
   lens: null,
   drafts: {},
   create_draft: null,

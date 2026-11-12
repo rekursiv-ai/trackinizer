@@ -66,7 +66,7 @@ Content-Type: application/json
     "kind": "show",
     "visual_type": "trax.subgraph",
     "record_id": "<record-id>",
-    "placement": "side"
+    "target": {"kind": "split", "of": "<panel-id>", "edge": "right"}
   }
 }
 ```
@@ -77,21 +77,25 @@ or agent changed the canvas,
 the server returns 409 and the current state; read it before retrying with a
 new revision and key. Reusing a key with different content also returns 409
 and the current state. An ended session or revoked key loses control,
-including idempotent replay. `hide`, `focus`, and `place` take an `instance_id` from
-the canvas response. A `show` can also include `record_id` and bounded
-`params`. Showing an existing visual type focuses and updates that instance.
+including idempotent replay. `hide`, `focus` and `move` take tab ids from the
+canvas response's `panels`; one the canvas no longer holds changes nothing. A
+`show` with no `target` opens in the focused panel, and can also include
+`record_id` and bounded `params`. Showing a visual already open, of the same
+type, record and params, switches to its tab. An old client's `placement`
+(`main`, `left`, `side`, `floating`) still validates and is mapped onto the
+panels (`server/private/canvas_old_clients.py`).
 
 ## Chat with the assistant
 
 Chat talks to the canvas's partner, which `CanvasState.partner` names on
 every read and the events stream pushes when it changes. It follows the canvas's
 `provider`: the server's shared assistant (`assistant`), or the owner's own
-The runner attached to the chat's session on one of their machines. The
+The runner attached to the chat's session on one of their hosts. The
 header's provider card chooses it (`{"kind": "provider"}`), stars the default for
-new chats (the `chat_provider` preference), allows a newly connected machine, and
-starts a run on a machine that lists the CLI, in a folder the person names. A CLI's
+new chats (the `chat_provider` preference), allows a newly connected host, and
+starts a run on a host that lists the CLI, in a folder the person names. A CLI's
 partner is `offline` while no such run drains the chat, and still names the session
-to attach a run to; a live one carries its `machine`, `run_name` (for an
+to attach a run to; a live one carries its `host`, `run_name` (for an
 attach) and `cwd`. A partner that is not `live` disables the composer.
 
 A claude run's prompts reach Chat as cards: the run records a prompt with

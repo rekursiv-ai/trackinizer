@@ -25,13 +25,17 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize(
     ("old_shape", "migrations"),
     [
-        ("DROP TABLE session_liveness", ["schema.032", "schema.060"]),
-        ("ALTER TABLE gpu_jobs DROP COLUMN requested_node", ["schema.062"]),
+        # 060 names the machine tables as 075 had them, which 076 renamed.
+        (
+            ("host_rename_down", "DROP TABLE session_liveness"),
+            ["schema.032", "schema.060", "schema.076"],
+        ),
+        (("ALTER TABLE gpu_jobs DROP COLUMN requested_node",), ["schema.062"]),
     ],
 )
 async def test_liveness_old_to_fresh_catalog_parity(
     pglite_rollback_conn: Conn,
-    old_shape: str,
+    old_shape: tuple[str, ...],
     migrations: list[str],
 ) -> None:
     """An old database receiving its migration has the full fresh schema."""
@@ -57,7 +61,9 @@ async def test_liveness_old_to_fresh_catalog_parity(
     )
     fresh = {tuple(row.values()) for row in await conn.fetch(catalog)}
     assert any(row[1] == "session_liveness" for row in fresh)
-    await conn.execute(old_shape)
+    # A bare name is an asset; anything else is a statement.
+    for step in old_shape:
+        await conn.execute(load_sql(step) if " " not in step else step)
     # 060 adds the table's later columns, so it runs again after 032 makes it.
     for migration in migrations:
         await conn.execute(load_sql(migration))

@@ -6,7 +6,7 @@ import math
 
 import pytest
 
-from trackinizer.types.cost import Cost
+from trackinizer.types.cost import Cost, TokenCount
 
 
 class TestModels:
@@ -43,10 +43,84 @@ class TestModels:
         delta = Cost(agent_usd=0.5) - Cost(agent_usd=2.0)
         assert delta.agent_usd == pytest.approx(-1.5)
 
+    def test_a_cost_is_truthy_when_either_axis_is_nonzero(self) -> None:
+        assert not Cost()
+        assert Cost(agent_usd=0.5)
+        assert Cost(resource_usd=-1.0)
+        assert Cost(agent_usd=1.0, resource_usd=2.5).total_usd == pytest.approx(3.5)
+
     def test_add_is_componentwise(self) -> None:
         total = Cost(agent_usd=1.0) + Cost(agent_usd=0.5, resource_usd=2.0)
         assert total.agent_usd == pytest.approx(1.5)
         assert total.resource_usd == pytest.approx(2.0)
+
+
+class TestFromRow:
+    def test_reads_the_unprefixed_inquiry_columns(self) -> None:
+        row = {"marginal_cost_agent_usd": 1.25, "marginal_cost_resource_usd": 3.5}
+        assert Cost.from_row(row) == Cost(agent_usd=1.25, resource_usd=3.5)
+
+    def test_prefix_selects_one_side_of_a_change_row(self) -> None:
+        row = {
+            "old_marginal_cost_agent_usd": 1.0,
+            "old_marginal_cost_resource_usd": 2.0,
+            "new_marginal_cost_agent_usd": 4.0,
+            "new_marginal_cost_resource_usd": 8.0,
+        }
+        assert Cost.from_row(row, prefix="new_") == Cost(
+            agent_usd=4.0,
+            resource_usd=8.0,
+        )
+
+    def test_a_missing_column_reads_as_zero(self) -> None:
+        assert Cost.from_row({"marginal_cost_agent_usd": 2.0}) == Cost(agent_usd=2.0)
+        assert Cost.from_row({"marginal_cost_resource_usd": 3.0}) == Cost(
+            resource_usd=3.0,
+        )
+
+
+class TestTokenCount:
+    def test_add_is_componentwise(self) -> None:
+        total = TokenCount(input_tokens=1, output_tokens=2) + TokenCount(
+            input_tokens=10,
+            cache_creation_tokens=3,
+            cache_read_tokens=4,
+        )
+        assert total == TokenCount(
+            input_tokens=11,
+            output_tokens=2,
+            cache_creation_tokens=3,
+            cache_read_tokens=4,
+        )
+
+    def test_sub_clamps_each_axis_at_zero(self) -> None:
+        delta = TokenCount(
+            input_tokens=5,
+            output_tokens=1,
+            cache_creation_tokens=7,
+            cache_read_tokens=2,
+        ) - TokenCount(input_tokens=2, output_tokens=4, cache_read_tokens=9)
+        assert delta == TokenCount(input_tokens=3, cache_creation_tokens=7)
+
+
+@pytest.mark.parametrize("prefix", ["", "old_", "new_"])
+def test_cost_row_uses_only_its_prefixed_axes(prefix: str) -> None:
+    assert Cost.from_row({}, prefix=prefix) == Cost()
+    assert Cost.from_row(
+        {prefix + "marginal_cost_agent_usd": 1.25},
+        prefix=prefix,
+    ) == Cost(agent_usd=1.25)
+    assert Cost.from_row(
+        {prefix + "marginal_cost_resource_usd": 2.5},
+        prefix=prefix,
+    ) == Cost(resource_usd=2.5)
+    assert Cost.from_row(
+        {
+            prefix + "marginal_cost_agent_usd": 1.25,
+            prefix + "marginal_cost_resource_usd": 2.5,
+        },
+        prefix=prefix,
+    ) == Cost(agent_usd=1.25, resource_usd=2.5)
 
 
 if __name__ == "__main__":

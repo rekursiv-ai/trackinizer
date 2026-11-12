@@ -9,6 +9,7 @@ identical request succeeds.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, NamedTuple
 
 import uuid
@@ -18,9 +19,11 @@ from treekle import from_plain
 import pytest
 import pytest_asyncio
 
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.server.api.session_test_support import seed_accounts
 from trackinizer.server.sql import schema_migrations
+from trackinizer.server.values import vetted_sql
 
 
 if TYPE_CHECKING:
@@ -290,15 +293,20 @@ async def test_the_lock_is_admin_only_and_clears(
     _as("admin")
     set_ = await client.put(path, json={"locked": True})
     cleared = await client.put(path, json={"locked": False})
+    missing_id = uuid.uuid4()
     missing = await client.put(
-        f"/api/admin/inquiries/{uuid.uuid4()}/lock",
+        f"/api/admin/inquiries/{missing_id}/lock",
         json={"locked": True},
     )
     _as("writer")
     editable = await client.put(_FIELD.format(rows.other, "title"), json={"value": "t"})
 
     admin = make_test_identity(role="admin").email
-    assert await _lock_log(store, rows.other) == [(True, admin), (False, admin)]
+    assert await _lock_log(store, rows.other) == [
+        ("locked", admin),
+        ("unlocked", admin),
+    ]
+    assert await _lock_log(store, missing_id) == []
     assert refused.status_code == 403
     assert set_.json() == {"id": str(rows.other), "locked": True}
     assert cleared.json() == {"id": str(rows.other), "locked": False}
@@ -355,8 +363,145 @@ async def test_claiming_the_next_issue_skips_a_locked_one(
     assert from_plain(taken.json(), dict[str, object])["id"] == str(only)
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_admin_reads_lock_events_in_the_change_log(
+    pglite_route_client: _Client,
+    rows: _Rows,
+) -> None:
+    client, store = pglite_route_client
+    _as("admin")
+
+    locks = await _change_feed(client, kind="locked")
+    event = locks[0]
+    one = await client.get(f"/api/change_log/{event['id']}")
+
+    assert {c["subject_id"] for c in locks} == {str(rows.locked), str(rows.artifact)}
+    assert (event["kind"], event["actor"]) == (
+        "locked",
+        make_test_identity(role="admin").email,
+    )
+    assert one.status_code == 200
+    assert uuid.UUID(from_plain(event["id"], str)) in await _readable_by(store, "admin")
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_writer_cannot_learn_of_a_lock_event_by_any_read(
+    pglite_route_client: _Client,
+    rows: _Rows,
+) -> None:
+    client, store = pglite_route_client
+    _as("admin")
+    everything = await _change_feed(client)
+    events = [c["id"] for c in everything if c["kind"] in _LOCK_KINDS]
+    others = [c["id"] for c in everything if c["kind"] not in _LOCK_KINDS]
+    _as("writer")
+
+    listed = await _change_feed(client)
+    by_kind = [await _change_feed(client, kind=kind) for kind in _LOCK_KINDS]
+    by_subject = await _change_feed(client, subject_id=str(rows.locked))
+    by_actor = await _change_feed(client, actor=make_test_identity(role="admin").email)
+    fetched = await client.get(f"/api/change_log/{events[0]}")
+    after = await client.get("/api/change_log", params={"after_id": events[0]})
+    paged = await _pages(client, size=1)
+    web_reads = {str(i) for i in await _readable_by(store, "writer")}
+
+    assert events
+    assert [c["id"] for c in listed] == others
+    assert by_kind == [[], []]
+    assert not {c["kind"] for c in by_subject + by_actor} & set(_LOCK_KINDS)
+    assert fetched.status_code == 404
+    assert after.status_code == 404
+    assert not set(events) & web_reads
+    assert paged == others
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_lock_event_reaches_no_subscription(
+    pglite_route_client: _Client,
+    rows: _Rows,
+) -> None:
+    _, store = pglite_route_client
+    epoch = datetime(2000, 1, 1, tzinfo=UTC)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
+            "subscribers_snapshot) SELECT gen_random_uuid(), 'a', $1, 'Issue', kind, "
+            "ARRAY['watcher'] FROM unnest(ARRAY['locked', 'unlocked', 'created']) "
+            "AS kind",
+            rows.other,
+        )
+
+    mine = await store.what_changed_for_me("watcher", epoch)
+    anyone = await store.what_changed_for_anyone(epoch)
+
+    assert [c.kind for c in mine] == ["created"]
+    assert [c.kind for c, _ in anyone] == ["created"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_lock_events_outlive_a_purge_of_their_subject(
+    pglite_route_client: _Client,
+    rows: _Rows,
+) -> None:
+    client, _ = pglite_route_client
+    _as("admin")
+
+    purged = await client.request("DELETE", f"/api/inquiries/{rows.locked}", json={})
+    kept = await _change_feed(client, subject_id=str(rows.locked))
+
+    assert purged.status_code == 200, purged.text
+    assert {"locked", "purged"} <= {c["kind"] for c in kept}
+
+
 def _as(role: Role) -> None:
     install_identity(make_test_identity(role=role, api_key_id=None))
+
+
+_LOCK_KINDS: Final = ("locked", "unlocked")
+
+
+async def _change_feed(
+    client: httpx2.AsyncClient,
+    **params: str,
+) -> list[dict[str, object]]:
+    """List the change log newest first, as the caller may read it."""
+    answer = await client.get("/api/change_log", params=params)
+    assert answer.status_code == 200, answer.text
+    return from_plain(answer.json(), list[dict[str, object]])
+
+
+# The web routes (``/api/web/recent_changes``, ``/api/web/get``) select through this
+# filter under the alias ``c``, and are not mounted on the test app.
+async def _readable_by(store: Store, role: Role) -> list[uuid.UUID]:
+    """List the change ids ``change_read_filter`` keeps for ``role``."""
+    params: list[object] = []
+    predicate = store.change_read_filter(
+        "c",
+        params=params,
+        principal=Principal(email="reader@example.com", role=role),
+    )
+    async with store.engine.acquire() as conn:
+        found = await conn.fetch(
+            vetted_sql("SELECT c.id FROM change_log AS c WHERE ", predicate),
+            *params,
+        )
+    return [from_plain(row["id"], uuid.UUID) for row in found]
+
+
+async def _pages(client: httpx2.AsyncClient, *, size: int) -> list[str]:
+    """Walk the change log ``size`` rows a page with ``after_id``; return every id."""
+    seen: list[str] = []
+    while page := await _change_feed(
+        client,
+        limit=str(size),
+        **({"after_id": seen[-1]} if seen else {}),
+    ):
+        seen.extend(from_plain(c["id"], str) for c in page)
+    return seen
 
 
 async def _issue(client: httpx2.AsyncClient, title: str) -> uuid.UUID:
@@ -388,15 +533,15 @@ def _publication(issue: uuid.UUID) -> dict[str, object]:
     }
 
 
-async def _lock_log(store: Store, target: uuid.UUID) -> list[tuple[bool, str]]:
-    """List who locked or unlocked ``target``, oldest first."""
+async def _lock_log(store: Store, target: uuid.UUID) -> list[tuple[str, str]]:
+    """List ``(kind, actor)`` of each lock event on ``target``, oldest first."""
     async with store.engine.acquire() as conn:
         found = await conn.fetch(
-            "SELECT locked, actor FROM inquiry_lock_log WHERE inquiry_id = $1 "
-            "ORDER BY id",
+            "SELECT kind, actor FROM change_log WHERE subject_id = $1 "
+            "AND kind IN ('locked', 'unlocked') ORDER BY created, id",
             target,
         )
-    return [(from_plain(r["locked"], bool), from_plain(r["actor"], str)) for r in found]
+    return [(from_plain(r["kind"], str), from_plain(r["actor"], str)) for r in found]
 
 
 async def _changes(store: Store) -> set[uuid.UUID]:

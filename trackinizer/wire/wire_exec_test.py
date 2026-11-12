@@ -1,8 +1,9 @@
-"""The exec wire contract: what a command, its offer and its result may carry."""
+"""The exec wire contract, kept one release for the old client that imports it."""
 
 from __future__ import annotations
 
 import base64
+import importlib
 import uuid
 
 import pydantic
@@ -21,6 +22,10 @@ _RESULT = {
     "truncated": False,
     "duration_ms": 3,
 }
+
+
+def _change_id(change: dict[str, object]) -> str:
+    return next(iter(change))
 
 
 def test_a_request_needs_only_a_command_a_folder_and_a_timeout() -> None:
@@ -63,7 +68,7 @@ def test_a_request_carries_stdin_as_base64_and_an_environment() -> None:
         {"env": {f"K{n}": "v" for n in range(wire_exec.MAX_ENV_VARS + 1)}},
         {"host": "other"},
     ],
-    ids=lambda change: next(iter(change)),
+    ids=_change_id,
 )
 def test_a_request_outside_the_limits_is_refused(change: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):
@@ -107,7 +112,7 @@ def test_a_full_size_stream_fits_a_result() -> None:
         {"truncated": "maybe"},
         {"extra": 1},
     ],
-    ids=lambda change: next(iter(change)),
+    ids=_change_id,
 )
 def test_a_result_outside_the_limits_is_refused(change: dict[str, object]) -> None:
     with pytest.raises(pydantic.ValidationError):
@@ -116,6 +121,27 @@ def test_a_result_outside_the_limits_is_refused(change: dict[str, object]) -> No
 
 def test_a_timeout_reports_the_exit_code_timeout_gives() -> None:
     assert wire_exec.TIMEOUT_EXIT_CODE == 124
+
+
+# A published daemon allows any newer version of this package and reads these as
+# it starts, so a name gone from here crashes a host that upgraded only this package.
+@pytest.mark.parametrize(
+    "name",
+    [
+        "HOST_EXEC_RESULT_PATH",
+        "HOST_EXEC_WAIT_PATH",
+        "MAX_ENV_VARS",
+        "MAX_STREAM_BYTES",
+        "TIMEOUT_EXIT_CODE",
+        "WAIT_MAX_SEC",
+        "Base64",
+        "ExecRequest",
+        "ExecResult",
+        "ExecWait",
+    ],
+)
+def test_wire_exec_still_imports_for_old_clients(name: str) -> None:
+    assert hasattr(importlib.import_module("trackinizer.wire.wire_exec"), name)
 
 
 if __name__ == "__main__":

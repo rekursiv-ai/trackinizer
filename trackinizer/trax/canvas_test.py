@@ -14,6 +14,7 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
+from trackinizer.trax.canvas import canvas_from_env
 
 
 if TYPE_CHECKING:
@@ -47,6 +48,9 @@ class _CanvasClient:
         self.chat_windows: list[bool] = []
         self.preferences: list[dict[str, object]] = []
         self.reads: list[str] = []
+        self.visuals: list[object] = []
+        self.focused: str | None = None
+        self.unlabeled = uuid.uuid4()
         self.canvas = uuid.uuid4()
 
     def get(self, path: str) -> dict[str, object]:
@@ -55,7 +59,7 @@ class _CanvasClient:
 
     def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, object]:
         self.reads.append(f"/api/canvases/{canvas_id}")
-        return self._state(8, visuals=[])
+        return self._state(8, visuals=self.visuals)
 
     def apply_canvas_operation(
         self,
@@ -76,7 +80,10 @@ class _CanvasClient:
                     "id": "m1",
                     "author": "agent",
                     "page": "#/graph",
-                    "covers": {"records": [record], "instances": ["inst-1"]},
+                    "covers": {
+                        "records": [record, str(self.unlabeled)],
+                        "instances": ["inst-1"],
+                    },
                 },
                 {"id": "m2", "author": "jp", "covers": {}, "window": True},
             ],
@@ -126,7 +133,12 @@ class _CanvasClient:
         }
 
     def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
-        return {"id": str(self.canvas), "revision": revision, "visuals": visuals}
+        return {
+            "id": str(self.canvas),
+            "revision": revision,
+            "visuals": visuals,
+            "focused_instance": self.focused,
+        }
 
     def _at(self, canvas_id: uuid.UUID) -> None:
         """Refuse a call that names any canvas but this one."""
@@ -234,6 +246,8 @@ def test_canvas_show_sends_one_operation_through_the_clients_one_path(
     _canvas(client, "focus", str(instance))
     _canvas(client, "place", str(instance), "floating")
     _canvas(client, "place", str(instance), "left")
+    _canvas(client, "place", str(instance), "main")
+    _canvas(client, "place", str(instance), "side")
 
     assert client.operations == [
         {
@@ -246,6 +260,8 @@ def test_canvas_show_sends_one_operation_through_the_clients_one_path(
         {"kind": "focus", "instance_id": str(instance)},
         {"kind": "place", "instance_id": str(instance), "placement": "floating"},
         {"kind": "place", "instance_id": str(instance), "placement": "left"},
+        {"kind": "place", "instance_id": str(instance), "placement": "main"},
+        {"kind": "place", "instance_id": str(instance), "placement": "side"},
     ]
     assert client.reads == []
     assert f"canvas {client.canvas} revision 9" in capsys.readouterr().out
@@ -267,6 +283,7 @@ def test_canvas_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None
         "flag=true",
     )
     _canvas(client, "show", "x.demo", "--param", "flag=false")
+    _canvas(client, "show", "x.demo", "--param", "label=left=right")
 
     assert client.operations == [
         {
@@ -275,7 +292,13 @@ def test_canvas_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None
             "params": {"label": "123", "count": -5, "flag": True},
         },
         {"kind": "show", "visual_type": "x.demo", "params": {"flag": False}},
+        {
+            "kind": "show",
+            "visual_type": "x.demo",
+            "params": {"label": "left=right"},
+        },
     ]
+    assert client.reads == ["/api/visuals"] * 3
 
 
 def test_canvas_show_without_params_does_not_read_the_catalog() -> None:
@@ -607,6 +630,68 @@ def test_canvas_mark_refuses_a_malformed_command(
     assert client.operations == []
 
 
+def test_a_malformed_placed_canvas_names_no_canvas() -> None:
+    """A garbled ``TRAX_CANVAS`` is not read past to its ``LC_`` twin."""
+    good = str(uuid.uuid4())
+
+    assert canvas_from_env({"TRAX_CANVAS": "garbled", "LC_TRAX_CANVAS": good}) is None
+    assert canvas_from_env({"TRAX_CANVAS": " ", "LC_TRAX_CANVAS": good}) == uuid.UUID(
+        good,
+    )
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["show"], "show requires one visual type"),
+        (["show", "trax.browse", "trax.subgraph"], "show requires one visual type"),
+        (["hide"], "hide requires one instance UUID"),
+        (
+            ["hide", str(uuid.uuid4()), "--record", str(uuid.uuid4())],
+            "hide requires one instance UUID",
+        ),
+        (["focus", str(uuid.uuid4()), "--placement", "main"], "focus requires one"),
+        (["hide", "not-a-uuid"], "instance is not a valid UUID"),
+        (["place", str(uuid.uuid4())], "place requires an instance UUID and placement"),
+        (["place", str(uuid.uuid4()), "nowhere"], "place requires an instance UUID"),
+        (
+            ["place", str(uuid.uuid4()), "left", "--record", str(uuid.uuid4())],
+            "place requires an instance UUID",
+        ),
+    ],
+)
+def test_canvas_refuses_a_malformed_operation(
+    arguments: list[str],
+    message: str,
+) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match=f"^{re.escape(message)}"):
+        _canvas(client, *arguments)
+
+    assert client.operations == []
+
+
+def test_canvas_prints_each_visual_with_its_placement_and_record(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    record = str(uuid.uuid4())
+    client.visuals = [
+        {"id": "i1", "type": "trax.subgraph", "placement": "side", "record_id": record},
+        {"id": "i2", "type": "trax.browse"},
+    ]
+    client.focused = "i1"
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"canvas {client.canvas} revision 8 focused i1",
+        f"  trax.subgraph i1 side record={record}",
+        "  trax.browse i2 main",
+    ]
+
+
 def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_own(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -616,7 +701,10 @@ def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_o
 
     lines = capsys.readouterr().out.splitlines()
     assert lines[-2:] == [
-        "  box m1 by agent on #/graph covers: Experiment#12 Measured tails, inst-1",
+        (
+            "  box m1 by agent on #/graph covers: "
+            f"Experiment#12 Measured tails, {client.unlabeled}, inst-1"
+        ),
         "  box m2 by jp over the window on no page covers: nothing",
     ]
 

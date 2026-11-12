@@ -116,10 +116,17 @@ def test_record_lines_rejects_a_non_object_record(tmp_path: Path) -> None:
         _record_lines(source)
 
 
-def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
+@pytest.fixture
+def claude_kinds_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-) -> None:
+) -> tuple[
+    Path,
+    Path,
+    Path,
+    list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]],
+    list[str],
+]:
     user = tmp_path / "user"
     real_claude_home = user / ".claude"
     real_claude_home.mkdir(parents=True)
@@ -158,6 +165,19 @@ def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
     monkeypatch.setattr(capture, "_drive", fake_drive)
     out = tmp_path / "out" / "kinds"
     root = tmp_path / "root"
+    return tmp_path, root, out, calls, skills
+
+
+def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
+    claude_kinds_capture: tuple[
+        Path,
+        Path,
+        Path,
+        list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]],
+        list[str],
+    ],
+) -> None:
+    _, root, out, calls, skills = claude_kinds_capture
 
     written = capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
 
@@ -228,6 +248,19 @@ def test_capture_claude_kinds_serves_the_mcp_and_skill_and_emits_only_main(
         "CLAUDE_CONFIG_DIR": str(root / "home"),
         "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
     }
+
+
+def test_capture_claude_kinds_reuses_existing_output(
+    claude_kinds_capture: tuple[
+        Path,
+        Path,
+        Path,
+        list[tuple[list[str], Sequence[_Step], Path, dict[str, str]]],
+        list[str],
+    ],
+) -> None:
+    tmp_path, root, out, _, _ = claude_kinds_capture
+    written = capture_claude_kinds(root, out, turn_sec=1.5, timeout_sec=9)
 
     assert (
         capture_claude_kinds(

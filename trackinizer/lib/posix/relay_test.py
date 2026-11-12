@@ -35,7 +35,7 @@ from trackinizer.lib.posix.relay import (
     real_fd,
     terminal_size,
 )
-from trackinizer.lib.posix.terminal import PASTE_START, Terminal
+from trackinizer.lib.posix.terminal import PASTE_START, TERMINAL_RESET, Terminal
 
 
 if TYPE_CHECKING:
@@ -48,7 +48,7 @@ if TYPE_CHECKING:
     )
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 class TestRealFd:
@@ -276,6 +276,157 @@ class TestTerminalHandback:
             b"\x1b[?25h",  # Cursor visible.
         ):
             assert disable in seen
+
+    @pytest.mark.parametrize(
+        ("chunks", "extra"),
+        [
+            ([b"ordinary output"], b""),
+            ([b"\x1b[?1049h", b"\x1b[?1049l", b"done"], b""),
+            ([b"\x1b[?1049h"], b"\x1b[?1049l"),
+            ([b"\x1b[?47h"], b"\x1b[?47l"),
+            ([b"\x1b[?1047h"], b"\x1b[?1047l"),
+            ([bytes([byte]) for byte in b"\x1b[?25;1049;1004h"], b"\x1b[?1049l"),
+            ([b"\x1b[?1049h\x1b[?47l"], b""),
+            ([b"\x1b[?1049h\x1bc"], b""),
+            ([b"\x1b]0;title \x1b[?1049h\x07"], b""),
+            ([b"\x1bPignored \x1b[?1049h\x1b\\"], b""),
+            ([b"\x1bPpayload\x1bX\x1b[?1049h\x1b\\"], b""),
+            ([bytes([byte]) for byte in b"\x1bPpayload\x1bX\x1b[?1049h\x1b\\"], b""),
+            ([b"\x1bPpayload\\\x1b[?1049h\x1b\\"], b""),
+            ([b"\x1b[?1049Xh"], b""),
+            ([b"\x1b[;1049h"], b""),
+            ([b"\x1b[?1049 h"], b""),
+            ([bytes([byte]) for byte in b"\x1b[?1049h\x1b[?1049l"], b""),
+            ([b"\x1b[31mplain\x1b[?1004h"], b""),
+            ([b"\x1b[?1049\x18h\x1b[?1049\x1ah"], b""),
+            ([b"\x1b[?1049$h"], b""),
+            ([b"\x1b[?1049\x00h"], b"\x1b[?1049l"),
+            ([b"\x1b[?10000000000000000000000049h"], b""),
+            ([b"\x1b[?00001049h"], b"\x1b[?1049l"),
+            ([b"\x1b[?1049h\x1b[?25l"], b"\x1b[?1049l"),
+            ([b"\x1b]title\x1b\\\x1b[?1049h"], b"\x1b[?1049l"),
+            ([b"\x1b]title\x07\x1b[?1049h"], b"\x1b[?1049l"),
+            ([b"\x1bP\x07\x1b[?1049h\x1b\\"], b""),
+            ([b"\x1b[?1049\x1b[?47h"], b"\x1b[?47l"),
+        ],
+    )
+    def test_cleanup_leaves_only_an_active_alternate_screen(
+        self,
+        chunks: list[bytes],
+        extra: bytes,
+    ) -> None:
+        master, slave = pty.openpty()
+        try:
+            relay = Relay(
+                _FakeChild(chunks=chunks),
+                stdin=_NoFileno(),
+                stdout=_Fd(slave),
+            )
+            assert asyncio.run(relay.serve()) == 0
+            seen = _terminal_bytes(
+                master,
+                size=len(b"".join(chunks) + extra + TERMINAL_RESET),
+            )
+        finally:
+            os.close(master)
+            os.close(slave)
+        child_output = b"".join(chunks)
+        for mode in (47, 1047, 1049):
+            leave = f"\x1b[?{mode}l".encode()
+            assert seen.count(leave) == (child_output + extra).count(leave)
+        assert seen == child_output + extra + TERMINAL_RESET
+
+    def test_resume_keeps_the_normal_screen_when_the_child_never_switched(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        master, slave = pty.openpty()
+        input_r, input_w = os.pipe()
+        monkeypatch.setattr(os, "killpg", mock.Mock())
+
+        async def run() -> int:
+            resumed = asyncio.Event()
+            relay = Relay(
+                _ResumedChild(resumed),
+                stdin=_Fd(input_r),
+                stdout=_Fd(slave),
+                suspend_key=b"\x1a",
+                on_resume=resumed.set,
+            )
+            _ = os.write(input_w, b"\x1a")
+            return await asyncio.wait_for(relay.serve(), 5.0)
+
+        try:
+            assert asyncio.run(run()) == 0
+            seen = _terminal_bytes(master, size=2 * len(TERMINAL_RESET))
+        finally:
+            for fd in (master, slave, input_r, input_w):
+                os.close(fd)
+        assert seen == TERMINAL_RESET * 2
+
+    @pytest.mark.parametrize("mode", [47, 1047, 1049])
+    def test_resume_reenters_the_active_screen_on_descriptor_zero(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        mode: int,
+    ) -> None:
+        master, slave = pty.openpty()
+        input_r, input_w = os.pipe()
+        enter = f"\x1b[?{mode}h".encode()
+        leave = f"\x1b[?{mode}l".encode()
+        monkeypatch.setattr(os, "killpg", mock.Mock())
+
+        class ScreenChild(_ResumedChild):
+            @override
+            async def output(self) -> AsyncIterator[bytes]:
+                yield enter
+                async for chunk in super().output():
+                    yield chunk
+
+        def suspend_after_output(chunk: bytes) -> None:
+            assert chunk == enter
+            _ = os.write(input_w, b"\x1a")
+
+        async def run() -> int:
+            resumed = asyncio.Event()
+            relay = Relay(
+                ScreenChild(resumed),
+                stdin=_Fd(input_r),
+                stdout=_Fd(0),
+                suspend_key=b"\x1a",
+                on_output=suspend_after_output,
+                on_resume=resumed.set,
+            )
+            return await asyncio.wait_for(relay.serve(), 5.0)
+
+        expected = (enter + leave + TERMINAL_RESET) * 2
+        try:
+            with _as_stdin(slave):
+                assert asyncio.run(run()) == 0
+            seen = _terminal_bytes(master, size=len(expected))
+        finally:
+            for fd in (master, slave, input_r, input_w):
+                os.close(fd)
+        assert seen == expected
+
+    @pytest.mark.parametrize("mode", [47, 1047, 1049])
+    def test_suspend_leaves_and_resume_reenters_the_active_screen(
+        self,
+        mode: int,
+    ) -> None:
+        master, slave = pty.openpty()
+        enter = f"\x1b[?{mode}h".encode()
+        relay = Relay(_FakeChild(chunks=[enter]))
+        expected = enter + f"\x1b[?{mode}l".encode() + TERMINAL_RESET + enter
+        with mock.patch.object(os, "killpg"):
+            try:
+                asyncio.run(relay._pump(-1, slave))
+                relay._suspend(-1, slave)
+                seen = _terminal_bytes(master, size=len(expected))
+            finally:
+                os.close(master)
+                os.close(slave)
+        assert seen == expected
 
     def test_line_discipline_is_restored(self) -> None:
         """Raw mode is undone, so the shell afterwards still echoes and canons."""
@@ -708,7 +859,12 @@ class TestRelayBranchEdges:
     ) -> None:
         reset: list[int] = []
 
-        def reset_terminal_modes(fd: int) -> bool:
+        def reset_terminal_modes(
+            fd: int,
+            *,
+            alternate_screen: int | None = None,
+        ) -> bool:
+            assert alternate_screen is None
             reset.append(fd)
             return True
 
@@ -1245,7 +1401,8 @@ class TestForwardInput:
                 os.close(fd)
         assert cooked_at_stop == [True]
         assert raw_again
-        assert b"\x1b[?1049l" in reset
+        assert b"\x1b[?1049l" not in reset
+        assert b"\x1b[?25h" in reset
         assert kept is not None
         assert _modes(kept) == _modes(cooked)
 
@@ -1448,7 +1605,12 @@ class TestThreadedRelayWiring:
     def test_work_that_never_finishes_is_left_at_its_timeout(self) -> None:
         threaded = ThreadedRelay(["cat"])
         loop = asyncio.new_event_loop()
-        serving = threading.Thread(target=loop.run_forever, daemon=True)
+
+        def serve() -> None:
+            with asyncio.Runner(loop_factory=lambda: loop):
+                loop.run_forever()
+
+        serving = threading.Thread(target=serve, daemon=True)
         serving.start()
         threaded._loop = loop
         caller = threading.Thread(
@@ -1462,11 +1624,10 @@ class TestThreadedRelayWiring:
             caller.join(timeout=5.0)
             assert not caller.is_alive()
         finally:
-            for task in asyncio.all_tasks(loop):
-                _ = loop.call_soon_threadsafe(task.cancel)
             _ = loop.call_soon_threadsafe(loop.stop)
             serving.join(timeout=5.0)
-            loop.close()
+        assert not serving.is_alive()
+        assert loop.is_closed()
 
     def test_a_dropped_call_says_what_and_how_much(
         self,
@@ -1483,6 +1644,17 @@ class TestThreadedRelayWiring:
             "write dropped: child not running (1 bytes)",
             "submit dropped: master died (4 bytes)",
         ]
+
+
+def _terminal_bytes(fd: int, *, size: int) -> bytes:
+    """Read at least ``size`` bytes, including writes still crossing the pty."""
+    seen = b""
+    nothing: list[int] = []
+    while len(seen) < size:
+        ready, _, _ = select.select([fd], nothing, nothing, 1)
+        assert ready
+        seen += os.read(fd, 4096)
+    return seen
 
 
 class _Fd:
@@ -1740,7 +1912,8 @@ def _wait(predicate: Callable[[], bool], timeout_sec: float) -> None:
     while time.monotonic() < deadline:
         if predicate():
             return
-        time.sleep(0.01)
+        # Its predicates read other processes, which signal nothing here.
+        time.sleep(0.01)  # house-ignore[sleep] -- See above.
 
 
 def _wait_running(relay: ThreadedRelay, timeout_sec: float) -> None:
@@ -1755,7 +1928,8 @@ async def _wait_for(predicate: Callable[[], bool], timeout_sec: float) -> None:
     while loop.time() < deadline:
         if predicate():
             return
-        await asyncio.sleep(0.02)
+        # Its predicates read other processes, which signal nothing here.
+        await asyncio.sleep(0.02)  # house-ignore[sleep] -- See above.
 
 
 if __name__ == "__main__":

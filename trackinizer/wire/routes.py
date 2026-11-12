@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, fields
 from functools import cache
-from typing import Final, Literal, get_args, get_origin, get_type_hints
+from typing import Final, Literal, cast, get_args, get_origin, get_type_hints
 
 from trackinizer.types.columns import (
     FlatColumn,
@@ -256,7 +256,7 @@ def inquiry_relation_fields() -> frozenset[str]:
     """
     relations: set[str] = set()
     for cls in INQUIRY_CLASSES:
-        hints = get_type_hints(cls)
+        hints = cast(dict[str, object], get_type_hints(cls))
         for field in fields(cls):
             hint = hints[field.name]
             peer: object = get_args(hint)[0] if get_origin(hint) is tuple else None
@@ -269,7 +269,8 @@ def inquiry_relation_fields() -> frozenset[str]:
 # element is one ``X``. Returns ``None`` when ``value_type`` is not a homogeneous tuple.
 def _element_type(value_type: object) -> object | None:
     """Return the element type of a ``tuple[X, ...] | None`` column."""
-    for member in get_args(value_type) or (value_type,):
+    members = (value_type,) if get_origin(value_type) is tuple else get_args(value_type)
+    for member in members:
         if get_origin(member) is tuple:
             args: tuple[object, ...] = get_args(member)
             if len(args) == 2 and args[1] is Ellipsis:

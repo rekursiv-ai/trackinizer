@@ -26,9 +26,10 @@ runs; leaving an addon out switches it off everywhere at once.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
+from uuid import UUID
 
 from fastapi import APIRouter
 from fastapi.routing import APIRoute, APIWebSocketRoute
@@ -60,11 +61,21 @@ class ServerContext:
     Attributes:
       store: The server's graph store, opened and bootstrapped.
       inbound: The live-session message queue, as the subscriber push uses it.
+      host_idle_sec: How long a host, by id, has had no tool call or result and
+        no terminal input or output, relayed or direct, as this process saw; a
+        host with none since the process started is counted from its start.
+      hosts_changed: Tells the followers of an owner's host listing, by email,
+        that it changed; called once the write has committed.
+      host_closed: Ends the tool pipes and terminals of a host, by id, taken
+        out of service.
 
     """
 
     store: Store
     inbound: InboundQueue
+    host_idle_sec: Callable[[UUID], float]
+    hosts_changed: Callable[[str], None]
+    host_closed: Callable[[UUID], Awaitable[None]]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

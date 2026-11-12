@@ -59,10 +59,23 @@ SESSION_CONTENT_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         # A run's word on what it is doing, kept on its lease in memory: it reads and
         # writes no record, and is held to the rules of the session's drain.
         ("POST", "/api/sessions/{session_id}/run-state"),
+        # A live session, relayed in memory: its lines take the records' read test;
+        # an input, and starting or stopping the process, take the test of who may
+        # send the session an input. Declared ahead of the relay: each answers 501
+        # until it is built, and reads nothing.
+        ("GET", "/api/sessions/{session_id}/lines"),
+        ("POST", "/api/sessions/{session_id}/inputs"),
+        ("PUT", "/api/sessions/{session_id}/process"),
+        ("GET", "/api/sessions/{session_id}/process"),
+        ("DELETE", "/api/sessions/{session_id}/process"),
         ("GET", "/api/sessions/{session_id}/parts"),
         ("GET", "/api/sessions/{session_id}/records"),
         ("POST", "/api/sessions/{session_id}/records"),
         ("GET", "/api/sessions/{session_id}/turns"),
+        # What a session's model calls used and cost, totalled from its records: it
+        # returns no transcript, but tells how much a session did, so a read takes the
+        # records' read test.
+        ("GET", "/api/sessions/{session_id}/usage"),
         ("POST", "/api/messages"),
         ("GET", "/api/web/feed"),
         ("GET", "/api/web/feed/facets"),

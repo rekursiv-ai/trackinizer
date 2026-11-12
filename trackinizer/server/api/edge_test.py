@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from unittest.mock import AsyncMock
 
 import asyncio
 import uuid
@@ -58,6 +59,47 @@ def test_set_edge_annotation_rejects_unknown_field() -> None:
         )
     assert exc.value.status_code == 500
     assert "edge-annotation setter" in exc.value.detail
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("priority", 2), ("note", "why"), ("valence", -0.5), ("labels", ["context"])],
+)
+def test_set_edge_annotation_writes_only_the_named_column(
+    field: str,
+    value: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _engine = make_store()
+    change = uuid.uuid4()
+    setter = AsyncMock(return_value=change)
+    monkeypatch.setattr(store, "set_edge_annotation", setter)
+    from_id, to_id = new_uuid(), new_uuid()
+
+    result = asyncio.run(
+        _set_edge_annotation(
+            store,
+            field,
+            value,
+            from_id=from_id,
+            to_id=to_id,
+            edge_kind="narrows",
+            reason="r",
+            api_key_id=None,
+            actor="u",
+        ),
+    )
+
+    assert result == change
+    setter.assert_awaited_once_with(
+        from_id=from_id,
+        to_id=to_id,
+        edge_kind="narrows",
+        reason="r",
+        api_key_id=None,
+        actor="u",
+        **{field: value},
+    )
 
 
 if TYPE_CHECKING:
@@ -633,6 +675,44 @@ class TestCoverageRoutesAndCli:
             ).status_code
             == 200
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("priority", 10), ("priority", None), ("valence", 0.5), ("valence", None)],
+)
+async def test_scalar_edge_annotation_dispatch_preserves_value_and_audit(
+    field: str,
+    value: float | None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store, _engine = make_store()
+    change = new_uuid()
+    setter = AsyncMock(return_value=change)
+    monkeypatch.setattr(store, "set_edge_annotation", setter)
+    source, target, key = new_uuid(), new_uuid(), new_uuid()
+    result = await _set_edge_annotation(
+        store,
+        field,
+        value,
+        from_id=source,
+        to_id=target,
+        edge_kind="proves",
+        reason="correct weight",
+        api_key_id=key,
+        actor="auditor",
+    )
+    assert result == change
+    setter.assert_awaited_once_with(
+        from_id=source,
+        to_id=target,
+        edge_kind="proves",
+        reason="correct weight",
+        api_key_id=key,
+        actor="auditor",
+        **{field: value},
+    )
 
 
 if __name__ == "__main__":

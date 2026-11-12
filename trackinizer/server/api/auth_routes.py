@@ -117,7 +117,7 @@ async def profile_route(
     Returns:
       result: JSON with user_id, email, name, role, last_login, the user's
         preferences (every key, defaults filled), the id of the API key the request
-        used (``None`` for a browser session) and the machine a device login made it
+        used (``None`` for a browser session) and the host a device login made it
         for (``None`` for a key made another way), and the audiences the credential
         reads and opens into, with its pin if any.
 
@@ -128,14 +128,14 @@ async def profile_route(
             "SELECT name, last_login, preferences FROM users WHERE id = $1",
             identity.user_id,
         )
-        # A device login that enrolled a machine made the key for it (``api_keys.machine_id``);
-        # logging that machine out revokes the key.
-        machine = (
+        # A device login that enrolled a host made the key for it (``api_keys.host_id``);
+        # logging that host out revokes the key.
+        host = (
             None
             if identity.api_key_id is None
             else await conn.fetchval(
-                "SELECT machines.name FROM api_keys JOIN machines "
-                "ON machines.id = api_keys.machine_id WHERE api_keys.id = $1",
+                "SELECT hosts.name FROM api_keys JOIN hosts "
+                "ON hosts.id = api_keys.host_id WHERE api_keys.id = $1",
                 identity.api_key_id,
             )
         )
@@ -154,7 +154,7 @@ async def profile_route(
             mode="json",
         ),
         "api_key_id": None if identity.api_key_id is None else str(identity.api_key_id),
-        "machine": from_plain(machine, str, default=None),
+        "host": from_plain(host, str, default=None),
         "read_audiences": _names(identity.read_audiences),
         "open_audiences": _names(identity.open_audiences),
         "pinned_audience": identity.pinned_audience,

@@ -8,7 +8,16 @@ version, export, and visual canvases.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import TYPE_CHECKING, ClassVar, Final, Protocol, cast, get_args, override
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Final,
+    NoReturn,
+    Protocol,
+    cast,
+    get_args,
+    override,
+)
 
 import argparse
 import json
@@ -252,9 +261,7 @@ class Kind(Command):
 
         """
         if verb == "agentsession" and (split := _split_run_tail(rest)) is not None:
-            args = cls.make_parser().parse_args(split[0])
-            cls.run_resume(split[0], split[1], args, client_factory)
-            return
+            cls.run_resume(split[1], cls.make_parser().parse_args(split[0]))
         # Split before the kind's parser, which would refuse the tail's own flags.
         if verb == "agentsession" and (split := _split_records_tail(rest)) is not None:
             cls.run_records(split[0], split[1], client_factory)
@@ -282,7 +289,7 @@ class Kind(Command):
         # generic dispatch below does not know the word, and would read it as
         # a field to show.
         if kind == "AgentSession" and (split := _split_run_tail(rest)) is not None:
-            return cls.run_resume(split[0], split[1], args, client_factory)
+            cls.run_resume(split[1], args)
         if not rest:
             return run_list_query(
                 ListQuery(kinds=(kind,), ranges={}, filters=()),
@@ -301,10 +308,9 @@ class Kind(Command):
             actions = _resolve_stdin_actions(parse_actions(rest))
             cls.run_create(kind, actions, args, client_factory)
             return None
+        # Tokens follow the ref: a ref alone is a subject list, shown above.
         ref, consumed = consume_ref(rest, 0, kind_hint=kind)
         after = rest[consumed:]
-        if not after:
-            return run_show(ref, args, client_factory)
         return run_actions(
             ref,
             _resolve_stdin_actions(parse_actions(after)),
@@ -322,23 +328,19 @@ class Kind(Command):
         args: argparse.Namespace,
         client_factory: Callable[[], Client],
         *,
-        against: bool = False,
+        against: bool,
     ) -> None:
         """Run relation.
 
         Args:
           ref: Row identifier.
           relation: Edge kind and inbound flag (reverse direction).
-          tokens: Row-specific suffix (edge index if any).
+          tokens: The edge index, when one was named; empty lists every row.
           args: CLI namespace (sort, format, width).
           client_factory: Callable that creates a client.
           against: Select citations with negative valence.
 
         """
-        if len(tokens) > 1:
-            raise ClientError(
-                f"unexpected positional after relation index: {tokens[1:]!r}",
-            )
         client = client_factory()
         _kind, _target_id, payload = client.get_inquiry(ref)
         edge_kind, _inbound = relation
@@ -391,44 +393,33 @@ class Kind(Command):
     @classmethod
     def run_resume(
         cls,
-        before: Sequence[str],
         tail: Sequence[str],
         args: argparse.Namespace,
-        client_factory: Callable[[], Client],
-    ) -> None:
+    ) -> NoReturn:
         """Refuse ``agentsession 42 run claude [--lossy] [runner args]``: it moved.
 
         Resuming a stored session runs an agent CLI, which moved out of trax. A
         malformed request is still named as such first, so the refusal is about the
-        one thing that changed.
+        one thing that changed. The session is one ref: ``_split_run_tail`` splits
+        only right after one.
 
         Args:
-          before: Session identifier.
           tail: Target CLI followed by runner args.
           args: CLI namespace (lossy conversion flag).
-          client_factory: Callable that creates a client; never called.
 
         Raises:
-          ClientError: The tail names no resumable CLI, or the session is not one.
+          ClientError: The tail names no resumable CLI.
           SystemExit: The request was well formed; it says it moved, with status 2.
 
         """
-        del client_factory
         _require_creation(args)
         if not tail:
             raise ClientError("run needs a target CLI: trax agentsession 42 run claude")
-        if not starts_with_ref(before):
-            raise ClientError("run needs one session: trax agentsession 42 run claude")
         if tail[0] not in RUN_CLIS:
             raise ClientError(
                 f"{tail[0]!r} cannot resume a stored session: it has no stable "
                 "per-session id to re-enter with. "
                 f"Resumable: {', '.join(sorted(RUN_CLIS))}.",
-            )
-        _ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
-        if before[consumed:]:
-            raise ClientError(
-                f"unexpected tokens before 'run': {list(before[consumed:])}",
             )
         moved("agentsession run")
 
@@ -454,13 +445,8 @@ class Kind(Command):
           ClientError: The session or a flag is not one this reads.
 
         """
-        if not starts_with_ref(before):
-            raise ClientError("records needs one session: trax agentsession 42 records")
-        ref, consumed = consume_ref(before, 0, kind_hint="AgentSession")
-        if before[consumed:]:
-            raise ClientError(
-                f"unexpected tokens before 'records': {list(before[consumed:])}",
-            )
+        # One session ref: ``_split_records_tail`` splits only right after one.
+        ref, _consumed = consume_ref(before, kind_hint="AgentSession")
         try:
             options, extra = _records_parser().parse_known_args(list(tail))
         except argparse.ArgumentError as err:
@@ -500,11 +486,8 @@ class Kind(Command):
     ) -> None:
         """``experiment <ref> metric ...``: read or write one experiment's grid."""
         _require_creation(args)
-        ref, consumed = consume_ref(before, 0, kind_hint="Experiment")
-        if consumed != len(before):
-            raise ClientError(
-                f"unexpected tokens before metric: {list(before[consumed:])!r}",
-            )
+        # Whole: ``_metric_prefix`` split the tail only after a ref that was all of it.
+        ref, _consumed = consume_ref(before, kind_hint="Experiment")
         client = client_factory()
         _kind, exp_id = client.resolve_id(ref)
         if action.write is not None:
@@ -512,7 +495,7 @@ class Kind(Command):
                 client,
                 exp_id,
                 action,
-                bulk_ok=bool(_arg_values(args).get("makeitso", False)),
+                bulk_ok=bool(_arg_values(args).get("makeitso")),
             )
             echo(f"written: {written}")
             return
@@ -581,7 +564,7 @@ class Kind(Command):
             client,
             exp_id,
             action,
-            bulk_ok=bool(_arg_values(args).get("makeitso", False)),
+            bulk_ok=bool(_arg_values(args).get("makeitso")),
         )
         echo(f"written: {written}")
 
@@ -676,11 +659,15 @@ class Kind(Command):
         edge_kind, inbound = relation
         bucket = "backlinks" if inbound else "edges"
         rows = from_plain(
-            from_plain(payload.get(bucket), dict[str, object], default={}).get(
+            from_plain(
+                payload.get(bucket),
+                dict[str, object],
+                default=dict[str, object](),
+            ).get(
                 edge_kind,
             ),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         )
         if against:
             # A ``dis*`` spelling selects the negative-valence (against) subset of
@@ -753,14 +740,22 @@ class Kind(Command):
             for change in from_plain(
                 source_payload.get("changes"),
                 list[dict[str, object]],
-                default=[],
+                default=list[dict[str, object]](),
             )
             if any(
                 from_plain(snapshot.get("peer_edge_kind"), str, default="") == edge_kind
                 and from_plain(snapshot.get("peer_id"), str, default="") == target_id
                 for snapshot in (
-                    from_plain(change.get("old"), dict[str, object], default={}),
-                    from_plain(change.get("new"), dict[str, object], default={}),
+                    from_plain(
+                        change.get("old"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
+                    from_plain(
+                        change.get("new"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
                 )
             )
         ]
@@ -981,7 +976,7 @@ class Kind(Command):
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
         # route that writes NULL; ``()`` leaves stored labels untouched
         # (TRAX-CLI-004).
-        labels = from_plain(metadata.get("labels"), list[str], default=[])
+        labels = from_plain(metadata.get("labels"), list[str], default=list[str]())
         edge_labels: Sequence[str] | None = labels
         if "labels" in metadata and not labels:
             edge_labels = None
@@ -1533,9 +1528,8 @@ class Kind(Command):
           client_factory: Callable that creates a client.
 
         """
-        spec = FIELDS_BY_NAME.get(action.field)
-        if spec is None or spec.shape != "list":
-            raise ClientError(f"unknown list field {action.field!r}")
+        # The parser builds an ``AddList`` / ``RemoveList`` for a list field alone.
+        spec = FIELDS_BY_NAME[action.field]
         include = isinstance(action, AddList)
         client = client_factory()
         actor = resolve_actor(_arg_str(args, "actor"), client)
@@ -1745,7 +1739,7 @@ def run_bulk_apply(
     # The guard is keyed on match count, not command shape: a single-row match
     # is as safe as a seq-targeted edit, so only a genuinely multi-row write
     # demands explicit confirmation. This is intentional (reviewed).
-    if len(rows) > 1 and not bool(_arg_values(args).get("makeitso", False)):
+    if len(rows) > 1 and not bool(_arg_values(args).get("makeitso")):
         echo(f"would apply to {len(rows)} rows; pass --makeitso to proceed:")
         print_rows(rows, _arg_str(args, "format_"), width=_arg_width(args))
         return
@@ -2308,7 +2302,7 @@ Examples:
                 for ref in from_plain(
                     row.get("requires"),
                     list[dict[str, object]],
-                    default=[],
+                    default=list[dict[str, object]](),
                 )
                 if (pid := str(ref.get("id")))
                 and status_by_id.get(pid, "active") == "active"
@@ -2484,7 +2478,7 @@ Examples:
   trax issue 7 status to complete              move issue to complete
 
 Values:
-  status: active complete abandoned invalid
+  status: active complete stopped abandoned invalid
 
 Options:
   --width INT                                  truncate rows to this width
@@ -2533,7 +2527,7 @@ Options:
             groups.setdefault(str(row.get("status") or "?"), []).append(row)
         for status in cast(
             tuple[Inquiry.Status, ...],
-            get_args(Inquiry.Status.__value__),
+            get_args(cast(object, Inquiry.Status.__value__)),
         ):
             bucket = groups.get(status, [])
             if not bucket:
@@ -2830,7 +2824,7 @@ Usage: trax export [labels <op> <value> ...]
 Examples:
   trax export > graph.jsonl                     back up the whole graph
   trax export labels is org:rekursiv            one org's subgraph
-  trax export labels is org:rekursiv labels nre '^machine:'
+  trax export labels is org:rekursiv labels nre '^host:'
                                                 that org, minus device rows
 
 Notes:
@@ -3283,8 +3277,7 @@ def _mask_clauses(masks: Sequence[MetricMask]) -> list[MetricMaskClause]:
 
 def _metric_write(action: MetricAction) -> tuple[float, list[MetricMaskClause]]:
     """Validate a metric write before any create or metric request."""
-    if action.write is None:
-        raise ValueError("Expected action.write is not None.")
+    assert isinstance(action.write, str)
     value = _finite_float(action.write)
     masks = _mask_clauses(action.masks)
     if not any(mask.axis == "step" for mask in masks):
@@ -3383,7 +3376,11 @@ def _arg_values(args: argparse.Namespace) -> Mapping[str, object]:
 
 
 def _arg_text(args: argparse.Namespace) -> list[str]:
-    value = from_plain(_arg_values(args).get("text"), list[object], default=[])
+    value = from_plain(
+        _arg_values(args).get("text"),
+        list[object],
+        default=list[object](),
+    )
     return [str(item) for item in value]
 
 

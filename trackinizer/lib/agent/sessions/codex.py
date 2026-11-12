@@ -197,13 +197,17 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             # The prompt lives on the opening clear, so the launch payload is
             # rebuilt from it rather than holding a second copy.
             _with_instructions(
-                from_plain(declaration.get("payload"), dict[str, object], default={}),
+                from_plain(
+                    declaration.get("payload"),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ),
                 ordered,
             ),
             template=from_plain(
                 declaration.get("$outer"),
                 dict[str, object],
-                default={},
+                default=dict[str, object](),
             ),
             include_timestamp=bool(declaration.get("$timestamp", True)),
             payload_at=from_plain(declaration.get("$payload_at"), int, default=None),
@@ -232,7 +236,11 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             ordinal += 1
             continue
         line_state, wire_item = _pop_line_state(item)
-        template = from_plain(line_state.get("outer"), dict[str, object], default={})
+        template = from_plain(
+            line_state.get("outer"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         raw_timestamp = template.get("timestamp")
         timestamp = (
             raw_timestamp
@@ -431,13 +439,21 @@ def _canonical_order(source: Mapping[str, object], *, kind: str = "") -> list[st
 def _ordered(kind: str, payload: Mapping[str, object]) -> dict[str, object]:
     """Return one payload in its native or canonical key order."""
     values = dict(payload)
-    native_order = from_plain(values.pop("$native_order", []), list[str], default=[])
+    native_order = from_plain(
+        values.pop("$native_order", []),
+        list[str],
+        default=list[str](),
+    )
     wire = from_plain(values.pop("$wire", {}), dict[str, object])
-    wire_values = from_plain(wire.get("values"), dict[str, object], default={})
+    wire_values = from_plain(
+        wire.get("values"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     values = {key: value for key, value in values.items() if not key.startswith("$")}
     values.update(wire_values)
     if not native_order:
-        native_order = from_plain(wire.get("order"), list[str], default=[])
+        native_order = from_plain(wire.get("order"), list[str], default=list[str]())
     if native_order:
         return {key: values[key] for key in native_order if key in values} | {
             key: value for key, value in values.items() if key not in native_order
@@ -502,7 +518,7 @@ def _write_record(
         return []
     if isinstance(item, TokenUsage):
         stored = mutable(item.extra)
-        nulls = set(from_plain(stored.get("$nulls"), list[str], default=[]))
+        nulls = set(from_plain(stored.get("$nulls"), list[str], default=list[str]()))
         values: dict[str, object] = {
             # ``None``, not the empty object the field holds: an object field
             # cannot tell a null apart from an absent one.
@@ -888,7 +904,11 @@ def _write_legacy_end(
         _ = extra.pop("$splice_counts", None)
         changes = _write_changes(
             by_path,
-            from_plain(extra.get("changes"), dict[str, object], default={}),
+            from_plain(
+                extra.get("changes"),
+                dict[str, object],
+                default=dict[str, object](),
+            ),
         )
         if changes is not None:
             extra["changes"] = changes
@@ -914,7 +934,9 @@ def _write_changes(
         for path, entry in stored.items()
         if (
             found := from_plain(
-                (from_plain(entry, dict[str, object], default={})).get("$filled"),
+                (from_plain(entry, dict[str, object], default=dict[str, object]())).get(
+                    "$filled",
+                ),
                 str,
                 default="",
             )
@@ -925,7 +947,7 @@ def _write_changes(
         return None
     out: dict[str, MutablePlainTree] = {}
     for path, entry in stored.items():
-        found = dict(from_plain(entry, dict[str, object], default={}))
+        found = dict(from_plain(entry, dict[str, object], default=dict[str, object]()))
         owner = by_path.get(path)
         if path in filled and owner is not None:
             # Each entry from the record that owns THAT path: an add states the
@@ -995,7 +1017,11 @@ def _write_completed(
             _ = nested.pop("$splice_counts", None)
             changes = _write_changes(
                 by_path,
-                from_plain(nested.get("changes"), dict[str, object], default={}),
+                from_plain(
+                    nested.get("changes"),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ),
             )
             if changes is not None:
                 nested["changes"] = changes
@@ -1600,7 +1626,11 @@ def _pop_line_state(
     """Remove and return record-owned Codex line replay state."""
     if isinstance(item, UncategorizedRecord):
         payload = dict(item.payload)
-        state = from_plain(payload.get("$codex_line"), dict[str, object], default={})
+        state = from_plain(
+            payload.get("$codex_line"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         if not isinstance(state.get("outer"), Mapping):
             return {}, item
         payload.pop("$codex_line")
@@ -1608,7 +1638,11 @@ def _pop_line_state(
             payload["$codex_line"] = mutable(state["value"])
         return state, replace(item, payload=payload)
     extra = mutable(item.extra)
-    state = from_plain(extra.get("$codex_line"), dict[str, object], default={})
+    state = from_plain(
+        extra.get("$codex_line"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     if not isinstance(state.get("outer"), Mapping):
         return {}, item
     extra.pop("$codex_line")
@@ -1736,12 +1770,12 @@ def _read_compacted(
     entries = read_or_default(
         payload.get("replacement_history"),
         list[object],
-        default=[],
+        default=list[object](),
     )
     kept: list[SessionRecord] = []
     sealed: str | None = None
     for value in entries:
-        entry = read_or_default(value, dict[str, object], default={})
+        entry = read_or_default(value, dict[str, object], default=dict[str, object]())
         if entry.get("type") == "compaction":
             sealed = read_or_default(entry.get("encrypted_content"), str, default=None)
             continue
@@ -1771,7 +1805,13 @@ def _read_compacted(
             for value in entries
             if (
                 read_or_default(
-                    (read_or_default(value, dict[str, object], default={})).get("type"),
+                    (
+                        read_or_default(
+                            value,
+                            dict[str, object],
+                            default=dict[str, object](),
+                        )
+                    ).get("type"),
                     str,
                     default="",
                 )
@@ -1989,7 +2029,11 @@ def _read_thinking(
     parts: list[str] = []
     templates: list[PlainTree] = []
     order: list[PlainTree] = []
-    for value in read_or_default(payload.get("summary"), list[object], default=[]):
+    for value in read_or_default(
+        payload.get("summary"),
+        list[object],
+        default=list[object](),
+    ):
         if isinstance(value, Mapping):
             block = from_plain(cast(dict[str, object], value), dict[str, object])
             if isinstance(block.get("text"), str):
@@ -2110,7 +2154,11 @@ def _read_tool_result(
     if isinstance(output, str):
         content = output
     elif isinstance(output, list):
-        output_list = read_or_default(payload.get("output"), list[object], default=[])
+        output_list = read_or_default(
+            payload.get("output"),
+            list[object],
+            default=list[object](),
+        )
         parts, attachments, templates = _read_content(output_list)
         content = "\n".join(parts)
         extra["$parts"] = [len(part) for part in parts] or [0]
@@ -2160,7 +2208,11 @@ def _read_search_call(
             "_call",
         ),
         arguments=immutable(
-            read_or_default(payload.get(arg_key), dict[str, object], default={}),
+            read_or_default(
+                payload.get(arg_key),
+                dict[str, object],
+                default=dict[str, object](),
+            ),
         ),
         extra=immutable(
             _codex_residual(payload, consumed)
@@ -2252,7 +2304,7 @@ def _read_event(
         invocation = read_or_default(
             payload.get("invocation"),
             dict[str, object],
-            default={},
+            default=dict[str, object](),
         )
         return McpResult(
             context_id=context_id,
@@ -2277,7 +2329,11 @@ def _read_event(
         )
         return lift_shell_result(shell) or shell
     if kind == "patch_apply_end":
-        changes = read_or_default(payload.get("changes"), dict[str, object], default={})
+        changes = read_or_default(
+            payload.get("changes"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         edits, counts = _patch_edits(changes)
         return _per_path_edits(
             changes,
@@ -2456,7 +2512,11 @@ def _read_completed(
     timestamp: str | None,
 ) -> SessionRecord | list[SessionRecord]:
     """Read an ``item_completed`` event by the kind of item it completed."""
-    item = read_or_default(payload.get("item"), dict[str, object], default={})
+    item = read_or_default(
+        payload.get("item"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
     item_type = read_or_default(item.get("type"), str, default="")
     outer = _codex_residual(payload, {"type", "item"}) | {"$echoes": "item_completed"}
     if item_type == "CommandExecution":
@@ -2491,7 +2551,11 @@ def _read_completed(
             consumed.add("id")
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        changes = read_or_default(item.get("changes"), dict[str, object], default={})
+        changes = read_or_default(
+            item.get("changes"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         edits, counts = _patch_edits(changes)
         return _per_path_edits(
             changes,
@@ -2546,7 +2610,7 @@ def _patch_edits(changes: Mapping[str, object]) -> tuple[tuple[Splice, ...], lis
     out: list[Splice] = []
     counts: list[int] = []
     for value in changes.values():
-        entry = read_or_default(value, dict[str, object], default={})
+        entry = read_or_default(value, dict[str, object], default=dict[str, object]())
         content = entry.get("content")
         if entry.get("unified_diff") is not None:
             found = parse_udiff(
@@ -2579,11 +2643,15 @@ def _per_path_edits(
         path
         for path, entry in changes.items()
         if isinstance(
-            (read_or_default(entry, dict[str, object], default={})).get("unified_diff"),
+            (
+                read_or_default(entry, dict[str, object], default=dict[str, object]())
+            ).get("unified_diff"),
             str,
         )
         or isinstance(
-            (read_or_default(entry, dict[str, object], default={})).get("content"),
+            (
+                read_or_default(entry, dict[str, object], default=dict[str, object]())
+            ).get("content"),
             str,
         )
     ]
@@ -2599,7 +2667,11 @@ def _per_path_edits(
         # A write ONLY when content is the form the entry used. An entry
         # carrying both keys is an update whose diff the reader took, and
         # typing it by key presence made the writer fill the wrong one.
-        entry = read_or_default(changes.get(path), dict[str, object], default={})
+        entry = read_or_default(
+            changes.get(path),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         added = not isinstance(entry.get("unified_diff"), str) and isinstance(
             entry.get("content"),
             str,

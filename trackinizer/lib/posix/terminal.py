@@ -90,7 +90,6 @@ dotfile picks a different wrong answer.
 # idempotent, so sending them when the child already cleaned up is a no-op.
 TERMINAL_RESET: Final = b"".join(
     (
-        b"\x1b[?1049l",  # Leave alternate screen.
         b"\x1b[?1000l\x1b[?1002l\x1b[?1003l",  # Mouse: click, drag, any-motion.
         b"\x1b[?1005l\x1b[?1006l\x1b[?1015l",  # Mouse encodings: utf8, SGR, urxvt.
         b"\x1b[?1004l",  # Focus in/out reporting.
@@ -159,7 +158,7 @@ def write_all(fd: int, data: bytes) -> bool:
     return True
 
 
-def reset_terminal_modes(fd: int) -> bool:
+def reset_terminal_modes(fd: int, *, alternate_screen: int | None = None) -> bool:
     """Disable DECSET modes a child may have left on; True if written.
 
     Only for a real terminal: a redirected or piped ``fd`` would collect the
@@ -168,6 +167,7 @@ def reset_terminal_modes(fd: int) -> bool:
 
     Args:
       fd: Descriptor of the terminal to restore.
+      alternate_screen: Active screen-switch mode (47, 1047, 1049), or None.
 
     Returns:
       written: Whether the reset was sent.
@@ -175,7 +175,9 @@ def reset_terminal_modes(fd: int) -> bool:
     """
     if fd < 0 or not os.isatty(fd):
         return False
-    return write_all(fd, TERMINAL_RESET)
+    # Resetting 1049 on the normal screen restores a stale cursor position.
+    leave = b"" if alternate_screen is None else f"\x1b[?{alternate_screen}l".encode()
+    return write_all(fd, leave + TERMINAL_RESET)
 
 
 class Terminal:
@@ -447,7 +449,10 @@ class Terminal:
             # Enter is suppressed and the line never submits. The delay is
             # deliberately OUTSIDE ``_write_lock`` -- holding that across the
             # sleep stalls every peer keystroke for the full delay.
-            await asyncio.sleep(self._enter_delay_sec)
+            # The child's paste-burst window is a duration, not an event.
+            await asyncio.sleep(
+                self._enter_delay_sec,
+            )  # house-ignore[sleep] -- See above.
             async with self._write_lock:
                 _ = await self._write(SUBMIT)
             self._submitted += 1
@@ -521,7 +526,8 @@ class Terminal:
                 break
             # A cooperative child is gone within a millisecond of TERM; the
             # tick is the floor on every teardown.
-            await asyncio.sleep(0.001)
+            # Reaping would end the wait but frees the group id this KILL needs.
+            await asyncio.sleep(0.001)  # house-ignore[sleep] -- See above.
         # The whole group received TERM; once its leader is gone, the rest are
         # stragglers with no reason to outlive it.
         if self._signal(signal.SIGKILL):
@@ -635,7 +641,7 @@ def _resolve(ready: asyncio.Future[None]) -> None:
 # anchors the process group until ``wait`` reaps it.
 if sys.platform == "darwin" and sys.version_info < (3, 13):
 
-    def _exit_seen(pid: int, *, block: bool) -> bool:  # pyright: ignore[reportUnreachable] -- Linux-targeted checking omits macOS select types.
+    def _exit_seen(pid: int, *, block: bool) -> bool:
         """Whether ``pid`` has exited, without reaping it; ``block`` waits."""
         with contextlib.closing(select.kqueue()) as kernel:
             note = select.kevent(

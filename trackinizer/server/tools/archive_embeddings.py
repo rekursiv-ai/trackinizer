@@ -65,7 +65,9 @@ def main() -> int:
     try:
         counts = asyncio.run(restore(flags.dsn, source=flags.source))
     except FileNotFoundError as error:
-        parser.error(f"--from {flags.source} is not an archive: no {error.filename}")
+        parser.error(
+            f"--from {flags.source} is not an archive: no {cast(object, error.filename)}",
+        )
     print(f"restored from {flags.source}: {_describe(counts)}")
     return 0
 
@@ -156,7 +158,8 @@ async def restore(dsn: str, *, source: Path) -> dict[str, int]:
         for table, columns in _archived_tables().items():
             staging = f"restore_{table}"
             await conn.execute(
-                f"CREATE TEMP TABLE {staging} (LIKE {table}) ON COMMIT DROP",
+                f"CREATE TEMP TABLE {staging} "
+                f"(LIKE {table} INCLUDING DEFAULTS) ON COMMIT DROP",
             )
             _ = await conn.copy_to_table(
                 staging,

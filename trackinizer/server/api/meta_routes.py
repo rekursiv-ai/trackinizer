@@ -7,14 +7,21 @@ the SHA is resolved. The metadata routes (``/api/meta/enums``,
 ``/api/meta/fields``, ``/api/meta/edges``) are likewise store-free -- each
 reflects the type ``Literal``s / route table so the SPA needs no
 hand-maintained copy of the enums, field-owner map, or edge topology.
+
+The OpenAPI schema is the exception: the whole route map needs no anonymous reader from
+the internet, so it takes a sign-in there, and FastAPI's own open ``/docs`` and ``/redoc``
+are off. A process on the server's own box still reads it with no credential:
+``redeploy-trackinizer-web.sh`` and ``stack-verify`` compare a web build with the live
+schema that way (``openapi_dump.py --url``), and hold no key to do it with.
 """
 
 from __future__ import annotations
 
-from typing import Protocol, cast, get_args
+from typing import Final, Protocol, cast, get_args
 
-from fastapi import APIRouter
+from fastapi import APIRouter, FastAPI, Request
 
+from trackinizer.server.auth import request_user
 from trackinizer.server.version import build_sha
 from trackinizer.types.edges import (
     Edge,
@@ -31,7 +38,24 @@ from trackinizer.types.inquiries import (
 from trackinizer.wire.routes import field_owner_kind
 
 
+_LOOPBACK: Final = frozenset({"127.0.0.1", "::1"})
+_PROXY_HEADERS: Final = (
+    "x-forwarded-for",
+    "forwarded",
+    "x-real-ip",
+    "cf-connecting-ip",
+    "via",
+)
+
 router = APIRouter()
+
+
+@router.get("/openapi.json", include_in_schema=False)
+async def openapi_route(request: Request) -> dict[str, object]:
+    """Serve the app's OpenAPI schema to this box, or to a signed-in caller."""
+    if not _from_this_box(request):
+        await request_user(request)
+    return cast("dict[str, object]", cast(FastAPI, request.app).openapi())
 
 
 @router.get("/api/version")
@@ -153,3 +177,14 @@ def _literal_values(value: object) -> list[str]:
             raise TypeError(f"Literal member is not a string: {member!r}")
         values.append(member)
     return values
+
+
+# Every way in from outside passes Cloudflare or Caddy, which add these headers and
+# connect from loopback themselves, so an address alone would let the internet in. A
+# client can add such a header, not remove what its proxy adds.
+def _from_this_box(request: Request) -> bool:
+    """Say whether a request came straight from this box, through no proxy."""
+    host = request.client.host if request.client else ""
+    return host in _LOOPBACK and not any(
+        name in request.headers for name in _PROXY_HEADERS
+    )

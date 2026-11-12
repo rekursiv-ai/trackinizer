@@ -41,8 +41,9 @@ import asyncio
 import json
 import logging
 
+from treekle import to_plain
+
 from trackinizer.server.inbound import Inbound, InboundQueue
-from trackinizer.wire.audience import OPEN
 
 
 if TYPE_CHECKING:
@@ -124,7 +125,8 @@ async def push_changes_to_live_subscribers(
             # Doubling from the base interval, capped: a 12-hour outage costs
             # ~720 attempts instead of ~86,400 per worker.
             delay = min(sweep_interval_sec * (2.0**failures), max_backoff_sec)
-        await asyncio.sleep(delay)
+        # Sweep interval, doubled on failure.
+        await asyncio.sleep(delay)  # house-ignore[sleep] -- See above.
 
 
 # Pages until a short page. The cursor advances past EVERY change, delivered or not
@@ -195,7 +197,6 @@ async def _deliver_change(
 ) -> None:
     """Enqueue one change to every snapshot subscriber's live sessions."""
     payload = _change_payload(change, subject_seq)
-    bare = _change_payload(change, subject_seq, named=False)
     for subscriber in change.subscribers_snapshot:
         sessions = await store.resolve_live_sessions(subscriber)
         # A science chat's session is left out: its run would type the push into
@@ -204,18 +205,11 @@ async def _deliver_change(
         audiences = await store.read_push_audiences(
             [session_id for session_id, _rooms in sessions],
         )
-        # A session that is not open takes the bare envelope: the writer's handle
-        # and ``reason`` are free text, and the bridge makes an inbound line the
-        # session's next user turn, so a writer who subscribed a staff lead to a
-        # row could otherwise speak to it. A session with no audience reads as
-        # not open.
+        # Every audience gets metadata only: a push becomes the run's next user turn.
         targets = [
             (
                 session_id,
-                Inbound(
-                    text=payload if audiences[session_id] == OPEN else bare,
-                    source="trackinizer",
-                ),
+                Inbound(text=payload, source="trackinizer"),
             )
             for session_id, _rooms in sessions
             if session_id in audiences
@@ -239,9 +233,8 @@ async def _deliver_change(
 
 
 # The push is a notification; the durable row is the record. Only the envelope ships --
-# no ``old``/``new`` delta, so unbounded text fields (descriptions, abstracts) never
-# ride the injected line, and no ``subscribers_snapshot``, so recipients do not learn
-# the roster.
+# no ``old``/``new`` delta, actor or reason, so caller-controlled text never rides the
+# injected line, and no ``subscribers_snapshot``, so recipients do not learn the roster.
 #
 # ``agent_message`` leads: the one line a model-CLI session receives (the run's
 # poller injects only it there, keeping the model's context clean; IO-stream sessions
@@ -249,16 +242,11 @@ async def _deliver_change(
 # trax verb does -- the short ``issue 42`` ref, not a 36-char UUID (a token-waste for
 # the model reading it). The seq is resolved by the sweep's JOIN; a purged subject (no
 # inquiries row) falls back to the UUID, which stays correct forever.
-def _change_payload(
-    change: Change,
-    subject_seq: int | None,
-    *,
-    named: bool = True,
-) -> str:
+def _change_payload(change: Change, subject_seq: int | None) -> str:
     """One change as a compact JSON envelope: metadata, not the record."""
+    kind = change.subject_kind.lower() if change.subject_kind else "inquiry"
     subject_ref = (
-        f"{(change.subject_kind or 'inquiry').lower()} "
-        f"{subject_seq if subject_seq is not None else change.subject_id}"
+        f"{kind} {subject_seq if subject_seq is not None else change.subject_id}"
     )
     # Field-edit kinds read "<field> changed"; event kinds (created,
     # edge_added, ...) already name the happening and read bare.
@@ -268,16 +256,13 @@ def _change_payload(
         else f"{change.kind} changed"
     )
     envelope: dict[str, object] = {
-        "agent_message": f"FYI: trax {subject_ref} {happening}"
-        + (f" (by {change.actor})" if named else ""),
+        "agent_message": f"FYI: trax {subject_ref} {happening}",
         "id": str(change.id),
         "created": change.created.isoformat(),
-        "actor": change.actor if named else None,
         "kind": change.kind,
         "subject_kind": change.subject_kind,
         "subject_id": str(change.subject_id),
         "subject_ref": subject_ref,
-        "reason": change.reason if named else None,
     }
     if change.caused_by is not None:
         envelope["caused_by"] = str(change.caused_by)
@@ -286,7 +271,7 @@ def _change_payload(
     # diff) once a ``trax change <id>`` verb exists to serve it; the server
     # route (GET /api/change_log/{id}) is already there.
     return json.dumps(
-        {k: v for k, v in envelope.items() if v not in (None, "")},
+        to_plain({k: v for k, v in envelope.items() if v is not None}),
         separators=(",", ":"),
     )
 

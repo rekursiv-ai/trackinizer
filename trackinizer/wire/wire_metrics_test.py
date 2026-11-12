@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Literal, cast
 
 import math
+import uuid
 
 from pydantic import ValidationError
 
@@ -14,7 +15,15 @@ from trackinizer.wire.wire_metrics import (
     _MAX_POINTS_PER_BATCH,
     LogMetricsRequest,
     MetricPoint,
+    experiment_metrics_path,
 )
+
+
+def test_metrics_path_interpolates_the_experiment_uuid() -> None:
+    experiment_id = uuid.UUID(int=1)
+    assert experiment_metrics_path(experiment_id) == (
+        "/api/experiments/00000000-0000-0000-0000-000000000001/metrics"
+    )
 
 
 class TestMetricPointValueDomain:
@@ -109,6 +118,13 @@ class TestLogMetricsRequestBatchSize:
             for i in range(_MAX_POINTS_PER_BATCH)
         ]
         assert len(LogMetricsRequest(points=points).points) == _MAX_POINTS_PER_BATCH
+
+
+def test_experiment_metrics_path_names_the_experiment() -> None:
+    experiment_id = uuid.UUID("12345678-1234-5678-1234-567812345678")
+    assert experiment_metrics_path(experiment_id) == (
+        "/api/experiments/12345678-1234-5678-1234-567812345678/metrics"
+    )
 
 
 if __name__ == "__main__":

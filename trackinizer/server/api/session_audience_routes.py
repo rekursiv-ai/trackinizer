@@ -18,7 +18,7 @@ from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api._deps import (
     get_store,
 )
-from trackinizer.server.api.session_access import (
+from trackinizer.server.api.session_identity import (
     request_principal,
     require_session,
 )

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from unittest.mock import AsyncMock
 
 import uuid
@@ -12,9 +12,11 @@ from pydantic import JsonValue
 import pydantic
 import pytest
 
+from trackinizer.mock_test_support import AsyncMockProtocol, MockConnection
 from trackinizer.server.preferences import (
     ASSISTANT_KEYS,
     SETTING,
+    ChatView,
     Preferences,
     stored_preferences,
     write_preferences,
@@ -63,10 +65,18 @@ _DEFAULTS: dict[str, JsonValue] = {
     "terminal_placement": "bottom",
     "home": "graph",
     "chat_provider": "assistant",
-    "assistant_prompt": "lead",
+    "assistant_prompt": "sagent",
     "cli_folder": "",
-    "chat_tool_calls": True,
+    "chat_view": {
+        "view": "chat",
+        "density": "auto",
+        "thinking": False,
+        "output_lines": "tool",
+        "times": False,
+    },
     "autofix": True,
+    "automerge": False,
+    "hide_closed_pulls": True,
     "stars": [],
     "views": [],
     "console_views": [],
@@ -75,6 +85,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "read": {"boundary": None, "marks": []},
     "collapsed": [],
     "dismissed": [],
+    "unread_tabs": [],
     "lens": None,
     "drafts": {},
     "create_draft": None,
@@ -218,12 +229,16 @@ def test_scanlines_are_on_until_the_user_turns_them_off() -> None:
         Preferences.model_validate({"scanlines": "off"})
 
 
-def test_the_assistant_runs_on_its_lead_prompt_until_the_user_picks_sagents() -> None:
-    assert stored_preferences(None).assistant_prompt == "lead"
+def test_native_sagent_is_the_default_and_legacy_lead_round_trips() -> None:
+    assert stored_preferences(None).assistant_prompt == "sagent"
     assert (
         stored_preferences({"assistant_prompt": "sagent"}).assistant_prompt == "sagent"
     )
     assert "assistant_prompt" in ASSISTANT_KEYS
+    assert stored_preferences({"assistant_prompt": "lead"}).model_dump(
+        mode="json",
+        include={"assistant_prompt"},
+    ) == {"assistant_prompt": "lead"}
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"assistant_prompt": "claude"})
 
@@ -291,8 +306,14 @@ def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
 
 @pytest.mark.asyncio
 async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_provider": "claude"}})
+    conn = cast(
+        MockConnection,
+        AsyncMock(
+            fetchrow=AsyncMock(
+                return_value={"preferences": {"chat_provider": "claude"}},
+            ),
+        ),
+    )
     written = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
@@ -305,7 +326,7 @@ async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"chat_provider": "claude"},
-        ["chat_style"],
+        ["chat_style", "chat_tool_calls"],
         _USER,
     )
     with pytest.raises(ValueError, match="chat_provider: "):
@@ -316,12 +337,48 @@ async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
         )
 
 
-def test_tool_calls_in_chat_are_on_until_the_user_turns_them_off() -> None:
-    assert stored_preferences(None).chat_tool_calls is True
-    assert stored_preferences({"chat_tool_calls": False}).chat_tool_calls is False
-    assert "chat_tool_calls" in ASSISTANT_KEYS
+_TERMINAL: Final = {
+    "view": "terminal",
+    "density": "verbose",
+    "thinking": True,
+    "output_lines": [3, 1],
+    "times": True,
+}
+"""A ``chat_view`` that sets every option away from its default."""
+
+
+def test_chat_draws_its_own_lines_until_the_user_picks_another_view() -> None:
+    assert stored_preferences(None).chat_view == ChatView()
+    assert (
+        stored_preferences({"chat_view": _TERMINAL}).chat_view.model_dump() == _TERMINAL
+    )
+    assert "chat_view" in ASSISTANT_KEYS
+    # The switch it replaced is no preference now: a stored one is ignored.
+    assert (
+        "chat_tool_calls"
+        not in stored_preferences({"chat_tool_calls": False}).model_dump()
+    )
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        {"view": "tui"},
+        {"density": "dense"},
+        {"thinking": "yes"},
+        {"output_lines": "some"},
+        {"output_lines": [1]},
+        {"output_lines": [1, 2, 3]},
+        {"output_lines": [1, -1]},
+        {"times": 1},
+        {"theme": "dark"},
+    ],
+)
+def test_a_chat_view_takes_only_its_options_each_of_its_type(
+    view: dict[str, object],
+) -> None:
     with pytest.raises(pydantic.ValidationError):
-        Preferences.model_validate({"chat_tool_calls": "yes"})
+        Preferences.model_validate({"chat_view": view})
 
 
 def test_autofix_is_on_until_the_user_or_their_agent_turns_it_off() -> None:
@@ -332,39 +389,56 @@ def test_autofix_is_on_until_the_user_or_their_agent_turns_it_off() -> None:
     assert Preferences.model_json_schema()["properties"]["autofix"]["x-setting"]
 
 
+def test_automerge_is_off_until_the_user_or_their_agent_turns_it_on() -> None:
+    assert stored_preferences(None).automerge is False
+    assert stored_preferences({"automerge": True}).automerge is True
+    # A canvas's agent sets it when the person asks it to, as it sets ``autofix``.
+    assert "automerge" in ASSISTANT_KEYS
+    assert Preferences.model_json_schema()["properties"]["automerge"]["x-setting"]
+
+
 @pytest.mark.asyncio
-async def test_a_write_turns_tool_calls_in_chat_off_and_back_to_the_default() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"chat_tool_calls": False}})
+async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_keys() -> (
+    None
+):
+    conn = cast(
+        MockConnection,
+        AsyncMock(
+            fetchrow=AsyncMock(return_value={"preferences": {"chat_view": _TERMINAL}}),
+        ),
+    )
     written = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
-        change={"chat_tool_calls": False},
+        change={"chat_view": _TERMINAL},
     )
     assert written is not None
-    assert written.chat_tool_calls is False
+    assert written.chat_view.view == "terminal"
     conn.fetchrow.assert_awaited_once_with(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
-        {"chat_tool_calls": False},
-        ["chat_style"],
+        {"chat_view": _TERMINAL},
+        ["chat_style", "chat_tool_calls"],
         _USER,
     )
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"theme": "light"}})
+    conn.fetchrow = cast(
+        AsyncMockProtocol[object],
+        AsyncMock(return_value={"preferences": {"theme": "light"}}),
+    )
     reset = await write_preferences(
         cast("Conn", conn),
         user_id=_USER,
-        change={"theme": "light", "chat_tool_calls": None},
+        change={"theme": "light", "chat_view": None},
     )
     assert reset is not None
-    assert reset.chat_tool_calls is True
+    assert reset.chat_view == ChatView()
     conn.fetchrow.assert_awaited_once_with(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_tool_calls", "chat_style"],
+        ["chat_view", "chat_style", "chat_tool_calls"],
         _USER,
     )
 
@@ -388,8 +462,10 @@ _USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 @pytest.mark.asyncio
 async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"preferences": {"theme": "light"}})
+    conn = cast(
+        MockConnection,
+        AsyncMock(fetchrow=AsyncMock(return_value={"preferences": {"theme": "light"}})),
+    )
 
     written = await write_preferences(
         cast("Conn", conn),
@@ -403,15 +479,14 @@ async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_side", "chat_style"],
+        ["chat_side", "chat_style", "chat_tool_calls"],
         _USER,
     )
 
 
 @pytest.mark.asyncio
 async def test_a_write_for_a_user_who_is_gone_is_none() -> None:
-    conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value=None)
+    conn = cast(MockConnection, AsyncMock(fetchrow=AsyncMock(return_value=None)))
     assert (
         await write_preferences(
             cast("Conn", conn),
@@ -438,7 +513,7 @@ async def test_a_key_or_value_the_preferences_do_not_take_writes_nothing(
     change: dict[str, object],
     message: str,
 ) -> None:
-    conn = AsyncMock()
+    conn = cast(MockConnection, AsyncMock())
     with pytest.raises(ValueError, match=message):
         await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
     assert not conn.fetchrow.called

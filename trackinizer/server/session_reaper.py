@@ -6,7 +6,7 @@ chance: SIGKILL, an OOM kill, a crashed host. Its ``AgentSession`` then stayed
 a dead agent as running. Nothing else could close it: the run was the only
 party that would ever call ``end``.
 
-The server already hears from every live run: it polls its inbound queue, and
+The server already hears from every live session: it polls its inbound queue, and
 its record uploads say the same. Each is noted in the ``session_liveness``
 table, and this loop closes a session once nothing has been heard from it for
 :data:`STALE_AFTER`, stamping ``ended`` with the last time it was. A session
@@ -136,7 +136,8 @@ async def session_reaper_loop(
 
     """
     while True:
-        await asyncio.sleep(interval_sec)
+        # A periodic sweep; the interval is the schedule.
+        await asyncio.sleep(interval_sec)  # house-ignore[sleep] -- See above.
         try:
             _ = await reap_silent_sessions(
                 store,

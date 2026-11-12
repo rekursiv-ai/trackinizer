@@ -15,8 +15,8 @@ unchanged and may name rows outside the slice. They do not expand selection.
 
 Filters reuse :mod:`trackinizer.wire.filters` rather than a selector language
 of this module's own. The example in the request, ``org:rekursiv AND NOT
-machine:*``, is already two clauses the list queries can say: ``labels is
-org:rekursiv`` and ``labels nre ^machine:``. They AND, which is what a
+host:*``, is already two clauses the list queries can say: ``labels is
+org:rekursiv`` and ``labels nre ^host:``. They AND, which is what a
 partition asks for and all the request asks for; OR would need a grammar, and
 no caller has needed one yet.
 
@@ -65,7 +65,11 @@ from trackinizer.server.audience import (
 )
 from trackinizer.server.notify import tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
-from trackinizer.server.store.read import _lower_filter, _ReadMixin
+from trackinizer.server.store.read import (
+    _lower_filter,
+    _ReadMixin,
+    unprotected_history,
+)
 from trackinizer.server.values import vetted_sql
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.row_filter import reject_inadmissible
@@ -399,6 +403,10 @@ async def _read_table(
                 for column in _SCOPE_COLUMNS[table]
             ),
         )
+    # Protected history is no one's to export, an admin's included: a copy would
+    # carry it to readers the change-log routes keep it from.
+    if table == "change_log":
+        conditions.append(unprotected_history(table))
     # Audience: gated -- a table keyed by session leaves out the rows of a session
     # ``reader`` may not read. Found from the columns, so a session table the export
     # gains is gated without an edit here.

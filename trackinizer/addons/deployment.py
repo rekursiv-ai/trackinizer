@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import field, fields
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import asyncio
 import logging
@@ -199,6 +199,7 @@ async def supervise(
     delay_sec = backoff_sec
     while True:
         started_sec = time.monotonic()
+        _logger.info("addon service %s started", name)
         try:
             await run()
         except Exception:
@@ -212,14 +213,15 @@ async def supervise(
             return
         if time.monotonic() - started_sec > max_backoff_sec:
             delay_sec = backoff_sec
-        await asyncio.sleep(delay_sec)
+        # Restart backoff for a crashing service.
+        await asyncio.sleep(delay_sec)  # house-ignore[sleep] -- See above.
         delay_sec = min(delay_sec * 2, max_backoff_sec)
 
 
 def _addon_configs(config: Deployment.Config) -> Iterator[tuple[str, Makeable[object]]]:
     """Yield ``(name, config)`` for every addon field that is switched on."""
     for config_field in fields(config):
-        value: object = getattr(config, config_field.name)
+        value = cast(object, getattr(config, config_field.name))
         if config_field.name == "visuals" or value is None:
             continue
         if not isinstance(value, Makeable):

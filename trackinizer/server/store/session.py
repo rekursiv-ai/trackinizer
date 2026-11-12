@@ -65,7 +65,7 @@ __all__ = [
 class RunPlace:
     """Where a polling run said it ran, each part the run's own word, or ``None``."""
 
-    machine: str | None = None
+    host: str | None = None
     run: str | None = None
     cli: str | None = None
     cwd: str | None = None
@@ -73,7 +73,7 @@ class RunPlace:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class PastRun:
-    """A run that last said it ran on a machine, and when its session last polled."""
+    """A run that last said it ran on a host, and when its session last polled."""
 
     session_id: UUID
     cli: str
@@ -102,20 +102,20 @@ _SEEN_WRITE_EVERY: Final = timedelta(minutes=1)
 # ``$3`` is the newest ``last_seen`` still worth rewriting. A poll starts watching a
 # session; any other sign of life only refreshes a session already watched. A poll also
 # keeps where the run said it ran (``$4``..``$7``), each kept until a poll names another:
-# the assistant drains a chat switched to it naming no machine, and the chat's run stays
-# among its machine's past runs. A poll that names another machine is written at once, so
+# the assistant drains a chat switched to it naming no host, and the chat's run stays
+# among its host's past runs. A poll that names another host is written at once, so
 # a run whose session was polled in the last minute without one, and that ends within
 # the minute, still is.
 _SEEN_SQL: Final = (
-    "INSERT INTO session_liveness (session_id, last_seen, machine, run, cli, cwd) "
+    "INSERT INTO session_liveness (session_id, last_seen, host, run, cli, cwd) "
     "VALUES ($1, $2, $4, $5, $6, $7) "
     "ON CONFLICT (session_id) DO UPDATE SET last_seen = EXCLUDED.last_seen, "
-    "machine = COALESCE(EXCLUDED.machine, session_liveness.machine), "
+    "host = COALESCE(EXCLUDED.host, session_liveness.host), "
     "run = COALESCE(EXCLUDED.run, session_liveness.run), "
     "cli = COALESCE(EXCLUDED.cli, session_liveness.cli), "
     "cwd = COALESCE(EXCLUDED.cwd, session_liveness.cwd) "
-    "WHERE session_liveness.last_seen < $3 OR (EXCLUDED.machine IS NOT NULL "
-    "AND session_liveness.machine IS DISTINCT FROM EXCLUDED.machine)"
+    "WHERE session_liveness.last_seen < $3 OR (EXCLUDED.host IS NOT NULL "
+    "AND session_liveness.host IS DISTINCT FROM EXCLUDED.host)"
 )
 _SEEN_AGAIN_SQL: Final = (
     "UPDATE session_liveness SET last_seen = $2 "
@@ -533,7 +533,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 session_id,
                 at,
                 at - _SEEN_WRITE_EVERY,
-                where.machine,
+                where.host,
                 where.run,
                 where.cli,
                 where.cwd,
@@ -542,14 +542,14 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
     async def past_runs(
         self,
         *,
-        machine: str,
+        host: str,
         account: str,
         limit: int,
     ) -> list[PastRun]:
-        """Return the runs of ``account``'s sessions that last said they ran on ``machine``.
+        """Return the runs of ``account``'s sessions that last said they ran on ``host``.
 
         Args:
-          machine: The machine's name, as the runs named it.
+          host: The host's name, as the runs named it.
           account: Whose sessions, matched in any case.
           limit: The most to return.
 
@@ -563,10 +563,10 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 "liveness.last_seen, inquiries.agentsession_ended AS ended "
                 "FROM session_liveness AS liveness "
                 "JOIN inquiries ON inquiries.id = liveness.session_id "
-                "WHERE liveness.machine = $1 AND liveness.cli IS NOT NULL "
+                "WHERE liveness.host = $1 AND liveness.cli IS NOT NULL "
                 "AND lower(inquiries.account) = lower($2) "
                 "ORDER BY liveness.last_seen DESC, liveness.session_id LIMIT $3",
-                machine,
+                host,
                 account,
                 limit,
             )
@@ -829,7 +829,13 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         return [
             (
                 _uuid(row["id"]),
-                tuple(from_plain(row["agentsession_rooms"], list[str], default=[])),
+                tuple(
+                    from_plain(
+                        row["agentsession_rooms"],
+                        list[str],
+                        default=list[str](),
+                    ),
+                ),
             )
             for row in rows
         ]
@@ -1293,7 +1299,7 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
     return FeedEvent(
         session_id=_uuid(row["session_id"]),
         actor=from_plain(row.get("owner"), str, default=""),
-        rooms=from_plain(row.get("agentsession_rooms"), list[str], default=[]),
+        rooms=from_plain(row.get("agentsession_rooms"), list[str], default=list[str]()),
         cli=_optional_str(row["agentsession_cli"]),
         part=from_plain(row["part"], int),
         seq=from_plain(row["idx"], int),

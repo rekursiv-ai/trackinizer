@@ -1,11 +1,4 @@
-"""Shared trax CLI test fixtures.
-
-``tmp_config_dir`` is autouse: every test gets a fresh tmp directory
-in place of the real config dir so profile reads and writes
-cannot bleed into the developer's real config. This closes the latent
-class of "test mutated my real profile" failures and unblocks the
-profile-related GRAMMAR.md examples once their xfails are lifted.
-"""
+"""Shared trax CLI fixtures over the parent's ``isolate_user_dirs`` fixture."""
 
 from __future__ import annotations
 
@@ -19,6 +12,7 @@ from treekle.absent import Absent
 import pytest
 
 from trackinizer.client.client import ArtifactRevision, Client, EdgeWrite
+from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
@@ -44,18 +38,16 @@ from trackinizer.wire.wire_session_ir import (
 )
 from trackinizer.wire.wire_sessions import (
     InboundDrainItem,
-    InboundKind,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
     SessionStartResponse,
 )
-from trackinizer.wire.wire_terminals import TerminalMachines, TerminalOpened
+from trackinizer.wire.wire_terminals import TerminalHosts, TerminalOpened
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
-    from pathlib import Path
     from types import TracebackType
 
     from trackinizer.wire.seq_ranges import SeqRange
@@ -97,25 +89,13 @@ def _storage_view(row: dict[str, object]) -> dict[str, object]:
 
 
 @pytest.fixture(autouse=True)
-def tmp_config_dir(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Isolate profile state so tests cannot touch the real config.
-
-    Redirects ``XDG_CONFIG_HOME`` rather than patching module globals: the
-    module builds each path inline from ``config_dir``, so moving the env var
-    exercises the same resolution production uses. Also clears
-    ``TRACKINIZER_PROFILE`` and ``TRACKINIZER_URL`` so an exported shell
-    variable does not bleed into the test process.
-    """
-    root = tmp_path
-    # A test fixture repointing userdirs.
-    monkeypatch.setenv(
-        "XDG_CONFIG_HOME",
-        str(root),
-    )  # house-ignore[xdg-literal] -- A test fixture repointing userdirs.
-    (root / "rekursiv-ai" / "trax" / "profiles").mkdir(parents=True, exist_ok=True)
+def profile_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Seed the isolated profile store and clear ambient connection selectors."""
+    (config_dir() / "rekursiv-ai" / "trax" / "profiles").mkdir(
+        parents=True,
+        exist_ok=True,
+        mode=0o700,
+    )
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
     monkeypatch.delenv("TRACKINIZER_URL", raising=False)
 
@@ -1029,14 +1009,9 @@ class FakeClient:
         self,
         session_id: uuid.UUID,
         text: str,
-        *,
-        kind: InboundKind = "line",
-        payload: dict[str, object] | None = None,
     ) -> int:
         """Enqueue inbound."""
-        self.calls.append(
-            ("enqueue_inbound", (session_id, text), {"kind": kind, "payload": payload}),
-        )
+        self.calls.append(("enqueue_inbound", (session_id, text), {}))
         return 1
 
     def drain_inbound(
@@ -1045,7 +1020,7 @@ class FakeClient:
         *,
         wait_sec: float = 0.0,
         run: str | None = None,
-        machine: str | None = None,
+        host: str | None = None,
         cwd: str | None = None,
         cli: str | None = None,
         instance: str | None = None,
@@ -1059,7 +1034,7 @@ class FakeClient:
                 {
                     "wait_sec": wait_sec,
                     "run": run,
-                    "machine": machine,
+                    "host": host,
                     "cwd": cwd,
                     "cli": cli,
                     "instance": instance,
@@ -1069,14 +1044,18 @@ class FakeClient:
         )
         return []
 
-    def terminal_machines(
+    def terminal_hosts(
         self,
         *,
         canvas: uuid.UUID | None = None,
-    ) -> TerminalMachines:
-        """Terminal machines."""
-        self.calls.append(("terminal_machines", (), {"canvas": canvas}))
-        return TerminalMachines(machines=[])
+        owner: str | None = None,
+    ) -> TerminalHosts:
+        """Terminal hosts."""
+        asked: dict[str, object] = {"canvas": canvas}
+        if owner is not None:
+            asked["owner"] = owner
+        self.calls.append(("terminal_hosts", (), asked))
+        return TerminalHosts(hosts=[])
 
     def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
         """Open terminal."""

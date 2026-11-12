@@ -1,6 +1,6 @@
 """Refuse a command that moved out of trax, in one line.
 
-``trax run``, ``trax machine`` and ``trax job`` act on computers, agent runs and GPU
+``trax run``, ``trax host`` and ``trax job`` act on computers, agent runs and GPU
 nodes rather than on the research records, so they left trax. Each exits 2 saying so.
 """
 
@@ -13,7 +13,7 @@ from trackinizer.trax.render import echo
 
 __all__ = ["MOVED_VERBS", "RUN_CLIS", "moved"]
 
-MOVED_VERBS: Final = frozenset({"run", "machine", "job"})
+MOVED_VERBS: Final = frozenset({"run", "host", "job"})
 """The verbs that moved out of trax; each still says so."""
 
 RUN_CLIS: Final = frozenset({"claude", "codex", "sagent"})

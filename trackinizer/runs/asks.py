@@ -6,6 +6,8 @@ Chat, a badge, and a reattach all read the same two records.
 
 - :func:`opened_record` writes ``extra["$interaction"]``, which opens a card.
 - :func:`resolved_record` writes ``extra["$interaction_resolved"]``, which closes it.
+- :func:`compaction_record` writes ``extra["$compaction"]``: the agent began or ended
+  compacting its context, which no CLI's own log says until it is over.
 - :func:`answer_from_payload` reads what Chat sends back: ``{prompt_id, option, ...}``,
   or the older ``{prompt_id, decision}``.
 
@@ -14,8 +16,8 @@ the fields the web card reads (``type``, ``tool``, ``input``, ``questions``, ``p
 ``decision``) keep their meaning, and the new fields ride beside them.
 
 A :class:`Driver` is one agent CLI run headless: it starts the CLI, sends it the person's
-lines, and streams back :class:`Ask`, :class:`Resolved` and :class:`StateChanged`. The
-run turns those into the records above.
+lines, and streams back :class:`Ask`, :class:`Resolved`, :class:`StateChanged` and
+:class:`Compaction`. The run turns asks and compactions into the records above.
 """
 
 from __future__ import annotations
@@ -40,8 +42,10 @@ __all__ = [
     "Ask",
     "AskKind",
     "AskProvider",
+    "Compaction",
     "Decision",
     "Driver",
+    "DriverEvent",
     "Option",
     "OptionKind",
     "Resolved",
@@ -49,6 +53,7 @@ __all__ = [
     "RunState",
     "StateChanged",
     "answer_from_payload",
+    "compaction_record",
     "opened_record",
     "resolved_record",
 ]
@@ -243,6 +248,22 @@ class StateChanged:
     state: RunState
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Compaction:
+    """The agent began compacting its context (``started``), or stopped (``ended``)."""
+
+    state: Literal["started", "ended"]
+    trigger: Literal["auto", "manual", ""] = ""
+    """Whether the agent compacted on its own or was told to; empty when it cannot say."""
+
+    error: str = ""
+    """Why an ended compaction failed; empty when it succeeded."""
+
+
+type DriverEvent = Ask | Resolved | StateChanged | Compaction
+"""What a :class:`Driver` reports."""
+
+
 class Driver(Protocol):
     """One agent CLI run headless; the run drives it and writes what it reports.
 
@@ -300,7 +321,7 @@ class Driver(Protocol):
         """End the CLI, and the events with it."""
         ...
 
-    def events(self) -> AsyncIterator[Ask | Resolved | StateChanged]:
+    def events(self) -> AsyncIterator[DriverEvent]:
         """Stream what the CLI reports until it ends."""
         ...
 
@@ -379,6 +400,40 @@ def resolved_record(resolved: Resolved, *, at: datetime) -> SystemMessage:
     )
 
 
+# A CLI logs a compaction only once it is over, after up to minutes of silence: until
+# then this record is all Chat has to tell a compacting agent from a stuck one.
+def compaction_record(compaction: Compaction, *, at: datetime) -> SystemMessage:
+    """Return the record that says the agent began or ended compacting its context.
+
+    Args:
+      compaction: What the agent reported.
+      at: When it reported it.
+
+    Returns:
+      record: A ``SystemMessage`` whose ``extra["$compaction"]`` says which.
+
+    """
+    said = (
+        "Compacting context"
+        if compaction.state == "started"
+        else f"Compaction failed: {compaction.error}"
+        if compaction.error
+        else "Compaction ended"
+    )
+    return SystemMessage(
+        timestamp=at.isoformat(),
+        subtype="compaction",
+        content=said,
+        extra={
+            "$compaction": {
+                "state": compaction.state,
+                "trigger": compaction.trigger,
+                "error": compaction.error,
+            },
+        },
+    )
+
+
 def answer_from_payload(payload: Mapping[str, PlainTree]) -> Answer:
     """Read an ``answer`` message's payload, in either of its two forms.
 
@@ -440,7 +495,11 @@ def _asks(ask: Ask) -> str:
     if ask.kind == "question" and ask.questions is not None and len(ask.questions) > 0:
         asked = [
             from_plain(
-                from_plain(each, dict[str, PlainTree], default={}).get("question"),
+                from_plain(
+                    each,
+                    dict[str, PlainTree],
+                    default=dict[str, PlainTree](),
+                ).get("question"),
                 str,
                 default="",
             )

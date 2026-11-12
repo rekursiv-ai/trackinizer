@@ -175,6 +175,19 @@ class TestPureFunctions:
 
         assert flags.session_max_age_seconds == 600
 
+    def test_session_ttl_flag_overrides_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_SESSION_MAX_AGE_SECONDS", "600")
+
+        flags, _ = _parse_args(
+            argparse.ArgumentParser(),
+            ["--session-max-age-seconds", "90"],
+        )
+
+        assert flags.session_max_age_seconds == 90
+
     @pytest.mark.parametrize(
         ("env", "argv", "auth_disabled"),
         [
@@ -426,6 +439,25 @@ class TestLogLevelReachesUvicorn:
         monkeypatch.setattr("sys.argv", ["trackinizer"])
         main()
         assert called["log_level"] == logging.ERROR
+
+    @pytest.mark.parametrize("level", ["INFO", "DEBUG"])
+    def test_a_level_below_warning_keeps_uvicorn_at_warning(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        level: str,
+    ) -> None:
+        """Uvicorn's per-request access log stays off when the package logs below WARNING."""
+        called: dict[str, object] = {}
+
+        def fake_run(app: object, **kwargs: object) -> None:
+            del app
+            called.update(kwargs)
+
+        monkeypatch.delenv("TRACKINIZER_LOG_LEVEL", raising=False)
+        monkeypatch.setattr(uvicorn, "run", fake_run)
+        monkeypatch.setattr("sys.argv", ["trackinizer", "--log-level", level])
+        main()
+        assert called["log_level"] == logging.WARNING
 
     def test_unset_leaves_uvicorn_default(
         self,

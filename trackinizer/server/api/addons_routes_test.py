@@ -101,6 +101,13 @@ def test_the_catalog_is_empty_without_a_deployment(
     assert json_loads(response.content, dict[str, object]) == {"addons": []}
 
 
+def test_an_app_with_nothing_attached_runs_the_deployment_of_no_addons() -> None:
+    bare = FastAPI()
+    bare.state.deployment = "not a deployment"
+    assert app_deployment(bare).manifests == {}
+    assert app_deployment(bare).catalog().addons == []
+
+
 def test_the_module_app_always_has_a_visual_catalog() -> None:
     assert _visual_catalog(app.app).catalog().visuals
 
@@ -160,7 +167,11 @@ def test_attaching_sets_the_deployments_visual_catalog() -> None:
     assert _visual_catalog(app).default_visual == "x.notes"
 
 
-def test_a_real_deployment_replaces_the_default_one_of_a_built_app() -> None:
+def test_a_real_deployment_replaces_the_default_one_of_a_built_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Unrelated core routes need no re-registration to test deployment replacement.
+    monkeypatch.setattr(app, "ROUTERS", (addons_routes.router,))
     built = _build_app()
     assert app_deployment(built).manifests == {}
     cfg = ProbeSite()
@@ -300,6 +311,15 @@ async def _viewer() -> AuthIdentity:
 
 async def _ping() -> dict[str, bool]:
     return {"pong": True}
+
+
+def test_app_without_a_deployment_gets_an_empty_catalog_without_mounting() -> None:
+    isolated = FastAPI()
+    routes = list(isolated.routes)
+    assert app_deployment(isolated).catalog().addons == []
+    isolated.state.deployment = "invalid"
+    assert app_deployment(isolated).manifests == {}
+    assert isolated.routes == routes
 
 
 if __name__ == "__main__":

@@ -75,7 +75,8 @@ from trackinizer.server.api._deps import (
 )
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
-from trackinizer.server.api.session_access import request_principal, session_reader
+from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import (
     AuthIdentity,
@@ -124,7 +125,7 @@ if TYPE_CHECKING:
     from trackinizer.types.embedder import QueryEmbedder
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 _DEFAULT_APP_NAME: Final = "Trackinizer"
 """What the sign-in page calls the app when the served build names none."""
 
@@ -1014,7 +1015,8 @@ _CHANGE_SELECT: Final = (
 _PEER_COLUMNS: Final = (
     "t.kind AS peer_kind, t.seq AS peer_seq, t.title AS peer_title, "
     "t.status AS peer_status, t.belief_judgement AS peer_judgement, "
-    "t.created AS peer_created, t.issue_priority AS peer_priority"
+    "t.created AS peer_created, t.issue_priority AS peer_priority, "
+    "t.agentsession_cli_session_id AS peer_cli_session_id"
 )
 """SELECT fragment for the joined inquiry on the far end of an edge."""
 
@@ -1449,8 +1451,8 @@ def _build_term_clause(
     return " AND ".join(clauses), params
 
 
-# Carries id, kind, seq, title, status (so the view can dim retired ``abandoned`` /
-# ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
+# Carries id, kind, seq, title, status (so the view can dim retired ``stopped`` /
+# ``abandoned`` / ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
 # confidence so the view can encode a claim's verdict and certainty. The two belief
 # fields are emitted only when present, so a non-Belief row stays clean.
 def _graph_node(row: asyncpg.Record) -> WebView:
@@ -1570,7 +1572,9 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
 
 
 # ``peer_priority`` is the peer's own priority; ``priority`` on the same ref is the
-# edge's (``_add_edge_annotation``), which overrides it in that parent's list.
+# edge's (``_add_edge_annotation``), which overrides it in that parent's list. A
+# session's ``cli_session_id`` names a sub-agent as its parent's records do
+# (``agent-<id>``), so a client can match a child session to the call that ran it.
 def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
     """Build a UI ref ``{id, kind, seq, title, status, peer_created, ...}``."""
     out: WebView = {
@@ -1585,6 +1589,8 @@ def _peer_ref(row: asyncpg.Record, peer_id: UUID) -> WebView:
         out["judgement"] = row["peer_judgement"]
     if row["peer_priority"] is not None:
         out["peer_priority"] = row["peer_priority"]
+    if row["peer_cli_session_id"] is not None:
+        out["cli_session_id"] = row["peer_cli_session_id"]
     return out
 
 
@@ -1793,13 +1799,19 @@ async def _probe_frames(
     due_sec = first_after_sec
     seq = 0
     while due_sec < for_sec:
-        await asyncio.sleep(due_sec - (time.monotonic() - start))
+        # Emits test frames on the schedule the route was asked for.
+        await asyncio.sleep(
+            due_sec - (time.monotonic() - start),
+        )  # house-ignore[sleep] -- See above.
         yield f'data: {{"seq": {seq}, "t": {time.monotonic() - start:.3f}}}\n\n'.encode()
         if every_sec == 0:
             break
         seq += 1
         due_sec += every_sec
-    await asyncio.sleep(for_sec - (time.monotonic() - start))
+    # Emits test frames on the schedule the route was asked for.
+    await asyncio.sleep(
+        for_sec - (time.monotonic() - start),
+    )  # house-ignore[sleep] -- See above.
 
 
 # Apps ``attach`` has already mounted; weak, so a discarded test app is freed.

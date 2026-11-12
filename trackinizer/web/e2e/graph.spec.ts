@@ -444,12 +444,12 @@ test("a fit keeps every node clear of the key; the tools' Key button hides it, a
   await expect(key).toHaveCount(0);
 });
 
-// A measurement more than a check: frame rates swing with what else the machine
+// A measurement more than a check: frame rates swing with what else the host
 // runs (on a loaded Mac, 14 to 47 fps for the same build), so it runs only when
-// asked, on a quiet machine: GRAPH_FPS=1, or 4 for a 4x slower CPU, which only
+// asked, on a quiet host: GRAPH_FPS=1, or 4 for a 4x slower CPU, which only
 // reports (v1 drew 25 fps there).
 test("1,000 nodes draw at 60 fps while the layout runs, with no long task after the answer", async ({ page }) => {
-  test.skip(!process.env.GRAPH_FPS, "A measurement: run with GRAPH_FPS=1 (or 4) on a quiet machine.");
+  test.skip(!process.env.GRAPH_FPS, "A measurement: run with GRAPH_FPS=1 (or 4) on a quiet host.");
   const cpu = Number(process.env.GRAPH_FPS);
   await (await page.context().newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate: cpu });
   await page.route("**/api/web/graph?*", (route) => route.fulfill({ json: syntheticGraph(1_000) }));

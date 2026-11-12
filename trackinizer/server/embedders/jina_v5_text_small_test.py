@@ -6,10 +6,15 @@ pins the small variant's name and native 1024 dim.
 
 from __future__ import annotations
 
+from typing import cast
+
+import huggingface_hub
 import pytest
 import torch
 
+from trackinizer.server.embedders import jina_v5_text_small
 from trackinizer.server.embedders.jina_v5_text_small import (
+    JINA_MODEL_ID,
     JINA_NATIVE_DIM,
     JinaV5SmallEmbedder,
 )
@@ -70,7 +75,38 @@ async def test_output_is_unit_normed_to_dim(monkeypatch: pytest.MonkeyPatch) -> 
     _patch_load(monkeypatch, fake)
     vector = await JinaV5SmallEmbedder().embed("anything")
     assert len(vector) == JINA_NATIVE_DIM
-    assert abs(sum(v * v for v in vector) ** 0.5 - 1.0) < 1e-4
+    assert abs(cast(float, sum(v * v for v in vector) ** 0.5) - 1.0) < 1e-4
+
+
+def test_weights_present_probes_its_pinned_config(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    probes: list[tuple[str, str, str]] = []
+
+    def probe(repo: str, filename: str, *, revision: str) -> str | None:
+        probes.append((repo, filename, revision))
+        return "/hf/config.json"
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", probe)
+
+    assert jina_v5_text_small.weights_present() is True
+    assert probes == [(JINA_MODEL_ID, "config.json", jina_v5_text_small._REVISION)]
+
+
+def test_load_builds_its_pinned_model_on_the_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loads: list[tuple[str, str, str]] = []
+    built = object()
+
+    def jina_load(model_id: str, revision: str, device: str) -> object:
+        loads.append((model_id, revision, device))
+        return built
+
+    monkeypatch.setattr(jina_v5_text_small, "jina_load", jina_load)
+
+    assert jina_v5_text_small._load("cuda:0") is built
+    assert loads == [(JINA_MODEL_ID, jina_v5_text_small._REVISION, "cuda:0")]
 
 
 if __name__ == "__main__":

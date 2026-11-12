@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from typing import override
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, override
+from unittest.mock import Mock
 
 import asyncio
 import threading
@@ -12,8 +14,18 @@ import uuid
 
 import pytest
 
-from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
+from trackinizer.server import inbound
+from trackinizer.server.inbound import (
+    IdempotencyReuseError,
+    Inbound,
+    InboundQueue,
+    PollerRun,
+)
 from trackinizer.wire.wire_sessions import CanvasMessageContext
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class TestInboundQueue:
@@ -41,6 +53,7 @@ class TestInboundQueue:
         first = queue.refusal(session)
         assert first is not None
         assert first.reason == "Another run is draining this chat"
+        assert first.at.utcoffset() == timedelta(0)
         queue.refuse(session, reason="This chat was closed")
         again = queue.refusal(session)
         # A new refusal is told from one a reader saw by when it was made.
@@ -50,9 +63,41 @@ class TestInboundQueue:
         assert queue.refusal(session) is None
         queue.refuse(session, reason="a")
         queue.refuse(other, reason="b")
+        assert queue.refusal(session) is not None
+        assert queue.refusal(other) is not None
         queue.refuse(third, reason="c")
         assert queue.refusal(session) is None
+        assert queue.refusal(other) is not None
         assert queue.refusal(third) is not None
+
+    @pytest.mark.parametrize("rollback_sec", [0, 1])
+    def test_refusal_freshness_survives_a_stalled_or_backward_clock(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        rollback_sec: int,
+    ) -> None:
+        first_time = datetime(2026, 1, 2, tzinfo=UTC)
+        clock = Mock(
+            now=Mock(
+                side_effect=[
+                    first_time,
+                    first_time - timedelta(seconds=rollback_sec),
+                ],
+            ),
+        )
+        monkeypatch.setattr(inbound, "datetime", clock)
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        queue.refuse(session, reason="first refusal")
+        first = queue.refusal(session)
+        queue.refuse(session, reason="second refusal")
+        second = queue.refusal(session)
+
+        assert first is not None
+        assert second is not None
+        assert second.at > first.at
+        assert second.reason == "second refusal"
 
     def test_active_poller_ids_lists_only_unexpired_leases(self) -> None:
         now = [100.0]
@@ -65,6 +110,16 @@ class TestInboundQueue:
         assert queue.active_poller_ids() == [late]
         now[0] = 165.0
         assert queue.active_poller_ids() == []
+
+    def test_many_live_pollers_can_renew_without_losing_their_leases(self) -> None:
+        queue = InboundQueue(_clock=lambda: 100.0)
+        sessions = [uuid.uuid4() for _ in range(1_025)]
+        for session in sessions:
+            queue.mark_poller(session)
+
+        assert queue.active_poller_ids() == sessions
+        queue.mark_poller(sessions[0])
+        assert queue.active_poller_ids() == sessions
 
     def test_enqueue_then_drain_is_fifo(self) -> None:
         q = InboundQueue()
@@ -186,6 +241,26 @@ class TestAwaitMessages:
         assert queue.pending(session) == 0
         assert not queue._waiters
 
+    def test_releasing_a_waiter_of_an_unwatched_session_is_a_no_op(self) -> None:
+        queue = InboundQueue()
+        loop = asyncio.new_event_loop()
+        try:
+            queue._release(uuid.uuid4(), inbound._Waiter(loop=loop))
+        finally:
+            loop.close()
+        assert not queue._waiters
+
+    def test_an_enqueue_skips_a_waiter_whose_loop_has_closed(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        closed = asyncio.new_event_loop()
+        closed.close()
+        gone = inbound._Waiter(loop=closed)
+        queue._waiters[session].append(gone)
+
+        assert queue.enqueue(session, Inbound(text="nobody is listening")) == 1
+        assert not gone.event.is_set()
+
     def test_cancellation_releases_the_waiter(self) -> None:
         queue = InboundQueue()
         session = uuid.uuid4()
@@ -279,6 +354,29 @@ class TestAwaitMessages:
         delivered = [texts for texts in results if texts]
         assert delivered == [["one message"]], f"message delivered twice: {results}"
 
+    @pytest.mark.asyncio
+    async def test_cancelling_one_hold_leaves_its_sibling_able_to_receive(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        first = asyncio.create_task(queue.await_messages(session, timeout_sec=3_600))
+        second = asyncio.create_task(queue.await_messages(session, timeout_sec=3_600))
+        try:
+            await asyncio.sleep(0)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            assert not second.done()
+
+            message = Inbound(text="for the remaining poll")
+            assert queue.enqueue(session, message) == 1
+            assert await asyncio.wait_for(second, timeout=5) == [message]
+            assert queue.drain(session) == []
+            assert not queue._waiters
+        finally:
+            first.cancel()
+            second.cancel()
+            await asyncio.gather(first, second, return_exceptions=True)
+
 
 class TestRevokingTheLeaseEndsTheHold:
     """A session's end releases the request its own poller is parked in.
@@ -322,6 +420,50 @@ class TestRevokingTheLeaseEndsTheHold:
 
         assert asyncio.run(run()) == []
         assert queue.pending(session) == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "revoke",
+        [
+            InboundQueue.forget_poller,
+            InboundQueue.retire_run,
+            InboundQueue.stop_run,
+        ],
+        ids=["session-ended", "run-replaced", "run-stopped"],
+    )
+    async def test_shutdown_releases_every_hold_only_for_its_own_session(
+        self,
+        revoke: Callable[[InboundQueue, uuid.UUID], None],
+    ) -> None:
+        queue = InboundQueue()
+        session, other = uuid.uuid4(), uuid.uuid4()
+        for each in (session, other):
+            queue.mark_poller(each, cli="claude", instance=uuid.uuid4().hex)
+        holds = [
+            asyncio.create_task(queue.await_messages(each, timeout_sec=3_600))
+            for each in (session, session, other)
+        ]
+        try:
+            await asyncio.sleep(0)
+            revoke(queue, session)
+
+            assert await asyncio.wait_for(
+                asyncio.gather(*holds[:2]),
+                timeout=5,
+            ) == [[], []]
+            assert not queue.has_poller(session)
+            assert queue.has_poller(other)
+            assert not holds[2].done()
+            assert queue.drain(session) == []
+
+            other_message = Inbound(text="for the unaffected run")
+            assert queue.enqueue(other, other_message) == 1
+            assert await asyncio.wait_for(holds[2], timeout=5) == [other_message]
+            assert not queue._waiters
+        finally:
+            for hold in holds:
+                hold.cancel()
+            await asyncio.gather(*holds, return_exceptions=True)
 
 
 class TestWhereAPollerRuns:
@@ -379,6 +521,15 @@ class TestWhichCliPolls:
         queue.mark_poller(session)
         assert queue.poller_run(session) == PollerRun()
 
+    def test_a_renewal_updates_whether_the_poller_takes_run_messages(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        queue.mark_poller(session, runs=True)
+        assert queue.poller_run(session) == PollerRun(runs=True)
+        queue.mark_poller(session, runs=False)
+        assert queue.poller_run(session) == PollerRun(runs=False)
+
     def test_active_poller_ids_can_be_asked_for_one_clis_alone(self) -> None:
         queue = InboundQueue()
         claude, codex, nameless = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
@@ -390,6 +541,21 @@ class TestWhichCliPolls:
         assert queue.active_poller_ids(cli="codex") == [codex]
         assert queue.active_poller_ids(cli="sagent") == []
         assert queue.active_poller_ids() == [claude, codex, nameless]
+
+    def test_active_poller_filters_intersect_cli_and_case_insensitive_account(
+        self,
+    ) -> None:
+        queue = InboundQueue()
+        mine, other, unnamed, codex = (uuid.uuid4() for _ in range(4))
+        queue.mark_poller(mine, cli="claude", account="Dan@x.ai")
+        queue.mark_poller(other, cli="claude", account="eve@x.ai")
+        queue.mark_poller(unnamed, cli="claude")
+        queue.mark_poller(codex, cli="codex", account="dan@x.ai")
+
+        assert queue.active_poller_ids(account="dan@X.ai") == [mine, codex]
+        assert queue.active_poller_ids(cli="claude", account="dan@X.ai") == [mine]
+        assert queue.active_poller_ids(cli="codex", account="dan@X.ai") == [codex]
+        assert queue.active_poller_ids(cli="sagent", account="dan@X.ai") == []
 
     def test_a_run_is_held_off_by_another_runs_live_lease_alone(self) -> None:
         now = [100.0]
@@ -527,6 +693,17 @@ class TestRunsThatWentOffline:
 
         assert queue.take_gone() == [second, third]
 
+    def test_a_session_going_offline_again_becomes_the_newest_gone_session(
+        self,
+    ) -> None:
+        queue = InboundQueue(max_gone=2)
+        first, second, third = (uuid.uuid4() for _ in range(3))
+        for session in (first, second, first, third):
+            queue.mark_poller(session, cli="claude")
+            queue.forget_poller(session)
+
+        assert queue.take_gone() == [first, third]
+
 
 class TestReplacingARun:
     """A run the server replaces is turned away when it drains again."""
@@ -550,7 +727,7 @@ class TestReplacingARun:
         queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
         session = uuid.uuid4()
         old, new = "a" * 32, "b" * 32
-        queue.mark_poller(session, cli="claude", machine="box", instance=old)
+        queue.mark_poller(session, cli="claude", host="box", instance=old)
         now[0] = 200.0
         assert queue.take_gone() == [session]
 
@@ -578,25 +755,25 @@ class TestReplacingARun:
         assert queue.held_by_another(second, cli="claude", instance="a" * 32)
 
 
-class TestTheRunsOnAMachine:
-    """A machine's owner sees the live runs that say they run on it, and stops them."""
+class TestTheRunsOnAHost:
+    """A host's owner sees the live sessions that say they run on it, and stops them."""
 
-    def test_a_machine_lists_its_owners_live_cli_runs_alone(self) -> None:
+    def test_a_host_lists_its_owners_live_cli_runs_alone(self) -> None:
         queue = InboundQueue()
         mine, theirs, elsewhere, assistant = (uuid.uuid4() for _ in range(4))
-        queue.mark_poller(mine, machine="box", cli="claude", account="Dan@x.ai")
-        queue.mark_poller(theirs, machine="box", cli="claude", account="eve@x.ai")
-        queue.mark_poller(elsewhere, machine="gx10", cli="codex", account="dan@x.ai")
-        queue.mark_poller(assistant, machine="box", account="dan@x.ai")
+        queue.mark_poller(mine, host="box", cli="claude", account="Dan@x.ai")
+        queue.mark_poller(theirs, host="box", cli="claude", account="eve@x.ai")
+        queue.mark_poller(elsewhere, host="gx10", cli="codex", account="dan@x.ai")
+        queue.mark_poller(assistant, host="box", account="dan@x.ai")
 
         assert queue.runs_on("box", account="dan@X.ai") == {
-            mine: PollerRun(machine="box", cli="claude"),
+            mine: PollerRun(host="box", cli="claude"),
         }
 
     def test_a_run_whose_lease_lapsed_is_not_listed(self) -> None:
         now = [100.0]
         queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
-        queue.mark_poller(uuid.uuid4(), machine="box", cli="claude", account="d@x.ai")
+        queue.mark_poller(uuid.uuid4(), host="box", cli="claude", account="d@x.ai")
         now[0] = 200.0
 
         assert queue.runs_on("box", account="d@x.ai") == {}
@@ -605,7 +782,7 @@ class TestTheRunsOnAMachine:
         queue = InboundQueue()
         session = uuid.uuid4()
         old, new = "a" * 32, "b" * 32
-        queue.mark_poller(session, machine="box", cli="claude", instance=old)
+        queue.mark_poller(session, host="box", cli="claude", instance=old)
 
         queue.stop_run(session)
 
@@ -666,13 +843,13 @@ class TestWhereARunWas:
         assert queue.last_run(second) == _AT
 
 
-_AT = PollerRun(run="chat-1a2b3c4d", machine="gx10", cwd="~/work")
+_AT = PollerRun(run="chat-1a2b3c4d", host="gx10", cwd="~/work")
 """Where a detached run on gx10, working in ``~/work``, says it is."""
 
 
 def _mark_at(queue: InboundQueue, session_id: uuid.UUID) -> None:
     """Renew ``session_id``'s lease as a poll from the run at :data:`_AT` does."""
-    queue.mark_poller(session_id, run=_AT.run, machine=_AT.machine, cwd=_AT.cwd)
+    queue.mark_poller(session_id, run=_AT.run, host=_AT.host, cwd=_AT.cwd)
 
 
 class TestSendIdempotency:
@@ -704,12 +881,58 @@ class TestSendIdempotency:
         q = InboundQueue()
         key = uuid.uuid4()
         sid = uuid.uuid4()
-        first = q.send_once(key, [(sid, Inbound(text="hi"))])
+        message = Inbound(text="hi", source="ada@example.com", room="review")
+        first = q.send_once(key, [(sid, message)])
         assert first == [sid]
         # Same key again: replay the receipt, enqueue nothing more.
-        second = q.send_once(key, [(sid, Inbound(text="hi"))])
+        second = q.send_once(key, [(sid, message)])
         assert second == [sid]
-        assert q.pending(sid) == 1
+        assert q.drain(sid) == [message]
+
+    @pytest.mark.parametrize("omit_first", [False, True])
+    def test_omitted_and_explicit_default_fingerprints_replay_the_same_send(
+        self,
+        omit_first: bool,
+    ) -> None:
+        queue = InboundQueue()
+        key, session = uuid.uuid4(), uuid.uuid4()
+        message = Inbound(text="one message")
+        for omit in (omit_first, not omit_first):
+            if omit:
+                delivered = queue.send_once(key, [(session, message)])
+            else:
+                delivered = queue.send_once(key, [(session, message)], fingerprint="")
+            assert delivered == [session]
+        assert queue.drain(session) == [message]
+
+    def test_an_empty_keyed_delivery_can_be_retried_when_a_target_is_live(self) -> None:
+        queue = InboundQueue()
+        key, session = uuid.uuid4(), uuid.uuid4()
+        message = Inbound(text="now live")
+
+        assert queue.send_once(key, []) == []
+        assert queue.send_once(key, [(session, message)]) == [session]
+        assert queue.send_once(key, [(session, message)]) == [session]
+        assert queue.drain(session) == [message]
+
+    def test_a_fingerprinted_retry_replays_but_a_changed_body_is_refused(self) -> None:
+        queue = InboundQueue()
+        key, session = uuid.uuid4(), uuid.uuid4()
+        message = Inbound(text="original")
+
+        assert queue.send_once(key, [(session, message)], fingerprint="body-a") == [
+            session,
+        ]
+        assert queue.send_once(key, [(session, message)], fingerprint="body-a") == [
+            session,
+        ]
+        with pytest.raises(IdempotencyReuseError):
+            queue.send_once(
+                key,
+                [(session, Inbound(text="changed"))],
+                fingerprint="body-b",
+            )
+        assert queue.drain(session) == [message]
 
     def test_a_key_remembers_who_first_sent_under_it(self) -> None:
         q = InboundQueue(max_seen_keys=1)
@@ -786,6 +1009,17 @@ class TestAChatsLinesOnTheirWay:
         assert queue.conversation_senders(self._CHAT) == []
         assert queue.conversation_senders(self._OTHER) == ["ada@example.com"]
 
+    def test_a_plain_message_does_not_hide_the_chat_line_after_it(self) -> None:
+        queue = InboundQueue()
+        session, taker = uuid.uuid4(), uuid.uuid4()
+        queue.enqueue(session, Inbound(text="plain message"))
+        queue.enqueue(session, self._line("bob@example.com"))
+
+        queue.hand_out(queue.drain(session), taker=taker)
+
+        assert queue.conversation_senders(self._CHAT) == ["bob@example.com"]
+        assert queue.took_line(taker, poster="bob@example.com")
+
     def test_recording_forgets_one_taken_line_per_sender(self) -> None:
         queue = InboundQueue()
         queue.hand_out([self._line("bob@example.com")] * 2, taker=None)
@@ -793,6 +1027,45 @@ class TestAChatsLinesOnTheirWay:
         queue.recorded(self._CHAT, senders=["bob@example.com"])
 
         assert queue.conversation_senders(self._CHAT) == ["bob@example.com"]
+
+    def test_recording_an_unknown_or_already_recorded_line_is_a_no_op(self) -> None:
+        queue = InboundQueue()
+        queue.recorded(self._CHAT, senders=["bob@example.com"])
+        assert queue.conversation_senders(self._CHAT) == []
+
+        queue.hand_out([self._line("bob@example.com")], taker=None)
+        queue.recorded(self._CHAT, senders=["bob@example.com"])
+        queue.recorded(self._CHAT, senders=["bob@example.com"])
+        assert queue.conversation_senders(self._CHAT) == []
+
+    def test_recorded_chats_leave_room_for_other_unrecorded_lines(self) -> None:
+        queue = InboundQueue(max_handed_chats=2)
+        third = uuid.UUID(int=3)
+        queue.hand_out([self._line("bob@example.com", chat=self._OTHER)], taker=None)
+        queue.hand_out([self._line("ada@example.com")], taker=None)
+        queue.recorded(self._CHAT, senders=["ada@example.com"])
+
+        queue.hand_out([self._line("kim@example.com", chat=third)], taker=None)
+
+        assert queue.conversation_senders(self._OTHER) == ["bob@example.com"]
+        assert queue.conversation_senders(self._CHAT) == []
+        assert queue.conversation_senders(third) == ["kim@example.com"]
+
+    def test_deleting_queued_lines_counts_all_sessions_and_can_be_repeated(
+        self,
+    ) -> None:
+        queue = InboundQueue()
+        first, second = uuid.uuid4(), uuid.uuid4()
+        other_line = self._line("ada@example.com", chat=self._OTHER)
+        queue.enqueue(first, self._line("bob@example.com"))
+        queue.enqueue(second, self._line("kim@example.com"))
+        queue.enqueue(second, other_line)
+
+        assert queue.drop_conversation(self._CHAT) == 2
+        assert queue.drain(first) == []
+        assert queue.drain(second) == [other_line]
+        assert queue.conversation_senders(self._CHAT) == []
+        assert queue.drop_conversation(self._CHAT) == 0
 
     def test_a_chats_delete_drops_its_queued_lines_and_forgets_its_taken_ones(
         self,
@@ -894,7 +1167,10 @@ class TestTheKeyThatTookALine:
     def test_a_turn_outlives_the_lines_record_and_ends_at_its_ttl(self) -> None:
         now = [0.0]
         queue = InboundQueue(turn_ttl_sec=3_600.0, _clock=lambda: now[0])
+        assert not queue.took_line(self._TAKER, poster=self._BOB)
         queue.hand_out([self._line(self._BOB)], taker=self._TAKER)
+        assert queue.took_line(self._TAKER, poster=self._BOB)
+        assert not queue.took_line(self._TAKER, poster="ada@example.com")
         queue.recorded(self._CHAT, senders=[self._BOB])
 
         now[0] = 3_599.0

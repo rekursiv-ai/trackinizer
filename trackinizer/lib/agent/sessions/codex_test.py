@@ -57,7 +57,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 META = '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/workspace"}}\n'
@@ -457,6 +457,53 @@ def test_a_peer_message_is_a_message_not_a_tool_result() -> None:
     assert message.content == "Take a look."
     assert message.sender == "/root"
     assert message.recipient == "/root/reviewer"
+    output = StringIO()
+
+    codex.denormalize(records, output)
+
+    assert output.getvalue() == native
+
+
+def test_a_constructed_peer_message_keeps_prose_and_routing() -> None:
+    output = StringIO()
+
+    codex.denormalize(
+        [
+            AgentToAgentMessage(
+                sender="root",
+                recipient="reviewer",
+                content="review this",
+            ),
+        ],
+        output,
+    )
+
+    (message,) = (
+        record
+        for record in codex.normalize(StringIO(output.getvalue()))
+        if isinstance(record, AgentToAgentMessage)
+    )
+    assert (message.sender, message.recipient, message.content) == (
+        "root",
+        "reviewer",
+        "review this",
+    )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"type":"function_call","name":"Read","arguments":"{}"}',
+        '{"type":"custom_tool_call","call_id":"c","name":"apply_patch"}',
+    ],
+)
+def test_replaying_a_call_does_not_invent_absent_fields(payload: str) -> None:
+    native = META + _item(payload)
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
 
 
 def test_a_completed_command_keeps_its_argument_list() -> None:

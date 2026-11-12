@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # The table as it stood before 021 dropped it, trimmed to the columns 020
 # reads. Not imported from the baseline schema (which no longer has it) and

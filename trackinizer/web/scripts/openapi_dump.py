@@ -54,7 +54,7 @@ else:
     # The module, not its attributes: an attribute proxy of a tuple cannot be
     # iterated, while an attribute read through a module proxy is the real value.
     app = lazy_import("trackinizer.server.api.app")
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 OPENAPI_JSON: Final = _CWD.parent / "src" / "api" / "openapi.json"
 """The committed dump the web app's client is generated from."""

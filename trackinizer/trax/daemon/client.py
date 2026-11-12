@@ -18,6 +18,7 @@ from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax.daemon.protocol import (
     FORWARDED_ENV,
     KEY_ENV,
+    KEY_FILE_ENV,
     PROTOCOL_VERSION,
     Request,
     Response,
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _CLI_MODULE: Final = __name__.rsplit(".", maxsplit=2)[0]
 """The ``trax`` package -- this module's own name minus ``daemon.client``.
@@ -64,10 +65,10 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 # here, where it says so, rather than reach a daemon for one line.
 _LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run"})
 
-# ``machine`` and ``job`` moved out of trax too; they say so here rather than reach a
+# ``host`` and ``job`` moved out of trax too; they say so here rather than reach a
 # daemon for one line. Judged in verb position only, so ``title to job`` still
 # delegates.
-_MOVED_VERBS: Final[frozenset[str]] = frozenset({"machine", "job"})
+_MOVED_VERBS: Final[frozenset[str]] = frozenset({"host", "job"})
 
 # These verbs print output that grows with the graph. The daemon answers with a verb's
 # whole output in one frame, which ``protocol`` caps, so ``export`` runs in this process
@@ -94,11 +95,11 @@ def should_delegate(argv: Sequence[str]) -> bool:
     """Whether ``argv`` may run in the daemon rather than this process.
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
-    any command whose value is the ``-`` stdin sentinel, ``machine`` and ``job``,
+    any command whose value is the ``-`` stdin sentinel, ``host`` and ``job``,
     ``profile NAME login URL``, and ``export``, whose output outgrows a frame. Each is judged by POSITION rather than
     by presence, so a row whose title happens to be "run" still gets the
-    daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
-    ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
+    daemon. An invocation with ``TRACKINIZER_URL`` and ``TRACKINIZER_TOKEN`` or
+    ``TRACKINIZER_TOKEN_FILE`` non-empty runs in this process: the key must not cross
     the socket.
 
     Args:
@@ -113,7 +114,8 @@ def should_delegate(argv: Sequence[str]) -> bool:
     # ``connection.resolve_target`` reads the key only beside a URL, and ops shells export a
     # lone token, so refusing on the token alone would forfeit the daemon on every
     # call there for nothing.
-    if os.getenv(KEY_ENV, default="") and os.getenv("TRACKINIZER_URL", default=""):
+    keyed = os.getenv(KEY_ENV, default="") or os.getenv(KEY_FILE_ENV, default="")
+    if keyed and os.getenv("TRACKINIZER_URL", default=""):
         return False
     if _spawns_a_terminal(argv) or _logs_in(argv):
         return False
@@ -337,7 +339,8 @@ def _spawn(path: Path, *, source_version: str) -> bool:
     while time.monotonic() < deadline:
         if _accepts(path):
             return True
-        time.sleep(0.01)
+        # The daemon is another process; only its socket says it is up.
+        time.sleep(0.01)  # house-ignore[sleep] -- See above.
     return False
 
 

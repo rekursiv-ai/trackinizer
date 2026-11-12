@@ -28,6 +28,7 @@ from pydantic import (
     ConfigDict,
     Field,
     StringConstraints,
+    computed_field,
     field_validator,
 )
 
@@ -46,9 +47,11 @@ __all__ = [
     "JOB_SECRETS_PATH",
     "JOB_SECRET_PATH",
     "JOB_START_PATH",
+    "JOB_USER_PATTERN",
     "JOB_USER_PREFIX",
     "MAX_ARGV_CHARS",
     "MAX_GPUS",
+    "MAX_LABEL_CHARS",
     "MAX_MINUTES",
     "NODE_PATTERN",
     "SECRET_NAMES",
@@ -91,7 +94,10 @@ NODE_PATTERN: Final = r"^[a-z0-9][a-z0-9-]{0,62}$"
 """A node name, as Slurm and the principal spell it."""
 
 JOB_USER_PREFIX: Final = "rai-ext-job-"
-"""Starts the node account a job runs as, ``rai-ext-job-<job id>``."""
+"""Starts the node account a job of a server with no tag runs as."""
+
+JOB_USER_PATTERN: Final = r"^rai-ext-(?:[a-z][a-z0-9]{0,9}-)?job-[0-9]{1,12}$"
+"""A node account a job runs as, with or without its server's tag."""
 
 SECRET_NAMES: Final = frozenset({"HF_TOKEN", "WANDB_API_KEY"})
 """The per-person secrets a job's proxy may use."""
@@ -113,6 +119,9 @@ GATE_RO_VERBS: Final = ("status", "logs", "manifest", "download")
 
 MAX_ARGV_CHARS: Final = 4_096
 """Longest job command line, all arguments together."""
+
+MAX_LABEL_CHARS: Final = 80
+"""Longest job label."""
 
 MAX_GPUS: Final = 8
 """The most GPUs one job may ask for: one whole node, since a job cannot span nodes."""
@@ -182,9 +191,21 @@ def key_sha256(public_key: str) -> str:
     return hashlib.sha256(base64.b64decode(blob)).hexdigest()
 
 
-def job_user(job_id: int) -> str:
-    """Return the node account job ``job_id`` runs as, ``rai-ext-job-<job_id>``."""
-    return f"{JOB_USER_PREFIX}{job_id}"
+def job_user(job_id: int, *, tag: str = "") -> str:
+    """Return the node account job ``job_id`` of the server tagged ``tag`` runs as.
+
+    Each server numbers its jobs from 1, so on a node that serves two the tag keeps them
+    apart: ``rai-ext-<tag>-job-<job_id>``, and ``rai-ext-job-<job_id>`` with no tag.
+
+    Args:
+      job_id: The job, as its server numbers it.
+      tag: What sets the server's names apart on a node; empty for the first server.
+
+    Returns:
+      user: The account's name.
+
+    """
+    return f"rai-ext-{tag}-job-{job_id}" if tag else f"{JOB_USER_PREFIX}{job_id}"
 
 
 type PublicKey = Annotated[str, AfterValidator(ed25519_public_key)]
@@ -205,7 +226,11 @@ class SubmitBody(BaseModel):
     minutes: int = Field(ge=1, le=MAX_MINUTES)
     """Wall-clock limit; the job is stopped when it runs out."""
 
-    label: str = Field(default="", max_length=80, pattern=r"^[A-Za-z0-9._ -]*$")
+    label: str = Field(
+        default="",
+        max_length=MAX_LABEL_CHARS,
+        pattern=r"^[A-Za-z0-9._ -]*$",
+    )
     argv: list[Annotated[str, StringConstraints(pattern=r"^[^\x00]*$")]] = Field(
         min_length=1,
     )
@@ -241,11 +266,12 @@ class JobView(BaseModel):
     created_at: datetime
     started_at: datetime | None
     ended_at: datetime | None
-    gpu_minutes: int | None
-    """GPUs times minutes charged so far; every minute charged once the job ended."""
+    gpu_seconds: int | None = None
+    """GPUs times seconds charged so far; every second Slurm counted once the job
+    ended; ``None`` before the first charge, or when the server does not say."""
 
     usd: float | None
-    """What those minutes cost the person."""
+    """What those seconds cost the person."""
 
     usd_per_gpu_minute: float | None = None
     """What one GPU minute costs, fixed when the job was submitted, before any
@@ -257,6 +283,18 @@ class JobView(BaseModel):
 
     upload_serial: int | None
     """The serial of the upload certificate, once the job is placed."""
+
+    @computed_field
+    @property
+    def gpu_minutes(self) -> int | None:
+        """``gpu_seconds`` rounded up to the minute; ``None`` when that is.
+
+        Exact for the whole intervals charged while a job runs and for jobs billed in
+        minutes before ``gpu_seconds``; a sealed job's last part minute rounds up.
+        Sent for clients through trackinizer 0.1.13, which require it and only show
+        it; drop it once they are gone.
+        """
+        return None if self.gpu_seconds is None else -(-self.gpu_seconds // 60)
 
 
 class JobList(BaseModel):
@@ -271,10 +309,7 @@ class NodeAddress(BaseModel):
     name: NodeName
     host: str = Field(min_length=1, max_length=253)
     port: int = Field(ge=1, le=65_535)
-    user: Annotated[
-        str,
-        StringConstraints(pattern=rf"^{JOB_USER_PREFIX}[0-9]{{1,12}}$"),
-    ]
+    user: Annotated[str, StringConstraints(pattern=JOB_USER_PATTERN)]
     host_key: str = Field(pattern=r"^ssh-ed25519 [A-Za-z0-9+/=]+$")
     """The node's host key; the client pins it under the node's name."""
 

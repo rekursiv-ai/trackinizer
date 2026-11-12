@@ -76,7 +76,7 @@ def candidates(root: Path, *, skip: frozenset[str] = frozenset()) -> tuple[str, 
       found: Each module's POSIX path relative to ``root``, sorted.
 
     """
-    found = []
+    found: list[str] = []
     for path in _modules(root, skip=skip):
         text = path.read_text()
         # Most modules hold no upper-case keyword at all.

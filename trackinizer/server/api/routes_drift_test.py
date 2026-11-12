@@ -36,17 +36,17 @@ from trackinizer.wire.wire_code import (
     CODE_DIFF_PATH,
     CODE_MISSING_PATH,
 )
-from trackinizer.wire.wire_export import EXPORT_API_PATHS
-from trackinizer.wire.wire_machine_host import (
+from trackinizer.wire.wire_daemon import (
     ENROLL_PATH,
     HEARTBEAT_PATH,
     JOIN_PATH,
     REVOKE_PATH,
 )
-from trackinizer.wire.wire_machines import (
-    MACHINE_LABELS_PATH,
-    MACHINE_PATH,
-    MACHINES_PATH,
+from trackinizer.wire.wire_export import EXPORT_API_PATHS
+from trackinizer.wire.wire_hosts import (
+    HOST_LABELS_PATH,
+    HOST_PATH,
+    HOSTS_PATH,
 )
 from trackinizer.wire.wire_metrics import METRICS_API_PATHS
 from trackinizer.wire.wire_metrics_query import (
@@ -61,7 +61,7 @@ from trackinizer.wire.wire_sessions import SESSION_API_PATHS
 from trackinizer.wire.wire_variables import VARIABLE_PATH, VARIABLES_PATH
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # Field-mutation routes are exactly the PUT/PATCH/DELETE verbs under the
@@ -246,19 +246,19 @@ def test_variables_paths_are_registered_and_documented() -> None:
     assert f"GET    {VARIABLES_PATH}" in api_md
 
 
-def test_machines_paths_are_registered_and_documented() -> None:
-    """The machine routes exist on the live app and appear in ``docs/api.md``."""
+def test_hosts_paths_are_registered_and_documented() -> None:
+    """The host routes exist on the live app and appear in ``docs/api.md``."""
     registered = registered_paths(app)
     api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
-    for path in (MACHINES_PATH, MACHINE_PATH, MACHINE_LABELS_PATH):
+    for path in (HOSTS_PATH, HOST_PATH, HOST_LABELS_PATH):
         assert path in registered
-    assert f"GET    {MACHINES_PATH}" in api_md
-    assert "PUT    /api/machines/<name>" in api_md
-    assert "PATCH  /api/machines/<name>/labels" in api_md
-    assert "DELETE /api/machines/<name>" in api_md
+    assert f"GET    {HOSTS_PATH}" in api_md
+    assert "PUT    /api/hosts/<name>" in api_md
+    assert "PATCH  /api/hosts/<name>/labels" in api_md
+    assert "DELETE /api/hosts/<name>" in api_md
 
 
-def test_machine_host_paths_are_registered_and_documented() -> None:
+def test_daemon_paths_are_registered_and_documented() -> None:
     """The enroll, join, heartbeat and revoke routes exist and appear in the docs."""
     registered = registered_paths(app)
     api_md = (_CWD.parents[1] / "docs" / "api.md").read_text()
@@ -266,8 +266,8 @@ def test_machine_host_paths_are_registered_and_documented() -> None:
         assert path in registered
     assert f"POST   {ENROLL_PATH}" in api_md
     assert f"POST   {JOIN_PATH}" in api_md
-    assert "POST   /api/machines/<uuid>/heartbeat" in api_md
-    assert "POST   /api/machines/<name>/revoke" in api_md
+    assert "POST   /api/hosts/<uuid>/heartbeat" in api_md
+    assert "POST   /api/hosts/<name>/revoke" in api_md
 
 
 def test_code_paths_are_registered_and_documented() -> None:
@@ -344,7 +344,7 @@ def test_submit_tokens_are_kind_lowercased() -> None:
     """
     kinds = cast(
         tuple[str, ...],
-        get_args(Inquiry.InquiryKind.__value__),
+        get_args(cast(object, Inquiry.InquiryKind.__value__)),
     )
     assert set(SUBMIT_BODY) == {kind.lower() for kind in kinds}
 

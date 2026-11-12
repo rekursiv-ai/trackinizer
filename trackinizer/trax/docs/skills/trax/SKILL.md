@@ -88,11 +88,12 @@ by default so priority retains a clear dynamic range.
 
 ## Status model
 
-Statuses are `active|complete|abandoned|invalid`. `active` with no `owner` is
-open; with an `owner` it is in progress. `trax next`, `board`, and `blocked`
-operate over `active` rows. `abandoned` = work stopped before completion;
-`invalid` = should not have been opened. Prefer either over `del` when history
-matters.
+Statuses are `active|complete|stopped|abandoned|invalid`. `active` with no
+`owner` is open; with an `owner` it is in progress. `trax next`, `board`, and
+`blocked` operate over `active` rows. `complete` = the work finished;
+`stopped` = a budget or usage limit ended the work before it finished;
+`abandoned` = a person gave the work up before completion; `invalid` = should
+not have been opened. Prefer any of these over `del` when history matters.
 
 ## Kinds and artifacts
 
@@ -416,10 +417,10 @@ with `trax env secret NAME to -` or point at a file with `to @FILE`. A literal
 secret on the command line is refused, and a listing shows `(secret)`, never a
 value. Never echo a secret into a command, a row or your own output.
 
-## Machines
+## Hosts
 
-The registry of machines campaigns may run on, and GPU jobs, moved out of trax:
-`trax machine` and `trax job` say so. A shell the web app opens sets
+The registry of hosts campaigns may run on, and GPU jobs, moved out of trax:
+`trax host` and `trax job` say so. A shell the web app opens sets
 `TRAX_WORKSPACE` and `TRAX_CANVAS`, and
 `LC_TRAX_*` copies that survive `ssh`; `trax` reads `TRAX_X`, else `LC_TRAX_X`, and
 uses the saved profile whose URL is `LC_TRAX_SERVER`.
@@ -429,7 +430,7 @@ uses the saved profile whose URL is `LC_TRAX_SERVER`.
 Running Claude Code and Codex recorded, as an AgentSession reachable from Chat,
 moved out of trax; `trax run` says so. `trax` reads the records they write
 (`trax agentsession N`, `trax agentsession N records`) and sends a message into a
-live run with `trax send @NAME TEXT`.
+live session with `trax send @NAME TEXT`.
 
 ## Recovery
 

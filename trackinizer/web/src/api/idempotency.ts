@@ -23,7 +23,7 @@ export function keyed<Body>(body: Body): Keyed<Body> {
  * saved view's id.
  *
  * `crypto.randomUUID` exists only in a secure context (HTTPS or localhost). The
- * app opened over plain HTTP from another machine lacks it, and calling it there
+ * app opened over plain HTTP from another host lacks it, and calling it there
  * failed every request (parity bug B1), so this builds one from
  * `crypto.getRandomValues`, which every context has, as the old UI's `uuidv4` did.
  */

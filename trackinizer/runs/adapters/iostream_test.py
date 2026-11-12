@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from trackinizer.runs.adapters.iostream import IOStreamAdapter
+from trackinizer.types.streams import Stdout
 
 
 class TestAdapter:
@@ -34,6 +35,17 @@ class TestAdapter:
         """No CLI wrote these bytes, so none can be handed them back."""
         assert IOStreamAdapter().session_id_from_path(Path("x")) is None
         assert IOStreamAdapter().resumed_session(("--resume", "x")) is None
+
+    def test_has_no_subagents(self) -> None:
+        assert IOStreamAdapter().subagent(Path("agent-x.jsonl")) is None
+
+    def test_the_reader_keeps_each_line_verbatim_as_stdout(self) -> None:
+        reader = IOStreamAdapter().reader()
+
+        read = [*reader.feed("one\n"), *reader.feed("two  \n"), *reader.close()]
+
+        assert [r.text for r in read if isinstance(r, Stdout)] == ["one\n", "two  \n"]
+        assert IOStreamAdapter().reader() is not reader
 
 
 if __name__ == "__main__":

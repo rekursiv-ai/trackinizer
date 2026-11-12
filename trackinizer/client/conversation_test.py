@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from treekle import immutable
 
@@ -16,10 +19,13 @@ from trackinizer.client.conversation import (
     neutral,
     placed,
     projected,
+    read_part,
+    read_segments,
 )
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
+    BashResult,
     ContextClear,
     ContextState,
     IncompleteRecord,
@@ -32,10 +38,15 @@ from trackinizer.sagent.session.types import (
     UncategorizedToolResult,
     UserMessage,
 )
+from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.types.streams import Stdout
+from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
+
+    from trackinizer.types.streams import TraxRecord
 
 
 def _at(second: int) -> str:
@@ -404,9 +415,12 @@ def test_a_stamped_mid_turn_line_is_a_persons_and_a_notice_is_not() -> None:
         ],
     )
 
-    assert _people(_neutral_conversation([segment])) == [
-        ("ada@example.com", "also check CI"),
-    ]
+    spoken = _neutral_conversation([segment])
+
+    assert _people(spoken) == [("ada@example.com", "also check CI")]
+    [person] = spoken
+    assert isinstance(person, AgentToAgentMessage)
+    assert (person.timestamp, person.extra) == (_at(1), {"provider": "claude"})
 
 
 def test_overlapping_parts_interleave_by_time_not_by_part() -> None:
@@ -463,16 +477,61 @@ def test_a_record_with_no_stamp_keeps_its_place_in_its_part() -> None:
     assert texts == ["cl1", "cl2", "early", "kb2"]
 
 
+def test_unstamped_parts_stay_ordered_before_a_stamped_part() -> None:
+    parts = [
+        _segment(1, "codex", [AssistantMessage(timestamp=_at(1), content="later")]),
+        _segment(
+            0,
+            "claude",
+            [UserMessage(content="first"), AssistantMessage(content="second")],
+        ),
+    ]
+
+    assert [(each.part, each.idx) for each in placed(parts)] == [(0, 0), (0, 1), (1, 0)]
+
+
+def test_offset_timestamps_are_compared_as_instants() -> None:
+    parts = [
+        _segment(
+            0,
+            "claude",
+            [UserMessage(timestamp="2026-10-20T11:00:00+02:00", content="first")],
+        ),
+        _segment(1, "codex", [AssistantMessage(timestamp=_at(1), content="second")]),
+    ]
+
+    assert [(each.part, each.idx) for each in placed(parts)] == [(0, 0), (1, 0)]
+
+
+def test_the_bots_answers_use_its_display_name() -> None:
+    spoken = [
+        AssistantMessage(content="first"),
+        AssistantMessage(content="second", extra=immutable({"provider": "bot"})),
+        AssistantMessage(content="third", extra=immutable({"provider": "codex"})),
+    ]
+
+    assert [
+        (line.role, line.author, line.text) for line in lines(spoken, bot="guide")
+    ] == [
+        ("assistant", "guide", "first"),
+        ("assistant", "guide", "second"),
+        ("assistant", "codex", "third"),
+    ]
+
+
 def test_a_window_with_no_summary_is_not_kept() -> None:
     segment = _segment(0, "claude", [ContextClear(timestamp=_at(1))])
 
     assert _neutral_conversation([segment]) == []
 
 
-def test_an_empty_answer_is_not_a_line() -> None:
-    segment = _segment(0, "claude", [AssistantMessage(timestamp=_at(1), content="  ")])
+@pytest.mark.parametrize("content", [None, "", "  "])
+def test_an_empty_answer_is_not_a_line(content: str | None) -> None:
+    answer = AssistantMessage(timestamp=_at(1), content=content)
+    segment = _segment(0, "claude", [answer])
 
     assert _neutral_conversation([segment]) == []
+    assert lines([answer], bot="guide") == []
 
 
 def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
@@ -507,6 +566,56 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
         ),
         "Understood; continuing as claude.",
     ]
+
+
+@pytest.mark.parametrize("failed", [False, True], ids=["success", "error"])
+def test_a_foreign_typed_tool_keeps_its_call_and_structured_result(
+    failed: bool,
+) -> None:
+    call = ToolCall(
+        context_id=11,
+        timestamp=_at(1),
+        call_id="shell-1",
+        name="exec",
+        arguments=immutable({"cmd": "pwd"}),
+    )
+    result = BashResult(
+        context_id=12,
+        timestamp=_at(2),
+        call_id="shell-1",
+        command=("pwd",),
+        stdout="/workspace\n",
+        stderr="permission denied\n",
+        exit_code=1,
+        extra=immutable({"is_error": failed}),
+    )
+    segment = _segment(0, "codex", [call, result])
+
+    written = projected(_neutral_conversation([segment]), "claude")
+
+    assert [record for record in written if isinstance(record, ToolCall)] == [
+        replace(call, context_id=None),
+    ]
+    assert [record for record in written if isinstance(record, BashResult)] == [
+        replace(
+            result,
+            context_id=None,
+            extra=immutable({"is_error": True} if failed else {}),
+        ),
+    ]
+    assert (call.context_id, result.context_id) == (11, 12)
+
+
+@pytest.mark.parametrize("target", ["claude", "codex"])
+def test_an_opening_without_conversation_is_preserved_without_a_switch(
+    target: str,
+) -> None:
+    opening = [
+        ContextClear(timestamp=_at(1), summary="The earlier request is resolved."),
+    ]
+
+    assert projected([], target, opening=opening) == opening
+    assert projected([], target) == []
 
 
 def test_consecutive_turns_of_one_role_are_one_turn_with_the_first_stamp() -> None:
@@ -702,6 +811,139 @@ def test_delivered_text_is_the_words_with_or_without_a_sender_or_a_trailer(
 ) -> None:
     """The sender is named only when it says something, so the prefix may lack it."""
     assert delivered_text(content, Delivery(source="ada@x", room=room)) == words
+
+
+_SESSION = UUID(int=1)
+
+
+class _Parts:
+    """A server holding one session's parts, as ``Client`` reads them."""
+
+    def __init__(self, parts: Mapping[int, tuple[str, Sequence[TraxRecord]]]) -> None:
+        self._parts = parts
+        self.reads: list[tuple[int, bool]] = []
+
+    def read_session_parts(self, session_id: UUID) -> list[PartBody]:
+        assert session_id == _SESSION
+        # Listed newest first, so the reader's own ordering is what is tested.
+        return [
+            PartBody(part=part, name=f"{part}.jsonl", format=fmt, records=len(records))
+            for part, (fmt, records) in sorted(self._parts.items(), reverse=True)
+        ]
+
+    def read_session_records(
+        self,
+        session_id: UUID,
+        *,
+        part: int = 0,
+        plaintext_only: bool = False,
+    ) -> list[RecordBody]:
+        assert session_id == _SESSION
+        self.reads.append((part, plaintext_only))
+        return [
+            RecordBody.of(
+                SessionRecordRow.of(
+                    session_id=session_id,
+                    part=part,
+                    idx=idx,
+                    record=record,
+                ),
+            )
+            for idx, record in enumerate(self._parts[part][1])
+        ]
+
+
+def test_read_segments_reads_each_native_part_in_order_without_ciphertext() -> None:
+    """A formatless ``sh`` scrape is searchable, never a conversation."""
+    server = _Parts(
+        {
+            0: ("claude", [UserMessage(timestamp=_at(1), content="q1")]),
+            1: ("", [Stdout(text="$ ls")]),
+            2: ("codex", [AssistantMessage(timestamp=_at(2), content="a1")]),
+        },
+    )
+
+    segments = read_segments(server, _SESSION)
+
+    assert [(s.part, s.name, s.format) for s in segments] == [
+        (0, "0.jsonl", "claude"),
+        (2, "2.jsonl", "codex"),
+    ]
+    [[asked], [answered]] = [s.records for s in segments]
+    assert isinstance(asked, UserMessage)
+    assert isinstance(answered, AssistantMessage)
+    assert (asked.content, answered.content) == ("q1", "a1")
+    assert server.reads == [(0, True), (2, True)]
+
+
+def test_read_part_aligns_each_record_with_its_ciphertext() -> None:
+    sealed = Thinking(timestamp=_at(1), content="", encrypted="gAAAA-sealed")
+    server = _Parts({0: ("codex", [sealed, UserMessage(content="q")])})
+
+    records, ciphertexts = read_part(server, _SESSION, 0, plaintext_only=False)
+
+    assert [type(record).__name__ for record in records] == [
+        "Thinking",
+        "UserMessage",
+    ]
+    assert ciphertexts == ["gAAAA-sealed", None]
+    assert server.reads == [(0, False)]
+
+
+def test_a_native_part_holding_a_stream_record_fails_loudly() -> None:
+    server = _Parts({0: ("claude", [Stdout(text="$ ls")])})
+
+    with pytest.raises(TypeError, match="no stream records; Stdout came from one"):
+        read_part(server, _SESSION, 0, plaintext_only=True)
+
+
+def test_an_unreadable_stamp_takes_the_one_before_it() -> None:
+    segment = _segment(
+        0,
+        "claude",
+        [
+            UserMessage(timestamp=_at(5), content="first"),
+            UserMessage(timestamp="not a time", content="second"),
+        ],
+    )
+
+    order = placed([segment])
+
+    assert [each.moment for each in order] == [
+        datetime(2026, 10, 20, 10, 0, 5, tzinfo=UTC),
+    ] * 2
+
+
+def test_a_record_no_writer_states_projects_to_nothing() -> None:
+    """Only a switch marker is a SystemMessage a target is told about."""
+    written = projected(
+        [SystemMessage(timestamp=_at(1), subtype="note", content="internal")],
+        "claude",
+    )
+
+    assert written == []
+
+
+def test_an_unparsed_opening_line_is_kept_unstamped() -> None:
+    """An unparsed line carries no stamp to give; the line after it takes the last."""
+    torn = IncompleteRecord(text='{"type": "us')
+
+    written = projected(
+        [AssistantMessage(timestamp=_at(2), content="a1")],
+        "claude",
+        opening=[
+            UserMessage(timestamp=_at(1), content="note"),
+            torn,
+            UserMessage(content="after"),
+        ],
+    )
+
+    assert written == [
+        UserMessage(timestamp=_at(1), content="note"),
+        torn,
+        UserMessage(timestamp=_at(1), content="after"),
+        AssistantMessage(timestamp=_at(2), content="a1"),
+    ]
 
 
 if __name__ == "__main__":

@@ -12,8 +12,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast, override
 from uuid import UUID, uuid4
 
+import re
+
 import pytest
 
+from trackinizer.conftest import make_store
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper import IndexUnit
 from trackinizer.server.semantic_mapper_footprint import (
@@ -24,6 +27,7 @@ from trackinizer.server.store import session_embed
 from trackinizer.server.store.session_embed import (
     Pool,
     SweepStats,
+    current_snapshot,
     embed_texts,
     pending_page_sql,
     save_cursor,
@@ -674,6 +678,36 @@ async def test_a_record_in_flight_at_the_cursor_is_read_once_it_commits(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_a_snapshot_taken_before_a_write_leaves_that_write_to_read(
+    store: Store,
+) -> None:
+    """A backfill saves the snapshot it took BEFORE reading, so later writes stay new.
+
+    A stale marker on the earlier record is the probe that the saved snapshot
+    is a real cursor: a full rescan would find and re-embed it.
+    """
+    session_id = await _session(store)
+    await _record(store, session_id, idx=0, kind="UserMessage", text="before")
+    await _sweep(store)
+    await _make_marker_stale(store, session_id, idx=0)
+    snapshot = await current_snapshot(store.engine)
+    await _record(store, session_id, idx=1, kind="UserMessage", text="after")
+    await save_cursor(
+        store.engine,
+        mapper=FootprintMapper().name,
+        model=StubEmbedder(dim=1024).name,
+        snapshot=snapshot,
+    )
+
+    stats = await _sweep(store)
+
+    assert re.fullmatch(r"\d+:\d+:[\d,]*", snapshot), snapshot
+    assert (stats.full_scan, stats.records_embedded) == (False, 1)
+    assert (await _marker_md5s(store, session_id))[0] == "stale"
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_each_model_keeps_its_own_cursor(store: Store) -> None:
     """A model swept for the first time catches up, whatever another model did."""
     session_id = await _session(store)
@@ -999,6 +1033,118 @@ async def test_write_pool_consumes_vectors_across_multiple_units(
             embedder=_NamedEmbedder(dim=1),
             mapper_name="mapper",
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("since", [None, "1:2:"])
+@pytest.mark.parametrize("kind", ["UserMessage", "Thinking"])
+async def test_sweep_pages_real_units_and_marks_the_snapshot_it_started_with(
+    since: str | None,
+    kind: str,
+) -> None:
+    store, engine = make_store()
+    session_id = uuid4()
+    row = {
+        "session_id": session_id,
+        "part": 2,
+        "idx": 3,
+        "kind": kind,
+        "text": "a",
+        "created": "created",
+        "changed_xid": "2",
+    }
+    engine.conn.fetchval.side_effect = [True, "1:3:", since]
+    engine.conn.fetch.side_effect = [[row], []]
+    mapper = FootprintMapper()
+    embedder = StubEmbedder(dim=2)
+
+    stats = await sweep_session_embeddings(
+        store.engine,
+        mapper=mapper,
+        embedder=embedder,
+        batch=1,
+    )
+
+    assert stats == SweepStats(
+        records_embedded=1,
+        units_written=1 if kind == "UserMessage" else 0,
+        full_scan=since is None,
+    )
+    pages = engine.conn.fetch.await_args_list
+    assert len(pages) == 2
+    assert pages[0].args[1:4] == (
+        mapper.name,
+        embedder.name,
+        sorted(mapper.indexed_kinds),
+    )
+    if since is None:
+        assert pages[1].args[4:] == ("created", session_id, 2, 3, 1)
+        assert "LIMIT $8" in str(pages[1].args[0])
+    else:
+        assert pages[1].args[4:] == (since, "1:3:", "2", session_id, 2, 3, 1)
+        assert "pg_visible_in_snapshot" in str(pages[0].args[0])
+        assert "LIMIT $10" in str(pages[1].args[0])
+    cursor = next(
+        call
+        for call in engine.conn.execute.await_args_list
+        if "INSERT INTO session_index_cursor" in str(call.args[0])
+    )
+    assert cursor.args[1:] == (mapper.name, embedder.name, "1:3:")
+    marker = next(
+        call
+        for call in engine.conn.execute.await_args_list
+        if "INSERT INTO session_index_state" in str(call.args[0])
+    )
+    assert marker.args[-1] == ["0cc175b9c0f1b6a831c399e269772661"]
+    assert engine.conn.execute.await_args_list[-1].args == (
+        "SELECT pg_advisory_unlock(hashtext($1))",
+        f"trackinizer.session_embed:{mapper.name}:{embedder.name}",
+    )
+
+
+@pytest.mark.asyncio
+async def test_busy_sweep_neither_reads_records_nor_writes_a_cursor() -> None:
+    store, engine = make_store()
+    engine.conn.fetchval.return_value = False
+
+    assert await sweep_session_embeddings(
+        store.engine,
+        mapper=FootprintMapper(),
+        embedder=StubEmbedder(dim=2),
+    ) == SweepStats(busy=True)
+
+    engine.conn.fetch.assert_not_awaited()
+    engine.conn.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_and_cursor_helpers_use_the_engine_connection() -> None:
+    store, engine = make_store()
+    engine.conn.fetchval.return_value = "1:3:2"
+
+    assert await current_snapshot(store.engine) == "1:3:2"
+    await save_cursor(store.engine, mapper="m", model="e", snapshot="1:3:2")
+
+    engine.conn.fetchval.assert_awaited_once_with("SELECT pg_current_snapshot()::text")
+    assert engine.conn.execute.await_args is not None
+    assert engine.conn.execute.await_args.args[1:] == ("m", "e", "1:3:2")
+
+
+@pytest.mark.asyncio
+async def test_writer_unlocks_even_when_the_body_raises() -> None:
+    _store, engine = make_store()
+    engine.conn.fetchval.return_value = True
+    with pytest.raises(ValueError, match="body failed"):
+        async with sole_writer(
+            cast("Conn", engine.conn),
+            mapper="m",
+            model="e",
+        ):
+            raise ValueError("body failed")
+    engine.conn.execute.assert_awaited_once_with(
+        "SELECT pg_advisory_unlock(hashtext($1))",
+        "trackinizer.session_embed:m:e",
+    )
 
 
 if __name__ == "__main__":

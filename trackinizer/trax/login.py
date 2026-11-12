@@ -3,7 +3,7 @@
 ``login`` asks the server for a device code, prints where to enter it, and polls until
 the person approves. The key it gets is saved as a profile named for the server, and
 made the current profile only when trax had none. ``trax profile NAME login URL`` runs
-it; a machine host runs it with the machine it is about to connect, whose one-use
+it; a daemon runs it with the host it is about to connect, whose one-use
 enrollment token the same approval returns.
 """
 
@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Final
 from urllib.parse import urlsplit
 
 import re
-import socket
 import time
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.posix import hostname
 from trackinizer.trax.profile import (
     Profile,
     has_usable_profile,
@@ -62,15 +62,15 @@ class LoginResult:
     role: str
     """The key's role: a writer, or less when the approver holds less."""
 
-    machine_token: str = field(default="", repr=False)
-    """The one-use ``enr_`` token for the requested machine; empty when none was."""
+    host_token: str = field(default="", repr=False)
+    """The one-use ``enr_`` token for the requested host; empty when none was."""
 
 
 def login(
     url: str,
     *,
     profile: str = "",
-    machine: str | None = None,
+    host: str | None = None,
     client: str = "trax",
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
@@ -84,16 +84,16 @@ def login(
     Args:
       url: The server's URL.
       profile: The profile name to save under; empty names it for the server.
-      machine: A machine to enroll as the approver's own, confirmed by the approval.
+      host: A host to enroll as the approver's own, confirmed by the approval.
       client: The program asking, shown on the approval page and in the key's name:
         ``trax`` for ``trax profile NAME login URL``, whose key trax holds; another
-        program, such as a machine host, passes its own name.
+        program, such as a daemon, passes its own name.
       sleep: Waits between polls; a test replaces it.
       clock: Monotonic seconds, for the code's lifetime; a test replaces it.
 
     Returns:
-      result: The profile's name, the key's role, and the machine's enrollment token
-        when ``machine`` was named.
+      result: The profile's name, the key's role, and the host's enrollment token
+        when ``host`` was named.
 
     Raises:
       ClientError: The URL or name is unusable, or plain ``http`` to a server that is
@@ -108,8 +108,8 @@ def login(
         DeviceCodeRequest,
         {
             "client": client,
-            "host": _hostname(),
-            "machine": machine,
+            "hostname": _hostname(),
+            "host": host,
         },
         where="login request",
     )
@@ -122,8 +122,8 @@ def login(
         echo(f"To log in to {base}, open {code.verification_uri_complete}")
         echo(f"and approve the code {code.user_code}. Waiting...")
         issued = _await_key(http, code, sleep=sleep, clock=clock)
-    if machine is not None and not issued.machine_token:
-        raise ClientError(f"the server enrolled no token for machine {machine!r}")
+    if host is not None and not issued.host_token:
+        raise ClientError(f"the server enrolled no token for host {host!r}")
     # Asked before the save: a profile named ``default`` would answer yes by itself.
     unpinned = not has_usable_profile()
     save_profile(
@@ -135,7 +135,7 @@ def login(
     return LoginResult(
         profile=name,
         role=issued.role,
-        machine_token=issued.machine_token,
+        host_token=issued.host_token,
     )
 
 
@@ -218,5 +218,5 @@ def _validated[M: BaseModel](model: type[M], payload: object, *, where: str) -> 
 
 def _hostname() -> str:
     """Return this computer's short host name, cut to what the server accepts."""
-    short = socket.gethostname().split(".")[0]
+    short = hostname.stable_hostname().split(".")[0]
     return re.sub(r"[^A-Za-z0-9._-]", "-", short).lstrip("._-")[:63]

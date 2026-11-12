@@ -33,16 +33,15 @@ from trackinizer.server.api import (
     admin_routes,
     auth_routes,
     code_routes,
+    daemon_routes,
     device_routes,
     edge,
     edit,
-    exec_routes,
     export_routes,
+    host_runs_routes,
+    hosts_routes,
     locks,
     logout_routes,
-    machine_host_routes,
-    machine_runs_routes,
-    machines_routes,
     meta_routes,
     metrics_routes,
     query,
@@ -51,12 +50,20 @@ from trackinizer.server.api import (
     session_audience_routes,
     session_ir_routes,
     session_list_routes,
+    session_relay_routes,
     sessions_routes,
     submit,
     terminal_routes,
+    tool_routes,
     variables_routes,
 )
-from trackinizer.server.api._deps import terminal_hub
+from trackinizer.server.api._deps import (
+    host_changes,
+    host_closed,
+    host_idle_sec,
+    terminal_relay,
+    tool_relay,
+)
 from trackinizer.server.api.addons_routes import app_deployment
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.asks import ask_release_loop
@@ -71,6 +78,7 @@ from trackinizer.server.config import (
 from trackinizer.server.embedders import registry
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.secrets import parse_secrets
+from trackinizer.server.service_keys import ensure_service_keys
 from trackinizer.server.session_reaper import session_reaper_loop
 from trackinizer.server.store.core import Store
 from trackinizer.server.subscriber import push_changes_to_live_subscribers
@@ -82,7 +90,7 @@ from trackinizer.types.errors import (
     NotFoundError,
     ValidationError,
 )
-from trackinizer.wire.wire_machine_host import JOIN_PATH
+from trackinizer.wire.wire_daemon import JOIN_PATH
 from trackinizer.wire.wire_variables import VARIABLES_PATH
 
 
@@ -203,6 +211,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
             # the schema is in place.
             async with engine.acquire() as conn:
                 await seed_no_auth_user(conn, policy=app.state.access_policy)
+        if config.service_keys is not None:
+            # The service accounts the deployment names, and their one live key each.
+            async with engine.acquire() as conn:
+                await ensure_service_keys(
+                    conn,
+                    keys=config.service_keys,
+                    policy=app.state.access_policy,
+                )
         # Resolve the session-search embedder ONCE at startup and cache it on
         # app.state (web.py reads it there). A real model is degraded to None
         # when its weights are absent -- never downloaded in-band -- and warmed
@@ -240,13 +256,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
                     ask_release_loop(app.state.store, inbound=app.state.inbound),
                 ),
             )
-            tasks.append(asyncio.create_task(sweep_loop(terminal_hub(app))))
+            tasks.append(asyncio.create_task(sweep_loop(terminal_relay(app))))
+            tasks.append(
+                asyncio.create_task(
+                    sweep_loop(tool_relay(app), interval_sec=config.tool_sweep_sec),
+                ),
+            )
             tasks.extend(
                 _start_addon_services(
                     app_deployment(app),
                     context=ServerContext(
                         store=app.state.store,
                         inbound=app.state.inbound,
+                        host_idle_sec=partial(host_idle_sec, app),
+                        hosts_changed=host_changes(app).bump,
+                        host_closed=partial(host_closed, app),
                     ),
                 ),
             )
@@ -344,13 +368,12 @@ ROUTERS: Final = (
     session_list_routes.router,
     edge.router,
     edit.router,
-    exec_routes.router,
     export_routes.router,
     locks.router,
     logout_routes.router,
-    machine_host_routes.router,
-    machine_runs_routes.router,
-    machines_routes.router,
+    daemon_routes.router,
+    host_runs_routes.router,
+    hosts_routes.router,
     meta_routes.router,
     metrics_routes.router,
     query.router,
@@ -358,16 +381,43 @@ ROUTERS: Final = (
     service_account_routes.router,
     session_audience_routes.router,
     session_ir_routes.router,
+    session_relay_routes.router,
     sessions_routes.router,
     submit.router,
     terminal_routes.router,
+    tool_routes.router,
     variables_routes.router,
 )
 
 
 def _build_app() -> FastAPI:
     """Assemble the application: middleware, then every route module's router."""
-    built = FastAPI(title="Trackinizer", lifespan=lifespan)
+    built = bare_app()
+    for router in ROUTERS:
+        built.include_router(router)
+    return built
+
+
+def bare_app() -> FastAPI:
+    """Return the application's middleware, error handling and state, with no routes.
+
+    Serving an addon's routers on it, as ``attach_deployment`` mounts them, answers
+    them as the whole server does: FastAPI readies each route the first time a
+    request is matched past it, ~1.7 ms for each of the core routes before them.
+
+    Returns:
+      app: The application without a router.
+
+    """
+    # No public /docs or /redoc, and the schema is read signed in (`meta_routes`): this
+    # server is reachable from the internet, and its full route map need not be.
+    built = FastAPI(
+        title="Trackinizer",
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     built.add_middleware(ChangeIdMiddleware)
     built.add_middleware(RequestLoggingMiddleware)
     built.exception_handler(ConflictError)(conflict_handler)
@@ -380,8 +430,6 @@ def _build_app() -> FastAPI:
     built.exception_handler(asyncpg.CheckViolationError)(check_violation_handler)
     built.exception_handler(asyncpg.DataError)(data_error_handler)
     built.exception_handler(asyncpg.UniqueViolationError)(unique_violation_handler)
-    for router in ROUTERS:
-        built.include_router(router)
     # The visual routes read the catalog from ``app.state.visual_catalog``, so it
     # is set on every app; ``attach_deployment`` swaps in a configured one.
     built.state.deployment = Deployment.Config().make()
@@ -562,7 +610,7 @@ async def request_validation_handler(
     """Answer 422 for a body or parameter that fails its model.
 
     FastAPI's default answer echoes the rejected input in each error. Under
-    ``/api/variables`` that input can be a secret's value, and on the machine join
+    ``/api/variables`` that input can be a secret's value, and on the host join
     route it is an enrollment token, so the answer there names only each error's
     type, location and message. An unexpected body key is also the rejected input,
     so its location names the field as ``extra``. The route is the matched one, not

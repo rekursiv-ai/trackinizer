@@ -16,6 +16,7 @@ from treekle import PlainTree, ReadError, json_loads
 
 import pytest
 
+from trackinizer.lib.userdirs import base_dir_variables
 from trackinizer.sagent.session import types
 from trackinizer.sagent.session.types import (
     AgentSpawnResult,
@@ -29,6 +30,7 @@ from trackinizer.sagent.session.types import (
     EditResult,
     IncompleteRecord,
     ReadResult,
+    RequestMeasurement,
     SessionRecord,
     Splice,
     SystemMessage,
@@ -51,7 +53,7 @@ from trackinizer.sagent.session.types import (
 )
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 def _json() -> dict[str, PlainTree]:
@@ -111,6 +113,13 @@ def _every_record() -> list[SessionRecord]:
             content=(WebSearchHit(url="u", title="t", snippet="s"),),
         ),
         WebFetchResult(call_id="7", url="u", content="page", code=200),
+        types.WebBrowserResult(
+            call_id="28",
+            action="screenshot",
+            content='{"text":"page"}',
+            attachments=(Attachment(mime_descriptor="image/png", data=b"png"),),
+            extra=_json(),
+        ),
         AgentSpawnResult(call_id="8", agent_id="a", content="done", tokens=5),
         ToolErrorResult(call_id="9", content="ValueError: no", shown="[pruned]"),
         ToolResult(call_id="10", stub="pending", shown="[running]", is_error=True),
@@ -132,7 +141,22 @@ def _every_record() -> list[SessionRecord]:
         types.McpResult(call_id="26", server="s", tool="t", content="ok"),
         types.FunctionResult(call_id="27", name="act", content="acted"),
         SystemMessage(content="reminder", subtype="rules", extra=_json()),
-        TokenUsage(info={"request": 1}, rate_limits={"5h": 0.5}, extra=_json()),
+        TokenUsage(
+            info={"request": 1},
+            rate_limits={"5h": 0.5},
+            extra=_json(),
+            measurement=RequestMeasurement(
+                tokenizer="provider/model",
+                model="provider/model",
+                frame="frame",
+                prefix="prefix",
+                records=2,
+                prompt=101,
+                block="block",
+                block_records=1,
+                block_tokens=31,
+            ),
+        ),
         ContextState(kind="k", content="c", extra={"full": [True]}),
         ContextCompaction(summary="sum", extra={"tokens": {"before": 9}}),
         ContextClear(
@@ -151,11 +175,15 @@ def _every_record() -> list[SessionRecord]:
 @pytest.fixture
 def pacific(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Run in Los Angeles' time zone."""
-    monkeypatch.setenv("TZ", "America/Los_Angeles")
-    time.tzset()
-    yield
-    monkeypatch.undo()
-    time.tzset()
+    isolated = base_dir_variables()
+    try:
+        with monkeypatch.context() as local:
+            local.setenv("TZ", "America/Los_Angeles")
+            time.tzset()
+            yield
+    finally:
+        time.tzset()
+        assert base_dir_variables() == isolated
 
 
 @pytest.mark.usefixtures("pacific")
@@ -226,6 +254,31 @@ def test_a_stored_record_is_read_as_the_class_asked_for() -> None:
         _ = stored_record(stored_plain(UserMessage(content="hi")), ToolCall)
 
 
+@pytest.mark.parametrize(
+    "plain",
+    [
+        {"py/object": "UserMessage", "content": "hi", "added_later": 1},
+        {
+            "py/object": "UserMessage",
+            "attachments": [{"mime_descriptor": "a", "data": "", "added_later": 1}],
+        },
+    ],
+)
+def test_a_record_with_a_field_its_class_lacks_does_not_read(
+    plain: dict[str, object],
+) -> None:
+    with pytest.raises(ReadError, match="added_later"):
+        _ = stored_record(plain)
+
+
+def test_a_result_keeps_the_id_its_call_went_by_on_the_wire() -> None:
+    """A journal written before ``wire_id`` reads it as ``""``."""
+    sent = ReadResult(call_id="toolu_1", wire_id="ab12", path="/a")
+    assert stored_record(json_loads(json.dumps(stored_plain(sent)))) == sent
+    old = {"py/object": "ReadResult", "call_id": "toolu_1", "path": "/a"}
+    assert stored_record(old) == replace(sent, wire_id="")
+
+
 def test_a_bare_tool_result_reads_as_nothing() -> None:
     assert ToolResult(call_id="1").text() == ""
     assert UncategorizedToolResult(call_id="1").text() == ""
@@ -282,11 +335,11 @@ def test_a_restated_result_keeps_its_type_and_fields_and_drops_attachments(
 @pytest.mark.parametrize(
     ("old", "kind"),
     [
-        ("BashResult", types.BashResult),
-        ("ReadResult", types.ReadResult),
-        ("WriteResult", types.WriteResult),
-        ("EditResult", types.EditResult),
-        ("AgentSpawnResult", types.AgentSpawnResult),
+        ("ShellCommandResult", types.BashResult),
+        ("FileReadResult", types.ReadResult),
+        ("FileWriteResult", types.WriteResult),
+        ("FileEditResult", types.EditResult),
+        ("AgentStatusResult", types.AgentSpawnResult),
     ],
 )
 def test_a_record_stored_under_its_old_name_reads_as_the_renamed_type(
@@ -508,7 +561,7 @@ def test_a_class_outside_the_vocabulary_stores_only_where_classes_name_it() -> N
 
 def test_the_round_trip_cases_cover_every_record_kind() -> None:
     covered = {type(r).__name__ for r in _every_record()}
-    containers = {"Attachment", "Splice", "WebSearchHit"}
+    containers = {"Attachment", "Splice", "WebSearchHit", "RequestMeasurement"}
     assert covered | containers == set(record_classes())
 
 
@@ -528,11 +581,12 @@ def test_a_session_preserves_interleaved_tool_lifecycles() -> None:
         ReadResult(call_id="a", content="A"),
     )
 
-    assert [item.call_id for item in records if isinstance(item, ToolResult)] == [
-        "a",
-        "b",
-        "a",
-    ]
+    restored = stored_record(stored_plain(ContextClear(history=records)), ContextClear)
+
+    assert restored.history == records
+    assert [
+        item.call_id for item in restored.history if isinstance(item, ToolResult)
+    ] == ["a", "b", "a"]
 
 
 def test_reasoning_is_a_sibling_of_the_reply_not_nested_in_it() -> None:
@@ -543,13 +597,15 @@ def test_reasoning_is_a_sibling_of_the_reply_not_nested_in_it() -> None:
     user = UserMessage(context_id=0, content="Check this.")
 
     records = (user, thinking, assistant)
+    restored = stored_record(stored_plain(ContextClear(history=records)), ContextClear)
 
-    assert [type(record).__name__ for record in records] == [
+    assert restored.history == records
+    assert [type(record).__name__ for record in restored.history] == [
         "UserMessage",
         "Thinking",
         "AssistantMessage",
     ]
-    assert not hasattr(assistant, "thinking")
+    assert not hasattr(restored.history[-1], "thinking")
 
 
 def test_a_record_names_its_settings_by_index_rather_than_copying_them() -> None:
@@ -560,7 +616,13 @@ def test_a_record_names_its_settings_by_index_rather_than_copying_them() -> None
         AssistantMessage(context_id=4, content="Second turn."),
     )
 
-    assert [record.context_id for record in records] == [0, 4]
+    restored = stored_record(stored_plain(ContextClear(history=records)), ContextClear)
+
+    assert restored.history == records
+    first, second = restored.history
+    assert isinstance(first, AssistantMessage)
+    assert isinstance(second, AssistantMessage)
+    assert (first.context_id, second.context_id) == (0, 4)
 
 
 if __name__ == "__main__":

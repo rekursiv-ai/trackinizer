@@ -14,13 +14,14 @@ from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli, connection
 from trackinizer.trax.client_cache import Target, close_clients
 from trackinizer.trax.conftest import FakeClient, run
+from trackinizer.trax.verbs import Recent
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 @pytest.mark.cli_python_subprocess
@@ -421,6 +422,20 @@ def test_help_topic_unknown_verb_raises(
         )
 
 
+def test_help_topic_prints_that_verbs_help(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``trax help Recent`` prints what ``trax recent help`` prints."""
+    run(["recent", "help"], client)
+    direct = capsys.readouterr().out
+    run(["help", "Recent"], client)
+    out = capsys.readouterr().out
+    assert out == direct
+    assert "Usage: trax recent [OPTIONS]" in out
+    assert not client.calls
+
+
 def test_main_handles_client_error_with_exit_2(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
@@ -482,13 +497,13 @@ def test_standalone_command_help_shows_local_forms(
         (["run", "claude", "--", "hi"], "run"),
         (["run", "attach", "chat-1"], "run"),
         (["--profile", "p", "--host", "h", "--port", "9", "RUN", "codex"], "run"),
-        (["machine"], "machine"),
-        (["MACHINE", "gx10", "connect", "--sandbox"], "machine"),
-        (["machine", "gx10", "role", "to", "dev"], "machine"),
+        (["host"], "host"),
+        (["HOST", "gx10", "connect", "--sandbox"], "host"),
+        (["host", "gx10", "role", "to", "dev"], "host"),
         (["job", "submit", "--", "python", "x.py", "--help"], "job"),
         (["job", "status"], "job"),
         (["job", "secret", "HF_TOKEN", "set"], "job"),
-        (["help", "Machine"], "machine"),
+        (["help", "Host"], "host"),
         (["help", "job"], "job"),
     ],
 )
@@ -517,11 +532,11 @@ def test_help_says_what_moved_out_of_trax(
 
     out = capsys.readouterr().out
     commands = out.split("Commands:")[1].splitlines()[0].split()
-    assert not {"run", "machine", "job"} & set(commands)
-    assert "Moved out of trax: job machine run" in out
+    assert not {"run", "host", "job"} & set(commands)
+    assert "Moved out of trax: host job run" in out
 
 
-@pytest.mark.parametrize("verb", ["RUN", "machine", "job"])
+@pytest.mark.parametrize("verb", ["RUN", "host", "job"])
 def test_a_moved_verb_prints_no_hint_about_traxs_profiles(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -545,6 +560,16 @@ def test_any_other_verb_still_prints_the_unmatched_server_hint(
     _ = cli.main(["profile"])
 
     assert "this shell came from https://elsewhere.test" in capsys.readouterr().err
+
+
+def test_help_topic_dispatches_without_connecting(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["help", "recent"], client)
+
+    assert capsys.readouterr().out == Recent.verb_help_text("recent")
+    assert client.calls == []
 
 
 if __name__ == "__main__":

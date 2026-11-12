@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from datetime import UTC, datetime
-from typing import get_args
+from typing import Literal, cast, get_args
 
 import pytest
 
@@ -47,7 +47,7 @@ class TestChangeKindAlignment:
     )
 
     def test_every_storage_name_is_a_change_kind(self) -> None:
-        valid = set(get_args(Change.Kind.__value__))
+        valid = set(get_args(cast(object, Change.Kind.__value__)))
         for cls in self.INQUIRY_CLASSES:
             for name, spec in column_specs(cls).items():
                 # Immutable columns are set once at submit and never edited, so
@@ -134,6 +134,55 @@ class TestRowConverters:
             "new_marginal_cost_resource_usd": 0.0,
         }
         assert Change.from_row(row).caused_by is None
+
+
+class TestSnapshot:
+    def test_an_empty_snapshot_is_falsy(self) -> None:
+        assert not Snapshot()
+
+    @pytest.mark.parametrize(
+        "populated",
+        [Snapshot(title=""), Snapshot(labels=()), Snapshot(belief_confidence=0.0)],
+    )
+    def test_any_populated_field_makes_it_truthy(self, populated: Snapshot) -> None:
+        # Falsy values still count: populated means "not None".
+        assert populated
+
+    def test_from_row_maps_an_empty_list_column_to_an_empty_tuple(self) -> None:
+        row = {"new_labels": list[str](), "new_subscribers": None, "old_labels": ["x"]}
+        snapshot = Snapshot.from_row(row, prefix="new_")
+        assert snapshot.labels == ()
+        assert snapshot.subscribers is None
+        assert snapshot.marginal_cost is None
+
+    def test_from_row_reads_only_its_own_side(self) -> None:
+        row = {"old_title": "before", "new_title": "after"}
+        assert Snapshot.from_row(row, prefix="old_") == Snapshot(title="before")
+        assert not Snapshot.from_row({"new_title": "after"}, prefix="old_")
+
+
+def test_snapshot_truth_distinguishes_absent_from_cleared_fields() -> None:
+    assert not Snapshot()
+    assert Snapshot(title="")
+    assert Snapshot(labels=())
+    assert Snapshot(belief_confidence=0.0)
+
+
+@pytest.mark.parametrize("prefix", ["old_", "new_"])
+def test_snapshot_array_columns_preserve_absence_and_legacy_empty(
+    prefix: Literal["old_", "new_"],
+) -> None:
+    row: dict[str, object] = {
+        prefix + "labels": [],
+        prefix + "subscribers": None,
+        prefix + "paper_authors": ("Ada",),
+    }
+    snapshot = Snapshot.from_row(row, prefix=prefix)
+
+    assert snapshot.labels == ()
+    assert snapshot.subscribers is None
+    assert snapshot.paper_authors == ("Ada",)
+    assert snapshot.issue_kind is None
 
 
 if __name__ == "__main__":

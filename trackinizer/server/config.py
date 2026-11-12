@@ -9,25 +9,33 @@ from typing import TYPE_CHECKING, Literal, Protocol, Self
 
 import os
 import re
+import secrets
 import shutil
+import tempfile
 import time
 import uuid
 
-from treekle import json_loads
-
-from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.notify import NOTIFY_CHANNEL
-from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_service_accounts import (
-    SERVICE_DOMAIN,
-    is_service_address,
-)
 
 
+# Registry only needs ConfigError; eager engines/wire models cost ~200 ms.
 if TYPE_CHECKING:
+    from treekle import json_loads
+
+    from trackinizer.lib.postgres import substrate
+    from trackinizer.lib.postgres.substrate import DatabaseEngine
+    from trackinizer.server import notify
     from trackinizer.types.embedder import Embedder
+    from trackinizer.wire import wire_service_accounts, wire_terminals
+else:
+    from wrapt import lazy_import
+
+    substrate = lazy_import("trackinizer.lib.postgres.substrate")
+    notify = lazy_import("trackinizer.server.notify")
+    wire_service_accounts = lazy_import("trackinizer.wire.wire_service_accounts")
+    wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
+    json_loads = lazy_import("treekle", "json_loads")
 
 
 __all__ = [
@@ -37,6 +45,7 @@ __all__ = [
     "Config",
     "ConfigError",
     "ConfigFlags",
+    "ServiceKeys",
     "build_embedder",
     "build_engine",
     "parse_assistant",
@@ -44,8 +53,11 @@ __all__ = [
     "parse_chat_streaming",
     "parse_compute",
     "parse_engine",
+    "parse_service_keys",
     "parse_staff",
     "parse_terminal_stun",
+    "session_secret_from_env",
+    "session_secret_from_file",
 ]
 
 
@@ -100,6 +112,20 @@ class ComputeNote:
     about: str
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ServiceKeys:
+    """The service accounts a deployment names, and where their keys are kept.
+
+    Attributes:
+      accounts: Each account's name and role, in the order named.
+      directory: Where each account's key lives, in a file named for it.
+
+    """
+
+    accounts: tuple[tuple[str, wire_service_accounts.ServiceRole], ...]
+    directory: Path
+
+
 class ConfigFlags(Protocol):
     """The parsed CLI flags :meth:`Config.from_args` reads."""
 
@@ -140,7 +166,9 @@ class Config:
         ``--app-dir``, the web app.
       session_secret: HMAC key for the session and OAuth-state cookies.
         Empty disables session login. Must be stable across processes
-        sharing the cookie -- rotating it logs everyone out.
+        sharing the cookie -- rotating it logs everyone out. Environment only:
+        ``TRACKINIZER_SESSION_SECRET``, or the file
+        ``TRACKINIZER_SESSION_SECRET_FILE`` names, which the first start makes.
       secrets: Secret-variable backend: ``file`` (under the user data
         directory), ``file:/abs/path``, or ``none`` to refuse secret
         variables. Environment only (``TRACKINIZER_SECRETS``).
@@ -167,14 +195,28 @@ class Config:
         the chat's readers to read as it grows. Off refuses its routes with 404
         ``chat_partials_off``, and the assistant stops sending it. Environment
         only (``TRACKINIZER_CHAT_STREAMING``, ``on`` or ``off``).
-      terminal_stun: STUN servers the browser and a machine host use to reach each
+      terminal_stun: STUN servers the browser and a daemon use to reach each
         other direct, as ``stun:HOST[:PORT]`` URLs. Empty (the default) means a
         direct link forms on one network only. Environment only
         (``TRACKINIZER_TERMINAL_STUN``, comma separated).
       compute: What this server provides to run commands on, which the web app's
-        Machines menu shows beside the person's own machines. Empty (the default)
+        Hosts menu shows beside the person's own hosts. Empty (the default)
         shows none. Environment only (``TRACKINIZER_COMPUTE``, a JSON list of
         ``{"name", "about"}`` objects).
+      service_keys: The service accounts this server keeps one live key each for,
+        at every start, and where the key files live; none when unset.
+        Environment only (``TRACKINIZER_SERVICE_KEYS``, comma separated
+        ``NAME:ROLE`` pairs, and ``TRACKINIZER_SERVICE_KEY_DIR``).
+      tool_connections_per_host: The most tool connections one host holds at once; the
+        next agent is refused.
+      tool_dial_back_sec: How long an offered tool connection waits for its host to dial
+        back before it ends.
+      tool_sweep_sec: How often each tool connection's rule is asked again, so a revoked
+        key or a demoted asker loses the host within it.
+      tool_line_bytes: The longest line the server reads from an agent's tool connection;
+        a longer one ends the tool connection. The default fits a ``Write`` of 8 MiB. Each line
+        is parsed inline, on the one process, so a line this long stalls it for a
+        moment; only the configured assistant's key can send one.
 
     """
 
@@ -217,6 +259,11 @@ class Config:
     chat_streaming: bool = True
     terminal_stun: tuple[str, ...] = ()
     compute: tuple[ComputeNote, ...] = ()
+    service_keys: ServiceKeys | None = None
+    tool_connections_per_host: int = 16
+    tool_dial_back_sec: float = 20.0
+    tool_sweep_sec: float = 60.0
+    tool_line_bytes: int = 16 << 20
 
     @classmethod
     def from_env(cls) -> Self:
@@ -229,7 +276,12 @@ class Config:
         return cls(
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
-            if (env_datadir := os.environ.get("TRACKINIZER_DATADIR", ""))
+            if (
+                env_datadir := os.environ.get(
+                    "TRACKINIZER_DATADIR",
+                    "",  # pragma: no mutate -- unset and "" are both falsy.
+                )
+            )
             else None,
             ephemeral=os.environ.get("TRACKINIZER_EPHEMERAL") == "1",
             pglite_tcp=os.environ.get("TRACKINIZER_PGLITE_TCP") == "1",
@@ -243,7 +295,7 @@ class Config:
                 os.environ.get("TRACKINIZER_SESSION_EMBEDDERS", ""),
             ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            session_secret=session_secret_from_env(),
             secrets=secrets_from_env(),
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
@@ -257,6 +309,10 @@ class Config:
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
             compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
+            service_keys=parse_service_keys(
+                os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
+                os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
         )
 
     @classmethod
@@ -283,7 +339,7 @@ class Config:
             session_embedders=_parse_session_embedders(flags.session_embedders),
             web=flags.web,
             # Secrets come from the environment only, never CLI flags.
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            session_secret=session_secret_from_env(),
             secrets=secrets_from_env(),
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
@@ -298,6 +354,10 @@ class Config:
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
             compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
+            service_keys=parse_service_keys(
+                os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
+                os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -348,6 +408,66 @@ def session_max_age_from_env() -> int:
     return seconds
 
 
+def session_secret_from_env() -> str:
+    """Read the session secret from its variable, or from the file another names.
+
+    ``TRACKINIZER_SESSION_SECRET`` holds the secret itself, and
+    ``TRACKINIZER_SESSION_SECRET_FILE`` names a file :func:`session_secret_from_file`
+    keeps it in.
+
+    Returns:
+      secret: The session secret; empty when neither is set.
+
+    Raises:
+      ConfigError: Both are set.
+
+    """
+    secret = os.environ.get(
+        "TRACKINIZER_SESSION_SECRET",
+        "",  # pragma: no mutate -- unset and "" are both falsy.
+    )
+    path = os.environ.get("TRACKINIZER_SESSION_SECRET_FILE", "")
+    if secret and path.strip():
+        raise ConfigError(
+            "set TRACKINIZER_SESSION_SECRET or TRACKINIZER_SESSION_SECRET_FILE, not both",
+        )
+    return secret or session_secret_from_file(path)
+
+
+# A box's server makes its own: the first start writes a random key, and each later one, a
+# restart or a deploy, reads it, so sessions outlive both. The key is staged beside the file
+# and linked into place, which fails when another start linked first, so two starts at once
+# keep one key.
+def session_secret_from_file(path: str) -> str:
+    """Return the session secret kept at ``path``, made at the first start.
+
+    Args:
+      path: The file; blank names none.
+
+    Returns:
+      secret: The key in the file, or empty when no file is named.
+
+    """
+    if not path.strip():
+        return ""
+    target = Path(path.strip())
+    if not target.exists():
+        # Staged under a name no other start shares, as write_private stages, then linked
+        # into place, so two first starts keep one secret and a crash leaves no name taken.
+        fd, staged = tempfile.mkstemp(prefix=f".{target.name}.", dir=target.parent)
+        secret = secrets.token_hex(32)  # pragma: no mutate -- None is 32 bytes too.
+        try:
+            with os.fdopen(fd, "w") as staged_file:
+                staged_file.write(secret + "\n")
+            with suppress(FileExistsError):
+                os.link(staged, target)
+        finally:
+            Path(staged).unlink()
+    return target.read_text(
+        encoding="utf-8",  # pragma: no mutate -- the secret is ASCII, read alike by any.
+    ).strip()
+
+
 def secrets_from_env() -> str:
     """Read ``TRACKINIZER_SECRETS``; unset keeps the :class:`Config` default."""
     return os.environ.get("TRACKINIZER_SECRETS", Config().secrets)
@@ -379,10 +499,10 @@ def parse_assistant(value: str) -> Assistant | None:
         raise ConfigError(f"--assistant must be ACTOR=EMAIL, got {value!r}")
     # A person's address would make every key of theirs the assistant: their own runs
     # would be refused their chats, and their keys would act for any asker.
-    if not is_service_address(email):
+    if not wire_service_accounts.is_service_address(email):
         raise ConfigError(
             "--assistant (TRACKINIZER_ASSISTANT) must name a service account, "
-            f"NAME@{SERVICE_DOMAIN}, got {email.strip()!r}",
+            f"NAME@{wire_service_accounts.SERVICE_DOMAIN}, got {email.strip()!r}",
         )
     # users.email is stored lowercase, so only a lowercase one can match it.
     return Assistant(actor=actor.strip(), email=email.strip().lower())
@@ -503,6 +623,45 @@ def parse_compute(value: str) -> tuple[ComputeNote, ...]:
     return notes
 
 
+def parse_service_keys(accounts: str, directory: str) -> ServiceKeys | None:
+    """Parse ``$TRACKINIZER_SERVICE_KEYS`` and ``$TRACKINIZER_SERVICE_KEY_DIR``.
+
+    Args:
+      accounts: ``NAME:ROLE`` pairs, comma separated; blank names none.
+      directory: Where the key files live; needed once an account is named.
+
+    Returns:
+      service_keys: The accounts and their directory, or None when none is named.
+
+    Raises:
+      ConfigError: A pair is malformed, its role is not ``viewer`` or ``writer``, a
+        name is given twice, or accounts are named with no directory.
+
+    """
+    named: dict[str, wire_service_accounts.ServiceRole] = {}
+    for pair in filter(None, (part.strip() for part in accounts.split(","))):
+        # pragma: no mutate start -- a name holds no colon, so rpartition refuses alike.
+        name, _, role = pair.partition(":")
+        # pragma: no mutate end
+        if not re.fullmatch(wire_service_accounts.NAME_PATTERN, name) or role not in (
+            "viewer",
+            "writer",
+        ):
+            raise ConfigError(
+                f"TRACKINIZER_SERVICE_KEYS: {pair!r} is not NAME:viewer or NAME:writer",
+            )
+        if name in named:
+            raise ConfigError(f"TRACKINIZER_SERVICE_KEYS: {name!r} is named twice")
+        named[name] = role
+    if not named:
+        return None
+    if not directory.strip():
+        raise ConfigError(
+            "TRACKINIZER_SERVICE_KEYS names accounts; set TRACKINIZER_SERVICE_KEY_DIR",
+        )
+    return ServiceKeys(accounts=tuple(named.items()), directory=Path(directory.strip()))
+
+
 def parse_chat_streaming(value: str) -> bool:
     """Parse ``$TRACKINIZER_CHAT_STREAMING``: ``on`` or ``off``; blank is ``on``.
 
@@ -561,7 +720,7 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
             workdir = _ephemeral_workdir()
         else:
             workdir = data_dir() / "rekursiv-ai" / "trackinizer" / "pgdata"
-        return PGliteEngine(
+        return substrate.PGliteEngine(
             workdir=workdir,
             persist=not config.ephemeral,
             use_tcp=config.pglite_tcp,
@@ -569,7 +728,10 @@ def build_engine(config: Config | None = None) -> DatabaseEngine:
         )
     if not config.dsn:
         raise ConfigError("--engine pg requires --dsn (or $TRACKINIZER_DSN).")
-    return PostgresEngine(dsn=config.dsn, listen_channel=NOTIFY_CHANNEL)
+    return substrate.PostgresEngine(
+        dsn=config.dsn,
+        listen_channel=notify.NOTIFY_CHANNEL,
+    )
 
 
 def build_embedder(name: str) -> Embedder:

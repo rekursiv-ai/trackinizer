@@ -256,7 +256,7 @@ def generate_inquiry_kind_columns() -> str:
     """
     # Sanity-check: the order tuple must cover every concrete kind so
     # adding a new Inquiry subclass doesn't silently KeyError below.
-    declared_kinds = set(get_args(Inquiry.InquiryKind.__value__))
+    declared_kinds = set(get_args(cast(object, Inquiry.InquiryKind.__value__)))
     missing = declared_kinds - set(INQUIRY_KIND_ORDER)
     if missing:
         raise AssertionError(

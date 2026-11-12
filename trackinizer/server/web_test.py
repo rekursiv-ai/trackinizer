@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -26,6 +26,7 @@ from starlette.datastructures import State
 if TYPE_CHECKING:
     import asyncpg
 
+    from trackinizer.mock_test_support import MockCall
     from trackinizer.server.store.core import Store
     from trackinizer.wire.bodies import SubmitBase
 else:
@@ -39,12 +40,16 @@ import pytest
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
 from trackinizer.lib.postgres import Conn
+from trackinizer.mock_test_support import AsyncMockProtocol
 from trackinizer.server import web
+from trackinizer.server.access_policy import Principal
 from trackinizer.server.api import auth_routes
+from trackinizer.server.api._deps import get_store
 from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
+from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import (
     iter_routes,
@@ -55,6 +60,7 @@ from trackinizer.server.store.session_feed import (
     CanvasAgents,
     FeedScope,
 )
+from trackinizer.server.store.session_search import SessionSearchHit
 from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
@@ -77,7 +83,7 @@ from trackinizer.wire.wire_sessions import (
 )
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # Tests in this module call the FastAPI route functions directly (not
@@ -118,6 +124,26 @@ _EDGE_RELATIONS: Final = frozenset(
         "cited_by",
     },
 )
+
+
+@dataclass(slots=True, kw_only=True)
+class _FeedStore:
+    engine: FakeEngine = field(default_factory=FakeEngine)
+    read_feed: AsyncMockProtocol[list[FeedEvent]] = field(
+        default_factory=lambda: cast(AsyncMockProtocol[list[FeedEvent]], AsyncMock()),
+    )
+    read_feed_facets: AsyncMockProtocol[FeedFacetsResponse] = field(
+        default_factory=lambda: cast(
+            AsyncMockProtocol[FeedFacetsResponse],
+            AsyncMock(),
+        ),
+    )
+    read_feed_histogram: AsyncMockProtocol[FeedHistogramResponse] = field(
+        default_factory=lambda: cast(
+            AsyncMockProtocol[FeedHistogramResponse],
+            AsyncMock(),
+        ),
+    )
 
 
 @dataclass(slots=True, kw_only=True)
@@ -274,6 +300,24 @@ class TestQueryHelpers:
             web._parse_query("title:")
         with pytest.raises(ValueError, match="empty"):
             web._parse_query("description:")
+
+    def test_parse_query_skips_an_empty_quoted_token(self) -> None:
+        assert web._parse_query('"" hello') == [(None, "hello")]
+
+    def test_a_snapshot_reads_only_the_columns_its_row_carries(self) -> None:
+        row = {
+            "new_marginal_cost_agent_usd": 1.5,
+            "new_marginal_cost_resource_usd": 0.0,
+            "new_title": "Kept",
+            "new_owner": None,
+        }
+        assert web._snapshot_to_dict(
+            cast("asyncpg.Record", row),
+            prefix="new_",
+        ) == {
+            "marginal_cost": {"agent_usd": 1.5, "resource_usd": 0.0},
+            "title": "Kept",
+        }
 
     def test_build_term_clause(self) -> None:
         clause, params = web._build_term_clause(
@@ -462,6 +506,7 @@ class TestSerialization:
             "peer_judgement": "proven",
             "peer_created": created,
             "peer_priority": None,
+            "peer_cli_session_id": None,
         }
         assert web._peer_ref(cast("asyncpg.Record", row), peer_id) == {
             "id": str(peer_id),
@@ -481,6 +526,17 @@ class TestSerialization:
         # Priority 0 is the most urgent, not an absent one.
         assert (
             web._peer_ref(cast("asyncpg.Record", issue), peer_id)["peer_priority"] == 0
+        )
+        # A session names the agent it holds as its parent's records do.
+        session = {
+            **row,
+            "peer_kind": "AgentSession",
+            "peer_judgement": None,
+            "peer_cli_session_id": "agent-a4e92ea6a0f453a03",
+        }
+        assert (
+            web._peer_ref(cast("asyncpg.Record", session), peer_id)["cli_session_id"]
+            == "agent-a4e92ea6a0f453a03"
         )
         assert web._isoformat(datetime(2026, 5, 18, tzinfo=UTC)).startswith("2026")
         assert web._isoformat("x") == "x"
@@ -509,6 +565,7 @@ class TestEdgeHelpers:
                         "peer_judgement": None,
                         "peer_created": datetime(2026, 5, 18, tzinfo=UTC),
                         "peer_priority": 20,
+                        "peer_cli_session_id": None,
                     },
                 ],
                 [
@@ -526,6 +583,7 @@ class TestEdgeHelpers:
                         "peer_judgement": None,
                         "peer_created": datetime(2026, 5, 19, tzinfo=UTC),
                         "peer_priority": None,
+                        "peer_cli_session_id": None,
                     },
                 ],
             ],
@@ -564,7 +622,7 @@ class TestRoutes:
             == []
         )
 
-        engine.conn.fetch = AsyncMock(return_value=[_inquiry_row()])
+        engine.conn.fetch.return_value = [_inquiry_row()]
         rows = await web.web_search(
             cast(Request, request),
             q="hello",
@@ -668,9 +726,7 @@ class TestRoutes:
         engine = FakeEngine()
         store = _store(engine)
         request = _request(store, engine)
-        engine.conn.fetch = AsyncMock(
-            return_value=[_change_row(principal="api@example.com")],
-        )
+        engine.conn.fetch.return_value = [_change_row(principal="api@example.com")]
         recent = await web.web_recent_changes(
             cast(Request, request),
             identity=_TEST_IDENTITY,
@@ -678,6 +734,7 @@ class TestRoutes:
         )
         assert recent[0]["actor"] == "alice"
         assert recent[0]["principal"] == "api@example.com"
+        assert engine.conn.fetch.call_args is not None
         sql = engine.conn.fetch.call_args.args[0]
         assert isinstance(sql, str)
         assert "LEFT JOIN api_keys" in sql
@@ -726,7 +783,7 @@ class TestRoutes:
         engine = FakeEngine()
         request = _request(_store(engine), engine)
         engine.conn.fetchrow = AsyncMock(return_value=_inquiry_row(id=target_id))
-        engine.conn.fetch = AsyncMock(return_value=[])
+        engine.conn.fetch.return_value = []
         await web.web_get(target_id, cast(Request, request), identity=_TEST_IDENTITY)
         changes_sql = engine.conn.fetch.call_args_list[-1].args[0]
         assert isinstance(changes_sql, str)
@@ -753,33 +810,31 @@ class TestRoutes:
                 "valence": 0.4,
             },
         ]
-        engine.conn.fetch = AsyncMock(
-            side_effect=[
-                [
-                    {
-                        "id": root_id,
-                        "kind": "Belief",
-                        "seq": 1,
-                        "title": "root",
-                        "status": "active",
-                        "created": early,
-                        "belief_judgement": "proven",
-                        "belief_confidence": 0.8,
-                    },
-                    {
-                        "id": child_id,
-                        "kind": "WebSearch",
-                        "seq": 2,
-                        "title": "child",
-                        "status": "complete",
-                        "created": late,
-                        "belief_judgement": None,
-                        "belief_confidence": None,
-                    },
-                ],
-                edge_rows,
+        engine.conn.fetch.side_effect = [
+            [
+                {
+                    "id": root_id,
+                    "kind": "Belief",
+                    "seq": 1,
+                    "title": "root",
+                    "status": "active",
+                    "created": early,
+                    "belief_judgement": "proven",
+                    "belief_confidence": 0.8,
+                },
+                {
+                    "id": child_id,
+                    "kind": "WebSearch",
+                    "seq": 2,
+                    "title": "child",
+                    "status": "complete",
+                    "created": late,
+                    "belief_judgement": None,
+                    "belief_confidence": None,
+                },
             ],
-        )
+            edge_rows,
+        ]
         graph = await web.web_graph(
             cast(Request, request),
             identity=_TEST_IDENTITY,
@@ -1096,8 +1151,8 @@ class TestFeedReads:
     """The feed, its facets and its histogram take one set of repeatable filters."""
 
     def test_backward_feed_cursor_reaches_the_store_whole(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
         session = new_uuid()
         created = datetime(2026, 6, 1, tzinfo=UTC)
@@ -1112,7 +1167,7 @@ class TestFeedReads:
             },
         )
         assert response.status_code == 200
-        assert store.read_feed.call_args.kwargs.get("before") == (
+        assert store.read_feed.call_args_list[-1].kwargs.get("before") == (
             created,
             session,
             1,
@@ -1120,7 +1175,7 @@ class TestFeedReads:
         )
 
     def test_backward_feed_cursor_requires_every_component(self) -> None:
-        store = AsyncMock()
+        store = _FeedStore()
         client = self._client(store)
         cursor = {
             "before_created": "2026-06-01T00:00:00Z",
@@ -1138,7 +1193,7 @@ class TestFeedReads:
         store.read_feed.assert_not_called()
 
     @classmethod
-    def _client(cls, store: AsyncMock) -> TestClient:
+    def _client(cls, store: _FeedStore) -> TestClient:
         app = FastAPI()
         app.state.engine = FakeEngine()
         app.state.store = store
@@ -1147,14 +1202,16 @@ class TestFeedReads:
         return TestClient(app)
 
     def test_each_filter_repeats_and_one_room_or_actor_still_filters(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
 
-        def fake_scope(*params: tuple[str, str]) -> object:
+        def fake_scope(*params: tuple[str, str]) -> FeedScope:
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
-            return store.read_feed.call_args.kwargs["scope"]
+            scope = store.read_feed.call_args_list[-1].kwargs["scope"]
+            assert isinstance(scope, FeedScope)
+            return scope
 
         assert fake_scope(
             ("actor", "a"),
@@ -1179,9 +1236,11 @@ class TestFeedReads:
 
     def test_each_read_is_scoped_to_the_reader_its_caller_is(self) -> None:
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         reads = {
             "/api/web/feed": store.read_feed,
@@ -1206,7 +1265,8 @@ class TestFeedReads:
             app.dependency_overrides[current_user] = identity
             for path, read in reads.items():
                 assert client.get(path).status_code == 200, path
-                scope = cast(FeedScope, read.call_args.kwargs["scope"])
+                scope = read.call_args_list[-1].kwargs["scope"]
+                assert isinstance(scope, FeedScope)
                 assert scope.reader == SessionReader(
                     audiences=audiences,
                     email=_TEST_IDENTITY.email,
@@ -1241,29 +1301,44 @@ class TestFeedReads:
 
     def test_feed_whose_everyone_is_the_default(self) -> None:
         """Everyone is every session the caller reads; ``hidden`` keeps private ones."""
-        named = self._scopes({"whose": "everyone"})
-        hidden = self._scopes({"hidden": "true"})
-
-        assert named == self._scopes({}) == [FeedScope(reader=_TEST_READER)] * 3
-        assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
-        assert (
-            self._client(AsyncMock())
-            .get(
-                "/api/web/feed",
-                params={"whose": "theirs"},
-            )
-            .status_code
-            == 422
+        store = self._histogram_store()
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
+        with self._client(store) as client:
+            named = self._read_scopes(client, store, params={"whose": "everyone"})
+            hidden = self._read_scopes(client, store, params={"hidden": "true"})
+            default = self._read_scopes(client, store, params={})
+            assert named == default == [FeedScope(reader=_TEST_READER)] * 3
+            assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
+            assert (
+                client.get("/api/web/feed", params={"whose": "theirs"}).status_code
+                == 422
+            )
 
     def _scopes(self, params: dict[str, str]) -> list[FeedScope]:
         """Return the scope each of the feed, its facets and histogram was read with."""
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
-        client = self._client(store)
+        with self._client(store) as client:
+            return self._read_scopes(client, store, params=params)
+
+    def _read_scopes(
+        self,
+        client: TestClient,
+        store: _FeedStore,
+        *,
+        params: dict[str, str],
+    ) -> list[FeedScope]:
+        """Read all three endpoints through the same app and client."""
         scopes: list[FeedScope] = []
         for path, read in (
             ("/api/web/feed", store.read_feed),
@@ -1271,12 +1346,14 @@ class TestFeedReads:
             ("/api/web/feed/histogram", store.read_feed_histogram),
         ):
             assert client.get(path, params=params).status_code == 200, path
-            scopes.append(cast(FeedScope, read.call_args.kwargs["scope"]))
+            scope = read.call_args_list[-1].kwargs["scope"]
+            assert isinstance(scope, FeedScope)
+            scopes.append(scope)
         return scopes
 
     def test_the_feed_keeps_only_conversation_when_asked(self) -> None:
-        store = AsyncMock()
-        store.read_feed = AsyncMock(return_value=[])
+        store = _FeedStore()
+        store.read_feed.return_value = []
         client = self._client(store)
 
         for params, conversation in (
@@ -1285,13 +1362,18 @@ class TestFeedReads:
         ):
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
-            assert store.read_feed.call_args.kwargs["conversation"] is conversation
+            assert (
+                store.read_feed.call_args_list[-1].kwargs["conversation"]
+                is conversation
+            )
 
     def test_a_canvas_filters_all_three_reads_to_its_callers_agents(self) -> None:
         store = self._histogram_store()
-        store.read_feed = AsyncMock(return_value=[])
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store.read_feed.return_value = []
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         canvas = uuid.uuid4()
@@ -1311,13 +1393,15 @@ class TestFeedReads:
                 params={"canvas": str(canvas), "kind": "ToolCall"},
             )
             assert response.status_code == 200, response.text
-            assert read.call_args.kwargs["scope"] == wanted
+            assert read.call_args_list[-1].kwargs["scope"] == wanted
         assert client.get("/api/web/feed", params={"canvas": "x"}).status_code == 422
 
     def test_facets_count_a_window_under_the_filters(self) -> None:
-        store = AsyncMock()
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         window = (("since", "2026-10-01T00:00:00Z"), ("until", "2026-10-02T00:00:00Z"))
@@ -1329,7 +1413,7 @@ class TestFeedReads:
 
         assert response.status_code == 200, response.text
         assert response.json() == {"actors": [], "rooms": [], "kinds": []}
-        assert store.read_feed_facets.call_args.kwargs == {
+        assert store.read_feed_facets.call_args_list[-1].kwargs == {
             "since": datetime(2026, 10, 1, tzinfo=UTC),
             "until": datetime(2026, 10, 2, tzinfo=UTC),
             "scope": FeedScope(clis=("codex",), reader=_TEST_READER),
@@ -1345,35 +1429,32 @@ class TestFeedReads:
         for session in (taken, waiting, ended):
             inbound.mark_poller(session, cli="claude", instance=run)
         assert inbound.report_state(taken, instance=run, state="taken_over")
-        store = AsyncMock()
-        store.engine = FakeEngine()
+        store = _FeedStore()
         store.engine.conn.fetch.return_value = [
             {"session_id": waiting, "opened": "a1", "closed": None},
         ]
         last = datetime(2026, 10, 1, tzinfo=UTC)
-        store.read_feed_facets = AsyncMock(
-            return_value=FeedFacetsResponse(
-                actors=[
-                    FeedActorFacet(
-                        actor=name,
-                        session_id=session,
-                        cli="claude",
-                        rooms=[],
-                        count=1,
-                        conversation=1,
-                        last=last,
-                        ended=last if session == ended else None,
-                    )
-                    for name, session in (
-                        ("taken", taken),
-                        ("waiting", waiting),
-                        ("quiet", quiet),
-                        ("ended", ended),
-                    )
-                ],
-                rooms=[],
-                kinds=[],
-            ),
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[
+                FeedActorFacet(
+                    actor=name,
+                    session_id=session,
+                    cli="claude",
+                    rooms=[],
+                    count=1,
+                    conversation=1,
+                    last=last,
+                    ended=last if session == ended else None,
+                )
+                for name, session in (
+                    ("taken", taken),
+                    ("waiting", waiting),
+                    ("quiet", quiet),
+                    ("ended", ended),
+                )
+            ],
+            rooms=[],
+            kinds=[],
         )
         client = self._client(store)
         cast("FastAPI", client.app).state.inbound = inbound
@@ -1391,11 +1472,41 @@ class TestFeedReads:
             "quiet": "idle",
             "ended": "idle",
         }
+        assert store.engine.conn.fetch.call_args is not None
         asked = from_plain(
             store.engine.conn.fetch.call_args.args[1],
             list[uuid.UUID],
         )
         assert set(asked) == {taken, waiting}
+
+    def test_facets_with_no_polled_agent_ask_no_run_its_state(self) -> None:
+        store = _FeedStore()
+        store.read_feed_facets.return_value = FeedFacetsResponse(
+            actors=[
+                FeedActorFacet(
+                    actor="quiet",
+                    session_id=new_uuid(),
+                    cli="claude",
+                    rooms=[],
+                    count=1,
+                    conversation=1,
+                    last=datetime(2026, 10, 1, tzinfo=UTC),
+                    ended=None,
+                ),
+            ],
+            rooms=[],
+            kinds=[],
+        )
+        client = self._client(store)
+        cast("FastAPI", client.app).state.inbound = InboundQueue()
+
+        response = client.get("/api/web/feed/facets")
+
+        assert response.status_code == 200, response.text
+        assert response.json() == store.read_feed_facets.return_value.model_dump(
+            mode="json",
+        )
+        store.engine.conn.fetch.assert_not_awaited()
 
     def test_a_histogram_has_2_to_1000_buckets_and_120_unless_asked(self) -> None:
         store = self._histogram_store()
@@ -1407,7 +1518,7 @@ class TestFeedReads:
         assert from_plain(response.json(), dict[str, object])["counts"] == [
             {"start": "2026-10-01T00:00:00Z", "count": 3},
         ]
-        kwargs = store.read_feed_histogram.call_args.kwargs
+        kwargs = store.read_feed_histogram.call_args_list[-1].kwargs
         assert {name: kwargs[name] for name in kwargs if name != "earliest"} == {
             "since": None,
             "until": None,
@@ -1440,7 +1551,7 @@ class TestFeedReads:
         after = datetime.now(UTC)
 
         assert response.status_code == 200, response.text
-        earliest = store.read_feed_histogram.call_args.kwargs["earliest"]
+        earliest = store.read_feed_histogram.call_args_list[-1].kwargs["earliest"]
         assert isinstance(earliest, datetime)
         assert before - week <= earliest <= after - week
         for days, status in ((8, 400), (6, 200)):
@@ -1452,16 +1563,14 @@ class TestFeedReads:
             assert response.status_code == status, days
 
     @classmethod
-    def _histogram_store(cls) -> AsyncMock:
+    def _histogram_store(cls) -> _FeedStore:
         """Return a store whose histogram read answers one bucket."""
-        store = AsyncMock()
-        store.read_feed_histogram = AsyncMock(
-            return_value=FeedHistogramResponse(
-                start=datetime(2026, 10, 1, tzinfo=UTC),
-                end=datetime(2026, 10, 2, tzinfo=UTC),
-                bucket_seconds=86_400,
-                counts=[FeedBucket(start=datetime(2026, 10, 1, tzinfo=UTC), count=3)],
-            ),
+        store = _FeedStore()
+        store.read_feed_histogram.return_value = FeedHistogramResponse(
+            start=datetime(2026, 10, 1, tzinfo=UTC),
+            end=datetime(2026, 10, 2, tzinfo=UTC),
+            bucket_seconds=86_400,
+            counts=[FeedBucket(start=datetime(2026, 10, 1, tzinfo=UTC), count=3)],
         )
         return store
 
@@ -1511,9 +1620,9 @@ class TestRouteBounds:
         zone: str,
     ) -> None:
         """Read a naive ``since`` and ``until`` as UTC whatever the zone is."""
-        store = AsyncMock()
-        read_feed = AsyncMock(return_value=[])
-        store.read_feed = read_feed
+        store = _FeedStore()
+        read_feed = store.read_feed
+        read_feed.return_value = []
         app = FastAPI()
         app.state.engine = FakeEngine()
         app.state.store = store
@@ -1529,11 +1638,14 @@ class TestRouteBounds:
         finally:
             monkeypatch.undo()
             time.tzset()
-        kwargs = cast("dict[str, datetime]", read_feed.call_args.kwargs)
-        assert kwargs["since"].tzinfo is not None
-        assert kwargs["until"].tzinfo is not None
-        assert kwargs["since"] == datetime(2024, 12, 10, tzinfo=UTC)
-        assert kwargs["until"] == datetime(2024, 12, 11, tzinfo=UTC)
+        kwargs = read_feed.call_args_list[-1].kwargs
+        since, until = kwargs["since"], kwargs["until"]
+        assert isinstance(since, datetime)
+        assert isinstance(until, datetime)
+        assert since.tzinfo is not None
+        assert until.tzinfo is not None
+        assert since == datetime(2024, 12, 10, tzinfo=UTC)
+        assert until == datetime(2024, 12, 11, tzinfo=UTC)
 
     def test_search_rejects_invalid_regex(self) -> None:
         engine = FakeEngine()
@@ -2321,19 +2433,21 @@ class TestOldPathsWithTheApp:
             ("/app/ref/Issue/7", "/trax/ref/Issue/7"),
             ("/trax/ref/Issue/7", "/trax/ref/Issue/7"),
         )
-        for identity in (_viewer_identity(), None):
-            _install_identity(app, identity)
-            client = TestClient(app)
-            for link, page in links:
-                r = client.get(link)
-                assert r.status_code == 200, link
-                landing = (r.url.path, parse_qs(r.url.query.decode()), r.text)
-                if identity is None:
-                    assert landing == ("/auth/login_page", {"next": [page]}, "LOGIN"), (
-                        link
-                    )
-                else:
-                    assert landing == (page, {}, "INDEX-a"), link
+        with TestClient(app) as client:
+            for identity in (_viewer_identity(), None):
+                _install_identity(app, identity)
+                for link, page in links:
+                    r = client.get(link)
+                    assert r.status_code == 200, link
+                    landing = (r.url.path, parse_qs(r.url.query.decode()), r.text)
+                    if identity is None:
+                        assert landing == (
+                            "/auth/login_page",
+                            {"next": [page]},
+                            "LOGIN",
+                        ), link
+                    else:
+                        assert landing == (page, {}, "INDEX-a"), link
 
 
 # ---- Read routes on a real engine ----------------------------------------
@@ -2806,19 +2920,19 @@ class TestSubscribeProbe:
 
     def test_frames_follow_the_schedule_then_the_stream_ends(self) -> None:
         status, headers, frames = self._get(
-            first_after_sec=0.02,
-            every_sec=0.02,
-            for_sec=0.09,
+            first_after_sec=0.01,
+            every_sec=0.01,
+            for_sec=0.045,
         )
         assert status == 200
         assert headers["content-type"].startswith("text/event-stream")
         assert "no-transform" not in headers.get("cache-control", "")
-        # Frames at 0.02, 0.04, 0.06 and 0.08 s; none at or after for_sec.
+        # Frames at 0.01, 0.02, 0.03 and 0.04 s; none at or after for_sec.
         assert [from_plain(f["seq"], int) for f in frames] == [0, 1, 2, 3]
         elapsed = [from_plain(f["t"], float) for f in frames]
-        assert elapsed[0] >= 0.02
+        assert elapsed[0] >= 0.01
         assert elapsed == sorted(elapsed)
-        assert elapsed[-1] < 0.09
+        assert elapsed[-1] < 0.045
 
     def test_one_frame_without_an_interval(self) -> None:
         # One byte, then silence until for_sec: the idle-cut experiment.
@@ -2979,6 +3093,40 @@ class TestSearchEmbedder:
         assert found is default
         assert calls == [("default", request)]
 
+    @pytest.mark.parametrize("cached", [StubEmbedder(dim=1024), None])
+    def test_the_default_embedder_is_built_once_per_process(
+        self,
+        cached: StubEmbedder | None,
+    ) -> None:
+        app = FastAPI()
+        app.state.session_embedder = cached
+        request = Request({"type": "http", "app": app})
+        assert web._session_embedder(request) is cached
+
+
+class TestOptionalIdentity:
+    @pytest.mark.asyncio
+    async def test_an_app_without_its_lifespan_has_no_identity(self) -> None:
+        request = Request({"type": "http", "app": FastAPI(), "headers": []})
+        assert await web.optional_identity(request) is None
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_other_than_401_is_not_swallowed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def forbidden(request: Request) -> AuthIdentity:
+            del request
+            raise HTTPException(status_code=403, detail="not yours")
+
+        monkeypatch.setattr(web, "current_user", forbidden)
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        request = Request({"type": "http", "app": app, "headers": []})
+        with pytest.raises(HTTPException) as caught:
+            await web.optional_identity(request)
+        assert caught.value.status_code == 403
+
 
 def test_the_install_icons_served_signed_out_are_192_and_512_pixel_pngs() -> None:
     # The identity table (web/src/identity.ts) names them; the build copies public/.
@@ -3001,6 +3149,180 @@ def _png_size(path: Path) -> tuple[int, int]:
     assert data[:8] == b"\x89PNG\r\n\x1a\n", path
     width, height = struct.unpack(">II", data[16:24])
     return width, height
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query", "limit", "detail"),
+    [
+        ("x", 0, "limit must be in [1, 200]"),
+        ("x", 201, "limit must be in [1, 200]"),
+        (" \t", 1, "q must be non-empty"),
+    ],
+)
+async def test_session_search_validates_before_reading_dependencies(
+    query: str,
+    limit: int,
+    detail: str,
+) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as caught:
+        await web.web_search_sessions(
+            request,
+            q=query,
+            identity=_TEST_IDENTITY,
+            limit=limit,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (400, detail)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [None, 2])
+async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
+    monkeypatch: pytest.MonkeyPatch,
+    limit: int | None,
+) -> None:
+    focus, peer = new_uuid(), new_uuid()
+    distances = {focus: 0, peer: 1}
+    neighbourhood: AsyncMockProtocol[dict[uuid.UUID, int]] = AsyncMock(
+        return_value=distances,
+    )
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    engine.conn.fetch.side_effect = [
+        [
+            {
+                "id": node_id,
+                "kind": "Issue",
+                "seq": seq,
+                "title": title,
+                "status": "active",
+                "created": datetime(2026, 5, 18, tzinfo=UTC),
+                "belief_judgement": None,
+                "belief_confidence": None,
+            }
+            for node_id, seq, title in ((peer, 1, "Peer"), (focus, 2, "Focus"))
+        ],
+        [{"from_id": peer, "to_id": focus, "edge_kind": "narrows", "valence": None}],
+    ]
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        focus=focus,
+        limit=limit,
+    )
+
+    assert graph == {
+        "nodes": [
+            {
+                "id": str(node_id),
+                "kind": "Issue",
+                "seq": seq,
+                "title": title,
+                "status": "active",
+                "created": "2026-05-18T00:00:00+00:00",
+                "hops": distances[node_id],
+            }
+            for node_id, seq, title in ((peer, 1, "Peer"), (focus, 2, "Focus"))
+        ],
+        "edges": [{"from_id": str(peer), "to_id": str(focus), "edge_kind": "narrows"}],
+    }
+    call = _neighbourhood_call(neighbourhood)
+    assert call.args == (engine.conn, focus)
+    assert call.kwargs["limit"] == (60 if limit is None else limit)
+    assert call.kwargs["hops"] == 2
+    assert call.kwargs["policy"] is get_store(request).access_policy
+    principal = call.kwargs["principal"]
+    assert isinstance(principal, Principal)
+    assert principal.email == _TEST_IDENTITY.email
+    assert principal.role == _TEST_IDENTITY.role
+    assert engine.conn.fetch.await_args_list[0].args[1:] == ([focus, peer],)
+    assert engine.conn.fetch.await_args_list[1].args[1:] == ([peer, focus],)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("hops", "status", "detail"),
+    [
+        (0, 400, "hops must be in [1, 3]"),
+        (4, 400, "hops must be in [1, 3]"),
+        (2, 404, "focus not found"),
+    ],
+)
+async def test_focused_graph_rejects_bad_hops_and_missing_focus_without_fetching_nodes(
+    monkeypatch: pytest.MonkeyPatch,
+    hops: int,
+    status: int,
+    detail: str,
+) -> None:
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    neighbourhood = AsyncMock(return_value={})
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
+            request,
+            identity=_TEST_IDENTITY,
+            focus=new_uuid(),
+            hops=hops,
+        )
+    assert (caught.value.status_code, caught.value.detail) == (status, detail)
+    engine.conn.fetch.assert_not_awaited()
+    assert neighbourhood.await_count == (1 if status == 404 else 0)
+
+
+def test_session_search_hit_keeps_every_record_coordinate_and_display_field() -> None:
+    session_id = new_uuid()
+    hit = SessionSearchHit(
+        session_id=session_id,
+        part=2,
+        idx=3,
+        field="content",
+        chunk=4,
+        score=0.25,
+        source="both",
+        snippet="Found text",
+        title="Deploy",
+    )
+    assert web._session_hit_to_dict(hit) == {
+        "session_id": str(session_id),
+        "part": 2,
+        "idx": 3,
+        "field": "content",
+        "chunk": 4,
+        "score": 0.25,
+        "source": "both",
+        "snippet": "Found text",
+        "title": "Deploy",
+    }
+
+
+@pytest.mark.parametrize(
+    ("name", "dim"),
+    [
+        ("unknown-embedder", None),
+        ("qwen3-embedding-4b", 99_999),
+    ],
+)
+def test_invalid_override_configuration_becomes_a_client_error(
+    name: str,
+    dim: int | None,
+) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as caught:
+        web._override_embedder(request, name, dim)
+    assert caught.value.status_code == 400
+    assert name in caught.value.detail or str(dim) in caught.value.detail
+
+
+def _neighbourhood_call(
+    mock: AsyncMockProtocol[dict[uuid.UUID, int]],
+) -> MockCall:
+    mock.assert_awaited_once()
+    assert mock.await_args is not None
+    return mock.await_args
 
 
 if __name__ == "__main__":

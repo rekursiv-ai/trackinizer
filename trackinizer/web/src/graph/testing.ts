@@ -32,7 +32,7 @@ export function edge(from: number, to: number, kind = "narrows", fields: Partial
 export const PALETTE: Palette = {
   kinds: { Issue: "issue-hue", Belief: "belief-hue", Paper: "paper-hue" },
   edges: { narrows: "narrows-hue", requires: "requires-hue", favors: "favors-hue", cites_paper: "cites-hue" },
-  status: { active: "active-ring", complete: "complete-ring", abandoned: "abandoned-ring", invalid: "invalid-ring" },
+  status: { active: "active-ring", complete: "complete-ring", stopped: "stopped-ring", abandoned: "abandoned-ring", invalid: "invalid-ring" },
   fallback: "fallback",
   background: "background",
   support: "support",
@@ -45,7 +45,7 @@ export const PALETTE: Palette = {
 /** The server's vocabulary as far as the graph reads it: kinds, statuses and edge kinds. */
 export const META: Meta = {
   kinds: ["Issue", "Paper", "Belief"],
-  enums: { status: ["active", "complete", "abandoned", "invalid"] },
+  enums: { status: ["active", "complete", "stopped", "abandoned", "invalid"] },
   fieldOwners: {},
   edges: {
     narrows: { from_kinds: ["Issue"], to_kinds: ["Issue"], forward: "narrows", inverse: "narrowed_by" },

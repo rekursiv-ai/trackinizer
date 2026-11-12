@@ -9,10 +9,15 @@ explains a missing extra instead of printing a traceback.
 
 from __future__ import annotations
 
+from bisect import bisect_left
+from functools import cache, partial
 from pathlib import Path
-from typing import Final
+from typing import TYPE_CHECKING, Final
+from unicodedata import normalize
+from unittest.mock import Mock
 
 import ast
+import gc
 import json
 import subprocess
 import sys
@@ -27,7 +32,11 @@ import pytest
 from trackinizer.server import entry
 
 
-_CWD: Final = Path(__file__).resolve().parent
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # The package this test lives in; the monorepo and the export name it differently.
 _BASE: Final = __name__.rpartition(".")[0]
@@ -130,7 +139,18 @@ def test_import_probe_reports_a_module_that_needs_a_server_only_package(
     assert failures == {"leaky": "ModuleNotFoundError: No module named 'torch'"}
 
 
-def test_client_side_modules_never_name_a_server_only_package() -> None:
+def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
+    """Give each client entry point its own transitive import check."""
+    if (
+        metafunc.definition.originalname
+        == "test_client_side_modules_never_name_a_server_only_package"
+    ):
+        metafunc.parametrize("client_module", _client_side_modules())
+
+
+def test_client_side_modules_never_name_a_server_only_package(
+    client_module: str,
+) -> None:
     """No module the client side can reach imports a package of the ``server`` extra.
 
     The import probe sees only what runs at import time. This scan follows every
@@ -139,10 +159,8 @@ def test_client_side_modules_never_name_a_server_only_package() -> None:
     function imports later, such as ``watchdog`` on macOS from the filesystem
     follower, would fail ``trax run`` on a bare install, and the probe cannot see it.
     """
-    modules = _client_side_modules()
-
     reached = _blocked_imports(
-        modules,
+        [client_module],
         root=_ROOT,
         blocked=_blocked_names(),
         skip=frozenset(f"{_BASE}.{name}" for name in _SERVER_ONLY_MODULES),
@@ -185,6 +203,95 @@ def test_static_scan_follows_later_lazy_and_relative_imports(tmp_path: Path) -> 
         "pkg.follower": {"watchdog"},
         "pkg.lazy": {"fastapi"},
     }
+
+
+def test_static_scan_does_not_walk_unrelated_expression_trees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(
+        "def unrelated():\n    return "
+        + " + ".join(str(value) for value in range(32))
+        + '\n\ndef caller():\n    return lazy_import("torch")\n',
+    )
+    children = Mock(wraps=ast.iter_child_nodes)
+    monkeypatch.setattr(ast, "iter_child_nodes", children)
+
+    assert _imported_names(path.read_text(), package="pkg") == {"torch"}
+    assert children.call_count < 20
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_static_scan_keeps_dynamic_imports_in_every_expression(
+    tmp_path: Path,
+    newline: str,
+) -> None:
+    path = tmp_path / "module.py"
+    path.write_text(
+        newline.join(
+            [
+                "from . import sibling",
+                "import json",
+                '@lazy_import("decorator")',
+                'def caller(default=import_module("default")):',
+                "    if TYPE_CHECKING:",
+                "        import hidden",
+                '        value = lazy_import("hidden_dynamic")',
+                "    else:",
+                "        import visible",
+                '    return [lazy_import("comprehension") for item in ()]',
+                "value = f\"{import_module('formatted')}\"",
+                'value = (lambda: loader.import_module("lambda_body"))()',
+                'value = Ｌａｚｙ.lazy_import("qualified")',
+                'value = ｌａｚｙ＿ｉｍｐｏｒｔ("normalized")',
+                "value = (loader",
+                " .import_module",
+                ')("multiline")',
+                "value = lazy_import(",
+                '    "argument_on_next_line",',
+                ")",
+            ],
+        ),
+    )
+
+    assert _imported_names(path.read_text(), package="pkg") == {
+        "pkg",
+        "pkg.sibling",
+        "json",
+        "decorator",
+        "default",
+        "visible",
+        "comprehension",
+        "formatted",
+        "lambda_body",
+        "qualified",
+        "normalized",
+        "multiline",
+        "argument_on_next_line",
+    }
+
+
+def test_static_scan_resolves_new_modules_on_every_invocation(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "root.py").write_text("from . import later\n")
+    blocked = frozenset({"torch"})
+
+    assert not _blocked_imports(
+        ["pkg.root"],
+        root=tmp_path,
+        blocked=blocked,
+        skip=frozenset(),
+    )
+    (package / "later.py").write_text("import torch\n")
+    assert _blocked_imports(
+        ["pkg.root"],
+        root=tmp_path,
+        blocked=blocked,
+        skip=frozenset(),
+    ) == {"pkg.later": {"torch"}}
 
 
 def test_missing_extra_guard_names_every_package_of_the_server_extra() -> None:
@@ -256,38 +363,48 @@ def _blocked_imports(
     skip: frozenset[str],
 ) -> dict[str, set[str]]:
     """Return the blocked names each module reachable from ``modules`` imports."""
+    module_path = cache(partial(_module_path, root=root))
     reached: dict[str, set[str]] = {}
     pending = list(modules)
     seen = set(modules)
-    while pending:
-        module = pending.pop()
-        path = _module_path(module, root=root)
-        assert path is not None, module
-        package = module if path.name == "__init__.py" else module.rpartition(".")[0]
-        for name in _imported_names(path, package=package):
-            hit = _blocked_prefix(name, blocked)
-            if hit is not None:
-                reached.setdefault(module, set()).add(hit)
-                continue
-            # Importing a.b.c also imports a and a.b.
-            parts = name.split(".")
-            for end in range(1, len(parts) + 1):
-                parent = ".".join(parts[:end])
-                if (
-                    parent not in seen
-                    and parent not in skip
-                    and _module_path(parent, root=root) is not None
-                ):
-                    seen.add(parent)
-                    pending.append(parent)
+    collecting = gc.isenabled()
+    gc.disable()
+    try:
+        while pending:
+            module = pending.pop()
+            path = module_path(module)
+            assert path is not None, module
+            package = (
+                module if path.name == "__init__.py" else module.rpartition(".")[0]
+            )
+            for name in _imported_names(path.read_text(), package=package):
+                hit = _blocked_prefix(name, blocked)
+                if hit is not None:
+                    reached.setdefault(module, set()).add(hit)
+                    continue
+                # Importing a.b.c also imports a and a.b.
+                parts = name.split(".")
+                for end in range(1, len(parts) + 1):
+                    parent = ".".join(parts[:end])
+                    if (
+                        parent not in seen
+                        and parent not in skip
+                        and module_path(parent) is not None
+                    ):
+                        seen.add(parent)
+                        pending.append(parent)
+    finally:
+        if collecting:
+            gc.enable()
     return reached
 
 
 def _blocked_prefix(name: str, blocked: frozenset[str]) -> str | None:
     """Return the blocked name that ``name`` is or lies inside, if any."""
-    for blocked_name in blocked:
-        if name == blocked_name or name.startswith(blocked_name + "."):
-            return blocked_name
+    while name:
+        if name in blocked:
+            return name
+        name = name.rpartition(".")[0]
     return None
 
 
@@ -300,10 +417,11 @@ def _module_path(module: str, *, root: Path) -> Path | None:
     return None
 
 
-def _imported_names(path: Path, *, package: str) -> set[str]:
-    """Return every dotted module name ``path`` imports, however and wherever."""
+@cache
+def _imported_names(source: str, *, package: str) -> frozenset[str]:
+    """Return the imports of ``source``, shared by entries reaching the same module."""
     names: set[str] = set()
-    for node in _executed_nodes(ast.parse(path.read_text())):
+    for node in _executed_nodes(source):
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
@@ -316,7 +434,7 @@ def _imported_names(path: Path, *, package: str) -> set[str]:
                 source = "" if module is None else module
             names.add(source)
             names.update(f"{source}.{alias.name}" for alias in node.names)
-        elif isinstance(node, ast.Call):
+        else:
             callee = node.func
             if isinstance(callee, ast.Attribute):
                 called = callee.attr
@@ -328,21 +446,35 @@ def _imported_names(path: Path, *, package: str) -> set[str]:
                 first = node.args[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     names.add(first.value)
-    return names
+    return frozenset(names)
 
 
-def _executed_nodes(tree: ast.AST) -> list[ast.AST]:
-    """Return every node of ``tree`` outside an ``if TYPE_CHECKING`` body."""
-    found: list[ast.AST] = []
-    pending: list[ast.AST] = [tree]
+def _executed_nodes(source: str) -> Iterator[ast.Import | ast.ImportFrom | ast.Call]:
+    """Yield imports and candidate calls outside ``if TYPE_CHECKING`` bodies."""
+    import_lines = [
+        number
+        for number, line in enumerate(normalize("NFKC", source).split("\n"), start=1)
+        if "import" in line
+    ]
+    pending: list[ast.AST] = [ast.parse(source)]
     while pending:
         node = pending.pop()
-        found.append(node)
+        # Definition line ranges exclude decorators, which can import dynamically.
+        if isinstance(node, ast.stmt | ast.expr) and not isinstance(
+            node,
+            ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef,
+        ):
+            at = bisect_left(import_lines, node.lineno)
+            if at == len(import_lines) or import_lines[at] > (
+                node.end_lineno or node.lineno
+            ):
+                continue
+        if isinstance(node, ast.Import | ast.ImportFrom | ast.Call):
+            yield node
         if isinstance(node, ast.If) and _is_type_checking(node.test):
             pending.extend(node.orelse)
         else:
             pending.extend(ast.iter_child_nodes(node))
-    return found
 
 
 def _is_type_checking(test: ast.expr) -> bool:
@@ -383,9 +515,9 @@ def _server_only_packages() -> frozenset[str]:
     ):
         if candidate.is_file():
             project = from_plain(
-                tomllib.loads(candidate.read_text())["project"],
-                dict[str, object],
-            )
+                tomllib.loads(candidate.read_text()),
+                dict[str, dict[str, object]],
+            )["project"]
             # The delta also holds operations on the base's extras, as ``!name = true``.
             extras = from_plain(project["optional-dependencies"], dict[str, object])
             return frozenset(

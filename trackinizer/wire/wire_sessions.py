@@ -250,6 +250,10 @@ class SessionStartResponse(BaseModel):
     collided with a live session, in which case the server appended a suffix
     (``scientist`` -> ``scientist#2``); the client adopts whatever is here."""
 
+    account: str | None = None
+    """The account that holds the session, whose ``run`` and ``answer`` messages its run
+    acts on; ``None`` from a server that predates the field."""
+
     audience: str | None = None
     """Who reads the session's transcript, as the server holds it; ``None`` from a
     server that predates the field."""
@@ -496,7 +500,7 @@ Values:
   settings: A model or effort change.
   interrupt: Stops the running turn.
   run: A command the agent wrote that the chat's starter clicked Run on: the run
-    runs it on its own machine and tells the agent how it ended. Only a run whose
+    runs it on its own host and tells the agent how it ended. Only a run whose
     drains say it takes runs is sent one.
 
 Payload by kind: ``answer`` is ``{"prompt_id": str, "option": str, "updated_input":
@@ -533,10 +537,13 @@ class SessionRunOutput(BaseModel):
 
 
 class InboundEnqueueRequest(BaseModel):
-    """A message a client asks trackinizer to inject into a live session.
+    """A line a client asks trackinizer to inject into a live session.
 
     The enqueue **request** carries ``text`` -- the one field the route delivers --
-    and, from the configured assistant alone, the ``asker`` it sends for. ``source``
+    and, from the configured assistant alone, the ``asker`` it sends for. It names no
+    kind: every other :data:`InboundKind` acts on the run's host, and comes from a
+    person in Chat (``POST /api/chats``) alone, so a key that leaked from an agent
+    sends its owner's run nothing but a line. ``source``
     is attested by the route from the authenticated principal (a client cannot forge
     another sender), and ``room`` has no enqueue semantics (the direct-session
     enqueue route discards it; routed delivery is the separate ``@actor:room``
@@ -549,23 +556,14 @@ class InboundEnqueueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
-    """The message as a person reads it: for ``answer`` the one-line form, "Yes" or
-    "No: <reason>"; for ``interrupt``, "interrupt"."""
-
-    kind: InboundKind = "line"
-    """What the message is; a person's line unless the client names another kind."""
-
-    payload: dict[str, object] | None = None
-    """The kind's structured data, as :data:`InboundKind` documents it; ``None`` for
-    the kinds that carry none."""
+    """The line as a person reads it."""
 
     asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
     """The account of the user the configured assistant sends this line for.
 
-    The server lets the assistant send to a session the assistant cannot read only
-    for a user who may write to it (that session's account, or a writer who holds its
-    audience), so the assistant names whom it speaks for. Any other sender's ``asker``
-    is ignored.
+    The server lets the assistant relay input only for a writer whose account holds
+    the session, even if the assistant itself opened or reads it. Any other sender's
+    ``asker`` is ignored.
     """
 
     _validate_scalars = field_validator("asker", mode="after")(
@@ -907,7 +905,7 @@ PROVIDER_IS_OTHER_CLI: Final = "provider_is_other_cli"
 """The canvas answers the chat with one CLI, and a run of the other drained it."""
 
 CHAT_RUN_LIVE: Final = "chat_run_live"
-"""Another run of the chat's CLI holds its lease: a chat has one live run at a time."""
+"""Another run of the chat's CLI holds its lease: a chat has one agent process at a time."""
 
 CLI_REQUIRED: Final = "cli_required"
 """The chat is answered by a CLI and the drain named none, as a ``trax`` older than the
@@ -917,7 +915,7 @@ SESSION_ENDED: Final = "session_ended"
 """The chat's session ended, as when the person closed the chat, and its run still polls."""
 
 RUN_STOPPED: Final = "run_stopped"
-"""The run's owner stopped it, or disconnected its machine, and it still polls."""
+"""The run's owner stopped it, or disconnected its host, and it still polls."""
 
 RUN_NAME_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$"
 """A detached run's name: the server takes it on a drain, and a detached run takes it

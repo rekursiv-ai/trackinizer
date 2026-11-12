@@ -19,7 +19,7 @@ from treekle import from_plain
 from trackinizer.server.store.core import Store
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # Backtick-quoted method references the doc makes, e.g. ``store.set_description``,
 # ``_submit_generic``, ``emit_change``. Captures the bare identifier.

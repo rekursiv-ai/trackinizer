@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
+from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 from treekle import from_plain, json_loads
@@ -19,10 +20,14 @@ import httpx2
 import pytest
 import pytest_asyncio
 
+from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.server.config import Assistant, Config
+from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
+from trackinizer.types.errors import ConflictError
+from trackinizer.types.inquiries import AgentSession
 
 
 if TYPE_CHECKING:
@@ -230,9 +235,40 @@ async def test_an_admin_cannot_take_a_hidden_session_to_show_it(
     assert (taken.status_code, unhidden.status_code, moved.status_code) == (
         403,
         403,
-        200,
+        403,
     )
     assert await served.session_audience(hidden) == "private"
+
+
+async def test_an_admin_cannot_reassign_a_run_to_inject_commands(
+    served: _Served,
+) -> None:
+    session_id = await served.session(opener=_ANN)
+    session = await served.store.get_inquiry(session_id)
+    assert isinstance(session, AgentSession)
+    inbound = cast(object, app.state.inbound)
+    assert isinstance(inbound, InboundQueue)
+    inbound.mark_poller(session_id, runs=True, account=_ANN)
+    served.act_as(_ADA, "admin")
+
+    reassigned = await served.http.put(
+        f"/api/inquiries/{session_id}/account",
+        json={"value": _ADA},
+    )
+    direct = await served.http.post(
+        f"/api/sessions/{session_id}/inbound",
+        json={"text": "AUDIT_COMMAND"},
+    )
+    routed = await served.http.post(
+        "/api/messages",
+        json={"actor": session.owner, "text": "AUDIT_PROMPT"},
+    )
+
+    assert [r.status_code for r in (reassigned, direct, routed)] == [403, 403, 403]
+    assert inbound.pending(session_id) == 0
+    kept = await served.store.get_inquiry(session_id)
+    assert isinstance(kept, AgentSession)
+    assert kept.account == _ANN
 
 
 async def test_a_staff_session_is_never_hidden(served: _Served) -> None:
@@ -265,6 +301,38 @@ async def test_each_change_is_audited(served: _Served) -> None:
         (_ANN, "open", "private"),
         (_ANN, "private", "open"),
     ]
+
+
+@pytest.mark.parametrize(
+    ("raised", "status", "code"),
+    [
+        (AccessDeniedError("denied"), 403, "session_not_owner"),
+        (ConflictError("now staff"), 409, "session_staff"),
+    ],
+    ids=["policy refuses", "became staff"],
+)
+async def test_a_move_the_store_refuses_answers_as_the_routes_own_refusal(
+    served: _Served,
+    monkeypatch: pytest.MonkeyPatch,
+    raised: Exception,
+    status: int,
+    code: str,
+) -> None:
+    """The policy, or a concurrent move to ``staff``, refuses under the row lock."""
+    session = await served.session()
+    served.act_as(_ANN)
+    monkeypatch.setattr(
+        served.store,
+        "set_session_audience",
+        AsyncMock(side_effect=raised),
+    )
+
+    refused = await served.move(session, "private")
+
+    assert (refused.status_code, json_loads(refused.content, dict[str, object])) == (
+        status,
+        {"detail": {"code": code}},
+    )
 
 
 async def test_an_audience_that_is_neither_open_nor_private_is_refused(

@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 import itertools
 
@@ -308,7 +308,7 @@ def derive_rows(
     return max(1, int(budget / per_row))
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 # The corpus histogram is pre-grouped to the pad multiple in the fixture. The
 # loader still clamps the tail and accepts ungrouped inputs; see
@@ -506,9 +506,7 @@ def knee(points: list[SweepPoint]) -> int:
     first, last = points[0], points[-1]
     dk = last.k - first.k
     dc = last.cost - first.cost
-    norm = (dk * dk + dc * dc) ** 0.5
-    if norm == 0:
-        return first.k
+    norm = cast(float, (dk * dk + dc * dc) ** 0.5)
     best = max(
         points,
         key=lambda p: abs(dk * (first.cost - p.cost) - dc * (first.k - p.k)) / norm,
@@ -588,18 +586,23 @@ def _fill(
     # through[j] = total count of lengths 0..j (inclusive).
     through = list(itertools.accumulate(freq[length] for length in lengths))
     edges = [-(-length // pad_multiple) * pad_multiple for length in lengths]
-    dp = [{j: through[j] * cost(edges[j]) for j in range(n)}]
+    costs = [cost(edge) for edge in edges]
+    dp = [{j: through[j] * costs[j] for j in range(n)}]
     cut: list[dict[int, int]] = [{}]
     for b in range(1, min(max_k, n)):
         prev = dp[-1]
         row: dict[int, float] = {}
         cut_row: dict[int, int] = {}
         for j in range(b, n):
-            # Ties go to the earliest cut (the tuple's second key).
-            row[j], cut_row[j] = min(
-                (prev[i] + (through[j] - through[i]) * cost(edges[j]), i)
-                for i in range(b - 1, j)
-            )
+            total, edge_cost = through[j], costs[j]
+            best_i = b - 1
+            best = prev[best_i] + (total - through[best_i]) * edge_cost
+            for i in range(b, j):
+                candidate = prev[i] + (total - through[i]) * edge_cost
+                # Strict comparisons preserve the earliest cut on ties.
+                if candidate < best:
+                    best, best_i = candidate, i
+            row[j], cut_row[j] = best, best_i
         dp.append(row)
         cut.append(cut_row)
     return _Table(edges=edges, dp=dp, cut=cut)
@@ -643,12 +646,7 @@ def _derive_edges(
         pad_multiple=_EDGE_PAD_MULTIPLE,
     )
     chosen_k = min(max_buckets, max(min_buckets, knee(points)))
-    edges = optimal_boundaries(
-        histogram,
-        chosen_k,
-        cost=cost,
-        pad_multiple=_EDGE_PAD_MULTIPLE,
-    )
+    edges = points[chosen_k - 1].edges.copy()
     if edges[-1] < _TAIL_EDGE:
         edges.append(_TAIL_EDGE)
     return tuple(edges)

@@ -117,6 +117,11 @@ def test_default_visual_requiring_a_record_is_rejected() -> None:
         Canvas.Config(default_visual="trax.subgraph").make()
 
 
+def test_default_visual_that_is_not_registered_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Default visual must be registered"):
+        Canvas.Config(default_visual="x.nowhere").make()
+
+
 def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
     """The window lights 1 to 3 hops, 2 unless asked, and marks ids it lists."""
     described = ContextGraphVisual.Config().make().describe()
@@ -140,19 +145,17 @@ def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
     )
 
 
-def test_terminal_needs_no_record_and_bounds_its_machine_and_has_no_terminal_id() -> (
-    None
-):
-    """The tile starts nothing itself, caps its machine and keeps no terminal id."""
+def test_terminal_needs_no_record_and_bounds_its_host_and_has_no_terminal_id() -> None:
+    """The tile starts nothing itself, caps its host and keeps no terminal id."""
     described = TerminalVisual.Config().make().describe()
     assert (described.type, described.requires, described.default_size) == (
         "trax.terminal",
         [],
         "wide",
     )
-    machine = described.parameter_schema["machine"]
-    assert (machine.type, machine.default, machine.max_length) == ("string", "", 63)
-    assert set(described.parameter_schema) == {"machine", "start"}
+    host = described.parameter_schema["host"]
+    assert (host.type, host.default, host.max_length) == ("string", "", 63)
+    assert set(described.parameter_schema) == {"host", "start"}
     start = described.parameter_schema["start"]
     assert (start.type, start.default) == ("boolean", False)
 
@@ -248,6 +251,38 @@ def test_parameter_bounds_that_do_not_apply_to_the_type_are_rejected(
     """Every type rejects the bounds that belong to the other types."""
     with pytest.raises(ValidationError, match="cannot have"):
         ParameterDescription.model_validate(kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"type": "string", "default": ""}, "need a default and max_length"),
+        ({"type": "string", "default": 3, "max_length": 5}, "need a default"),
+        ({"type": "string", "default": "toolong", "max_length": 3}, "exceeds maximum"),
+        ({"type": "integer", "default": "1", "minimum": 0, "maximum": 2}, "integer"),
+        ({"type": "integer", "default": True, "minimum": 0, "maximum": 2}, "integer"),
+        ({"type": "integer", "default": 1, "minimum": 0}, "need minimum and maximum"),
+        ({"type": "integer", "default": 1, "minimum": 3, "maximum": 2}, "exceeds max"),
+        ({"type": "boolean", "default": "yes"}, "need a boolean default"),
+    ],
+)
+def test_a_parameter_whose_default_its_type_cannot_hold_is_rejected(
+    kwargs: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        ParameterDescription.model_validate(kwargs)
+
+
+def test_two_visuals_of_one_type_are_rejected() -> None:
+    notes = StaticVisual.Config(type="x.notes", title="Notes")
+    with pytest.raises(ValueError, match="Visual types must be unique"):
+        Canvas.Config(visuals=[notes, notes], default_visual="x.notes").make()
+
+
+def test_an_unregistered_default_visual_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Default visual must be registered"):
+        Canvas.Config(default_visual="x.absent").make()
 
 
 if __name__ == "__main__":

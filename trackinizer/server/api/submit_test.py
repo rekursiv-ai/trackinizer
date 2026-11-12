@@ -44,6 +44,33 @@ class TestRoutes:
         body = from_plain(r.json(), dict[str, object])
         assert "id" in body
 
+    def test_an_unknown_kind_token_is_404(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        r = client.post("/api/inquiries/widget", json={"title": "t"})
+        assert r.status_code == 404
+        assert from_plain(r.json(), dict[str, str])["detail"] == (
+            "unknown inquiry kind 'widget'"
+        )
+
+    def test_a_session_opens_into_the_audience_the_caller_is_granted(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, store, _engine = route_client
+        submit = AsyncMock(return_value=uuid.uuid4())
+        monkeypatch.setattr(store, "submit", submit)
+        r = client.post("/api/inquiries/agentsession", json={"title": "run"})
+        issue = client.post("/api/inquiries/issue", json={"title": "t"})
+        assert (r.status_code, issue.status_code) == (201, 201), r.text
+        assert [c.kwargs["session_audience"] for c in submit.await_args_list] == [
+            "open",
+            None,
+        ]
+
     def test_submit_codechange_allows_unset_sha(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -117,7 +144,7 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200, r.text
-        forwarded_items = captured.call_args.args[0]
+        forwarded_items = cast(object, captured.call_args.args[0])
         assert isinstance(forwarded_items, list)
         assert isinstance(forwarded_items[0], SubmitBase)
         assert isinstance(forwarded_items[1], SubmitBase)
