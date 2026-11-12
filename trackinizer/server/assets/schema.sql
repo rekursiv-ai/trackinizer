@@ -63,6 +63,11 @@ CREATE TABLE IF NOT EXISTS inquiries (
                        app IS NULL
                        OR jsonb_typeof(app) = 'object' AND octet_length(app::text) <= 65536
                    ),
+    -- The session that began the science chat the assistant filed the row from: while
+    -- that chat is not ``open``, the row is read as the chat is, and by its own account.
+    -- Mirrors ``Inquiry.filed_from_chat``. No FK: a deleted chat takes its sessions, and
+    -- its rows stay hidden rather than open. Added in 077.
+    filed_from_chat UUID,
     marginal_cost_agent_usd    NUMERIC(14, 6) NOT NULL DEFAULT 0,
     marginal_cost_resource_usd NUMERIC(14, 6) NOT NULL DEFAULT 0,
     -- Derived load-bearing (PageRank) scores, one per citation-relation graph.

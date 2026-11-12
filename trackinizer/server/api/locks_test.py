@@ -126,8 +126,10 @@ async def test_a_row_the_caller_may_not_read_is_absent_to_an_admin_too() -> None
     with pytest.raises(NotFoundError, match=f"inquiry {_B} not found"):
         await require_writable(request, _who("admin"), [_A, _B])
     assert engine.conn.fetchval.call_args is not None
-    sql, ids, kinds = engine.conn.fetchval.call_args.args
-    assert (ids, kinds) == ([_A, _B], ["Issue"])
+    # The chat filing test binds the reader first, then how the transcript test
+    # reads them.
+    sql, ids, kinds, reader, *_ = engine.conn.fetchval.call_args.args
+    assert (ids, kinds, reader) == ([_A, _B], ["Issue"], "x@example.com")
     assert "WHERE NOT EXISTS" in from_plain(sql, str)
     assert not engine.conn.fetch.called
 
@@ -153,8 +155,8 @@ async def test_no_locked_row_lets_a_writer_through() -> None:
     request, engine = _request([])
     await require_writable(request, _who("writer"), (_A, _B))
     assert engine.conn.fetch.call_args is not None
-    ids, peers = engine.conn.fetch.call_args.args[1:]
-    assert (ids, peers) == ([_A, _B], False)
+    ids, peers, reader, *_ = engine.conn.fetch.call_args.args[1:]
+    assert (ids, peers, reader) == ([_A, _B], False, "x@example.com")
 
 
 @pytest.mark.asyncio
@@ -176,7 +178,7 @@ def test_a_submit_names_the_rows_it_links_but_not_its_own_key() -> None:
     assert referenced_ids(issue) == {_A, _B}
 
 
-def test_a_batch_names_every_item_and_edge_row() -> None:
+def test_a_batch_names_every_item_and_edge_row_but_not_its_chat() -> None:
     batch = SubmitBatch.model_validate(
         {
             "items": [
@@ -188,6 +190,7 @@ def test_a_batch_names_every_item_and_edge_row() -> None:
                 },
             ],
             "edges": [{"from_index": 0, "to_id": str(_B), "edge_kind": "narrows"}],
+            "chat": str(_KEY),
         },
     )
     assert referenced_ids(batch) == {_A, _B}

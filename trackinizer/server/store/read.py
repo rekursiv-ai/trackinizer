@@ -261,15 +261,14 @@ class _ReadMixin(_StoreShared):
         """
         params: list[object] = [kind]
         clauses = ["kind = $1"]
-        if principal is not None:
-            predicate = self.access_policy.read_filter(
-                "inquiry",
-                "inquiries",
-                params=params,
-                principal=principal,
-            )
-            if predicate != "TRUE":
-                clauses.append(f"({predicate})")
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        if predicate != "TRUE":
+            clauses.append(f"({predicate})")
         if status is not None:
             params.append(status)
             clauses.append(f"status = ${len(params)}")

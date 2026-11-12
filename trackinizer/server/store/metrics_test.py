@@ -481,7 +481,7 @@ class TestQueryMetrics:
         assert (
             "AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry WHERE "
             "readable_inquiry.id = experiment_metrics.experiment_id AND "
-            "(readable_inquiry.granted)))"
+            "((readable_inquiry.granted) AND (readable_inquiry.filed_from_chat IS NULL"
         ) in sql
 
 

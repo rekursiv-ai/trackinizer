@@ -40,8 +40,9 @@ class _FailingInsertClient(Client):
         *,
         edges: Sequence[Mapping[str, object]] = (),
         actor: Inquiry.Actor | None = None,
+        chat: uuid.UUID | None = None,
     ) -> list[uuid.UUID]:
-        del items, edges, actor
+        del items, edges, actor, chat
         raise ClientError("POST /api/inquiries/batch failed: [Errno 61]")
 
     @override

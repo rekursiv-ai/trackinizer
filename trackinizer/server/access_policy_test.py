@@ -16,6 +16,7 @@ from trackinizer.server.access_policy import (
     Resource,
     inquiry_read_filter,
 )
+from trackinizer.server.values import vetted_sql
 
 
 if TYPE_CHECKING:
@@ -77,22 +78,47 @@ def test_a_trusted_internal_read_is_unrestricted(
     assert (predicate, params) == ("TRUE", [])
 
 
-def test_the_default_policy_reads_every_row_without_a_subquery() -> None:
-    params: list[object] = []
+@pytest.mark.parametrize(
+    "reader",
+    [None, SessionReader(audiences=frozenset({"open", "staff"}), email="ada@x.io")],
+    ids=["undescribed", "described"],
+)
+def test_the_default_policy_still_hides_what_a_private_chat_hides(
+    reader: SessionReader | None,
+) -> None:
+    """It reads every other row, as an auditing policy does; the chat test reads as
+    the principal's reader, else as a plain person.
+    """
+    params: list[object] = ["earlier"]
+    expected: list[object] = ["earlier"]
+    gate = filed_readable_sql(
+        "readable_inquiry",
+        params=expected,
+        email="Ada@Example.com",
+        reader=reader,
+    )
 
     predicate = inquiry_read_filter(
         "s.inquiry_id",
         policy=DefaultPolicy(),
-        principal=_READER,
+        principal=Principal(email="Ada@Example.com", role="viewer", reader=reader),
         params=params,
     )
 
-    assert (predicate, params) == ("TRUE", [])
+    assert predicate == vetted_sql(
+        "EXISTS (SELECT 1 FROM inquiries readable_inquiry "
+        "WHERE readable_inquiry.id = s.inquiry_id AND (",
+        gate,
+        "))",
+    )
+    assert params == expected
 
 
 def test_a_restricting_policy_gates_the_reference_by_its_inquiry_row() -> None:
     params: list[object] = ["earlier"]
     reader = Principal(email="ada@example.com", role="viewer", groups=frozenset({"g"}))
+    expected: list[object] = ["earlier", ["g"]]
+    gate = filed_readable_sql("readable_inquiry", params=expected, email=reader.email)
 
     predicate = inquiry_read_filter(
         "s.inquiry_id",
@@ -101,12 +127,15 @@ def test_a_restricting_policy_gates_the_reference_by_its_inquiry_row() -> None:
         params=params,
     )
 
-    assert predicate == (
+    assert predicate == vetted_sql(
         "EXISTS (SELECT 1 FROM inquiries readable_inquiry "
-        "WHERE readable_inquiry.id = s.inquiry_id AND ("
-        "readable_inquiry.kind = 'inquiry' AND readable_inquiry.grp = ANY($2)))"
+        "WHERE readable_inquiry.id = s.inquiry_id AND (("
+        "readable_inquiry.kind = 'inquiry' AND readable_inquiry.grp = ANY($2)) "
+        "AND ",
+        gate,
+        "))",
     )
-    assert params == ["earlier", ["g"]]
+    assert params == expected
 
 
 @pytest.mark.asyncio

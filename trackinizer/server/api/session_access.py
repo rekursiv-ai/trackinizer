@@ -69,7 +69,6 @@ from trackinizer.server.access_policy import (
 )
 from trackinizer.server.api._deps import (
     get_assistant,
-    get_chat_orgs,
     get_staff,
     get_store,
 )
@@ -79,25 +78,23 @@ from trackinizer.server.api.session_identity import (
     hidden_session,
     is_the_assistant,
     request_principal,
+    session_reader,
 )
 from trackinizer.server.audience import (
-    SessionReader,
-    caller_reader,
     person_audiences,
     reads_session,
 )
-from trackinizer.server.config import Config
 from trackinizer.server.notify import tx
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import NotFoundError
-from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
+from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_service_accounts import is_service_address
 
 
 if TYPE_CHECKING:
     from collections.abc import Collection
 
-    from fastapi import FastAPI, Request
+    from fastapi import Request
     from starlette.requests import HTTPConnection
 
     from trackinizer.lib.postgres import Conn
@@ -120,7 +117,6 @@ __all__ = [
     "require_session_row_write",
     "require_session_write_access",
     "resolve_asker",
-    "session_reader",
 ]
 
 
@@ -323,48 +319,6 @@ async def require_session_access(
         ):
             return
     raise hidden_session(session.audience)
-
-
-def session_reader(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    hidden: bool = True,
-) -> SessionReader:
-    """Describe ``identity`` as the transcript test reads it on this server.
-
-    Under ``--no-auth`` the one caller reads every audience, every session and every
-    chat but a private one.
-
-    Args:
-      request: The request, which carries the configuration.
-      identity: Authenticated caller.
-      hidden: Keep private sessions; a listing passes False unless asked for them.
-
-    Returns:
-      reader: As :func:`~trackinizer.server.audience.caller_reader` derives it for
-        the server's organisation mode.
-
-    """
-    assistant = get_assistant(request)
-    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
-    if isinstance(config, Config) and config.auth_disabled:
-        return SessionReader(
-            audiences=AUDIENCES,
-            email=identity.email.lower(),
-            every_session=True,
-            oversight=True,
-            hidden=hidden,
-        )
-    return caller_reader(
-        identity.email,
-        audiences=identity.read_audiences,
-        admin=identity.role == "admin",
-        orgs=get_chat_orgs(request),
-        assistant="" if assistant is None else assistant.email,
-        hosted_domain=identity.hosted_domain,
-        hidden=hidden,
-    )
 
 
 async def require_row_write(

@@ -514,12 +514,15 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
     assert before - timedelta(days=2) <= since <= datetime.now(UTC) - timedelta(days=2)
     assert recent.args[3] == 4
     assert "ORDER BY active DESC, s.id DESC LIMIT $3" in str(recent.args[0])
-    assert produced.args[1:] == ([chat, placed, foreign],)
-    assert issues.args[1:] == ([issue],)
+    # Every read is gated by the chat a row was filed from; the policy's own test
+    # joins it unless the policy reads everything.
+    assert produced.args[1:3] == ([chat, placed, foreign], _EMAIL)
+    assert issues.args[1:3] == ([issue], _EMAIL)
     for call in (produced, issues):
-        assert (
-            "EXISTS (SELECT 1 FROM inquiries readable_inquiry" in str(call.args[0])
-        ) == (predicate == "FALSE")
+        assert "EXISTS (SELECT 1 FROM inquiries readable_inquiry" in str(call.args[0])
+        assert ("((FALSE) AND (readable_inquiry." in str(call.args[0])) == (
+            predicate == "FALSE"
+        )
         assert "ARRAY['workspace']" in str(call.args[0])
 
 

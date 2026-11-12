@@ -68,6 +68,7 @@
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "favors": [],
+        "filed_from_chat": null,
         "google_scholar_cites_id": null,
         "google_scholar_cluster_id": null,
         "id": "00000000-0000-4000-8000-000000000005",
@@ -114,6 +115,7 @@
         "description": null,
         "ended": null,
         "favors": [],
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000011",
         "kind": "AgentSession",
         "labels": null,
@@ -147,6 +149,7 @@
         "description": null,
         "favored_by": [],
         "favors": [],
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000009",
         "kind": "Experiment",
         "labels": [
@@ -201,6 +204,7 @@
           }
         ],
         "favors": [],
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000007",
         "judgement": "unproven",
         "kind": "Belief",
@@ -253,6 +257,7 @@
             "valence": -0.4
           }
         ],
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000006",
         "kind": "Artifact",
         "labels": [
@@ -280,6 +285,7 @@
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
         "favors": [],
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000010",
         "kind": "Artifact",
         "labels": null,
@@ -313,6 +319,7 @@
         "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000001",
         "issue_kind": null,
         "kind": "Issue",
@@ -366,6 +373,7 @@
         "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000002",
         "issue_kind": null,
         "kind": "Issue",
@@ -413,6 +421,7 @@
         "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000003",
         "issue_kind": [
           "bug"
@@ -501,6 +510,7 @@
         "app": null,
         "created": "2026-01-01T00:00:00.000000+00:00",
         "description": null,
+        "filed_from_chat": null,
         "id": "00000000-0000-4000-8000-000000000004",
         "issue_kind": [
           "question"

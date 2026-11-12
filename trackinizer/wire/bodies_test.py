@@ -355,6 +355,19 @@ class TestSubmitTimes:
                 modified=created - timedelta(seconds=1),
             )
 
+    @pytest.mark.parametrize("body", [SubmitIssue, SubmitArtifact, SubmitBelief])
+    def test_a_body_naming_the_chat_a_row_was_filed_from_is_refused(
+        self,
+        body: type[SubmitIssue | SubmitArtifact | SubmitBelief],
+    ) -> None:
+        """Only the server stamps it, from the chat a filing names."""
+        with pytest.raises(
+            ValidationError,
+            match="filed_from_chat is set by the server",
+        ):
+            body.model_validate({"title": "x", "filed_from_chat": str(new_uuid())})
+        assert body.model_validate({"title": "x", "FILED_FROM_CHAT": None}).title == "x"
+
     def test_modified_without_created_is_rejected(self) -> None:
         modified = datetime(2024, 3, 1, 12, tzinfo=UTC)
         with pytest.raises(ValidationError, match="modified requires created"):

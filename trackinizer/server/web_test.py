@@ -635,7 +635,9 @@ class TestRoutes:
         sql, *params = engine.conn.fetch.await_args.args
         assert isinstance(sql, str)
         assert "kind = $2" in sql
-        assert params == ["%hello%", "Issue", 3]
+        assert "filed_from_chat" in sql
+        assert params[:3] == ["%hello%", "Issue", _TEST_IDENTITY.email]
+        assert params[-1] == 3
 
     @pytest.mark.asyncio
     async def test_web_search_bounds_db_cost_with_statement_timeout(self) -> None:

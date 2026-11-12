@@ -20,7 +20,11 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.access_policy import DefaultPolicy, Principal
-from trackinizer.server.audience import SessionReader, hidden_exists_sql
+from trackinizer.server.audience import (
+    SessionReader,
+    filed_readable_sql,
+    hidden_exists_sql,
+)
 from trackinizer.server.store import read
 from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.belief_confidence import fold_confidence
@@ -666,7 +670,9 @@ class TestPolicyGatedReads:
 
         assert await store.list_kind("Issue", principal=_READER) == []
 
-        assert "(inquiries.granted)" in _last_sql(conn.fetch)
+        assert "readable_inquiry.id = inquiries.id AND ((readable_inquiry.granted)" in (
+            _last_sql(conn.fetch)
+        )
 
     @pytest.mark.asyncio
     async def test_history_is_gated_by_its_subject_and_each_present_peer(self) -> None:
@@ -687,7 +693,10 @@ class TestPolicyGatedReads:
         )
         listed = _last_sql(conn.fetch)
         assert "(created" not in listed
-        assert "actor = $1" in listed
+        # The three read tests bind the reader first, one each.
+        gated: list[object] = []
+        _ = filed_readable_sql("r", params=gated, email=_READER.email)
+        assert f"actor = ${3 * len(gated) + 1}" in listed
 
 
 class _Binding(DefaultPolicy):
@@ -716,26 +725,32 @@ class TestProtectedHistory:
         store, _engine = make_store()
         store.access_policy = _Binding()
         params: list[object] = []
+        # Each reference binds the policy's email, then the chat filing test's values.
+        filed: list[object] = []
+        _ = filed_readable_sql("r", params=filed, email=_READER.email)
+        step = 1 + len(filed)
 
         predicate = store.change_read_filter("c", params=params, principal=_READER)
 
-        assert params == [_READER.email] * 3
+        assert params[::step] == [_READER.email] * 3
         assert predicate.startswith("c.kind NOT IN ('locked', 'unlocked') AND (EXISTS")
-        assert [f"readable_inquiry.owner = ${n}" in predicate for n in (1, 2, 3)] == [
-            True,
-            True,
-            True,
-        ]
+        assert [
+            f"readable_inquiry.owner = ${n}" in predicate
+            for n in (1, 1 + step, 1 + 2 * step)
+        ] == [True, True, True]
 
     def test_only_an_admin_reads_a_protected_kind(self) -> None:
         store, _engine = make_store()
         admin = Principal(email="root@example.com", role="admin")
 
-        assert store.change_read_filter("c", params=[], principal=admin) == "TRUE"
         assert store.change_read_filter("c", params=[], principal=None) == "TRUE"
-        assert (
-            store.change_read_filter("c", params=[], principal=_READER)
-            == "c.kind NOT IN ('locked', 'unlocked')"
+        assert "'locked'" not in store.change_read_filter(
+            "c",
+            params=[],
+            principal=admin,
+        )
+        assert store.change_read_filter("c", params=[], principal=_READER).startswith(
+            "c.kind NOT IN ('locked', 'unlocked') AND (EXISTS",
         )
 
 

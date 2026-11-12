@@ -82,7 +82,9 @@ async def read_artifact_content_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
 ) -> ArtifactContentRevision:
-    """Read the content held by one Artifact with team access.
+    """Read the content held by one Artifact the caller reads.
+
+    An Artifact the caller may not read answers 404, as a missing one does.
 
     Args:
       artifact_id: Canonical Artifact identity for the publication.
@@ -93,8 +95,11 @@ async def read_artifact_content_route(
       artifact: Exact revision and its frozen citations.
 
     """
-    del identity
-    artifact = await read_artifact_content(get_store(request), artifact_id)
+    artifact = await read_artifact_content(
+        get_store(request),
+        artifact_id,
+        principal=await request_principal(request, identity),
+    )
     if artifact is None:
         raise HTTPException(status_code=404, detail="Artifact content not found.")
     return artifact
@@ -116,6 +121,8 @@ async def read_artifact_html_route(
     gives the page an opaque origin even when opened directly, so its scripts
     cannot read Trackinizer cookies or storage, nor call the API.
 
+    An Artifact the caller may not read answers 404, as a missing one does.
+
     Args:
       artifact_id: Canonical Artifact identity for the revision.
       request: Request carrying the graph Store.
@@ -126,8 +133,11 @@ async def read_artifact_html_route(
         a picture, under the sandbox Content Security Policy.
 
     """
-    del identity
-    artifact = await read_artifact_content(get_store(request), artifact_id)
+    artifact = await read_artifact_content(
+        get_store(request),
+        artifact_id,
+        principal=await request_principal(request, identity),
+    )
     if artifact is None or artifact.html is None:
         raise HTTPException(status_code=404, detail="HTML Artifact not found.")
     # ``private``: no shared cache may keep team content. ``no-transform``:

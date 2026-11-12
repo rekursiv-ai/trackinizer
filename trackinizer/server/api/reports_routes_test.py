@@ -327,7 +327,13 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
     assert json_loads(preserved.content, dict[str, object])["author"] == TEST_USER_EMAIL
     await store.purge(issue_id, actor=TEST_USER_EMAIL)
     await store.purge(uuid.UUID(artifact_id), actor=TEST_USER_EMAIL)
-    historical = await client.get(f"/api/artifacts/{artifact_id}/content")
+    # A revision is read as its Artifact row is, so purging the row takes its page
+    # down; a later revision outlives the Issue that produced it.
+    purged = await client.get(f"/api/artifacts/{artifact_id}/content")
+    assert purged.status_code == 404
+    historical = await client.get(
+        f"/api/artifacts/{second_revision['artifact_id']}/content",
+    )
     assert historical.status_code == 200
     assert json_loads(historical.content, dict[str, object])["issue_id"] == str(
         issue_id,
@@ -684,6 +690,7 @@ async def test_report_publication_checks_linked_locks_and_forwards_identity(
         body=body,
         key=key,
         principal=principal,
+        chat=None,
     )
 
 
@@ -739,6 +746,8 @@ async def test_report_content_returns_exact_revision_or_not_found(
     app = FastAPI()
     app.state.store = store
     request = Request({"type": "http", "app": app})
+    principal = Principal(email=TEST_USER_EMAIL, role="viewer")
+    request.state.access_principal = principal
     revision = _unit_revision()
     read = AsyncMock(return_value=revision if found else None)
     monkeypatch.setattr(reports_routes, "read_artifact_content", read)
@@ -762,7 +771,7 @@ async def test_report_content_returns_exact_revision_or_not_found(
             404,
             "Artifact content not found.",
         )
-    read.assert_awaited_once_with(store, revision.artifact_id)
+    read.assert_awaited_once_with(store, revision.artifact_id, principal=principal)
 
 
 @pytest.mark.asyncio
@@ -775,6 +784,8 @@ async def test_report_html_refuses_non_html_and_serves_sandboxed_capture(
     app = FastAPI()
     app.state.store = store
     request = Request({"type": "http", "app": app})
+    principal = Principal(email=TEST_USER_EMAIL, role="viewer")
+    request.state.access_principal = principal
     revision = _unit_revision()
     if kind == "structured":
         revision = revision.model_copy(update={"format": "structured", "html": None})
@@ -803,7 +814,7 @@ async def test_report_html_refuses_non_html_and_serves_sandboxed_capture(
             404,
             "HTML Artifact not found.",
         )
-    read.assert_awaited_once_with(store, revision.artifact_id)
+    read.assert_awaited_once_with(store, revision.artifact_id, principal=principal)
 
 
 def _unit_revision() -> ArtifactContentRevision:
