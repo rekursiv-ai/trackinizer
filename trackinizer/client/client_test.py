@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, TypedDict, cast, override
 from urllib.parse import parse_qsl
 
 import argparse
+import base64
 import inspect
 import json
 import logging
@@ -1547,7 +1548,7 @@ class TestClientMethods:
 # on the fake. The variable methods are driven through stub clients in
 # ``trax/variables_test.py``, and no ``trax`` command reads hosts or jobs, so the
 # shared fake carries none of them. No ``trax`` command files code, so it holds no
-# code-store method either. The canvas capture is an agent's alone, and no command takes one.
+# code-store method either. ``trax/canvas_test.py`` drives the canvas capture.
 # The tool and exec waits are a daemon's, which no ``trax`` command is, and
 # ``client/client_exec_test.py`` drives them. The session relay's calls are an agent
 # process's and a daemon's, and ``client/client_session_relay_test.py`` drives those.
@@ -1569,6 +1570,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"host_job_cancel", "host_job_log", "host_job_manifest"}
     | {"host_job_file", "wait_host_work", "report_host_job"}
     | {"post_host_read"}
+    | {"capture_canvas"}
     | {"code_missing", "code_put_blobs", "code_put_snapshot", "code_snapshot"},
 )
 
@@ -1869,6 +1871,70 @@ def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
             {"revision": 0, "operation": {"kind": "chat", "hidden": True}},
         ),
     ]
+
+
+def test_a_capture_posts_once_and_returns_the_picture() -> None:
+    canvas, tile = uuid.uuid4(), uuid.uuid4()
+    seen: list[tuple[str, str]] = []
+    sent = {
+        "width": 4,
+        "height": 3,
+        "mime": "image/png",
+        "data": base64.b64encode(b"\x89PNG\r\n\x1a\n-").decode(),
+        "tiles": [{"id": str(tile), "left": 0, "top": 0, "right": 1, "bottom": 1}],
+        "added_later": True,
+    }
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append((request.method, request.url.path))
+        return httpx2.Response(200, json=sent)
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        picture = client.capture_canvas(canvas)
+
+    assert picture.picture == b"\x89PNG\r\n\x1a\n-"
+    assert (picture.width, picture.height, picture.mime) == (4, 3, "image/png")
+    assert [each.id for each in picture.tiles] == [tile]
+    assert seen == [("POST", f"/api/canvases/{canvas}/captures")]
+
+
+def test_a_capture_that_is_not_the_picture_it_claims_is_refused() -> None:
+    canvas = uuid.uuid4()
+    lie = base64.b64encode(b"GIF89a").decode()
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(
+            200,
+            json={"width": 4, "height": 3, "mime": "image/png", "data": lie},
+        )
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError) as raised:
+            client.capture_canvas(canvas)
+
+    assert str(raised.value).startswith(
+        f"/api/canvases/{canvas}/captures returned a malformed payload: ",
+    )
+
+
+def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(request.url.path)
+        return httpx2.Response(424, json={"detail": "No open page answered."})
+
+    with Client("http://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError) as raised:
+            client.capture_canvas(uuid.uuid4())
+
+    assert raised.value.status_code == 424
+    assert "No open page answered" in str(raised.value)
+    assert len(calls) == 1
 
 
 def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:

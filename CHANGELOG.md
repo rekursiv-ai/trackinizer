@@ -5,6 +5,17 @@ All notable trackinizer changes are documented here. This project follows
 
 ## Unreleased
 
+### Added
+
+- `Client.capture_canvas(canvas_id)` asks the canvas owner's open page for a
+  picture of the canvas and returns a `CaptureImage` (new `wire_capture`): the
+  picture as `data` (base64) and `picture` (bytes), the red `boxes` on it, the
+  visuals `not_captured`, and each visual's place as `tiles`. A 424 `ClientError`
+  says why there is none, such as no open page. `trax canvas UUID capture [PATH]`
+  saves it to PATH, or else a new temporary file, readable by its owner alone, and
+  prints where with what is on it. As for the other canvas commands, an app built
+  on the server serves the route; the server alone answers 404.
+
 ### Changed
 
 - **Breaking:** a computer enrolled with the server is a *host*, not a *machine*, and
