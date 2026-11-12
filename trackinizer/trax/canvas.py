@@ -1,4 +1,4 @@
-"""``trax canvas``: read a canvas, change what it shows, or mark records on it.
+"""``trax canvas``: read a canvas, change what it shows, mark records, or capture it.
 
 An agent run placed on a canvas finds it in ``$TRAX_CANVAS`` (:func:`canvas_from_env`),
 so the command may leave the id out. An app built on the server serves the canvas
@@ -7,15 +7,19 @@ routes; the server alone answers each with a 404.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast, override
 
 import argparse
 import json
+import os
+import tempfile
 import uuid
 
 from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.files.owner_only import write_private
 from trackinizer.trax.commands import Command, HelpPage
 from trackinizer.trax.context import env
 from trackinizer.trax.render import echo
@@ -55,8 +59,8 @@ class Canvas(Command):
 
     names = ("canvas",)
     help = HelpPage(
-        usage="trax canvas CANVAS_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT | mark X1,Y1 X2,Y2 | mark remove MARK_ID | mark clear]",
-        summary="Read a canvas, change its visible modules, move its page, or mark records.",
+        usage="trax canvas CANVAS_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT | mark X1,Y1 X2,Y2 | mark remove MARK_ID | mark clear | capture [PATH]]",
+        summary="Read a canvas, change its visible modules, move its page, mark records, or capture it.",
         options=(
             (
                 "--record UUID",
@@ -86,6 +90,8 @@ class Canvas(Command):
             "trax canvas UUID mark remove MARK_UUID",
             "trax canvas UUID mark clear",
             "trax canvas UUID mark clear --page '#/graph'",
+            "trax canvas UUID capture",
+            "trax canvas UUID capture canvas.png",
             "trax canvas UUID theme to light",
             "trax canvas UUID chat_side to right",
             "trax canvas UUID theme to null",
@@ -97,6 +103,13 @@ class Canvas(Command):
                 "and which stays until someone clicks it away; its corners are X,Y "
                 "fractions (0 to 1) of the stage. It shows on the page the canvas is on. "
                 "`trax canvas UUID` lists the boxes with their ids and what each covers."
+            ),
+            (
+                "capture saves the canvas as its owner's open page shows it, to PATH or "
+                "else a new temporary file, and prints where, with its size, the boxes "
+                "on it and each visual's place as X,Y fractions, as mark takes them. "
+                "It fails when no page of the canvas is open; the picture is not kept "
+                "anywhere else."
             ),
             (
                 "KEY to VALUE sets the canvas owner's preference KEY (VALUE read as JSON "
@@ -168,6 +181,9 @@ class Canvas(Command):
             return
         if flags.action == "mark":
             _print_canvas(_mark(client, canvas_id=canvas_id, args=flags))
+            return
+        if flags.action == "capture":
+            _capture(client, canvas_id=canvas_id, args=flags)
             return
         if _is_chat(flags):
             updated = client.chat_window(canvas_id, hidden=flags.action == "hide")
@@ -279,6 +295,40 @@ def _mark(
         canvas_id,
         operation={"kind": "mark", "mark": mark},
     )
+
+
+def _capture(client: Client, *, canvas_id: uuid.UUID, args: _CanvasArgs) -> None:
+    """Save the owner's page's picture of the canvas; print where, and what is on it."""
+    if (
+        len(args.subject) > 1
+        or args.record is not None
+        or args.placement is not None
+        or args.param
+        or args.page is not None
+    ):
+        raise ClientError("capture takes at most one PATH and no other argument")
+    seen = client.capture_canvas(canvas_id)
+    picture = seen.picture
+    if args.subject:
+        path = Path(args.subject[0])
+        write_private(path, picture)
+    else:
+        made, name = tempfile.mkstemp(
+            prefix="canvas-",
+            suffix=".png" if seen.mime == "image/png" else ".jpg",
+        )
+        with os.fdopen(made, "wb") as file:
+            _ = file.write(picture)
+        path = Path(name)
+    echo(f"capture {path} {seen.width}x{seen.height} {seen.mime}")
+    boxes = ", ".join(f"{each.id} by {each.author}" for each in seen.boxes)
+    echo(f"  boxes: {boxes or 'none'}")
+    echo(f"  not captured: {', '.join(seen.not_captured) or 'none'}")
+    for tile in seen.tiles:
+        echo(
+            f"  visual {tile.id} at {tile.left:.3f},{tile.top:.3f} "
+            f"{tile.right:.3f},{tile.bottom:.3f}",
+        )
 
 
 def _mark_point(text: str) -> dict[str, float]:
@@ -468,6 +518,7 @@ _CANVAS_ACTIONS: Final = (
     "focus",
     "place",
     "mark",
+    "capture",
 )
 """The operations a canvas takes by name; any other word starts ``KEY to VALUE``."""
 

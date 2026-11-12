@@ -5,28 +5,15 @@ from __future__ import annotations
 from typing import Final
 
 import asyncio
-import base64
 import uuid
-
-from pydantic import ValidationError
 
 import pytest
 
-from trackinizer.server.capture_relay import (
-    CaptureAnswer,
-    CaptureImage,
-    CaptureRelay,
-    CaptureTile,
-)
+from trackinizer.server.capture_relay import CaptureRelay
+from trackinizer.wire.wire_capture import CaptureAnswer
 
 
 _CANVAS: Final = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
-_PNG: Final = base64.b64encode(b"\x89PNG\r\n\x1a\n-").decode()
-_JPEG: Final = base64.b64encode(b"\xff\xd8\xff-").decode()
-
-
-def _image(*, data: str = _PNG, mime: str = "image/png") -> dict[str, object]:
-    return {"width": 40, "height": 30, "mime": mime, "data": data}
 
 
 def _answer(note: str) -> CaptureAnswer:
@@ -96,53 +83,6 @@ async def test_a_finished_request_leaves_nothing_waiting() -> None:
     await task
 
     assert not relay.answer(_CANVAS, request=request, answer=_answer("again"))
-
-
-def test_an_answer_is_a_picture_or_a_reason_and_never_both_or_neither() -> None:
-    image = CaptureImage.model_validate(_image())
-
-    assert CaptureAnswer(image=image).error is None
-    for both_or_neither in (dict[str, object](), {"image": _image(), "error": "x"}):
-        with pytest.raises(ValidationError):
-            CaptureAnswer.model_validate(both_or_neither)
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [
-        _image(data="not base64!"),
-        _image(data=_JPEG),
-        _image(data=_PNG, mime="image/jpeg"),
-        _image(mime="image/gif"),
-        {**_image(), "width": 0},
-    ],
-)
-def test_bytes_that_are_not_the_picture_claimed_are_refused(
-    bad: dict[str, object],
-) -> None:
-    with pytest.raises(ValidationError):
-        CaptureImage.model_validate(bad)
-
-
-_TILE_BODY = {"left": 0.1, "top": 0.2, "right": 0.6, "bottom": 0.9}
-
-
-@pytest.mark.parametrize(
-    "bad",
-    [{**_TILE_BODY, "left": 1.5}, {**_TILE_BODY, "top": -0.1}, {**_TILE_BODY, "x": 1}],
-)
-def test_a_tile_is_an_id_and_edges_that_are_fractions(bad: dict[str, object]) -> None:
-    with pytest.raises(ValidationError):
-        CaptureTile.model_validate({"id": str(_CANVAS), **bad})
-
-
-def test_an_image_keeps_its_tiles_in_order_and_at_most_fifty() -> None:
-    tiles = [{"id": str(uuid.uuid4()), **_TILE_BODY} for _ in range(50)]
-    image = CaptureImage.model_validate({**_image(), "tiles": tiles})
-    assert [str(t.id) for t in image.tiles] == [t["id"] for t in tiles]
-    assert CaptureImage.model_validate(_image()).tiles == []
-    with pytest.raises(ValidationError):
-        CaptureImage.model_validate({**_image(), "tiles": [*tiles, tiles[0]]})
 
 
 if __name__ == "__main__":

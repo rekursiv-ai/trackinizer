@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+import base64
 import re
 import uuid
 
@@ -15,11 +17,17 @@ from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
 from trackinizer.trax.canvas import canvas_from_env
+from trackinizer.wire.wire_capture import CaptureImage
 
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+
+_PICTURES = {"image/png": b"\x89PNG\r\n\x1a\nfake", "image/jpeg": b"\xff\xd8\xfffake"}
+_BOX_1 = uuid.UUID("b1b1b1b1-0000-0000-0000-000000000000")
+_BOX_2 = uuid.UUID("b2b2b2b2-0000-0000-0000-000000000000")
+_TILE = uuid.UUID("71717171-0000-0000-0000-000000000000")
 
 _CATALOG: dict[str, object] = {
     "default_visual": "trax.browse",
@@ -52,6 +60,13 @@ class _CanvasClient:
         self.focused: str | None = None
         self.unlabeled = uuid.uuid4()
         self.canvas = uuid.uuid4()
+        self.captures = 0
+        self.mime = "image/png"
+        self.not_captured = ["trax.terminal", "trax.artifact"]
+        self.boxes = [
+            {"id": str(_BOX_1), "author": "person"},
+            {"id": str(_BOX_2), "author": "agent"},
+        ]
 
     def get(self, path: str) -> dict[str, object]:
         self.reads.append(path)
@@ -131,6 +146,29 @@ class _CanvasClient:
             **self._state(8, visuals=[]),
             "preferences": {"theme": "light", "highlight_mentions": False},
         }
+
+    def capture_canvas(self, canvas_id: uuid.UUID) -> CaptureImage:
+        self._at(canvas_id)
+        self.captures += 1
+        return CaptureImage.model_validate(
+            {
+                "width": 640,
+                "height": 400,
+                "mime": self.mime,
+                "data": base64.b64encode(_PICTURES[self.mime]).decode(),
+                "not_captured": self.not_captured,
+                "boxes": self.boxes,
+                "tiles": [
+                    {
+                        "id": str(_TILE),
+                        "left": 0,
+                        "top": 0.05,
+                        "right": 0.5,
+                        "bottom": 1,
+                    },
+                ],
+            },
+        )
 
     def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
         return {
@@ -628,6 +666,108 @@ def test_canvas_mark_refuses_a_malformed_command(
         _canvas(client, *arguments)
 
     assert client.operations == []
+
+
+def test_canvas_capture_saves_the_picture_to_the_path_and_says_what_is_on_it(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    path = tmp_path / "seen.png"
+
+    _canvas(client, "capture", str(path))
+
+    assert path.read_bytes() == _PICTURES["image/png"]
+    assert capsys.readouterr().out.splitlines() == [
+        f"capture {path} 640x400 image/png",
+        f"  boxes: {_BOX_1} by person, {_BOX_2} by agent",
+        "  not captured: trax.terminal, trax.artifact",
+        f"  visual {_TILE} at 0.000,0.050 0.500,1.000",
+    ]
+    assert client.operations == []
+
+
+@pytest.mark.parametrize("existed", [False, True])
+def test_canvas_capture_saves_to_a_path_only_its_owner_may_read(
+    existed: bool,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "seen.png"
+    if existed:
+        _ = path.write_bytes(b"old")
+        path.chmod(0o644)
+
+    _canvas(_CanvasClient(), "capture", str(path))
+
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert path.read_bytes() == _PICTURES["image/png"]
+
+
+def test_canvas_capture_says_none_for_no_boxes_and_nothing_left_blank(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    client.boxes = []
+    client.not_captured = []
+
+    _canvas(client, "capture", str(tmp_path / "seen.png"))
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[1:3] == ["  boxes: none", "  not captured: none"]
+
+
+@pytest.mark.parametrize(
+    ("mime", "suffix"),
+    [("image/png", ".png"), ("image/jpeg", ".jpg")],
+)
+def test_canvas_capture_with_no_path_saves_a_new_file_named_for_its_kind(
+    mime: str,
+    suffix: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
+    monkeypatch.setattr("tempfile.tempdir", None)
+    client = _CanvasClient()
+    client.mime = mime
+
+    _canvas(client, "capture")
+    _canvas(client, "capture")
+
+    first, second = (
+        Path(line.split()[1])
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("capture ")
+    )
+    assert first != second
+    for path in (first, second):
+        assert path.parent == tmp_path
+        assert path.name.startswith("canvas-")
+        assert path.suffix == suffix
+        assert path.read_bytes() == _PICTURES[mime]
+        assert path.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["capture", "a.png", "b.png"],
+        ["capture", "--record", str(uuid.uuid4())],
+        ["capture", "--placement", "main"],
+        ["capture", "--param", "a=b"],
+        ["capture", "--page", "#/graph"],
+    ],
+)
+def test_canvas_capture_takes_at_most_a_path(arguments: list[str]) -> None:
+    client = _CanvasClient()
+    refusal = "capture takes at most one PATH and no other argument"
+
+    with pytest.raises(ClientError, match=f"^{re.escape(refusal)}$"):
+        _canvas(client, *arguments)
+
+    assert client.captures == 0
 
 
 def test_a_malformed_placed_canvas_names_no_canvas() -> None:

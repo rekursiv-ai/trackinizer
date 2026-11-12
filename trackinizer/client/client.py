@@ -74,6 +74,7 @@ if TYPE_CHECKING:
     import pydantic
 
     from trackinizer.wire import (
+        wire_capture,
         wire_code,
         wire_daemon,
         wire_exec,
@@ -90,6 +91,7 @@ if TYPE_CHECKING:
         wire_variables,
     )
     from trackinizer.wire.filters import Filter
+    from trackinizer.wire.wire_capture import CaptureImage
     from trackinizer.wire.wire_code import CodeSnapshot, CodeSnapshotHead
     from trackinizer.wire.wire_daemon import (
         Claim,
@@ -188,6 +190,8 @@ else:
     wire_tools = lazy_import("trackinizer.wire.wire_tools")
     # Same lazy-bind for ``wire_variables``: only the variable methods touch it.
     wire_variables = lazy_import("trackinizer.wire.wire_variables")
+    # Same lazy-bind for ``wire_capture``: only ``capture_canvas`` touches it.
+    wire_capture = lazy_import("trackinizer.wire.wire_capture")
     # Same lazy-bind for ``wire_code``: only the code-store methods touch it.
     wire_code = lazy_import("trackinizer.wire.wire_code")
     # Same lazy-bind for ``wire_job``: only the ``job_*`` methods touch it.
@@ -2111,6 +2115,21 @@ class Client:
             },
         )
         return dict(_require_mapping(windowed, where))
+
+    def capture_canvas(self, canvas_id: uuid.UUID) -> CaptureImage:
+        """Ask the canvas owner's open page for a picture of the canvas.
+
+        Args:
+          canvas_id: The canvas.
+
+        Returns:
+          capture: The picture, the visuals left blank, the red boxes on it and
+            where each visual's body stands. A 424 ``ClientError`` says why there
+            is no picture.
+
+        """
+        where = wire_capture.CAPTURES_PATH.format(canvas_id=canvas_id)
+        return _validate_model(wire_capture.CaptureImage, self.post(where), where)
 
     def _live_revision(self, canvas_id: uuid.UUID) -> int:
         """Return the canvas's live revision."""
