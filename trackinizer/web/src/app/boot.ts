@@ -2,6 +2,7 @@ import { queryOptions, type UseQueryResult, useQueries } from "@tanstack/react-q
 import { createContext, useContext } from "react";
 import { getEdgeTopology, getEnums, getFieldOwners, type EdgeTopology, type Enums, type FieldOwners } from "../api/meta";
 import { getProfile, type Profile } from "../api/me";
+import { readAs } from "../api/signedIn";
 import { adoptLegacyPreferences, receivePreferences } from "../preferences";
 import { adoptLocalUserData } from "../state/local";
 import { useOnline } from "../ui/bars";
@@ -46,6 +47,7 @@ export const bootQueries = {
     queryKey: ["me", "profile"],
     queryFn: async ({ queryKey, signal }) => {
       const profile = await prefetched(queryKey, () => getProfile({ signal }));
+      readAs(profile.email, profile.user_id);
       receivePreferences(profile.preferences);
       void adoptLegacyPreferences(profile.email);
       void adoptLocalUserData(profile.email);

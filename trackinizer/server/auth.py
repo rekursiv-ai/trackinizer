@@ -15,7 +15,8 @@ The pieces:
 * :func:`current_user` -- the FastAPI dependency. Bearer header wins;
   otherwise the signed session cookie. 401 on no/bad credential or
   disabled user; 409 when a browser page's ``X-Page-Account`` names another
-  account than its session's (:data:`PAGE_ACCOUNT_HEADER`).
+  account than its session's (:data:`PAGE_ACCOUNT_HEADER`), or its stream's
+  ``page_user`` another user id (:data:`PAGE_USER_PARAM`).
 * :func:`allowlist_match` -- matches an email against the allowlist for
   the OAuth callback; literal match wins over a ``*@domain`` wildcard.
 * :func:`bootstrap_admin` -- seeds the first admin when ``users`` is empty.
@@ -68,6 +69,7 @@ __all__ = [
     "BOOTSTRAP_ADMIN_ENV",
     "BOOTSTRAP_TOKEN_FILE_ENV",
     "PAGE_ACCOUNT_HEADER",
+    "PAGE_USER_PARAM",
     "ROLE_ORDER",
     "TOKEN_PREFIX_LEN",
     "AudienceCeilingError",
@@ -116,6 +118,12 @@ TOKEN_PREFIX_LEN: Final[int] = 12
 
 PAGE_ACCOUNT_HEADER: Final[str] = "X-Page-Account"
 """The header a browser page sends with the email of the account it was read as."""
+
+PAGE_USER_PARAM: Final[str] = "page_user"
+"""The query parameter a browser page's stream sends with the id of the user it was read as.
+
+An ``EventSource`` cannot send a header, and an id keeps the email out of URLs and logs.
+"""
 
 BOOTSTRAP_ADMIN_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_ADMIN"
 BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.
@@ -1063,18 +1071,24 @@ def _try_read_session_user_id(request: HTTPConnection) -> uuid.UUID | None:
 
 # One browser shares one session cookie across its tabs. A tab left open while another
 # tab signs in as someone else would otherwise show the first account and act as the
-# second: its ``X-Page-Account`` names whom it shows. A request without the header, a
-# WebSocket or another client's, is the session's own.
+# second: its ``X-Page-Account`` names whom it shows, and its streams' ``page_user``,
+# which cannot carry a header. A request with neither, a WebSocket or another client's,
+# is the session's own.
 def _refuse_another_page(request: HTTPConnection, identity: AuthIdentity) -> None:
     """Refuse a request from a page read as another account than the session's."""
     page = request.headers.get(PAGE_ACCOUNT_HEADER)
-    if page is None or page.casefold() == identity.email.casefold():
+    user = request.query_params.get(PAGE_USER_PARAM)
+    if page is not None and page.casefold() != identity.email.casefold():
+        shown = page
+    elif user is not None and user != str(identity.user_id):
+        shown = "another account"
+    else:
         return
     raise HTTPException(
         status_code=409,
         detail={
             "code": "other_account",
-            "message": f"Nothing was sent: this page was read as {page}, and you are "
+            "message": f"Nothing was sent: this page was read as {shown}, and you are "
             f"signed in as {identity.email} now. Reload it to see {identity.email}'s.",
         },
     )

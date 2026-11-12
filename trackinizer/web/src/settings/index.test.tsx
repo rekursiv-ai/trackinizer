@@ -2,6 +2,7 @@ import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-libra
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import noAuth from "../../test/testdata/me/getProfile.json";
 import type { Profile } from "../api/me";
+import { SIGNED_IN_KEY } from "../api/signedIn";
 import { LOGIN_URL } from "../app/session";
 import { DEFAULT_PREFERENCES, receivePreferences, sendWaiting } from "../preferences";
 import { chooseTheme, installTheme } from "../theme";
@@ -99,13 +100,17 @@ test("a failed profile refetch shows its error and Retry beside the profile alre
   expect(server.reads("/api/me/profile")).toBe(2);
 });
 
-test("Sign out posts to /auth/logout, then loads the login page", async () => {
+test("Sign out posts to /auth/logout, then loads the login page, once it told every other tab", async () => {
   const server = serveAccount(ADA);
-  const assign = vi.fn();
+  // Whom the browser says it is signed in as, to every other tab (`signedIn.ts`), as the login page loads.
+  const told: (string | null)[] = [];
+  const assign = vi.fn(() => void told.push(localStorage.getItem(SIGNED_IN_KEY)));
+  localStorage.setItem(SIGNED_IN_KEY, ADA.email);
   renderScreen(<SettingsView assign={assign} />, ADA);
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   await waitFor(() => expect(assign).toHaveBeenCalledWith(LOGIN_URL), FAST);
   expect(server.writes()).toEqual([{ call: "POST /auth/logout", body: undefined }]);
+  expect(told).toEqual([""]);
 });
 
 test("under --no-auth, where nobody signs in, the page offers no sign out", () => {
@@ -127,9 +132,11 @@ test("a refused sign-out shows why, and stays on the page", async () => {
   const server = serveAccount(ADA);
   server.answers.push(() => Response.json({ detail: "cross-origin logout rejected" }, { status: 403 }));
   const assign = vi.fn();
+  localStorage.setItem(SIGNED_IN_KEY, ADA.email);
   renderScreen(<SettingsView assign={assign} />, ADA);
   fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
   const session = within(screen.getByRole("region", { name: "Session" }));
   expect((await session.findByRole("alert")).textContent).toBe("Could not sign out. cross-origin logout rejected");
   expect(assign).not.toHaveBeenCalled();
+  expect(localStorage.getItem(SIGNED_IN_KEY)).toBe(ADA.email);
 });

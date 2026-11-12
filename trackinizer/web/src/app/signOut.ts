@@ -1,5 +1,6 @@
 import { useContext, useState } from "react";
 import { signOut } from "../api/me";
+import { signedOut } from "../api/signedIn";
 import { LOGIN_URL, SessionContext } from "./session";
 
 /**
@@ -37,6 +38,8 @@ export function useSignOut({ assign, failed }: {
       failed?.(failure);
       return;
     }
+    // Every other tab of this browser shows an account nobody is signed in as now.
+    signedOut();
     if (assign) assign(LOGIN_URL);
     else if (session) session.assign(LOGIN_URL);
     else throw new Error("useSignOut needs `assign` or a SessionContext above it.");

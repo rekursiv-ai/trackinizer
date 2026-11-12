@@ -90,3 +90,19 @@ export async function rejected(): Promise<void> {
   // @ts-expect-error
   await setTokenRole(KEY, "root");
 }
+
+test("a save from a page read as Ada names her, and once the browser is Sam's the refusal moves the page", async () => {
+  // Fresh modules: `readAs` binds a page for good, so this test's page is its own, whatever runs before or after it.
+  vi.resetModules();
+  const signedIn = await import("./signedIn");
+  const me = await import("./me");
+  signedIn.readAs("ada@example.com", "00000000-0000-4000-8000-000000000001");
+  const sent = stubFetch(() => Response.json(
+    { detail: { code: "other_account", message: "Nothing was sent: this page was read as ada@example.com." } },
+    { status: 409 },
+  ));
+  await expect(me.setPreferences({ skin: "dos" })).rejects.toMatchObject({ status: 409, code: "other_account" });
+  expect(sent.map(({ method, path, headers }) => [method, path, headers["x-page-account"]]))
+    .toEqual([["PATCH", "/api/me/preferences", "ada@example.com"]]);
+  expect(signedIn.switched()).toEqual({ page: "ada@example.com", now: null });
+});

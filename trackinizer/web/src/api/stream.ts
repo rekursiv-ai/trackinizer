@@ -1,4 +1,6 @@
+
 import type { paths } from "./generated/schema";
+import { pageUrl } from "./signedIn";
 
 /** What the live stream tells its listener. */
 export type StreamListener = {
@@ -73,8 +75,14 @@ export function openStream(listener: StreamListener, options: StreamOptions = {}
  * has heard nothing for `SILENCE_MS` is dead: the wrapper tells the listener it
  * dropped, closes it and opens a new one after the same delays. Returns a
  * function that closes the stream for good.
+ *
+ * Each connection's URL names the user the page was read as (`pageUrl`), which a
+ * header cannot for a stream, so a tab left open across an account switch hears
+ * nothing more: the server fixes whom a stream is for as it connects, so only a
+ * connection made after the switch could be another's.
  */
 export function openEvents(path: string, listener: EventsListener, options: StreamOptions = {}): () => void {
+  const base = () => new URL(path, globalThis.location.origin).href;
   const connect = options.connect ?? ((url: string) => new EventSource(url));
   const delays = options.retryDelaysMs ?? RETRY_DELAYS_MS;
   let source: EventSourceLike | null = null;
@@ -82,6 +90,8 @@ export function openEvents(path: string, listener: EventsListener, options: Stre
   let refusals = 0;
   let silence: ReturnType<typeof setTimeout> | null = null;
   let closed = false;
+  // The URL the open source was made with, which the browser reconnects to by itself.
+  let url = "";
   const later = () => {
     timer = setTimeout(start, delays[Math.min(refusals, delays.length - 1)]);
     refusals += 1;
@@ -89,7 +99,8 @@ export function openEvents(path: string, listener: EventsListener, options: Stre
   const start = () => {
     timer = null;
     if (closed) return;
-    const opened = connect(new URL(path, globalThis.location.origin).href);
+    url = pageUrl(base());
+    const opened = connect(url);
     source = opened;
     // Whatever the server sends restarts the wait; so does connecting.
     const heard = () => {
@@ -116,7 +127,17 @@ export function openEvents(path: string, listener: EventsListener, options: Stre
     opened.onerror = () => {
       if (closed) return;
       listener.drop();
-      if (opened.readyState !== CLOSED) return;
+      if (opened.readyState !== CLOSED) {
+        // The browser reconnects by itself, to the URL made before the page was read when it was, which names no user:
+        // the server would take it as whoever is signed in by then. Made anew instead, it names the page's.
+        if (pageUrl(base()) === url) return;
+        opened.onerror = null;
+        opened.close();
+        if (silence !== null) clearTimeout(silence);
+        silence = null;
+        start();
+        return;
+      }
       // A closed source is done: one refusal, one new try, whatever it fires next.
       opened.onerror = null;
       if (silence !== null) clearTimeout(silence);
