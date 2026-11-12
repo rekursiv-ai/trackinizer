@@ -49,6 +49,11 @@ ASSISTANT_KEYS: Final = frozenset(
         "terminal_colors",
         "chat_side",
         "app_bar",
+        "app_bar_pinned",
+        "font",
+        "interface_text_size",
+        "chat_text_size",
+        "canvas_text_size",
         "highlight_mentions",
         "terminal_font_size",
         "terminal_tab_chords",
@@ -361,6 +366,43 @@ class CreateDraft(_Strict):
     _bounded = field_validator("chips")(_json_within)
 
 
+type Font = Literal[
+    "system",
+    "inter",
+    "ibm_plex_sans",
+    "manrope",
+    "source_sans_3",
+    "geist",
+    "dm_sans",
+    "work_sans",
+    "public_sans",
+    "lato",
+    "nunito_sans",
+]
+"""The app's text face: the system's own, or one the app serves itself."""
+
+_InterfaceSize = Annotated[int, Field(ge=11, le=20)]
+_ChatSize = Annotated[int, Field(ge=10, le=24)]
+
+
+class DisplayTextSizes(_Strict):
+    """One display's own text sizes; a size left None follows the user's default."""
+
+    label: _Name
+    """What Settings calls the display: its size, or the name the browser gave it."""
+
+    interface_text_size: _InterfaceSize | None = None
+    chat_text_size: _ChatSize | None = None
+    canvas_text_size: _InterfaceSize | None = None
+
+
+# A display as the browser tells it without asking: its width and height in CSS px.
+_DisplayKey = Annotated[
+    str,
+    StringConstraints(pattern=r"^[1-9][0-9]{1,4}x[1-9][0-9]{1,4}$"),
+]
+
+
 class Preferences(_Strict):
     """Every preference, the user's choice or its default."""
 
@@ -426,6 +468,56 @@ class Preferences(_Strict):
     app_bar_folded: bool = Field(
         default=False,
         description="The app bar on the left folded to its icons.",
+    )
+    app_bar_pinned: bool = Field(
+        default=True,
+        description=(
+            "Keep the app bar along the top shown; off, it hides until the pointer "
+            "nears the top edge."
+        ),
+        json_schema_extra=SETTING,
+    )
+    font: Font = Field(
+        default="system",
+        description=(
+            "The app's text face: system, inter, ibm_plex_sans, manrope, source_sans_3, "
+            "geist, dm_sans, work_sans, public_sans, lato or nunito_sans. Code and "
+            "terminals keep their monospace; a fixed skin keeps its own face."
+        ),
+        json_schema_extra=SETTING,
+    )
+    interface_text_size: _InterfaceSize = Field(
+        default=14,
+        description=(
+            "The app's text size in px, 11 to 20, on every display without its own."
+        ),
+        json_schema_extra=SETTING,
+    )
+    chat_text_size: _ChatSize = Field(
+        default=13,
+        description=(
+            "Chat's text size in px, its messages and its box, 10 to 24, on every "
+            "display without its own."
+        ),
+        json_schema_extra=SETTING,
+    )
+    canvas_text_size: _InterfaceSize = Field(
+        default=14,
+        description=(
+            "The canvas area's text size in px, every pane beside Chat, 11 to 20, on "
+            "every display without its own; terminals keep terminal_font_size."
+        ),
+        json_schema_extra=SETTING,
+    )
+    display_text_sizes: Annotated[
+        dict[_DisplayKey, DisplayTextSizes],
+        Field(max_length=50),
+    ] = Field(
+        default=dict[_DisplayKey, DisplayTextSizes](),
+        description=(
+            "Text sizes for one display, by its width and height in CSS px "
+            "(1512x982): each size given replaces the default there."
+        ),
     )
     highlight_mentions: bool = Field(
         default=True,
@@ -653,7 +745,9 @@ async def write_preferences(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
-        checked.model_dump(mode="json", include=set(chosen)),
+        # Every field dumps alike in either mode today; "json" keeps a later
+        # non-JSON type (a datetime, a set) storable as jsonb.
+        checked.model_dump(mode="json", include=set(chosen)),  # pragma: no mutate
         # A retired key goes with the next write, so a stored value never lingers.
         [
             *sorted(key for key, value in change.items() if value is None),

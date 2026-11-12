@@ -59,6 +59,12 @@ _DEFAULTS: dict[str, JsonValue] = {
     "app_bar": "top",
     "app_bar_width": 220,
     "app_bar_folded": False,
+    "app_bar_pinned": True,
+    "font": "system",
+    "interface_text_size": 14,
+    "chat_text_size": 13,
+    "canvas_text_size": 14,
+    "display_text_sizes": {},
     "highlight_mentions": True,
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
@@ -457,6 +463,108 @@ def test_any_other_terminal_font_size_is_refused(size: str) -> None:
         Preferences.model_validate({"terminal_font_size": size})
 
 
+def test_the_app_bar_is_pinned_until_the_user_or_their_agent_unpins_it() -> None:
+    assert stored_preferences(None).app_bar_pinned is True
+    assert stored_preferences({"app_bar_pinned": False}).app_bar_pinned is False
+    assert "app_bar_pinned" in ASSISTANT_KEYS
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"app_bar_pinned": "no"})
+
+
+@pytest.mark.parametrize("font", ["system", "inter", "source_sans_3", "nunito_sans"])
+def test_a_font_is_the_systems_or_one_the_app_serves(font: str) -> None:
+    assert Preferences.model_validate({"font": font}).font == font
+    assert "font" in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize("font", ["Inter", "comic_sans", "", "ibm-plex-sans"])
+def test_any_other_font_is_refused(font: str) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"font": font})
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"interface_text_size": 11},
+        {"interface_text_size": 20},
+        {"chat_text_size": 10},
+        {"chat_text_size": 24},
+        {"canvas_text_size": 11},
+        {"canvas_text_size": 20},
+    ],
+)
+def test_text_sizes_take_their_whole_px_bounds(change: dict[str, JsonValue]) -> None:
+    key = next(iter(change))
+    assert Preferences.model_validate(change).model_dump()[key] == change[key]
+    assert key in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"interface_text_size": 10},
+        {"interface_text_size": 21},
+        {"chat_text_size": 9},
+        {"chat_text_size": 25},
+        {"chat_text_size": 13.5},
+        {"chat_text_size": "13"},
+        {"chat_text_size": None},
+        {"canvas_text_size": 10},
+        {"canvas_text_size": 21},
+    ],
+)
+def test_a_text_size_past_its_bounds_or_not_whole_px_is_refused(
+    change: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate(change)
+
+
+def test_a_display_keeps_its_own_sizes_and_follows_the_default_for_the_rest() -> None:
+    sizes = {
+        "2560x1440": {
+            "label": "2560 × 1440",
+            "interface_text_size": 16,
+            "chat_text_size": None,
+        },
+        "1512x982": {
+            "label": "Built-in Retina Display",
+            "chat_text_size": 15,
+            "canvas_text_size": 12,
+        },
+    }
+    read = stored_preferences({"display_text_sizes": sizes})
+    assert read.display_text_sizes["2560x1440"].interface_text_size == 16
+    assert read.display_text_sizes["2560x1440"].chat_text_size is None
+    assert read.display_text_sizes["1512x982"].interface_text_size is None
+    assert read.display_text_sizes["1512x982"].canvas_text_size == 12
+    assert read.display_text_sizes["2560x1440"].canvas_text_size is None
+    assert read.chat_text_size == 13
+    # The user's own record, which Settings' displays manage: not the assistant's.
+    assert "display_text_sizes" not in ASSISTANT_KEYS
+
+
+@pytest.mark.parametrize(
+    "sizes",
+    [
+        {"wide": {"label": "x"}},
+        {"0x900": {"label": "x"}},
+        {"1440x900": {"label": "x", "chat_text_size": 30}},
+        {"1440x900": {"label": "x", "interface_text_size": 10}},
+        {"1440x900": {"label": "x", "canvas_text_size": 21}},
+        {"1440x900": {"chat_text_size": 14}},
+        {"1440x900": {"label": "x", "zoom": 2}},
+        {f"{1000 + n}x900": {"label": "x"} for n in range(51)},
+    ],
+)
+def test_a_display_that_is_not_a_size_or_holds_a_size_past_bounds_is_refused(
+    sizes: dict[str, JsonValue],
+) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"display_text_sizes": sizes})
+
+
 _USER = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 
@@ -517,6 +625,32 @@ async def test_a_key_or_value_the_preferences_do_not_take_writes_nothing(
     with pytest.raises(ValueError, match=message):
         await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
     assert not conn.fetchrow.called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"colour": "red", "size": 3}, "No such preference: colour, size"),
+        (
+            {
+                "theme": "blue",
+                "display_text_sizes": {
+                    "1440x900": {"label": "x", "chat_text_size": 30},
+                },
+            },
+            "theme: [^;]+; display_text_sizes.1440x900.chat_text_size: ",
+        ),
+    ],
+    ids=["unknown keys", "bad values"],
+)
+async def test_a_refused_write_names_every_key_and_where_in_it_the_value_is_wrong(
+    change: dict[str, object],
+    message: str,
+) -> None:
+    conn = cast(MockConnection, AsyncMock())
+    with pytest.raises(ValueError, match=f"^{message}"):
+        await write_preferences(cast("Conn", conn), user_id=_USER, change=change)
 
 
 def test_the_user_data_keys_round_trip_whole() -> None:
