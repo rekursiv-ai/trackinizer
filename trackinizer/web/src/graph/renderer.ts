@@ -84,20 +84,20 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
   let pointed: DrawNode | null = null;
   let labelled: DrawNode[] = [];
   const font = getComputedStyle(host).fontFamily;
-  const graph = new ForceGraph<DrawNode, DrawLink>(host)
-    .width(host.clientWidth)
+  const graph = new ForceGraph<DrawNode, DrawLink>(host);
+  graph.width(host.clientWidth)
     .height(host.clientHeight)
     .nodeVisibility((node) => !node.hidden)
     // The size force-graph reckons a node at (the square root of this times
     // its `nodeRelSize`, 4) places arrowheads on the rim and pads the fit.
-    .nodeVal((node) => (node.look.radius / 4) ** 2)
+    .nodeVal((node) => (displayRadius(node, graph.zoom()) / 4) ** 2)
     .nodeCanvasObject(drawNode)
     .nodePointerAreaPaint(paintHitArea)
     .linkVisibility((link) => !link.hidden)
     .linkCanvasObject(drawLink)
     // The arrowheads' colour; force-graph draws them, and `drawLink` the lines.
     .linkColor((link) => link.look.color)
-    .linkDirectionalArrowLength(4)
+    .linkDirectionalArrowLength(() => Math.min(4, 10 / graph.zoom()))
     .linkDirectionalArrowRelPos(1)
     .d3VelocityDecay(0.58)
     // The layout stops once it has cooled, about 170 ticks, rather than after
@@ -242,15 +242,16 @@ function boundsOf(
 /** A disc of the node's fill, its wash, its ring and its dot, and its halo (`NodeLook`). */
 function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number): void {
   const { look } = node;
+  const radius = displayRadius(node, scale);
   if (look.halo) {
     ctx.beginPath();
-    ctx.arc(node.x!, node.y!, look.radius + HALO_GAP_PX / scale, 0, 2 * Math.PI);
+    ctx.arc(node.x!, node.y!, radius + HALO_GAP_PX / scale, 0, 2 * Math.PI);
     ctx.lineWidth = 2 / scale;
     ctx.strokeStyle = look.halo;
     ctx.stroke();
   }
   ctx.beginPath();
-  ctx.arc(node.x!, node.y!, look.radius, 0, 2 * Math.PI);
+  ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI);
   if (look.fillAlpha > 0) {
     ctx.globalAlpha = look.fillAlpha;
     ctx.fillStyle = look.fill;
@@ -267,7 +268,7 @@ function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number):
   ctx.stroke();
   if (look.dot) {
     ctx.beginPath();
-    ctx.arc(node.x!, node.y!, look.radius * 0.4, 0, 2 * Math.PI);
+    ctx.arc(node.x!, node.y!, radius * 0.4, 0, 2 * Math.PI);
     ctx.fillStyle = look.dot;
     ctx.fill();
   }
@@ -290,7 +291,7 @@ function drawLabels(nodes: readonly DrawNode[], ctx: CanvasRenderingContext2D, s
   for (const node of nodes) {
     const label = node.look.label;
     if (!label || node.hidden || !Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
-    const top = node.y! + node.look.radius + LABEL_GAP_PX / scale;
+    const top = node.y! + displayRadius(node, scale) + LABEL_GAP_PX / scale;
     const half = ctx.measureText(label.text).width / 2;
     const box = { left: node.x! - half, right: node.x! + half, top, bottom: top + height };
     if (taken.some((other) => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) continue;
@@ -321,11 +322,17 @@ function drawLink(link: DrawLink, ctx: CanvasRenderingContext2D, scale: number):
   ctx.stroke();
 }
 
+/** Scale all nodes equally so zooming preserves degree and root size ratios. */
+function displayRadius(node: DrawNode, scale: number): number {
+  return node.look.radius / Math.max(1, scale);
+}
+
 /** The node's disc in its hit colour, so pointing and dragging match what is drawn. */
-function paintHitArea(node: DrawNode, color: string, ctx: CanvasRenderingContext2D): void {
+function paintHitArea(node: DrawNode, color: string, ctx: CanvasRenderingContext2D, scale: number): void {
+  const radius = Math.max(displayRadius(node, scale), Math.min(node.look.radius, 8 / scale));
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(node.x!, node.y!, node.look.radius, 0, 2 * Math.PI);
+  ctx.arc(node.x!, node.y!, radius, 0, 2 * Math.PI);
   ctx.fill();
 }
 
