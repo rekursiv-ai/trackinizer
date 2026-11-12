@@ -23,7 +23,7 @@ from trackinizer.lib.agent.sessions.testdata.capture import (
 )
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # ``--strict-mcp-config`` so the one server is ``echo_mcp.py``: a server from the
@@ -241,9 +241,17 @@ def _first_of_each_kind(path: Path) -> Path:
     text = path.read_text(encoding="utf-8")
     for line in text.splitlines():
         record = json_loads(line, dict[str, MutablePlainTree])
-        payload = from_plain(record.get("payload"), dict[str, object], default={})
+        payload = from_plain(
+            record.get("payload"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         # An ``item_completed`` event names its item's own type one level down.
-        item = from_plain(payload.get("item"), dict[str, object], default={})
+        item = from_plain(
+            payload.get("item"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         kind = (record.get("type"), payload.get("type"), item.get("type"))
         if kind not in seen:
             seen.add(kind)
@@ -300,7 +308,11 @@ def _record_lines(path: Path) -> Path:
         kind = record.get("type")
         if not isinstance(kind, str):
             continue
-        message = from_plain(record.get("message"), dict[str, object], default={})
+        message = from_plain(
+            record.get("message"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         # A message's content is its text, or a list of blocks.
         blocks = (
             from_plain(message["content"], list[dict[str, object] | None])

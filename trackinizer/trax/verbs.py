@@ -659,11 +659,15 @@ class Kind(Command):
         edge_kind, inbound = relation
         bucket = "backlinks" if inbound else "edges"
         rows = from_plain(
-            from_plain(payload.get(bucket), dict[str, object], default={}).get(
+            from_plain(
+                payload.get(bucket),
+                dict[str, object],
+                default=dict[str, object](),
+            ).get(
                 edge_kind,
             ),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         )
         if against:
             # A ``dis*`` spelling selects the negative-valence (against) subset of
@@ -736,14 +740,22 @@ class Kind(Command):
             for change in from_plain(
                 source_payload.get("changes"),
                 list[dict[str, object]],
-                default=[],
+                default=list[dict[str, object]](),
             )
             if any(
                 from_plain(snapshot.get("peer_edge_kind"), str, default="") == edge_kind
                 and from_plain(snapshot.get("peer_id"), str, default="") == target_id
                 for snapshot in (
-                    from_plain(change.get("old"), dict[str, object], default={}),
-                    from_plain(change.get("new"), dict[str, object], default={}),
+                    from_plain(
+                        change.get("old"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
+                    from_plain(
+                        change.get("new"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
                 )
             )
         ]
@@ -964,7 +976,7 @@ class Kind(Command):
         # arg". ``None`` threads the clear through ``add_edge`` to the labels
         # route that writes NULL; ``()`` leaves stored labels untouched
         # (TRAX-CLI-004).
-        labels = from_plain(metadata.get("labels"), list[str], default=[])
+        labels = from_plain(metadata.get("labels"), list[str], default=list[str]())
         edge_labels: Sequence[str] | None = labels
         if "labels" in metadata and not labels:
             edge_labels = None
@@ -2290,7 +2302,7 @@ Examples:
                 for ref in from_plain(
                     row.get("requires"),
                     list[dict[str, object]],
-                    default=[],
+                    default=list[dict[str, object]](),
                 )
                 if (pid := str(ref.get("id")))
                 and status_by_id.get(pid, "active") == "active"
@@ -3364,7 +3376,11 @@ def _arg_values(args: argparse.Namespace) -> Mapping[str, object]:
 
 
 def _arg_text(args: argparse.Namespace) -> list[str]:
-    value = from_plain(_arg_values(args).get("text"), list[object], default=[])
+    value = from_plain(
+        _arg_values(args).get("text"),
+        list[object],
+        default=list[object](),
+    )
     return [str(item) for item in value]
 
 

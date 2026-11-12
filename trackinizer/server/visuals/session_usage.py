@@ -217,7 +217,7 @@ class _Tally:
 
 def _fields(value: object) -> Mapping[str, object]:
     """Return ``value`` as a JSON object; empty for anything else."""
-    return from_plain(value, dict[str, object], default={})
+    return from_plain(value, dict[str, object], default=dict[str, object]())
 
 
 def _count(fields: Mapping[str, object], key: str) -> int:

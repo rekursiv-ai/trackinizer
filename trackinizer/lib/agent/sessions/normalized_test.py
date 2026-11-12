@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.agent.sessions.convert import _Adapter
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 def test_session_json_round_trips_every_record_type() -> None:

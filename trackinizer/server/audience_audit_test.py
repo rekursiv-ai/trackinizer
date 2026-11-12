@@ -40,7 +40,7 @@ from trackinizer.server.route_iter import iter_routes
 from trackinizer.wire.audience import SESSION_CONTENT_ROUTES
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

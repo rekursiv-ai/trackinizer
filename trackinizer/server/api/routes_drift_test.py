@@ -61,7 +61,7 @@ from trackinizer.wire.wire_sessions import SESSION_API_PATHS
 from trackinizer.wire.wire_variables import VARIABLE_PATH, VARIABLES_PATH
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # Field-mutation routes are exactly the PUT/PATCH/DELETE verbs under the

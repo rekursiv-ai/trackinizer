@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from treekle import MutablePlainTree
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 _FIXTURES: Final = _CWD / "test" / "testdata"
 _UPDATE: Final = "TRACKINIZER_WEB_FIXTURES_UPDATE"
 # A second admin, as playwright.config.ts seeds one: the --no-auth admin cannot

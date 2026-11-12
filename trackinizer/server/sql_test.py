@@ -10,7 +10,7 @@ import pytest
 from trackinizer.server.sql import load_sql, schema_migrations
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 _ASSETS = _CWD / "assets"
 

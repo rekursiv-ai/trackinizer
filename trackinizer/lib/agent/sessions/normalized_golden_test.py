@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from trackinizer.sagent.session.types import SessionRecord
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 _ENV_REGENERATE: Final = "SESSIONS_REGENERATE_GOLDEN"
 
 

@@ -829,7 +829,13 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         return [
             (
                 _uuid(row["id"]),
-                tuple(from_plain(row["agentsession_rooms"], list[str], default=[])),
+                tuple(
+                    from_plain(
+                        row["agentsession_rooms"],
+                        list[str],
+                        default=list[str](),
+                    ),
+                ),
             )
             for row in rows
         ]
@@ -1293,7 +1299,7 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
     return FeedEvent(
         session_id=_uuid(row["session_id"]),
         actor=from_plain(row.get("owner"), str, default=""),
-        rooms=from_plain(row.get("agentsession_rooms"), list[str], default=[]),
+        rooms=from_plain(row.get("agentsession_rooms"), list[str], default=list[str]()),
         cli=_optional_str(row["agentsession_cli"]),
         part=from_plain(row["part"], int),
         seq=from_plain(row["idx"], int),

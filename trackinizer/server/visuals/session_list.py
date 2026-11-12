@@ -365,7 +365,7 @@ def _listed(
 
 def _placed(row: Record, *, places: _Places) -> uuid.UUID | None:
     """Return the caller's canvas a placed session's ``canvas:`` label names, if any."""
-    for label in from_plain(row["labels"], list[str], default=[]):
+    for label in from_plain(row["labels"], list[str], default=list[str]()):
         if label.startswith(CANVAS_LABEL_PREFIX):
             try:
                 canvas = uuid.UUID(label.removeprefix(CANVAS_LABEL_PREFIX))

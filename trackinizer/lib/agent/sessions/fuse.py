@@ -247,7 +247,11 @@ def _declared(part: Sequence[SessionRecord]) -> dict[str, str]:
     """Return the launch settings' string fields a part declared, by wire key."""
     for record in part:
         if isinstance(record, TurnContext) and "payload" in record.extra:
-            payload = from_plain(record.extra["payload"], dict[str, object], default={})
+            payload = from_plain(
+                record.extra["payload"],
+                dict[str, object],
+                default=dict[str, object](),
+            )
             return {k: v for k, v in payload.items() if isinstance(v, str)}
     return {}
 

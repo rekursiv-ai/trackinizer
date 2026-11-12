@@ -62,7 +62,7 @@ USER_AGENT: Final = Agent(key_id=TEST_API_KEY_ID, email=TEST_USER_EMAIL)
 OTHER_AGENT: Final = Agent(key_id=OTHER_KEY_ID, email=OTHER_EMAIL)
 ASSISTANT: Final = Agent(key_id=KB_KEY_ID, email=KB_EMAIL)
 
-ASSISTANT_CONFIG: Final = replace(
+ASSISTANT_CONFIG: Final[Config] = replace(
     Config(),
     assistant=Assistant(actor=KB_ACTOR, email=KB_EMAIL),
     chat_orgs="single",

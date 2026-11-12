@@ -495,7 +495,11 @@ def _asks(ask: Ask) -> str:
     if ask.kind == "question" and ask.questions is not None and len(ask.questions) > 0:
         asked = [
             from_plain(
-                from_plain(each, dict[str, PlainTree], default={}).get("question"),
+                from_plain(
+                    each,
+                    dict[str, PlainTree],
+                    default=dict[str, PlainTree](),
+                ).get("question"),
                 str,
                 default="",
             )

@@ -89,7 +89,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 # How often the live CLI's session log is read; it is the only signal there is.
 _POLL_SEC: Final = 0.5
 

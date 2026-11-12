@@ -96,7 +96,7 @@ ASSISTANT: Final = _principal("scout@example.com", "writer", OPEN)
 ALL: Final = (STAFF_USER, WRITER, VIEWER, CAMPAIGN, ASSISTANT)
 # The configuration under which the server itself finds the staff user to be staff, as
 # it must for an asker the assistant names.
-_SERVING_STAFF: Final = replace(ASSISTANT_CONFIG, staff=(STAFF_USER.email,))
+_SERVING_STAFF: Final[Config] = replace(ASSISTANT_CONFIG, staff=(STAFF_USER.email,))
 
 
 def _inbound() -> InboundQueue:

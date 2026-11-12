@@ -332,13 +332,17 @@ def _assistant_fan_out(
             call_id=from_plain(call.get("id"), str, default=""),
             name=from_plain(call.get("name"), str, default=""),
             arguments=immutable(
-                from_plain(call.get("args"), dict[str, object], default={}),
+                from_plain(
+                    call.get("args"),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ),
             ),
         )
         for call in from_plain(
             payload.get("tool_calls"),
             list[dict[str, object]],
-            default=[],
+            default=list[dict[str, object]](),
         )
     )
     tokens = {
@@ -346,7 +350,7 @@ def _assistant_fan_out(
         for key, value in from_plain(
             payload.get("tokens"),
             dict[str, object],
-            default={},
+            default=dict[str, object](),
         ).items()
         if isinstance(value, int) and not isinstance(value, bool) and (count := value)
     }
@@ -368,7 +372,11 @@ def _assistant_fan_out(
 # rather than guessing at the union member's codec shape unverified.
 def _attachments(payload: Mapping[str, object]) -> tuple[Attachment, ...]:
     """Rebuild inline attachments; raise on any shape never seen in the wild."""
-    items = from_plain(payload.get("attachments"), list[dict[str, object]], default=[])
+    items = from_plain(
+        payload.get("attachments"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
     if items:
         raise ValueError(
             "legacy attachment encountered; the live corpus carried none and "

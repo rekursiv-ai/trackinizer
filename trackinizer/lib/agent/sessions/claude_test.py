@@ -60,7 +60,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 ENVELOPE = (
@@ -697,8 +697,18 @@ def test_deleting_one_call_does_not_move_another_across_prose() -> None:
 def _content_blocks(native: str) -> list[dict[str, object]]:
     """Return the message content blocks of a written line."""
     record = json_loads(native.splitlines()[0], dict[str, object])
-    message = from_plain(record.get("message"), dict[str, object], default={})
-    return list(from_plain(message.get("content"), list[dict[str, object]], default=[]))
+    message = from_plain(
+        record.get("message"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
+    return list(
+        from_plain(
+            message.get("content"),
+            list[dict[str, object]],
+            default=list[dict[str, object]](),
+        ),
+    )
 
 
 def test_a_malformed_failure_marker_prevents_lifting() -> None:

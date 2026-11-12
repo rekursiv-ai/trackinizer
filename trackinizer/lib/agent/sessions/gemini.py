@@ -155,7 +155,7 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
                 payload=immutable(message),
             ),
         ]
-    calls = from_plain(message.get("toolCalls"), list[object], default=[])
+    calls = from_plain(message.get("toolCalls"), list[object], default=list[object]())
     stamp = read_or_default(message.get("$timestamp"), str, default=None)
     kept = dict(
         extract_unmodeled_fields(
@@ -181,14 +181,19 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
                 name=from_plain(call.get("name"), str, default=""),
                 timestamp=stamp,
                 arguments=immutable(
-                    from_plain(call.get("args"), dict[str, object], default={}),
+                    from_plain(
+                        call.get("args"),
+                        dict[str, object],
+                        default=dict[str, object](),
+                    ),
                 ),
                 extra=immutable(
                     extract_unmodeled_fields(call, ("id", "name", "args")),
                 ),
             )
             for call in (
-                from_plain(value, dict[str, object], default={}) for value in calls
+                from_plain(value, dict[str, object], default=dict[str, object]())
+                for value in calls
             )
         ),
     ]
@@ -299,7 +304,11 @@ def _read(text: str) -> list[SessionRecord]:
         return [*out, IncompleteRecord(text=text)]
     document = from_plain(decoded, dict[str, object])
     try:
-        messages = from_plain(document.get("messages"), list[object], default=[])
+        messages = from_plain(
+            document.get("messages"),
+            list[object],
+            default=list[object](),
+        )
     except ReadError:
         # No message list, no messages to keep one by one: the document is kept whole.
         return [*out, IncompleteRecord(text=text)]

@@ -85,7 +85,7 @@ if TYPE_CHECKING:
     from trackinizer.trax.commands import Command
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # The hand-written structural body: the productions and the binding-rule prose.

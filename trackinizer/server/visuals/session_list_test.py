@@ -56,7 +56,7 @@ _USER: Final = uuid.UUID("11111111-1111-1111-1111-111111111111")
 _EMAIL: Final = "ada@example.com"
 _KEY: Final = uuid.UUID("22222222-2222-2222-2222-222222222222")
 _OPEN: Final = SessionReader(audiences=frozenset({"open"}), email=_EMAIL)
-_NOW: Final = datetime.now(UTC)
+_NOW: Final[datetime] = datetime.now(UTC)
 
 
 @pytest_asyncio.fixture(loop_scope="session")

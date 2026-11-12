@@ -43,7 +43,7 @@ from trackinizer.server.config import (
 from trackinizer.server.embedders.registry import EMBEDDERS
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 logger = logging.getLogger(__name__)
 

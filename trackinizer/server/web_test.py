@@ -83,7 +83,7 @@ from trackinizer.wire.wire_sessions import (
 )
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 # Tests in this module call the FastAPI route functions directly (not

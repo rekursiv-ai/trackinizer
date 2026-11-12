@@ -56,7 +56,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
 
-_CWD: Final = Path(__file__).resolve().parent
+_CWD: Final[Path] = Path(__file__).resolve().parent
 
 
 @functools.cache
@@ -87,7 +87,11 @@ def _first_turn(rollout: str) -> str:
         if not started:
             continue
         kept.append(line)
-        payload = from_plain(record.get("payload"), dict[str, object], default={})
+        payload = from_plain(
+            record.get("payload"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
         if from_plain(payload.get("type"), str, default="").endswith(
             "tool_call_output",
         ):
