@@ -124,6 +124,8 @@ Left out on purpose, and why:
   AgentSession, so its lines export with the sessions.
 * ``science_chat_shares``, ``science_chat_tombstones`` -- who may post into which
   science chat, and which chats were deleted: access control, like ``allowlist``.
+  A row's ``filed_from_chat`` is a column of ``inquiries`` and is exported, so a
+  row filed from a chat still names it wherever the file is read back.
 * ``visual_reports``, ``visual_report_revisions`` -- shared report presentation
   and author identity; the linked Artifact and graph citations export above.
 * ``session_liveness`` -- when each live session was last heard from, which

@@ -395,8 +395,10 @@ class FakeClient:
         *,
         edges: Sequence[object] = (),
         actor: Inquiry.Actor | None = None,
+        chat: uuid.UUID | None = None,
     ) -> list[uuid.UUID]:
-        """Submit batch."""
+        """Submit batch; the CLI files from no chat."""
+        del chat
         self.calls.append(
             (
                 "submit_batch",
@@ -815,8 +817,10 @@ class FakeClient:
         summary: str,
         html: str,
         previous_id: uuid.UUID | None = None,
+        chat: uuid.UUID | None = None,
     ) -> ArtifactRevision:
-        """Publish artifact content."""
+        """Publish artifact content; the CLI publishes from no chat."""
+        del chat
         self.calls.append(
             (
                 "publish_artifact_content",

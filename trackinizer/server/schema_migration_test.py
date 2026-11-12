@@ -1761,6 +1761,26 @@ async def test_migration_071_matches_the_baseline_status_checks(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
+async def test_migration_077_matches_the_baseline_filed_from_chat(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    """A 076 database migrated by 077, once or twice, has a fresh install's catalog."""
+    conn = pglite_rollback_conn
+    baseline = await _inquiries_shape(conn)
+    await conn.execute("ALTER TABLE inquiries DROP COLUMN filed_from_chat")
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.077.sql'")
+    assert await _catalog_names_aside(conn) != fresh_install
+
+    await conn.execute(load_sql("schema.077"))
+    await conn.execute(load_sql("schema.077"))
+
+    assert await _inquiries_shape(conn) == baseline
+    assert await _catalog_names_aside(conn) == fresh_install
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
 async def test_migration_071_lets_an_existing_issue_be_stopped(
     pglite_rollback_conn: Conn,
 ) -> None:

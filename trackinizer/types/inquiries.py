@@ -27,6 +27,7 @@ everything above it::
     │   marginal_cost
     │   subscribers
     │   app
+    │   filed_from_chat
     │   superseded_by
     │   supersedes
     │   produces
@@ -338,6 +339,17 @@ class Inquiry:
     never read by trackinizer; at most 64 KiB. A writer that changes one field of
     it writes the whole object, so it compares and sets (``Store.transition_app``)
     to keep a field another writer set meanwhile."""
+
+    filed_from_chat: UUID | None = field(
+        default=None,
+        metadata=ColumnSpec(sql_type="UUID", immutable=True, route_editable=False),
+    )
+    """The session that began the science chat the assistant filed this row from;
+    empty for a row filed from none. While that chat is not ``open``, the row is read
+    as the chat is, and by its own account. The server stamps it in the creating
+    transaction from the chat a filing names, which only the assistant may name; no
+    submit body carries it, and no edit or route rewrites it. It has no foreign key: a
+    deleted chat takes its sessions, and its rows stay hidden rather than open."""
 
     superseded_by: tuple[InquiryEdge, ...] = ()
     """Successor inquiries that replace or refine this one.

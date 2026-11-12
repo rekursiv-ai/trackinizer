@@ -11,15 +11,16 @@ from fastapi import HTTPException
 
 from trackinizer.server.access_policy import Principal
 from trackinizer.server.api._deps import get_assistant, get_chat_orgs, get_store
-from trackinizer.server.audience import caller_reader
+from trackinizer.server.audience import SessionReader, caller_reader
 from trackinizer.server.auth import Role
+from trackinizer.server.config import Config
 from trackinizer.types.inquiries import AgentSession
+from trackinizer.wire.audience import AUDIENCES
 
 
 if TYPE_CHECKING:
-    from fastapi import Request
+    from fastapi import FastAPI, Request
 
-    from trackinizer.server.audience import SessionReader
     from trackinizer.server.auth import AuthIdentity
     from trackinizer.server.config import Assistant
     from trackinizer.server.store.core import Store
@@ -80,8 +81,8 @@ async def request_principal(request: Request, identity: AuthIdentity) -> Princip
       identity: Authenticated caller.
 
     Returns:
-      principal: Its lowercase email, its role, the policy's groups for it and the
-        API key it used.
+      principal: Its lowercase email, its role, the policy's groups for it, the
+        API key it used and how the transcript test reads it.
 
     """
     held = cast(object, getattr(request.state, "access_principal", None))
@@ -103,6 +104,48 @@ async def request_principal(request: Request, identity: AuthIdentity) -> Princip
     )
     request.state.access_principal = principal
     return principal
+
+
+def session_reader(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    hidden: bool = True,
+) -> SessionReader:
+    """Describe ``identity`` as the transcript test reads it on this server.
+
+    Under ``--no-auth`` the one caller reads every audience, every session and every
+    chat but a private one.
+
+    Args:
+      request: The request, which carries the configuration.
+      identity: Authenticated caller.
+      hidden: Keep private sessions; a listing passes False unless asked for them.
+
+    Returns:
+      reader: As :func:`~trackinizer.server.audience.caller_reader` derives it for
+        the server's organisation mode.
+
+    """
+    assistant = get_assistant(request)
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    if isinstance(config, Config) and config.auth_disabled:
+        return SessionReader(
+            audiences=AUDIENCES,
+            email=identity.email.lower(),
+            every_session=True,
+            oversight=True,
+            hidden=hidden,
+        )
+    return caller_reader(
+        identity.email,
+        audiences=identity.read_audiences,
+        admin=identity.role == "admin",
+        orgs=get_chat_orgs(request),
+        assistant="" if assistant is None else assistant.email,
+        hosted_domain=identity.hosted_domain,
+        hidden=hidden,
+    )
 
 
 def hidden_session(audience: str | None) -> HTTPException:

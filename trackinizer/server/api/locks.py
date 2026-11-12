@@ -121,9 +121,10 @@ async def require_writable(
 def referenced_ids(body: object) -> set[uuid.UUID]:
     """Collect the row ids a submit body names, except its idempotency keys.
 
-    Every UUID in a submit body but ``idempotency_key`` is the id of an existing
-    row: an Issue's parents and prerequisites, an Experiment's code changes, a
-    Belief's citations, a batch edge's endpoints.
+    Every UUID in a submit body but ``idempotency_key`` and a batch's ``chat`` (a
+    conversation) is the id of an existing row: an Issue's parents and
+    prerequisites, an Experiment's code changes, a Belief's citations, a batch
+    edge's endpoints.
 
     Args:
       body: A submit body, or a value inside one.
@@ -138,7 +139,7 @@ def referenced_ids(body: object) -> set[uuid.UUID]:
         fields: list[object] = [
             getattr(body, name)
             for name in type(body).model_fields
-            if name != "idempotency_key"
+            if name not in {"idempotency_key", "chat"}
         ]
         return referenced_ids(fields)
     if isinstance(body, (list, tuple)):

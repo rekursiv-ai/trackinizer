@@ -10,8 +10,10 @@ import pytest
 from trackinizer.conftest import make_store
 from trackinizer.server.api import session_list_routes
 from trackinizer.server.api.conftest import make_test_identity
-from trackinizer.server.api.session_access import session_reader
-from trackinizer.server.api.session_identity import request_principal
+from trackinizer.server.api.session_identity import (
+    request_principal,
+    session_reader,
+)
 from trackinizer.server.config import Config
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.visuals.session_list import SessionList

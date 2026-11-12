@@ -6221,6 +6221,18 @@
     "additionalProperties": false,
     "description": "A bounded publication request, separate from canvas mutations.",
     "properties": {
+     "chat": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Chat"
+     },
      "citations": {
       "items": {
        "$ref": "#/components/schemas/ArtifactCitationRef"
@@ -8730,6 +8742,18 @@
        }
       ],
       "title": "Actor"
+     },
+     "chat": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Chat"
      },
      "edges": {
       "items": {
@@ -12073,7 +12097,7 @@
   },
   "/api/artifacts/{artifact_id}/content": {
    "get": {
-    "description": "Read the content held by one Artifact with team access.\n\nArgs:\n  artifact_id: Canonical Artifact identity for the publication.\n  request: Request carrying the graph Store.\n  identity: Authenticated teammate.\n\nReturns:\n  artifact: Exact revision and its frozen citations.",
+    "description": "Read the content held by one Artifact the caller reads.\n\nAn Artifact the caller may not read answers 404, as a missing one does.\n\nArgs:\n  artifact_id: Canonical Artifact identity for the publication.\n  request: Request carrying the graph Store.\n  identity: Authenticated teammate.\n\nReturns:\n  artifact: Exact revision and its frozen citations.",
     "operationId": "read_artifact_content_route_api_artifacts__artifact_id__content_get",
     "parameters": [
      {
@@ -12114,7 +12138,7 @@
   },
   "/api/artifacts/{artifact_id}/html": {
    "get": {
-    "description": "Serve one HTML Artifact revision as a page: the link an agent shares.\n\nv2 embeds this same URL in its Artifact frame. The ``sandbox`` directive\ngives the page an opaque origin even when opened directly, so its scripts\ncannot read Trackinizer cookies or storage, nor call the API.\n\nArgs:\n  artifact_id: Canonical Artifact identity for the revision.\n  request: Request carrying the graph Store.\n  identity: Authenticated teammate.\n\nReturns:\n  page: The stored HTML, with the script that answers the canvas's request for\n    a picture, under the sandbox Content Security Policy.",
+    "description": "Serve one HTML Artifact revision as a page: the link an agent shares.\n\nv2 embeds this same URL in its Artifact frame. The ``sandbox`` directive\ngives the page an opaque origin even when opened directly, so its scripts\ncannot read Trackinizer cookies or storage, nor call the API.\n\nAn Artifact the caller may not read answers 404, as a missing one does.\n\nArgs:\n  artifact_id: Canonical Artifact identity for the revision.\n  request: Request carrying the graph Store.\n  identity: Authenticated teammate.\n\nReturns:\n  page: The stored HTML, with the script that answers the canvas's request for\n    a picture, under the sandbox Content Security Policy.",
     "operationId": "read_artifact_html_route_api_artifacts__artifact_id__html_get",
     "parameters": [
      {
@@ -15282,7 +15306,7 @@
   },
   "/api/inquiries/batch": {
    "post": {
-    "description": "Submit many inquiries in one all-or-nothing transaction.\n\nEvery item commits together or none does: a single failure rolls the\nwhole batch back, so no partial state is left behind. On success the\nresponse is ``{\"ids\": [...]}`` with the server-minted ids in input\norder. A failure propagates as the same HTTP error a single submit of\nthat item would raise (e.g. 409 on a conflict, 422 on bad input). One\nitem carrying ``modified`` from a non-admin 403s the batch.\n\nArgs:\n  req: SubmitBatch payload with items and edges to create atomically.\n  request: FastAPI request object; used to fetch the store.\n  identity: Authenticated writer; enforced by Depends(require_role(\"writer\")).\n\nReturns:\n  body: JSON object with \"ids\" key mapping to list of minted server IDs.",
+    "description": "Submit many inquiries in one all-or-nothing transaction.\n\nEvery item commits together or none does: a single failure rolls the\nwhole batch back, so no partial state is left behind. On success the\nresponse is ``{\"ids\": [...]}`` with the server-minted ids in input\norder. A failure propagates as the same HTTP error a single submit of\nthat item would raise (e.g. 409 on a conflict, 422 on bad input). One\nitem carrying ``modified`` from a non-admin 403s the batch. A batch naming a\nscience ``chat`` is filed from it, which only the assistant does: every item\nis then read as the chat is.\n\nArgs:\n  req: SubmitBatch payload with items and edges to create atomically.\n  request: FastAPI request object; used to fetch the store.\n  identity: Authenticated writer; enforced by Depends(require_role(\"writer\")).\n\nReturns:\n  body: JSON object with \"ids\" key mapping to list of minted server IDs.",
     "operationId": "submit_batch_route_api_inquiries_batch_post",
     "requestBody": {
      "content": {

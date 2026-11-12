@@ -924,6 +924,8 @@ class Client:
           edges: Edge definitions referencing item indices by name.
           actor: Audit actor for items that do not name their own. Omit to
             let the server default to the authenticated principal's email.
+          chat: The science chat the assistant files every item from, which it is
+            then read as; None for none.
 
         Returns:
           result: Server-minted UUIDs in item order.
@@ -1469,6 +1471,8 @@ class Client:
           summary: One sentence shown above the page.
           html: One complete document, every asset inline.
           previous_id: The Artifact this revision supersedes; ``None`` starts one.
+          chat: The science chat the assistant publishes from, which the Artifact
+            is then read as; None for none.
 
         Returns:
           revision: The Artifact and revision number the server stored.

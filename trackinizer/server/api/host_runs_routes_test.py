@@ -31,6 +31,8 @@ from trackinizer.server.api.conftest import (
     patch_state,
 )
 from trackinizer.server.api.host_runs_routes import named_runs
+from trackinizer.server.audience import filed_readable_sql
+from trackinizer.server.values import vetted_sql
 from trackinizer.wire.wire_hosts import (
     HOST_DISCONNECT_PATH,
     HOST_LOGOUT_PATH,
@@ -124,7 +126,12 @@ def test_listing_shows_the_owners_live_runs_sorted_then_the_past_ones(
     ]
     past, sessions = engine.conn.fetch.call_args_list
     assert past.args[1:] == ("box", TEST_USER_EMAIL.upper(), 1 + 2)
-    assert sessions.args[1:] == ([_CLAUDE, _CODEX, _PAST], TEST_USER_EMAIL.upper())
+    # The second email is the chat filing test's reader, which every gated read binds.
+    assert sessions.args[1:4] == (
+        [_CLAUDE, _CODEX, _PAST],
+        TEST_USER_EMAIL.upper(),
+        TEST_USER_EMAIL,
+    )
 
 
 @pytest.mark.asyncio
@@ -170,15 +177,21 @@ async def test_named_runs_reads_the_owners_sessions_once_and_names_each_found() 
 @pytest.mark.asyncio
 async def test_named_runs_names_only_a_session_the_callers_policy_reads() -> None:
     run = HostRun(session_id=uuid.uuid4(), cli="claude")
+    gated: list[object] = [None] * 3
+    gate = filed_readable_sql("readable_inquiry", params=gated, email="ada@x.io")
     engine = ExchangeEngine(
         Says(
             method="fetch",
-            sql="SELECT id, seq, agentsession_cli_session_id AS chat FROM inquiries "
-            "WHERE id = ANY($1::uuid[]) AND kind = 'AgentSession' "
-            "AND lower(account) = lower($2) AND (EXISTS (SELECT 1 FROM inquiries "
-            "readable_inquiry WHERE readable_inquiry.id = inquiries.id AND "
-            "(readable_inquiry.access_group = $3)))",
-            args=([run.session_id], "ada@x.io", "g1"),
+            sql=vetted_sql(
+                "SELECT id, seq, agentsession_cli_session_id AS chat FROM inquiries "
+                "WHERE id = ANY($1::uuid[]) AND kind = 'AgentSession' "
+                "AND lower(account) = lower($2) AND (EXISTS (SELECT 1 FROM inquiries "
+                "readable_inquiry WHERE readable_inquiry.id = inquiries.id AND "
+                "((readable_inquiry.access_group = $3) AND ",
+                gate,
+                ")))",
+            ),
+            args=([run.session_id], "ada@x.io", "g1", *gated[3:]),
             # The policy hides the session from the caller, so the database finds none.
             answer=[],
         ),

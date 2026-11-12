@@ -26,7 +26,7 @@ from trackinizer.conftest import make_store
 from trackinizer.server.access_policy import Principal
 from trackinizer.server.api import code_routes
 from trackinizer.server.api.conftest import install_identity, make_test_identity
-from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.api.session_identity import session_reader
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.store.code_store import SnapshotOwnerError
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE

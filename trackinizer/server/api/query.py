@@ -36,9 +36,11 @@ from trackinizer.server.api.locks import require_writable
 from trackinizer.server.api.session_access import (
     require_row_purge,
     require_row_write,
+)
+from trackinizer.server.api.session_identity import (
+    request_principal,
     session_reader,
 )
-from trackinizer.server.api.session_identity import request_principal
 from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events

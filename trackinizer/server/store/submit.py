@@ -832,6 +832,8 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             ``items``; required when one is, and ignored by the other kinds.
           principal: The caller the access policy records as each row's creator;
             None for rows the system creates.
+          chat: The session that began the science chat every item is filed from,
+            which each is read as; None for none.
 
         Returns:
           ids: Server-minted inquiry ids, aligned to ``items`` order.

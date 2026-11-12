@@ -2238,12 +2238,14 @@ def _edge_post(
     return fake_post
 
 
+@pytest.mark.parametrize("chat", [None, uuid.UUID(int=5)])
 @pytest.mark.parametrize("previous", [None, uuid.uuid4()])
 def test_publish_artifact_content_posts_html_and_reads_the_revision(
     monkeypatch: pytest.MonkeyPatch,
     previous: uuid.UUID | None,
+    chat: uuid.UUID | None,
 ) -> None:
-    """The route gets an HTML body; ``previous_id`` is sent only when given."""
+    """The route gets an HTML body; ``previous_id`` and ``chat`` only when given."""
     client = Client("http://example.com")
     issue_id, artifact_id = uuid.uuid4(), uuid.uuid4()
     posted: list[tuple[str, object]] = []
@@ -2260,6 +2262,7 @@ def test_publish_artifact_content_posts_html_and_reads_the_revision(
         summary="Edges first.",
         html="<!doctype html><p>x</p>",
         previous_id=previous,
+        chat=chat,
     )
 
     assert result == ArtifactRevision(artifact_id=artifact_id, revision=2)
@@ -2272,6 +2275,8 @@ def test_publish_artifact_content_posts_html_and_reads_the_revision(
     }
     if previous is not None:
         expected["previous_artifact_id"] = str(previous)
+    if chat is not None:
+        expected["chat"] = str(chat)
     assert posted == [("/api/artifacts/content", expected)]
 
 
@@ -4428,6 +4433,23 @@ def test_submit_batch_preserves_keys_actor_edges_and_server_result_order() -> No
         {"title": "second"},
         {"title": "third", "idempotency_key": None},
     ]
+
+
+@pytest.mark.parametrize("chat", [None, uuid.UUID(int=5)])
+def test_submit_batch_names_its_chat_only_when_given(chat: uuid.UUID | None) -> None:
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(201, json={"ids": [str(uuid.UUID(int=9))]})
+
+    with Client("https://server", transport=httpx2.MockTransport(handler)) as client:
+        _ = client.submit_batch([("Issue", {"title": "t"})], chat=chat)
+
+    [request] = sent
+    body = json_loads(request.content, dict[str, object])
+    assert body.get("chat") == (None if chat is None else str(chat))
+    assert ("chat" in body) is (chat is not None)
 
 
 @pytest.mark.parametrize("as_tuple", [False, True], ids=["list", "tuple"])
