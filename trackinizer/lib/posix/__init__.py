@@ -14,7 +14,8 @@ keeps through a cancel, is :mod:`trackinizer.lib.posix.child`. Starting a proces
 terminal owns, and hearing that it is ready, is :mod:`trackinizer.lib.posix.detached`;
 a Unix socket address short enough to bind is :mod:`trackinizer.lib.posix.sockets`;
 a rename that refuses, rather than replaces, an existing destination is
-:mod:`trackinizer.lib.posix.rename`.
+:mod:`trackinizer.lib.posix.rename`; and a hostname macOS does not change with the
+network is :mod:`trackinizer.lib.posix.hostname`.
 
 Stdlib only, and nothing here imports anything else in this repository.
 """
