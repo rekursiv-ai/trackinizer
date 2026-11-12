@@ -4,14 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Final
 
-import socket
-
 from treekle import json_loads
 
 import httpx2
 import pytest
 
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.posix import hostname
 from trackinizer.trax.login import LoginResult, login
 from trackinizer.trax.profile import (
     Profile,
@@ -134,7 +133,7 @@ def _log_in(
 @pytest.fixture(autouse=True)
 def _no_pinned_profile(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
-    monkeypatch.setattr(socket, "gethostname", lambda: "Dev_box.local")
+    monkeypatch.setattr(hostname, "stable_hostname", lambda: "Dev_box.local")
 
 
 def test_a_login_saves_the_key_under_the_servers_host_and_makes_it_current(
@@ -206,19 +205,22 @@ def test_an_existing_profile_keeps_its_actor_when_the_key_is_renewed() -> None:
 
 
 @pytest.mark.parametrize(
-    ("hostname", "sent"),
+    ("full", "sent"),
     [
         ("_build-7.corp", "build-7"),
         ("--ci-box", "ci-box"),
         ("Dev_box.local", "Dev_box"),
+        ("Ada's Mac", "Ada-s-Mac"),
+        ("Xserve.lan", "Xserve"),
+        ("h" * 64, "h" * 63),
     ],
 )
 def test_a_host_name_the_server_would_refuse_is_cleaned_before_it_is_sent(
     monkeypatch: pytest.MonkeyPatch,
-    hostname: str,
+    full: str,
     sent: str,
 ) -> None:
-    monkeypatch.setattr(socket, "gethostname", lambda: hostname)
+    monkeypatch.setattr(hostname, "stable_hostname", lambda: full)
     server = _Server([_approved()])
 
     _log_in(server, _Time())

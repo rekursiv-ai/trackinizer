@@ -14,11 +14,11 @@ from typing import TYPE_CHECKING, Final
 from urllib.parse import urlsplit
 
 import re
-import socket
 import time
 
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.posix import hostname
 from trackinizer.trax.profile import (
     Profile,
     has_usable_profile,
@@ -218,5 +218,5 @@ def _validated[M: BaseModel](model: type[M], payload: object, *, where: str) -> 
 
 def _hostname() -> str:
     """Return this computer's short host name, cut to what the server accepts."""
-    short = socket.gethostname().split(".")[0]
+    short = hostname.stable_hostname().split(".")[0]
     return re.sub(r"[^A-Za-z0-9._-]", "-", short).lstrip("._-")[:63]
