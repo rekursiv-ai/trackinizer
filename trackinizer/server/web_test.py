@@ -6,10 +6,12 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Final, cast, override
 from unittest.mock import AsyncMock
 from urllib.parse import parse_qs, urlparse
 
+import asyncio
 import json
 import os
 import struct
@@ -2889,8 +2891,38 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
     assert not any("hops" in node for node in whole)
 
 
+@dataclass(slots=True, kw_only=True)
+class _ProbeClock:
+    """A clock the probe's own sleeps advance: a sleep takes no time and is never late."""
+
+    now: float = 1000.0
+    """Not 0: a probe that took the clock itself for the time since it began would pass."""
+
+    slept: list[float] = field(default_factory=list[float])
+    """Each delay the probe asked to sleep, in order."""
+
+    def monotonic(self) -> float:
+        return self.now
+
+    async def sleep(self, delay: float) -> None:
+        self.slept.append(round(delay, 6))
+        self.now += max(delay, 0.0)
+        # Yield as a real sleep does: the response is watching for a client that left.
+        await asyncio.sleep(0)
+
+
 class TestSubscribeProbe:
     """The stream probe sends frames on the caller's schedule, then ends cleanly."""
+
+    # On the machine's clock a busy runner sent the last frame at 0.111 s of a 0.045 s
+    # schedule: the frames' times said how loaded the machine was, not what was asked.
+    @pytest.fixture(autouse=True)
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> _ProbeClock:
+        """Give the probe a clock its sleeps advance, so no test waits or races one."""
+        clock = _ProbeClock()
+        monkeypatch.setattr(web, "time", SimpleNamespace(monotonic=clock.monotonic))
+        monkeypatch.setattr(web, "asyncio", SimpleNamespace(sleep=clock.sleep))
+        return clock
 
     @classmethod
     def _get(
@@ -2918,7 +2950,10 @@ class TestSubscribeProbe:
         ]
         return status, headers, frames
 
-    def test_frames_follow_the_schedule_then_the_stream_ends(self) -> None:
+    def test_frames_follow_the_schedule_then_the_stream_ends(
+        self,
+        clock: _ProbeClock,
+    ) -> None:
         status, headers, frames = self._get(
             first_after_sec=0.01,
             every_sec=0.01,
@@ -2929,21 +2964,25 @@ class TestSubscribeProbe:
         assert "no-transform" not in headers.get("cache-control", "")
         # Frames at 0.01, 0.02, 0.03 and 0.04 s; none at or after for_sec.
         assert [from_plain(f["seq"], int) for f in frames] == [0, 1, 2, 3]
-        elapsed = [from_plain(f["t"], float) for f in frames]
-        assert elapsed[0] >= 0.01
-        assert elapsed == sorted(elapsed)
-        assert elapsed[-1] < 0.045
+        assert [from_plain(f["t"], float) for f in frames] == [0.01, 0.02, 0.03, 0.04]
+        # One sleep to each frame, then one to for_sec, where the stream ends.
+        assert clock.slept == [0.01, 0.01, 0.01, 0.01, 0.005]
 
-    def test_one_frame_without_an_interval(self) -> None:
+    def test_one_frame_without_an_interval(self, clock: _ProbeClock) -> None:
         # One byte, then silence until for_sec: the idle-cut experiment.
         _, _, frames = self._get(first_after_sec=0, for_sec=0.05)
         assert [from_plain(f["seq"], int) for f in frames] == [0]
+        assert clock.slept == [0, 0.05]
 
-    def test_no_bytes_when_the_first_is_due_after_the_end(self) -> None:
+    def test_no_bytes_when_the_first_is_due_after_the_end(
+        self,
+        clock: _ProbeClock,
+    ) -> None:
         # Headers only: the experiment for a proxy that holds them.
         status, _, frames = self._get(first_after_sec=0.05, for_sec=0.05)
         assert status == 200
         assert frames == []
+        assert clock.slept == [0.05]
 
     def test_forbid_transform_marks_the_response(self) -> None:
         _, headers, _ = self._get(for_sec=0.01, forbid_transform=True)
