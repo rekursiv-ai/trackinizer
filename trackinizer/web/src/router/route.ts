@@ -1,10 +1,15 @@
+import { must } from "../must";
 /** Where the app is: one of the deep links the address bar can hold. */
 export type Route =
   /**
    * One kind's list: `#/list/Issue`. With `columns`, its Columns view, the seqs
    * selected column by column: `#/list/Issue?view=columns&path=21933,21934`.
    */
-  | { readonly name: "list"; readonly kind: string; readonly columns?: readonly number[] }
+  | {
+      readonly name: "list";
+      readonly kind: string;
+      readonly columns?: readonly number[];
+    }
   /** An inquiry by kind and seq: `#/ref/Issue/412`. */
   | { readonly name: "ref"; readonly kind: string; readonly seq: number }
   /** An inquiry by id: `#/lookup/<uuid>`. */
@@ -32,7 +37,9 @@ export type Route =
   | { readonly name: "notFound"; readonly hash: string };
 
 /** An inquiry the graph centres a focus on, by kind and seq or by id. */
-export type FocusRef = { readonly kind: string; readonly seq: number } | { readonly id: string };
+export type FocusRef =
+  | { readonly kind: string; readonly seq: number }
+  | { readonly id: string };
 
 /** How far a graph focus reaches: 1, 2 or 3 edges, or its whole connected part. */
 export type Hops = 1 | 2 | 3 | "all";
@@ -60,7 +67,10 @@ export function formatRoute(route: Route): string {
       const params = [];
       if (route.focus) {
         const { ref, hops } = route.focus;
-        params.push(`focus=${"id" in ref ? ref.id : `${encodeURIComponent(ref.kind)}/${ref.seq}`}`, `hops=${hops}`);
+        params.push(
+          `focus=${"id" in ref ? ref.id : `${encodeURIComponent(ref.kind)}/${ref.seq}`}`,
+          `hops=${hops}`,
+        );
       }
       if (route.grouped === false) params.push("group=none");
       return params.length > 0 ? `#/graph?${params.join("&")}` : "#/graph";
@@ -115,17 +125,27 @@ export function parseHash(hash: string, kinds: readonly string[]): Route {
     case "new": {
       const named = rest.length === 0 ? kinds[0] : kind;
       if (!named || rest.length > 1) return notFound;
-      if (head === "new" || query.get("view") !== "columns") return { name: head, kind: named };
-      const columns = (query.get("path") ?? "").split(",").filter(Boolean).map(parseSeq);
-      return columns.every((seq) => seq !== null) ? { name: "list", kind: named, columns } : notFound;
+      if (head === "new" || query.get("view") !== "columns")
+        return { name: head, kind: named };
+      const columns = (query.get("path") ?? "")
+        .split(",")
+        .filter(Boolean)
+        .map(parseSeq);
+      return columns.every((seq) => seq !== null)
+        ? { name: "list", kind: named, columns }
+        : notFound;
     }
     case "ref": {
       const seq = parseSeq(rest[1] ?? "");
-      return kind && rest.length === 2 && seq !== null ? { name: "ref", kind, seq } : notFound;
+      return kind && rest.length === 2 && seq !== null
+        ? { name: "ref", kind, seq }
+        : notFound;
     }
     case "lookup":
     case "inquiry":
-      return rest.length === 1 && UUID.test(rest[0]!) ? { name: "lookup", id: rest[0]!.toLowerCase() } : notFound;
+      return rest.length === 1 && UUID.test(must(rest[0]))
+        ? { name: "lookup", id: must(rest[0]).toLowerCase() }
+        : notFound;
     case "activity":
     case "recent":
       return rest.length === 0 ? { name: "activity" } : notFound;
@@ -133,19 +153,25 @@ export function parseHash(hash: string, kinds: readonly string[]): Route {
       return rest.length === 0 ? { name: "console" } : notFound;
     case "graph": {
       const group = query.get("group");
-      if (rest.length > 0 || (group !== null && group !== "root" && group !== "none")) return notFound;
+      if (rest.length > 0 || (group !== null && group !== "root" && group !== "none"))
+        return notFound;
       const grouped = group === "none" ? { grouped: false as const } : {};
       const focus = query.get("focus");
       if (focus === null) return { name: "graph", ...grouped };
       const ref = parseFocusRef(focus, kinds);
       const hops = HOPS.find((option) => String(option) === (query.get("hops") ?? "1"));
-      return ref && hops ? { name: "graph", focus: { ref, hops }, ...grouped } : notFound;
+      return ref && hops
+        ? { name: "graph", focus: { ref, hops }, ...grouped }
+        : notFound;
     }
     case "settings":
     case "admin":
       return rest.length === 0 ? { name: head } : notFound;
     case "search":
-      return { name: "search", q: rest.length ? rest.join("/") : (query.get("q") ?? "") };
+      return {
+        name: "search",
+        q: rest.length ? rest.join("/") : (query.get("q") ?? ""),
+      };
     default:
       return notFound;
   }

@@ -22,6 +22,7 @@ import {
   Writer,
 } from "./harness";
 import { abortStream, STREAM_ROUTES, STREAM_URL, streamOpened } from "../fixtures";
+import { must } from "../../src/must";
 
 // The live and responsiveness suite (the plan's testing layer 7): a writer
 // drives the suite's own server through the Python client while the page
@@ -69,8 +70,11 @@ test("the probes catch a long task, a shift, a slow key, an open request and a p
   await openList(page, server.url, label);
   const { pointer } = await holdThings(page);
   // Aimed at the list's header, the pointer rests on no row: a stillness check must not pass on that.
-  const header = (await page.locator(".view-h").boundingBox())!;
-  await startHolding(page, { x: header.x + header.width / 2, y: header.y + header.height / 2 });
+  const header = must(await page.locator(".view-h").boundingBox());
+  await startHolding(page, {
+    x: header.x + header.width / 2,
+    y: header.y + header.height / 2,
+  });
   const onNoRow = await probed(page);
   expect(() => expectHeldStill(onNoRow)).toThrow("a row under the pointer");
   await startHolding(page, pointer);
@@ -84,7 +88,11 @@ test("the probes catch a long task, a shift, a slow key, an open request and a p
         setTimeout(() => {
           const end = performance.now() + 80;
           while (performance.now() < end);
-          document.querySelector(".view .scroll")!.before(Object.assign(document.createElement("div"), { style: "height: 40px" }));
+          document
+            .querySelector(".view .scroll")!
+            .before(
+              Object.assign(document.createElement("div"), { style: "height: 40px" }),
+            );
           requestAnimationFrame(() => setTimeout(done, 0));
         }, 0),
       ),
@@ -105,16 +113,22 @@ test("the probes catch a long task, a shift, a slow key, an open request and a p
     ),
   );
   await page.keyboard.press("Shift");
-  await expect.poll(async () => (await probed(page)).keys.filter((key) => key.ms > 100)).toHaveLength(1);
+  await expect
+    .poll(async () => (await probed(page)).keys.filter((key) => key.ms > 100))
+    .toHaveLength(1);
   // A request with no answer yet, and one whose headers came but not its body (the stream's): both still open.
   await page.route("**/api/inquiries?probe=*", () => {});
-  const headers = page.waitForResponse((response) => response.url().endsWith("/api/web/subscribe?probe"));
+  const headers = page.waitForResponse((response) =>
+    response.url().endsWith("/api/web/subscribe?probe"),
+  );
   await page.evaluate(() => {
     void fetch("/api/inquiries?probe=1");
     void fetch("/api/web/subscribe?probe");
   });
   await headers;
-  const open = (await probed(page)).fetches.filter((sent) => sent.url.includes("probe"));
+  const open = (await probed(page)).fetches.filter((sent) =>
+    sent.url.includes("probe"),
+  );
   expect(open.map((sent) => [sent.url, sent.end])).toEqual([
     ["/api/inquiries?probe=1", null],
     ["/api/web/subscribe?probe", null],
@@ -135,14 +149,16 @@ test("an edit to a row on screen shows in the list and the peek within 2 s, and 
   const latencies: number[] = [];
   for (let n = 0; n < 20; n++) {
     // Every fourth edit is to the peeked row, which shows in the list and the peek.
-    const id = n % 4 === 0 ? peeked : onScreen[(n * 7) % onScreen.length]!;
+    const id = n % 4 === 0 ? peeked : must(onScreen[(n * 7) % onScreen.length]);
     const title = `Edited ${n} ${label}`;
     latencies.push(
       await timeToShow(
         page,
         ([id, title, peeked]) =>
-          document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent === title &&
-          (id !== peeked || document.querySelector(".peek .d-title")?.textContent === title) &&
+          document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent ===
+            title &&
+          (id !== peeked ||
+            document.querySelector(".peek .d-title")?.textContent === title) &&
           Date.now(),
         [id, title, peeked],
         () => writer.edit(id, "title", title),
@@ -153,7 +169,13 @@ test("an edit to a row on screen shows in the list and the peek within 2 s, and 
   }
   const probe = await probed(page);
   const load = requestLoad(requests(probe));
-  measured.edits = { latencies, p95: p95(latencies), ...load, longTasks: probe.longTasks, shifts: probe.shifts };
+  measured.edits = {
+    latencies,
+    p95: p95(latencies),
+    ...load,
+    longTasks: probe.longTasks,
+    shifts: probe.shifts,
+  };
   expect(p95(latencies)).toBeLessThan(2_000);
   expectHeldStill(probe);
   expectNoLongTasks(probe);
@@ -176,7 +198,9 @@ test("a new matching row is counted in the pill within 3 s, one that does not ma
     latencies.push(
       await timeToShow(
         page,
-        ([count]) => document.querySelector(".live-pill")?.textContent === `${count} new` && Date.now(),
+        ([count]) =>
+          document.querySelector(".live-pill")?.textContent === `${count} new` &&
+          Date.now(),
         [String(n)],
         () => writer.create(`Created ${n} ${label}`, [label]),
       ),
@@ -188,7 +212,13 @@ test("a new matching row is counted in the pill within 3 s, one that does not ma
   await expect(page.locator(".live-pill")).toHaveText("15 new");
   const probe = await probed(page);
   const load = requestLoad(requests(probe));
-  measured.creates = { latencies, p95: p95(latencies), ...load, longTasks: probe.longTasks, shifts: probe.shifts };
+  measured.creates = {
+    latencies,
+    p95: p95(latencies),
+    ...load,
+    longTasks: probe.longTasks,
+    shifts: probe.shifts,
+  };
   expect(p95(latencies)).toBeLessThan(3_000);
   expectHeldStill(probe);
   expectNoLongTasks(probe);
@@ -198,12 +228,19 @@ test("a new matching row is counted in the pill within 3 s, one that does not ma
   await expect(page.locator(".live-pill")).toHaveCount(0);
   await expect(page.locator("a.row")).toHaveCount(45);
   const titles = await page.locator("a.row .row-title").allTextContents();
-  expect(titles.slice(0, 15)).toEqual(Array.from({ length: 15 }, (_, n) => `Created ${15 - n} ${label}`));
+  expect(titles.slice(0, 15)).toEqual(
+    Array.from({ length: 15 }, (_, n) => `Created ${15 - n} ${label}`),
+  );
   expect(titles.filter((title) => title.startsWith("Unrelated"))).toEqual([]);
-  expect(await page.locator(".view .scroll").evaluate((scroller) => scroller.scrollTop)).toBe(0);
+  expect(
+    await page.locator(".view .scroll").evaluate((scroller) => scroller.scrollTop),
+  ).toBe(0);
 });
 
-test("at the top of an idle list, a new matching row shows in the list itself within 3 s", async ({ page, request }) => {
+test("at the top of an idle list, a new matching row shows in the list itself within 3 s", async ({
+  page,
+  request,
+}) => {
   const label = fresh("idle");
   await seed(request, label, 3);
   await openList(page, server.url, label);
@@ -217,7 +254,9 @@ test("at the top of an idle list, a new matching row shows in the list itself wi
       await timeToShow(
         page,
         ([title]) =>
-          [...document.querySelectorAll("a.row .row-title")].some((row) => row.textContent === title) && Date.now(),
+          [...document.querySelectorAll("a.row .row-title")].some(
+            (row) => row.textContent === title,
+          ) && Date.now(),
         [title],
         () => writer.create(title, [label]),
       ),
@@ -228,7 +267,10 @@ test("at the top of an idle list, a new matching row shows in the list itself wi
   expect(p95(latencies)).toBeLessThan(3_000);
 });
 
-test("a row that stops matching dims within 2 s and stays where it was", async ({ page, request }) => {
+test("a row that stops matching dims within 2 s and stays where it was", async ({
+  page,
+  request,
+}) => {
   test.setTimeout(60_000);
   const label = fresh("leaving");
   await seed(request, label, 30);
@@ -239,13 +281,16 @@ test("a row that stops matching dims within 2 s and stays where it was", async (
   expect(onScreen.length).toBeGreaterThanOrEqual(8);
   const latencies: number[] = [];
   for (let n = 0; n < 8; n++) {
-    const id = onScreen[n]!;
+    const id = must(onScreen[n]);
     latencies.push(
       await timeToShow(
         page,
         ([id]) =>
-          (document.querySelector(".view .scroll style")?.textContent ?? "").includes(id!) &&
-          getComputedStyle(document.querySelector(`a.row[data-row="${id}"]`)!).opacity === "0.45" &&
+          (document.querySelector(".view .scroll style")?.textContent ?? "").includes(
+            must(id),
+          ) &&
+          getComputedStyle(must(document.querySelector(`a.row[data-row="${id}"]`)))
+            .opacity === "0.45" &&
           Date.now(),
         [id],
         () => writer.edit(id, "labels", [fresh("moved")]),
@@ -254,43 +299,82 @@ test("a row that stops matching dims within 2 s and stays where it was", async (
     await sleep(250 + ((n * 373) % 900));
   }
   const probe = await probed(page);
-  measured.leaving = { latencies, p95: p95(latencies), longTasks: probe.longTasks, shifts: probe.shifts };
+  measured.leaving = {
+    latencies,
+    p95: p95(latencies),
+    longTasks: probe.longTasks,
+    shifts: probe.shifts,
+  };
   expect(p95(latencies)).toBeLessThan(2_000);
   expectHeldStill(probe);
   expectNoLongTasks(probe);
 });
 
-test("a relation added or removed by the other client shows in an open detail within 2 s", async ({ page, request }) => {
+test("a relation added or removed by the other client shows in an open detail within 2 s", async ({
+  page,
+  request,
+}) => {
   test.setTimeout(60_000);
   const label = fresh("edges");
   const [focus, ...peers] = await seed(request, label, 6);
-  const titles = await page.request.get(`${server.url}/api/inquiries?kind=Issue&limit=10&filter=${filter("labels", label)}`);
-  const titleOf = new Map(((await titles.json()) as { id: string; title: string }[]).map((row) => [row.id, row.title]));
-  await openDetail(page, server.url, focus!);
+  const titles = await page.request.get(
+    `${server.url}/api/inquiries?kind=Issue&limit=10&filter=${filter("labels", label)}`,
+  );
+  const titleOf = new Map(
+    ((await titles.json()) as { id: string; title: string }[]).map((row) => [
+      row.id,
+      row.title,
+    ]),
+  );
+  await openDetail(page, server.url, must(focus));
   await startHolding(page);
   const latencies: number[] = [];
   // In the Parents rail, by its `requires` edge: the first edge between two rows
   // also infers a `produced_by` edge, which stays when the `requires` one goes.
   const shown = ([title, present]: string[]) =>
     [...document.querySelectorAll(".rail-peer")]
-      .filter((peer) => [...peer.querySelectorAll(".edge-name")].some((edge) => edge.textContent === "requires"))
-      .some((peer) => peer.querySelector(".rail-title")!.textContent!.startsWith(`${title} `)) ===
+      .filter((peer) =>
+        [...peer.querySelectorAll(".edge-name")].some(
+          (edge) => edge.textContent === "requires",
+        ),
+      )
+      .some((peer) =>
+        must(must(peer.querySelector(".rail-title")).textContent).startsWith(
+          `${title} `,
+        ),
+      ) ===
       (present === "yes") && Date.now();
   for (const peer of peers) {
     const edge = { op: "edge", from: focus, to: peer, kind: "requires" };
-    latencies.push(await timeToShow(page, shown, [titleOf.get(peer)!, "yes"], () => writer.send<Written>(edge)));
+    latencies.push(
+      await timeToShow(page, shown, [must(titleOf.get(peer)), "yes"], () =>
+        writer.send<Written>(edge),
+      ),
+    );
     await sleep(400);
-    latencies.push(await timeToShow(page, shown, [titleOf.get(peer)!, "no"], () => writer.send<Written>({ ...edge, remove: true })));
+    latencies.push(
+      await timeToShow(page, shown, [must(titleOf.get(peer)), "no"], () =>
+        writer.send<Written>({ ...edge, remove: true }),
+      ),
+    );
     await sleep(400);
   }
   const probe = await probed(page);
-  measured.edges = { latencies, p95: p95(latencies), longTasks: probe.longTasks, shifts: probe.shifts };
+  measured.edges = {
+    latencies,
+    p95: p95(latencies),
+    longTasks: probe.longTasks,
+    shifts: probe.shifts,
+  };
   expect(p95(latencies)).toBeLessThan(2_000);
   expectHeldStill(probe);
   expectNoLongTasks(probe);
 });
 
-test("Activity: a change joins the top of the feed within 3 s, at most one ask per kind every 2 s", async ({ page, request }) => {
+test("Activity: a change joins the top of the feed within 3 s, at most one ask per kind every 2 s", async ({
+  page,
+  request,
+}) => {
   test.setTimeout(90_000);
   const label = fresh("activity");
   const ids = await seed(request, label, 6);
@@ -306,31 +390,41 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
     latencies.push(
       await timeToShow(
         page,
-        ([lines]) => document.querySelectorAll(".feed-row").length > Number(lines) && Date.now(),
+        ([lines]) =>
+          document.querySelectorAll(".feed-row").length > Number(lines) && Date.now(),
         [String(lines)],
-        () => writer.edit(ids[n % ids.length]!, "status", n < ids.length ? "complete" : "active"),
+        () =>
+          writer.edit(
+            must(ids[n % ids.length]),
+            "status",
+            n < ids.length ? "complete" : "active",
+          ),
       ),
     );
     await sleep(250 + ((n * 373) % 900));
   }
   // Scrolled down, lines join above the one the user reads, which stays put.
   const feed = page.locator(".activity .scroll");
-  const box = (await feed.boundingBox())!;
+  const box = must(await feed.boundingBox());
   const at = [box.x + box.width / 2, box.y + box.height / 2];
-  await page.mouse.move(at[0]!, at[1]!);
+  await page.mouse.move(must(at[0]), must(at[1]));
   await page.mouse.wheel(0, 300);
-  await expect.poll(() => feed.evaluate((scroller) => scroller.scrollTop)).toBeGreaterThan(0);
+  await expect
+    .poll(() => feed.evaluate((scroller) => scroller.scrollTop))
+    .toBeGreaterThan(0);
   await sleep(500);
   const underPointer = () =>
     page.evaluate(([x, y]) => {
       const line = document.elementFromPoint(x!, y!)?.closest(".feed-row");
-      return line ? `${Math.round(line.getBoundingClientRect().top)} ${line.querySelector("time")?.getAttribute("datetime")}` : null;
+      return line
+        ? `${Math.round(line.getBoundingClientRect().top)} ${line.querySelector("time")?.getAttribute("datetime")}`
+        : null;
     }, at);
   const read = await underPointer();
   const readLater: (string | null)[] = [];
   for (let n = 0; n < 3; n++) {
     const lines = await page.locator(".feed-row").count();
-    await writer.edit(ids[n]!, "status", "complete");
+    await writer.edit(must(ids[n]), "status", "complete");
     await expect.poll(() => page.locator(".feed-row").count()).toBeGreaterThan(lines);
     readLater.push(await underPointer());
   }
@@ -353,21 +447,32 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
     shifts: probe.shifts,
   };
   expect(p95(latencies)).toBeLessThan(3_000);
-  expect(readLater, "the line under the pointer, scrolled down, as lines join above").toEqual([read, read, read]);
+  expect(
+    readLater,
+    "the line under the pointer, scrolled down, as lines join above",
+  ).toEqual([read, read, read]);
   expectNoLongTasks(probe);
   expectNoLongTasks(steadyProbe);
   expectWithinCaps(load);
   expectWithinCaps(steady);
-  expect(steady.perSecond, "requests a second at today's event rate").toBeLessThanOrEqual(3);
+  expect(
+    steady.perSecond,
+    "requests a second at today's event rate",
+  ).toBeLessThanOrEqual(3);
   // The asks of one kind, one every 2 s at most.
-  const asks = [...sent, ...requests(steadyProbe)].filter((s) => s.path === "/api/change_log" && s.query.has("since"));
+  const asks = [...sent, ...requests(steadyProbe)].filter(
+    (s) => s.path === "/api/change_log" && s.query.has("since"),
+  );
   for (const kind of new Set(asks.map((s) => s.query.get("kind")))) {
     const starts = asks.filter((s) => s.query.get("kind") === kind).map((s) => s.start);
-    for (let n = 1; n < starts.length; n++) expect(starts[n]! - starts[n - 1]!).toBeGreaterThanOrEqual(1_950);
+    for (let n = 1; n < starts.length; n++)
+      expect(must(starts[n]) - must(starts[n - 1])).toBeGreaterThanOrEqual(1_950);
   }
 });
 
-test("search results stay the snapshot they were, labelled with its time, while their rows change", async ({ page }) => {
+test("search results stay the snapshot they were, labelled with its time, while their rows change", async ({
+  page,
+}) => {
   const token = crypto.randomUUID().slice(0, 8);
   const { id } = await writer.create(`Snapshot ${token}`, [fresh("search")]);
   await page.goto(`${server.url}/trax/activity`);
@@ -379,18 +484,25 @@ test("search results stay the snapshot they were, labelled with its time, while 
   const heading = page.locator(".pal-sec", { hasText: "From the server" });
   const label = await heading.textContent();
   expect(label).toMatch(/^From the server · as of \d/);
-  const searches = requests(await probed(page)).filter((s) => s.path === "/api/web/search").length;
+  const searches = requests(await probed(page)).filter(
+    (s) => s.path === "/api/web/search",
+  ).length;
   await writer.edit(id, "title", `Renamed ${token}`);
   await sleep(3_000);
   await expect(hit).toBeVisible();
-  await expect(heading).toHaveText(label!);
-  expect(requests(await probed(page)).filter((s) => s.path === "/api/web/search")).toHaveLength(searches);
+  await expect(heading).toHaveText(must(label));
+  expect(
+    requests(await probed(page)).filter((s) => s.path === "/api/web/search"),
+  ).toHaveLength(searches);
   measured.search = { label, searches };
 });
 
-test("an open draft keeps its text, caret and focus through every live update of its row", async ({ page, request }) => {
+test("an open draft keeps its text, caret and focus through every live update of its row", async ({
+  page,
+  request,
+}) => {
   const [id, neighbour] = await seed(request, fresh("draft"), 2);
-  await openDetail(page, server.url, id!);
+  await openDetail(page, server.url, must(id));
   await page.getByRole("button", { name: "Edit Description" }).click();
   const editor = page.getByRole("textbox", { name: "Description" });
   await editor.pressSequentially("Half-written");
@@ -399,20 +511,27 @@ test("an open draft keeps its text, caret and focus through every live update of
   const titles: string[] = [];
   for (let n = 0; n < 4; n++) {
     titles.push(`Retitled ${n}`);
-    await writer.edit(id!, "title", titles.at(-1));
-    await expect(page.getByRole("heading", { level: 1 })).toHaveText(titles.at(-1)!);
+    await writer.edit(must(id), "title", titles.at(-1));
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+      must(titles.at(-1)),
+    );
   }
-  await writer.edit(id!, "priority", 10);
+  await writer.edit(must(id), "priority", 10);
   await writer.send({ op: "edge", from: neighbour, to: id, kind: "requires" });
   // The neighbour that requires it is one of its children, in the rail.
-  await expect(page.getByRole("region", { name: "Children", exact: true }).locator(".rail-peer")).not.toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Children", exact: true }).locator(".rail-peer"),
+  ).not.toHaveCount(0);
   const probe = await probed(page);
   measured.draft = { held: probe.held };
   expectHeldStill(probe);
   await expect(editor).toHaveValue("Half-written");
 });
 
-test("at today's event rate, a list and its peek stay within the request caps", async ({ page, request }) => {
+test("at today's event rate, a list and its peek stay within the request caps", async ({
+  page,
+  request,
+}) => {
   test.setTimeout(90_000);
   const label = fresh("rate");
   await seed(request, label, 30);
@@ -423,19 +542,36 @@ test("at today's event rate, a list and its peek stay within the request caps", 
   await startHolding(page, pointer);
   // Six distinct ids, as a 20 s sample of the production stream had: three
   // rows on screen, the peeked one, and two the list does not hold.
-  const ids = [...onScreen.filter((id) => id !== peeked).slice(0, 3), peeked, ...outsiders];
-  const { ats } = await writer.send<{ ats: number[] }>({ op: "steady", ids, rate: 3.1, seconds: 30 });
+  const ids = [
+    ...onScreen.filter((id) => id !== peeked).slice(0, 3),
+    peeked,
+    ...outsiders,
+  ];
+  const { ats } = await writer.send<{ ats: number[] }>({
+    op: "steady",
+    ids,
+    rate: 3.1,
+    seconds: 30,
+  });
   await sleep(2_000);
   const probe = await probed(page);
   const load = requestLoad(requests(probe));
-  measured.todaysRate = { writes: ats.length, ...load, longTasks: probe.longTasks, shifts: probe.shifts };
+  measured.todaysRate = {
+    writes: ats.length,
+    ...load,
+    longTasks: probe.longTasks,
+    shifts: probe.shifts,
+  };
   expect(load.perSecond, "requests a second").toBeLessThanOrEqual(3);
   expectWithinCaps(load);
   expectHeldStill(probe);
   expectNoLongTasks(probe);
 });
 
-test("a short drop: the paused bar never shows, and gap recovery shows what the stream missed", async ({ page, request }) => {
+test("a short drop: the paused bar never shows, and gap recovery shows what the stream missed", async ({
+  page,
+  request,
+}) => {
   test.setTimeout(90_000);
   const label = fresh("drop");
   const [id] = await seed(request, label, 5);
@@ -443,10 +579,11 @@ test("a short drop: the paused bar never shows, and gap recovery shows what the 
   await expect(page.locator("a.row")).toHaveCount(5);
   await page.evaluate(() => {
     Object.assign(window, { __pausedSeen: false });
-    new MutationObserver(() => document.querySelector(".bar.paused") && Object.assign(window, { __pausedSeen: true })).observe(
-      document.body,
-      { childList: true, subtree: true },
-    );
+    new MutationObserver(
+      () =>
+        document.querySelector(".bar.paused") &&
+        Object.assign(window, { __pausedSeen: true }),
+    ).observe(document.body, { childList: true, subtree: true });
   });
   const reconnected = page.waitForResponse(
     (response) => STREAM_URL.test(response.url()) && response.status() === 200,
@@ -460,17 +597,21 @@ test("a short drop: the paused bar never shows, and gap recovery shows what the 
   // Written while the stream is held off, so it never carries the change: only gap recovery can show it.
   const latency = await timeToShow(
     page,
-    ([id, title]) => document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent === title && Date.now(),
-    [id!, title],
+    ([id, title]) =>
+      document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent ===
+        title && Date.now(),
+    [must(id), title],
     async () => {
-      const written = await writer.edit(id!, "title", title);
+      const written = await writer.edit(must(id), "title", title);
       for (const route of SUBSCRIBE) await page.unroute(route);
       return written;
     },
   );
   await reconnected;
   const downMs = Date.now() - downAt;
-  const pausedSeen = await page.evaluate(() => (window as unknown as { __pausedSeen: boolean }).__pausedSeen);
+  const pausedSeen = await page.evaluate(
+    () => (window as unknown as { __pausedSeen: boolean }).__pausedSeen,
+  );
   measured.shortDrop = { downMs, shownAfterWriteMs: latency, pausedSeen };
   expect(downMs, "a drop under 10 s, as this test needs").toBeLessThan(10_000);
   expect(pausedSeen, "no paused bar at any time during a drop under 10 s").toBe(false);
@@ -490,7 +631,11 @@ test("a long drop shows the paused bar after 10 s, and the restart clears it and
   await holdOffStream(page);
   await server.down();
   const barAt = await (
-    await page.waitForFunction(() => document.querySelector(".bar.paused") !== null && Date.now(), undefined, { polling: "raf", timeout: 30_000 })
+    await page.waitForFunction(
+      () => document.querySelector(".bar.paused") !== null && Date.now(),
+      undefined,
+      { polling: "raf", timeout: 30_000 },
+    )
   ).jsonValue();
   const paused = await probed(page);
   await server.up();
@@ -500,11 +645,12 @@ test("a long drop shows the paused bar after 10 s, and the restart clears it and
     page,
     ([id, title]) =>
       document.querySelector(".bar.paused") === null &&
-      document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent === title &&
+      document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent ===
+        title &&
       Date.now(),
-    [id!, title],
+    [must(id), title],
     async () => {
-      const written = await writer.edit(id!, "title", title);
+      const written = await writer.edit(must(id), "title", title);
       for (const route of SUBSCRIBE) await page.unroute(route);
       return written;
     },
@@ -522,7 +668,7 @@ test("a long drop shows the paused bar after 10 s, and the restart clears it and
 test("the paused bar moves nothing the user holds", () => {
   // It floats over the view (`BarStack` in src/ui/bars.tsx); in the view's
   // flow it pushed the list down 34 px (measured).
-  expectHeldStill(whenPaused!);
+  expectHeldStill(must(whenPaused));
 });
 
 test("a burst of 20 matching creates a second for 60 s: the page stays responsive, within the caps, and counts every row", async ({
@@ -543,8 +689,14 @@ test("a burst of 20 matching creates a second for 60 s: the page stays responsiv
     addEventListener(
       "keydown",
       () => {
-        const before = document.querySelector<HTMLElement>("a.row.is-focused")?.dataset.row;
-        requestAnimationFrame(() => frames.push(document.querySelector<HTMLElement>("a.row.is-focused")?.dataset.row !== before));
+        const before =
+          document.querySelector<HTMLElement>("a.row.is-focused")?.dataset.row;
+        requestAnimationFrame(() =>
+          frames.push(
+            document.querySelector<HTMLElement>("a.row.is-focused")?.dataset.row !==
+              before,
+          ),
+        );
       },
       { capture: true },
     );
@@ -552,7 +704,13 @@ test("a burst of 20 matching creates a second for 60 s: the page stays responsiv
   });
   let done = false;
   const burst = writer
-    .send<{ ids: string[]; ats: number[] }>({ op: "burst", rate: 20, seconds: 60, title: `Burst ${label}`, labels: [label] })
+    .send<{ ids: string[]; ats: number[] }>({
+      op: "burst",
+      rate: 20,
+      seconds: 60,
+      title: `Burst ${label}`,
+      labels: [label],
+    })
     .finally(() => (done = true));
   let presses = 0;
   while (!done) {
@@ -560,12 +718,16 @@ test("a burst of 20 matching creates a second for 60 s: the page stays responsiv
     await sleep(250);
   }
   const { ids, ats } = await burst;
-  const writtenFor = (ats.at(-1)! - ats[0]!) / 1_000;
+  const writtenFor = (must(ats.at(-1)) - must(ats[0])) / 1_000;
   // The last ids wait at most one check of 63 every 2 s.
-  await expect(page.locator(".live-pill")).toHaveText(`${ids.length} new`, { timeout: 30_000 });
+  await expect(page.locator(".live-pill")).toHaveText(`${ids.length} new`, {
+    timeout: 30_000,
+  });
   const probe = await probed(page);
   const load = requestLoad(requests(probe));
-  const frames = await page.evaluate(() => (window as unknown as { __frames: boolean[] }).__frames);
+  const frames = await page.evaluate(
+    () => (window as unknown as { __frames: boolean[] }).__frames,
+  );
   measured.burst = {
     created: ids.length,
     writtenForSeconds: writtenFor,
@@ -580,15 +742,26 @@ test("a burst of 20 matching creates a second for 60 s: the page stays responsiv
   };
   expect(ids.length).toBe(1_200);
   // Under 19 a second, the writer fell behind and the page was never held to the burst.
-  expect(ids.length / writtenFor, "creates a second, as written").toBeGreaterThanOrEqual(19);
+  expect(
+    ids.length / writtenFor,
+    "creates a second, as written",
+  ).toBeGreaterThanOrEqual(19);
   expect(load.perSecond, "requests a second").toBeLessThanOrEqual(3);
-  expect(frames, "each j and k shows in the next frame").toEqual(frames.map(() => true));
-  expect(probe.keys.filter((key) => key.ms > 100), "keys without feedback within 100 ms").toEqual([]);
+  expect(frames, "each j and k shows in the next frame").toEqual(
+    frames.map(() => true),
+  );
+  expect(
+    probe.keys.filter((key) => key.ms > 100),
+    "keys without feedback within 100 ms",
+  ).toEqual([]);
   expectNoLongTasks(probe);
   expectWithinCaps(load);
 });
 
-test("an accelerated soak of 8 hours of batches leaves the heap within 20% of its start", async ({ page, request }) => {
+test("an accelerated soak of 8 hours of batches leaves the heap within 20% of its start", async ({
+  page,
+  request,
+}) => {
   // Today's stream has a frame in nearly every second (64 frames, 6 distinct
   // ids in 20 s), so 8 hours is 28,800 one-second batches of one or two ids.
   // The page's clock runs 100x, so a batch is 10 ms, and the writer edits one
@@ -604,7 +777,11 @@ test("an accelerated soak of 8 hours of batches leaves the heap within 20% of it
   const { peeked, pointer } = await holdThings(page);
   await startHolding(page, pointer);
   const onScreen = await rowsOnScreen(page);
-  const ids = [...onScreen.filter((id) => id !== peeked).slice(0, 3), peeked, ...outsiders];
+  const ids = [
+    ...onScreen.filter((id) => id !== peeked).slice(0, 3),
+    peeked,
+    ...outsiders,
+  ];
   const cdp = await page.context().newCDPSession(page);
   const heap = async () => {
     await forget(page);
@@ -626,10 +803,13 @@ test("an accelerated soak of 8 hours of batches leaves the heap within 20% of it
     longTasks += probe.longTasks.length;
     const sent = requests(probe);
     soak.push(...sent);
-    liveReads.push({ seq: sent.filter((s) => s.type === "seq").length, check: sent.filter((s) => s.type === "check").length });
+    liveReads.push({
+      seq: sent.filter((s) => s.type === "seq").length,
+      check: sent.filter((s) => s.type === "check").length,
+    });
     hours.push(await heap());
   }
-  const growth = hours.at(-1)! / hours[0]! - 1;
+  const growth = must(hours.at(-1)) / must(hours[0]) - 1;
   measured.soak = {
     realSeconds: (Date.now() - from) / 1_000,
     writes: 8 * 3_600,
@@ -641,13 +821,19 @@ test("an accelerated soak of 8 hours of batches leaves the heap within 20% of it
   };
   // A page that did no live work would keep its heap for free: every hour must have done some.
   for (const [hour, reads] of liveReads.entries()) {
-    expect(reads.seq, `refetches of rows on screen in hour ${hour + 1}`).toBeGreaterThan(0);
+    expect(
+      reads.seq,
+      `refetches of rows on screen in hour ${hour + 1}`,
+    ).toBeGreaterThan(0);
     expect(reads.check, `membership checks in hour ${hour + 1}`).toBeGreaterThan(0);
   }
   expect(growth, "heap growth over the soak").toBeLessThanOrEqual(0.2);
 });
 
-test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail", async ({ browser, request }) => {
+test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail", async ({
+  browser,
+  request,
+}) => {
   test.setTimeout(180_000);
   // Enough Issues for a full first page, and a hub: 60 children, each also
   // produced by it, and the Artifact it produced, as phase 1's check has.
@@ -661,7 +847,9 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
       const context = await browser.newContext();
       await context.addInitScript(installProbes);
       const page = await context.newPage();
-      await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate });
+      await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", {
+        rate,
+      });
       const subscribed = streamOpened(page);
       await page.goto(`${server.url}/trax/${path}`);
       return { context, page, subscribed };
@@ -669,9 +857,13 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
     // First load of the Issue list, to 50 rows, then live batches on it with a peek.
     const list = await visit("#/list/Issue");
     const usableMs = await (
-      await list.page.waitForFunction(() => document.querySelectorAll("a.row").length >= 50 && performance.now(), undefined, {
-        polling: "raf",
-      })
+      await list.page.waitForFunction(
+        () => document.querySelectorAll("a.row").length >= 50 && performance.now(),
+        undefined,
+        {
+          polling: "raf",
+        },
+      )
     ).jsonValue();
     const boot = (await probed(list.page)).longTasks;
     await list.subscribed;
@@ -682,11 +874,13 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
     const onScreen = await rowsOnScreen(list.page);
     await startHolding(list.page, pointer);
     for (let n = 0; n < 10; n++) {
-      const id = n % 2 ? peeked : onScreen[n]!;
+      const id = n % 2 ? peeked : must(onScreen[n]);
       const title = `Slow ${n} ${label}`;
       await timeToShow(
         list.page,
-        ([id, title]) => document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent === title && Date.now(),
+        ([id, title]) =>
+          document.querySelector(`a.row[data-row="${id}"] .row-title`)?.textContent ===
+            title && Date.now(),
         [id, title],
         () => writer.edit(id, "title", title),
       );
@@ -702,7 +896,9 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
     const hubTasks = await detail.page.evaluate(() => {
       const response = performance
         .getEntriesByType("resource")
-        .find((entry): entry is PerformanceResourceTiming => entry.name.includes("/api/web/get/"))!;
+        .find((entry): entry is PerformanceResourceTiming =>
+          entry.name.includes("/api/web/get/"),
+        )!;
       return (window as unknown as { __probe: { read: () => Probed } }).__probe
         .read()
         .longTasks.filter((task) => task.start + task.ms > response.responseEnd);
@@ -710,8 +906,16 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
     // The probe sees a long task at this rate too, so its silence above means none.
     await expectBusyTaskSeen(detail.page, `${rate}x`);
     await detail.context.close();
-    results[`${rate}x`] = { usableMs, bootLongTasks: boot, batchLongTasks: batches, hubLongTasks: hubTasks };
-    if (rate === 1) expect(usableMs, "a list usable within 1.5 s of a fresh load").toBeLessThan(1_500);
+    results[`${rate}x`] = {
+      usableMs,
+      bootLongTasks: boot,
+      batchLongTasks: batches,
+      hubLongTasks: hubTasks,
+    };
+    if (rate === 1)
+      expect(usableMs, "a list usable within 1.5 s of a fresh load").toBeLessThan(
+        1_500,
+      );
     expect(boot, `long tasks at boot, ${rate}x`).toEqual([]);
     expect(batches, `long tasks while applying live batches, ${rate}x`).toEqual([]);
     expect(hubTasks, `long tasks rendering the hub's detail, ${rate}x`).toEqual([]);
@@ -723,15 +927,28 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
 async function seedHub(request: APIRequestContext, children: number): Promise<string> {
   const tag = crypto.randomUUID().slice(0, 8);
   const items = [
-    { kind: "Issue", title: `Hub ${tag}`, description: "A hub with **many** children." },
-    ...Array.from({ length: children }, (_, n) => ({ kind: "Issue", title: `Hub child ${n} ${tag}` })),
+    {
+      kind: "Issue",
+      title: `Hub ${tag}`,
+      description: "A hub with **many** children.",
+    },
+    ...Array.from({ length: children }, (_, n) => ({
+      kind: "Issue",
+      title: `Hub child ${n} ${tag}`,
+    })),
     { kind: "Artifact", title: `Hub artifact ${tag}` },
   ].map((item) => ({ ...item, idempotency_key: crypto.randomUUID() }));
   const edges = [
-    ...Array.from({ length: children }, (_, n) => ({ from_index: n + 1, to_index: 0, edge_kind: "narrows" })),
+    ...Array.from({ length: children }, (_, n) => ({
+      from_index: n + 1,
+      to_index: 0,
+      edge_kind: "narrows",
+    })),
     { from_index: children + 1, to_index: 0, edge_kind: "produced_by" },
   ];
-  const response = await request.post(`${server.url}/api/inquiries/batch`, { data: { items, edges } });
+  const response = await request.post(`${server.url}/api/inquiries/batch`, {
+    data: { items, edges },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).ids[0];
 }
@@ -752,14 +969,20 @@ function filter(field: string, value: string): string {
 }
 
 /** Create `count` Issues labelled `label` in one batch, oldest first; returns their ids. */
-async function seed(request: APIRequestContext, label: string, count: number): Promise<string[]> {
+async function seed(
+  request: APIRequestContext,
+  label: string,
+  count: number,
+): Promise<string[]> {
   const items = Array.from({ length: count }, (_, n) => ({
     kind: "Issue",
     title: `Row ${n} ${label}`,
     labels: [label],
     idempotency_key: crypto.randomUUID(),
   }));
-  const response = await request.post(`${server.url}/api/inquiries/batch`, { data: { items, edges: [] } });
+  const response = await request.post(`${server.url}/api/inquiries/batch`, {
+    data: { items, edges: [] },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).ids;
 }
@@ -769,20 +992,29 @@ async function seed(request: APIRequestContext, label: string, count: number): P
  * scroll a little, rest the pointer on a row, and peek at the focused row.
  * Resolves with the peeked row and where the pointer rests.
  */
-async function holdThings(page: Page): Promise<{ peeked: string; pointer: { x: number; y: number } }> {
+async function holdThings(
+  page: Page,
+): Promise<{ peeked: string; pointer: { x: number; y: number } }> {
   await expect(page.locator("a.row").first()).toBeVisible();
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   for (const key of ["j", "j", "j", "x", "j", "x", "k"]) await page.keyboard.press(key);
   await expect(page.locator(".row-line.is-selected")).toHaveCount(2);
-  const box = (await page.locator(".view .scroll").boundingBox())!;
+  const box = must(await page.locator(".view .scroll").boundingBox());
   // Left of where the peek opens: the peek takes up to 45% of the page, from the right.
-  const pointer = { x: box.x + Math.min(box.width / 3, 120), y: box.y + box.height / 2 };
+  const pointer = {
+    x: box.x + Math.min(box.width / 3, 120),
+    y: box.y + box.height / 2,
+  };
   await page.mouse.move(pointer.x, pointer.y);
   await page.mouse.wheel(0, 80);
-  await expect.poll(() => page.locator(".view .scroll").evaluate((scroller) => scroller.scrollTop)).toBeGreaterThan(0);
+  await expect
+    .poll(() =>
+      page.locator(".view .scroll").evaluate((scroller) => scroller.scrollTop),
+    )
+    .toBeGreaterThan(0);
   await page.keyboard.press("Space");
   await expect(page.locator(".peek .d-title")).toBeVisible();
-  const peeked = (await page.locator("a.row.is-focused").getAttribute("data-row"))!;
+  const peeked = must(await page.locator("a.row.is-focused").getAttribute("data-row"));
   // Let the peek's reads and any batch already under way settle.
   await sleep(1_500);
   return { peeked, pointer };
@@ -793,14 +1025,21 @@ function rowsOnScreen(page: Page): Promise<string[]> {
   return page.evaluate(() => {
     const box = document.querySelector(".view .scroll")!.getBoundingClientRect();
     return [...document.querySelectorAll<HTMLElement>("a.row")]
-      .filter((row) => row.getBoundingClientRect().top >= box.top && row.getBoundingClientRect().bottom <= box.bottom)
+      .filter(
+        (row) =>
+          row.getBoundingClientRect().top >= box.top &&
+          row.getBoundingClientRect().bottom <= box.bottom,
+      )
       .map((row) => row.dataset.row!);
   });
 }
 
 /** The request caps' numbers over `sent`: rate, most in flight per query, least time between checks. */
 function requestLoad(sent: readonly Sent[]) {
-  const seconds = sent.length ? (Math.max(...sent.map((s) => s.end)) - Math.min(...sent.map((s) => s.start))) / 1_000 : 0;
+  const seconds = sent.length
+    ? (Math.max(...sent.map((s) => s.end)) - Math.min(...sent.map((s) => s.start))) /
+      1_000
+    : 0;
   return {
     requests: sent.length,
     perSecond: seconds ? sent.length / seconds : 0,
@@ -808,17 +1047,33 @@ function requestLoad(sent: readonly Sent[]) {
     // The first overlapping requests of one query, if any, to say which.
     overlapping: overlaps(sent)
       .slice(0, 3)
-      .map((pair) => pair.map((s) => `${s.type} ${s.path}?${s.query} ${Math.round(s.start)}..${Math.round(s.end)}`)),
+      .map((pair) =>
+        pair.map(
+          (s) =>
+            `${s.type} ${s.path}?${s.query} ${Math.round(s.start)}..${Math.round(s.end)}`,
+        ),
+      ),
     leastCheckGapMs: Math.min(Infinity, ...checkSpacing(sent).values()),
-    byType: Object.fromEntries(["check", "seq", "page", "lookup", "other"].map((type) => [type, sent.filter((s) => s.type === type).length])),
+    byType: Object.fromEntries(
+      ["check", "seq", "page", "lookup", "other"].map((type) => [
+        type,
+        sent.filter((s) => s.type === type).length,
+      ]),
+    ),
   };
 }
 
 function expectWithinCaps(load: ReturnType<typeof requestLoad>): void {
-  expect(load.mostInFlight, "requests of one query in flight at once").toBeLessThanOrEqual(1);
+  expect(
+    load.mostInFlight,
+    "requests of one query in flight at once",
+  ).toBeLessThanOrEqual(1);
   // The app counts its 2 s from a few promise hops before it calls `fetch`,
   // where the probe stamps a request, so two checks can read a ms or so closer.
-  expect(load.leastCheckGapMs, "least time between two membership checks of one list").toBeGreaterThanOrEqual(1_990);
+  expect(
+    load.leastCheckGapMs,
+    "least time between two membership checks of one list",
+  ).toBeGreaterThanOrEqual(1_990);
 }
 
 /**
@@ -829,8 +1084,14 @@ function expectWithinCaps(load: ReturnType<typeof requestLoad>): void {
  * those shifts are logged, not failed.
  */
 function expectHeldStill(probe: Probed): void {
-  expect(probe.held.map((sample) => sample.state), "what the user holds").toHaveLength(1);
-  expect((JSON.parse(probe.held[0]!.state) as { pointer: unknown }).pointer, "a row under the pointer").not.toBe("no row");
+  expect(
+    probe.held.map((sample) => sample.state),
+    "what the user holds",
+  ).toHaveLength(1);
+  expect(
+    (JSON.parse(must(probe.held[0]).state) as { pointer: unknown }).pointer,
+    "a row under the pointer",
+  ).not.toBe("no row");
   expect(rowShifts(probe), "layout shifts that moved list rows").toEqual([]);
 }
 
@@ -840,7 +1101,11 @@ function expectHeldStill(probe: Probed): void {
  * names by its scroller alone (measured: a bar pushed in above it).
  */
 function rowShifts(probe: Probed): Probed["shifts"] {
-  return probe.shifts.filter((shift) => shift.moved.some((moved) => /^(a\.row|div\.row-line)\b|^section\.$|^div\.scroll$/.test(moved)));
+  return probe.shifts.filter((shift) =>
+    shift.moved.some((moved) =>
+      /^(a\.row|div\.row-line)\b|^section\.$|^div\.scroll$/.test(moved),
+    ),
+  );
 }
 
 /**
@@ -862,7 +1127,10 @@ async function expectBusyTaskSeen(page: Page, rate: string): Promise<void> {
       ),
   );
   const seen = (await probed(page)).longTasks.slice(before);
-  expect(seen.filter((task) => task.ms >= 80), `the probe sees an 80 ms task of the page's own, ${rate}`).toHaveLength(1);
+  expect(
+    seen.filter((task) => task.ms >= 80),
+    `the probe sees an 80 ms task of the page's own, ${rate}`,
+  ).toHaveLength(1);
 }
 
 function expectNoLongTasks(probe: Awaited<ReturnType<typeof probed>>): void {

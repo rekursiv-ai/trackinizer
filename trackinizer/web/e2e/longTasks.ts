@@ -11,7 +11,9 @@ export async function watchLongTasks(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const tasks: { start: number; ms: number }[] = [];
     const keep = (entries: PerformanceEntryList) =>
-      tasks.push(...entries.map((task) => ({ start: task.startTime, ms: task.duration })));
+      tasks.push(
+        ...entries.map((task) => ({ start: task.startTime, ms: task.duration })),
+      );
     const observer = new PerformanceObserver((list) => keep(list.getEntries()));
     observer.observe({ type: "longtask", buffered: true });
     // An entry reaches the callback a task after it is recorded; `takeRecords`
@@ -22,7 +24,11 @@ export async function watchLongTasks(page: Page): Promise<void> {
 
 /** Every long task the page has had so far. */
 export function longTasks(page: Page): Promise<LongTask[]> {
-  return page.evaluate(() => (window as unknown as { longTasks: () => { start: number; ms: number }[] }).longTasks());
+  return page.evaluate(() =>
+    (
+      window as unknown as { longTasks: () => { start: number; ms: number }[] }
+    ).longTasks(),
+  );
 }
 
 /**
@@ -44,5 +50,8 @@ export async function expectControlSeen(page: Page): Promise<void> {
       ),
   );
   const seen = (await longTasks(page)).slice(before);
-  expect(seen.filter((task) => task.ms >= 80), "the probe sees an 80 ms task of the page's own").toHaveLength(1);
+  expect(
+    seen.filter((task) => task.ms >= 80),
+    "the probe sees an 80 ms task of the page's own",
+  ).toHaveLength(1);
 }

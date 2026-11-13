@@ -4,6 +4,7 @@
 import ForceGraph from "force-graph";
 import { clusterForce } from "./clusters";
 import type { DrawLink, DrawNode } from "./model";
+import { must } from "../must";
 
 /** What covers the canvas, in pixels: a strip on its right (Peek, the key or the zoom buttons). */
 export type Covered = { readonly right: number };
@@ -16,7 +17,11 @@ export type Renderer = {
    * it. With `frame`, the view frames the visible nodes it keeps once the
    * layout settles; without, a frame already asked for stands.
    */
-  setData(nodes: readonly DrawNode[], links: readonly DrawLink[], frame: ((node: DrawNode) => boolean) | null): void;
+  setData(
+    nodes: readonly DrawNode[],
+    links: readonly DrawLink[],
+    frame: ((node: DrawNode) => boolean) | null,
+  ): void;
   /** Draw again: the nodes' and links' looks or hidden flags changed. */
   repaint(): void;
   /**
@@ -60,7 +65,11 @@ export type RendererEvents = {
  * what the pointer does; `covered` says what covers the canvas, measured each
  * time it frames.
  */
-export type CreateRenderer = (host: HTMLElement, events: RendererEvents, covered: () => Covered) => Renderer;
+export type CreateRenderer = (
+  host: HTMLElement,
+  events: RendererEvents,
+  covered: () => Covered,
+) => Renderer;
 
 /**
  * Draw with force-graph on a canvas filling `host`, with v1's forces: charge -70
@@ -154,7 +163,11 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
       (width - 2 * padding) / Math.max(right - left, 1),
       (height - 2 * padding) / Math.max(bottom - top, 1),
     );
-    graph.centerAt((left + right) / 2 + over.right / 2 / zoom, (top + bottom) / 2, FIT_MS);
+    graph.centerAt(
+      (left + right) / 2 + over.right / 2 / zoom,
+      (top + bottom) / 2,
+      FIT_MS,
+    );
     graph.zoom(zoom, FIT_MS);
   };
   return {
@@ -171,7 +184,9 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
       relabel();
       // Setting an accessor asks for a frame; once the layout has settled,
       // force-graph draws nothing until something does.
-      graph.nodeVisibility(graph.nodeVisibility()).linkVisibility(graph.linkVisibility());
+      graph
+        .nodeVisibility(graph.nodeVisibility())
+        .linkVisibility(graph.linkVisibility());
     },
     fit(filter = everything) {
       framed = filter;
@@ -191,7 +206,10 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
       graph
         .d3Force("link")
         ?.strength((link: DrawLink) =>
-          !groupOf || groupOf(link.source as DrawNode) === groupOf(link.target as DrawNode) ? LINK_STRENGTH : CROSS_ISLAND_STRENGTH,
+          !groupOf ||
+          groupOf(link.source as DrawNode) === groupOf(link.target as DrawNode)
+            ? LINK_STRENGTH
+            : CROSS_ISLAND_STRENGTH,
         );
       // The islands form as the layout settles: frame then what was asked for
       // last. Framing every node instead would undo a focus's frame or a root's.
@@ -230,11 +248,17 @@ function boundsOf(
 ): { left: number; right: number; top: number; bottom: number } | null {
   let [left, right, top, bottom] = [Infinity, -Infinity, Infinity, -Infinity];
   for (const node of nodes) {
-    if (node.hidden || !Number.isFinite(node.x) || !Number.isFinite(node.y) || !filter(node)) continue;
-    left = Math.min(left, node.x!);
-    right = Math.max(right, node.x!);
-    top = Math.min(top, node.y!);
-    bottom = Math.max(bottom, node.y!);
+    if (
+      node.hidden ||
+      !Number.isFinite(node.x) ||
+      !Number.isFinite(node.y) ||
+      !filter(node)
+    )
+      continue;
+    left = Math.min(left, must(node.x));
+    right = Math.max(right, must(node.x));
+    top = Math.min(top, must(node.y));
+    bottom = Math.max(bottom, must(node.y));
   }
   return left <= right ? { left, right, top, bottom } : null;
 }
@@ -244,13 +268,19 @@ function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number):
   const { look } = node;
   if (look.halo) {
     ctx.beginPath();
-    ctx.arc(node.x!, node.y!, look.radius + HALO_GAP_PX / scale, 0, 2 * Math.PI);
+    ctx.arc(
+      must(node.x),
+      must(node.y),
+      look.radius + HALO_GAP_PX / scale,
+      0,
+      2 * Math.PI,
+    );
     ctx.lineWidth = 2 / scale;
     ctx.strokeStyle = look.halo;
     ctx.stroke();
   }
   ctx.beginPath();
-  ctx.arc(node.x!, node.y!, look.radius, 0, 2 * Math.PI);
+  ctx.arc(must(node.x), must(node.y), look.radius, 0, 2 * Math.PI);
   if (look.fillAlpha > 0) {
     ctx.globalAlpha = look.fillAlpha;
     ctx.fillStyle = look.fill;
@@ -267,7 +297,7 @@ function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number):
   ctx.stroke();
   if (look.dot) {
     ctx.beginPath();
-    ctx.arc(node.x!, node.y!, look.radius * 0.4, 0, 2 * Math.PI);
+    ctx.arc(must(node.x), must(node.y), look.radius * 0.4, 0, 2 * Math.PI);
     ctx.fillStyle = look.dot;
     ctx.fill();
   }
@@ -279,7 +309,12 @@ function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number):
  * screen at any zoom and outlined so edges never cross it; in order, leaving
  * out any that would overlap one drawn before it.
  */
-function drawLabels(nodes: readonly DrawNode[], ctx: CanvasRenderingContext2D, scale: number, font: string): void {
+function drawLabels(
+  nodes: readonly DrawNode[],
+  ctx: CanvasRenderingContext2D,
+  scale: number,
+  font: string,
+): void {
   const height = LABEL_PX / scale;
   ctx.font = `600 ${height}px ${font}`;
   ctx.textAlign = "center";
@@ -289,16 +324,31 @@ function drawLabels(nodes: readonly DrawNode[], ctx: CanvasRenderingContext2D, s
   const taken: { left: number; right: number; top: number; bottom: number }[] = [];
   for (const node of nodes) {
     const label = node.look.label;
-    if (!label || node.hidden || !Number.isFinite(node.x) || !Number.isFinite(node.y)) continue;
-    const top = node.y! + node.look.radius + LABEL_GAP_PX / scale;
+    if (!label || node.hidden || !Number.isFinite(node.x) || !Number.isFinite(node.y))
+      continue;
+    const top = must(node.y) + node.look.radius + LABEL_GAP_PX / scale;
     const half = ctx.measureText(label.text).width / 2;
-    const box = { left: node.x! - half, right: node.x! + half, top, bottom: top + height };
-    if (taken.some((other) => box.left < other.right && other.left < box.right && box.top < other.bottom && other.top < box.bottom)) continue;
+    const box = {
+      left: must(node.x) - half,
+      right: must(node.x) + half,
+      top,
+      bottom: top + height,
+    };
+    if (
+      taken.some(
+        (other) =>
+          box.left < other.right &&
+          other.left < box.right &&
+          box.top < other.bottom &&
+          other.top < box.bottom,
+      )
+    )
+      continue;
     taken.push(box);
     ctx.strokeStyle = label.outline;
-    ctx.strokeText(label.text, node.x!, top);
+    ctx.strokeText(label.text, must(node.x), top);
     ctx.fillStyle = label.color;
-    ctx.fillText(label.text, node.x!, top);
+    ctx.fillText(label.text, must(node.x), top);
   }
 }
 
@@ -313,8 +363,8 @@ function drawLink(link: DrawLink, ctx: CanvasRenderingContext2D, scale: number):
   // The layout swaps a link's ends for their nodes before the first frame.
   if (typeof source === "string" || typeof target === "string") return;
   ctx.beginPath();
-  ctx.moveTo(source.x!, source.y!);
-  ctx.lineTo(target.x!, target.y!);
+  ctx.moveTo(must(source.x), must(source.y));
+  ctx.lineTo(must(target.x), must(target.y));
   ctx.lineWidth = look.width / scale;
   ctx.strokeStyle = look.color;
   ctx.setLineDash(look.dash ?? NO_DASH);
@@ -322,10 +372,14 @@ function drawLink(link: DrawLink, ctx: CanvasRenderingContext2D, scale: number):
 }
 
 /** The node's disc in its hit colour, so pointing and dragging match what is drawn. */
-function paintHitArea(node: DrawNode, color: string, ctx: CanvasRenderingContext2D): void {
+function paintHitArea(
+  node: DrawNode,
+  color: string,
+  ctx: CanvasRenderingContext2D,
+): void {
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(node.x!, node.y!, node.look.radius, 0, 2 * Math.PI);
+  ctx.arc(must(node.x), must(node.y), node.look.radius, 0, 2 * Math.PI);
   ctx.fill();
 }
 

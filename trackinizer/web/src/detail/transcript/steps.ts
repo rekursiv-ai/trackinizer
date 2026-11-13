@@ -1,4 +1,11 @@
-import { type DiffLine, type RecordView, type ToolKind, toolKind, type TranscriptRow } from "./records";
+import {
+  type DiffLine,
+  type RecordView,
+  type ToolKind,
+  toolKind,
+  type TranscriptRow,
+} from "./records";
+import { must } from "../../must";
 
 /**
  * A tool step's one line, as the Claude and Codex CLIs summarize one: a verb
@@ -21,10 +28,24 @@ export type ToolSummary = {
  * comes from the result's kind unless that is the opaque `call`; what it acted on
  * from the result (a path, a query, a URL, a command) else the call's arguments.
  */
-export function toolSummary(call: RecordView | null, result: RecordView | null): ToolSummary {
-  const tool = result?.tool && (result.tool !== "call" || !call) ? result.tool : (call?.tool ?? "call");
-  const asked = call?.shape === "tool" ? call.primary || call.args.map(([name, value]) => `${name}: ${value}`).join(", ") : "";
-  const where = result?.shape === "shell" ? result.command : result && "source" in result ? result.source : "";
+export function toolSummary(
+  call: RecordView | null,
+  result: RecordView | null,
+): ToolSummary {
+  const tool =
+    result?.tool && (result.tool !== "call" || !call)
+      ? result.tool
+      : (call?.tool ?? "call");
+  const asked =
+    call?.shape === "tool"
+      ? call.primary || call.args.map(([name, value]) => `${name}: ${value}`).join(", ")
+      : "";
+  const where =
+    result?.shape === "shell"
+      ? result.command
+      : result && "source" in result
+        ? result.source
+        : "";
   const target = where || asked;
   const named = call?.shape === "tool" ? call.name : result?.label;
   return {
@@ -33,7 +54,12 @@ export function toolSummary(call: RecordView | null, result: RecordView | null):
     target: oneLine(target),
     outcome: result ? outcomeOf(result) : "",
     failed: result?.failed ?? false,
-    language: tool === "command" ? "bash" : tool === "read" || tool === "edit" || tool === "write" ? languageOf(target) : "",
+    language:
+      tool === "command"
+        ? "bash"
+        : tool === "read" || tool === "edit" || tool === "write"
+          ? languageOf(target)
+          : "",
   };
 }
 
@@ -48,10 +74,16 @@ export function groupSummary(steps: readonly ToolSummary[]): string {
   const byVerb = new Map<string, string[]>();
   for (const [tool, count] of counts) {
     const [verb, one, many] = GROUP_PHRASES[tool];
-    byVerb.set(verb, [...(byVerb.get(verb) ?? []), `${count.toLocaleString("en")} ${count === 1 ? one : many}`]);
+    byVerb.set(verb, [
+      ...(byVerb.get(verb) ?? []),
+      `${count.toLocaleString("en")} ${count === 1 ? one : many}`,
+    ]);
   }
   const text = [...byVerb]
-    .map(([verb, counted]) => `${verb} ${counted.length > 1 ? `${counted.slice(0, -1).join(", ")} and ${counted.at(-1)}` : counted[0]}`)
+    .map(
+      ([verb, counted]) =>
+        `${verb} ${counted.length > 1 ? `${counted.slice(0, -1).join(", ")} and ${counted.at(-1)}` : counted[0]}`,
+    )
     .join(", ");
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
@@ -66,21 +98,31 @@ export type ToolGroup = { readonly group: readonly TranscriptRow[] };
  * group, as Codex keeps it in an exploring cell; reasoning before the first or
  * after the last stays a line of its own. Any other line ends the run.
  */
-export function groupRows(rows: readonly TranscriptRow[]): (TranscriptRow | ToolGroup)[] {
+export function groupRows(
+  rows: readonly TranscriptRow[],
+): (TranscriptRow | ToolGroup)[] {
   const items: (TranscriptRow | ToolGroup)[] = [];
   let k = 0;
   while (k < rows.length) {
     let end = k;
-    while (end < rows.length && (isTool(rows[end]!) || rows[end]!.record.kind === "Thinking")) end++;
+    while (
+      end < rows.length &&
+      (isTool(must(rows[end])) || must(rows[end]).record.kind === "Thinking")
+    )
+      end++;
     let first = k;
-    while (first < end && !isTool(rows[first]!)) first++;
+    while (first < end && !isTool(must(rows[first]))) first++;
     let last = end;
-    while (last > first && !isTool(rows[last - 1]!)) last--;
+    while (last > first && !isTool(must(rows[last - 1]))) last--;
     if (rows.slice(first, last).filter(isTool).length < 2) {
       end = Math.max(end, k + 1);
       items.push(...rows.slice(k, end));
     } else {
-      items.push(...rows.slice(k, first), { group: rows.slice(first, last) }, ...rows.slice(last, end));
+      items.push(
+        ...rows.slice(k, first),
+        { group: rows.slice(first, last) },
+        ...rows.slice(last, end),
+      );
     }
     k = end;
   }
@@ -102,9 +144,12 @@ function isTool(row: TranscriptRow): boolean {
 function outcomeOf(result: RecordView): string {
   switch (result.shape) {
     case "shell":
-      return result.exit !== null && result.exit !== 0 ? `exit ${result.exit}` : linesOf(result.stdout, result.stderr);
+      return result.exit !== null && result.exit !== 0
+        ? `exit ${result.exit}`
+        : linesOf(result.stdout, result.stderr);
     case "edit": {
-      const count = (kind: DiffLine["kind"]) => result.lines.filter((line) => line.kind === kind).length;
+      const count = (kind: DiffLine["kind"]) =>
+        result.lines.filter((line) => line.kind === kind).length;
       return `+${count("add")} −${count("del")}`;
     }
     case "search":
@@ -118,14 +163,19 @@ function outcomeOf(result: RecordView): string {
 
 /** How many lines `texts` hold together, the newline that ends one left out: `3 lines`, or `no output`. */
 function linesOf(...texts: string[]): string {
-  const count = texts.reduce((sum, text) => sum + (text ? text.replace(/\n$/, "").split("\n").length : 0), 0);
-  return count ? `${count.toLocaleString("en")} ${count === 1 ? "line" : "lines"}` : "no output";
+  const count = texts.reduce(
+    (sum, text) => sum + (text ? text.replace(/\n$/, "").split("\n").length : 0),
+    0,
+  );
+  return count
+    ? `${count.toLocaleString("en")} ${count === 1 ? "line" : "lines"}`
+    : "no output";
 }
 
 /** `text`'s first line, with `…` when more follow. */
 function oneLine(text: string): string {
   const [first, ...rest] = text.trim().split("\n");
-  return rest.length ? `${first} …` : first!;
+  return rest.length ? `${first} …` : must(first);
 }
 
 /** A step's verb on its row, as the CLIs word theirs (`Ran`, `Read`, `Edited`); a `call` takes its tool's name. */
@@ -142,7 +192,9 @@ const TOOL_VERBS: { readonly [tool in Exclude<ToolKind, "call">]: string } = {
 };
 
 /** How a group counts each kind of step: its verb, and its noun for one and for more. */
-const GROUP_PHRASES: { readonly [tool in ToolKind]: readonly [verb: string, one: string, many: string] } = {
+const GROUP_PHRASES: {
+  readonly [tool in ToolKind]: readonly [verb: string, one: string, many: string];
+} = {
   command: ["ran", "command", "commands"],
   agent: ["ran", "agent", "agents"],
   web: ["ran", "web search", "web searches"],

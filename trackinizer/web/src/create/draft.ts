@@ -16,6 +16,7 @@ import type { Route } from "../router/route";
 import { kindLook } from "../ui/kinds";
 import { type Edit, short } from "../writes/edits";
 import { batchRequest, createRequest, type WriteRequest } from "../writes/requests";
+import { must } from "../must";
 
 /** A kind a person can create here: every kind but AgentSession. */
 export type CreatableKind = Exclude<InquiryKind, "AgentSession">;
@@ -27,11 +28,16 @@ export type CreatableKind = Exclude<InquiryKind, "AgentSession">;
  * build's schema does not name has no create body to type, so it is left out.
  */
 export function creatableKinds(kinds: readonly string[]): CreatableKind[] {
-  return kinds.filter((kind): kind is CreatableKind => isInquiryKind(kind) && kind !== "AgentSession");
+  return kinds.filter(
+    (kind): kind is CreatableKind => isInquiryKind(kind) && kind !== "AgentSession",
+  );
 }
 
 /** The kind New makes from `route`: the kind it shows, when that can be created, else the first that can. */
-export function createKindFor(route: Route, creatable: readonly InquiryKind[]): InquiryKind | undefined {
+export function createKindFor(
+  route: Route,
+  creatable: readonly InquiryKind[],
+): InquiryKind | undefined {
   const shown = "kind" in route ? route.kind : null;
   return creatable.find((kind) => kind === shown) ?? creatable[0];
 }
@@ -49,7 +55,12 @@ export type RelationOption = {
 };
 
 /** An inquiry a relation points at. */
-export type Target = { readonly id: string; readonly kind: InquiryKind; readonly seq: number; readonly title?: string };
+export type Target = {
+  readonly id: string;
+  readonly kind: InquiryKind;
+  readonly seq: number;
+  readonly title?: string;
+};
 
 /** One relation picked on the form. */
 export type Related = { readonly option: RelationOption; readonly target: Target };
@@ -78,7 +89,12 @@ export function keptDraft(draft: Draft): KeptDraft {
     ...draft,
     relations: draft.relations.map(({ option, target }) => ({
       option: option.key,
-      target: { id: target.id, kind: target.kind, seq: target.seq, ...(target.title === undefined ? {} : { title: target.title }) },
+      target: {
+        id: target.id,
+        kind: target.kind,
+        seq: target.seq,
+        ...(target.title === undefined ? {} : { title: target.title }),
+      },
     })),
   };
 }
@@ -88,30 +104,65 @@ export function keptDraft(draft: Draft): KeptDraft {
  * A draft of another kind was for another form. A relation whose option or kind
  * the server's topology no longer has is left out.
  */
-export function reopenedDraft(kept: Preferences["create_draft"], kind: InquiryKind, edges: EdgeTopology): Draft | null {
+export function reopenedDraft(
+  kept: Preferences["create_draft"],
+  kind: InquiryKind,
+  edges: EdgeTopology,
+): Draft | null {
   if (!kept || kept.kind !== kind) return null;
-  const options = new Map(relationOptions(kind, edges).map((option) => [option.key, option]));
+  const options = new Map(
+    relationOptions(kind, edges).map((option) => [option.key, option]),
+  );
   return {
     ...kept,
     kind,
     relations: kept.relations.flatMap(({ option, target }) => {
       const found = options.get(option);
-      return found && isInquiryKind(target.kind) ? [{ option: found, target: { ...target, kind: target.kind, title: target.title ?? undefined } }] : [];
+      return found && isInquiryKind(target.kind)
+        ? [
+            {
+              option: found,
+              target: {
+                ...target,
+                kind: target.kind,
+                title: target.title ?? undefined,
+              },
+            },
+          ]
+        : [];
     }),
   };
 }
 
 /** The change that keeps `draft` as the create form's, or none when it already is. */
-export function keepCreateDraft(now: Preferences, draft: KeptDraft | null): Partial<Preferences> {
+export function keepCreateDraft(
+  now: Preferences,
+  draft: KeptDraft | null,
+): Partial<Preferences> {
   return sameJson(now.create_draft, draft) ? {} : { create_draft: draft };
 }
 
 /** The fields the form sets through chips, as the mock's create dialog does, in its order. */
-export const CHIPS = ["judgement", "status", "priority", "issue_kind", "owner", "subscribers", "labels"] as const;
+export const CHIPS = [
+  "judgement",
+  "status",
+  "priority",
+  "issue_kind",
+  "owner",
+  "subscribers",
+  "labels",
+] as const;
 
 /** A new draft of `kind`: its chips and fields at their defaults, nothing else set. */
 export function emptyDraft(kind: InquiryKind): Draft {
-  return { kind, title: "", description: "", fields: fieldDefaults(kind), chips: chipDefaults(kind), relations: [] };
+  return {
+    kind,
+    title: "",
+    description: "",
+    fields: fieldDefaults(kind),
+    chips: chipDefaults(kind),
+    relations: [],
+  };
 }
 
 /**
@@ -119,14 +170,25 @@ export function emptyDraft(kind: InquiryKind): Draft {
  * kinds have keep their values, as do relations the new kind can take to the
  * same inquiries. Fields of the old kind alone go.
  */
-export function switchKind(draft: Draft, kind: InquiryKind, edges: EdgeTopology): Draft {
+export function switchKind(
+  draft: Draft,
+  kind: InquiryKind,
+  edges: EdgeTopology,
+): Draft {
   const chips = chipDefaults(kind);
-  const options = new Map(relationOptions(kind, edges).map((option) => [option.key, option]));
+  const options = new Map(
+    relationOptions(kind, edges).map((option) => [option.key, option]),
+  );
   return {
     ...emptyDraft(kind),
     title: draft.title,
     description: draft.description,
-    chips: { ...chips, ...Object.fromEntries(Object.entries(draft.chips).filter(([name]) => name in chips)) },
+    chips: {
+      ...chips,
+      ...Object.fromEntries(
+        Object.entries(draft.chips).filter(([name]) => name in chips),
+      ),
+    },
     relations: draft.relations.flatMap(({ option, target }) => {
       const same = options.get(option.key);
       return same?.targetKinds.includes(target.kind) ? [{ option: same, target }] : [];
@@ -144,13 +206,18 @@ export function nextDraft(draft: Draft): Draft {
  * topology gives the kind, in the server's order, then its fields that list
  * other inquiries.
  */
-export function relationOptions(kind: InquiryKind, edges: EdgeTopology): RelationOption[] {
-  const choices = relationChoices(kind, edges).map(({ edgeKind, direction, label, targetKinds }) => ({
-    key: `${edgeKind}:${direction}`,
-    label,
-    targetKinds,
-    edge: { edgeKind, direction },
-  }));
+export function relationOptions(
+  kind: InquiryKind,
+  edges: EdgeTopology,
+): RelationOption[] {
+  const choices = relationChoices(kind, edges).map(
+    ({ edgeKind, direction, label, targetKinds }) => ({
+      key: `${edgeKind}:${direction}`,
+      label,
+      targetKinds,
+      edge: { edgeKind, direction },
+    }),
+  );
   const lists = Object.entries(ID_LISTS[kind] ?? {}).map(([field, target]) => ({
     key: `field:${field}`,
     label: kindLook(target).plural,
@@ -170,10 +237,21 @@ export function relationOptions(kind: InquiryKind, edges: EdgeTopology): Relatio
  */
 export function formFields(kind: InquiryKind, fieldOwners: FieldOwners): Field[] {
   const owner = kind.toLowerCase();
-  const stub = { id: "", kind, seq: 0, title: "", status: "", created: "", modified: "" };
+  const stub = {
+    id: "",
+    kind,
+    seq: 0,
+    title: "",
+    status: "",
+    created: "",
+    modified: "",
+  };
   return kindFields(stub, fieldOwners).filter(
     ({ name, route }) =>
-      route && fieldOwners[name] === owner && !(CHIPS as readonly string[]).includes(name) && !(name in (ID_LISTS[kind] ?? {})),
+      route &&
+      fieldOwners[name] === owner &&
+      !(CHIPS as readonly string[]).includes(name) &&
+      !(name in (ID_LISTS[kind] ?? {})),
   );
 }
 
@@ -187,8 +265,13 @@ export function formFields(kind: InquiryKind, fieldOwners: FieldOwners): Field[]
  * inquiries at the other ends refetch, since they show the new relation. Its
  * toast says it was created, even when the form was closed meanwhile.
  */
-export function createEdit(draft: Draft, fields: readonly Field[]): { readonly edit: Edit<string> } | { readonly error: string } {
-  const body: { [field: string]: unknown } = { title: draft.title.replace(/\s+/g, " ").trim() };
+export function createEdit(
+  draft: Draft,
+  fields: readonly Field[],
+): { readonly edit: Edit<string> } | { readonly error: string } {
+  const body: { [field: string]: unknown } = {
+    title: draft.title.replace(/\s+/g, " ").trim(),
+  };
   const description = draft.description.trim();
   if (description) body.description = description;
   const errors: string[] = [];
@@ -198,7 +281,8 @@ export function createEdit(draft: Draft, fields: readonly Field[]): { readonly e
     else if (!isUnset(parsed.value)) body[field.name] = parsed.value;
   }
   if (errors.length) return { error: errors.join("\n") };
-  for (const [name, value] of Object.entries(draft.chips)) if (!isUnset(value)) body[name] = value;
+  for (const [name, value] of Object.entries(draft.chips))
+    if (!isUnset(value)) body[name] = value;
   const edges: BatchEdge[] = [];
   for (const { option, target } of draft.relations) {
     const inline = INLINE[draft.kind]?.[option.key];
@@ -209,15 +293,29 @@ export function createEdit(draft: Draft, fields: readonly Field[]): { readonly e
   // field-type map, the chips from the fields they are named for, and the
   // relations from `INLINE`, whose shapes `tsc` checks. The server checks again.
   const request = edges.length
-    ? mapResult(batchRequest([{ ...body, kind: draft.kind } as BatchItem], edges), ({ ids }) => ids[0]!)
-    : mapResult(createRequest(draft.kind, body as CreateBody<InquiryKind>), ({ id }) => id);
+    ? mapResult(
+        batchRequest([{ ...body, kind: draft.kind } as BatchItem], edges),
+        ({ ids }) => must(ids[0]),
+      )
+    : mapResult(
+        createRequest(draft.kind, body as CreateBody<InquiryKind>),
+        ({ id }) => id,
+      );
   const done = `Created ${kindLook(draft.kind).one} “${short(String(body.title))}”`;
-  return { edit: { request, touches: draft.relations.map(({ target }) => target.id), creates: (id) => [id], done } };
+  return {
+    edit: {
+      request,
+      touches: draft.relations.map(({ target }) => target.id),
+      creates: (id) => [id],
+      done,
+    },
+  };
 }
 
 /** Append each list in `lists` to `body`'s list of the same name. */
 function appendLists(body: { [field: string]: unknown }, lists: object): void {
-  for (const [name, items] of Object.entries(lists)) body[name] = [...asArray(body[name]), ...asArray(items)];
+  for (const [name, items] of Object.entries(lists))
+    body[name] = [...asArray(body[name]), ...asArray(items)];
 }
 
 function asArray(value: unknown): readonly unknown[] {
@@ -225,9 +323,18 @@ function asArray(value: unknown): readonly unknown[] {
 }
 
 /** A field's text as the value to send: `null` when empty, and a list field's comma-separated items as a list. */
-function parseField(field: Field, text: string): { readonly value: unknown } | { readonly error: string } {
-  if (field.route!.value.type !== "array") return parseInput(text, inputKind(field.route!, field.look));
-  return { value: text.split(",").map((item) => item.trim()).filter(Boolean) };
+function parseField(
+  field: Field,
+  text: string,
+): { readonly value: unknown } | { readonly error: string } {
+  if (must(field.route).value.type !== "array")
+    return parseInput(text, inputKind(must(field.route), field.look));
+  return {
+    value: text
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean),
+  };
 }
 
 /**
@@ -238,7 +345,10 @@ function parseField(field: Field, text: string): { readonly value: unknown } | {
 function chipDefaults(kind: InquiryKind): { readonly [field: string]: unknown } {
   const routes = editableFields(kind);
   return Object.fromEntries(
-    CHIPS.filter((name) => routes[name]).map((name) => [name, CHIP_DEFAULTS[name] ?? (routes[name]!.value.type === "array" ? [] : null)]),
+    CHIPS.filter((name) => routes[name]).map((name) => [
+      name,
+      CHIP_DEFAULTS[name] ?? (must(routes[name]).value.type === "array" ? [] : null),
+    ]),
   );
 }
 
@@ -256,7 +366,9 @@ const CHIP_DEFAULTS: { readonly [field: string]: unknown } = {
  */
 function fieldDefaults(kind: InquiryKind): { readonly [field: string]: string } {
   const routes = editableFields(kind);
-  return Object.fromEntries(Object.entries(FIELD_DEFAULTS).filter(([name]) => routes[name]));
+  return Object.fromEntries(
+    Object.entries(FIELD_DEFAULTS).filter(([name]) => routes[name]),
+  );
 }
 
 const FIELD_DEFAULTS: { readonly [field: string]: string } = { confidence: "0.5" };
@@ -266,12 +378,18 @@ const FIELD_DEFAULTS: { readonly [field: string]: string } = { confidence: "0.5"
  * The schema types them as lists of UUIDs and cannot say which kind; the server
  * checks each id names one (`validate_list_references`).
  */
-const ID_LISTS: { readonly [Kind in InquiryKind]?: { readonly [field in keyof CreateBody<Kind>]?: InquiryKind } } = {
+const ID_LISTS: {
+  readonly [Kind in InquiryKind]?: {
+    readonly [field in keyof CreateBody<Kind>]?: InquiryKind;
+  };
+} = {
   Experiment: { codechanges: "CodeChange" },
 };
 
 /** A kind's relations its create body takes itself, by option key, as the body's own fields. */
-type Inline<Kind extends InquiryKind> = { readonly [option: string]: (target: Target) => Partial<CreateBody<Kind>> };
+type Inline<Kind extends InquiryKind> = {
+  readonly [option: string]: (target: Target) => Partial<CreateBody<Kind>>;
+};
 
 /**
  * The relations each kind's create body takes, so the one create request holds
@@ -298,22 +416,28 @@ const INLINE: { readonly [Kind in InquiryKind]?: Inline<Kind> } = {
  * and the server checks it too.
  */
 function citation({ id, kind }: Target) {
-  if (kind === "Issue" || kind === "AccessGroup") throw new Error(`An ${kind} cannot cite a claim.`);
+  if (kind === "Issue" || kind === "AccessGroup")
+    throw new Error(`An ${kind} cannot cite a claim.`);
   return { artifact_id: id, artifact_kind: kind };
 }
 
 /** The batch edge between the new row, item 0, and `target`, stored child to parent. */
 function batchEdge(option: RelationOption, target: Target): BatchEdge {
-  const { edgeKind, direction } = option.edge!;
+  const { edgeKind, direction } = must(option.edge);
   // The edge kind is the server's own, from `/api/meta/edges`.
   const edge_kind = edgeKind as BatchEdge["edge_kind"];
-  return direction === "out" ? { edge_kind, from_index: 0, to_id: target.id } : { edge_kind, from_id: target.id, to_index: 0 };
+  return direction === "out"
+    ? { edge_kind, from_index: 0, to_id: target.id }
+    : { edge_kind, from_id: target.id, to_index: 0 };
 }
 
 /**
  * A create `request`, resolving with `pick` of its result. It has no
  * `reconcile`: the server replays a create's key.
  */
-function mapResult<Result, Picked>({ route, key, send }: WriteRequest<Result>, pick: (result: Result) => Picked): WriteRequest<Picked> {
+function mapResult<Result, Picked>(
+  { route, key, send }: WriteRequest<Result>,
+  pick: (result: Result) => Picked,
+): WriteRequest<Picked> {
   return { route, key, send: () => send().then(pick) };
 }

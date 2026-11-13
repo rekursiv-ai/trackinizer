@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import type { APIRequestContext, APIResponse, Page, TestInfo } from "@playwright/test";
 import { expect, failedResource, openProperties, test } from "./fixtures";
+import { must } from "../src/must";
 
 // Copy details against the e2e server: a render crash, a read and a write the
 // server refuses. Each shows Copy details, whose request id is the one the
@@ -13,7 +14,9 @@ test.beforeEach(async ({ context }) => {
 });
 
 async function createIssue(request: APIRequestContext, title: string): Promise<string> {
-  const response = await request.post("/api/inquiries/issue", { data: { title, idempotency_key: crypto.randomUUID() } });
+  const response = await request.post("/api/inquiries/issue", {
+    data: { title, idempotency_key: crypto.randomUUID() },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).id;
 }
@@ -34,7 +37,7 @@ async function copyDetails(page: Page, info: TestInfo, name: string): Promise<st
 function echoed(response: { headers(): { [name: string]: string } }): string {
   const id = response.headers()["x-request-id"];
   expect(id).toMatch(/^[0-9a-f-]{36}$/);
-  return id!;
+  return must(id);
 }
 
 test("a render crash shows what happened, with Copy details and Reload; the details name the request behind it", async ({
@@ -49,27 +52,43 @@ test("a render crash shows what happened, with Copy details and Reload; the deta
   await page.route("**/api/meta/enums", async (route) => {
     const response = await route.fetch();
     answered.response = response;
-    await route.fulfill({ response, json: { ...(await response.json()), inquiry_kind_all: 5 } });
+    await route.fulfill({
+      response,
+      json: { ...(await response.json()), inquiry_kind_all: 5 },
+    });
   });
   await page.goto("/trax/");
-  await expect(page.getByRole("heading", { name: "Trackinizer stopped on an error" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Trackinizer stopped on an error" }),
+  ).toBeVisible();
   // The bundle is minified, so the name before `.find` is not the source's.
   await expect(page.getByRole("alert")).toHaveText(/^\w+\.find is not a function$/);
   await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
 
   const text = await copyDetails(page, test.info(), "crash");
-  expect(text).toMatch(/^Trackinizer web app: The page crashed: \w+\.find is not a function\n/);
+  expect(text).toMatch(
+    /^Trackinizer web app: The page crashed: \w+\.find is not a function\n/,
+  );
   expect(text).toMatch(/\nbuild: [0-9a-f]{40}\n/);
-  expect(text).toMatch(/\nerror: TypeError: \w+\.find is not a function\nstack: TypeError: /);
+  expect(text).toMatch(
+    /\nerror: TypeError: \w+\.find is not a function\nstack: TypeError: /,
+  );
   expect(text).toMatch(/ error render\.crash error=TypeError /);
-  expect(text).toMatch(new RegExp(` debug request method=GET path=/api/meta/enums status=200 ms=\\d+ request_id=${echoed(answered.response!)}\\n`));
+  expect(text).toMatch(
+    new RegExp(
+      ` debug request method=GET path=/api/meta/enums status=200 ms=\\d+ request_id=${echoed(must(answered.response))}\\n`,
+    ),
+  );
 
   await page.unroute("**/api/meta/enums");
   await page.getByRole("button", { name: "Reload" }).click();
   await expect(page.getByLabel("Signed in")).toBeVisible();
 });
 
-test("a read the server refuses shows Copy details with the id it echoed", async ({ page, allowErrors }) => {
+test("a read the server refuses shows Copy details with the id it echoed", async ({
+  page,
+  allowErrors,
+}) => {
   // The server's 400, which the browser logs as a failed resource.
   allowErrors(failedResource("/api/inquiries?", 400));
   // The list's first read, sent on with a filter field the server does not know.
@@ -78,10 +97,15 @@ test("a read the server refuses shows Copy details with the id it echoed", async
     if (once || !route.request().url().includes("kind=Paper")) return route.continue();
     once = true;
     const url = new URL(route.request().url());
-    url.searchParams.append("filter", JSON.stringify({ field: "l1b_no_such_field", op: "is", value: "x" }));
+    url.searchParams.append(
+      "filter",
+      JSON.stringify({ field: "l1b_no_such_field", op: "is", value: "x" }),
+    );
     return route.continue({ url: url.toString() });
   });
-  const refused = page.waitForResponse((response) => response.url().includes("l1b_no_such_field"));
+  const refused = page.waitForResponse((response) =>
+    response.url().includes("l1b_no_such_field"),
+  );
   await page.goto("/trax/list/Paper");
   const response = await refused;
   expect(response.status()).toBe(400);
@@ -91,22 +115,36 @@ test("a read the server refuses shows Copy details with the id it echoed", async
   const text = await copyDetails(page, test.info(), "read");
   expect(text).toMatch(/^Trackinizer web app: .*l1b_no_such_field/);
   expect(text).toContain("\npage: #/list/Paper\n");
-  expect(text).toMatch(new RegExp(`\\nfailed: request method=GET path=/api/inquiries status=400 ms=\\d+ request_id=${echoed(response)} attempt=\\d+ at=`));
+  expect(text).toMatch(
+    new RegExp(
+      `\\nfailed: request method=GET path=/api/inquiries status=400 ms=\\d+ request_id=${echoed(response)} attempt=\\d+ at=`,
+    ),
+  );
 });
 
-test("a write the server refuses shows Copy details with the id it echoed", async ({ page, request, allowErrors }) => {
+test("a write the server refuses shows Copy details with the id it echoed", async ({
+  page,
+  request,
+  allowErrors,
+}) => {
   const id = await createIssue(request, "L1b write refused");
   // The server's 422, which the browser logs as a failed resource.
   allowErrors(failedResource(`/api/inquiries/${id}/status`, 422));
   // The status write, sent on with a value the server's schema refuses.
   await page.route(`**/api/inquiries/${id}/status`, (route) =>
-    route.continue({ postData: JSON.stringify({ ...route.request().postDataJSON(), value: 5 }) }),
+    route.continue({
+      postData: JSON.stringify({ ...route.request().postDataJSON(), value: 5 }),
+    }),
   );
   await page.goto(`/trax/lookup/${id}`);
   await openProperties(page);
-  const status = page.getByRole("complementary", { name: "Properties" }).locator('[data-field="status"] button.prop-btn');
+  const status = page
+    .getByRole("complementary", { name: "Properties" })
+    .locator('[data-field="status"] button.prop-btn');
   await expect(status).toHaveText("Active");
-  const refused = page.waitForResponse((response) => response.url().endsWith(`/api/inquiries/${id}/status`));
+  const refused = page.waitForResponse((response) =>
+    response.url().endsWith(`/api/inquiries/${id}/status`),
+  );
   await status.click();
   await page.getByRole("option", { name: "Complete" }).click();
   const response = await refused;
@@ -116,15 +154,22 @@ test("a write the server refuses shows Copy details with the id it echoed", asyn
   const text = await copyDetails(page, test.info(), "write");
   expect(text).toContain(`\npage: #/lookup/${id}\n`);
   expect(text).toMatch(
-    new RegExp(`\\nfailed: request method=PUT path=/api/inquiries/${id}/status status=422 ms=\\d+ request_id=${echoed(response)} attempt=1 at=`),
+    new RegExp(
+      `\\nfailed: request method=PUT path=/api/inquiries/${id}/status status=422 ms=\\d+ request_id=${echoed(response)} attempt=1 at=`,
+    ),
   );
   // The write's own events, by route and key, and never the value sent.
   expect(text).toMatch(/ info write\.send route=setField key=[0-9a-f-]{36}\n/);
-  expect(text).toMatch(/ warn write\.failed route=setField key=[0-9a-f-]{36} method=PUT /);
+  expect(text).toMatch(
+    / warn write\.failed route=setField key=[0-9a-f-]{36} method=PUT /,
+  );
 });
 
 // The guard's positive control: a page error nobody allowed must fail its test.
-test("the error guard fails a test whose page throws, unless the test allowed it", async ({ page, context }) => {
+test("the error guard fails a test whose page throws, unless the test allowed it", async ({
+  page,
+  context,
+}) => {
   test.fail();
   await page.goto("/trax/");
   await expect(page.getByLabel("Signed in")).toBeVisible();

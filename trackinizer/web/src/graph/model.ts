@@ -1,5 +1,12 @@
 import type { Graph } from "../api/graph";
-import { type LinkLook, linkLook, type NodeLook, nodeLook, type Palette } from "./encode";
+import {
+  type LinkLook,
+  linkLook,
+  type NodeLook,
+  nodeLook,
+  type Palette,
+} from "./encode";
+import { must } from "../must";
 
 /**
  * One inquiry as the canvas draws it. The layout writes its place (`x`, `y`) and
@@ -102,7 +109,9 @@ export class GraphModel {
   /** Take the server's `graph`; true when its inquiries or edges changed, not only their fields. */
   apply(graph: Graph): boolean {
     const nodesBefore = new Map(this.nodes.map((drawn) => [drawn.id, drawn]));
-    const linksBefore = new Map(this.links.map((link) => [linkKey(link.from, link.to, link.kind), link]));
+    const linksBefore = new Map(
+      this.links.map((link) => [linkKey(link.from, link.to, link.kind), link]),
+    );
     const added: DrawNode[] = [];
     let addedLinks = 0;
     this.nodes = graph.nodes.map((row) => {
@@ -112,15 +121,26 @@ export class GraphModel {
       added.push(drawn);
       return drawn;
     });
-    this.links = graph.edges.map(({ from_id: from, to_id: to, edge_kind: kind, valence }) => {
-      const kept = linksBefore.get(linkKey(from, to, kind));
-      if (kept) {
-        kept.valence = valence;
-        return kept;
-      }
-      addedLinks += 1;
-      return { from, to, kind, valence, source: from, target: to, look: NO_LINK_LOOK, hidden: false };
-    });
+    this.links = graph.edges.map(
+      ({ from_id: from, to_id: to, edge_kind: kind, valence }) => {
+        const kept = linksBefore.get(linkKey(from, to, kind));
+        if (kept) {
+          kept.valence = valence;
+          return kept;
+        }
+        addedLinks += 1;
+        return {
+          from,
+          to,
+          kind,
+          valence,
+          source: from,
+          target: to,
+          look: NO_LINK_LOOK,
+          hidden: false,
+        };
+      },
+    );
     this.#byId = new Map(this.nodes.map((drawn) => [drawn.id, drawn]));
     // Every node was kept or added, so with none added a count that differs means
     // one left; the same holds for links.
@@ -149,35 +169,68 @@ export class GraphModel {
 
   /** Set each node's degree and whether it is a root; returns each node's neighbours' ids. */
   #connect(): Map<string, Set<string>> {
-    const neighbours = new Map(this.nodes.map((drawn) => [drawn.id, new Set<string>()]));
+    const neighbours = new Map(
+      this.nodes.map((drawn) => [drawn.id, new Set<string>()]),
+    );
     const children = new Set<string>();
     for (const link of this.links) {
       // The server sends only edges between the nodes it sends.
-      neighbours.get(link.from)!.add(link.to);
-      neighbours.get(link.to)!.add(link.from);
+      must(neighbours.get(link.from)).add(link.to);
+      must(neighbours.get(link.to)).add(link.from);
       if (link.kind === "narrows") children.add(link.from);
     }
     for (const drawn of this.nodes) {
-      drawn.degree = neighbours.get(drawn.id)!.size;
+      drawn.degree = must(neighbours.get(drawn.id)).size;
       drawn.root = drawn.kind === "Issue" && !children.has(drawn.id);
     }
     return neighbours;
   }
 
   #restyle(): void {
-    const { hiddenKinds, hiddenStatuses, lit, skipEdges, only, strong, matches, labelled } = this.#lens;
+    const {
+      hiddenKinds,
+      hiddenStatuses,
+      lit,
+      skipEdges,
+      only,
+      strong,
+      matches,
+      labelled,
+    } = this.#lens;
     for (const drawn of this.nodes) {
       const far = lit?.get(drawn.id);
       const dimmed = lit !== null && far === undefined;
-      const halo = strong.has(drawn.id) ? "strong" : matches.has(drawn.id) ? "match" : null;
+      const halo = strong.has(drawn.id)
+        ? "strong"
+        : matches.has(drawn.id)
+          ? "match"
+          : null;
       const label = labelled.has(drawn.id) ? drawn.title || "(untitled)" : null;
-      drawn.look = nodeLook(drawn, this.#palette, { dimmed, far: far !== undefined && far >= 2, halo, label });
-      drawn.hidden = hiddenKinds.has(drawn.kind) || hiddenStatuses.has(drawn.status) || (only && dimmed);
+      drawn.look = nodeLook(drawn, this.#palette, {
+        dimmed,
+        far: far !== undefined && far >= 2,
+        halo,
+        label,
+      });
+      drawn.hidden =
+        hiddenKinds.has(drawn.kind) ||
+        hiddenStatuses.has(drawn.status) ||
+        (only && dimmed);
     }
     for (const link of this.links) {
-      const [from, to] = [this.#byId.get(link.from)!, this.#byId.get(link.to)!];
-      const dimmed = lit !== null && (!lit.has(link.from) || !lit.has(link.to) || skipEdges.has(link.kind));
-      link.look = linkLook(link, Math.max(from.degree, to.degree), this.#palette, dimmed);
+      const [from, to] = [
+        must(this.#byId.get(link.from)),
+        must(this.#byId.get(link.to)),
+      ];
+      const dimmed =
+        lit !== null &&
+        (!lit.has(link.from) || !lit.has(link.to) || skipEdges.has(link.kind));
+      link.look = linkLook(
+        link,
+        Math.max(from.degree, to.degree),
+        this.#palette,
+        dimmed,
+      );
       link.hidden = from.hidden || to.hidden;
     }
   }
@@ -195,24 +248,41 @@ function withoutBelief(drawn: DrawNode): DrawNode {
  * placed nodes, and slow the placed ones, once any of `nodes` is placed: before
  * that, the layout places them all.
  */
-function place(added: readonly DrawNode[], nodes: readonly DrawNode[], neighbours: ReadonlyMap<string, ReadonlySet<string>>): void {
+function place(
+  added: readonly DrawNode[],
+  nodes: readonly DrawNode[],
+  neighbours: ReadonlyMap<string, ReadonlySet<string>>,
+): void {
   const fresh = new Set(added);
   const placed = new Map(
-    nodes.filter((drawn) => !fresh.has(drawn) && Number.isFinite(drawn.x) && Number.isFinite(drawn.y)).map((drawn) => [drawn.id, drawn]),
+    nodes
+      .filter(
+        (drawn) =>
+          !fresh.has(drawn) && Number.isFinite(drawn.x) && Number.isFinite(drawn.y),
+      )
+      .map((drawn) => [drawn.id, drawn]),
   );
   if (placed.size === 0) return;
   const middle = { x: 0, y: 0 };
   for (const drawn of placed.values()) {
-    middle.x += drawn.x! / placed.size;
-    middle.y += drawn.y! / placed.size;
+    middle.x += must(drawn.x) / placed.size;
+    middle.y += must(drawn.y) / placed.size;
     drawn.vx = (drawn.vx ?? 0) * SLOW_DOWN;
     drawn.vy = (drawn.vy ?? 0) * SLOW_DOWN;
   }
   for (const [index, drawn] of added.entries()) {
-    const anchor = [...neighbours.get(drawn.id)!].map((id) => placed.get(id)).find((peer) => peer !== undefined) ?? middle;
+    const anchor =
+      [...must(neighbours.get(drawn.id))]
+        .map((id) => placed.get(id))
+        .find((peer) => peer !== undefined) ?? middle;
     const distance = 36 + 12 * Math.sqrt(drawn.degree);
     const angle = (placed.size + index) * GOLDEN_ANGLE;
-    Object.assign(drawn, { x: anchor.x! + distance * Math.cos(angle), y: anchor.y! + distance * Math.sin(angle), vx: 0, vy: 0 });
+    Object.assign(drawn, {
+      x: must(anchor.x) + distance * Math.cos(angle),
+      y: must(anchor.y) + distance * Math.sin(angle),
+      vx: 0,
+      vy: 0,
+    });
   }
 }
 
@@ -227,5 +297,16 @@ const SLOW_DOWN = 0.25;
 const GOLDEN_ANGLE = Math.PI * (3 - Math.sqrt(5));
 
 /** Every node and link is styled before the canvas sees it; this only fills the field until then. */
-const NO_LOOK: NodeLook = { radius: 0, fill: "", fillAlpha: 0, wash: null, washAlpha: 0, ring: "", ringAlpha: 0, dot: null, halo: null, label: null };
+const NO_LOOK: NodeLook = {
+  radius: 0,
+  fill: "",
+  fillAlpha: 0,
+  wash: null,
+  washAlpha: 0,
+  ring: "",
+  ringAlpha: 0,
+  dot: null,
+  halo: null,
+  label: null,
+};
 const NO_LINK_LOOK: LinkLook = { color: "", width: 0, dash: null };

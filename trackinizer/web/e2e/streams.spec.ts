@@ -13,8 +13,12 @@ async function streams(page: Page, label: string): Promise<string[]> {
         const strip = (text: string) => text.replaceAll(` ${label}`, "");
         const rows = [...stream.querySelectorAll("a.row")].map((row) => {
           const context = row.querySelector(".row-ctx")?.textContent ?? "";
-          const title = row.querySelector(".row-title")!.textContent!.slice(0, -context.length || undefined);
-          return context ? `${strip(title)} (${strip(context).replace(" · in ", "in ")})` : strip(title);
+          const title = row
+            .querySelector(".row-title")!
+            .textContent!.slice(0, -context.length || undefined);
+          return context
+            ? `${strip(title)} (${strip(context).replace(" · in ", "in ")})`
+            : strip(title);
         });
         return `${strip(stream.querySelector(".s-title")!.textContent!)}: ${rows.join(", ")}`;
       }),
@@ -27,19 +31,32 @@ test("Streams groups rows under their root goal, newest few first, and N more in
   request,
 }) => {
   const tag = freshLabel("lv3");
-  await seed(request, tag, ["Goal", "One", "Two", "Three", "Four", "Five", "Loose"], [
-    [1, 0],
-    [2, 0],
-    [3, 0],
-    [4, 0],
-    [5, 0],
-  ]);
+  await seed(
+    request,
+    tag,
+    ["Goal", "One", "Two", "Three", "Four", "Five", "Loose"],
+    [
+      [1, 0],
+      [2, 0],
+      [3, 0],
+      [4, 0],
+      [5, 0],
+    ],
+  );
   await openView(page, tag, "Streams");
-  await expect.poll(() => streams(page, tag)).toEqual(["Goal: Five, Four, Three", "No parent: Loose"]);
-  await expect(page.locator(".s-head").first()).toContainText("5 issues · 5 active · 0 done · newest now");
+  await expect
+    .poll(() => streams(page, tag))
+    .toEqual(["Goal: Five, Four, Three", "No parent: Loose"]);
+  await expect(page.locator(".s-head").first()).toContainText(
+    "5 issues · 5 active · 0 done · newest now",
+  );
   await page.getByRole("button", { name: "2 more in this stream" }).click();
-  await expect.poll(() => streams(page, tag)).toEqual(["Goal: Five, Four, Three, Two, One", "No parent: Loose"]);
-  await expect(page.getByRole("button", { name: /more in this stream/ })).toHaveCount(0);
+  await expect
+    .poll(() => streams(page, tag))
+    .toEqual(["Goal: Five, Four, Three, Two, One", "No parent: Loose"]);
+  await expect(page.getByRole("button", { name: /more in this stream/ })).toHaveCount(
+    0,
+  );
 });
 
 test("a narrows edge added elsewhere moves a row from No parent into its root's stream, naming its parent", async ({
@@ -49,9 +66,13 @@ test("a narrows edge added elsewhere moves a row from No parent into its root's 
   const tag = freshLabel("lv3");
   const ids = await seed(request, tag, ["Goal", "Child", "Mover"], [[1, 0]]);
   await openView(page, tag, "Streams");
-  await expect.poll(() => streams(page, tag)).toEqual(["Goal: Child", "No parent: Mover"]);
+  await expect
+    .poll(() => streams(page, tag))
+    .toEqual(["Goal: Child", "No parent: Mover"]);
 
   await post(request, `/api/edges/${ids[2]}/narrows/${ids[1]}`, {});
-  await expect.poll(() => streams(page, tag)).toEqual(["Goal: Mover (in Child), Child"]);
+  await expect
+    .poll(() => streams(page, tag))
+    .toEqual(["Goal: Mover (in Child), Child"]);
   await expect(page.locator(".s-head")).toContainText("2 issues · 2 active · 0 done");
 });

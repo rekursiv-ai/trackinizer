@@ -6,6 +6,12 @@ import { listAllowlist, listUsers } from "../api/admin";
  * and after the admin's own writes.
  */
 export const adminQueries = {
-  users: queryOptions({ queryKey: ["admin", "users"], queryFn: ({ signal }) => listUsers({ signal }) }),
-  allowlist: queryOptions({ queryKey: ["admin", "allowlist"], queryFn: ({ signal }) => listAllowlist({ signal }) }),
+  users: queryOptions({
+    queryKey: ["admin", "users"],
+    queryFn: ({ signal }) => listUsers({ signal }),
+  }),
+  allowlist: queryOptions({
+    queryKey: ["admin", "allowlist"],
+    queryFn: ({ signal }) => listAllowlist({ signal }),
+  }),
 };

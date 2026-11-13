@@ -28,7 +28,11 @@ import {
 } from "./capture.ts";
 
 /** One screenshot: its file, the hash it opens, and what shows it has drawn. */
-type Shot = { readonly file: string; readonly hash: string; readonly drawn: (page: Page) => Promise<void> };
+type Shot = {
+  readonly file: string;
+  readonly hash: string;
+  readonly drawn: (page: Page) => Promise<void>;
+};
 
 const OUT = resolve(process.argv[2] ?? join(WEB, "..", "docs", "screenshots"));
 
@@ -40,7 +44,8 @@ try {
   // exits, and a cold first launch took up to 35 s on a CI runner, past its 30 s default.
   const browser = await chromium.launch({ timeout: 0 });
   try {
-    for (const shot of shots(served.seeded)) console.log(await capture(browser, shot, served));
+    for (const shot of shots(served.seeded))
+      console.log(await capture(browser, shot, served));
   } finally {
     await browser.close();
   }
@@ -59,7 +64,11 @@ function shots(seeded: Seeded): Shot[] {
     // The newest 5,000 nodes grouped by root, each root's island labelled, the
     // roots list hidden so the graph takes the width.
     { file: "graph.webp", hash: "#/graph", drawn: graphSettled },
-    { file: "chat.webp", hash: "#/console", drawn: (page) => page.locator(".console-line").last().waitFor() },
+    {
+      file: "chat.webp",
+      hash: "#/console",
+      drawn: (page) => page.locator(".console-line").last().waitFor(),
+    },
     detail("belief.webp", seeded.belief),
     detail("paper.webp", seeded.paper),
     detail("experiment.webp", seeded.experiment),
@@ -67,7 +76,11 @@ function shots(seeded: Seeded): Shot[] {
 }
 
 /** Open `shot` in a window of its own, wait until it is still, and write it; returns the file written. */
-async function capture(browser: Browser, shot: Shot, { origin, data }: { origin: string; data: string }): Promise<string> {
+async function capture(
+  browser: Browser,
+  shot: Shot,
+  { origin, data }: { origin: string; data: string },
+): Promise<string> {
   // The README shows each 640 px wide: half of this window, which is wide
   // enough for a detail's side rail, at twice the scale.
   const context = await browser.newContext({

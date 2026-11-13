@@ -88,7 +88,10 @@ export function useCommands(commands: readonly Command[]): void {
   useEffect(
     () =>
       registry.add(
-        commands.map((command, index) => ({ ...command, run: () => latest.current[index].run() })),
+        commands.map((command, index) => ({
+          ...command,
+          run: () => latest.current[index].run(),
+        })),
       ),
     [registry, signature],
   );
@@ -118,13 +121,20 @@ export function Shortcuts() {
  * holds every binding, chords first and the latest first within each, and tinykeys
  * runs only the first that matches a key, so two can never both run.
  */
-export function bindShortcuts(target: Window, commands: readonly Command[]): () => void {
+export function bindShortcuts(
+  target: Window,
+  commands: readonly Command[],
+): () => void {
   const chosen = new Map<string, (event: KeyboardEvent) => void>();
   for (const command of commands.toReversed()) {
     for (const key of command.keys ?? []) {
       if (!chosen.has(key)) {
         chosen.set(key, (event) => {
-          if ((event.repeat && !command.repeat) || (!command.global && handlesOwnKeys(event))) return;
+          if (
+            (event.repeat && !command.repeat) ||
+            (!command.global && handlesOwnKeys(event))
+          )
+            return;
           event.preventDefault();
           command.run();
         });
@@ -135,7 +145,8 @@ export function bindShortcuts(target: Window, commands: readonly Command[]): () 
   // plain `]` mounted after `g ]` would take the chord's last key and the chord would never fire.
   const bindings: { [key: string]: (event: KeyboardEvent) => void } = {};
   for (const chords of [true, false]) {
-    for (const [key, run] of chosen) if (key.includes(" ") === chords) bindings[key] = run;
+    for (const [key, run] of chosen)
+      if (key.includes(" ") === chords) bindings[key] = run;
   }
   return tinykeys(target, bindings, { ignore: (event) => event.isComposing });
 }
@@ -151,7 +162,15 @@ export function keyCaps(binding: string): string[] {
     chord
       .split("+")
       .map((part) =>
-        part === "$mod" ? (mac ? "⌘" : "Ctrl") : part === "Enter" && mac ? "↵" : part.length === 1 ? part.toUpperCase() : part,
+        part === "$mod"
+          ? mac
+            ? "⌘"
+            : "Ctrl"
+          : part === "Enter" && mac
+            ? "↵"
+            : part.length === 1
+              ? part.toUpperCase()
+              : part,
       )
       .join(mac ? "" : "+"),
   );
@@ -171,9 +190,12 @@ function handlesOwnKeys(event: KeyboardEvent): boolean {
   // key reached the window. Leaving a listbox every key would strand the view's
   // there: Esc, `.` and `/` in the graph's roots list.
   if (target.closest('[role="listbox"]')) return event.defaultPrevented;
-  return (event.key === "Enter" || event.key === " ") && target.closest(ACTIVATES) !== null;
+  return (
+    (event.key === "Enter" || event.key === " ") && target.closest(ACTIVATES) !== null
+  );
 }
 
 const TYPING =
   'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="dialog"], [role="alertdialog"], [role="menu"]';
-const ACTIVATES = 'a[href], button, summary, [role="button"], [role="link"], [role="tab"], [role="checkbox"]';
+const ACTIVATES =
+  'a[href], button, summary, [role="button"], [role="link"], [role="tab"], [role="checkbox"]';

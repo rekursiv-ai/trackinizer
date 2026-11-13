@@ -21,10 +21,25 @@ afterEach(() => {
 });
 
 test("the lists are GETs, read from their users and entries fields", async () => {
-  const user = { id: USER, email: "ada@example.com", name: "Ada", role: "writer", status: "active", created_at: "2026-09-20T10:00:00+00:00", last_login: null };
-  const entry = { email_or_pattern: "*@example.com", role: "viewer", added_by: null, added_at: "2026-09-20T10:00:00+00:00" };
+  const user = {
+    id: USER,
+    email: "ada@example.com",
+    name: "Ada",
+    role: "writer",
+    status: "active",
+    created_at: "2026-09-20T10:00:00+00:00",
+    last_login: null,
+  };
+  const entry = {
+    email_or_pattern: "*@example.com",
+    role: "viewer",
+    added_by: null,
+    added_at: "2026-09-20T10:00:00+00:00",
+  };
   const sent = stubFetch((request) =>
-    Response.json(request.url.endsWith("/users") ? { users: [user] } : { entries: [entry] }),
+    Response.json(
+      request.url.endsWith("/users") ? { users: [user] } : { entries: [entry] },
+    ),
   );
   expect(await listUsers()).toEqual([user]);
   expect(await listAllowlist()).toEqual([entry]);
@@ -35,38 +50,95 @@ test("the lists are GETs, read from their users and entries fields", async () =>
 });
 
 test("each user write goes to its own route, with no idempotency key, since the server keeps none", async () => {
-  const sent = stubFetch((request) => (request.method === "DELETE" ? new Response(null, { status: 204 }) : Response.json({ ok: true })));
+  const sent = stubFetch((request) =>
+    request.method === "DELETE"
+      ? new Response(null, { status: 204 })
+      : Response.json({ ok: true }),
+  );
   await setUserRole(USER, "viewer");
   await disableUser(USER);
   await enableUser(USER);
   expect(await deleteUser(USER)).toBeUndefined();
   expect(sent).toEqual([
-    { method: "PUT", path: `/api/admin/users/${USER}/role`, query: "", headers: JSON_BODY, body: { role: "viewer" } },
-    { method: "POST", path: `/api/admin/users/${USER}/disable`, query: "", headers: {}, body: undefined },
-    { method: "POST", path: `/api/admin/users/${USER}/enable`, query: "", headers: {}, body: undefined },
-    { method: "DELETE", path: `/api/admin/users/${USER}`, query: "", headers: {}, body: undefined },
+    {
+      method: "PUT",
+      path: `/api/admin/users/${USER}/role`,
+      query: "",
+      headers: JSON_BODY,
+      body: { role: "viewer" },
+    },
+    {
+      method: "POST",
+      path: `/api/admin/users/${USER}/disable`,
+      query: "",
+      headers: {},
+      body: undefined,
+    },
+    {
+      method: "POST",
+      path: `/api/admin/users/${USER}/enable`,
+      query: "",
+      headers: {},
+      body: undefined,
+    },
+    {
+      method: "DELETE",
+      path: `/api/admin/users/${USER}`,
+      query: "",
+      headers: {},
+      body: undefined,
+    },
   ]);
 });
 
 test("allowlist writes put the entry in the path percent-encoded, so a wildcard reaches the server whole", async () => {
   const sent = stubFetch((request) =>
-    Response.json(request.method === "POST" ? { ok: true, email_or_pattern: "*@example.com", role: "writer" } : { ok: true }),
+    Response.json(
+      request.method === "POST"
+        ? { ok: true, email_or_pattern: "*@example.com", role: "writer" }
+        : { ok: true },
+    ),
   );
-  expect(await addAllowlistEntry({ email_or_pattern: " *@Example.com", role: "writer" })).toEqual({
+  expect(
+    await addAllowlistEntry({ email_or_pattern: " *@Example.com", role: "writer" }),
+  ).toEqual({
     email_or_pattern: "*@example.com",
     role: "writer",
   });
   await setAllowlistRole("*@example.com", "viewer");
   await removeAllowlistEntry("ada+test@example.com");
   expect(sent).toEqual([
-    { method: "POST", path: "/api/admin/allowlist", query: "", headers: JSON_BODY, body: { email_or_pattern: " *@Example.com", role: "writer" } },
-    { method: "PUT", path: "/api/admin/allowlist/*%40example.com/role", query: "", headers: JSON_BODY, body: { role: "viewer" } },
-    { method: "DELETE", path: "/api/admin/allowlist/ada%2Btest%40example.com", query: "", headers: {}, body: undefined },
+    {
+      method: "POST",
+      path: "/api/admin/allowlist",
+      query: "",
+      headers: JSON_BODY,
+      body: { email_or_pattern: " *@Example.com", role: "writer" },
+    },
+    {
+      method: "PUT",
+      path: "/api/admin/allowlist/*%40example.com/role",
+      query: "",
+      headers: JSON_BODY,
+      body: { role: "viewer" },
+    },
+    {
+      method: "DELETE",
+      path: "/api/admin/allowlist/ada%2Btest%40example.com",
+      query: "",
+      headers: {},
+      body: undefined,
+    },
   ]);
 });
 
 test("a refusal is an ApiError with the server's message", async () => {
-  stubFetch(() => Response.json({ detail: "Demoting one's own admin role is not permitted." }, { status: 409 }));
+  stubFetch(() =>
+    Response.json(
+      { detail: "Demoting one's own admin role is not permitted." },
+      { status: 409 },
+    ),
+  );
   await expect(setUserRole(USER, "writer")).rejects.toMatchObject({
     status: 409,
     detail: "Demoting one's own admin role is not permitted.",
@@ -84,9 +156,17 @@ export async function rejected(): Promise<void> {
 }
 
 test("a lock is a PUT of the admin route with the flag, and no idempotency key", async () => {
-  const sent = stubFetch((request) => Response.json({ id: USER, locked: request.url.includes("lock") }));
+  const sent = stubFetch((request) =>
+    Response.json({ id: USER, locked: request.url.includes("lock") }),
+  );
   expect(await setInquiryLock(USER, true)).toEqual({ id: USER, locked: true });
   expect(sent).toEqual([
-    { method: "PUT", path: `/api/admin/inquiries/${USER}/lock`, query: "", headers: JSON_BODY, body: { locked: true } },
+    {
+      method: "PUT",
+      path: `/api/admin/inquiries/${USER}/lock`,
+      query: "",
+      headers: JSON_BODY,
+      body: { locked: true },
+    },
   ]);
 });

@@ -20,19 +20,26 @@ export function SearchView({ q }: { q: string }) {
   const { navigate } = useRouter();
   const search = useQuery({
     queryKey: ["search", q, null],
-    queryFn: ({ signal }) => searchInquiries({ q, limit: LIMIT, fields: FIELDS }, { signal }),
+    queryFn: ({ signal }) =>
+      searchInquiries({ q, limit: LIMIT, fields: FIELDS }, { signal }),
     enabled: q !== "",
     staleTime: Infinity,
   });
   const hits = search.data;
   return (
     <div className="view search">
-      <ViewHeader icon={<Icon name="search" />} title={q ? `Search: ${q}${hits ? ` (${hits.length})` : ""}` : "Search"}>
+      <ViewHeader
+        icon={<Icon name="search" />}
+        title={q ? `Search: ${q}${hits ? ` (${hits.length})` : ""}` : "Search"}
+      >
         <form
           role="search"
           onSubmit={(event) => {
             event.preventDefault();
-            navigate({ name: "search", q: String(new FormData(event.currentTarget).get("q")).trim() });
+            navigate({
+              name: "search",
+              q: String(new FormData(event.currentTarget).get("q")).trim(),
+            });
           }}
         >
           <input
@@ -50,7 +57,10 @@ export function SearchView({ q }: { q: string }) {
       </ViewHeader>
       <div className="scroll">
         {!q ? (
-          <EmptyState icon={<Icon name="search" size={24} />} title="Enter a query above" />
+          <EmptyState
+            icon={<Icon name="search" size={24} />}
+            title="Enter a query above"
+          />
         ) : hits ? (
           hits.length ? (
             <table className="search-t">
@@ -69,7 +79,12 @@ export function SearchView({ q }: { q: string }) {
                     </td>
                     <td>
                       <span className="search-state">
-                        <StateGlyphs status={hit.status} judgement={typeof hit.judgement === "string" ? hit.judgement : null} />
+                        <StateGlyphs
+                          status={hit.status}
+                          judgement={
+                            typeof hit.judgement === "string" ? hit.judgement : null
+                          }
+                        />
                         {capitalize(hit.status)}
                       </span>
                     </td>

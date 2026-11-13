@@ -15,10 +15,17 @@
 export type Level = "debug" | "info" | "warn" | "error";
 
 /** An event's fields; see the module comment for what may go in them. */
-export type Fields = { readonly [name: string]: string | number | boolean | null | undefined };
+export type Fields = {
+  readonly [name: string]: string | number | boolean | null | undefined;
+};
 
 /** One logged event. `at` is an ISO time. */
-export type LogEntry = { readonly at: string; readonly level: Level; readonly event: string; readonly fields: Fields };
+export type LogEntry = {
+  readonly at: string;
+  readonly level: Level;
+  readonly event: string;
+  readonly fields: Fields;
+};
 
 /**
  * Log `event` at `level`: into the ring, and onto the console when the level is
@@ -28,7 +35,8 @@ export function log(level: Level, event: string, fields: Fields = {}): void {
   const entry: LogEntry = { at: new Date().toISOString(), level, event, fields };
   ring.push(entry);
   if (ring.length > RING_SIZE) ring.shift();
-  if (level === "warn" || level === "error" || debug.on) console[level](`trackinizer ${formatEvent(event, fields)}`);
+  if (level === "warn" || level === "error" || debug.on)
+    console[level](`trackinizer ${formatEvent(event, fields)}`);
 }
 
 /** The ring's events, oldest first. */
@@ -49,7 +57,10 @@ export function setDebug(on: boolean): void {
 export function formatEvent(event: string, fields: Fields): string {
   const pairs = Object.entries(fields)
     .filter(([, value]) => value !== undefined && value !== null)
-    .map(([name, value]) => `${name}=${typeof value === "string" && /[\s"=]|^$/.test(value) ? JSON.stringify(value) : value}`);
+    .map(
+      ([name, value]) =>
+        `${name}=${typeof value === "string" && /[\s"=]|^$/.test(value) ? JSON.stringify(value) : value}`,
+    );
   return [event, ...pairs].join(" ");
 }
 

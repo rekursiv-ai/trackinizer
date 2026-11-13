@@ -1,4 +1,12 @@
-import { createContext, Fragment, type ReactNode, use, useLayoutEffect, useRef, useState } from "react";
+import {
+  createContext,
+  Fragment,
+  type ReactNode,
+  use,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import type { SessionRecord } from "../../api/sessions";
 import { Markdown } from "../../markdown/Markdown";
 import { safeUrl } from "../../markdown/safeUrl";
@@ -35,11 +43,19 @@ export const StepMemoryContext = createContext<StepMemory | null>(null);
  * the console: its body, then its attachments as a chip, whatever its shape. A
  * tool call or result is a step (`ToolStep`), whose chip shows once it is open.
  */
-export function RecordBody({ view, kinds }: { view: RecordView; kinds: readonly string[] }) {
+export function RecordBody({
+  view,
+  kinds,
+}: {
+  view: RecordView;
+  kinds: readonly string[];
+}) {
   return (
     <>
       <ShapeBody view={view} kinds={kinds} />
-      {view.attachments && !view.tool ? <span className="tr-chip">{view.attachments}</span> : null}
+      {view.attachments && !view.tool ? (
+        <span className="tr-chip">{view.attachments}</span>
+      ) : null}
     </>
   );
 }
@@ -86,8 +102,17 @@ export function ToolStep({
     >
       {() => (
         <>
-          {call?.shape === "tool" ? <Arguments call={call} summary={summary} result={result} /> : null}
-          {result ? <ResultBody result={result} summary={summary} shown={Boolean(call)} kinds={kinds} /> : null}
+          {call?.shape === "tool" ? (
+            <Arguments call={call} summary={summary} result={result} />
+          ) : null}
+          {result ? (
+            <ResultBody
+              result={result}
+              summary={summary}
+              shown={Boolean(call)}
+              kinds={kinds}
+            />
+          ) : null}
           {attachments ? <span className="tr-chip">{attachments}</span> : null}
           {foot}
         </>
@@ -117,10 +142,20 @@ export function Reasoning({
   foot?: ReactNode;
 }) {
   return (
-    <Step id={id} name={name} line={<span className="tr-think-line">{headline(text)}</span>} aside={aside}>
+    <Step
+      id={id}
+      name={name}
+      line={<span className="tr-think-line">{headline(text)}</span>}
+      aside={aside}
+    >
       {() => (
         <>
-          <Markdown source={text} kinds={kinds} className="md turn-body tr-think" images={false} />
+          <Markdown
+            source={text}
+            kinds={kinds}
+            className="md turn-body tr-think"
+            images={false}
+          />
           {foot}
         </>
       )}
@@ -219,7 +254,14 @@ function ShapeBody({ view, kinds }: { view: RecordView; kinds: readonly string[]
             block.tag ? (
               <Fold key={k} summary={block.tag} text={block.text} />
             ) : (
-              <Markdown key={k} source={block.text} kinds={kinds} className="md turn-body" images={false} breaks />
+              <Markdown
+                key={k}
+                source={block.text}
+                kinds={kinds}
+                className="md turn-body"
+                images={false}
+                breaks
+              />
             ),
           )}
           {view.context ? <CanvasNote context={view.context} /> : null}
@@ -243,9 +285,19 @@ function ShapeBody({ view, kinds }: { view: RecordView; kinds: readonly string[]
               Continues session <span className="mono">{view.continues}</span>
             </p>
           ) : null}
-          {view.summary ? <Markdown source={view.summary} kinds={kinds} className="md turn-body" images={false} /> : null}
+          {view.summary ? (
+            <Markdown
+              source={view.summary}
+              kinds={kinds}
+              className="md turn-body"
+              images={false}
+            />
+          ) : null}
           {view.prompt ? (
-            <Fold summary={`System prompt · ${view.prompt.length.toLocaleString("en")} characters`} text={view.prompt} />
+            <Fold
+              summary={`System prompt · ${view.prompt.length.toLocaleString("en")} characters`}
+              text={view.prompt}
+            />
           ) : null}
         </>
       );
@@ -253,7 +305,9 @@ function ShapeBody({ view, kinds }: { view: RecordView; kinds: readonly string[]
       return <Fold summary={view.summary} text={view.text} />;
     case "output":
       if (view.tool) return <ToolStep call={null} result={view} kinds={kinds} />;
-      return view.text ? <Output text={view.text} failed={view.failed} kinds={kinds} /> : null;
+      return view.text ? (
+        <Output text={view.text} failed={view.failed} kinds={kinds} />
+      ) : null;
     case "note":
       return null;
   }
@@ -263,7 +317,11 @@ function ShapeBody({ view, kinds }: { view: RecordView; kinds: readonly string[]
 function Target({ summary: { tool, target } }: { summary: ToolSummary }) {
   if (!target) return null;
   const slash = target.lastIndexOf("/");
-  if ((tool === "read" || tool === "edit" || tool === "write" || tool === "list") && slash > 0 && slash < target.length - 1) {
+  if (
+    (tool === "read" || tool === "edit" || tool === "write" || tool === "list") &&
+    slash > 0 &&
+    slash < target.length - 1
+  ) {
     return (
       <>
         <code className="tool-arg tool-file" title={target}>
@@ -287,22 +345,45 @@ function Target({ summary: { tool, target } }: { summary: ToolSummary }) {
  * write's are what its result shows, its diff or its text, so they go once a
  * result that succeeded shows them, as the CLIs show only the diff.
  */
-function Arguments({ call, summary, result }: { call: RecordView & { shape: "tool" }; summary: ToolSummary; result: RecordView | null }) {
+function Arguments({
+  call,
+  summary,
+  result,
+}: {
+  call: RecordView & { shape: "tool" };
+  summary: ToolSummary;
+  result: RecordView | null;
+}) {
   // The line cuts its target to one line, or names the result's own (the file a command read).
-  const code = long(call.primary) || call.primary !== summary.target ? call.primary : "";
+  const code =
+    long(call.primary) || call.primary !== summary.target ? call.primary : "";
   const reproduced =
     !result?.failed &&
-    (result?.shape === "edit" || (result?.shape === "output" && summary.tool === "write" && call.args.some(([, value]) => value === result.text)));
+    (result?.shape === "edit" ||
+      (result?.shape === "output" &&
+        summary.tool === "write" &&
+        call.args.some(([, value]) => value === result.text)));
   const args = reproduced ? [] : call.args;
   return (
     <>
-      {code ? <Code text={code} language={call.tool === "command" ? "bash" : summary.language} /> : null}
+      {code ? (
+        <Code
+          text={code}
+          language={call.tool === "command" ? "bash" : summary.language}
+        />
+      ) : null}
       {args.length ? (
         <dl className="tool-args">
           {args.map(([name, value]) => (
             <Fragment key={name}>
               <dt>{name}</dt>
-              <dd>{long(value) ? <Code text={value} language={summary.language} /> : value}</dd>
+              <dd>
+                {long(value) ? (
+                  <Code text={value} language={summary.language} />
+                ) : (
+                  value
+                )}
+              </dd>
             </Fragment>
           ))}
         </dl>
@@ -317,18 +398,34 @@ function Arguments({ call, summary, result }: { call: RecordView & { shape: "too
  * output, a failure's included. A command over one line that no call shows
  * shows here, in full. Only a read's text has line numbers its tool put there.
  */
-function ResultBody({ result, summary, shown, kinds }: { result: RecordView; summary: ToolSummary; shown: boolean; kinds: readonly string[] }) {
+function ResultBody({
+  result,
+  summary,
+  shown,
+  kinds,
+}: {
+  result: RecordView;
+  summary: ToolSummary;
+  shown: boolean;
+  kinds: readonly string[];
+}) {
   switch (result.shape) {
     case "shell":
       return (
         <>
-          {!shown && long(result.command) ? <Code text={result.command} language="bash" /> : null}
-          {result.stdout ? <Output text={result.stdout} failed={false} kinds={kinds} /> : null}
+          {!shown && long(result.command) ? (
+            <Code text={result.command} language="bash" />
+          ) : null}
+          {result.stdout ? (
+            <Output text={result.stdout} failed={false} kinds={kinds} />
+          ) : null}
           {result.stderr ? <Output text={result.stderr} failed kinds={kinds} /> : null}
         </>
       );
     case "edit":
-      return result.lines.length ? <Diff lines={result.lines} language={summary.language} /> : null;
+      return result.lines.length ? (
+        <Diff lines={result.lines} language={summary.language} />
+      ) : null;
     case "search":
       return <SearchResults results={result.results} />;
     case "output": {
@@ -336,7 +433,10 @@ function ResultBody({ result, summary, shown, kinds }: { result: RecordView; sum
       if (result.failed || (summary.tool !== "read" && summary.tool !== "write")) {
         return <Output text={result.text} failed={result.failed} kinds={kinds} />;
       }
-      const { numbers, text } = summary.tool === "read" ? lineNumbers(result.text) : { numbers: null, text: result.text };
+      const { numbers, text } =
+        summary.tool === "read"
+          ? lineNumbers(result.text)
+          : { numbers: null, text: result.text };
       return <Code text={text} language={summary.language} numbers={numbers} />;
     }
     default:
@@ -351,7 +451,10 @@ function ResultBody({ result, summary, shown, kinds }: { result: RecordView; sum
  * tool's output, or of an edit's diff, and how many more open it. A read, a
  * search, a listing or a fetch shows none, as their exploring rows show none.
  */
-function preview(result: RecordView, { tool }: ToolSummary): ((open: () => void) => ReactNode) | null {
+function preview(
+  result: RecordView,
+  { tool }: ToolSummary,
+): ((open: () => void) => ReactNode) | null {
   if (result.shape === "edit") {
     const hidden = result.lines.length - 3;
     return (open) => (
@@ -371,7 +474,8 @@ function preview(result: RecordView, { tool }: ToolSummary): ((open: () => void)
       : result.shape === "output"
         ? result.text
         : "";
-  if (!text || !(tool === "command" || tool === "call" || tool === "agent")) return null;
+  if (!text || !(tool === "command" || tool === "call" || tool === "agent"))
+    return null;
   const clip = clipLines(text, 3, 0);
   return (open) => (
     <div className="tr-preview">
@@ -399,9 +503,7 @@ function SearchResults({ results }: { results: readonly SearchResult[] }) {
       {results.map((result, k) => (
         <li key={k}>
           {safeUrl(result.url) ? (
-            <a {...linkProps(result.url)}>
-              {result.title || result.url}
-            </a>
+            <a {...linkProps(result.url)}>{result.title || result.url}</a>
           ) : (
             <span>{result.title || result.url}</span>
           )}
@@ -420,14 +522,23 @@ function SearchResults({ results }: { results: readonly SearchResult[] }) {
 export function Terminal({ records }: { records: readonly SessionRecord[] }) {
   const [whole, setWhole] = useState(false);
   const read = ansiReader();
-  const lines = terminalLines(records).map((line) => ({ ...line, runs: read(line.text) }));
+  const lines = terminalLines(records).map((line) => ({
+    ...line,
+    runs: read(line.text),
+  }));
   const hidden = lines.length - 60;
-  const shown = whole || hidden <= 0 ? lines : [...lines.slice(0, 20), null, ...lines.slice(-40)];
+  const shown =
+    whole || hidden <= 0 ? lines : [...lines.slice(0, 20), null, ...lines.slice(-40)];
   return (
     <pre className="tool-out tr-term">
       {shown.map((line, k) =>
         line === null ? (
-          <button key={k} type="button" className="tr-show" onClick={() => setWhole(true)}>
+          <button
+            key={k}
+            type="button"
+            className="tr-show"
+            onClick={() => setWhole(true)}
+          >
             Show {hidden.toLocaleString("en")} more lines{"\n"}
           </button>
         ) : (
@@ -449,7 +560,12 @@ function Clamp({ children }: { children: ReactNode }) {
       <div className="tr-clamp" data-open={open}>
         {children}
       </div>
-      <button type="button" className="tr-show tr-clamp-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        className="tr-show tr-clamp-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
         {open ? "Show less" : "Show all"}
       </button>
     </>
@@ -475,7 +591,9 @@ function CanvasNote({ context }: { context: CanvasContext }) {
         {context.recordId ? (
           <>
             {" · "}
-            <a href={routeHref({ name: "lookup", id: context.recordId })}>{context.title || context.recordId}</a>
+            <a href={routeHref({ name: "lookup", id: context.recordId })}>
+              {context.title || context.recordId}
+            </a>
           </>
         ) : null}
       </summary>

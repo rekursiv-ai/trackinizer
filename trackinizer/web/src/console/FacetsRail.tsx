@@ -12,7 +12,11 @@ export type Active = "15m" | "1h" | "24h" | "7d";
  * the facets count every record in their window, and the whole history took
  * 8.8 s on 9 million records, against 0.5 s for 7 days.
  */
-export const ACTIVE: readonly { readonly value: Active; readonly label: string; readonly ms: number }[] = [
+export const ACTIVE: readonly {
+  readonly value: Active;
+  readonly label: string;
+  readonly ms: number;
+}[] = [
   { value: "15m", label: "15 m", ms: 15 * 60_000 },
   { value: "1h", label: "1 h", ms: 60 * 60_000 },
   { value: "24h", label: "24 h", ms: 24 * 60 * 60_000 },
@@ -52,19 +56,37 @@ export function AgentsSection({
   return (
     <section className="console-sec" aria-label="Agents">
       <h2 className="console-h">Agents</h2>
-      <Picked picks={picks} onClear={(pick) => onPicks(picks.filter((other) => other !== pick))} />
-      <Find label="Find agents" placeholder="Find, or a pattern: atlas-*" query={query} onQuery={setQuery} onPattern={(pattern) => onPicks([...picks, pattern])} />
+      <Picked
+        picks={picks}
+        onClear={(pick) => onPicks(picks.filter((other) => other !== pick))}
+      />
+      <Find
+        label="Find agents"
+        placeholder="Find, or a pattern: atlas-*"
+        query={query}
+        onQuery={setQuery}
+        onPattern={(pattern) => onPicks([...picks, pattern])}
+      />
       <div className="console-facet-tools">
         {onActive ? (
           <div className="console-seg" role="group" aria-label="Active in the last">
             {ACTIVE.map(({ value, label }) => (
-              <button key={value} type="button" aria-pressed={active === value} onClick={() => onActive(value)}>
+              <button
+                key={value}
+                type="button"
+                aria-pressed={active === value}
+                onClick={() => onActive(value)}
+              >
                 {label}
               </button>
             ))}
           </div>
         ) : null}
-        <select aria-label="Group agents by" value={by} onChange={(event) => setBy(event.currentTarget.value as Grouping)}>
+        <select
+          aria-label="Group agents by"
+          value={by}
+          onChange={(event) => setBy(event.currentTarget.value as Grouping)}
+        >
           <option value="none">No groups</option>
           <option value="room">By room</option>
           <option value="cli">By CLI</option>
@@ -89,7 +111,13 @@ export function AgentsSection({
                 />
               )}
               {group.agents.map((agent) => (
-                <AgentRow key={agent.session_id} agent={agent} picks={picks} onPicks={onPicks} onHide={onHide} />
+                <AgentRow
+                  key={agent.session_id}
+                  agent={agent}
+                  picks={picks}
+                  onPicks={onPicks}
+                  onHide={onHide}
+                />
               ))}
             </div>
           );
@@ -115,7 +143,9 @@ export function PickSection({
 }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
-  const shown = needle.includes("*") ? items : items.filter(({ name }) => name.toLowerCase().includes(needle));
+  const shown = needle.includes("*")
+    ? items
+    : items.filter(({ name }) => name.toLowerCase().includes(needle));
   return (
     <section className="console-sec" aria-label={label}>
       <h2 className="console-h">{label}</h2>
@@ -124,11 +154,25 @@ export function PickSection({
         onClear={(pick) => onPicks(picks.filter((other) => other !== pick))}
       />
       {find ? (
-        <Find label={`Find ${label.toLowerCase()}`} placeholder="Find, or a pattern: atlas-*" query={query} onQuery={setQuery} onPattern={(pattern) => onPicks([...picks, pattern])} />
+        <Find
+          label={`Find ${label.toLowerCase()}`}
+          placeholder="Find, or a pattern: atlas-*"
+          query={query}
+          onQuery={setQuery}
+          onPattern={(pattern) => onPicks([...picks, pattern])}
+        />
       ) : null}
       <div className="console-rows">
         {shown.map(({ name, count }) => (
-          <Row key={name} label={name} text={name} count={count} picks={picks} names={[name]} onChange={() => onPicks(toggle(picks, [name], null))} />
+          <Row
+            key={name}
+            label={name}
+            text={name}
+            count={count}
+            picks={picks}
+            names={[name]}
+            onChange={() => onPicks(toggle(picks, [name], null))}
+          />
         ))}
       </div>
     </section>
@@ -136,14 +180,24 @@ export function PickSection({
 }
 
 /** What a facet picks, each with a button that clears it, so a pattern or a name no longer listed can be cleared. */
-function Picked({ picks, onClear }: { picks: readonly string[]; onClear: (pick: string) => void }) {
+function Picked({
+  picks,
+  onClear,
+}: {
+  picks: readonly string[];
+  onClear: (pick: string) => void;
+}) {
   if (!picks.length) return null;
   return (
     <ul className="console-picked">
       {picks.map((pick) => (
         <li key={pick} className="console-chip">
           <span title={pick}>{pick}</span>
-          <button type="button" aria-label={`Clear ${pick}`} onClick={() => onClear(pick)}>
+          <button
+            type="button"
+            aria-label={`Clear ${pick}`}
+            onClick={() => onClear(pick)}
+          >
             <Icon name="x" size={11} />
           </button>
         </li>
@@ -169,7 +223,13 @@ function Find({
   const pattern = query.trim();
   return (
     <div className="console-find">
-      <input type="search" aria-label={label} placeholder={placeholder} value={query} onChange={(event) => onQuery(event.currentTarget.value)} />
+      <input
+        type="search"
+        aria-label={label}
+        placeholder={placeholder}
+        value={query}
+        onChange={(event) => onQuery(event.currentTarget.value)}
+      />
       {pattern.includes("*") ? (
         <button
           type="button"
@@ -204,8 +264,17 @@ function AgentRow({
   const { actor, count } = agent;
   const isPrivate = agent.audience === "private";
   const switchable = onHide !== null && agent.hideable;
-  const row = <Row label={actor} text={actor} count={count} picks={picks} names={[actor]} onChange={() => onPicks(toggle(picks, [actor], null))}
-    isPrivate={isPrivate && !switchable} />;
+  const row = (
+    <Row
+      label={actor}
+      text={actor}
+      count={count}
+      picks={picks}
+      names={[actor]}
+      onChange={() => onPicks(toggle(picks, [actor], null))}
+      isPrivate={isPrivate && !switchable}
+    />
+  );
   if (!switchable) return row;
   return (
     <div className="console-agent">
@@ -214,9 +283,11 @@ function AgentRow({
         type="button"
         className={`btn ghost console-privacy${isPrivate ? " console-privacy-private" : ""}`}
         aria-label={`${actor} is ${isPrivate ? "private: make it public" : "public: make it private"}`}
-        title={isPrivate
-          ? "Private: only you, staff and admins read its transcript. Click to let whoever may read your sessions read it."
-          : "Public: whoever may read your sessions reads its transcript. Click to keep it to you, staff and admins; its name stays listed."}
+        title={
+          isPrivate
+            ? "Private: only you, staff and admins read its transcript. Click to let whoever may read your sessions read it."
+            : "Public: whoever may read your sessions reads its transcript. Click to keep it to you, staff and admins; its name stays listed."
+        }
         onClick={() => onHide(agent)}
       >
         {isPrivate ? "Private" : "Public"}
@@ -262,7 +333,10 @@ function Row({
         {text}
       </span>
       {isPrivate ? (
-        <span className="console-badge" title="Private: only its owner, staff and admins read it">
+        <span
+          className="console-badge"
+          title="Private: only its owner, staff and admins read it"
+        >
           Private
         </span>
       ) : null}

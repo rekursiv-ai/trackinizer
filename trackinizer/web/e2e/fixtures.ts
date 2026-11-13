@@ -1,6 +1,11 @@
 // The suite's `test` and `expect`. Every spec imports them from here, not from
 // @playwright/test, so every test runs under the error guard below.
-import { type APIRequestContext, type Page, test as base, expect } from "@playwright/test";
+import {
+  type APIRequestContext,
+  type Page,
+  test as base,
+  expect,
+} from "@playwright/test";
 
 export { expect };
 
@@ -22,14 +27,18 @@ export async function setPreferences(
   change: { readonly [key: string]: unknown },
 ): Promise<void> {
   const patched = await request.patch("/api/me/preferences", { data: change });
-  if (!patched.ok()) throw new Error(`Could not set preferences: ${patched.status()} ${await patched.text()}`);
+  if (!patched.ok())
+    throw new Error(
+      `Could not set preferences: ${patched.status()} ${await patched.text()}`,
+    );
 }
 
 /** An Issue's Properties and details stand folded; open them, as a reader does, where a test reads or edits a field in them. */
 export async function openProperties(page: Page): Promise<void> {
   const fold = page.locator(".props-fold");
   await expect(fold).toBeAttached();
-  if (!(await fold.evaluate((element: HTMLDetailsElement) => element.open))) await fold.locator("summary").click();
+  if (!(await fold.evaluate((element: HTMLDetailsElement) => element.open)))
+    await fold.locator("summary").click();
   await expect(fold).toHaveJSProperty("open", true);
 }
 
@@ -53,8 +62,13 @@ export const test = base.extend<{
   // each test starts on the defaults; a spec sets what it needs with `setPreferences`.
   preferencesReset: [
     async ({ request }, use) => {
-      const profile = (await (await request.get("/api/me/profile")).json()) as { preferences: { [key: string]: unknown } };
-      await setPreferences(request, Object.fromEntries(Object.keys(profile.preferences).map((key) => [key, null])));
+      const profile = (await (await request.get("/api/me/profile")).json()) as {
+        preferences: { [key: string]: unknown };
+      };
+      await setPreferences(
+        request,
+        Object.fromEntries(Object.keys(profile.preferences).map((key) => [key, null])),
+      );
       await use(undefined);
     },
     { auto: true },
@@ -64,11 +78,17 @@ export const test = base.extend<{
       const allowed: RegExp[] = [];
       const seen: string[] = [];
       context.on("console", (message) => {
-        if (message.type() === "error") seen.push(`console.error: ${message.text()} (${message.location().url})`);
+        if (message.type() === "error")
+          seen.push(`console.error: ${message.text()} (${message.location().url})`);
       });
-      context.on("weberror", (error) => seen.push(`page error: ${error.error().stack ?? error.error().message}`));
+      context.on("weberror", (error) =>
+        seen.push(`page error: ${error.error().stack ?? error.error().message}`),
+      );
       await use((pattern) => void allowed.push(pattern));
-      expect(seen.filter((line) => !allowed.some((pattern) => pattern.test(line))), "errors the page logged or threw").toEqual([]);
+      expect(
+        seen.filter((line) => !allowed.some((pattern) => pattern.test(line))),
+        "errors the page logged or threw",
+      ).toEqual([]);
     },
     // Automatic: it guards every test, whether or not the test names it.
     { auto: true },
@@ -81,8 +101,13 @@ export const test = base.extend<{
  * request a test aborted is `ERR_FAILED`), for `allowErrors`.
  */
 export function failedResource(path: string, status: number | string): RegExp {
-  const why = typeof status === "number" ? `the server responded with a status of ${status} \\(` : `net::${status} `;
-  return new RegExp(`^console\\.error: Failed to load resource: ${why}.*\\(https?://[^/]+${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  const why =
+    typeof status === "number"
+      ? `the server responded with a status of ${status} \\(`
+      : `net::${status} `;
+  return new RegExp(
+    `^console\\.error: Failed to load resource: ${why}.*\\(https?://[^/]+${path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+  );
 }
 
 /** The tab's live stream, `/api/web/subscribe` (not the probe the page sends before it). */
@@ -90,7 +115,9 @@ export const STREAM_URL = /\/api\/web\/subscribe(?:$|\?(?!probe))/;
 
 /** Resolves when the page's live stream has answered. */
 export function streamOpened(page: Page, ok = false) {
-  return page.waitForResponse((response) => STREAM_URL.test(response.url()) && (!ok || response.status() === 200));
+  return page.waitForResponse(
+    (response) => STREAM_URL.test(response.url()) && (!ok || response.status() === 200),
+  );
 }
 
 /** The globs `page.route` matches the live stream by. */
@@ -98,10 +125,14 @@ export const STREAM_ROUTES = ["**/api/web/subscribe"] as const;
 
 /** Refuse the page's live stream connections until `page.unroute`. */
 export async function abortStream(page: Page) {
-  for (const route of STREAM_ROUTES) await page.route(route, (request) => request.abort());
+  for (const route of STREAM_ROUTES)
+    await page.route(route, (request) => request.abort());
 }
 
 /** Allow the browser's error line for each stream route a test refused. */
-export function allowStreamErrors(allowErrors: (pattern: RegExp) => void, status: number | string = "ERR_FAILED") {
+export function allowStreamErrors(
+  allowErrors: (pattern: RegExp) => void,
+  status: number | string = "ERR_FAILED",
+) {
   allowErrors(failedResource("/api/web/subscribe", status));
 }

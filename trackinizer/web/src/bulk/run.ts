@@ -8,6 +8,7 @@ import { type Edit, type Guard, sameValue } from "../writes/edits";
 import { isTransient, sendWithRetries, type WriteRequest } from "../writes/requests";
 import { refetchShowing } from "../writes/useWrite";
 import type { BulkChange } from "./edits";
+import { must } from "../must";
 
 /**
  * Where one row's write is.
@@ -30,13 +31,23 @@ export type Outcome =
   | { readonly status: "conflict"; readonly message: string; readonly theirs: unknown };
 
 /** One row of a bulk edit: the row, its edit, and where it is. */
-export type Entry = { readonly row: InquiryRow; readonly edit: Edit<FieldWrite>; readonly outcome: Outcome };
+export type Entry = {
+  readonly row: InquiryRow;
+  readonly edit: Edit<FieldWrite>;
+  readonly outcome: Outcome;
+};
 
 /** A bulk edit's rows, each with its outcome; `running` while any is being sent. */
-export type BulkReport = { readonly title: string; readonly entries: readonly Entry[]; readonly running: boolean };
+export type BulkReport = {
+  readonly title: string;
+  readonly entries: readonly Entry[];
+  readonly running: boolean;
+};
 
 /** How a bulk edit sends one write, with its retries. */
-export type Io = { readonly send: (request: WriteRequest<FieldWrite>) => Promise<FieldWrite> };
+export type Io = {
+  readonly send: (request: WriteRequest<FieldWrite>) => Promise<FieldWrite>;
+};
 
 /**
  * Apply one change to many rows, one request per row, each with its own key.
@@ -72,7 +83,9 @@ export function useBulkEdit() {
           } catch (error) {
             // The role may have changed; the profile says what it is now.
             if (error instanceof ApiError && error.status === 403) {
-              void queryClient.invalidateQueries({ queryKey: bootQueries.profile.queryKey });
+              void queryClient.invalidateQueries({
+                queryKey: bootQueries.profile.queryKey,
+              });
             }
             throw error;
           }
@@ -131,10 +144,12 @@ export async function sendPending(
   io: Io,
   onSettled: (index: number, entry: Entry) => void,
 ): Promise<void> {
-  const queue = entries.flatMap((entry, index) => (entry.outcome.status === "pending" ? [index] : []));
+  const queue = entries.flatMap((entry, index) =>
+    entry.outcome.status === "pending" ? [index] : [],
+  );
   const worker = async () => {
     for (let index = queue.shift(); index !== undefined; index = queue.shift()) {
-      const entry = entries[index]!;
+      const entry = must(entries[index]);
       onSettled(index, { ...entry, outcome: await settle(entry.edit, io) });
     }
   };
@@ -173,7 +188,8 @@ export function forRetry(entries: readonly Entry[]): Entry[] {
   return entries.map((entry) => {
     const { edit, outcome } = entry;
     if (outcome.status === "failed") return { ...entry, outcome: PENDING };
-    if (outcome.status === "conflict" && edit.guard) return { ...entry, edit: edit.guard.again(outcome.theirs), outcome: PENDING };
+    if (outcome.status === "conflict" && edit.guard)
+      return { ...entry, edit: edit.guard.again(outcome.theirs), outcome: PENDING };
     return entry;
   });
 }
@@ -185,15 +201,20 @@ export function landed(entry: Entry): boolean {
 
 /** How many rows a retry would send. */
 export function retryCount(entries: readonly Entry[]): number {
-  return entries.filter((entry) => entry.outcome.status === "failed" || entry.outcome.status === "conflict").length;
+  return entries.filter(
+    (entry) => entry.outcome.status === "failed" || entry.outcome.status === "conflict",
+  ).length;
 }
 
 /** The toast once every row has landed: `Status set to Complete on 3 inquiries; 1 was already so.` */
 export function summary(title: string, entries: readonly Entry[]): string {
   const done = entries.filter((entry) => entry.outcome.status === "done").length;
   const unchanged = entries.length - done;
-  if (done === 0) return `${title}: ${entries.length === 1 ? "it was" : `all ${entries.length} were`} already so.`;
-  const already = unchanged ? `; ${unchanged} ${unchanged === 1 ? "was" : "were"} already so` : "";
+  if (done === 0)
+    return `${title}: ${entries.length === 1 ? "it was" : `all ${entries.length} were`} already so.`;
+  const already = unchanged
+    ? `; ${unchanged} ${unchanged === 1 ? "was" : "were"} already so`
+    : "";
   return `${title} on ${done} ${done === 1 ? "inquiry" : "inquiries"}${already}.`;
 }
 
@@ -210,17 +231,26 @@ async function refused(guard: Guard<FieldWrite>, refusal: ApiError): Promise<Out
     if (!(error instanceof ApiError)) throw error;
     return failure(error);
   }
-  return sameValue(theirs, guard.base) ? { status: "rejected", message: failureMessage(refusal) } : moved(guard, theirs);
+  return sameValue(theirs, guard.base)
+    ? { status: "rejected", message: failureMessage(refusal) }
+    : moved(guard, theirs);
 }
 
 /** A row whose value someone changed to `theirs` since the list loaded it. */
 function moved(guard: Guard<FieldWrite>, theirs: unknown): Outcome {
   if (sameValue(theirs, guard.mine)) return UNCHANGED;
-  return { status: "conflict", theirs, message: `Changed to ${guard.show(theirs)} since the list loaded it. Retry saves yours over it.` };
+  return {
+    status: "conflict",
+    theirs,
+    message: `Changed to ${guard.show(theirs)} since the list loaded it. Retry saves yours over it.`,
+  };
 }
 
 function failure(error: ApiError): Outcome {
-  return { status: isTransient(error) ? "failed" : "rejected", message: failureMessage(error) };
+  return {
+    status: isTransient(error) ? "failed" : "rejected",
+    message: failureMessage(error),
+  };
 }
 
 /**
@@ -230,5 +260,7 @@ function failure(error: ApiError): Outcome {
 function failureMessage(error: ApiError): string {
   if (error.status === 0) return `Not saved. ${error.detail}`;
   if (error.status === 403) return `Your role cannot make this change. ${error.detail}`;
-  return error.status >= 500 ? `Not saved: the server failed (${error.detail}).` : error.detail;
+  return error.status >= 500
+    ? `Not saved: the server failed (${error.detail}).`
+    : error.detail;
 }

@@ -47,8 +47,19 @@ export function EdgeAnnotations({
       {annotations.valence === undefined ? null : (
         <ValenceField edge={edge} valence={annotations.valence} disabled={disabled} />
       )}
-      <LabelsField edge={edge} labels={annotations.labels ?? []} offered={offered} disabled={disabled} />
-      {priority ? <PriorityField edge={edge} priority={annotations.priority} disabled={disabled} /> : null}
+      <LabelsField
+        edge={edge}
+        labels={annotations.labels ?? []}
+        offered={offered}
+        disabled={disabled}
+      />
+      {priority ? (
+        <PriorityField
+          edge={edge}
+          priority={annotations.priority}
+          disabled={disabled}
+        />
+      ) : null}
     </>
   );
 }
@@ -58,7 +69,15 @@ export function signed(value: number): string {
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}`;
 }
 
-function NoteField({ edge, note, disabled }: { edge: EdgeRef; note: string | undefined; disabled: boolean }) {
+function NoteField({
+  edge,
+  note,
+  disabled,
+}: {
+  edge: EdgeRef;
+  note: string | undefined;
+  disabled: boolean;
+}) {
   const writer = useWrite();
   const pending = unsettled(writer.state);
   const [text, setText] = useFollowed(note ?? "");
@@ -70,7 +89,18 @@ function NoteField({ edge, note, disabled }: { edge: EdgeRef; note: string | und
         event.preventDefault();
         const to = text.trim();
         if (pending || sameValue(to, note)) return;
-        if (await writer.run(edgeAnnotationEdit({ edge, annotation: "note", label: "Note", from: note, to }))) setText(to, true);
+        if (
+          await writer.run(
+            edgeAnnotationEdit({
+              edge,
+              annotation: "note",
+              label: "Note",
+              from: note,
+              to,
+            }),
+          )
+        )
+          setText(to, true);
       }}
     >
       <label htmlFor={id}>Note</label>
@@ -84,7 +114,12 @@ function NoteField({ edge, note, disabled }: { edge: EdgeRef; note: string | und
           value={text}
           onChange={(event) => setText(event.target.value, false)}
         />
-        <WriteButton type="submit" className="btn" pending={pending} disabled={disabled}>
+        <WriteButton
+          type="submit"
+          className="btn"
+          pending={pending}
+          disabled={disabled}
+        >
           Save
         </WriteButton>
       </div>
@@ -94,7 +129,15 @@ function NoteField({ edge, note, disabled }: { edge: EdgeRef; note: string | und
 }
 
 /** Valence in [-1, 1], in steps of 0.1: below 0 argues against. A citation always has one, so it is never cleared. */
-function ValenceField({ edge, valence, disabled }: { edge: EdgeRef; valence: number; disabled: boolean }) {
+function ValenceField({
+  edge,
+  valence,
+  disabled,
+}: {
+  edge: EdgeRef;
+  valence: number;
+  disabled: boolean;
+}) {
   const writer = useWrite();
   const pending = unsettled(writer.state);
   const [value, setValue] = useFollowed(valence);
@@ -105,12 +148,22 @@ function ValenceField({ edge, valence, disabled }: { edge: EdgeRef; valence: num
       onSubmit={async (event) => {
         event.preventDefault();
         if (pending || value === valence) return;
-        const edit = edgeAnnotationEdit({ edge, annotation: "valence", label: "Valence", from: valence, to: value, show: showValence });
+        const edit = edgeAnnotationEdit({
+          edge,
+          annotation: "valence",
+          label: "Valence",
+          from: valence,
+          to: value,
+          show: showValence,
+        });
         if (await writer.run(edit)) setValue(value, true);
       }}
     >
       <label htmlFor={id}>
-        Valence <output className={`v-num ${value >= 0 ? "pos" : "neg"}`}>{signed(value)}</output>
+        Valence{" "}
+        <output className={`v-num ${value >= 0 ? "pos" : "neg"}`}>
+          {signed(value)}
+        </output>
       </label>
       <div className="ea-row">
         <input
@@ -124,7 +177,12 @@ function ValenceField({ edge, valence, disabled }: { edge: EdgeRef; valence: num
           value={value}
           onChange={(event) => setValue(Number(event.target.value), false)}
         />
-        <WriteButton type="submit" className="btn" pending={pending} disabled={disabled}>
+        <WriteButton
+          type="submit"
+          className="btn"
+          pending={pending}
+          disabled={disabled}
+        >
           Save
         </WriteButton>
       </div>
@@ -151,7 +209,8 @@ function LabelsField({
 }) {
   const writer = useWrite();
   const pending = unsettled(writer.state);
-  const change = (op: "add" | "sub", value: string) => void writer.run(edgeLabelEdit({ edge, op, value }));
+  const change = (op: "add" | "sub", value: string) =>
+    void writer.run(edgeLabelEdit({ edge, op, value }));
   return (
     <div className="ea-field" role="group" aria-label="Labels">
       <span className="ea-k">Labels</span>
@@ -180,7 +239,11 @@ function LabelsField({
           }
           options={offered
             .filter((label) => !labels.includes(label))
-            .map((label) => ({ value: label, label, icon: <LabelDot label={label} /> }))}
+            .map((label) => ({
+              value: label,
+              label,
+              icon: <LabelDot label={label} />,
+            }))}
           create={(typed) => `Create label “${typed}”`}
           onPick={(value) => change("add", value)}
         />
@@ -191,7 +254,15 @@ function LabelsField({
 }
 
 /** The child's priority under this parent: a band, an exact number, or none, which clears it. */
-function PriorityField({ edge, priority, disabled }: { edge: EdgeRef; priority: number | undefined; disabled: boolean }) {
+function PriorityField({
+  edge,
+  priority,
+  disabled,
+}: {
+  edge: EdgeRef;
+  priority: number | undefined;
+  disabled: boolean;
+}) {
   const writer = useWrite();
   return (
     <div className="ea-field" role="group" aria-label="Priority">
@@ -200,14 +271,28 @@ function PriorityField({ edge, priority, disabled }: { edge: EdgeRef; priority: 
         <PriorityPicker
           value={priority}
           trigger={
-            <WriteButton className="btn" pending={unsettled(writer.state)} disabled={disabled} title="Priority under this parent">
+            <WriteButton
+              className="btn"
+              pending={unsettled(writer.state)}
+              disabled={disabled}
+              title="Priority under this parent"
+            >
               <PriorityGlyph priority={priority ?? null} />
               {priorityText(priority)}
             </WriteButton>
           }
           onPick={(to) => {
             if (!sameValue(to, priority)) {
-              void writer.run(edgeAnnotationEdit({ edge, annotation: "priority", label: "Priority", from: priority, to, show: priorityText }));
+              void writer.run(
+                edgeAnnotationEdit({
+                  edge,
+                  annotation: "priority",
+                  label: "Priority",
+                  from: priority,
+                  to,
+                  show: priorityText,
+                }),
+              );
             }
           }}
         />
@@ -223,10 +308,14 @@ function PriorityField({ edge, priority, disabled }: { edge: EdgeRef; priority: 
  * and a later Save cannot quietly re-apply what was undone. Once edited, it is
  * kept until saved. `set(draft, true)` marks a draft just saved as the new base.
  */
-function useFollowed<Value>(stored: Value): [Value, (draft: Value, saved: boolean) => void] {
+function useFollowed<Value>(
+  stored: Value,
+): [Value, (draft: Value, saved: boolean) => void] {
   const [state, setState] = useState({ base: stored, draft: stored });
-  if (!Object.is(stored, state.base) && Object.is(state.draft, state.base)) setState({ base: stored, draft: stored });
-  const set = (draft: Value, saved: boolean) => setState((held) => ({ base: saved ? draft : held.base, draft }));
+  if (!Object.is(stored, state.base) && Object.is(state.draft, state.base))
+    setState({ base: stored, draft: stored });
+  const set = (draft: Value, saved: boolean) =>
+    setState((held) => ({ base: saved ? draft : held.base, draft }));
   return [state.draft, set];
 }
 

@@ -43,7 +43,9 @@ export type Token = {
 };
 
 /** A new token, with the secret the server returns this once and never again. */
-export type NewToken = Omit<Token, "created_at" | "last_used_at" | "revoked_at"> & { readonly secret: string };
+export type NewToken = Omit<Token, "created_at" | "last_used_at" | "revoked_at"> & {
+  readonly secret: string;
+};
 
 /** The body of a token create: its label, and a role at most the caller's (theirs by default). */
 export type CreateTokenBody = components["schemas"]["CreateTokenBody"];
@@ -75,28 +77,49 @@ export async function setPreferences(
 
 /** Fetch the caller's tokens, revoked ones included. */
 export async function listTokens({ signal }: CallOptions = {}): Promise<Token[]> {
-  const listed = await send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/me/tokens", { signal }));
+  const listed = await send(TIMEOUT_MS.read, signal, (signal) =>
+    client.GET("/api/me/tokens", { signal }),
+  );
   // Written by hand from `list_tokens_route`: the schema types it as free JSON.
   return (listed as { tokens: Token[] }).tokens;
 }
 
 /** Make a token. A role above the caller's is refused with 403. */
-export async function createToken(body: CreateTokenBody, { signal }: CallOptions = {}): Promise<NewToken> {
-  const made = await send(TIMEOUT_MS.write, signal, (signal) => client.POST("/api/me/tokens", { body, signal }));
+export async function createToken(
+  body: CreateTokenBody,
+  { signal }: CallOptions = {},
+): Promise<NewToken> {
+  const made = await send(TIMEOUT_MS.write, signal, (signal) =>
+    client.POST("/api/me/tokens", { body, signal }),
+  );
   return made as NewToken;
 }
 
 /** Revoke a token at once. One not the caller's, or already revoked, is a 404. */
-export async function revokeToken(id: string, { signal }: CallOptions = {}): Promise<void> {
+export async function revokeToken(
+  id: string,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.POST("/api/me/tokens/{key_id}/revoke", { params: { path: { key_id: id } }, signal }),
+    client.POST("/api/me/tokens/{key_id}/revoke", {
+      params: { path: { key_id: id } },
+      signal,
+    }),
   );
 }
 
 /** Change a token's role; one above the caller's is refused with 403. */
-export async function setTokenRole(id: string, role: Role, { signal }: CallOptions = {}): Promise<void> {
+export async function setTokenRole(
+  id: string,
+  role: Role,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.PUT("/api/me/tokens/{key_id}/role", { params: { path: { key_id: id } }, body: { role }, signal }),
+    client.PUT("/api/me/tokens/{key_id}/role", {
+      params: { path: { key_id: id } },
+      body: { role },
+      signal,
+    }),
   );
 }
 

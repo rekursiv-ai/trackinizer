@@ -5,6 +5,7 @@ import type { JsonNode } from "./json";
 import { Link } from "./Link";
 import { remarkRefs } from "./remarkRefs";
 import "./JsonView.css";
+import { must } from "../must";
 
 /**
  * A JSON object or array, pretty-printed: one entry a line, numbers as written,
@@ -15,7 +16,13 @@ import "./JsonView.css";
  * W&B and TensorBoard group scalars. Refs and UUIDs in strings link as they do in
  * Markdown (`remarkRefs`).
  */
-export function JsonView({ root, kinds }: { root: JsonNode; kinds: readonly string[] }) {
+export function JsonView({
+  root,
+  kinds,
+}: {
+  root: JsonNode;
+  kinds: readonly string[];
+}) {
   const link = useMemo(() => linker(kinds), [kinds]);
   return (
     <div className="jv" role="group" aria-label="JSON">
@@ -34,7 +41,19 @@ type Linker = (text: string) => ReactNode;
 type Name = string | number | undefined;
 
 /** One value, after its key when it has one; the last in its object or array takes no comma. */
-function Value({ node, name, depth, last, link }: { node: JsonNode; name: Name; depth: number; last: boolean; link: Linker }) {
+function Value({
+  node,
+  name,
+  depth,
+  last,
+  link,
+}: {
+  node: JsonNode;
+  name: Name;
+  depth: number;
+  last: boolean;
+  link: Linker;
+}) {
   if (node.type === "object" || node.type === "array") {
     return <Branch node={node} name={name} depth={depth} last={last} link={link} />;
   }
@@ -44,7 +63,9 @@ function Value({ node, name, depth, last, link }: { node: JsonNode; name: Name; 
       {node.type === "string" ? (
         <span className="jv-string">&quot;{link(node.value)}&quot;</span>
       ) : (
-        <span className={node.type === "number" ? "jv-number" : "jv-literal"}>{node.text}</span>
+        <span className={node.type === "number" ? "jv-number" : "jv-literal"}>
+          {node.text}
+        </span>
       )}
       {last ? null : ","}
     </div>
@@ -66,12 +87,16 @@ function Branch({
   link: Linker;
 }) {
   const size = node.type === "object" ? node.entries.length : node.items.length;
-  const [open, setOpen] = useState(depth === 0 || (size <= FOLD_ENTRIES && depth < FOLD_DEPTH));
+  const [open, setOpen] = useState(
+    depth === 0 || (size <= FOLD_ENTRIES && depth < FOLD_DEPTH),
+  );
   const [start, end] = node.type === "object" ? ["{", "}"] : ["[", "]"];
   const comma = last ? null : ",";
   const head =
     name === undefined || !size ? (
-      typeof name === "string" ? <Key name={name} /> : null
+      typeof name === "string" ? (
+        <Key name={name} />
+      ) : null
     ) : (
       <>
         <button
@@ -82,7 +107,9 @@ function Branch({
           onClick={() => setOpen(!open)}
         >
           <Icon name={open ? "chevD" : "chevR"} size={12} />
-          {typeof name === "string" ? <span className="jv-key">&quot;{name}&quot;</span> : null}
+          {typeof name === "string" ? (
+            <span className="jv-key">&quot;{name}&quot;</span>
+          ) : null}
         </button>
         {typeof name === "string" ? ": " : null}
       </>
@@ -98,7 +125,14 @@ function Branch({
         {size ? (
           <span className="jv-count">
             {" "}
-            {size} {node.type === "object" ? (size === 1 ? "key" : "keys") : size === 1 ? "item" : "items"}
+            {size}{" "}
+            {node.type === "object"
+              ? size === 1
+                ? "key"
+                : "keys"
+              : size === 1
+                ? "item"
+                : "items"}
           </span>
         ) : null}
       </div>
@@ -114,13 +148,27 @@ function Branch({
       <div className="jv-kids">
         {node.type === "array" ? (
           node.items.map((item, index) => (
-            <Value key={index} node={item} name={index} depth={depth + 1} last={index === size - 1} link={link} />
+            <Value
+              key={index}
+              node={item}
+              name={index}
+              depth={depth + 1}
+              last={index === size - 1}
+              link={link}
+            />
           ))
         ) : numbers ? (
           <NumberTable groups={numbers} />
         ) : (
           node.entries.map(([key, value], index) => (
-            <Value key={index} node={value} name={key} depth={depth + 1} last={index === size - 1} link={link} />
+            <Value
+              key={index}
+              node={value}
+              name={key}
+              depth={depth + 1}
+              last={index === size - 1}
+              link={link}
+            />
           ))
         )}
       </div>
@@ -149,14 +197,17 @@ function Key({ name }: { name: string }) {
  * An object's entries as key and number, grouped by the prefix before each key's
  * first `/`; undefined unless every value is a number.
  */
-function numberGroups(entries: readonly (readonly [string, JsonNode])[]): Map<string, [string, string][]> | undefined {
+function numberGroups(
+  entries: readonly (readonly [string, JsonNode])[],
+): Map<string, [string, string][]> | undefined {
   const groups = new Map<string, [string, string][]>();
   for (const [key, value] of entries) {
     if (value.type !== "number") return undefined;
     const slash = key.indexOf("/");
-    const [prefix, rest] = slash > 0 ? [key.slice(0, slash), key.slice(slash + 1)] : ["", key];
+    const [prefix, rest] =
+      slash > 0 ? [key.slice(0, slash), key.slice(slash + 1)] : ["", key];
     if (!groups.has(prefix)) groups.set(prefix, []);
-    groups.get(prefix)!.push([rest, value.text]);
+    must(groups.get(prefix)).push([rest, value.text]);
   }
   return groups;
 }
@@ -190,12 +241,22 @@ function NumberTable({ groups }: { groups: Map<string, [string, string][]> }) {
 function linker(kinds: readonly string[]): Linker {
   const refs = remarkRefs({ kinds });
   return (text) => {
-    const paragraph: Paragraph = { type: "paragraph", children: [{ type: "text", value: text }] };
+    const paragraph: Paragraph = {
+      type: "paragraph",
+      children: [{ type: "text", value: text }],
+    };
     refs({ type: "root", children: [paragraph] });
     return paragraph.children.map((node, index) =>
       node.type === "link" ? (
-        <Link key={index} href={node.url} className="ref" title={node.title ?? undefined}>
-          {node.children.map((child) => (child.type === "text" ? child.value : "")).join("")}
+        <Link
+          key={index}
+          href={node.url}
+          className="ref"
+          title={node.title ?? undefined}
+        >
+          {node.children
+            .map((child) => (child.type === "text" ? child.value : ""))
+            .join("")}
         </Link>
       ) : node.type === "text" ? (
         node.value

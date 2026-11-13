@@ -23,7 +23,13 @@ test("bare terms AND together over title and description, ignoring case", () => 
 test("a field term is a regex only the server runs, so no loaded row matches it (WEB-02, WEB-14)", () => {
   // Postgres runs POSIX regexes, which JavaScript's disagree with (`\\m`,
   // `[[:digit:]]`, `\\b`), under a time budget a browser tab cannot impose.
-  for (const q of ["title:\\d+", "description:^seen", "title:^r", "retry title:(a+)+$", "title:[[:digit:]]"]) {
+  for (const q of [
+    "title:\\d+",
+    "description:^seen",
+    "title:^r",
+    "retry title:(a+)+$",
+    "title:[[:digit:]]",
+  ]) {
     expect(titles(q), q).toEqual([]);
   }
 });
@@ -62,12 +68,15 @@ test("text the server refuses, or with no terms, matches nothing", () => {
 
 test("a ref names its kind, or every kind its prefix starts; a UUID names its inquiry", () => {
   const kinds = ["Issue", "Belief", "WebResult", "WebSearch"];
-  expect(jumpsFor("issue#412", kinds)).toEqual([{ name: "ref", kind: "Issue", seq: 412 }]);
-  expect(jumpsFor(" Iss # 7 ", kinds)).toEqual([{ name: "ref", kind: "Issue", seq: 7 }]);
-  expect(jumpsFor("web#3", kinds).map((route) => route.name === "ref" && route.kind)).toEqual([
-    "WebResult",
-    "WebSearch",
+  expect(jumpsFor("issue#412", kinds)).toEqual([
+    { name: "ref", kind: "Issue", seq: 412 },
   ]);
+  expect(jumpsFor(" Iss # 7 ", kinds)).toEqual([
+    { name: "ref", kind: "Issue", seq: 7 },
+  ]);
+  expect(
+    jumpsFor("web#3", kinds).map((route) => route.name === "ref" && route.kind),
+  ).toEqual(["WebResult", "WebSearch"]);
   expect(jumpsFor("Paper#3", kinds)).toEqual([]);
   expect(jumpsFor("0B6F7C1E-2F7A-4C55-9D7E-1F0E6B1D2A33", kinds)).toEqual([
     { name: "lookup", id: "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33" },
@@ -75,5 +84,7 @@ test("a ref names its kind, or every kind its prefix starts; a UUID names its in
   expect(jumpsFor("retry#3 now", kinds)).toEqual([]);
   // A seq past 2^53 would round to another inquiry's, so it names none (WEB-05).
   expect(jumpsFor(`Issue#${BigInt(Number.MAX_SAFE_INTEGER) + 2n}`, kinds)).toEqual([]);
-  expect(jumpsFor(`Issue#${Number.MAX_SAFE_INTEGER}`, kinds)).toEqual([{ name: "ref", kind: "Issue", seq: Number.MAX_SAFE_INTEGER }]);
+  expect(jumpsFor(`Issue#${Number.MAX_SAFE_INTEGER}`, kinds)).toEqual([
+    { name: "ref", kind: "Issue", seq: Number.MAX_SAFE_INTEGER },
+  ]);
 });

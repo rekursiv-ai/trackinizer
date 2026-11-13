@@ -12,11 +12,21 @@ import {
   toggle,
   toTargets,
 } from "./facets";
+import { must } from "../must";
 
 const NOW = Date.parse("2026-10-02T12:00:00Z");
 
 /** Agent `actor`, last heard from `minutes` ago. */
-function agent(actor: string, minutes: number, { rooms = [] as string[], cli = "codex", ended = null as string | null, count = 10 } = {}): FeedActorFacet {
+function agent(
+  actor: string,
+  minutes: number,
+  {
+    rooms = [] as string[],
+    cli = "codex",
+    ended = null as string | null,
+    count = 10,
+  } = {},
+): FeedActorFacet {
   return {
     actor,
     session_id: `00000000-0000-4000-8000-${String(actor.length).padStart(12, "0")}`,
@@ -48,34 +58,61 @@ test("a pattern's * matches any run of characters; any other entry matches only 
 
 test("a selection picks the known names its patterns match, and its exact names even when unknown", () => {
   const names = AGENTS.map(({ actor }) => actor);
-  expect(picked(["lead_atlas-*", "gone-agent"], names)).toEqual(["lead_atlas-a1", "lead_atlas-b", "gone-agent"]);
+  expect(picked(["lead_atlas-*", "gone-agent"], names)).toEqual([
+    "lead_atlas-a1",
+    "lead_atlas-b",
+    "gone-agent",
+  ]);
   expect(picked([], names)).toEqual([]);
   expect(isPicked(["lead_atlas-*"], "lead_atlas-b")).toBe(true);
 });
 
 test("the feed reads the view's agents, rooms and CLIs by name, and its level's kinds; a choice that picks nothing reads nothing", () => {
-  const view = { agents: ["lead_atlas-*"], rooms: [], clis: ["codex"], level: 1 as const };
+  const view = {
+    agents: ["lead_atlas-*"],
+    rooms: [],
+    clis: ["codex"],
+    level: 1 as const,
+  };
   expect(feedFilter(view, AGENTS)).toEqual({
     actor: ["lead_atlas-a1", "lead_atlas-b"],
     room: [],
     cli: ["codex"],
     kind: ["AgentToAgentMessage", "AssistantMessage", "ContextState", "UserMessage"],
   });
-  expect(feedFilter({ agents: [], rooms: ["atlas-*"], clis: [], level: 4 }, AGENTS)).toEqual({
+  expect(
+    feedFilter({ agents: [], rooms: ["atlas-*"], clis: [], level: 4 }, AGENTS),
+  ).toEqual({
     actor: [],
     room: ["atlas-a1", "atlas-b"],
     cli: [],
     kind: [],
   });
-  expect(feedFilter({ agents: ["nobody-*"], rooms: [], clis: [], level: 4 }, AGENTS)).toBeNull();
+  expect(
+    feedFilter({ agents: ["nobody-*"], rooms: [], clis: [], level: 4 }, AGENTS),
+  ).toBeNull();
 });
 
 test("the feed's filters are sorted, so the facets in another order, or picks made in another order, read the same feed", () => {
-  const view = { agents: ["lead_atlas-*", "Ada#8"], rooms: ["atlas-*"], clis: ["slackbot", "codex"], level: 2 as const };
+  const view = {
+    agents: ["lead_atlas-*", "Ada#8"],
+    rooms: ["atlas-*"],
+    clis: ["slackbot", "codex"],
+    level: 2 as const,
+  };
   const filter = feedFilter(view, AGENTS);
-  expect(filter).toMatchObject({ actor: ["Ada#8", "lead_atlas-a1", "lead_atlas-b"], room: ["atlas-a1", "atlas-b"], cli: ["codex", "slackbot"] });
+  expect(filter).toMatchObject({
+    actor: ["Ada#8", "lead_atlas-a1", "lead_atlas-b"],
+    room: ["atlas-a1", "atlas-b"],
+    cli: ["codex", "slackbot"],
+  });
   expect(feedFilter(view, AGENTS.toReversed())).toEqual(filter);
-  expect(feedFilter({ ...view, agents: view.agents.toReversed(), clis: view.clis.toReversed() }, AGENTS)).toEqual(filter);
+  expect(
+    feedFilter(
+      { ...view, agents: view.agents.toReversed(), clis: view.clis.toReversed() },
+      AGENTS,
+    ),
+  ).toEqual(filter);
 });
 
 test("the agents seen are remembered, one row per name from its session heard from last; a read that adds nothing gives back the same", () => {
@@ -84,9 +121,9 @@ test("the agents seen are remembered, one row per name from its session heard fr
   // A narrower window lists fewer agents, and forgets none.
   expect(remember(seen, AGENTS.slice(0, 2))).toBe(seen);
   const restarted = agent("critic-zo", 0, { rooms: ["critic"] });
-  const next = remember(seen, [restarted, AGENTS[4]!]);
+  const next = remember(seen, [restarted, must(AGENTS[4])]);
   expect(next.get("critic-zo")).toBe(restarted);
-  expect(remember(next, [AGENTS[4]!])).toBe(next);
+  expect(remember(next, [must(AGENTS[4])])).toBe(next);
 });
 
 test("a view shows the agents that pass its agent, room and CLI choices, or every agent when it chooses none", () => {
@@ -94,9 +131,17 @@ test("a view shows the agents that pass its agent, room and CLI choices, or ever
     const { agents, everyone } = shown(view, AGENTS);
     return { actors: agents.map(({ actor }) => actor), everyone };
   };
-  expect(actors({ agents: [], rooms: [], clis: [] })).toEqual({ actors: AGENTS.map(({ actor }) => actor), everyone: true });
-  expect(actors({ agents: [], rooms: ["atlas-a1"], clis: [] })).toEqual({ actors: ["lead_atlas-a1", "child_coder"], everyone: false });
-  expect(actors({ agents: ["*atlas*", "child_coder"], rooms: [], clis: ["claude"] })).toEqual({ actors: ["child_coder"], everyone: false });
+  expect(actors({ agents: [], rooms: [], clis: [] })).toEqual({
+    actors: AGENTS.map(({ actor }) => actor),
+    everyone: true,
+  });
+  expect(actors({ agents: [], rooms: ["atlas-a1"], clis: [] })).toEqual({
+    actors: ["lead_atlas-a1", "child_coder"],
+    everyone: false,
+  });
+  expect(
+    actors({ agents: ["*atlas*", "child_coder"], rooms: [], clis: ["claude"] }),
+  ).toEqual({ actors: ["child_coder"], everyone: false });
 });
 
 test("agents are found by a fragment of their name or room, or by a pattern", () => {
@@ -108,7 +153,11 @@ test("agents are found by a fragment of their name or room, or by a pattern", ()
 
 test("agents group by room, CLI, state or name family, the busiest-lately group first, each newest first", () => {
   const groups = (by: Parameters<typeof groupAgents>[1]) =>
-    groupAgents(AGENTS, by, NOW).map(({ key, agents, pattern }) => [key, agents.map(({ actor }) => actor), pattern]);
+    groupAgents(AGENTS, by, NOW).map(({ key, agents, pattern }) => [
+      key,
+      agents.map(({ actor }) => actor),
+      pattern,
+    ]);
   expect(groups("room")).toEqual([
     ["atlas-a1", ["lead_atlas-a1", "child_coder"], null],
     ["(no room)", ["Ada#8"], null],
@@ -133,12 +182,17 @@ test("agents group by room, CLI, state or name family, the busiest-lately group 
     ["child_coder", ["child_coder"], null],
     ["critic", ["critic-zo"], "critic-*"],
   ]);
-  expect(groups("none")).toEqual([["", ["lead_atlas-a1", "Ada#8", "child_coder", "lead_atlas-b", "critic-zo"], null]]);
+  expect(groups("none")).toEqual([
+    ["", ["lead_atlas-a1", "Ada#8", "child_coder", "lead_atlas-b", "critic-zo"], null],
+  ]);
 });
 
 test("a group is picked in one step: a family as its pattern, any other group as its names; picking it again clears it", () => {
   const tiles = ["lead_atlas-a1", "lead_atlas-b"];
-  expect(toggle(["lead_atlas-b", "Ada#8"], tiles, "lead_atlas-*")).toEqual(["Ada#8", "lead_atlas-*"]);
+  expect(toggle(["lead_atlas-b", "Ada#8"], tiles, "lead_atlas-*")).toEqual([
+    "Ada#8",
+    "lead_atlas-*",
+  ]);
   expect(toggle(["Ada#8", "lead_atlas-*"], tiles, "lead_atlas-*")).toEqual(["Ada#8"]);
   const room = ["lead_atlas-a1", "child_coder"];
   expect(toggle(["child_coder"], room, null)).toEqual(["child_coder", "lead_atlas-a1"]);

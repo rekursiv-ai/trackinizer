@@ -1,6 +1,10 @@
+import { must } from "../must";
 /** A JSON value as its text wrote it: keys in order, numbers as written. */
 export type JsonNode =
-  | { readonly type: "object"; readonly entries: readonly (readonly [string, JsonNode])[] }
+  | {
+      readonly type: "object";
+      readonly entries: readonly (readonly [string, JsonNode])[];
+    }
   | { readonly type: "array"; readonly items: readonly JsonNode[] }
   | { readonly type: "string"; readonly value: string }
   | { readonly type: "number"; readonly text: string }
@@ -40,20 +44,21 @@ function tree(text: string): JsonNode {
     if (!parent) root = node;
     else if (parent.node.type === "array") parent.node.items.push(node);
     else {
-      parent.node.entries.push([parent.key!, node]);
+      parent.node.entries.push([must(parent.key), node]);
       parent.key = undefined;
     }
   };
   for (const [token] of text.matchAll(TOKEN)) {
     if (token === "{" || token === "[") {
-      const node: Container = token === "{" ? { type: "object", entries: [] } : { type: "array", items: [] };
+      const node: Container =
+        token === "{" ? { type: "object", entries: [] } : { type: "array", items: [] };
       place(node);
       open.push({ node, key: undefined });
     } else if (token === "}" || token === "]") {
       open.pop();
     } else if (token[0] === '"') {
       const value = JSON.parse(token) as string;
-      const parent = open.at(-1)!;
+      const parent = must(open.at(-1));
       if (parent.node.type === "object" && parent.key === undefined) parent.key = value;
       else place({ type: "string", value });
     } else if (token === "true" || token === "false" || token === "null") {
@@ -62,7 +67,9 @@ function tree(text: string): JsonNode {
       place({ type: "number", text: token });
     }
   }
-  return root!;
+  return must(root);
 }
 
-type Container = { type: "object"; entries: [string, JsonNode][] } | { type: "array"; items: JsonNode[] };
+type Container =
+  | { type: "object"; entries: [string, JsonNode][] }
+  | { type: "array"; items: JsonNode[] };

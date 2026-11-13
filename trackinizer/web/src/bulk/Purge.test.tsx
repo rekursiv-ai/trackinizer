@@ -1,5 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { DetailRow } from "../api/detail";
 import { stubFetch } from "../api/testing";
@@ -9,6 +17,7 @@ import { detail, PROFILE, renderDetail, row } from "../detail/testing";
 import { stubLayout } from "../editors/testing";
 import { ToastProvider } from "../ui/toast";
 import { mayPurge, PurgeDialog } from "./Purge";
+import { must } from "../must";
 
 beforeEach(() => {
   history.replaceState(null, "", "#/ref/Issue/7");
@@ -38,20 +47,31 @@ function serve(self: DetailRow) {
     const { pathname } = new URL(request.url);
     if (pathname.endsWith("/owner") && server.ownerHeld) await server.ownerHeld;
     if (request.method === "GET") {
-      if (server.purged) return Response.json({ detail: "inquiry not found" }, { status: 404 });
-      if (pathname === `/api/web/get/${self.id}`) return Response.json(detail(server.self));
+      if (server.purged)
+        return Response.json({ detail: "inquiry not found" }, { status: 404 });
+      if (pathname === `/api/web/get/${self.id}`)
+        return Response.json(detail(server.self));
       return Response.json({ confidence: 0.5 });
     }
-    const body = (await request.clone().json()) as { value?: unknown; expected?: unknown };
+    const body = (await request.clone().json()) as {
+      value?: unknown;
+      expected?: unknown;
+    };
     server.writes.push(`${request.method} ${pathname.replace(self.id, "{id}")}`);
     server.bodies.push(body);
     if (pathname.endsWith("/owner")) {
-      if (body.expected !== server.self.owner) return Response.json({ detail: "owner transition rejected" }, { status: 409 });
+      if (body.expected !== server.self.owner)
+        return Response.json({ detail: "owner transition rejected" }, { status: 409 });
       server.self = { ...server.self, owner: body.value ?? null };
       return Response.json({ id: self.id, change_id: "c1" });
     }
     if (server.self.owner) {
-      return Response.json({ detail: `inquiry is owned by '${server.self.owner}'; release its owner before purge` }, { status: 409 });
+      return Response.json(
+        {
+          detail: `inquiry is owned by '${server.self.owner}'; release its owner before purge`,
+        },
+        { status: 409 },
+      );
     }
     server.purged = true;
     return Response.json({ id: self.id, change_id: "c2" });
@@ -67,10 +87,16 @@ test("the server lets a row's account purge it, without case, and an admin, and 
 });
 
 test("a science chat's session is purged by an admin alone, not by its starter", () => {
-  const chat = row("AgentSession", 3, { account: "ada@example.com", labels: ["science-chat"] });
+  const chat = row("AgentSession", 3, {
+    account: "ada@example.com",
+    labels: ["science-chat"],
+  });
   expect(mayPurge(chat, { email: "ada@example.com", role: "writer" })).toBe(false);
   expect(mayPurge(chat, { email: "bob@example.com", role: "admin" })).toBe(true);
-  const other = row("AgentSession", 4, { account: "ada@example.com", labels: ["other"] });
+  const other = row("AgentSession", 4, {
+    account: "ada@example.com",
+    labels: ["other"],
+  });
   expect(mayPurge(other, { email: "ada@example.com", role: "writer" })).toBe(true);
 });
 
@@ -79,18 +105,34 @@ test("the dialog of a viewer who may not purge clears no owner and sends no purg
   render(
     <QueryClientProvider client={new QueryClient()}>
       <SessionContext value={new Session(() => {})}>
-        <ProfileContext value={PROFILE}><ToastProvider>
-          <PurgeDialog detail={detail(row("Issue", 7, { account: "bob@example.com", owner: "worker-1" }))} returnTo={null} onClose={() => {}} />
-        </ToastProvider></ProfileContext>
+        <ProfileContext value={PROFILE}>
+          <ToastProvider>
+            <PurgeDialog
+              detail={detail(
+                row("Issue", 7, { account: "bob@example.com", owner: "worker-1" }),
+              )}
+              returnTo={null}
+              onClose={() => {}}
+            />
+          </ToastProvider>
+        </ProfileContext>
       </SessionContext>
     </QueryClientProvider>,
   );
   const dialog = screen.getByRole("dialog", { name: "Purge Issue#7" });
-  expect(within(dialog).getByText("Only the row's account or an admin can purge it.")).toBeTruthy();
-  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "tidy" } });
-  const confirm = within(dialog).getByRole("button", { name: /^Clear owner and purge/ }) as HTMLButtonElement;
+  expect(
+    within(dialog).getByText("Only the row's account or an admin can purge it."),
+  ).toBeTruthy();
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), {
+    target: { value: "tidy" },
+  });
+  const confirm = within(dialog).getByRole("button", {
+    name: /^Clear owner and purge/,
+  }) as HTMLButtonElement;
   expect(confirm.disabled).toBe(true);
-  await act(async () => { fireEvent.submit(dialog.querySelector("form")!); });
+  await act(async () => {
+    fireEvent.submit(must(dialog.querySelector("form")));
+  });
   expect(sent).toEqual([]);
 });
 
@@ -102,19 +144,28 @@ async function openPurge() {
   return screen.findByRole("dialog", { name: "Purge Issue#7" });
 }
 
-test("an owned row: the dialog offers to clear the owner, needs a reason, then clears it by compare-and-set and purges", { tags: ["manual"] }, async () => {
+test("an owned row: the dialog offers to clear the owner, needs a reason, then clears it by compare-and-set and purges", {
+  tags: ["manual"],
+}, async () => {
   const server = serve(row("Issue", 7, { owner: "bob" }));
   const dialog = await openPurge();
   expect(dialog.textContent).toContain("Issue#7 is owned by bob.");
-  const confirm = within(dialog).getByRole("button", { name: /^Clear owner and purge/ });
+  const confirm = within(dialog).getByRole("button", {
+    name: /^Clear owner and purge/,
+  });
   fireEvent.click(confirm);
   expect(within(dialog).getByRole("alert").textContent).toBe("Add a reason first.");
   expect(server.writes).toEqual([]);
 
-  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "  A duplicate.  " } });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), {
+    target: { value: "  A duplicate.  " },
+  });
   fireEvent.click(confirm);
   await screen.findByRole("heading", { name: "Deleted or purged" });
-  expect(server.writes).toEqual(["PUT /api/inquiries/{id}/owner", "DELETE /api/inquiries/{id}"]);
+  expect(server.writes).toEqual([
+    "PUT /api/inquiries/{id}/owner",
+    "DELETE /api/inquiries/{id}",
+  ]);
   expect(server.bodies).toEqual([
     { value: null, mode: "cas", expected: "bob", reason: "A duplicate." },
     { reason: "A duplicate." },
@@ -127,8 +178,13 @@ test("an unowned row is purged with one DELETE, after one confirm", async () => 
   const server = serve(row("Issue", 7));
   const dialog = await openPurge();
   expect(dialog.textContent).not.toContain("owned by");
-  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "Test row" } });
-  fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Reason" }), { key: "Enter", metaKey: true });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), {
+    target: { value: "Test row" },
+  });
+  fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Reason" }), {
+    key: "Enter",
+    metaKey: true,
+  });
   await screen.findByRole("heading", { name: "Deleted or purged" });
   expect(server.writes).toEqual(["DELETE /api/inquiries/{id}"]);
   expect(server.bodies).toEqual([{ reason: "Test row" }]);
@@ -138,10 +194,14 @@ test("a row someone took after the detail loaded: the refusal shows, and the dia
   const server = serve(row("Issue", 7));
   const dialog = await openPurge();
   server.self = { ...server.self, owner: "carol" };
-  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "Stale" } });
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), {
+    target: { value: "Stale" },
+  });
   fireEvent.click(within(dialog).getByRole("button", { name: /^Purge permanently/ }));
   await waitFor(() =>
-    expect(within(dialog).getByRole("alert").textContent).toBe("inquiry is owned by 'carol'; release its owner before purge"),
+    expect(within(dialog).getByRole("alert").textContent).toBe(
+      "inquiry is owned by 'carol'; release its owner before purge",
+    ),
   );
   await within(dialog).findByRole("button", { name: /^Clear owner and purge/ });
   expect(dialog.textContent).toContain("Issue#7 is owned by carol.");
@@ -153,8 +213,12 @@ test("a dialog closed while the owner is cleared purges nothing once that lands 
   let release = () => {};
   server.ownerHeld = new Promise((resolve) => (release = resolve));
   const dialog = await openPurge();
-  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), { target: { value: "A duplicate." } });
-  fireEvent.click(within(dialog).getByRole("button", { name: /^Clear owner and purge/ }));
+  fireEvent.change(within(dialog).getByRole("textbox", { name: "Reason" }), {
+    target: { value: "A duplicate." },
+  });
+  fireEvent.click(
+    within(dialog).getByRole("button", { name: /^Clear owner and purge/ }),
+  );
   await within(dialog).findByText("Saving…");
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -162,7 +226,8 @@ test("a dialog closed while the owner is cleared purges nothing once that lands 
   // A write the server receives changes nothing on screen, so only the interval checks again.
   await waitFor(() => expect(server.self.owner).toBeNull(), { interval: 1 });
   // Turns enough for a purge to follow, as it did before (RV-04).
-  for (let turn = 0; turn < 5; turn++) await act(() => new Promise((resolve) => setTimeout(resolve)));
+  for (let turn = 0; turn < 5; turn++)
+    await act(() => new Promise((resolve) => setTimeout(resolve)));
   expect(server.writes).toEqual(["PUT /api/inquiries/{id}/owner"]);
   expect(server.purged).toBe(false);
 });

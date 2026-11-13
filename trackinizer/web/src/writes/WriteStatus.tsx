@@ -48,7 +48,12 @@ export function WriteStatus({ state }: { state: WriteState }) {
         <div className="w-status" role="alert">
           <Lines text={state.message} />
           <span className="w-actions">
-            <button type="button" className="btn" onClick={state.retry} disabled={!online}>
+            <button
+              type="button"
+              className="btn"
+              onClick={state.retry}
+              disabled={!online}
+            >
               Retry
             </button>
             <button type="button" className="btn ghost" onClick={state.discard}>
@@ -79,7 +84,13 @@ function Lines({ text }: { text: string }) {
  * known, show both values, and ask. Keeping theirs is the default, and Escape
  * chooses it.
  */
-function ConflictDialog({ state, online }: { state: Extract<WriteState, { status: "conflict" }>; online: boolean }) {
+function ConflictDialog({
+  state,
+  online,
+}: {
+  state: Extract<WriteState, { status: "conflict" }>;
+  online: boolean;
+}) {
   const { label, who, theirs, mine } = state;
   return (
     <AlertDialog.Root open onOpenChange={(open) => open || state.keepTheirs()}>
@@ -91,8 +102,10 @@ function ConflictDialog({ state, online }: { state: Extract<WriteState, { status
               <h3>{label} changed</h3>
             </AlertDialog.Title>
             <AlertDialog.Description>
-              {who ? `${who} changed this since you saw it.` : "It changed since you started editing."} Save yours
-              anyway?
+              {who
+                ? `${who} changed this since you saw it.`
+                : "It changed since you started editing."}{" "}
+              Save yours anyway?
             </AlertDialog.Description>
             <dl className="w-versions">
               <dt>{who ? `Now, by ${who}` : "Now"}</dt>
@@ -106,7 +119,12 @@ function ConflictDialog({ state, online }: { state: Extract<WriteState, { status
             <AlertDialog.Cancel className="btn ghost" onClick={state.keepTheirs}>
               Keep theirs
             </AlertDialog.Cancel>
-            <button type="button" className="btn primary" onClick={state.saveMine} disabled={!online}>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={state.saveMine}
+              disabled={!online}
+            >
               Save mine
             </button>
           </div>

@@ -27,7 +27,13 @@ export function Refresh({ queryKey, title }: { queryKey: QueryKey; title: string
     );
   }
   return (
-    <button type="button" className="btn ghost" onClick={refresh} disabled={fetching} title={title}>
+    <button
+      type="button"
+      className="btn ghost"
+      onClick={refresh}
+      disabled={fetching}
+      title={title}
+    >
       {fetching ? "Refreshing…" : "Refresh"}
     </button>
   );
@@ -36,7 +42,10 @@ export function Refresh({ queryKey, title }: { queryKey: QueryKey; title: string
 /** The failure of the first read under `queryKey` that failed to refresh data it still shows, or null. */
 function useRefreshFailure(queryKey: QueryKey): Error | null {
   const queryClient = useQueryClient();
-  const subscribe = useCallback((changed: () => void) => queryClient.getQueryCache().subscribe(changed), [queryClient]);
+  const subscribe = useCallback(
+    (changed: () => void) => queryClient.getQueryCache().subscribe(changed),
+    [queryClient],
+  );
   return useSyncExternalStore(subscribe, () => {
     const failed = queryClient
       .getQueryCache()

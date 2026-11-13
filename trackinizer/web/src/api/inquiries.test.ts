@@ -15,6 +15,7 @@ import {
   setField,
 } from "./inquiries";
 import { stubFetch } from "./testing";
+import { must } from "../must";
 
 const ID = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
 
@@ -78,8 +79,11 @@ test("list kinds are checked against the schema this build is typed against", ()
   expect(inquiryKinds(["Issue", "CodeChange"])).toEqual(["Issue", "CodeChange"]);
   expect(isInquiryKind("AgentSession")).toBe(true);
   // Kinds are PascalCase; an inherited property is not a kind.
-  for (const kind of ["issue", "Ticket", "toString"]) expect(isInquiryKind(kind), kind).toBe(false);
-  expect(() => inquiryKinds(["Issue", "Ticket"])).toThrow("This build does not know the inquiry kind Ticket");
+  for (const kind of ["issue", "Ticket", "toString"])
+    expect(isInquiryKind(kind), kind).toBe(false);
+  expect(() => inquiryKinds(["Issue", "Ticket"])).toThrow(
+    "This build does not know the inquiry kind Ticket",
+  );
 });
 
 test("a retry sends the same key and body again", async () => {
@@ -96,11 +100,20 @@ test("a list page repeats kind and filter, with limit and offset per kind", asyn
     { field: "status", op: "ne", value: "active" },
     { field: "owner", op: "re", value: "^(dan@example\\.com|josh)$" },
   ];
-  const rows = await listInquiries({ kinds: ["Issue", "Belief"], filters, limit: 20, offset: 40 });
+  const rows = await listInquiries({
+    kinds: ["Issue", "Belief"],
+    filters,
+    limit: 20,
+    offset: 40,
+  });
   expect(rows).toEqual([{ id: ID, kind: "Issue", seq: 3 }]);
   expect(sent).toHaveLength(1);
-  expect(sent[0]).toMatchObject({ method: "GET", path: "/api/inquiries", body: undefined });
-  const query = new URLSearchParams(sent[0]!.query);
+  expect(sent[0]).toMatchObject({
+    method: "GET",
+    path: "/api/inquiries",
+    body: undefined,
+  });
+  const query = new URLSearchParams(must(sent[0]).query);
   expect(query.getAll("kind")).toEqual(["Issue", "Belief"]);
   expect(query.getAll("filter").map((raw) => JSON.parse(raw))).toEqual(filters);
   expect([query.get("limit"), query.get("offset")]).toEqual(["20", "40"]);
@@ -110,7 +123,14 @@ test("a list page repeats kind and filter, with limit and offset per kind", asyn
 });
 
 test("a list page can ask for each row's narrows ancestors, and a list filter on narrows", async () => {
-  const ancestor = { id: ID, kind: "Issue", seq: 1, title: "Goal", status: "active", child_ids: [ID] };
+  const ancestor = {
+    id: ID,
+    kind: "Issue",
+    seq: 1,
+    title: "Goal",
+    status: "active",
+    child_ids: [ID],
+  };
   const sent = stubFetch(() => Response.json([{ id: ID, ancestors: [ancestor] }]));
   const roots = [{ field: "narrows", op: "notnull", value: "" }];
   const rows = await listInquiries({
@@ -121,24 +141,39 @@ test("a list page can ask for each row's narrows ancestors, and a list filter on
     fields: ["id"],
     ancestors: "narrows",
   });
-  const ancestry: readonly Ancestor[] | undefined = rows[0]!.ancestors;
+  const ancestry: readonly Ancestor[] | undefined = must(rows[0]).ancestors;
   expect(ancestry).toEqual([ancestor]);
-  const query = new URLSearchParams(sent[0]!.query);
+  const query = new URLSearchParams(must(sent[0]).query);
   expect(query.get("ancestors")).toBe("narrows");
   expect(query.getAll("filter").map((raw) => JSON.parse(raw))).toEqual(roots);
 });
 
 test("a list page can name the only keys its rows carry, one fields param each", async () => {
   const sent = stubFetch(() => Response.json([{ id: ID, title: "Retry" }]));
-  const rows = await listInquiries({ kinds: ["Issue"], filters: [], limit: 50, offset: 0, fields: ["id", "title"] });
+  const rows = await listInquiries({
+    kinds: ["Issue"],
+    filters: [],
+    limit: 50,
+    offset: 0,
+    fields: ["id", "title"],
+  });
   expect(rows).toEqual([{ id: ID, title: "Retry" }]);
-  expect(new URLSearchParams(sent[0]!.query).getAll("fields")).toEqual(["id", "title"]);
+  expect(new URLSearchParams(must(sent[0]).query).getAll("fields")).toEqual([
+    "id",
+    "title",
+  ]);
   // A row is typed with the keys asked for alone,
   // @ts-expect-error
-  expect(rows[0]!.status).toBeUndefined();
+  expect(must(rows[0]).status).toBeUndefined();
   // and a page names no key a list row lacks.
-  // @ts-expect-error
-  await listInquiries({ kinds: ["Issue"], filters: [], limit: 50, offset: 0, fields: ["description"] });
+  await listInquiries({
+    kinds: ["Issue"],
+    filters: [],
+    limit: 50,
+    offset: 0,
+    // @ts-expect-error
+    fields: ["description"],
+  });
 });
 
 test("INQUIRY_ROW_FIELDS asks for every key of a list row", async () => {
@@ -152,18 +187,29 @@ test("INQUIRY_ROW_FIELDS asks for every key of a list row", async () => {
     fields: INQUIRY_ROW_FIELDS,
   });
   expect(rows).toEqual([]);
-  const asked = new URLSearchParams(sent[0]!.query).getAll("fields");
+  const asked = new URLSearchParams(must(sent[0]).query).getAll("fields");
   expect(asked).toEqual([...INQUIRY_ROW_FIELDS]);
-  expect(asked).toEqual(expect.arrayContaining(["id", "kind", "seq", "title", "proved_by", "favored_by"]));
+  expect(asked).toEqual(
+    expect.arrayContaining(["id", "kind", "seq", "title", "proved_by", "favored_by"]),
+  );
   expect(asked).not.toContain("description");
 });
 
 test("a seq-range read repeats seq_range with the kinds and filters, and a limit per kind", async () => {
   const sent = stubFetch(() => Response.json([{ id: ID, kind: "Issue", seq: 3 }]));
   const filters = [{ field: "status", op: "is", value: "active" }];
-  await listInquiriesBySeq({ kinds: ["Issue", "Belief"], filters, seqRanges: ["3..5", "9..9"], limit: 4 });
-  const query = new URLSearchParams(sent[0]!.query);
-  expect(sent[0]).toMatchObject({ method: "GET", path: "/api/inquiries", body: undefined });
+  await listInquiriesBySeq({
+    kinds: ["Issue", "Belief"],
+    filters,
+    seqRanges: ["3..5", "9..9"],
+    limit: 4,
+  });
+  const query = new URLSearchParams(must(sent[0]).query);
+  expect(sent[0]).toMatchObject({
+    method: "GET",
+    path: "/api/inquiries",
+    body: undefined,
+  });
   expect(query.getAll("kind")).toEqual(["Issue", "Belief"]);
   expect(query.getAll("filter").map((raw) => JSON.parse(raw))).toEqual(filters);
   expect(query.getAll("seq_range")).toEqual(["3..5", "9..9"]);
@@ -173,15 +219,30 @@ test("a seq-range read repeats seq_range with the kinds and filters, and a limit
 
 test("a seq-range read names its fields as a list page does", async () => {
   const sent = stubFetch(() => Response.json([{ id: ID, seq: 3 }]));
-  const rows = await listInquiriesBySeq({ kinds: ["Issue"], filters: [], seqRanges: ["3..3"], limit: 1, fields: ["id", "seq"] });
+  const rows = await listInquiriesBySeq({
+    kinds: ["Issue"],
+    filters: [],
+    seqRanges: ["3..3"],
+    limit: 1,
+    fields: ["id", "seq"],
+  });
   expect(rows).toEqual([{ id: ID, seq: 3 }]);
-  expect(new URLSearchParams(sent[0]!.query).getAll("fields")).toEqual(["id", "seq"]);
+  expect(new URLSearchParams(must(sent[0]).query).getAll("fields")).toEqual([
+    "id",
+    "seq",
+  ]);
   // @ts-expect-error
-  expect(rows[0]!.title).toBeUndefined();
+  expect(must(rows[0]).title).toBeUndefined();
 });
 
 test("a seq-range read asks for ancestors as a list page does", async () => {
   const sent = stubFetch(() => Response.json([]));
-  await listInquiriesBySeq({ kinds: ["Issue"], filters: [], seqRanges: ["3..3"], limit: 1, ancestors: "narrows" });
-  expect(new URLSearchParams(sent[0]!.query).get("ancestors")).toBe("narrows");
+  await listInquiriesBySeq({
+    kinds: ["Issue"],
+    filters: [],
+    seqRanges: ["3..3"],
+    limit: 1,
+    ancestors: "narrows",
+  });
+  expect(new URLSearchParams(must(sent[0]).query).get("ancestors")).toBe("narrows");
 });

@@ -1,15 +1,26 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test } from "vitest";
 import { stubClipboard } from "../debug/testing";
 import { ToastProvider } from "../ui/toast";
 import { Markdown } from "./Markdown";
+import { must } from "../must";
 
 // A synthetic job result, as an Artifact's description holds one: one line of
 // JSON with eight metrics.
-const RESULT = readFileSync(join(import.meta.dirname, "testdata/job_result.json"), "utf8");
+const RESULT = readFileSync(
+  join(import.meta.dirname, "testdata/job_result.json"),
+  "utf8",
+);
 const KINDS = ["Issue", "Experiment"];
 
 afterEach(cleanup);
@@ -29,7 +40,9 @@ function lines(view: HTMLElement): string[] {
 
 /** Each row of `table`, as the text of its cells. */
 function rows(table: HTMLElement): string[][] {
-  return [...table.querySelectorAll("tr")].map((row) => [...row.cells].map((cell) => cell.textContent ?? ""));
+  return [...table.querySelectorAll("tr")].map((row) =>
+    [...row.cells].map((cell) => cell.textContent ?? ""),
+  );
 }
 
 test("a description that is one line of JSON shows as a JSON view, one entry a line", () => {
@@ -50,9 +63,9 @@ test("a description that is one line of JSON shows as a JSON view, one entry a l
     '"submission_category": ""',
     "}",
   ]);
-  expect(within(view).getByRole("link", { name: "01434be3" }).getAttribute("href")).toBe(
-    "/trax/lookup/01434be3-ebf8-4ed6-9c1b-bf9c0735c9c9",
-  );
+  expect(
+    within(view).getByRole("link", { name: "01434be3" }).getAttribute("href"),
+  ).toBe("/trax/lookup/01434be3-ebf8-4ed6-9c1b-bf9c0735c9c9");
 });
 
 test("an object of numbers is a table of key and value, each key under its prefix, numbers as written", () => {
@@ -70,7 +83,9 @@ test("an object of numbers is a table of key and value, each key under its prefi
     ["val_bpb", "1.07744145321265"],
   ]);
   // Tabular figures (`.num`), right-aligned by the view's style.
-  expect([...table.querySelectorAll("td")].every((cell) => cell.classList.contains("num"))).toBe(true);
+  expect(
+    [...table.querySelectorAll("td")].every((cell) => cell.classList.contains("num")),
+  ).toBe(true);
   cleanup();
 
   renderMd('{"loss": 2.5, "eval/acc": 0.5, "train/lr": 1e-3, "eval/loss": 2.7}');
@@ -87,13 +102,19 @@ test("an object of numbers is a table of key and value, each key under its prefi
   // One value that is not a number, and it is JSON again.
   renderMd('{"loss": 2.5, "note": "x"}');
   expect(screen.queryByRole("table")).toBeNull();
-  expect(lines(screen.getByRole("group", { name: "JSON" }))).toEqual(["{", '"loss": 2.5,', '"note": "x"', "}"]);
+  expect(lines(screen.getByRole("group", { name: "JSON" }))).toEqual([
+    "{",
+    '"loss": 2.5,',
+    '"note": "x"',
+    "}",
+  ]);
 });
 
 test("keys, strings, numbers, and true, false and null each take their colour", () => {
   renderMd('[{"ok": true, "off": false, "none": null, "n": -3.5e2, "s": "x"}]');
   const view = screen.getByRole("group", { name: "JSON" });
-  const tokens = (name: string) => [...view.querySelectorAll(`.jv-${name}`)].map((token) => token.textContent);
+  const tokens = (name: string) =>
+    [...view.querySelectorAll(`.jv-${name}`)].map((token) => token.textContent);
   expect(tokens("key")).toEqual(['"ok"', '"off"', '"none"', '"n"', '"s"']);
   expect(tokens("literal")).toEqual(["true", "false", "null"]);
   expect(tokens("number")).toEqual(["-3.5e2"]);
@@ -104,13 +125,11 @@ test("an object or array folds and unfolds from the keyboard; one over 50 entrie
   const big = Array.from({ length: 60 }, (_, k) => k);
   renderMd(JSON.stringify({ small: [1, 2], big, deep: { a: { b: { c: 1 } } } }));
   const toggle = (name: string) => screen.getByRole("button", { name });
-  expect(["small", "big", "deep", "a", "b"].map((name) => toggle(name).getAttribute("aria-expanded"))).toEqual([
-    "true",
-    "false",
-    "true",
-    "true",
-    "false",
-  ]);
+  expect(
+    ["small", "big", "deep", "a", "b"].map((name) =>
+      toggle(name).getAttribute("aria-expanded"),
+    ),
+  ).toEqual(["true", "false", "true", "true", "false"]);
   const view = screen.getByRole("group", { name: "JSON" });
   expect(lines(view)).toContain('"big": […], 60 items');
   expect(lines(view)).toContain('"b": {…} 1 key');
@@ -137,15 +156,23 @@ test("Copy copies the JSON as it was written", async () => {
 test("a ref in a JSON string links as it does in text", () => {
   renderMd('{"note": "Rerun after Issue#4 lands", "ref": "Experiment#12"}');
   const view = screen.getByRole("group", { name: "JSON" });
-  expect(within(view).getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(["/trax/ref/Issue/4", "/trax/ref/Experiment/12"]);
+  expect(
+    within(view)
+      .getAllByRole("link")
+      .map((link) => link.getAttribute("href")),
+  ).toEqual(["/trax/ref/Issue/4", "/trax/ref/Experiment/12"]);
   expect(lines(view)[1]).toBe('"note": "Rerun after Issue#4 lands",');
 });
 
 test("markup and script URLs in a JSON string stay text", () => {
-  const root = renderMd('{"html": "<img src=x onerror=alert(1)>", "url": "javascript:alert(1)", "<b>": 1, "n": "x"}');
+  const root = renderMd(
+    '{"html": "<img src=x onerror=alert(1)>", "url": "javascript:alert(1)", "<b>": 1, "n": "x"}',
+  );
   expect(root.querySelector("img, b, script")).toBeNull();
   expect(root.querySelector("a")).toBeNull();
-  expect(lines(screen.getByRole("group", { name: "JSON" }))[1]).toBe('"html": "<img src=x onerror=alert(1)>",');
+  expect(lines(screen.getByRole("group", { name: "JSON" }))[1]).toBe(
+    '"html": "<img src=x onerror=alert(1)>",',
+  );
 });
 
 test("a fenced block tagged json or jsonc, or untagged, holding JSON shows as a JSON view; the rest stays code", async () => {
@@ -171,18 +198,32 @@ test("a fenced block tagged json or jsonc, or untagged, holding JSON shows as a 
   ].join("\n");
   const root = renderMd(source);
   const views = screen.getAllByRole("group", { name: "JSON" });
-  expect(views.map((view) => lines(view).join(" "))).toEqual(['{ "a": true }', "[ 1, 2 ]", '{ "untagged": true }']);
-  expect([...root.querySelectorAll("pre code")].map((code) => code.textContent)).toEqual(['{"broken": \n', "[1, 2]\n"]);
-  expect([...root.querySelectorAll("p")].map((paragraph) => paragraph.textContent)).toEqual(["Before.", "After."]);
-  fireEvent.click(screen.getAllByRole("button", { name: "Copy JSON" })[0]!);
+  expect(views.map((view) => lines(view).join(" "))).toEqual([
+    '{ "a": true }',
+    "[ 1, 2 ]",
+    '{ "untagged": true }',
+  ]);
+  expect(
+    [...root.querySelectorAll("pre code")].map((code) => code.textContent),
+  ).toEqual(['{"broken": \n', "[1, 2]\n"]);
+  expect(
+    [...root.querySelectorAll("p")].map((paragraph) => paragraph.textContent),
+  ).toEqual(["Before.", "After."]);
+  fireEvent.click(must(screen.getAllByRole("button", { name: "Copy JSON" })[0]));
   await waitFor(() => expect(copied).toEqual(['{"a": true}']));
 });
 
 test("text that is not all JSON renders as Markdown, as before", () => {
-  for (const source of ['[the plan](https://example.com/plan) and {"a": 1}', '{"a": 1} and more', "[1, 2] [3]"]) {
+  for (const source of [
+    '[the plan](https://example.com/plan) and {"a": 1}',
+    '{"a": 1} and more',
+    "[1, 2] [3]",
+  ]) {
     const root = renderMd(source);
     expect(screen.queryByRole("group", { name: "JSON" })).toBeNull();
-    expect(root.querySelector("p")?.textContent).toBe(source.replace("[the plan](https://example.com/plan)", "the plan"));
+    expect(root.querySelector("p")?.textContent).toBe(
+      source.replace("[the plan](https://example.com/plan)", "the plan"),
+    );
     cleanup();
   }
 });

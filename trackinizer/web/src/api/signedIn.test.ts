@@ -1,5 +1,15 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { PAGE_USER_PARAM, pageAccount, pageUrl, readAs, refused, SIGNED_IN_KEY, signedOut, subscribe, switched } from "./signedIn";
+import {
+  PAGE_USER_PARAM,
+  pageAccount,
+  pageUrl,
+  readAs,
+  refused,
+  SIGNED_IN_KEY,
+  signedOut,
+  subscribe,
+  switched,
+} from "./signedIn";
 
 const ADA = "ada@example.com";
 const SAM = "sam@example.com";
@@ -19,7 +29,9 @@ function anotherTabSays(email: string) {
 test("a page not yet read names no account and no user, and no word of another tab moves it", () => {
   anotherTabSays(SAM);
   expect(pageAccount()).toBeNull();
-  expect(pageUrl("https://trax.test/api/web/subscribe")).toBe("https://trax.test/api/web/subscribe");
+  expect(pageUrl("https://trax.test/api/web/subscribe")).toBe(
+    "https://trax.test/api/web/subscribe",
+  );
   expect(switched()).toBeNull();
   refused();
   expect(switched()).toBeNull();
@@ -30,8 +42,11 @@ test("a page read as an account says so to the browser, and names its user, not 
   expect(pageAccount()).toBe(ADA);
   expect(localStorage.getItem(SIGNED_IN_KEY)).toBe(ADA);
   const url = new URL(pageUrl("https://trax.test/api/canvases/c/events?since=1"));
-  expect([url.pathname, url.searchParams.get("since"), url.searchParams.get(PAGE_USER_PARAM)])
-    .toEqual(["/api/canvases/c/events", "1", USER_ID]);
+  expect([
+    url.pathname,
+    url.searchParams.get("since"),
+    url.searchParams.get(PAGE_USER_PARAM),
+  ]).toEqual(["/api/canvases/c/events", "1", USER_ID]);
   expect(url.href).not.toContain("ada");
   expect(switched()).toBeNull();
 });
@@ -79,8 +94,12 @@ test("a refusal moves the page, naming whom the browser says it is signed in as 
 });
 
 test("without storage no tab is heard, and the page moves only on a refusal", () => {
-  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("denied", "SecurityError"); });
-  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("denied", "SecurityError"); });
+  vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    throw new DOMException("denied", "SecurityError");
+  });
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new DOMException("denied", "SecurityError");
+  });
   readAs(ADA, USER_ID);
   expect(pageAccount()).toBe(ADA);
   expect(switched()).toBeNull();

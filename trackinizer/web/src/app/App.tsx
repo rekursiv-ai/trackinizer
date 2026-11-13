@@ -1,9 +1,20 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { APP } from "../appName";
-import { type ReactNode, startTransition, useDeferredValue, useEffect, useState, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  startTransition,
+  useDeferredValue,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { ApiError } from "../api/client";
 import { subscribe, switched, type Switched } from "../api/signedIn";
-import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
+import {
+  CommandRegistry,
+  CommandRegistryContext,
+  Shortcuts,
+} from "../commands/registry";
 import { CopyDetails } from "../debug/CopyDetails";
 import { prepareTimes } from "../detail/time";
 import { log } from "../debug/log";
@@ -42,7 +53,9 @@ export function App({
   reload?: () => void;
 }) {
   const [session] = useState(() => new Session(assign));
-  const [queryClient] = useState(() => createQueryClient(() => session.leaveForLogin()));
+  const [queryClient] = useState(() =>
+    createQueryClient(() => session.leaveForLogin()),
+  );
   const [registry] = useState(() => new CommandRegistry());
   const started = useDeferredValue(true, false);
   useEffect(() => {
@@ -95,7 +108,12 @@ function Boot({ reload }: { reload: () => void }) {
   useEffect(() => {
     if (role && !shown) startTransition(() => setShown(true));
   }, [role, shown]);
-  if (moved) return <Frame><AccountChanged moved={moved} reload={reload} /></Frame>;
+  if (moved)
+    return (
+      <Frame>
+        <AccountChanged moved={moved} reload={reload} />
+      </Frame>
+    );
   if (boot.state === "ready" && !shown) return <Frame busy />;
   if (boot.state === "ready") {
     return (
@@ -110,19 +128,29 @@ function Boot({ reload }: { reload: () => void }) {
       </MetaContext>
     );
   }
-  if (boot.state === "loading" || (boot.error instanceof ApiError && boot.error.status === 401)) {
+  if (
+    boot.state === "loading" ||
+    (boot.error instanceof ApiError && boot.error.status === 401)
+  ) {
     return <Frame busy />;
   }
   const message = boot.error instanceof Error ? boot.error.message : String(boot.error);
   return (
     <Frame>
-      <EmptyState icon={<Icon name="x" size={24} />} title={`Could not start ${APP.name}`}>
+      <EmptyState
+        icon={<Icon name="x" size={24} />}
+        title={`Could not start ${APP.name}`}
+      >
         <p role="alert">{message}</p>
         <span className="w-actions">
           <button type="button" className="btn" onClick={boot.retry}>
             Retry
           </button>
-          <CopyDetails message={`Could not start: ${message}`} error={boot.error} labelled />
+          <CopyDetails
+            message={`Could not start: ${message}`}
+            error={boot.error}
+            labelled
+          />
         </span>
       </EmptyState>
     </Frame>
@@ -131,12 +159,25 @@ function Boot({ reload }: { reload: () => void }) {
 
 /** What a tab says in place of the app once the browser signed in as another account, or out, elsewhere. */
 function AccountChanged({ moved, reload }: { moved: Switched; reload: () => void }) {
-  const now = moved.now === null ? "is no longer signed in as it" : `is signed in as ${moved.now} now`;
+  const now =
+    moved.now === null
+      ? "is no longer signed in as it"
+      : `is signed in as ${moved.now} now`;
   return (
-    <EmptyState icon={<Icon name="user" size={24} />} title={moved.now === null ? "No longer signed in" : "Signed in as another account"}>
-      <p role="alert">This tab was opened as {moved.page}, and this browser {now}. Nothing more is sent from it.</p>
+    <EmptyState
+      icon={<Icon name="user" size={24} />}
+      title={
+        moved.now === null ? "No longer signed in" : "Signed in as another account"
+      }
+    >
+      <p role="alert">
+        This tab was opened as {moved.page}, and this browser {now}. Nothing more is
+        sent from it.
+      </p>
       <span className="w-actions">
-        <button type="button" className="btn" onClick={reload}>Reload</button>
+        <button type="button" className="btn" onClick={reload}>
+          Reload
+        </button>
       </span>
     </EmptyState>
   );

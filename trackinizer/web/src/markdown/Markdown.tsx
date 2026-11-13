@@ -1,7 +1,11 @@
 import type { Root } from "mdast";
 import { findAndReplace } from "mdast-util-find-and-replace";
 import { type ComponentProps, memo, useEffect, useMemo, useState } from "react";
-import ReactMarkdown, { type Components, type ExtraProps, type Options } from "react-markdown";
+import ReactMarkdown, {
+  type Components,
+  type ExtraProps,
+  type Options,
+} from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useCopy } from "../ui/toast";
 import { hasFence, rehypeJsonBlocks } from "./code";
@@ -59,7 +63,9 @@ export const Markdown = memo(function Markdown({
             <JsonView root={json} kinds={kinds} />
           </CodeFrame>
         ) : (
-          <ReactMarkdown {...markdownOptions({ kinds, images, breaks, highlight })}>{source}</ReactMarkdown>
+          <ReactMarkdown {...markdownOptions({ kinds, images, breaks, highlight })}>
+            {source}
+          </ReactMarkdown>
         )}
       </KindsContext>
     </div>
@@ -101,7 +107,10 @@ function warmMarkdown(): Promise<void> {
     for (const [source, breaks] of WARM_UP) {
       await new Promise((resolve) => setTimeout(resolve));
       // The pipeline alone, as a render runs it: its result, React elements, goes nowhere.
-      ReactMarkdown({ ...markdownOptions({ kinds: ["Issue"], images: false, breaks }), children: source });
+      ReactMarkdown({
+        ...markdownOptions({ kinds: ["Issue"], images: false, breaks }),
+        children: source,
+      });
     }
     warmed = true;
   })());
@@ -113,9 +122,15 @@ function warmMarkdown(): Promise<void> {
  */
 const WARM_UP: readonly (readonly [string, boolean])[] = [
   ["Hello *there*.", false],
-  ["# Plan\n\n- one **two** `three`\n- [four](https://example.com) Issue#4 at /opt/x/y\n\n> said", false],
+  [
+    "# Plan\n\n- one **two** `three`\n- [four](https://example.com) Issue#4 at /opt/x/y\n\n> said",
+    false,
+  ],
   ["| a | b |\n|---|---|\n| c | d |", false],
-  ["```py\nx = 1\n```\n\n1. first\n2. second\n\n---\n\nhttps://example.com\n00000000-0000-4000-8000-000000000001", true],
+  [
+    "```py\nx = 1\n```\n\n1. first\n2. second\n\n---\n\nhttps://example.com\n00000000-0000-4000-8000-000000000001",
+    true,
+  ],
 ];
 
 /** react-markdown's options for a `Markdown` of these props; `highlight` colours code, once the highlighter has loaded. */
@@ -131,7 +146,12 @@ function markdownOptions({
   highlight?: typeof rehypeHighlightCode;
 }): Options {
   return {
-    remarkPlugins: [remarkGfm, remarkPaths, [remarkRefs, { kinds }], ...(breaks ? [remarkBreaks] : [])],
+    remarkPlugins: [
+      remarkGfm,
+      remarkPaths,
+      [remarkRefs, { kinds }],
+      ...(breaks ? [remarkBreaks] : []),
+    ],
     rehypePlugins: highlight ? [rehypeJsonBlocks, highlight] : [rehypeJsonBlocks],
     urlTransform: safeUrl,
     components: images ? COMPONENTS : NO_IMAGE_COMPONENTS,
@@ -154,18 +174,29 @@ const COMPONENTS: Components = {
 
 /** Each newline in a paragraph as a line break, as remark-breaks makes one. */
 function remarkBreaks() {
-  return (tree: Root) => findAndReplace(tree, [[/\r?\n/g, () => ({ type: "break" as const })]]);
+  return (tree: Root) =>
+    findAndReplace(tree, [[/\r?\n/g, () => ({ type: "break" as const })]]);
 }
 
 /** Code, or a path (`remarkPaths`): code that copies its path on a click. */
 function CodeSpan({ className, children }: ComponentProps<"code"> & ExtraProps) {
-  return className === "md-path" ? <CopyPath path={String(children)} /> : <code className={className}>{children}</code>;
+  return className === "md-path" ? (
+    <CopyPath path={String(children)} />
+  ) : (
+    <code className={className}>{children}</code>
+  );
 }
 
 function CopyPath({ path }: { path: string }) {
   const copy = useCopy();
   return (
-    <button type="button" className="md-path" aria-label={`Copy path ${path}`} title="Copy path" onClick={() => void copy(path, "Copied the path")}>
+    <button
+      type="button"
+      className="md-path"
+      aria-label={`Copy path ${path}`}
+      title="Copy path"
+      onClick={() => void copy(path, "Copied the path")}
+    >
       <code>{path}</code>
     </button>
   );
@@ -173,7 +204,11 @@ function CopyPath({ path }: { path: string }) {
 
 /** An image as text: its alt and URL, never an element the browser loads. */
 function InertImage({ src, alt }: ComponentProps<"img"> & ExtraProps) {
-  return <span className="md-dead-link">{[alt, src ? `(${String(src)})` : ""].filter(Boolean).join(" ")}</span>;
+  return (
+    <span className="md-dead-link">
+      {[alt, src ? `(${String(src)})` : ""].filter(Boolean).join(" ")}
+    </span>
+  );
 }
 
 const NO_IMAGE_COMPONENTS: Components = { ...COMPONENTS, img: InertImage };

@@ -2,7 +2,16 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { APIRequestContext, Page, Request } from "@playwright/test";
-import { expect, failedResource, openProperties, test, streamOpened, abortStream, allowStreamErrors } from "./fixtures";
+import {
+  expect,
+  failedResource,
+  openProperties,
+  test,
+  streamOpened,
+  abortStream,
+  allowStreamErrors,
+} from "./fixtures";
+import { must } from "../src/must";
 
 // The detail's editors against the e2e server, with the Python client as a
 // second user. Each test makes its own Issue, so rows other spec files create
@@ -11,25 +20,53 @@ import { expect, failedResource, openProperties, test, streamOpened, abortStream
 const ROOT = fileURLToPath(new URL("../../../..", import.meta.url));
 
 /** Edit field `field` of inquiry `id` to the JSON `value` as the Python client, as `e2e-writer`. */
-async function pythonEdit(baseURL: string, id: string, field: string, value: unknown): Promise<void> {
+async function pythonEdit(
+  baseURL: string,
+  id: string,
+  field: string,
+  value: unknown,
+): Promise<void> {
   const code = [
     "import json, sys, uuid",
     "from trackinizer.client.client import Client",
     "client = Client(sys.argv[1], author='e2e-writer')",
     "client.edit(uuid.UUID(sys.argv[2]), sys.argv[3], json.loads(sys.argv[4]), actor='e2e-writer')",
   ].join("\n");
-  await promisify(execFile)("uv", ["--quiet", "run", "--frozen", "python", "-c", code, baseURL, id, field, JSON.stringify(value)], {
-    cwd: ROOT,
-  });
+  await promisify(execFile)(
+    "uv",
+    [
+      "--quiet",
+      "run",
+      "--frozen",
+      "python",
+      "-c",
+      code,
+      baseURL,
+      id,
+      field,
+      JSON.stringify(value),
+    ],
+    {
+      cwd: ROOT,
+    },
+  );
 }
 
-async function createIssue(request: APIRequestContext, fields: object): Promise<string> {
-  const response = await request.post("/api/inquiries/issue", { data: { ...fields, idempotency_key: crypto.randomUUID() } });
+async function createIssue(
+  request: APIRequestContext,
+  fields: object,
+): Promise<string> {
+  const response = await request.post("/api/inquiries/issue", {
+    data: { ...fields, idempotency_key: crypto.randomUUID() },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).id;
 }
 
-async function stored(request: APIRequestContext, id: string): Promise<{ [field: string]: unknown }> {
+async function stored(
+  request: APIRequestContext,
+  id: string,
+): Promise<{ [field: string]: unknown }> {
   return (await request.get(`/api/inquiries/${id}`)).json();
 }
 
@@ -37,7 +74,8 @@ async function stored(request: APIRequestContext, id: string): Promise<{ [field:
 async function openDetail(page: Page, id: string): Promise<Request[]> {
   const writes: Request[] = [];
   page.on("request", (request) => {
-    if (request.method() !== "GET" && request.url().includes("/api/")) writes.push(request);
+    if (request.method() !== "GET" && request.url().includes("/api/"))
+      writes.push(request);
   });
   const subscribed = streamOpened(page);
   await page.goto(`/trax/lookup/${id}`);
@@ -47,8 +85,10 @@ async function openDetail(page: Page, id: string): Promise<Request[]> {
   return writes;
 }
 
-const properties = (page: Page) => page.getByRole("complementary", { name: "Properties" });
-const propButton = (page: Page, field: string) => properties(page).locator(`[data-field="${field}"] button.prop-btn`);
+const properties = (page: Page) =>
+  page.getByRole("complementary", { name: "Properties" });
+const propButton = (page: Page, field: string) =>
+  properties(page).locator(`[data-field="${field}"] button.prop-btn`);
 
 test("a status change after the Python client's gets the conflict dialog, then lands on Save mine", async ({
   page,
@@ -66,7 +106,7 @@ test("a status change after the Python client's gets the conflict dialog, then l
   await page.goto(`/trax/lookup/${id}`);
   await openProperties(page);
   await expect(propButton(page, "status")).toHaveText("Active");
-  await pythonEdit(baseURL!, id, "status", "abandoned");
+  await pythonEdit(must(baseURL), id, "status", "abandoned");
 
   await propButton(page, "status").click();
   await page.getByRole("option", { name: "Complete" }).click();
@@ -79,8 +119,14 @@ test("a status change after the Python client's gets the conflict dialog, then l
 });
 
 /** Set Issue `id`'s priority to `value` directly, as the second user `e2e-writer`. */
-async function setPriorityAsOther(request: APIRequestContext, id: string, value: number): Promise<{ change_id: string | null }> {
-  const response = await request.put(`/api/issue/${id}/priority`, { data: { value, actor: "e2e-writer" } });
+async function setPriorityAsOther(
+  request: APIRequestContext,
+  id: string,
+  value: number,
+): Promise<{ change_id: string | null }> {
+  const response = await request.put(`/api/issue/${id}/priority`, {
+    data: { value, actor: "e2e-writer" },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   return response.json();
 }
@@ -113,7 +159,11 @@ async function pickHighWhileAnswerLost(
 }
 
 /** Expect the conflict dialog to name the other user, keep theirs, and see P3 Low stay. */
-async function keepTheirs(page: Page, request: APIRequestContext, id: string): Promise<void> {
+async function keepTheirs(
+  page: Page,
+  request: APIRequestContext,
+  id: string,
+): Promise<void> {
   const dialog = page.getByRole("alertdialog", { name: "Priority changed" });
   await expect(dialog).toContainText("e2e-writer changed this since you saw it.");
   await dialog.getByRole("button", { name: "Keep theirs" }).click();
@@ -136,18 +186,27 @@ test("a field write whose answer is lost while another user changes the field sh
   expect(writes).toHaveLength(1);
 });
 
-test("the same for a field write that changed nothing, whose key the server does not replay (K1)", async ({ page, request, allowErrors }) => {
+test("the same for a field write that changed nothing, whose key the server does not replay (K1)", async ({
+  page,
+  request,
+  allowErrors,
+}) => {
   const id = await createIssue(request, { title: "K1 lost no-op", priority: 20 });
   // The write's answer, which the route drops once the server has applied it.
   allowErrors(failedResource(`/api/issue/${id}/priority`, "ERR_FAILED"));
   // The other user sets P1 High first, so the page's write changes nothing.
-  const { writes, answers } = await pickHighWhileAnswerLost(page, request, id, () => setPriorityAsOther(request, id, 10));
+  const { writes, answers } = await pickHighWhileAnswerLost(page, request, id, () =>
+    setPriorityAsOther(request, id, 10),
+  );
   await keepTheirs(page, request, id);
   expect(answers.map((answer) => answer.change_id === null)).toEqual([true]);
   expect(writes).toHaveLength(1);
 });
 
-test("a label is added and removed with one single-element PATCH each, never a PUT", async ({ page, request }) => {
+test("a label is added and removed with one single-element PATCH each, never a PUT", async ({
+  page,
+  request,
+}) => {
   const id = await createIssue(request, { title: "D2 labels", labels: ["d2-keep"] });
   const writes = await openDetail(page, id);
   await propButton(page, "labels").click();
@@ -158,10 +217,11 @@ test("a label is added and removed with one single-element PATCH each, never a P
   await expect(propButton(page, "labels")).toHaveText("d2-new");
   await page.keyboard.press("Escape");
 
-  expect(writes.map((write) => `${write.method()} ${new URL(write.url()).pathname.split("/").at(-1)}`)).toEqual([
-    "PATCH labels",
-    "PATCH labels",
-  ]);
+  expect(
+    writes.map(
+      (write) => `${write.method()} ${new URL(write.url()).pathname.split("/").at(-1)}`,
+    ),
+  ).toEqual(["PATCH labels", "PATCH labels"]);
   expect(writes.map((write) => write.postDataJSON())).toEqual([
     { op: "add", value: "d2-new" },
     { op: "sub", value: "d2-keep" },
@@ -169,7 +229,10 @@ test("a label is added and removed with one single-element PATCH each, never a P
   expect((await stored(request, id)).labels).toEqual(["d2-new"]);
 });
 
-test("the exact priority takes a typed number, focused as it opens (COLD-10)", async ({ page, request }) => {
+test("the exact priority takes a typed number, focused as it opens (COLD-10)", async ({
+  page,
+  request,
+}) => {
   const id = await createIssue(request, { title: "D2 exact priority", priority: 20 });
   await openDetail(page, id);
   await propButton(page, "priority").click();
@@ -192,7 +255,10 @@ test("a description draft is kept across a live update, and names who changed th
   request,
   baseURL,
 }) => {
-  const id = await createIssue(request, { title: "D2 draft", description: "First words." });
+  const id = await createIssue(request, {
+    title: "D2 draft",
+    description: "First words.",
+  });
   await openDetail(page, id);
   await page.getByText("First words.").dblclick();
   const editor = page.getByRole("textbox", { name: "Description" });
@@ -200,20 +266,26 @@ test("a description draft is kept across a live update, and names who changed th
   await editor.pressSequentially(" My draft.");
 
   // Another field changes: the live refetch redraws the page and keeps the draft.
-  await pythonEdit(baseURL!, id, "title", "D2 draft, retitled");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("D2 draft, retitled");
+  await pythonEdit(must(baseURL), id, "title", "D2 draft, retitled");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText(
+    "D2 draft, retitled",
+  );
   await expect(editor).toHaveValue("First words. My draft.");
   await expect(editor).toBeFocused();
 
   // The description itself changes: the editor says who, and keeps mine on request.
-  await pythonEdit(baseURL!, id, "description", "Their words.");
+  await pythonEdit(must(baseURL), id, "description", "Their words.");
   const notice = page.locator(".ed-changed");
-  await expect(notice).toContainText("e2e-writer changed description while you were editing.");
+  await expect(notice).toContainText(
+    "e2e-writer changed description while you were editing.",
+  );
   await expect(editor).toHaveValue("First words. My draft.");
   await notice.getByRole("button", { name: "Keep mine" }).click();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(editor).toBeHidden();
-  await expect(page.locator('[data-field="description"]')).toHaveText("First words. My draft.");
+  await expect(page.locator('[data-field="description"]')).toHaveText(
+    "First words. My draft.",
+  );
   expect((await stored(request, id)).description).toBe("First words. My draft.");
 });
 
@@ -221,13 +293,19 @@ test("a click leaves the description to select; a double-click opens it, a click
   page,
   request,
 }) => {
-  const id = await createIssue(request, { title: "D2 click away", description: "First words." });
+  const id = await createIssue(request, {
+    title: "D2 click away",
+    description: "First words.",
+  });
   const writes = await openDetail(page, id);
   const editor = page.getByRole("textbox", { name: "Description" });
   await page.getByText("First words.").click();
   await expect(editor).toBeHidden();
 
-  for (const drop of [() => page.getByRole("button", { name: "Cancel" }).click(), () => editor.press("Escape")]) {
+  for (const drop of [
+    () => page.getByRole("button", { name: "Cancel" }).click(),
+    () => editor.press("Escape"),
+  ]) {
     await page.getByText("First words.").dblclick();
     await editor.press("End");
     await editor.pressSequentially(" Dropped.");
@@ -240,9 +318,15 @@ test("a click leaves the description to select; a double-click opens it, a click
   await editor.pressSequentially(" Kept.");
   await page.getByRole("heading", { name: /^Activity/ }).click();
   await expect(editor).toBeHidden();
-  await expect(page.locator('[data-field="description"]')).toHaveText("First words. Kept.");
+  await expect(page.locator('[data-field="description"]')).toHaveText(
+    "First words. Kept.",
+  );
   expect((await stored(request, id)).description).toBe("First words. Kept.");
-  expect(writes.filter((write) => write.url().includes(`/inquiries/${id}/`)).map((write) => write.method())).toEqual(["PUT"]);
+  expect(
+    writes
+      .filter((write) => write.url().includes(`/inquiries/${id}/`))
+      .map((write) => write.method()),
+  ).toEqual(["PUT"]);
 });
 
 test("an Issue's last type goes with a DELETE checked at save, so a type the Python client added meanwhile stays (R4-F02)", async ({
@@ -260,11 +344,15 @@ test("an Issue's last type goes with a DELETE checked at save, so a type the Pyt
   page.on("request", (sent) => {
     if (sent.method() !== "GET" && sent.url().includes("/api/")) writes.push(sent);
   });
-  const sent = () => writes.map((write) => [`${write.method()} ${new URL(write.url()).pathname.split("/").at(-1)}`, write.postDataJSON()]);
+  const sent = () =>
+    writes.map((write) => [
+      `${write.method()} ${new URL(write.url()).pathname.split("/").at(-1)}`,
+      write.postDataJSON(),
+    ]);
   await page.goto(`/trax/lookup/${id}`);
   await openProperties(page);
   await expect(propButton(page, "issue_kind")).toHaveText("bug");
-  await pythonEdit(baseURL!, id, "issue_kind", ["bug", "feature"]);
+  await pythonEdit(must(baseURL), id, "issue_kind", ["bug", "feature"]);
 
   // The server will not empty an Issue's type by PATCH, so the last one goes by
   // DELETE, which would clear the added type too: the check at save stops it.
@@ -280,7 +368,10 @@ test("an Issue's last type goes with a DELETE checked at save, so a type the Pyt
   // With both shown, bug goes by PATCH, and the last, feature, by DELETE.
   await propButton(page, "issue_kind").click();
   await page.getByRole("option", { name: "bug" }).click();
-  await expect(page.getByRole("option", { name: "bug" })).toHaveAttribute("aria-selected", "false");
+  await expect(page.getByRole("option", { name: "bug" })).toHaveAttribute(
+    "aria-selected",
+    "false",
+  );
   await page.getByRole("option", { name: "feature" }).click();
   await expect.poll(async () => (await stored(request, id)).issue_kind).toBeNull();
   expect(sent()).toEqual([
@@ -292,8 +383,14 @@ test("an Issue's last type goes with a DELETE checked at save, so a type the Pyt
 test.describe("on a phone's touch screen", () => {
   test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
 
-  test("the description's Edit button shows with no hover, and a tap on it opens the editor", async ({ page, request }) => {
-    const id = await createIssue(request, { title: "D2 touch", description: "First words." });
+  test("the description's Edit button shows with no hover, and a tap on it opens the editor", async ({
+    page,
+    request,
+  }) => {
+    const id = await createIssue(request, {
+      title: "D2 touch",
+      description: "First words.",
+    });
     await page.goto(`/trax/lookup/${id}`);
     const pencil = page.getByRole("button", { name: "Edit Description" });
     await expect(pencil).toHaveCSS("opacity", "1");

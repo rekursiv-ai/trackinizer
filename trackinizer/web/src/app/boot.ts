@@ -1,6 +1,13 @@
 import { queryOptions, type UseQueryResult, useQueries } from "@tanstack/react-query";
 import { createContext, useContext } from "react";
-import { getEdgeTopology, getEnums, getFieldOwners, type EdgeTopology, type Enums, type FieldOwners } from "../api/meta";
+import {
+  getEdgeTopology,
+  getEnums,
+  getFieldOwners,
+  type EdgeTopology,
+  type Enums,
+  type FieldOwners,
+} from "../api/meta";
 import { getProfile, type Profile } from "../api/me";
 import { readAs } from "../api/signedIn";
 import { adoptLegacyPreferences, receivePreferences } from "../preferences";
@@ -29,12 +36,14 @@ export const bootQueries = {
   }),
   fieldOwners: queryOptions({
     queryKey: ["meta", "fields"],
-    queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getFieldOwners({ signal })),
+    queryFn: ({ queryKey, signal }) =>
+      prefetched(queryKey, () => getFieldOwners({ signal })),
     staleTime: Infinity,
   }),
   edges: queryOptions({
     queryKey: ["meta", "edges"],
-    queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getEdgeTopology({ signal })),
+    queryFn: ({ queryKey, signal }) =>
+      prefetched(queryKey, () => getEdgeTopology({ signal })),
     staleTime: Infinity,
   }),
   /**
@@ -70,7 +79,12 @@ export type Boot =
  */
 export function useBoot(): Boot {
   return useQueries({
-    queries: [bootQueries.enums, bootQueries.fieldOwners, bootQueries.edges, bootQueries.profile],
+    queries: [
+      bootQueries.enums,
+      bootQueries.fieldOwners,
+      bootQueries.edges,
+      bootQueries.profile,
+    ],
     combine: combineBoot,
   });
 }
@@ -95,7 +109,9 @@ function combineBoot([enums, fieldOwners, edges, profile]: [
       profile: profile.data,
     };
   }
-  const failed = [enums, fieldOwners, edges, profile].filter((result) => result.isError);
+  const failed = [enums, fieldOwners, edges, profile].filter(
+    (result) => result.isError,
+  );
   if (failed.length === 0) return { state: "loading" };
   return {
     state: "failed",

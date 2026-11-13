@@ -1,6 +1,13 @@
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { currentRoute, goTo, onRouteChange, routeHref, routeOf, routeUrl } from "./addressBar";
+import {
+  currentRoute,
+  goTo,
+  onRouteChange,
+  routeHref,
+  routeOf,
+  routeUrl,
+} from "./addressBar";
 
 const PAGE = { href: "https://trackinizer.example.com/trax/graph" };
 
@@ -30,7 +37,9 @@ test("an old link's #/... address names its route, wherever it is", () => {
 
 test("a route's address is its path under the app", () => {
   expect(routeUrl("#/ref/Issue/7")).toBe("/trax/ref/Issue/7");
-  expect(routeUrl("#/graph?focus=Issue/9&hops=2")).toBe("/trax/graph?focus=Issue/9&hops=2");
+  expect(routeUrl("#/graph?focus=Issue/9&hops=2")).toBe(
+    "/trax/graph?focus=Issue/9&hops=2",
+  );
   expect(routeUrl("")).toBe("/trax/");
   expect(routeUrl("#/")).toBe("/trax/");
   expect(routeHref({ name: "search", q: "what?" })).toBe("/trax/search/what%3F");
@@ -55,10 +64,18 @@ test("going to a route adds one history entry and tells every listener; going wh
 });
 
 test("a URL to a page of this app is its route", () => {
-  expect(routeOf("https://trackinizer.example.com/trax/ref/Issue/9", PAGE)).toBe("#/ref/Issue/9");
-  expect(routeOf("/trax/graph?focus=Issue/9&hops=2", PAGE)).toBe("#/graph?focus=Issue/9&hops=2");
-  expect(routeOf("https://trackinizer.example.com/trax/#/ref/Issue/9", PAGE)).toBe("#/ref/Issue/9");
-  expect(routeOf("https://trackinizer.example.com/#/ref/Issue/9", PAGE)).toBe("#/ref/Issue/9");
+  expect(routeOf("https://trackinizer.example.com/trax/ref/Issue/9", PAGE)).toBe(
+    "#/ref/Issue/9",
+  );
+  expect(routeOf("/trax/graph?focus=Issue/9&hops=2", PAGE)).toBe(
+    "#/graph?focus=Issue/9&hops=2",
+  );
+  expect(routeOf("https://trackinizer.example.com/trax/#/ref/Issue/9", PAGE)).toBe(
+    "#/ref/Issue/9",
+  );
+  expect(routeOf("https://trackinizer.example.com/#/ref/Issue/9", PAGE)).toBe(
+    "#/ref/Issue/9",
+  );
   expect(routeOf("#/ref/Issue/9", PAGE)).toBe("#/ref/Issue/9");
   expect(routeOf("/trax/", PAGE)).toBe("#/");
 });
@@ -84,7 +101,9 @@ test("a plain click on an app link moves the router; a modified one, or one open
   const view = render(
     <>
       <a href="/trax/ref/Issue/7">app</a>
-      <a href="/trax/ref/Issue/8" target="_blank">tab</a>
+      <a href="/trax/ref/Issue/8" target="_blank" rel="noopener">
+        tab
+      </a>
       <a href="https://example.com/">away</a>
     </>,
   );

@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Graph } from "../api/graph";
 import { replay } from "./replay";
 import { edge, node } from "./testing";
+import { must } from "../must";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -13,7 +14,11 @@ afterEach(() => {
 
 // Sent 3, 1, 2 but made 1, 2, 3: replay goes by `created`, not the answer's order.
 const GRAPH: Graph = {
-  nodes: [node(3, { created: "2026-09-20T00:05:00+00:00" }), node(1, { kind: "Belief", judgement: "proven", confidence: 0.9 }), node(2)],
+  nodes: [
+    node(3, { created: "2026-09-20T00:05:00+00:00" }),
+    node(1, { kind: "Belief", judgement: "proven", confidence: 0.9 }),
+    node(2),
+  ],
   edges: [edge(2, 1, "proves", { valence: 0.5 }), edge(3, 1)],
 };
 
@@ -22,7 +27,11 @@ function record(speed = () => 1) {
   let done = false;
   const cancel = replay(GRAPH, {
     speed,
-    step: (grown) => steps.push({ seqs: grown.nodes.map((row) => row.seq), edges: grown.edges.map((row) => row.edge_kind) }),
+    step: (grown) =>
+      steps.push({
+        seqs: grown.nodes.map((row) => row.seq),
+        edges: grown.edges.map((row) => row.edge_kind),
+      }),
     done: () => (done = true),
   });
   return { steps, isDone: () => done, cancel };
@@ -47,7 +56,7 @@ test("each node keeps every field the graph sent, a Belief's judgement and confi
   let last: Graph | undefined;
   replay(GRAPH, { speed: () => 1, step: (grown) => (last = grown), done: () => {} });
   vi.advanceTimersByTime(70 * 3);
-  expect(last!.nodes.find((row) => row.seq === 1)).toEqual(GRAPH.nodes[1]);
+  expect(must(last).nodes.find((row) => row.seq === 1)).toEqual(GRAPH.nodes[1]);
 });
 
 test("the speed is read before each node, so a change takes effect at the next; 10x waits 16 ms, a frame", () => {
@@ -74,10 +83,17 @@ test("cancelled, it stops where it is", () => {
 test("replay orders `created` as instants: the server drops a zero fraction, so precision varies (GR-04)", () => {
   const grown: number[][] = [];
   const graph: Graph = {
-    nodes: [node(1, { created: "2026-01-01T00:00:00+00:00" }), node(2, { created: "2026-01-01T00:00:00.000001+00:00" })],
+    nodes: [
+      node(1, { created: "2026-01-01T00:00:00+00:00" }),
+      node(2, { created: "2026-01-01T00:00:00.000001+00:00" }),
+    ],
     edges: [],
   };
-  replay(graph, { speed: () => 1, step: (step) => grown.push(step.nodes.map((row) => row.seq)), done: () => {} });
+  replay(graph, {
+    speed: () => 1,
+    step: (step) => grown.push(step.nodes.map((row) => row.seq)),
+    done: () => {},
+  });
   vi.advanceTimersByTime(70 * 2);
   expect(grown).toEqual([[], [1], [1, 2]]);
 });

@@ -18,10 +18,20 @@ import "./bulk.css";
  * Whether the server lets this viewer purge `row`: its account, or an admin, compared without case.
  * A science chat's session is an admin's alone.
  */
-export function mayPurge(row: Detail["self"], viewer: { readonly email: string; readonly role: string }): boolean {
+export function mayPurge(
+  row: Detail["self"],
+  viewer: { readonly email: string; readonly role: string },
+): boolean {
   if (viewer.role === "admin") return true;
-  const chat = row.kind === "AgentSession" && Array.isArray(row.labels) && row.labels.includes(SCIENCE_CHAT_LABEL);
-  return !chat && typeof row.account === "string" && row.account.toLowerCase() === viewer.email.toLowerCase();
+  const chat =
+    row.kind === "AgentSession" &&
+    Array.isArray(row.labels) &&
+    row.labels.includes(SCIENCE_CHAT_LABEL);
+  return (
+    !chat &&
+    typeof row.account === "string" &&
+    row.account.toLowerCase() === viewer.email.toLowerCase()
+  );
 }
 
 /**
@@ -62,10 +72,13 @@ export function PurgeDialog({
       return;
     }
     // Each resolves null too once the dialog is closed, so a closed one purges nothing.
-    if (owner !== null && (await writer.run(clearOwnerEdit(self, why))) === null) return;
+    if (owner !== null && (await writer.run(clearOwnerEdit(self, why))) === null)
+      return;
     if ((await writer.run(purgeEdit(self, why))) === null) {
       // Refused, perhaps because someone has since taken it: show who owns it now.
-      void queryClient.invalidateQueries({ queryKey: detailQueries.detail(self.id).queryKey });
+      void queryClient.invalidateQueries({
+        queryKey: detailQueries.detail(self.id).queryKey,
+      });
       return;
     }
     onClose();
@@ -99,12 +112,15 @@ export function PurgeDialog({
                 <h3>Purge {name}</h3>
               </Dialog.Title>
               <Dialog.Description asChild>
-                <p>Purge deletes the row and every edge touching it. To keep history, set the status to Invalid instead.</p>
+                <p>
+                  Purge deletes the row and every edge touching it. To keep history, set
+                  the status to Invalid instead.
+                </p>
               </Dialog.Description>
               {owner !== null ? (
                 <p className="pg-owner">
-                  {name} is owned by <b>{owner}</b>. {APP.name} purges only rows without an owner, so the owner is
-                  cleared first.
+                  {name} is owned by <b>{owner}</b>. {APP.name} purges only rows without
+                  an owner, so the owner is cleared first.
                 </p>
               ) : null}
               <textarea
@@ -118,7 +134,11 @@ export function PurgeDialog({
                   setMissing(false);
                 }}
               />
-              {allowed ? null : <p className="form-err" role="alert">Only the row's account or an admin can purge it.</p>}
+              {allowed ? null : (
+                <p className="form-err" role="alert">
+                  Only the row's account or an admin can purge it.
+                </p>
+              )}
               {missing ? (
                 <span className="form-err" role="alert">
                   Add a reason first.
@@ -129,8 +149,14 @@ export function PurgeDialog({
             <div className="modal-f">
               <div className="spacer" />
               <Dialog.Close className="btn ghost">Cancel</Dialog.Close>
-              <WriteButton type="submit" className="btn danger" pending={pending} disabled={!writable || !allowed}>
-                {owner !== null ? "Clear owner and purge" : "Purge permanently"} <kbd>{keyCaps("$mod+Enter")[0]}</kbd>
+              <WriteButton
+                type="submit"
+                className="btn danger"
+                pending={pending}
+                disabled={!writable || !allowed}
+              >
+                {owner !== null ? "Clear owner and purge" : "Purge permanently"}{" "}
+                <kbd>{keyCaps("$mod+Enter")[0]}</kbd>
               </WriteButton>
             </div>
           </form>

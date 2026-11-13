@@ -1,6 +1,11 @@
 import { ApiError } from "../api/client";
 import { type Change, type DetailRow, getDetail, type Peer } from "../api/detail";
-import type { EdgeAnnotation, EdgeRef, EdgeWrite, SetEdgeAnnotationBody } from "../api/edges";
+import type {
+  EdgeAnnotation,
+  EdgeRef,
+  EdgeWrite,
+  SetEdgeAnnotationBody,
+} from "../api/edges";
 import type { FieldRoute } from "../api/fields";
 import {
   type ClearFieldPath,
@@ -104,7 +109,11 @@ export type FieldChange = {
  * `mode: "cas"` with the value the user saw, and a 409 opens the conflict dialog.
  * The schema offers `mode` on every field, so the list cannot come from it.
  */
-export const CAS_FIELDS: ReadonlySet<string> = new Set(["status", "owner", "judgement"]);
+export const CAS_FIELDS: ReadonlySet<string> = new Set([
+  "status",
+  "owner",
+  "judgement",
+]);
 
 /**
  * The edit that sets one field: a `PUT`, or a `DELETE` when the new value is
@@ -120,11 +129,15 @@ export const CAS_FIELDS: ReadonlySet<string> = new Set(["status", "owner", "judg
  */
 export function fieldEdit(change: FieldChange): Edit<FieldWrite> {
   const { id, field, route, label, from, to } = change;
-  if (route.value.type === "array") throw new Error(`${field} is a list: change it one element at a time with listEdit.`);
+  if (route.value.type === "array")
+    throw new Error(
+      `${field} is a list: change it one element at a time with listEdit.`,
+    );
   const show = change.show ?? showValue;
   const reason = change.reason ? { reason: change.reason } : {};
   const cas = CAS_FIELDS.has(field);
-  if (isUnset(to) && !cas && !route.delete) throw new Error(`${field} cannot be cleared.`);
+  if (isUnset(to) && !cas && !route.delete)
+    throw new Error(`${field} cannot be cleared.`);
   // The editor chose `to` from the field's value type in the field-type map, so it
   // is this route's value type; the server checks it again (422).
   const request =
@@ -153,7 +166,9 @@ export function fieldEdit(change: FieldChange): Edit<FieldWrite> {
     done: isUnset(to) ? `Cleared ${label}` : `${label} set to ${short(show(to))}`,
     guard,
     undo: (result) =>
-      result.change_id === null ? undefined : withoutUndo(fieldEdit({ id, field, route, label, from: to, to: from, show })),
+      result.change_id === null
+        ? undefined
+        : withoutUndo(fieldEdit({ id, field, route, label, from: to, to: from, show })),
   };
 }
 
@@ -189,17 +204,30 @@ export type ListChange = {
 export function listEdit(change: ListChange): Edit<FieldWrite> {
   const { id, field, route, label, op, value } = change;
   const show = change.show ?? showValue;
-  if (field === "issue_kind" && op === "sub" && sameValue(change.from, [value])) return clearLastType(change, show);
+  if (field === "issue_kind" && op === "sub" && sameValue(change.from, [value]))
+    return clearLastType(change, show);
   const body = { op, value, ...(change.reason && { reason: change.reason }) };
   // The element comes from the field-type map's element type, as in `fieldEdit`.
-  const request = patchFieldRequest(route.path as PatchFieldPath, id, body as PatchFieldBody<PatchFieldPath>);
+  const request = patchFieldRequest(
+    route.path as PatchFieldPath,
+    id,
+    body as PatchFieldBody<PatchFieldPath>,
+  );
   const items = Array.isArray(change.from) ? (change.from as unknown[]) : [];
-  const copies = (list: unknown) => (Array.isArray(list) ? list.filter((element) => sameValue(element, value)).length : 0);
+  const copies = (list: unknown) =>
+    Array.isArray(list)
+      ? list.filter((element) => sameValue(element, value)).length
+      : 0;
   // Removing one needs one there, whether or not `from` was given.
   const before = Math.max(copies(items), op === "sub" ? 1 : 0);
   const at = items.findIndex((element) => sameValue(element, value));
   // The list its undo edits, when this edit's was known.
-  const after = change.from === undefined ? undefined : op === "add" ? [...items, value] : items.filter((_, index) => index !== at);
+  const after =
+    change.from === undefined
+      ? undefined
+      : op === "add"
+        ? [...items, value]
+        : items.filter((_, index) => index !== at);
   const landed = { id, change_id: request.key };
   return {
     request: reconciled(request, {
@@ -211,11 +239,21 @@ export function listEdit(change: ListChange): Edit<FieldWrite> {
       landed,
     }),
     touches: [id],
-    done: op === "add" ? `Added ${short(show(value))} to ${label}` : `Removed ${short(show(value))} from ${label}`,
+    done:
+      op === "add"
+        ? `Added ${short(show(value))} to ${label}`
+        : `Removed ${short(show(value))} from ${label}`,
     undo: (result) =>
       result.change_id === null
         ? undefined
-        : withoutUndo(listEdit({ ...change, op: op === "add" ? "sub" : "add", from: after, reason: undefined })),
+        : withoutUndo(
+            listEdit({
+              ...change,
+              op: op === "add" ? "sub" : "add",
+              from: after,
+              reason: undefined,
+            }),
+          ),
   };
 }
 
@@ -226,12 +264,26 @@ export function listEdit(change: ListChange): Edit<FieldWrite> {
  * list is still `from`, and saving over a changed one clears it. Its undo adds
  * the type back.
  */
-function clearLastType(change: ListChange, show: (value: unknown) => string): Edit<FieldWrite> {
+function clearLastType(
+  change: ListChange,
+  show: (value: unknown) => string,
+): Edit<FieldWrite> {
   const { id, field, route, label, value, from } = change;
-  const request = clearFieldRequest(route.path as ClearFieldPath, id, change.reason ? { reason: change.reason } : {});
+  const request = clearFieldRequest(
+    route.path as ClearFieldPath,
+    id,
+    change.reason ? { reason: change.reason } : {},
+  );
   const read = () => readField(id, field);
   return {
-    request: reconciled(request, { read, from, to: undefined, label, show, landed: { id, change_id: request.key } }),
+    request: reconciled(request, {
+      read,
+      from,
+      to: undefined,
+      label,
+      show,
+      landed: { id, change_id: request.key },
+    }),
     touches: [id],
     done: `Removed ${short(show(value))} from ${label}`,
     guard: {
@@ -248,7 +300,9 @@ function clearLastType(change: ListChange, show: (value: unknown) => string): Ed
     undo: (result) =>
       result.change_id === null
         ? undefined
-        : withoutUndo(listEdit({ ...change, op: "add", from: undefined, reason: undefined })),
+        : withoutUndo(
+            listEdit({ ...change, op: "add", from: undefined, reason: undefined }),
+          ),
   };
 }
 
@@ -278,9 +332,15 @@ export function edgeAnnotationEdit(change: EdgeChange): Edit<EdgeWrite> {
   const request = isUnset(to)
     ? clearEdgeAnnotationRequest(annotation, edge, reason)
     : // The value comes from the annotation's editor, typed for this annotation.
-      setEdgeAnnotationRequest(annotation, edge, { value: to, ...reason } as SetEdgeAnnotationBody<EdgeAnnotation>);
+      setEdgeAnnotationRequest(annotation, edge, {
+        value: to,
+        ...reason,
+      } as SetEdgeAnnotationBody<EdgeAnnotation>);
   const read = async () => (await readEdge(edge))?.[annotation];
-  const landed = { change_id: sameValue(from, to) ? null : request.key, created: false };
+  const landed = {
+    change_id: sameValue(from, to) ? null : request.key,
+    created: false,
+  };
   return {
     request: reconciled(request, { read, from, to, label, show, landed }),
     touches: [edge.from, edge.to],
@@ -288,7 +348,14 @@ export function edgeAnnotationEdit(change: EdgeChange): Edit<EdgeWrite> {
     undo: (result) =>
       result.change_id === null
         ? undefined
-        : withoutUndo(edgeAnnotationEdit({ ...change, from: to, to: change.from, reason: undefined })),
+        : withoutUndo(
+            edgeAnnotationEdit({
+              ...change,
+              from: to,
+              to: change.from,
+              reason: undefined,
+            }),
+          ),
   };
 }
 
@@ -296,17 +363,40 @@ export function edgeAnnotationEdit(change: EdgeChange): Edit<EdgeWrite> {
  * The edit that adds or removes one of an edge's labels; its undo is the
  * opposite. A resend after a lost answer first reads whether the label is there.
  */
-export function edgeLabelEdit(change: { readonly edge: EdgeRef; readonly op: "add" | "sub"; readonly value: string; readonly reason?: string }): Edit<EdgeWrite> {
+export function edgeLabelEdit(change: {
+  readonly edge: EdgeRef;
+  readonly op: "add" | "sub";
+  readonly value: string;
+  readonly reason?: string;
+}): Edit<EdgeWrite> {
   const { edge, op, value } = change;
-  const request = patchEdgeLabelsRequest(edge, { op, value, ...(change.reason && { reason: change.reason }) });
+  const request = patchEdgeLabelsRequest(edge, {
+    op,
+    value,
+    ...(change.reason && { reason: change.reason }),
+  });
   const has = async () => (await readEdge(edge))?.labels?.includes(value) ?? false;
   const landed = { change_id: request.key, created: false };
   return {
-    request: reconciled(request, { read: has, from: op === "sub", to: op === "add", label: "Labels", landed }),
+    request: reconciled(request, {
+      read: has,
+      from: op === "sub",
+      to: op === "add",
+      label: "Labels",
+      landed,
+    }),
     touches: [edge.from, edge.to],
     done: op === "add" ? `Added label ${value}` : `Removed label ${value}`,
     undo: (result) =>
-      result.change_id === null ? undefined : withoutUndo(edgeLabelEdit({ ...change, op: op === "add" ? "sub" : "add", reason: undefined })),
+      result.change_id === null
+        ? undefined
+        : withoutUndo(
+            edgeLabelEdit({
+              ...change,
+              op: op === "add" ? "sub" : "add",
+              reason: undefined,
+            }),
+          ),
   };
 }
 
@@ -356,7 +446,11 @@ export function reconciled<Result>(
       const stored = await read();
       if (sameValue(state(stored), to)) return landed;
       if (sameValue(state(stored), from)) return null;
-      throw new ApiError(409, `Not saved: someone changed ${label} to ${show(stored)}`, "conflict");
+      throw new ApiError(
+        409,
+        `Not saved: someone changed ${label} to ${show(stored)}`,
+        "conflict",
+      );
     },
   };
 }
@@ -366,7 +460,9 @@ export function reconciled<Result>(
  * edge's annotations; `undefined` when there is no such edge.
  */
 export async function readEdge(edge: EdgeRef): Promise<Peer | undefined> {
-  return (await getDetail(edge.from)).edges[edge.kind]?.find((peer) => peer.id === edge.to);
+  return (await getDetail(edge.from)).edges[edge.kind]?.find(
+    (peer) => peer.id === edge.to,
+  );
 }
 
 /**
@@ -382,8 +478,15 @@ export function fieldValue(row: DetailRow, field: string): unknown {
  * field by its flat storage name: bare (`status`), or `<kind>_<field>`
  * (`belief_judgement`).
  */
-export function lastChangeOf(changes: readonly Change[], field: string): Change | undefined {
-  return changes.find((change) => change.kind === field || change.kind === `${change.subject_kind.toLowerCase()}_${field}`);
+export function lastChangeOf(
+  changes: readonly Change[],
+  field: string,
+): Change | undefined {
+  return changes.find(
+    (change) =>
+      change.kind === field ||
+      change.kind === `${change.subject_kind.toLowerCase()}_${field}`,
+  );
 }
 
 /**
@@ -399,18 +502,28 @@ export function sameValue(a: unknown, b: unknown): boolean {
 /** Whether two JSON values are equal, objects in any key order. */
 function sameJson(a: unknown, b: unknown): boolean {
   if (a === b) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null)
+    return false;
   if (Array.isArray(a) !== Array.isArray(b)) return false;
-  const [left, right] = [a as { [key: string]: unknown }, b as { [key: string]: unknown }];
+  const [left, right] = [
+    a as { [key: string]: unknown },
+    b as { [key: string]: unknown },
+  ];
   const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length && keys.every((key) => key in right && sameJson(left[key], right[key]));
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => key in right && sameJson(left[key], right[key]))
+  );
 }
 
 /** A field value as text: `Not set`, a list joined by commas, or JSON for an object. */
 export function showValue(value: unknown): string {
   if (isUnset(value)) return "Not set";
   if (typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map((item) => (typeof item === "string" ? item : JSON.stringify(item))).join(", ");
+  if (Array.isArray(value))
+    return value
+      .map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
+      .join(", ");
   return JSON.stringify(value, null, 2);
 }
 

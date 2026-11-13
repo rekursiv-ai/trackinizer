@@ -7,7 +7,12 @@ import { KindIcon } from "../ui/kinds";
 import { type Panel, type PanelSpec, PanelStrip, PanelToggle } from "../ui/panel";
 
 /** The search results as a panel: on the graph's left, and `[` collapses or expands it. */
-export const RESULTS: PanelSpec = { id: "graph.results", name: "search results", side: "left", keys: ["["] };
+export const RESULTS: PanelSpec = {
+  id: "graph.results",
+  name: "search results",
+  side: "left",
+  keys: ["["],
+};
 
 /** What a key in the search box asks for. */
 export type SearchKey = "next" | "previous" | "pick" | "everywhere" | "leave";
@@ -37,7 +42,8 @@ export function SearchBox({
 }) {
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
-    const key = KEYS[event.key === "Enter" && event.shiftKey ? "Shift+Enter" : event.key];
+    const key =
+      KEYS[event.key === "Enter" && event.shiftKey ? "Shift+Enter" : event.key];
     if (!key) return;
     event.preventDefault();
     if (key === "leave") event.currentTarget.blur();
@@ -66,7 +72,10 @@ export function SearchBox({
 }
 
 /** One group of matches: those within a focus's hops, those elsewhere, or all of them (no name). */
-export type MatchGroup = { readonly name: string | null; readonly rows: readonly GraphNode[] };
+export type MatchGroup = {
+  readonly name: string | null;
+  readonly rows: readonly GraphNode[];
+};
 
 /**
  * The matches, in the left column: their count and the button that collapses
@@ -102,7 +111,8 @@ export function SearchResults({
   panel: Panel;
 }) {
   useEffect(() => {
-    if (marked >= 0) document.getElementById(`${id}-${marked}`)?.scrollIntoView({ block: "nearest" });
+    if (marked >= 0)
+      document.getElementById(`${id}-${marked}`)?.scrollIntoView({ block: "nearest" });
   }, [id, marked]);
   let number = 0;
   const row = (match: GraphNode) => {
@@ -124,7 +134,9 @@ export function SearchResults({
         <StatusGlyph status={match.status} />
         <span className="row-ref">#{match.seq}</span>
         <span className="row-title">{marks(match.title || "(untitled)", query)}</span>
-        {far === undefined ? null : <span className="row-meta">{far === 0 ? "focus" : hopsName(far)}</span>}
+        {far === undefined ? null : (
+          <span className="row-meta">{far === 0 ? "focus" : hopsName(far)}</span>
+        )}
       </div>
     );
   };
@@ -146,15 +158,22 @@ export function SearchResults({
         <PanelToggle panel={panel} controls={`${id}-panel`} />
       </div>
       <div className="scroll" role="listbox" id={id} aria-label="Matches">
-        {total === 0 ? <p className="list-note">No matches among the nodes drawn</p> : null}
+        {total === 0 ? (
+          <p className="list-note">No matches among the nodes drawn</p>
+        ) : null}
         {groups.map((group) =>
           group.name === null ? (
-            [...group.rows.slice(0, MAX_ROWS).map(row), <More key="more" rows={group.rows} />]
+            [
+              ...group.rows.slice(0, MAX_ROWS).map(row),
+              <More key="more" rows={group.rows} />,
+            ]
           ) : (
             <div key={group.name} role="group" aria-label={group.name}>
               <div className="group-h" aria-hidden="true">
                 {group.name}
-                <span className="count">{group.rows.length.toLocaleString("en-US")}</span>
+                <span className="count">
+                  {group.rows.length.toLocaleString("en-US")}
+                </span>
               </div>
               {group.rows.slice(0, MAX_ROWS).map(row)}
               <More rows={group.rows} />
@@ -174,7 +193,11 @@ export function SearchResults({
 
 /** Past `MAX_ROWS`, how many matches the list leaves out. */
 function More({ rows }: { rows: readonly GraphNode[] }) {
-  return rows.length > MAX_ROWS ? <p className="list-note">{(rows.length - MAX_ROWS).toLocaleString("en-US")} more: type more to narrow them</p> : null;
+  return rows.length > MAX_ROWS ? (
+    <p className="list-note">
+      {(rows.length - MAX_ROWS).toLocaleString("en-US")} more: type more to narrow them
+    </p>
+  ) : null;
 }
 
 /** The most matches a group lists; more would make every keystroke slow on a big graph. */
@@ -191,13 +214,18 @@ export function hopsName(far: number): string {
  * other text matches a substring of the title or the kind, in any case. Blank
  * text finds nothing.
  */
-export function searchNodes<Node extends GraphNode>(nodes: readonly Node[], query: string): Node[] {
+export function searchNodes<Node extends GraphNode>(
+  nodes: readonly Node[],
+  query: string,
+): Node[] {
   const text = query.trim().toLowerCase();
   if (!text) return [];
   const digits = text.replace(/^#/, "");
   const matches = /^\d+$/.test(digits)
     ? (found: Node) => String(found.seq) === digits
-    : (found: Node) => found.title.toLowerCase().includes(text) || found.kind.toLowerCase().includes(text);
+    : (found: Node) =>
+        found.title.toLowerCase().includes(text) ||
+        found.kind.toLowerCase().includes(text);
   // The server sends nodes oldest first.
   return nodes.filter(matches).toReversed();
 }

@@ -1,4 +1,11 @@
-import { type FocusEvent, type KeyboardEvent, type MouseEvent, type ReactNode, useRef, useState } from "react";
+import {
+  type FocusEvent,
+  type KeyboardEvent,
+  type MouseEvent,
+  type ReactNode,
+  useRef,
+  useState,
+} from "react";
 import type { Detail } from "../api/detail";
 import { editableFields } from "../api/fields";
 import { useWriteMode } from "../app/boot";
@@ -12,6 +19,7 @@ import { unsettled, WriteStatus } from "../writes/WriteStatus";
 import { type Draft, useDraft, useDraftKeeper } from "./drafts";
 import { inputText, parseInput } from "./values";
 import "./editors.css";
+import { must } from "../must";
 
 /**
  * A text field, drawn by `children`, that opens as a Markdown editor on a
@@ -46,10 +54,28 @@ export function TextEditor({
   const [draft, setDraft] = useDraft(detail.self.id, field.name);
   const editable = mode !== "hidden" && field.route !== undefined;
   const open = () => {
-    if (mode === "enabled" && !draft) setDraft({ text: inputText(field.value, json ? "json" : "text"), base: field.value });
+    if (mode === "enabled" && !draft)
+      setDraft({
+        text: inputText(field.value, json ? "json" : "text"),
+        base: field.value,
+      });
   };
-  useCommands(editable && field.name === "description" ? [{ id: "detail.edit.description", title: "Edit description", keys: ["e"], run: open }] : []);
-  const copy = field.name === "description" && typeof field.value === "string" && field.value ? <CopyText text={field.value} what="description" /> : null;
+  useCommands(
+    editable && field.name === "description"
+      ? [
+          {
+            id: "detail.edit.description",
+            title: "Edit description",
+            keys: ["e"],
+            run: open,
+          },
+        ]
+      : [],
+  );
+  const copy =
+    field.name === "description" && typeof field.value === "string" && field.value ? (
+      <CopyText text={field.value} what="description" />
+    ) : null;
   if (!editable) {
     return copy ? (
       <div className="ed-text off">
@@ -61,14 +87,25 @@ export function TextEditor({
     );
   }
   if (draft) {
-    return <OpenText detail={detail} field={field} json={json} draft={draft} setDraft={setDraft} />;
+    return (
+      <OpenText
+        detail={detail}
+        field={field}
+        json={json}
+        draft={draft}
+        setDraft={setDraft}
+      />
+    );
   }
   // A double-click on the text opens it, unless it lands on a link or a button.
   const onDoubleClick = (event: MouseEvent) => {
     if (!(event.target as Element).closest("a, button, summary")) open();
   };
   return (
-    <div className={mode === "enabled" ? "ed-text" : "ed-text off"} onDoubleClick={onDoubleClick}>
+    <div
+      className={mode === "enabled" ? "ed-text" : "ed-text off"}
+      onDoubleClick={onDoubleClick}
+    >
       {children}
       {copy}
       <button
@@ -77,7 +114,11 @@ export function TextEditor({
         onClick={open}
         disabled={mode === "disabled"}
         aria-label={`Edit ${field.look.label}`}
-        title={field.name === "description" ? "Edit (E), or double-click the text" : "Edit, or double-click the text"}
+        title={
+          field.name === "description"
+            ? "Edit (E), or double-click the text"
+            : "Edit, or double-click the text"
+        }
       >
         <Icon name="edit" size={13} />
         Edit
@@ -136,15 +177,25 @@ function OpenText({
     if (done.current || offline || pending) return;
     const parsed = parseInput(draft.text, json ? "json" : "text");
     if ("error" in parsed) return setError(parsed.error);
-    if (sameValue(parsed.value, draft.base) && sameValue(field.value, draft.base)) return close();
+    if (sameValue(parsed.value, draft.base) && sameValue(field.value, draft.base))
+      return close();
     const to = parsed.value;
-    const edit = fieldEdit({ id: detail.self.id, field: field.name, route: field.route!, label, from: draft.base, to, reason: reason.trim() });
+    const edit = fieldEdit({
+      id: detail.self.id,
+      field: field.name,
+      route: must(field.route),
+      label,
+      from: draft.base,
+      to,
+      reason: reason.trim(),
+    });
     if ((await writer.run(edit)) !== null) close();
   };
   // Clicking away saves. Moving within the editor does not, nor does leaving the
   // window, which takes focus with it and gives it back on return.
   const onBlur = (event: FocusEvent<HTMLDivElement>) => {
-    if (!event.currentTarget.contains(event.relatedTarget) && document.hasFocus()) void save();
+    if (!event.currentTarget.contains(event.relatedTarget) && document.hasFocus())
+      void save();
   };
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.nativeEvent.isComposing) return;
@@ -166,7 +217,12 @@ function OpenText({
         field={field}
         draft={draft}
         pending={pending}
-        onTheirs={() => setDraft({ text: inputText(field.value, json ? "json" : "text"), base: field.value })}
+        onTheirs={() =>
+          setDraft({
+            text: inputText(field.value, json ? "json" : "text"),
+            base: field.value,
+          })
+        }
         onMine={() => setDraft({ ...draft, base: field.value })}
       />
       <textarea
@@ -175,7 +231,11 @@ function OpenText({
         aria-label={label}
         readOnly={pending}
         value={draft.text}
-        placeholder={json ? "A JSON object" : `Add ${label.toLowerCase()}… Markdown, and Issue#123 links to other inquiries.`}
+        placeholder={
+          json
+            ? "A JSON object"
+            : `Add ${label.toLowerCase()}… Markdown, and Issue#123 links to other inquiries.`
+        }
         onChange={(event) => {
           setDraft({ ...draft, text: event.target.value });
           setError(null);
@@ -189,7 +249,8 @@ function OpenText({
       ) : null}
       <div className="md-edit-foot">
         <span className="muted">
-          {json ? "JSON" : "Markdown"} · <kbd>{keyCaps("$mod+Enter")[0]}</kbd> save · <kbd>Esc</kbd> cancel
+          {json ? "JSON" : "Markdown"} · <kbd>{keyCaps("$mod+Enter")[0]}</kbd> save ·{" "}
+          <kbd>Esc</kbd> cancel
         </span>
         <input
           className="field ed-why"
@@ -204,7 +265,12 @@ function OpenText({
         <button type="button" className="btn ghost" onClick={cancel} disabled={pending}>
           Cancel
         </button>
-        <button type="button" className="btn primary" onClick={() => void save()} disabled={pending || offline}>
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => void save()}
+          disabled={pending || offline}
+        >
           Save
         </button>
       </div>
@@ -267,7 +333,8 @@ export function TitleEditor({ detail }: { detail: Detail }) {
   const mode = useWriteMode();
   const { id, title } = detail.self;
   const [draft, setDraft] = useDraft(id, "title");
-  if (draft && mode !== "hidden") return <OpenTitle detail={detail} draft={draft} setDraft={setDraft} />;
+  if (draft && mode !== "hidden")
+    return <OpenTitle detail={detail} draft={draft} setDraft={setDraft} />;
   return (
     <div className="d-title-row">
       <h1 className="d-title">
@@ -290,7 +357,15 @@ export function TitleEditor({ detail }: { detail: Detail }) {
   );
 }
 
-function OpenTitle({ detail, draft, setDraft }: { detail: Detail; draft: Draft; setDraft: (draft: Draft | null) => void }) {
+function OpenTitle({
+  detail,
+  draft,
+  setDraft,
+}: {
+  detail: Detail;
+  draft: Draft;
+  setDraft: (draft: Draft | null) => void;
+}) {
   const { id, kind, title } = detail.self;
   useDraftKeeper(id, "title", draft);
   const writer = useWrite();
@@ -298,8 +373,13 @@ function OpenTitle({ detail, draft, setDraft }: { detail: Detail; draft: Draft; 
   const pending = unsettled(writer.state);
   // Set once the editor is done, so a blur as it closes never saves again.
   const done = useRef(false);
-  const route = editableFields(kind).title!;
-  const field: Field = { name: "title", look: { label: "Title", place: "title" }, route, value: title };
+  const route = must(editableFields(kind).title);
+  const field: Field = {
+    name: "title",
+    look: { label: "Title", place: "title" },
+    route,
+    value: title,
+  };
   const close = () => {
     done.current = true;
     setDraft(null);
@@ -308,7 +388,19 @@ function OpenTitle({ detail, draft, setDraft }: { detail: Detail; draft: Draft; 
     const text = draft.text.replace(/\s+/g, " ").trim();
     if (done.current || offline || pending) return;
     if (!text || (text === draft.base && sameValue(title, draft.base))) return close();
-    if ((await writer.run(fieldEdit({ id, field: "title", route, label: "Title", from: draft.base, to: text }))) !== null) close();
+    if (
+      (await writer.run(
+        fieldEdit({
+          id,
+          field: "title",
+          route,
+          label: "Title",
+          from: draft.base,
+          to: text,
+        }),
+      )) !== null
+    )
+      close();
   };
   // Leaving the editor saves; moving within it (to the notice's buttons) does not.
   const onBlur = (event: FocusEvent<HTMLDivElement>) => {

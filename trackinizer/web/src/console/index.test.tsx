@@ -1,18 +1,36 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import type { FeedEvent, FeedFacets } from "../api/sessions";
 import { type Sent, stubFetch } from "../api/testing";
 import { MetaContext, ProfileContext } from "../app/boot";
-import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
+import {
+  CommandRegistry,
+  CommandRegistryContext,
+  Shortcuts,
+} from "../commands/registry";
 import { META, PROFILE } from "../detail/testing";
 import { shellResult } from "../detail/transcript/testing";
-import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
+import {
+  DEFAULT_PREFERENCES,
+  type Preferences,
+  preferences,
+  receivePreferences,
+} from "../preferences";
 import { ToastProvider } from "../ui/toast";
 import { clock, ConsoleView } from ".";
 import type { KeptView } from "./legacyViews";
 import { type Level, levelOf } from "./levels";
+import { must } from "../must";
 
 afterEach(async () => {
   // A view's own send answers first, or its answer would put the views back for the next test.
@@ -40,10 +58,16 @@ const SESSIONS: { [id: string]: { actor: string; rooms: string[]; cli: string } 
 };
 
 /** Record `seq` of a session, as the feed sends one. */
-function said(seq: number, session: string, kind: string, message: { [field: string]: unknown }, text = ""): FeedEvent {
+function said(
+  seq: number,
+  session: string,
+  kind: string,
+  message: { [field: string]: unknown },
+  text = "",
+): FeedEvent {
   return {
     session_id: session,
-    ...SESSIONS[session]!,
+    ...must(SESSIONS[session]),
     part: 0,
     seq,
     kind,
@@ -56,12 +80,24 @@ function said(seq: number, session: string, kind: string, message: { [field: str
 
 const EVENTS = [
   said(0, TILES_A, "UserMessage", { content: "Fix the flake." }, "Fix the flake."),
-  said(1, CLAUDE, "ToolCall", { call_id: "c1", name: "Bash", arguments: { command: "pytest -x" } }),
+  said(1, CLAUDE, "ToolCall", {
+    call_id: "c1",
+    name: "Bash",
+    arguments: { command: "pytest -x" },
+  }),
   said(2, CLAUDE, "TokenUsage", { info: { input_tokens: 3 } }),
-  said(3, TILES_A, "UncategorizedRecord", { kind: "event_msg/task_started", payload: { type: "task_started" } }),
+  said(3, TILES_A, "UncategorizedRecord", {
+    kind: "event_msg/task_started",
+    payload: { type: "task_started" },
+  }),
   said(4, TILES_A, "AssistantMessage", { content: "**Done.**" }, "**Done.**"),
   said(5, TILES_B, "AssistantMessage", { content: "On it." }, "On it."),
-  said(6, CLAUDE, "BashResult", shellResult({ command: ["pytest -x"], stdout: "1 passed", exit: 0 })),
+  said(
+    6,
+    CLAUDE,
+    "BashResult",
+    shellResult({ command: ["pytest -x"], stdout: "1 passed", exit: 0 }),
+  ),
 ];
 
 /** The audience of each session its owner hid, as the fake server holds it; the rest are open. */
@@ -71,10 +107,27 @@ const AUDIENCES = new Map<string, string>();
  * Session `session`'s agent as the facets count it, last heard from `minutes`
  * before `now`. tiles-a is the signed-in person's, so they may hide it.
  */
-function facet(session: string, count: number, conversation: number, minutes: number, now: number, ended: string | null = null) {
+function facet(
+  session: string,
+  count: number,
+  conversation: number,
+  minutes: number,
+  now: number,
+  ended: string | null = null,
+) {
   const last = new Date(now - minutes * 60_000).toISOString();
   const account = session === TILES_A ? PROFILE.email : "grace@example.com";
-  return { ...SESSIONS[session]!, session_id: session, count, conversation, last, ended, account, audience: AUDIENCES.get(session) ?? "open", hideable: session === TILES_A };
+  return {
+    ...must(SESSIONS[session]),
+    session_id: session,
+    count,
+    conversation,
+    last,
+    ended,
+    account,
+    audience: AUDIENCES.get(session) ?? "open",
+    hideable: session === TILES_A,
+  };
 }
 
 /**
@@ -83,10 +136,19 @@ function facet(session: string, count: number, conversation: number, minutes: nu
  * tiles-b has ended; tiles-c was last heard from two hours ago.
  */
 function facets(query: URLSearchParams, now: number): FeedFacets {
-  const since = query.has("since") ? Date.parse(query.get("since")!) : -Infinity;
-  const actors = [facet(TILES_A, 40, 3, 1, now), facet(CLAUDE, 20, 1, 2, now), facet(TILES_B, 10, 1, 30, now, new Date(now).toISOString()), facet(TILES_C, 5, 1, 120, now)];
+  const since = query.has("since") ? Date.parse(must(query.get("since"))) : -Infinity;
+  const actors = [
+    facet(TILES_A, 40, 3, 1, now),
+    facet(CLAUDE, 20, 1, 2, now),
+    facet(TILES_B, 10, 1, 30, now, new Date(now).toISOString()),
+    facet(TILES_C, 5, 1, 120, now),
+  ];
   return {
-    actors: actors.filter(({ last, audience }) => Date.parse(last) >= since && (audience !== "private" || query.get("hidden") === "true")),
+    actors: actors.filter(
+      ({ last, audience }) =>
+        Date.parse(last) >= since &&
+        (audience !== "private" || query.get("hidden") === "true"),
+    ),
     rooms: [
       { room: "ops", count: 50, actors: ["tiles-a", "tiles-b"] },
       { room: "lab", count: 40, actors: ["tiles-a"] },
@@ -104,7 +166,15 @@ function facets(query: URLSearchParams, now: number): FeedFacets {
 
 /** The facets under a read's picks: its agents, and their records by kind (tiles-a's alone, here). */
 function scoped(query: URLSearchParams, now: number): FeedFacets {
-  const pass = ({ actor, rooms, cli }: { actor: string; rooms: readonly string[]; cli: string | null }) =>
+  const pass = ({
+    actor,
+    rooms,
+    cli,
+  }: {
+    actor: string;
+    rooms: readonly string[];
+    cli: string | null;
+  }) =>
     (!query.has("actor") || query.getAll("actor").includes(actor)) &&
     (!query.has("room") || rooms.some((room) => query.getAll("room").includes(room))) &&
     (!query.has("cli") || query.getAll("cli").includes(cli ?? ""));
@@ -126,10 +196,20 @@ function scoped(query: URLSearchParams, now: number): FeedFacets {
  * a hidden session's only when the read keeps them; none for My campaigns, as the person launched none.
  */
 function passes(event: FeedEvent, query: URLSearchParams): boolean {
-  const any = (name: string, values: readonly string[]) => !query.has(name) || values.some((value) => query.getAll(name).includes(value));
+  const any = (name: string, values: readonly string[]) =>
+    !query.has(name) || values.some((value) => query.getAll(name).includes(value));
   const said = !query.has("conversation") || levelOf(event) === 1;
-  const shown = (AUDIENCES.get(event.session_id) !== "private" || query.get("hidden") === "true") && query.get("whose") !== "campaigns";
-  return any("actor", [event.actor]) && any("room", event.rooms ?? []) && any("cli", [event.cli ?? ""]) && any("kind", [event.kind]) && said && shown;
+  const shown =
+    (AUDIENCES.get(event.session_id) !== "private" || query.get("hidden") === "true") &&
+    query.get("whose") !== "campaigns";
+  return (
+    any("actor", [event.actor]) &&
+    any("room", event.rooms ?? []) &&
+    any("cli", [event.cli ?? ""]) &&
+    any("kind", [event.kind]) &&
+    said &&
+    shown
+  );
 }
 
 /**
@@ -138,33 +218,53 @@ function passes(event: FeedEvent, query: URLSearchParams): boolean {
  * `message`.
  */
 function serve(
-  message: (body: { actor: string; room: string | null }) => Response = () => Response.json({ delivered: ["s1"] }),
+  message: (body: { actor: string; room: string | null }) => Response = () =>
+    Response.json({ delivered: ["s1"] }),
   events: readonly FeedEvent[] = EVENTS,
 ): Sent[] {
   const now = Date.now();
   return stubFetch(async (request) => {
     const url = new URL(request.url);
     if (url.pathname === "/api/me/preferences" && request.method === "PATCH") {
-      return Response.json({ ...preferences(), ...(await request.json() as Partial<Preferences>) });
+      return Response.json({
+        ...preferences(),
+        ...((await request.json()) as Partial<Preferences>),
+      });
     }
     if (url.pathname === "/api/web/feed") {
-      const last = events.at(-1)!;
+      const last = must(events.at(-1));
       return Response.json({
-        events: url.searchParams.has("after_seq") ? [] : events.filter((event) => passes(event, url.searchParams)),
-        next_after: { created: last.created, session_id: last.session_id, part: last.part, seq: last.seq },
+        events: url.searchParams.has("after_seq")
+          ? []
+          : events.filter((event) => passes(event, url.searchParams)),
+        next_after: {
+          created: last.created,
+          session_id: last.session_id,
+          part: last.part,
+          seq: last.seq,
+        },
       });
     }
     if (url.pathname === "/api/web/feed/facets") {
-      return Response.json(["actor", "room", "cli"].some((name) => url.searchParams.has(name)) ? scoped(url.searchParams, now) : facets(url.searchParams, now));
+      return Response.json(
+        ["actor", "room", "cli"].some((name) => url.searchParams.has(name))
+          ? scoped(url.searchParams, now)
+          : facets(url.searchParams, now),
+      );
     }
     if (url.pathname === "/api/web/feed/histogram") {
-      return Response.json({ start: "2026-10-01T10:00:00Z", end: "2026-10-01T11:00:00Z", bucket_seconds: 3600, counts: [] });
+      return Response.json({
+        start: "2026-10-01T10:00:00Z",
+        end: "2026-10-01T11:00:00Z",
+        bucket_seconds: 3600,
+        counts: [],
+      });
     }
     if (url.pathname === "/api/messages") return message(await request.json());
     const hiding = /^\/api\/sessions\/([^/]+)\/audience$/.exec(url.pathname);
     if (hiding && request.method === "POST") {
       const { audience } = (await request.json()) as { audience: string };
-      AUDIENCES.set(hiding[1]!, audience);
+      AUDIENCES.set(must(hiding[1]), audience);
       return Response.json({ session_id: hiding[1], audience, sessions: [hiding[1]] });
     }
     return Response.json({ detail: "not found" }, { status: 404 });
@@ -180,7 +280,9 @@ function renderConsole(profile = PROFILE) {
       disconnect() {}
     },
   );
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
   return render(
     <ToastProvider>
       <QueryClientProvider client={client}>
@@ -212,7 +314,9 @@ const feedReads = (sent: readonly Sent[]) =>
     .filter((request) => request.path === "/api/web/feed")
     .map((request) => {
       const query = new URLSearchParams(request.query);
-      return Object.fromEntries([...new Set(query.keys())].map((name) => [name, query.getAll(name).join(",")]));
+      return Object.fromEntries(
+        [...new Set(query.keys())].map((name) => [name, query.getAll(name).join(",")]),
+      );
     });
 
 const MESSAGES = "AgentToAgentMessage,AssistantMessage,ContextState,UserMessage";
@@ -231,25 +335,38 @@ const EVERYONE = { whose: "everyone" };
 // it for each candidate: 4-8 ms a call here, against under one by label.
 
 /** One section of the rail. */
-const rail = (name: string) => within(screen.getByLabelText(name, { selector: "section" }));
+const rail = (name: string) =>
+  within(screen.getByLabelText(name, { selector: "section" }));
 
-const levels = () => within(screen.getByLabelText("Level", { selector: "[role=group]" }));
+const levels = () =>
+  within(screen.getByLabelText("Level", { selector: "[role=group]" }));
 
 /** The checkboxes of the agent facet, by name. */
-const agentBoxes = () => rail("Agents").queryAllByRole("checkbox").map((box) => box.getAttribute("aria-label"));
+const agentBoxes = () =>
+  rail("Agents")
+    .queryAllByRole("checkbox")
+    .map((box) => box.getAttribute("aria-label"));
 
 test("the console opens on every agent's messages, live, drawn as the transcript draws them, each level with its count", async () => {
   const sent = serve();
   renderConsole();
   const [user, done, onIt] = await lines(3);
-  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", ...CONVERSATION, ...MINE }]);
+  expect(feedReads(sent)).toEqual([
+    { tail: "true", limit: "300", ...CONVERSATION, ...MINE },
+  ]);
   // Two lines: when and whose; then where and what.
-  expect([...user!.querySelectorAll(".turn-h")].map((row) => row.textContent)).toEqual([`${clock(EVENTS[0]!.created)}tiles-a`, "[ops, lab]User"]);
-  expect(clock(EVENTS[0]!.created)).toMatch(/^\d\d:\d\d:\d\d$/);
-  expect(done!.querySelector("strong")!.textContent).toBe("Done.");
-  expect(onIt!.textContent).toContain("On it.");
+  expect(
+    [...must(user).querySelectorAll(".turn-h")].map((row) => row.textContent),
+  ).toEqual([`${clock(must(EVENTS[0]).created)}tiles-a`, "[ops, lab]User"]);
+  expect(clock(must(EVENTS[0]).created)).toMatch(/^\d\d:\d\d:\d\d$/);
+  expect(must(must(done).querySelector("strong")).textContent).toBe("Done.");
+  expect(must(onIt).textContent).toContain("On it.");
   await waitFor(() =>
-    expect(levels().getAllByRole("button").map((button) => [button.textContent, button.getAttribute("aria-pressed")])).toEqual([
+    expect(
+      levels()
+        .getAllByRole("button")
+        .map((button) => [button.textContent, button.getAttribute("aria-pressed")]),
+    ).toEqual([
       ["Messages5", "true"],
       ["+ Calls15", "false"],
       ["+ Output24", "false"],
@@ -264,7 +381,11 @@ test("the rail's button in the header, or [, collapses the rail and expands it a
   const user = userEvent.setup();
   const toggle = () => screen.getByRole("button", { name: /views and filters$/ });
   expect(toggle().closest(".view-h")).not.toBeNull();
-  expect(document.getElementById(toggle().getAttribute("aria-controls")!)!.contains(rail("Views").getByRole("heading").closest("section"))).toBe(true);
+  expect(
+    must(
+      document.getElementById(must(toggle().getAttribute("aria-controls"))),
+    ).contains(rail("Views").getByRole("heading").closest("section")),
+  ).toBe(true);
   await user.click(toggle());
   expect(toggle().getAttribute("aria-label")).toBe("Expand views and filters");
   expect(toggle().getAttribute("aria-expanded")).toBe("false");
@@ -277,17 +398,19 @@ test("the rail's button in the header, or [, collapses the rail and expands it a
 test("a line shows when its record happened, its own timestamp, not when the server stored it; one with none, when it was stored", async () => {
   // Stored in one burst, as capture stores records, but said minutes apart, the second before the first.
   serve(undefined, [
-    { ...EVENTS[0]!, timestamp: "2026-10-01T09:41:07Z" },
-    { ...EVENTS[4]!, timestamp: "2026-10-01T09:37:30Z" },
-    EVENTS[5]!,
+    { ...must(EVENTS[0]), timestamp: "2026-10-01T09:41:07Z" },
+    { ...must(EVENTS[4]), timestamp: "2026-10-01T09:37:30Z" },
+    must(EVENTS[5]),
   ]);
   renderConsole();
-  const times = (await lines(3)).map((line) => line.querySelector("time")!);
+  const times = (await lines(3)).map((line) => must(line.querySelector("time")));
   // Still in the server's order, by when it stored them.
-  expect(times.map((time) => [time.getAttribute("datetime"), time.textContent])).toEqual([
+  expect(
+    times.map((time) => [time.getAttribute("datetime"), time.textContent]),
+  ).toEqual([
     ["2026-10-01T09:41:07Z", clock("2026-10-01T09:41:07Z")],
     ["2026-10-01T09:37:30Z", clock("2026-10-01T09:37:30Z")],
-    [EVENTS[5]!.created, clock(EVENTS[5]!.created)],
+    [must(EVENTS[5]).created, clock(must(EVENTS[5]).created)],
   ]);
 });
 
@@ -297,9 +420,15 @@ test("with agents picked, each level counts the view's own records, from facets 
   await lines(3);
   fireEvent.click(rail("Agents").getByRole("checkbox", { name: "tiles-a" }));
   await waitFor(() =>
-    expect(levels().getAllByRole("button").map((button) => button.textContent)).toEqual(["Messages3", "+ Calls7", "+ Output27", "All40"]),
+    expect(
+      levels()
+        .getAllByRole("button")
+        .map((button) => button.textContent),
+    ).toEqual(["Messages3", "+ Calls7", "+ Output27", "All40"]),
   );
-  const reads = sent.filter((request) => request.path === "/api/web/feed/facets").map((request) => new URLSearchParams(request.query));
+  const reads = sent
+    .filter((request) => request.path === "/api/web/feed/facets")
+    .map((request) => new URLSearchParams(request.query));
   expect(reads.map((query) => query.getAll("actor"))).toEqual([[], ["tiles-a"]]);
   // The agent facet still lists every agent.
   expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]);
@@ -311,8 +440,13 @@ test("a level reads the kinds it adds and shows them: + Calls the tool calls, + 
   await lines(3);
   fireEvent.click(levels().getByRole("button", { name: /^\+ Calls/ }));
   const [, call] = await lines(4);
-  expect(call!.querySelector(".tool-arg")!.textContent).toBe("pytest -x");
-  expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", kind: `${MESSAGES},ToolCall`, ...MINE });
+  expect(must(must(call).querySelector(".tool-arg")).textContent).toBe("pytest -x");
+  expect(feedReads(sent).at(-1)).toEqual({
+    tail: "true",
+    limit: "300",
+    kind: `${MESSAGES},ToolCall`,
+    ...MINE,
+  });
   fireEvent.click(levels().getByRole("button", { name: /^\+ Output/ }));
   await lines(5);
   expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", ...MINE });
@@ -327,13 +461,39 @@ test("agents group by name family, and a family is picked as its pattern; the fe
   renderConsole();
   await lines(3);
   const agents = rail("Agents");
-  fireEvent.change(agents.getByRole("combobox", { name: "Group agents by" }), { target: { value: "family" } });
-  expect(agentBoxes()).toEqual(["tiles-*", "tiles-a", "tiles-b", "claude (whole group)", "claude"]);
+  fireEvent.change(agents.getByRole("combobox", { name: "Group agents by" }), {
+    target: { value: "family" },
+  });
+  expect(agentBoxes()).toEqual([
+    "tiles-*",
+    "tiles-a",
+    "tiles-b",
+    "claude (whole group)",
+    "claude",
+  ]);
   fireEvent.click(agents.getByRole("checkbox", { name: "tiles-*" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", actor: "tiles-a,tiles-b", ...CONVERSATION, ...MINE }));
-  expect(agents.getByRole("checkbox", { name: "tiles-b" })).toHaveProperty("checked", true);
+  await waitFor(() =>
+    expect(feedReads(sent).at(-1)).toEqual({
+      tail: "true",
+      limit: "300",
+      actor: "tiles-a,tiles-b",
+      ...CONVERSATION,
+      ...MINE,
+    }),
+  );
+  expect(agents.getByRole("checkbox", { name: "tiles-b" })).toHaveProperty(
+    "checked",
+    true,
+  );
   fireEvent.click(agents.getByRole("button", { name: "Clear tiles-*" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", ...CONVERSATION, ...MINE }));
+  await waitFor(() =>
+    expect(feedReads(sent).at(-1)).toEqual({
+      tail: "true",
+      limit: "300",
+      ...CONVERSATION,
+      ...MINE,
+    }),
+  );
 });
 
 test("agents are found by a fragment of their name or room, and a typed pattern is picked in one step", async () => {
@@ -346,13 +506,19 @@ test("agents are found by a fragment of their name or room, and a typed pattern 
   expect(agentBoxes()).toEqual(["tiles-a"]);
   fireEvent.change(find, { target: { value: "tiles-*" } });
   fireEvent.click(agents.getByRole("button", { name: "Pick tiles-*" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toMatchObject({ actor: "tiles-a,tiles-b" }));
+  await waitFor(() =>
+    expect(feedReads(sent).at(-1)).toMatchObject({ actor: "tiles-a,tiles-b" }),
+  );
   fireEvent.change(find, { target: { value: "nobody-*" } });
   fireEvent.click(agents.getByRole("button", { name: "Pick nobody-*" }));
   fireEvent.click(agents.getByRole("button", { name: "Clear tiles-*" }));
   expect(await screen.findByText("No agent matches this view's picks.")).toBeTruthy();
   expect(document.querySelectorAll(".console-line")).toHaveLength(0);
-  expect(levels().getAllByRole("button").map((button) => button.textContent)).toEqual(["Messages", "+ Calls", "+ Output", "All"]);
+  expect(
+    levels()
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Messages", "+ Calls", "+ Output", "All"]);
 });
 
 test("agents group by state, and Active in reads the facets over that much of the past: 15 m, 1 h, 24 h or 7 d, never all of it", async () => {
@@ -360,18 +526,37 @@ test("agents group by state, and Active in reads the facets over that much of th
   renderConsole();
   await lines(3);
   const agents = rail("Agents");
-  fireEvent.change(agents.getByRole("combobox", { name: "Group agents by" }), { target: { value: "state" } });
-  expect(agentBoxes()).toEqual(["Working (whole group)", "tiles-a", "claude", "Ended (whole group)", "tiles-b"]);
-  const facetReads = () => sent.filter((request) => request.path === "/api/web/feed/facets").map((request) => new URLSearchParams(request.query));
-  const minutesAgo = (query: URLSearchParams) => Math.round((Date.now() - Date.parse(query.get("since")!)) / 60_000);
+  fireEvent.change(agents.getByRole("combobox", { name: "Group agents by" }), {
+    target: { value: "state" },
+  });
+  expect(agentBoxes()).toEqual([
+    "Working (whole group)",
+    "tiles-a",
+    "claude",
+    "Ended (whole group)",
+    "tiles-b",
+  ]);
+  const facetReads = () =>
+    sent
+      .filter((request) => request.path === "/api/web/feed/facets")
+      .map((request) => new URLSearchParams(request.query));
+  const minutesAgo = (query: URLSearchParams) =>
+    Math.round((Date.now() - Date.parse(must(query.get("since")))) / 60_000);
   expect(facetReads().map(minutesAgo)).toEqual([60]);
   const active = within(agents.getByRole("group", { name: "Active in the last" }));
   // All would count the whole history: 8.8 s on 9 million records.
-  expect(active.getAllByRole("button").map((button) => button.textContent)).toEqual(["15 m", "1 h", "24 h", "7 d"]);
+  expect(active.getAllByRole("button").map((button) => button.textContent)).toEqual([
+    "15 m",
+    "1 h",
+    "24 h",
+    "7 d",
+  ]);
   fireEvent.click(active.getByRole("button", { name: "15 m" }));
   await waitFor(() => expect(facetReads().map(minutesAgo)).toEqual([60, 15]));
   fireEvent.click(active.getByRole("button", { name: "7 d" }));
-  await waitFor(() => expect(facetReads().map(minutesAgo)).toEqual([60, 15, 7 * 24 * 60]));
+  await waitFor(() =>
+    expect(facetReads().map(minutesAgo)).toEqual([60, 15, 7 * 24 * 60]),
+  );
 });
 
 test("rooms and CLIs filter the feed, AND with each other", async () => {
@@ -382,12 +567,17 @@ test("rooms and CLIs filter the feed, AND with each other", async () => {
   await waitFor(() => expect(feedReads(sent).at(-1)).toMatchObject({ room: "lab" }));
   await lines(2);
   fireEvent.click(rail("CLI").getByRole("checkbox", { name: "claude" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toMatchObject({ room: "lab", cli: "claude" }));
+  await waitFor(() =>
+    expect(feedReads(sent).at(-1)).toMatchObject({ room: "lab", cli: "claude" }),
+  );
   expect(await screen.findByText("No records match this view.")).toBeTruthy();
 });
 
 /** The rail's views, in its order. */
-const viewNames = () => rail("Views").queryAllByRole("listitem").map((item) => item.querySelector("button")!.textContent);
+const viewNames = () =>
+  rail("Views")
+    .queryAllByRole("listitem")
+    .map((item) => must(item.querySelector("button")).textContent);
 
 /** Store `views` as views kept from before, oldest first, each live and picking no agent, room or CLI. */
 /** The views the server holds for the user, as the profile brought them. */
@@ -395,18 +585,22 @@ function keepOnServer(console_views: Preferences["console_views"]) {
   receivePreferences({ ...DEFAULT_PREFERENCES, console_views });
 }
 
-function keepViews(...views: { name: string; level: Level; rooms?: string[]; pinned?: boolean }[]) {
-  const kept = views.map(({ name, level, rooms = [], pinned = false }, index): KeptView => ({
-    id: `v${index}`,
-    name,
-    pinned,
-    created: `2026-10-01T09:0${index}:00.000Z`,
-    agents: [],
-    rooms,
-    clis: [],
-    level,
-    range: { live: true },
-  }));
+function keepViews(
+  ...views: { name: string; level: Level; rooms?: string[]; pinned?: boolean }[]
+) {
+  const kept = views.map(
+    ({ name, level, rooms = [], pinned = false }, index): KeptView => ({
+      id: `v${index}`,
+      name,
+      pinned,
+      created: `2026-10-01T09:0${index}:00.000Z`,
+      agents: [],
+      rooms,
+      clis: [],
+      level,
+      range: { live: true },
+    }),
+  );
   keepOnServer(kept);
 }
 
@@ -418,7 +612,11 @@ test("a change saves the view: the rail lists it, Untitled, as the open one", as
   fireEvent.click(levels().getByRole("button", { name: /^All/ }));
   await lines(7);
   expect(viewNames()).toEqual(["Untitled view"]);
-  expect(rail("Views").getByRole("button", { name: "Untitled view" }).getAttribute("aria-current")).toBe("page");
+  expect(
+    rail("Views")
+      .getByRole("button", { name: "Untitled view" })
+      .getAttribute("aria-current"),
+  ).toBe("page");
 });
 
 test("a saved view is renamed and pinned in the rail", async () => {
@@ -455,12 +653,17 @@ test("+ starts another view, listed after an older pinned one; a view picked in 
   unmount();
   renderConsole();
   await lines(7);
-  expect(levels().getByText(/^All/, { selector: "button" }).getAttribute("aria-pressed")).toBe("true");
+  expect(
+    levels().getByText(/^All/, { selector: "button" }).getAttribute("aria-pressed"),
+  ).toBe("true");
 });
 
 test("Delete takes a view out of the rail and opens the one left", async () => {
   serve();
-  keepViews({ name: "Everything", level: 4 }, { name: "Lab", level: 1, rooms: ["lab"] });
+  keepViews(
+    { name: "Everything", level: 4 },
+    { name: "Lab", level: 1, rooms: ["lab"] },
+  );
   renderConsole();
   // The newest view opens first.
   await lines(2);
@@ -475,21 +678,38 @@ test("To follows the view's agents that have not ended; a line with no target go
   await lines(3);
   expect(screen.queryByRole("group", { name: "To" })).toBeNull();
   const agents = rail("Agents");
-  fireEvent.change(agents.getByRole("searchbox", { name: "Find agents" }), { target: { value: "tiles-*" } });
+  fireEvent.change(agents.getByRole("searchbox", { name: "Find agents" }), {
+    target: { value: "tiles-*" },
+  });
   fireEvent.click(agents.getByRole("button", { name: "Pick tiles-*" }));
   // Found by their labels and text, as the rail's sections are.
   const to = within(await screen.findByLabelText("To", { selector: "[role=group]" }));
-  expect(to.getAllByRole("listitem").map((chip) => chip.textContent)).toEqual(["@tiles-a:ops", "@tiles-a:lab"]);
+  expect(to.getAllByRole("listitem").map((chip) => chip.textContent)).toEqual([
+    "@tiles-a:ops",
+    "@tiles-a:lab",
+  ]);
   const box = screen.getByLabelText("Message");
   const send = screen.getByText("Send message", { selector: "button" });
   fireEvent.change(box, { target: { value: "rerun the suite" } });
   fireEvent.click(send);
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 2 sessions"));
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 2 sessions",
+    ),
+  );
   fireEvent.click(to.getByLabelText("Leave out @tiles-a:lab"));
   fireEvent.change(box, { target: { value: "stop" } });
   fireEvent.click(send);
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session"));
-  expect(sent.filter((request) => request.path === "/api/messages").map((request) => request.body)).toEqual([
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 1 session",
+    ),
+  );
+  expect(
+    sent
+      .filter((request) => request.path === "/api/messages")
+      .map((request) => request.body),
+  ).toEqual([
     { actor: "tiles-a", room: "ops", text: "rerun the suite" },
     { actor: "tiles-a", room: "lab", text: "rerun the suite" },
     { actor: "tiles-a", room: "ops", text: "stop" },
@@ -504,7 +724,8 @@ test("a chip left out stays left out of its own view only, however views are swi
   const pick = (name: string) => fireEvent.click(rail("Agents").getByLabelText(name));
   const toGroup = () => screen.findByLabelText("To", { selector: "[role=group]" });
   const to = async () => within(await toGroup());
-  const chips = async () => [...(await toGroup()).querySelectorAll("li")].map((chip) => chip.textContent);
+  const chips = async () =>
+    [...(await toGroup()).querySelectorAll("li")].map((chip) => chip.textContent);
   const views = rail("Views");
   pick("tiles-a");
   fireEvent.click(await views.findByLabelText("Rename Untitled view"));
@@ -518,11 +739,21 @@ test("a chip left out stays left out of its own view only, however views are swi
   fireEvent.click((await to()).getByLabelText("Leave out @tiles-a:lab"));
   expect(await chips()).toEqual(["@tiles-a:ops"]);
   fireEvent.click(views.getByText("One", { selector: "button" }));
-  await waitFor(async () => expect(await chips()).toEqual(["@tiles-a:ops", "@tiles-a:lab"]));
+  await waitFor(async () =>
+    expect(await chips()).toEqual(["@tiles-a:ops", "@tiles-a:lab"]),
+  );
   fireEvent.change(screen.getByLabelText("Message"), { target: { value: "stop" } });
   fireEvent.click(screen.getByText("Send message", { selector: "button" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 2 sessions"));
-  expect(sent.filter((request) => request.path === "/api/messages").map((request) => request.body)).toEqual([
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 2 sessions",
+    ),
+  );
+  expect(
+    sent
+      .filter((request) => request.path === "/api/messages")
+      .map((request) => request.body),
+  ).toEqual([
     { actor: "tiles-a", room: "ops", text: "stop" },
     { actor: "tiles-a", room: "lab", text: "stop" },
   ]);
@@ -536,11 +767,20 @@ test("the facets' window only finds agents: a narrower one keeps every agent the
   const active = within(agents.getByRole("group", { name: "Active in the last" }));
   fireEvent.click(active.getByRole("button", { name: "24 h" }));
   await waitFor(() => expect(agentBoxes()).toContain("tiles-c"));
-  fireEvent.change(agents.getByRole("searchbox", { name: "Find agents" }), { target: { value: "tiles-*" } });
+  fireEvent.change(agents.getByRole("searchbox", { name: "Find agents" }), {
+    target: { value: "tiles-*" },
+  });
   fireEvent.click(agents.getByRole("button", { name: "Pick tiles-*" }));
-  const chips = () => within(screen.getByRole("group", { name: "To" })).getAllByRole("listitem").map((chip) => chip.textContent);
-  await waitFor(() => expect(chips()).toEqual(["@tiles-a:ops", "@tiles-a:lab", "@tiles-c:ops"]));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toMatchObject({ actor: "tiles-a,tiles-b,tiles-c" }));
+  const chips = () =>
+    within(screen.getByRole("group", { name: "To" }))
+      .getAllByRole("listitem")
+      .map((chip) => chip.textContent);
+  await waitFor(() =>
+    expect(chips()).toEqual(["@tiles-a:ops", "@tiles-a:lab", "@tiles-c:ops"]),
+  );
+  await waitFor(() =>
+    expect(feedReads(sent).at(-1)).toMatchObject({ actor: "tiles-a,tiles-b,tiles-c" }),
+  );
   const reads = feedReads(sent).length;
   fireEvent.click(active.getByRole("button", { name: "1 h" }));
   await waitFor(() => expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]));
@@ -554,12 +794,33 @@ test("live, with no stream batch, the facets' window still rolls on and Working 
   renderConsole();
   await lines(3);
   const agents = rail("Agents");
-  fireEvent.change(agents.getByRole("combobox", { name: "Group agents by" }), { target: { value: "state" } });
-  expect(agentBoxes()).toEqual(["Working (whole group)", "tiles-a", "claude", "Ended (whole group)", "tiles-b"]);
+  fireEvent.change(agents.getByRole("combobox", { name: "Group agents by" }), {
+    target: { value: "state" },
+  });
+  expect(agentBoxes()).toEqual([
+    "Working (whole group)",
+    "tiles-a",
+    "claude",
+    "Ended (whole group)",
+    "tiles-b",
+  ]);
   await act(() => vi.advanceTimersByTimeAsync(6 * 60_000));
-  expect(agentBoxes()).toEqual(["Quiet (whole group)", "tiles-a", "claude", "Ended (whole group)", "tiles-b"]);
-  fireEvent.click(within(agents.getByRole("group", { name: "Active in the last" })).getByRole("button", { name: "15 m" }));
-  await waitFor(() => expect(agentBoxes()).toEqual(["Quiet (whole group)", "tiles-a", "claude"]));
+  expect(agentBoxes()).toEqual([
+    "Quiet (whole group)",
+    "tiles-a",
+    "claude",
+    "Ended (whole group)",
+    "tiles-b",
+  ]);
+  fireEvent.click(
+    within(agents.getByRole("group", { name: "Active in the last" })).getByRole(
+      "button",
+      { name: "15 m" },
+    ),
+  );
+  await waitFor(() =>
+    expect(agentBoxes()).toEqual(["Quiet (whole group)", "tiles-a", "claude"]),
+  );
   await act(() => vi.advanceTimersByTimeAsync(10 * 60_000));
   expect(agentBoxes()).toEqual([]);
 });
@@ -570,63 +831,117 @@ test("a history range reads its window instead of the live tail, the facets coun
   const sent = serve();
   renderConsole();
   await lines(3);
-  expect(document.querySelector(".console-mark")!.textContent).toBe("● Live");
+  expect(must(document.querySelector(".console-mark")).textContent).toBe("● Live");
   const range = within(screen.getByRole("group", { name: "Range" }));
   fireEvent.click(range.getByRole("button", { name: "Apply" }));
   expect(range.getByRole("status").textContent).toBe("Set a from or to time first.");
-  fireEvent.change(range.getByLabelText("From"), { target: { value: "2026-10-01T09:30" } });
+  fireEvent.change(range.getByLabelText("From"), {
+    target: { value: "2026-10-01T09:30" },
+  });
   fireEvent.click(range.getByRole("button", { name: "Apply" }));
   await waitFor(() => expect(feedReads(sent)).toHaveLength(2));
   const since = new Date("2026-10-01T09:30").toISOString();
   expect(feedReads(sent)[1]).toEqual({ since, limit: "300", ...CONVERSATION, ...MINE });
   // The range's controls start afresh from the new range.
   const applied = within(screen.getByRole("group", { name: "Range" }));
-  expect(applied.getByRole("button", { name: "Live" }).getAttribute("aria-pressed")).toBe("false");
-  expect((applied.getByLabelText("From") as HTMLInputElement).value).toBe("2026-10-01T09:30");
-  expect(document.querySelector(".console-mark")!.textContent).toBe("History");
-  await waitFor(() => expect(sent.filter((request) => request.path === "/api/web/feed/facets").at(-1)!.query).toBe(`?since=${encodeURIComponent(since)}&whose=mine`));
+  expect(
+    applied.getByRole("button", { name: "Live" }).getAttribute("aria-pressed"),
+  ).toBe("false");
+  expect((applied.getByLabelText("From") as HTMLInputElement).value).toBe(
+    "2026-10-01T09:30",
+  );
+  expect(must(document.querySelector(".console-mark")).textContent).toBe("History");
+  await waitFor(() =>
+    expect(
+      must(sent.filter((request) => request.path === "/api/web/feed/facets").at(-1))
+        .query,
+    ).toBe(`?since=${encodeURIComponent(since)}&whose=mine`),
+  );
 });
 
 test("a history range's facets count at most the 7 days before its end, now for an open one; its feed reads the window as it is", async () => {
   vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-10-02T12:00:00Z") });
   const sent = serve();
   const facetWindows = () =>
-    sent.filter((request) => request.path === "/api/web/feed/facets").map((request) => new URLSearchParams(request.query)).map((query) => [query.get("since"), query.get("until")]);
+    sent
+      .filter((request) => request.path === "/api/web/feed/facets")
+      .map((request) => new URLSearchParams(request.query))
+      .map((query) => [query.get("since"), query.get("until")]);
   const until = "2026-10-01T10:00:00.000Z";
   // With no start, as Apply with only To sets: the 7 days before its end, not the whole history.
-  const open = (since: string | null, end: string | null): KeptView => ({ id: "v", name: "Old", pinned: false, created: "2026-09-01T00:00:00.000Z", agents: [], rooms: [], clis: [], level: 1, range: { live: false, since, until: end } });
+  const open = (since: string | null, end: string | null): KeptView => ({
+    id: "v",
+    name: "Old",
+    pinned: false,
+    created: "2026-09-01T00:00:00.000Z",
+    agents: [],
+    rooms: [],
+    clis: [],
+    level: 1,
+    range: { live: false, since, until: end },
+  });
   keepOnServer([open(null, until)]);
   const { unmount } = renderConsole();
   await lines(3);
   expect(feedReads(sent)).toEqual([{ until, limit: "300", ...CONVERSATION, ...MINE }]);
-  await waitFor(() => expect(new Set(facetWindows().map(String))).toEqual(new Set([String(["2026-09-24T10:00:00.000Z", until])])));
+  await waitFor(() =>
+    expect(new Set(facetWindows().map(String))).toEqual(
+      new Set([String(["2026-09-24T10:00:00.000Z", until])]),
+    ),
+  );
   unmount();
   // A start a month back with no end: the 7 days before now.
   sent.length = 0;
   keepOnServer([open("2026-09-01T00:00:00.000Z", null)]);
   renderConsole();
   await lines(3);
-  expect(feedReads(sent)).toEqual([{ since: "2026-09-01T00:00:00.000Z", limit: "300", ...CONVERSATION, ...MINE }]);
-  await waitFor(() => expect(new Set(facetWindows().map(String))).toEqual(new Set([String(["2026-09-25T12:00:00.000Z", null])])));
+  expect(feedReads(sent)).toEqual([
+    { since: "2026-09-01T00:00:00.000Z", limit: "300", ...CONVERSATION, ...MINE },
+  ]);
+  await waitFor(() =>
+    expect(new Set(facetWindows().map(String))).toEqual(
+      new Set([String(["2026-09-25T12:00:00.000Z", null])]),
+    ),
+  );
 });
 
 test("a view kept as a window of history opens on that window, its times in the range's boxes", async () => {
   const sent = serve();
   const since = "2026-10-01T09:30:00.000Z";
-  const view: KeptView = { id: "v", name: "Morning", pinned: false, created: since, agents: [], rooms: [], clis: [], level: 1, range: { live: false, since, until: null } };
+  const view: KeptView = {
+    id: "v",
+    name: "Morning",
+    pinned: false,
+    created: since,
+    agents: [],
+    rooms: [],
+    clis: [],
+    level: 1,
+    range: { live: false, since, until: null },
+  };
   keepOnServer([view]);
   renderConsole();
   await lines(3);
   expect(feedReads(sent)).toEqual([{ since, limit: "300", ...CONVERSATION, ...MINE }]);
   const range = within(screen.getByRole("group", { name: "Range" }));
-  const local = new Date(new Date(since).getTime() - new Date(since).getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-  expect([range.getByLabelText("From"), range.getByLabelText("To")].map((box) => (box as HTMLInputElement).value)).toEqual([local, ""]);
+  const local = new Date(
+    new Date(since).getTime() - new Date(since).getTimezoneOffset() * 60_000,
+  )
+    .toISOString()
+    .slice(0, 16);
+  expect(
+    [range.getByLabelText("From"), range.getByLabelText("To")].map(
+      (box) => (box as HTMLInputElement).value,
+    ),
+  ).toEqual([local, ""]);
 });
 
 test("a line goes to each target under its own key; Retry sends them again under the same keys; the receipt counts sessions", async () => {
   let refuse = true;
   const sent = serve(({ actor }) =>
-    refuse && actor === "claude" ? Response.json({ detail: "statement timeout" }, { status: 500 }) : Response.json({ delivered: ["s1"] }),
+    refuse && actor === "claude"
+      ? Response.json({ detail: "statement timeout" }, { status: 500 })
+      : Response.json({ delivered: ["s1"] }),
   );
   renderConsole();
   await lines(3);
@@ -638,9 +953,16 @@ test("a line goes to each target under its own key; Retry sends them again under
   );
   refuse = false;
   fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 2 sessions"));
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 2 sessions",
+    ),
+  );
   const posts = sent.filter((request) => request.path === "/api/messages");
-  const keyOf = (actor: string) => posts.filter((post) => (post.body as { actor: string }).actor === actor).map((post) => post.headers["idempotency-key"]);
+  const keyOf = (actor: string) =>
+    posts
+      .filter((post) => (post.body as { actor: string }).actor === actor)
+      .map((post) => post.headers["idempotency-key"]);
   expect(posts.map((post) => post.body)).toEqual(
     expect.arrayContaining([
       { actor: "tiles-a", room: "ops", text: "rerun the suite" },
@@ -649,7 +971,12 @@ test("a line goes to each target under its own key; Retry sends them again under
   );
   expect(posts).toHaveLength(4);
   const [tiles, claude] = [keyOf("tiles-a"), keyOf("claude")];
-  expect([tiles.length, new Set(tiles).size, claude.length, new Set(claude).size]).toEqual([2, 1, 2, 1]);
+  expect([
+    tiles.length,
+    new Set(tiles).size,
+    claude.length,
+    new Set(claude).size,
+  ]).toEqual([2, 1, 2, 1]);
   expect(tiles[0]).not.toBe(claude[0]);
 });
 
@@ -660,14 +987,26 @@ test("a line with no target and no agents picked says why; @* sends to each agen
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: "stop" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  expect(screen.getByRole("alert").textContent).toBe("Pick agents for this view, or start with a target: @agent message");
+  expect(screen.getByRole("alert").textContent).toBe(
+    "Pick agents for this view, or start with a target: @agent message",
+  );
   fireEvent.click(rail("Agents").getByRole("checkbox", { name: "tiles-a" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toMatchObject({ actor: "tiles-a" }));
+  await waitFor(() =>
+    expect(feedReads(sent).at(-1)).toMatchObject({ actor: "tiles-a" }),
+  );
   await lines(2);
   fireEvent.change(box, { target: { value: "@* stop" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 2 sessions"));
-  expect(sent.filter((request) => request.path === "/api/messages").map((request) => request.body)).toEqual([
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 2 sessions",
+    ),
+  );
+  expect(
+    sent
+      .filter((request) => request.path === "/api/messages")
+      .map((request) => request.body),
+  ).toEqual([
     { actor: "tiles-a", room: "ops", text: "stop" },
     { actor: "tiles-a", room: "lab", text: "stop" },
   ]);
@@ -676,14 +1015,18 @@ test("a line with no target and no agents picked says why; @* sends to each agen
 test("Retry sends @* to the targets it first went to, under the same keys, whatever shows by then (CR-01)", async () => {
   let refuse = true;
   const sent = serve(({ room }) =>
-    refuse && room === "lab" ? Response.json({ detail: "statement timeout" }, { status: 500 }) : Response.json({ delivered: ["s1"] }),
+    refuse && room === "lab"
+      ? Response.json({ detail: "statement timeout" }, { status: 500 })
+      : Response.json({ delivered: ["s1"] }),
   );
   renderConsole();
   await lines(3);
   const agents = rail("Agents");
   fireEvent.click(agents.getByRole("checkbox", { name: "tiles-a" }));
   await lines(2);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), { target: { value: "@* stop" } });
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+    target: { value: "@* stop" },
+  });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   expect((await screen.findByRole("alert")).textContent).toBe(
     "Not sent to @tiles-a:lab (statement timeout). Retry sends it again; no session gets a message twice.",
@@ -693,11 +1036,23 @@ test("Retry sends @* to the targets it first went to, under the same keys, whate
   await lines(3);
   refuse = false;
   fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 2 sessions"));
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 2 sessions",
+    ),
+  );
   const posts = sent.filter((request) => request.path === "/api/messages");
-  const [ops, lab] = [{ actor: "tiles-a", room: "ops", text: "stop" }, { actor: "tiles-a", room: "lab", text: "stop" }];
+  const [ops, lab] = [
+    { actor: "tiles-a", room: "ops", text: "stop" },
+    { actor: "tiles-a", room: "lab", text: "stop" },
+  ];
   expect(posts.map((post) => post.body)).toEqual([ops, lab, ops, lab]);
-  const keys = (room: string) => new Set(posts.filter((post) => (post.body as { room: string }).room === room).map((post) => post.headers["idempotency-key"]));
+  const keys = (room: string) =>
+    new Set(
+      posts
+        .filter((post) => (post.body as { room: string }).room === room)
+        .map((post) => post.headers["idempotency-key"]),
+    );
   expect([keys("ops").size, keys("lab").size]).toEqual([1, 1]);
 });
 
@@ -706,7 +1061,10 @@ test("@ lists the agents the view shows first, then the rest, then @*; Enter com
   renderConsole();
   await lines(3);
   const box = screen.getByLabelText<HTMLTextAreaElement>("Message");
-  const offered = () => [...document.querySelectorAll<HTMLElement>("[role=option]")].map((option) => option.title);
+  const offered = () =>
+    [...document.querySelectorAll<HTMLElement>("[role=option]")].map(
+      (option) => option.title,
+    );
   box.focus();
   fireEvent.change(box, { target: { value: "@" } });
   // tiles-a's lines show, in two rooms; tiles-b's show too, but it has ended; claude is only in the facets.
@@ -716,11 +1074,21 @@ test("@ lists the agents the view shows first, then the rest, then @*; Enter com
   expect(box.value).toBe("@tiles-a:ops ");
   fireEvent.change(box, { target: { value: "@tiles-a:ops rerun" } });
   fireEvent.keyDown(box, { key: "Enter" });
-  await waitFor(() => expect(document.querySelector(".composer-receipt")?.textContent).toBe("Sent to 1 session"));
-  expect(sent.filter((request) => request.path === "/api/messages").map((request) => request.body)).toEqual([{ actor: "tiles-a", room: "ops", text: "rerun" }]);
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 1 session",
+    ),
+  );
+  expect(
+    sent
+      .filter((request) => request.path === "/api/messages")
+      .map((request) => request.body),
+  ).toEqual([{ actor: "tiles-a", room: "ops", text: "rerun" }]);
   // A view of claude alone ranks it first, though none of its lines show at Messages.
   fireEvent.click(rail("Agents").getByRole("checkbox", { name: "claude" }));
-  await waitFor(() => expect(feedReads(sent).at(-1)).toMatchObject({ actor: "claude" }));
+  await waitFor(() =>
+    expect(feedReads(sent).at(-1)).toMatchObject({ actor: "claude" }),
+  );
   fireEvent.change(box, { target: { value: "@" } });
   expect(offered()).toEqual(["@claude", "@tiles-a:lab", "@tiles-a:ops"]);
 });
@@ -731,42 +1099,89 @@ test("a click on a line's agent addresses the box to it, focused with the caret 
   const [user, , onIt] = await lines(3);
   const box = screen.getByLabelText<HTMLTextAreaElement>("Message");
   // Found by label, as the rail's controls are.
-  const agent = (line: HTMLElement, name: string) => within(line).getByLabelText(`Message ${name}`);
-  fireEvent.click(agent(onIt!, "tiles-b"));
-  expect([box.value, document.activeElement === box, box.selectionStart]).toEqual(["@tiles-b ", true, 9]);
+  const agent = (line: HTMLElement, name: string) =>
+    within(line).getByLabelText(`Message ${name}`);
+  fireEvent.click(agent(must(onIt), "tiles-b"));
+  expect([box.value, document.activeElement === box, box.selectionStart]).toEqual([
+    "@tiles-b ",
+    true,
+    9,
+  ]);
   fireEvent.change(box, { target: { value: "@tiles-b rerun" } });
-  fireEvent.click(agent(user!, "tiles-a"));
+  fireEvent.click(agent(must(user), "tiles-a"));
   expect([box.value, box.selectionStart]).toEqual(["@tiles-b,@tiles-a:ops rerun", 27]);
-  fireEvent.click(agent(onIt!, "tiles-b"));
+  fireEvent.click(agent(must(onIt), "tiles-b"));
   expect(box.value).toBe("@tiles-b,@tiles-a:ops rerun");
 });
 
 test("a picked agent the facets do not count stays picked, so it can be cleared (CR-04)", async () => {
   const sent = serve();
-  const view: KeptView = { id: "v", name: "Gone", pinned: false, created: "2026-10-01T00:00:00Z", agents: ["gone-agent"], rooms: [], clis: [], level: 4, range: { live: true } };
+  const view: KeptView = {
+    id: "v",
+    name: "Gone",
+    pinned: false,
+    created: "2026-10-01T00:00:00Z",
+    agents: ["gone-agent"],
+    rooms: [],
+    clis: [],
+    level: 4,
+    range: { live: true },
+  };
   keepOnServer([view]);
   renderConsole();
   expect(await screen.findByText("No records match this view.")).toBeTruthy();
-  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", actor: "gone-agent", ...EVERYONE }]);
+  expect(feedReads(sent)).toEqual([
+    { tail: "true", limit: "300", actor: "gone-agent", ...EVERYONE },
+  ]);
   fireEvent.click(rail("Agents").getByRole("button", { name: "Clear gone-agent" }));
   await lines(7);
 });
 
 test("a kept view that picks agents opens on Everyone and reads a colleague's; a view that picks nothing keeps Mine as it picks", async () => {
   const sent = serve();
-  const view: KeptView = { id: "v", name: "Grace's", pinned: false, created: "2026-10-01T00:00:00Z", agents: ["tiles-b"], rooms: [], clis: [], level: 1, range: { live: true } };
+  const view: KeptView = {
+    id: "v",
+    name: "Grace's",
+    pinned: false,
+    created: "2026-10-01T00:00:00Z",
+    agents: ["tiles-b"],
+    rooms: [],
+    clis: [],
+    level: 1,
+    range: { live: true },
+  };
   keepOnServer([view]);
   renderConsole();
   await lines(1);
-  expect(scopeButtons()).toEqual([["Mine", "false"], ["My campaigns", "false"], ["Everyone", "true"]]);
-  expect(feedReads(sent)).toEqual([{ tail: "true", limit: "300", actor: "tiles-b", ...CONVERSATION, ...EVERYONE }]);
+  expect(scopeButtons()).toEqual([
+    ["Mine", "false"],
+    ["My campaigns", "false"],
+    ["Everyone", "true"],
+  ]);
+  expect(feedReads(sent)).toEqual([
+    { tail: "true", limit: "300", actor: "tiles-b", ...CONVERSATION, ...EVERYONE },
+  ]);
   fireEvent.click(rail("Views").getByText("New view", { selector: "button" }));
   await lines(3);
-  expect(scopeButtons()).toEqual([["Mine", "true"], ["My campaigns", "false"], ["Everyone", "false"]]);
+  expect(scopeButtons()).toEqual([
+    ["Mine", "true"],
+    ["My campaigns", "false"],
+    ["Everyone", "false"],
+  ]);
   fireEvent.click(rail("Agents").getByLabelText("tiles-a"));
   await lines(2);
-  expect(feedReads(sent).at(-1)).toEqual({ tail: "true", limit: "300", actor: "tiles-a", ...CONVERSATION, ...MINE });
-  expect(scopeButtons()).toEqual([["Mine", "true"], ["My campaigns", "false"], ["Everyone", "false"]]);
+  expect(feedReads(sent).at(-1)).toEqual({
+    tail: "true",
+    limit: "300",
+    actor: "tiles-a",
+    ...CONVERSATION,
+    ...MINE,
+  });
+  expect(scopeButtons()).toEqual([
+    ["Mine", "true"],
+    ["My campaigns", "false"],
+    ["Everyone", "false"],
+  ]);
 });
 
 test("a viewer reads the console but gets no send box", async () => {
@@ -775,7 +1190,7 @@ test("a viewer reads the console but gets no send box", async () => {
   const [user] = await lines(3);
   expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
   // Nor a line's agent to address it to.
-  expect(user!.querySelector(".console-actor")!.tagName).toBe("B");
+  expect(must(must(user).querySelector(".console-actor")).tagName).toBe("B");
 });
 
 /** Two science chats' sessions, whose records the feed carries as any session's. */
@@ -789,28 +1204,54 @@ Object.assign(SESSIONS, {
 });
 const WITH_CHATS = [
   ...EVENTS,
-  said(7, CHAT_A, "AssistantMessage", { content: "In my own chat." }, "In my own chat."),
-  said(8, CHAT_B, "AssistantMessage", { content: "In another chat." }, "In another chat."),
+  said(
+    7,
+    CHAT_A,
+    "AssistantMessage",
+    { content: "In my own chat." },
+    "In my own chat.",
+  ),
+  said(
+    8,
+    CHAT_B,
+    "AssistantMessage",
+    { content: "In another chat." },
+    "In another chat.",
+  ),
 ];
 
 /** Each read of one kind, by one of its parameters. */
 const paramOf = (sent: readonly Sent[], path: string, name: string) =>
-  sent.filter((request) => request.path === path).map((request) => new URLSearchParams(request.query).get(name));
+  sent
+    .filter((request) => request.path === path)
+    .map((request) => new URLSearchParams(request.query).get(name));
 
 /** Whose sessions each feed and facets read since `sent` was last emptied keeps. */
 const scopesOf = (sent: readonly Sent[]) =>
-  new Set(["/api/web/feed", "/api/web/feed/facets"].flatMap((path) => paramOf(sent, path, "whose")));
+  new Set(
+    ["/api/web/feed", "/api/web/feed/facets"].flatMap((path) =>
+      paramOf(sent, path, "whose"),
+    ),
+  );
 
 /** The scope's buttons, as named, and which is pressed. */
 const scopeButtons = () =>
-  within(screen.getByRole("group", { name: "Scope" })).getAllByRole("button").map((button) => [button.textContent, button.getAttribute("aria-pressed")]);
+  within(screen.getByRole("group", { name: "Scope" }))
+    .getAllByRole("button")
+    .map((button) => [button.textContent, button.getAttribute("aria-pressed")]);
 
 test("the console opens on the person's own sessions: Mine, then My campaigns and Everyone", async () => {
   const sent = serve();
   renderConsole();
   await lines(3);
-  expect(scopeButtons()).toEqual([["Mine", "true"], ["My campaigns", "false"], ["Everyone", "false"]]);
-  await waitFor(() => expect(paramOf(sent, "/api/web/feed/facets", "whose").length).toBeGreaterThan(0));
+  expect(scopeButtons()).toEqual([
+    ["Mine", "true"],
+    ["My campaigns", "false"],
+    ["Everyone", "false"],
+  ]);
+  await waitFor(() =>
+    expect(paramOf(sent, "/api/web/feed/facets", "whose").length).toBeGreaterThan(0),
+  );
   expect(scopesOf(sent)).toEqual(new Set(["mine"]));
 });
 
@@ -819,11 +1260,19 @@ test("My campaigns reads the sessions of the campaigns the person launched, and 
   renderConsole();
   await lines(3);
   const scope = within(screen.getByRole("group", { name: "Scope" }));
-  for (const [name, whose] of [["My campaigns", "campaigns"], ["Everyone", "everyone"], ["Mine", "mine"]] as const) {
+  for (const [name, whose] of [
+    ["My campaigns", "campaigns"],
+    ["Everyone", "everyone"],
+    ["Mine", "mine"],
+  ] as const) {
     sent.length = 0;
     fireEvent.click(scope.getByRole("button", { name }));
-    await waitFor(() => expect(paramOf(sent, "/api/web/feed", "whose")).toContain(whose));
-    await waitFor(() => expect(paramOf(sent, "/api/web/feed/facets", "whose")).toContain(whose));
+    await waitFor(() =>
+      expect(paramOf(sent, "/api/web/feed", "whose")).toContain(whose),
+    );
+    await waitFor(() =>
+      expect(paramOf(sent, "/api/web/feed/facets", "whose")).toContain(whose),
+    );
     expect(scopesOf(sent)).toEqual(new Set([whose]));
   }
 });
@@ -833,14 +1282,20 @@ test("an empty My campaigns says only that nothing matches, staff or not: campai
     serve();
     const { unmount } = renderConsole(profile);
     await lines(3);
-    fireEvent.click(within(screen.getByRole("group", { name: "Scope" })).getByRole("button", { name: "My campaigns" }));
+    fireEvent.click(
+      within(screen.getByRole("group", { name: "Scope" })).getByRole("button", {
+        name: "My campaigns",
+      }),
+    );
     const note = await screen.findByText(/^No records match this view/);
     unmount();
     return note.textContent;
   };
 
   expect(await said(PROFILE)).toBe("No records match this view.");
-  expect(await said({ ...PROFILE, read_audiences: ["open", "private", "staff"] })).toBe("No records match this view.");
+  expect(await said({ ...PROFILE, read_audiences: ["open", "private", "staff"] })).toBe(
+    "No records match this view.",
+  );
 });
 
 test("Show private reads the sessions their owners made private as well, and lists them marked; off again leaves them out", async () => {
@@ -866,17 +1321,31 @@ test("making a session of mine private takes it out of the console and reads it 
   const sent = serve();
   renderConsole();
   await lines(3);
-  const audiences = () => sent.filter((request) => request.path.endsWith("/audience")).map((request) => [request.path, request.body]);
+  const audiences = () =>
+    sent
+      .filter((request) => request.path.endsWith("/audience"))
+      .map((request) => [request.path, request.body]);
   const reads = feedReads(sent).length;
-  fireEvent.click(rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }));
+  fireEvent.click(
+    rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }),
+  );
   await waitFor(() => expect(agentBoxes()).toEqual(["claude", "tiles-b"]));
-  expect(audiences()).toEqual([[`/api/sessions/${TILES_A}/audience`, { audience: "private" }]]);
+  expect(audiences()).toEqual([
+    [`/api/sessions/${TILES_A}/audience`, { audience: "private" }],
+  ]);
   await waitFor(() => expect(feedReads(sent).length).toBeGreaterThan(reads));
-  expect(await screen.findByText("Made tiles-a private: only you, staff and admins read its transcript now.")).toBeTruthy();
+  expect(
+    await screen.findByText(
+      "Made tiles-a private: only you, staff and admins read its transcript now.",
+    ),
+  ).toBeTruthy();
   screen.getByRole("button", { name: "Undo" }).focus();
   await userEvent.keyboard("{Enter}");
   await waitFor(() => expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]));
-  expect(audiences().at(-1)).toEqual([`/api/sessions/${TILES_A}/audience`, { audience: "open" }]);
+  expect(audiences().at(-1)).toEqual([
+    `/api/sessions/${TILES_A}/audience`,
+    { audience: "open" },
+  ]);
   // Only the person's own session has the switch.
   expect(rail("Agents").queryByRole("button", { name: /^claude is / })).toBeNull();
 });
@@ -887,17 +1356,30 @@ test("a switch the server refuses says why in words for its code, and the sessio
   await lines(3);
   const answer = globalThis.fetch;
   // The server names the refusal by its code alone.
-  const refusals = [{ status: 403, code: "session_not_owner" }, { status: 409, code: "session_staff" }];
+  const refusals = [
+    { status: 403, code: "session_not_owner" },
+    { status: 409, code: "session_staff" },
+  ];
   vi.stubGlobal("fetch", async (request: Request) => {
     if (!new URL(request.url).pathname.endsWith("/audience")) return answer(request);
-    const { status, code } = refusals.shift()!;
+    const { status, code } = must(refusals.shift());
     return Response.json({ detail: { code } }, { status });
   });
   const reads = feedReads(sent).length;
-  fireEvent.click(rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }));
-  expect(await screen.findByText("Only the session's owner can make it public or private.")).toBeTruthy();
-  fireEvent.click(rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }));
-  expect(await screen.findByText("A staff session keeps its audience: it is never made public or private.")).toBeTruthy();
+  fireEvent.click(
+    rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }),
+  );
+  expect(
+    await screen.findByText("Only the session's owner can make it public or private."),
+  ).toBeTruthy();
+  fireEvent.click(
+    rail("Agents").getByRole("button", { name: "tiles-a is public: make it private" }),
+  );
+  expect(
+    await screen.findByText(
+      "A staff session keeps its audience: it is never made public or private.",
+    ),
+  ).toBeTruthy();
   expect(agentBoxes()).toEqual(["tiles-a", "claude", "tiles-b"]);
   expect(feedReads(sent)).toHaveLength(reads);
 });
@@ -909,11 +1391,17 @@ test("a line to a chat, named or by @*, is refused: only its own Chat posts to i
   const box = screen.getByRole("textbox", { name: "Message" });
   fireEvent.change(box, { target: { value: `@${OTHER_CHAT} hello` } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  expect((await screen.findByRole("alert")).textContent).toBe(`${OTHER_CHAT} is a chat: only its own Chat posts to it`);
+  expect((await screen.findByRole("alert")).textContent).toBe(
+    `${OTHER_CHAT} is a chat: only its own Chat posts to it`,
+  );
   fireEvent.change(box, { target: { value: "@* hello" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  await waitFor(() => expect(document.querySelector(".composer-receipt")).not.toBeNull());
-  const told = sent.filter((request) => request.path === "/api/messages").map((request) => (request.body as { actor: string }).actor);
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")).not.toBeNull(),
+  );
+  const told = sent
+    .filter((request) => request.path === "/api/messages")
+    .map((request) => (request.body as { actor: string }).actor);
   expect(told).not.toContain(OTHER_CHAT);
   expect(told).not.toContain(OWN_CHAT);
 });
@@ -925,10 +1413,17 @@ test("the box names its targets: Message lead-2, or each of several, never a cou
   const agents = rail("Agents");
   fireEvent.click(agents.getByRole("checkbox", { name: "claude" }));
   await screen.findByLabelText("To", { selector: "[role=group]" });
-  expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe("Message claude… (@agent, @agent:room and @* still work)");
+  expect(
+    screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder"),
+  ).toBe("Message claude… (@agent, @agent:room and @* still work)");
   fireEvent.click(agents.getByRole("checkbox", { name: "claude" }));
-  fireEvent.change(agents.getByRole("searchbox", { name: "Find agents" }), { target: { value: "tiles-*" } });
+  fireEvent.change(agents.getByRole("searchbox", { name: "Find agents" }), {
+    target: { value: "tiles-*" },
+  });
   fireEvent.click(agents.getByRole("button", { name: "Pick tiles-*" }));
-  await waitFor(() => expect(screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder")).toBe(
-    "Message tiles-a:ops, tiles-a:lab… (@agent, @agent:room and @* still work)"));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("textbox", { name: "Message" }).getAttribute("placeholder"),
+    ).toBe("Message tiles-a:ops, tiles-a:lab… (@agent, @agent:room and @* still work)"),
+  );
 });

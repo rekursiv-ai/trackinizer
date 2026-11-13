@@ -46,7 +46,11 @@ export type InquiryRow = {
 };
 
 /** A citation edge on a Belief or Experiment row; `valence` below 0 argues against. */
-export type Citation = { readonly id: string; readonly kind: string; readonly valence: number };
+export type Citation = {
+  readonly id: string;
+  readonly kind: string;
+  readonly valence: number;
+};
 
 /**
  * One Issue above a row in its `narrows` ancestry, sent with `ancestors: "narrows"`.
@@ -66,7 +70,10 @@ export type Ancestor = {
 };
 
 /** A list row with the keys `Field` names, and its ancestry when the list asked for it. */
-export type ListedRow<Field extends keyof InquiryRow = keyof InquiryRow> = Pick<InquiryRow, Field> & {
+export type ListedRow<Field extends keyof InquiryRow = keyof InquiryRow> = Pick<
+  InquiryRow,
+  Field
+> & {
   readonly ancestors?: readonly Ancestor[];
 };
 
@@ -106,7 +113,9 @@ const ROW_KEYS: { readonly [Key in keyof InquiryRow]-?: true } = {
  * what lists read and nothing more. Fifty production rows cut to these keys
  * measured 21 KB of JSON, against 315 KB whole.
  */
-export const INQUIRY_ROW_FIELDS = Object.freeze(Object.keys(ROW_KEYS)) as readonly (keyof InquiryRow)[];
+export const INQUIRY_ROW_FIELDS = Object.freeze(
+  Object.keys(ROW_KEYS),
+) as readonly (keyof InquiryRow)[];
 
 /** An inquiry kind as the schema names it, PascalCase: `Issue`, `CodeChange`. */
 export type InquiryKind = components["schemas"]["InquiryKind"];
@@ -126,7 +135,10 @@ export function isInquiryKind(kind: string): kind is InquiryKind {
  */
 export function inquiryKinds(kinds: readonly string[]): InquiryKind[] {
   return kinds.map((kind) => {
-    if (!isInquiryKind(kind)) throw new Error(`This build does not know the inquiry kind ${kind}; reload to get the server's build.`);
+    if (!isInquiryKind(kind))
+      throw new Error(
+        `This build does not know the inquiry kind ${kind}; reload to get the server's build.`,
+      );
     return kind;
   });
 }
@@ -138,7 +150,11 @@ export type ListPage<Field extends keyof InquiryRow = keyof InquiryRow> = {
    * Each a `{field, op, value}` filter; they AND together. On Issues, `narrows`
    * filters on parents: `isnull` keeps the roots, `is <id>` one Issue's children.
    */
-  readonly filters: readonly { readonly field: string; readonly op: string; readonly value: string }[];
+  readonly filters: readonly {
+    readonly field: string;
+    readonly op: string;
+    readonly value: string;
+  }[];
   /** Rows per kind, as is `offset`: each kind is its own query on the server. */
   readonly limit: number;
   readonly offset: number;
@@ -187,8 +203,17 @@ export async function listInquiries<Field extends keyof InquiryRow = keyof Inqui
  * A seq names a row only within its kind, and the server applies every range to
  * every kind, so a request for two kinds can return rows that were not asked for.
  */
-export async function listInquiriesBySeq<Field extends keyof InquiryRow = keyof InquiryRow>(
-  { kinds, filters, seqRanges, limit, fields, ancestors }: Omit<ListPage<Field>, "offset"> & { readonly seqRanges: readonly string[] },
+export async function listInquiriesBySeq<
+  Field extends keyof InquiryRow = keyof InquiryRow,
+>(
+  {
+    kinds,
+    filters,
+    seqRanges,
+    limit,
+    fields,
+    ancestors,
+  }: Omit<ListPage<Field>, "offset"> & { readonly seqRanges: readonly string[] },
   { signal }: CallOptions = {},
 ): Promise<ListedRow<Field>[]> {
   const rows = await send(TIMEOUT_MS.read, signal, (signal) =>
@@ -299,7 +324,9 @@ export async function clearField(
  * validates with (`SUBMIT_BODY` in `server/api/submit.py`). The server drops an
  * unknown key without a word, so only these types keep one out.
  */
-export type CreateBody<Kind extends InquiryKind> = WithoutActor<Omit<Extract<SubmitItem, { kind: Kind }>, "kind" | "idempotency_key">>;
+export type CreateBody<Kind extends InquiryKind> = WithoutActor<
+  Omit<Extract<SubmitItem, { kind: Kind }>, "kind" | "idempotency_key">
+>;
 
 /**
  * Create one inquiry of `kind` with `POST /api/inquiries/<kind>`, the route taking
@@ -309,7 +336,10 @@ export type CreateBody<Kind extends InquiryKind> = WithoutActor<Omit<Extract<Sub
  * atomic request. The idempotency key goes in the body as `idempotency_key`. A
  * key the body's model lacks does not compile, nor does a value of the wrong type.
  */
-export async function createInquiry<Kind extends InquiryKind, Body extends CreateBody<Kind>>(
+export async function createInquiry<
+  Kind extends InquiryKind,
+  Body extends CreateBody<Kind>,
+>(
   kind: Kind,
   write: Keyed<Body & Exact<Body, CreateBody<Kind>>>,
   { signal }: CallOptions = {},
@@ -373,13 +403,22 @@ export type BatchEdge = components["schemas"]["BatchEdge"];
  * A batch's body, frozen, with a fresh idempotency key per item. Make one per
  * request; to retry the batch, send the same one again.
  */
-export type KeyedBatch = { readonly items: readonly Keyed<BatchItem>[]; readonly edges: readonly BatchEdge[] };
+export type KeyedBatch = {
+  readonly items: readonly Keyed<BatchItem>[];
+  readonly edges: readonly BatchEdge[];
+};
 
 /** Pair each item with a fresh key, and freeze the whole batch. */
-export function keyedBatch(items: readonly BatchItem[], edges: readonly BatchEdge[] = []): KeyedBatch {
+export function keyedBatch(
+  items: readonly BatchItem[],
+  edges: readonly BatchEdge[] = [],
+): KeyedBatch {
   // The edges are frozen the way a keyed body is; the batch sends no key of its
   // own, since the server takes one per item and none for the request.
-  return Object.freeze({ items: Object.freeze(items.map((item) => keyed(item))), edges: keyed(edges).body });
+  return Object.freeze({
+    items: Object.freeze(items.map((item) => keyed(item))),
+    edges: keyed(edges).body,
+  });
 }
 
 /**
@@ -390,7 +429,10 @@ export function keyedBatch(items: readonly BatchItem[], edges: readonly BatchEdg
  * ids first created instead of creating the rows again. Returns the new ids in
  * item order.
  */
-export async function createBatch(batch: KeyedBatch, { signal }: CallOptions = {}): Promise<{ ids: string[] }> {
+export async function createBatch(
+  batch: KeyedBatch,
+  { signal }: CallOptions = {},
+): Promise<{ ids: string[] }> {
   const result = await send(TIMEOUT_MS.write, signal, (signal) =>
     client.POST("/api/inquiries/batch", {
       body: {
@@ -429,9 +471,15 @@ export async function purgeInquiry(
  * Fetch one row by id with `GET /api/inquiries/{id}`: every field of its kind,
  * `null` when unset, plus its relation keys. A purged row is a 404.
  */
-export async function getInquiry(targetId: string, { signal }: CallOptions = {}): Promise<DetailRow> {
+export async function getInquiry(
+  targetId: string,
+  { signal }: CallOptions = {},
+): Promise<DetailRow> {
   const row = await send(TIMEOUT_MS.read, signal, (signal) =>
-    client.GET("/api/inquiries/{target_id}", { params: { path: { target_id: targetId } }, signal }),
+    client.GET("/api/inquiries/{target_id}", {
+      params: { path: { target_id: targetId } },
+      signal,
+    }),
   );
   // The route answers with the whole row (`get_inquiry`), typed as free JSON.
   return row as DetailRow;
@@ -450,7 +498,9 @@ type SubmitItem = components["schemas"]["SubmitBatch"]["items"][number];
  * through `keyed` is not an object literal where `tsc` checks for excess keys,
  * so each extra key is made `never` instead.
  */
-type Exact<Body, Allowed> = { readonly [Key in Exclude<keyof Body, keyof Allowed>]: never };
+type Exact<Body, Allowed> = {
+  readonly [Key in Exclude<keyof Body, keyof Allowed>]: never;
+};
 
 /**
  * Every kind the schema names, once. The mapped type makes `tsc` fail when the

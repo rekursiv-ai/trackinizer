@@ -1,6 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Dialog } from "radix-ui";
-import { type KeyboardEvent, type RefObject, useEffect, useId, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type RefObject,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+} from "react";
 import { useMeta } from "../app/boot";
 import { usePalette } from "../commands/palette";
 import { keyCaps, useCommandList } from "../commands/registry";
@@ -12,6 +19,7 @@ import { KindIcon, kindLook } from "../ui/kinds";
 import { type Option, paletteOptions, SERVER_SECTION } from "./options";
 import "./palette.css";
 import { type KindSearch, useLoaded, useServerSearch } from "./sources";
+import { must } from "../must";
 
 /**
  * The ⌘K palette: a Radix Dialog around a combobox over a listbox, in the
@@ -24,7 +32,10 @@ export function PaletteView() {
   const opener = useRef<HTMLElement | null>(null);
   const input = useRef<HTMLInputElement>(null);
   return (
-    <Dialog.Root open={palette.open} onOpenChange={(open) => (open ? palette.show() : palette.hide())}>
+    <Dialog.Root
+      open={palette.open}
+      onOpenChange={(open) => (open ? palette.show() : palette.hide())}
+    >
       <Dialog.Portal>
         <Dialog.Overlay className="pal-backdrop" />
         <Dialog.Content
@@ -35,7 +46,10 @@ export function PaletteView() {
           // element that had focus and returns focus there itself.
           onOpenAutoFocus={(event) => {
             event.preventDefault();
-            opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+            opener.current =
+              document.activeElement instanceof HTMLElement
+                ? document.activeElement
+                : null;
             input.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
@@ -53,7 +67,13 @@ export function PaletteView() {
 }
 
 /** The input, its rows and the footer; mounted afresh each time the palette opens. */
-function Combobox({ initialText, inputRef }: { initialText: string; inputRef: RefObject<HTMLInputElement | null> }) {
+function Combobox({
+  initialText,
+  inputRef,
+}: {
+  initialText: string;
+  inputRef: RefObject<HTMLInputElement | null>;
+}) {
   const palette = usePalette();
   const { navigate } = useRouter();
   const { kinds } = useMeta();
@@ -62,7 +82,9 @@ function Combobox({ initialText, inputRef }: { initialText: string; inputRef: Re
   const [text, setText] = useState(initialText);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   // A search link names what it wants, so it searches at once.
-  const { searches, waiting, searchNow } = useServerSearch(text, kinds, { immediate: initialText !== "" });
+  const { searches, waiting, searchNow } = useServerSearch(text, kinds, {
+    immediate: initialText !== "",
+  });
   const { cached, recent } = useLoaded(queryClient);
   const options = paletteOptions({ text, kinds, cached, recent, commands, searches });
   // Tracked by key, not position, so rows arriving from the server never move it.
@@ -73,7 +95,9 @@ function Combobox({ initialText, inputRef }: { initialText: string; inputRef: Re
   const listId = `${idPrefix}-list`;
 
   useEffect(() => {
-    document.getElementById(`${idPrefix}-option-${activeIndex}`)?.scrollIntoView?.({ block: "nearest" });
+    document
+      .getElementById(`${idPrefix}-option-${activeIndex}`)
+      ?.scrollIntoView?.({ block: "nearest" });
   }, [idPrefix, activeIndex]);
 
   const pick = (option: Option) => {
@@ -97,11 +121,13 @@ function Combobox({ initialText, inputRef }: { initialText: string; inputRef: Re
       event.preventDefault();
       if (!options.length) return;
       const step = event.key === "ArrowDown" ? 1 : -1;
-      setActiveKey(options[(activeIndex + step + options.length) % options.length]!.key);
+      setActiveKey(
+        must(options[(activeIndex + step + options.length) % options.length]).key,
+      );
     } else if (event.key === "Enter") {
       event.preventDefault();
       if (activeIndex < 0) searchNow();
-      else pick(options[activeIndex]!);
+      else pick(must(options[activeIndex]));
     }
   };
 
@@ -133,9 +159,15 @@ function Combobox({ initialText, inputRef }: { initialText: string; inputRef: Re
       </div>
       <div className="pal-list" id={listId} role="listbox" aria-label="Results">
         {sectionsOf(options).map(({ section, rows }, n) => (
-          <div key={`${n}-${section}`} role="group" aria-labelledby={`${idPrefix}-section-${n}`}>
+          <div
+            key={`${n}-${section}`}
+            role="group"
+            aria-labelledby={`${idPrefix}-section-${n}`}
+          >
             <div className="pal-sec" id={`${idPrefix}-section-${n}`}>
-              {section === SERVER_SECTION && taken ? `${section} · as of ${taken}` : section}
+              {section === SERVER_SECTION && taken
+                ? `${section} · as of ${taken}`
+                : section}
             </div>
             {rows.map(({ option, index }) => (
               <div
@@ -146,7 +178,9 @@ function Combobox({ initialText, inputRef }: { initialText: string; inputRef: Re
                 className={index === activeIndex ? "pal-item is-active" : "pal-item"}
                 // Keep focus in the input, where the arrows and Enter work.
                 onMouseDown={(event) => event.preventDefault()}
-                onPointerMove={() => option.key !== activeKey && setActiveKey(option.key)}
+                onPointerMove={() =>
+                  option.key !== activeKey && setActiveKey(option.key)
+                }
                 onClick={() => pick(option)}
               >
                 <OptionBody option={option} />
@@ -189,8 +223,14 @@ function OptionBody({ option }: { option: Option }) {
       if (!found) {
         return (
           <>
-            {route.name === "ref" ? <KindIcon kind={route.kind} size={15} /> : <Icon name="corner" size={15} />}
-            <span className="ref-t">{route.name === "ref" ? `${route.kind}#${route.seq}` : route.id}</span>
+            {route.name === "ref" ? (
+              <KindIcon kind={route.kind} size={15} />
+            ) : (
+              <Icon name="corner" size={15} />
+            )}
+            <span className="ref-t">
+              {route.name === "ref" ? `${route.kind}#${route.seq}` : route.id}
+            </span>
             <span className="lbl muted">Open</span>
           </>
         );
@@ -224,7 +264,8 @@ function OptionBody({ option }: { option: Option }) {
         <>
           <Icon name="x" size={15} />
           <span className="lbl pal-error">
-            {option.kinds.map((kind) => kindLook(kind).plural).join(", ")}: {option.message}
+            {option.kinds.map((kind) => kindLook(kind).plural).join(", ")}:{" "}
+            {option.message}
           </span>
           <span className="keys">Retry</span>
         </>
@@ -233,7 +274,9 @@ function OptionBody({ option }: { option: Option }) {
 }
 
 /** Consecutive rows of one section, with each row's place in the whole list. */
-function sectionsOf(options: readonly Option[]): { section: string; rows: { option: Option; index: number }[] }[] {
+function sectionsOf(
+  options: readonly Option[],
+): { section: string; rows: { option: Option; index: number }[] }[] {
   const sections: { section: string; rows: { option: Option; index: number }[] }[] = [];
   options.forEach((option, index) => {
     const last = sections.at(-1);
@@ -255,10 +298,14 @@ function serverStatus(
   options: readonly Option[],
   taken: string,
 ): { pending: boolean; text: string } {
-  if (waiting || searches.some((search) => search.pending)) return { pending: true, text: "Searching the server…" };
+  if (waiting || searches.some((search) => search.pending))
+    return { pending: true, text: "Searching the server…" };
   const added = options.some((option) => option.section === SERVER_SECTION);
   const nothing = searches.length > 0 && options.length > 0 && !added;
-  return { pending: false, text: nothing ? `The server's results, as of ${taken}, are all listed above.` : "" };
+  return {
+    pending: false,
+    text: nothing ? `The server's results, as of ${taken}, are all listed above.` : "",
+  };
 }
 
 /** When the server's answers were taken: the earliest, as a clock time. */

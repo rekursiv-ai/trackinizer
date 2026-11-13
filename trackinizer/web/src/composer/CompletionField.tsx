@@ -1,15 +1,34 @@
-import { type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEvent,
+  type ReactNode,
+  type RefObject,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { caretPoint, menuLeft } from "./caretPoint";
 import type { FieldProps } from "./Composer";
 import { useCaretPlacement } from "./placeCaret";
 import "../lists/lists.css";
 import "./CompletionField.css";
+import { must } from "../must";
 
 /** The word the caret is in that a list may complete: `start` to `end`, and the text from after its sigil to the caret. */
-export type Target = { readonly start: number; readonly end: number; readonly query: string };
+export type Target = {
+  readonly start: number;
+  readonly end: number;
+  readonly query: string;
+};
 
 /** One option: `insert` replaces the target; `title` names it; `label` draws it. */
-export type Completion = { readonly key: string; readonly title: string; readonly label: ReactNode; readonly insert: string };
+export type Completion = {
+  readonly key: string;
+  readonly title: string;
+  readonly label: ReactNode;
+  readonly insert: string;
+};
 
 /**
  * A Composer `field` that completes the word `find` sees at the caret, from
@@ -42,18 +61,32 @@ export function useCompletion<T extends Target = Target>({
   field: FieldProps;
   edit: (text: string) => void;
   find: (value: string, caret: number) => T | null;
-}): { target: T | null; render: (options: readonly Completion[], label: string, emptyHint?: string) => ReactNode } {
+}): {
+  target: T | null;
+  render: (
+    options: readonly Completion[],
+    label: string,
+    emptyHint?: string,
+  ) => ReactNode;
+} {
   const listId = useId();
   const box = useRef<HTMLTextAreaElement>(null);
   const [caret, setCaret] = useState(0);
   const [focused, setFocused] = useState(false);
-  const [closed, setClosed] = useState<{ readonly start: number; readonly query: string } | null>(null);
+  const [closed, setClosed] = useState<{
+    readonly start: number;
+    readonly query: string;
+  } | null>(null);
   const [active, setActive] = useState({ at: "", index: 0 });
   const placeCaret = useCaretPlacement();
   const holder = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLElement>(null);
   const found = find(field.value, caret);
-  const shut = !found || !focused || field.disabled || (closed?.start === found.start && found.query.startsWith(closed.query));
+  const shut =
+    !found ||
+    !focused ||
+    field.disabled ||
+    (closed?.start === found.start && found.query.startsWith(closed.query));
   const target = shut ? null : found;
   const place = useMenuPlace(box, holder, menu, target === null ? null : caret);
 
@@ -71,7 +104,11 @@ export function useCompletion<T extends Target = Target>({
     return () => document.removeEventListener("selectionchange", select);
   }, [focused]);
 
-  const render = (options: readonly Completion[], label: string, emptyHint?: string) => {
+  const render = (
+    options: readonly Completion[],
+    label: string,
+    emptyHint?: string,
+  ) => {
     const at = target ? `${target.start}:${target.query}` : "";
     const index = active.at === at ? Math.min(active.index, options.length - 1) : 0;
     const open = target !== null && options.length > 0;
@@ -86,13 +123,20 @@ export function useCompletion<T extends Target = Target>({
       placeCaret(box.current, after);
     };
     const take = (chosen: T, event: KeyboardEvent<HTMLTextAreaElement>): boolean => {
-      if (event.nativeEvent.isComposing || event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return false;
+      if (
+        event.nativeEvent.isComposing ||
+        event.shiftKey ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey
+      )
+        return false;
       if (!options.length && event.key !== "Escape") return false;
       const step = { ArrowDown: 1, ArrowUp: -1 }[event.key];
       if (step !== undefined) {
         setActive({ at, index: (index + step + options.length) % options.length });
       } else if (event.key === "Enter" || event.key === "Tab") {
-        pick(chosen, options[index]!);
+        pick(chosen, must(options[index]));
       } else if (event.key === "Escape") {
         setClosed({ start: chosen.start, query: chosen.query });
         // The list's Esc, not the page's.
@@ -128,9 +172,23 @@ export function useCompletion<T extends Target = Target>({
             field.onKeyDown(event);
           }}
         />
-        {hint ? <div ref={menu as RefObject<HTMLDivElement>} className="list-menu menu-list completion-list" role="status"><div className="menu-item">{hint}</div></div> : null}
+        {hint ? (
+          <div
+            ref={menu as RefObject<HTMLDivElement>}
+            className="list-menu menu-list completion-list"
+            role="status"
+          >
+            <div className="menu-item">{hint}</div>
+          </div>
+        ) : null}
         {open ? (
-          <ul ref={menu as RefObject<HTMLUListElement>} className="list-menu menu-list completion-list" id={listId} role="listbox" aria-label={label}>
+          <ul
+            ref={menu as RefObject<HTMLUListElement>}
+            className="list-menu menu-list completion-list"
+            id={listId}
+            role="listbox"
+            aria-label={label}
+          >
             {options.map((option, k) => (
               <li
                 key={option.key}
@@ -199,7 +257,11 @@ function useMenuPlace(
 }
 
 /** `value` with `target` replaced by `insert`, a space after it at the end, and where the caret goes. */
-export function splice(value: string, target: Target, insert: string): { text: string; caret: number } {
+export function splice(
+  value: string,
+  target: Target,
+  insert: string,
+): { text: string; caret: number } {
   const after = value.slice(target.end);
   const put = `${insert}${after ? "" : " "}`;
   const caret = target.start + put.length + (/^\s/.test(after) ? 1 : 0);

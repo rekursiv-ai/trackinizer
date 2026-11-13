@@ -11,7 +11,11 @@ function Host({ text, caret }: { text: string; caret: number }) {
   const place = useCaretPlacement();
   return (
     <>
-      <textarea aria-label="box" value={value} onChange={(event) => setValue(event.currentTarget.value)} />
+      <textarea
+        aria-label="box"
+        value={value}
+        onChange={(event) => setValue(event.currentTarget.value)}
+      />
       <button
         type="button"
         onClick={() => {
@@ -44,7 +48,17 @@ test("a null box asks for nothing", () => {
   function Bare() {
     const place = useCaretPlacement();
     const [n, setN] = useState(0);
-    return <button type="button" onClick={() => { place(null, 3); setN(n + 1); }}>{n}</button>;
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          place(null, 3);
+          setN(n + 1);
+        }}
+      >
+        {n}
+      </button>
+    );
   }
   render(<Bare />);
   fireEvent.click(screen.getByRole("button"));

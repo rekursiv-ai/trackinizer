@@ -66,7 +66,11 @@ class Boundary extends Component<{ children: ReactNode }, { error: unknown }> {
     return { error };
   }
   render() {
-    return this.state.error ? <p role="alert">{String(this.state.error)}</p> : this.props.children;
+    return this.state.error ? (
+      <p role="alert">{String(this.state.error)}</p>
+    ) : (
+      this.props.children
+    );
   }
 }
 
@@ -81,7 +85,9 @@ function show(view: ReactNode) {
 
 /** A chunk that exports `Named`, and a way to see whether it was loaded. */
 function fakeChunk() {
-  const load = vi.fn(async () => ({ Named: ({ word }: { word: string }) => <p>{word}</p> }));
+  const load = vi.fn(async () => ({
+    Named: ({ word }: { word: string }) => <p>{word}</p>,
+  }));
   return { load, View: lazyView(load, (module) => module.Named) };
 }
 
@@ -102,9 +108,14 @@ test("a view not yet loaded shows the fallback, then itself; a chunk that fails 
   await act(async () => {});
   expect(screen.getByText("later")).toBeTruthy();
   cleanup();
-  const Failed = lazyView(() => Promise.reject(new TypeError("Failed to fetch dynamically imported module")), () => () => null);
+  const Failed = lazyView(
+    () => Promise.reject(new TypeError("Failed to fetch dynamically imported module")),
+    () => () => null,
+  );
   await act(async () => show(<Failed />));
-  expect(screen.getByRole("alert").textContent).toBe("TypeError: Failed to fetch dynamically imported module");
+  expect(screen.getByRole("alert").textContent).toBe(
+    "TypeError: Failed to fetch dynamically imported module",
+  );
 });
 
 test("useLoaded loads a view's chunk while it is needed, and says when it has; a failed load counts", async () => {
@@ -120,7 +131,10 @@ test("useLoaded loads a view's chunk while it is needed, and says when it has; a
   await act(async () => {});
   expect(screen.getByRole("status").textContent).toBe("true");
   cleanup();
-  const Failed = lazyView(() => Promise.reject(new TypeError("Failed to fetch dynamically imported module")), () => () => null);
+  const Failed = lazyView(
+    () => Promise.reject(new TypeError("Failed to fetch dynamically imported module")),
+    () => () => null,
+  );
   function FailedLoaded() {
     return <output>{String(useLoaded(Failed, true))}</output>;
   }

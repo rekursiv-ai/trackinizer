@@ -14,6 +14,7 @@ import {
   useCommandList,
   useCommands,
 } from "./registry";
+import { must } from "../must";
 
 afterEach(cleanup);
 
@@ -23,7 +24,13 @@ function Mount({ commands }: { commands: readonly Command[] }) {
 }
 
 function Titles() {
-  return <output>{useCommandList().map((command) => command.title).join(",")}</output>;
+  return (
+    <output>
+      {useCommandList()
+        .map((command) => command.title)
+        .join(",")}
+    </output>
+  );
 }
 
 function setup(children: ReactNode) {
@@ -37,7 +44,13 @@ function setup(children: ReactNode) {
 }
 
 function handlers(): { [K in keyof ListHandlers]: Mock<() => void> } {
-  return { next: vi.fn(), previous: vi.fn(), open: vi.fn(), close: vi.fn(), peek: vi.fn() };
+  return {
+    next: vi.fn(),
+    previous: vi.fn(),
+    open: vi.fn(),
+    close: vi.fn(),
+    peek: vi.fn(),
+  };
 }
 
 test("list keys run their handlers, and not while typing in a field", async () => {
@@ -49,9 +62,11 @@ test("list keys run their handlers, and not while typing in a field", async () =
     </>,
   );
   await user.keyboard("jjk{Enter}{Escape} ");
-  expect([list.next, list.previous, list.open, list.close, list.peek].map((f) => f.mock.calls.length)).toEqual([
-    2, 1, 1, 1, 1,
-  ]);
+  expect(
+    [list.next, list.previous, list.open, list.close, list.peek].map(
+      (f) => f.mock.calls.length,
+    ),
+  ).toEqual([2, 1, 1, 1, 1]);
 
   await user.type(screen.getByLabelText("Title"), "jk ");
   expect((screen.getByLabelText("Title") as HTMLInputElement).value).toBe("jk ");
@@ -63,7 +78,9 @@ test("a chord whose last key is also a single key mounted later still fires, and
   const { user } = setup(
     <>
       <Mount commands={[{ id: "go.next", title: "Next", keys: ["g ]"], run: chord }]} />
-      <Mount commands={[{ id: "rail.toggle", title: "Rail", keys: ["]"], run: single }]} />
+      <Mount
+        commands={[{ id: "rail.toggle", title: "Rail", keys: ["]"], run: single }]}
+      />
     </>,
   );
   await user.keyboard("g]");
@@ -79,7 +96,9 @@ test("a digit typed in a menu's search box types the digit (COLD-15)", async () 
   const pick = vi.fn();
   const { user } = setup(
     <>
-      <Mount commands={[{ id: "pick.1", title: "Pick first", keys: ["1"], run: pick }]} />
+      <Mount
+        commands={[{ id: "pick.1", title: "Pick first", keys: ["1"], run: pick }]}
+      />
       <div role="menu">
         <input aria-label="Filter" />
         <button type="button">Item</button>
@@ -103,7 +122,12 @@ test("a listbox the keyboard is in keeps the keys it takes, and the rest reach t
           { id: "focus", title: "Focus", keys: ["."], run: focus },
         ]}
       />
-      <ul role="listbox" aria-label="Roots" tabIndex={0} onKeyDown={(event) => event.key === "j" && event.preventDefault()} />
+      <ul
+        role="listbox"
+        aria-label="Roots"
+        tabIndex={0}
+        onKeyDown={(event) => event.key === "j" && event.preventDefault()}
+      />
     </>,
   );
   screen.getByRole("listbox").focus();
@@ -117,7 +141,17 @@ test("a global command fires from inside a field; held keys repeat only when all
   const list = handlers();
   const { user } = setup(
     <>
-      <Mount commands={[{ id: "palette", title: "Palette", keys: ["$mod+k"], global: true, run: toggle }]} />
+      <Mount
+        commands={[
+          {
+            id: "palette",
+            title: "Palette",
+            keys: ["$mod+k"],
+            global: true,
+            run: toggle,
+          },
+        ]}
+      />
       <Mount commands={listCommands(list)} />
       <input aria-label="Query" />
     </>,
@@ -172,17 +206,32 @@ test("the latest mounted command wins an id and its key; unmounting it restores 
   const view = render(wrap(tree(true)));
   expect(screen.getByRole("status").textContent).toBe("Second");
   await user.keyboard("x");
-  expect([first.run, second.run].map((run) => vi.mocked(run).mock.calls.length)).toEqual([0, 1]);
+  expect(
+    [first.run, second.run].map((run) => vi.mocked(run).mock.calls.length),
+  ).toEqual([0, 1]);
 
   view.rerender(wrap(tree(false)));
   expect(screen.getByRole("status").textContent).toBe("First");
   await user.keyboard("x");
-  expect([first.run, second.run].map((run) => vi.mocked(run).mock.calls.length)).toEqual([1, 1]);
+  expect(
+    [first.run, second.run].map((run) => vi.mocked(run).mock.calls.length),
+  ).toEqual([1, 1]);
 });
 
 test("a key bound by a global and a later local command runs only the later one (WEB-11)", async () => {
-  const global: Command = { id: "palette", title: "Palette", keys: ["$mod+k"], global: true, run: vi.fn() };
-  const local: Command = { id: "list.k", title: "Local", keys: ["$mod+k"], run: vi.fn() };
+  const global: Command = {
+    id: "palette",
+    title: "Palette",
+    keys: ["$mod+k"],
+    global: true,
+    run: vi.fn(),
+  };
+  const local: Command = {
+    id: "list.k",
+    title: "Local",
+    keys: ["$mod+k"],
+    run: vi.fn(),
+  };
   const { user } = setup(
     <>
       <Mount commands={[global]} />
@@ -190,7 +239,9 @@ test("a key bound by a global and a later local command runs only the later one 
     </>,
   );
   await user.keyboard("{Control>}k{/Control}");
-  expect([global.run, local.run].map((run) => vi.mocked(run).mock.calls.length)).toEqual([0, 1]);
+  expect(
+    [global.run, local.run].map((run) => vi.mocked(run).mock.calls.length),
+  ).toEqual([0, 1]);
 });
 
 test("a new handler closure does not re-register; a new title does", () => {
@@ -212,7 +263,7 @@ test("a new handler closure does not re-register; a new title does", () => {
     </CommandRegistryContext>,
   );
   expect(added).toHaveBeenCalledTimes(1);
-  act(() => registry.getCommands()[0]!.run());
+  act(() => must(registry.getCommands()[0]).run());
   expect(calls).toEqual(["second"]);
   view.rerender(
     <CommandRegistryContext value={registry}>

@@ -33,17 +33,24 @@ function isView(value: unknown): value is KeptView {
     isText(view.name, 200) &&
     isTime(view.created) &&
     typeof view.pinned === "boolean" &&
-    ["agents", "rooms", "clis"].every((field) => Array.isArray(view[field]) && view[field].length <= 100 && view[field].every((name) => isText(name, 200))) &&
+    ["agents", "rooms", "clis"].every(
+      (field) =>
+        Array.isArray(view[field]) &&
+        view[field].length <= 100 &&
+        view[field].every((name) => isText(name, 200)),
+    ) &&
     [1, 2, 3, 4].includes(view.level as number) &&
     typeof range === "object" &&
     range !== null &&
-    (range.live === true || (range.live === false && isWindow(range.since, range.until)))
+    (range.live === true ||
+      (range.live === false && isWindow(range.since, range.until)))
   );
 }
 
 /** Whether `since` and `until` bound a window: each a time or open (null), and the window not ending before it starts. */
 function isWindow(since: unknown, until: unknown): boolean {
-  if ((since !== null && !isTime(since)) || (until !== null && !isTime(until))) return false;
+  if ((since !== null && !isTime(since)) || (until !== null && !isTime(until)))
+    return false;
   return !isTime(since) || !isTime(until) || Date.parse(since) <= Date.parse(until);
 }
 

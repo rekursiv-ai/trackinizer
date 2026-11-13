@@ -1,5 +1,12 @@
 import { Popover } from "radix-ui";
-import { type KeyboardEvent, type ReactElement, type ReactNode, useEffect, useId, useState } from "react";
+import {
+  type KeyboardEvent,
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useId,
+  useState,
+} from "react";
 import { Icon } from "../ui/icons";
 
 /** One choice in a menu. */
@@ -67,7 +74,12 @@ export function Menu({
     <Popover.Root open={open} onOpenChange={change}>
       <Popover.Trigger asChild>{trigger}</Popover.Trigger>
       <Popover.Portal>
-        <Popover.Content className="list-menu" align="start" sideOffset={4} aria-label={label}>
+        <Popover.Content
+          className="list-menu"
+          align="start"
+          sideOffset={4}
+          aria-label={label}
+        >
           <MenuBody
             // A new step starts with an empty search box and the first option active.
             key={label}
@@ -112,7 +124,10 @@ function MenuBody({
   const typed = text.trim();
   const needle = typed.toLowerCase();
   const shown = options.filter((option) =>
-    match ? match(option, typed) : option.label.toLowerCase().includes(needle) || option.value.toLowerCase().includes(needle),
+    match
+      ? match(option, typed)
+      : option.label.toLowerCase().includes(needle) ||
+        option.value.toLowerCase().includes(needle),
   );
   const created: MenuOption | null =
     create && typed && !options.some((option) => option.value === typed)
@@ -174,13 +189,21 @@ function MenuBody({
       </div>
       <div className="menu-list" role="listbox" id={`${id}-list`} aria-label={label}>
         {offered.flatMap((option, index) => [
-          ...(index === firstFixed && index > 0 ? [<div key={SEPARATOR} className="menu-sep" aria-hidden="true" />] : []),
+          ...(index === firstFixed && index > 0
+            ? [<div key={SEPARATOR} className="menu-sep" aria-hidden="true" />]
+            : []),
           <div
             key={option.value}
             id={optionId(index)}
             role="option"
             aria-selected={option.checked ?? false}
-            className={["menu-item", index === current && "is-active", option.danger && "danger"].filter(Boolean).join(" ")}
+            className={[
+              "menu-item",
+              index === current && "is-active",
+              option.danger && "danger",
+            ]
+              .filter(Boolean)
+              .join(" ")}
             // Keep focus in the search box, so typing goes on working after a click.
             onMouseDown={(event) => event.preventDefault()}
             onMouseMove={() => setActive(index)}

@@ -16,10 +16,17 @@ export type Toggle = { readonly op: "add" | "sub"; readonly value: string };
  * remove of one it lacks, changes nothing. A `byline` keeps order and repeats:
  * an add appends, and a remove drops the first match only.
  */
-export function withToggles(list: readonly string[], toggles: readonly Toggle[], byline = false): readonly string[] {
+export function withToggles(
+  list: readonly string[],
+  toggles: readonly Toggle[],
+  byline = false,
+): readonly string[] {
   return toggles.reduce((shown, { op, value }) => {
-    if (op === "add") return byline || !shown.includes(value) ? [...shown, value] : shown;
-    return byline ? shown.toSpliced(shown.indexOf(value), shown.includes(value) ? 1 : 0) : shown.filter((item) => item !== value);
+    if (op === "add")
+      return byline || !shown.includes(value) ? [...shown, value] : shown;
+    return byline
+      ? shown.toSpliced(shown.indexOf(value), shown.includes(value) ? 1 : 0)
+      : shown.filter((item) => item !== value);
   }, list);
 }
 
@@ -80,7 +87,10 @@ export function inputText(value: unknown, kind: InputKind): string {
  * field. Only what cannot be sent at all is refused here, such as text that is
  * not JSON; the server checks everything else and says what is wrong.
  */
-export function parseInput(text: string, kind: InputKind): { readonly value: unknown } | { readonly error: string } {
+export function parseInput(
+  text: string,
+  kind: InputKind,
+): { readonly value: unknown } | { readonly error: string } {
   const trimmed = text.trim();
   if (!trimmed) return { value: null };
   switch (kind) {
@@ -98,7 +108,9 @@ export function parseInput(text: string, kind: InputKind): { readonly value: unk
       try {
         return { value: JSON.parse(trimmed) };
       } catch (error) {
-        return { error: `Not valid JSON: ${error instanceof Error ? error.message : String(error)}` };
+        return {
+          error: `Not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+        };
       }
   }
   return { value: trimmed };
@@ -112,7 +124,11 @@ function rowsIn(data: unknown): readonly { readonly [field: string]: unknown }[]
 }
 
 function isRow(value: unknown): value is { readonly [field: string]: unknown } {
-  return isRecord(value) && typeof value.seq === "number" && typeof value.created === "string";
+  return (
+    isRecord(value) &&
+    typeof value.seq === "number" &&
+    typeof value.created === "string"
+  );
 }
 
 function isRecord(value: unknown): value is { readonly [key: string]: unknown } {

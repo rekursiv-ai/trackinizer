@@ -17,7 +17,10 @@ export type Selection = {
  * the focused row, and a shift-click selects every row shown between the row
  * clicked last and this one. `order` is the rows' ids as shown.
  */
-export function useSelection(order: readonly string[], focused: string | null): Selection {
+export function useSelection(
+  order: readonly string[],
+  focused: string | null,
+): Selection {
   const enabled = useWriteMode() !== "hidden";
   const [ids, setIds] = useState<ReadonlySet<string>>(NONE);
   const anchor = useRef<string | null>(null);
@@ -69,7 +72,10 @@ export function clickSelect(
     if (!next.delete(id)) next.add(id);
     return next;
   }
-  return new Set([...selected, ...order.slice(Math.min(from, to), Math.max(from, to) + 1)]);
+  return new Set([
+    ...selected,
+    ...order.slice(Math.min(from, to), Math.max(from, to) + 1),
+  ]);
 }
 
 const NONE: ReadonlySet<string> = new Set();

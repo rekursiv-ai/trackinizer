@@ -1,7 +1,15 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactElement } from "react";
 import { afterEach, expect, test } from "vitest";
-import { JudgementGlyph, PriorityGlyph, priorityBand, priorityName, StateGlyphs, StatusGlyph } from "./glyphs";
+import {
+  JudgementGlyph,
+  PriorityGlyph,
+  priorityBand,
+  priorityName,
+  StateGlyphs,
+  StatusGlyph,
+} from "./glyphs";
+import { must } from "../must";
 
 // The server's closed sets, as the local preview's `/api/meta/enums` returned them.
 const STATUSES = ["active", "complete", "stopped", "abandoned", "invalid"];
@@ -12,7 +20,7 @@ afterEach(cleanup);
 test("every status and judgement draws as itself, each with its own mark (COLD-14)", () => {
   const drawn = (element: ReactElement) => {
     const { container } = render(element);
-    const svg = container.querySelector("svg")!;
+    const svg = must(container.querySelector("svg"));
     cleanup();
     return [svg.getAttribute("aria-label"), svg.innerHTML] as const;
   };
@@ -21,7 +29,9 @@ test("every status and judgement draws as itself, each with its own mark (COLD-1
     [JUDGEMENTS, (value: string) => <JudgementGlyph judgement={value} />],
   ] as const) {
     const marks = values.map((value) => drawn(glyph(value)));
-    expect(marks.map(([label]) => label)).toEqual(values.map((value) => value[0]!.toUpperCase() + value.slice(1)));
+    expect(marks.map(([label]) => label)).toEqual(
+      values.map((value) => must(value[0]).toUpperCase() + value.slice(1)),
+    );
     expect(new Set(marks.map(([, markup]) => markup)).size).toBe(values.length);
   }
 });
@@ -32,7 +42,8 @@ test("a value the UI never drew still shows its own name", () => {
 });
 
 test("a Belief shows its judgement, and its status once closed", () => {
-  const labels = () => screen.getAllByRole("img").map((img) => img.getAttribute("aria-label"));
+  const labels = () =>
+    screen.getAllByRole("img").map((img) => img.getAttribute("aria-label"));
   const view = render(<StateGlyphs status="active" judgement="proven" />);
   expect(labels()).toEqual(["Proven"]);
   view.rerender(<StateGlyphs status="abandoned" judgement="proven" />);

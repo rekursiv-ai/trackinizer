@@ -1,7 +1,14 @@
-import { queryOptions, skipToken, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  queryOptions,
+  skipToken,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { type ChangeKind, type LoggedChange, listChanges } from "../api/changes";
 import { inquiryKinds, listInquiries } from "../api/inquiries";
 import type { Mention } from "./feed";
+import { must } from "../must";
 
 /** Changes per page: the 50 rows measured at 0.15 s a query. */
 const PAGE_SIZE = 50;
@@ -20,7 +27,11 @@ export const activityQueries = {
   page: (kinds: readonly ChangeKind[], afterId: string | null) =>
     queryOptions({
       queryKey: ["activity", "changes", kinds, afterId],
-      queryFn: ({ signal }) => listChanges({ kind: kinds, afterId: afterId ?? undefined, limit: PAGE_SIZE, brief: true }, { signal }),
+      queryFn: ({ signal }) =>
+        listChanges(
+          { kind: kinds, afterId: afterId ?? undefined, limit: PAGE_SIZE, brief: true },
+          { signal },
+        ),
     }),
   /**
    * A tab's changes newer than its first page, newest first. The live stream
@@ -46,7 +57,13 @@ export const activityQueries = {
         const rows = await listInquiries(
           {
             kinds: inquiryKinds([...new Set(mentions.map((m) => m.kind))]),
-            filters: [{ field: "id", op: "re", value: `^(${mentions.map((m) => m.id).join("|")})$` }],
+            filters: [
+              {
+                field: "id",
+                op: "re",
+                value: `^(${mentions.map((m) => m.id).join("|")})$`,
+              },
+            ],
             limit: mentions.length,
             offset: 0,
             fields: ["id", "kind", "seq", "title"],
@@ -88,17 +105,21 @@ export function useChangePages(kinds: readonly ChangeKind[], pages: number): Loa
   let afterId: string | null = null;
   for (let page = 0; page < Math.max(1, pages); page++) {
     slots.push(afterId);
-    const rows: LoggedChange[] | undefined = queryClient.getQueryData(activityQueries.page(kinds, afterId).queryKey);
+    const rows: LoggedChange[] | undefined = queryClient.getQueryData(
+      activityQueries.page(kinds, afterId).queryKey,
+    );
     if (!rows || rows.length < PAGE_SIZE) break;
-    afterId = rows.at(-1)!.id;
+    afterId = must(rows.at(-1)).id;
   }
-  const results = useQueries({ queries: slots.map((after) => activityQueries.page(kinds, after)) });
+  const results = useQueries({
+    queries: slots.map((after) => activityQueries.page(kinds, after)),
+  });
   const head = useQuery(activityQueries.head(kinds));
   const loaded = results.flatMap((result) => (result.data ? [result.data] : []));
   const [first] = results;
   // A first page refetched by anything but the live layer (a write, a gap) can
   // hold changes the head still holds: each shows once.
-  const rows = [...head.data!, ...loaded.flat()];
+  const rows = [...must(head.data), ...loaded.flat()];
   const ids = rows.map((row) => row.id);
   return {
     rows: rows.filter((row, index) => ids.indexOf(row.id) === index),
@@ -111,7 +132,12 @@ export function useChangePages(kinds: readonly ChangeKind[], pages: number): Loa
 }
 
 /** What a mention resolved to; absent while it loads, and for a purged inquiry. */
-export type Subject = { readonly id: string; readonly kind: string; readonly seq: number; readonly title: string };
+export type Subject = {
+  readonly id: string;
+  readonly kind: string;
+  readonly seq: number;
+  readonly title: string;
+};
 
 /** The subjects looked up so far, by id, and the first lookup that failed. */
 export type Subjects = {
@@ -130,14 +156,20 @@ export type Subjects = {
  * answer; one that fails says so, since its lines would otherwise stay bare.
  */
 export function useSubjects(mentions: readonly Mention[]): Subjects {
-  const chunks = Array.from({ length: Math.ceil(mentions.length / LOOKUP_IDS) }, (_, k) =>
-    mentions.slice(k * LOOKUP_IDS, (k + 1) * LOOKUP_IDS),
+  const chunks = Array.from(
+    { length: Math.ceil(mentions.length / LOOKUP_IDS) },
+    (_, k) => mentions.slice(k * LOOKUP_IDS, (k + 1) * LOOKUP_IDS),
   );
   return useQueries({
     queries: chunks.map((chunk) => activityQueries.subjects(chunk)),
     combine: (results) => ({
-      byId: new Map(results.flatMap((result) => (result.data ?? []).map((subject) => [subject.id, subject] as const))),
-      error: results.find((result) => result.error && !result.isFetching)?.error ?? null,
+      byId: new Map(
+        results.flatMap((result) =>
+          (result.data ?? []).map((subject) => [subject.id, subject] as const),
+        ),
+      ),
+      error:
+        results.find((result) => result.error && !result.isFetching)?.error ?? null,
       retry: () => results.forEach((result) => result.error && void result.refetch()),
     }),
   });

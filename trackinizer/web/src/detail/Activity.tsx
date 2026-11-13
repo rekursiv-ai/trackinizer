@@ -5,15 +5,30 @@ import { Markdown } from "../markdown/Markdown";
 import { routeHref } from "../router/addressBar";
 import { Avatar, RefChip } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
-import { type ActivityItem, activityItems, describeChange, type Mention, type Phrase } from "./timeline";
+import {
+  type ActivityItem,
+  activityItems,
+  describeChange,
+  type Mention,
+  type Phrase,
+} from "./timeline";
 import type { Field } from "./fields";
 import { dateTime, relativeTime } from "./time";
 import "./timeline.css";
 
 /** The inquiry's last changes, oldest first, as `/api/web/get` sends them (at most 50). */
-export function Activity({ detail, fields, now }: { detail: Detail; fields: readonly Field[]; now: number }) {
+export function Activity({
+  detail,
+  fields,
+  now,
+}: {
+  detail: Detail;
+  fields: readonly Field[];
+  now: number;
+}) {
   const { edges: topology, kinds } = useMeta();
-  const describe = (change: Change) => describeChange(change, { detail, topology, fields });
+  const describe = (change: Change) =>
+    describeChange(change, { detail, topology, fields });
   const count = detail.changes.length;
   const id = useId();
   // Below the fold: it renders after the rest of the page, in a background
@@ -25,13 +40,20 @@ export function Activity({ detail, fields, now }: { detail: Detail; fields: read
     <section className="sec" aria-labelledby={id}>
       <div className="sec-h">
         <h2 id={id}>
-          Activity <span className="count">{count >= LIMIT ? `last ${LIMIT}` : count}</span>
+          Activity{" "}
+          <span className="count">{count >= LIMIT ? `last ${LIMIT}` : count}</span>
         </h2>
       </div>
       {count ? (
         <ol className="timeline">
           {activityItems(detail.changes).map((item) => (
-            <Line key={keyOf(item)} item={item} describe={describe} kinds={kinds} now={now} />
+            <Line
+              key={keyOf(item)}
+              item={item}
+              describe={describe}
+              kinds={kinds}
+              now={now}
+            />
           ))}
         </ol>
       ) : (
@@ -60,7 +82,11 @@ function Line({
     </span>
   );
   if (changes.length > 1) {
-    const mentions = new Map(changes.map(describe).flatMap((phrase) => phrase.filter(isMention).map((m) => [m.id, m])));
+    const mentions = new Map(
+      changes
+        .map(describe)
+        .flatMap((phrase) => phrase.filter(isMention).map((m) => [m.id, m])),
+    );
     return (
       <li>
         <Avatar actor={last.actor} size={20} />
@@ -94,7 +120,11 @@ function Line({
 
 function PhraseText({ phrase }: { phrase: Phrase }) {
   return phrase.map((part, index) =>
-    typeof part === "string" ? part : <MentionLink key={`${index}:${part.id}`} mention={part} />,
+    typeof part === "string" ? (
+      part
+    ) : (
+      <MentionLink key={`${index}:${part.id}`} mention={part} />
+    ),
   );
 }
 
@@ -103,7 +133,11 @@ function MentionLink({ mention }: { mention: Mention }) {
   const { peer } = mention;
   if (peer) return <RefChip kind={peer.kind} seq={peer.seq} title={peer.title} />;
   return (
-    <a className="ref" href={routeHref({ name: "lookup", id: mention.id })} title={mention.id}>
+    <a
+      className="ref"
+      href={routeHref({ name: "lookup", id: mention.id })}
+      title={mention.id}
+    >
       <Icon name="link" size={12} />
       {`${mention.kind} ${mention.id.slice(0, 8)}`}
     </a>

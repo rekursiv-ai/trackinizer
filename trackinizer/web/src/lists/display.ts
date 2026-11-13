@@ -5,6 +5,7 @@ import type { FieldOwners } from "../api/meta";
 import type { Meta } from "../app/boot";
 import { appliesTo } from "../query/query";
 import { priorityBand } from "../ui/glyphs";
+import { must } from "../must";
 
 /** What rows are grouped by; `none` is one list with no headings. */
 export type Grouping = "none" | "kind" | "status" | "owner" | "priority" | "judgement";
@@ -13,10 +14,16 @@ export type Grouping = "none" | "kind" | "status" | "owner" | "priority" | "judg
 export type Ordering = "modified" | "created" | "seq" | "priority" | "confidence";
 
 /** Rows under one heading. `value` is `null` for rows without one, and for `none`. */
-export type Group = { readonly value: string | null; readonly rows: readonly InquiryRow[] };
+export type Group = {
+  readonly value: string | null;
+  readonly rows: readonly InquiryRow[];
+};
 
 /** The groupings a list of `kinds` offers: a field's only when every kind has it. */
-export function groupings(kinds: readonly string[], fieldOwners: FieldOwners): Grouping[] {
+export function groupings(
+  kinds: readonly string[],
+  fieldOwners: FieldOwners,
+): Grouping[] {
   const all = everyKindHas(kinds, fieldOwners);
   return [
     "none",
@@ -29,7 +36,10 @@ export function groupings(kinds: readonly string[], fieldOwners: FieldOwners): G
 }
 
 /** The orderings a list of `kinds` offers, its kind's own field first. */
-export function orderings(kinds: readonly string[], fieldOwners: FieldOwners): Ordering[] {
+export function orderings(
+  kinds: readonly string[],
+  fieldOwners: FieldOwners,
+): Ordering[] {
   const all = everyKindHas(kinds, fieldOwners);
   return [
     ...(all("priority") ? (["priority"] as const) : []),
@@ -47,12 +57,21 @@ export function defaultDisplay(
 ): { grouping: Grouping; ordering: Ordering } {
   const all = everyKindHas(kinds, fieldOwners);
   const grouping: Grouping =
-    kinds.length > 1 ? "kind" : all("priority") ? "priority" : all("judgement") ? "judgement" : "status";
+    kinds.length > 1
+      ? "kind"
+      : all("priority")
+        ? "priority"
+        : all("judgement")
+          ? "judgement"
+          : "status";
   return { grouping, ordering: all("priority") ? "priority" : "modified" };
 }
 
 /** `rows` in `ordering`; ties keep the server's order. Returns a new array. */
-export function sortRows(rows: readonly InquiryRow[], ordering: Ordering): InquiryRow[] {
+export function sortRows(
+  rows: readonly InquiryRow[],
+  ordering: Ordering,
+): InquiryRow[] {
   return rows.toSorted(COMPARE[ordering]);
 }
 
@@ -64,7 +83,11 @@ export function sortRows(rows: readonly InquiryRow[], ordering: Ordering): Inqui
  * Known values (statuses, judgements, kinds, priority bands) come first in the
  * server's order, then any others alphabetically, then rows without a value.
  */
-export function groupRows(rows: readonly InquiryRow[], grouping: Grouping, meta: Meta): Group[] {
+export function groupRows(
+  rows: readonly InquiryRow[],
+  grouping: Grouping,
+  meta: Meta,
+): Group[] {
   if (grouping === "none") return [{ value: null, rows }];
   const byValue = new Map<string | null, InquiryRow[]>();
   for (const row of rows) {
@@ -77,10 +100,13 @@ export function groupRows(rows: readonly InquiryRow[], grouping: Grouping, meta:
     .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }));
   return [...known.filter((value) => byValue.has(value)), ...others, null]
     .filter((value) => byValue.has(value))
-    .map((value) => ({ value, rows: byValue.get(value)! }));
+    .map((value) => ({ value, rows: must(byValue.get(value)) }));
 }
 
-function valueOf(row: InquiryRow, grouping: Exclude<Grouping, "none">): string | null | undefined {
+function valueOf(
+  row: InquiryRow,
+  grouping: Exclude<Grouping, "none">,
+): string | null | undefined {
   switch (grouping) {
     case "kind":
       return row.kind;
@@ -97,7 +123,10 @@ function valueOf(row: InquiryRow, grouping: Exclude<Grouping, "none">): string |
   }
 }
 
-function knownOrder(grouping: Exclude<Grouping, "none">, meta: Meta): readonly string[] {
+function knownOrder(
+  grouping: Exclude<Grouping, "none">,
+  meta: Meta,
+): readonly string[] {
   switch (grouping) {
     case "kind":
       return meta.kinds;

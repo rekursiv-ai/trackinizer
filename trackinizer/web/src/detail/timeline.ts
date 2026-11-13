@@ -9,7 +9,11 @@ export type ActivityItem =
   | { readonly type: "alerts"; readonly changes: readonly Change[] };
 
 /** An inquiry a change names: the loaded neighbour when it is still linked. */
-export type Mention = { readonly id: string; readonly kind: string; readonly peer: Peer | undefined };
+export type Mention = {
+  readonly id: string;
+  readonly kind: string;
+  readonly peer: Peer | undefined;
+};
 
 /** What a change did, as words and the inquiries it names. */
 export type Phrase = readonly (string | Mention)[];
@@ -27,7 +31,8 @@ export function activityItems(changes: readonly Change[]): ActivityItem[] {
   for (const change of [...changes].reverse()) {
     const last = items.at(-1);
     if (change.kind !== ALERT) items.push({ type: "change", change });
-    else if (last?.type === "alerts") items[items.length - 1] = { type: "alerts", changes: [...last.changes, change] };
+    else if (last?.type === "alerts")
+      items[items.length - 1] = { type: "alerts", changes: [...last.changes, change] };
     else items.push({ type: "alerts", changes: [change] });
   }
   return items;
@@ -42,7 +47,11 @@ export function activityItems(changes: readonly Change[]): ActivityItem[] {
  */
 export function describeChange(
   change: Change,
-  { detail, topology, fields }: { detail: Detail; topology: EdgeTopology; fields: readonly Field[] },
+  {
+    detail,
+    topology,
+    fields,
+  }: { detail: Detail; topology: EdgeTopology; fields: readonly Field[] },
 ): Phrase {
   switch (change.kind) {
     case "created":
@@ -61,10 +70,16 @@ export function describeChange(
   if (!field) return [sentence(change.kind)];
   const [before, after] = [change.old[change.kind], change.new[change.kind]];
   const { label, place } = field.look;
-  if (Array.isArray(before) || Array.isArray(after)) return [listText(label, before, after)];
+  if (Array.isArray(before) || Array.isArray(after))
+    return [listText(label, before, after)];
   if (isUnset(after)) return [`cleared ${label}`];
-  if (place === "text" || place === "json") return [isUnset(before) ? `set ${label}` : `edited ${label}`];
-  return [isUnset(before) ? `set ${label} to ${short(after)}` : `changed ${label} from ${short(before)} to ${short(after)}`];
+  if (place === "text" || place === "json")
+    return [isUnset(before) ? `set ${label}` : `edited ${label}`];
+  return [
+    isUnset(before)
+      ? `set ${label} to ${short(after)}`
+      : `changed ${label} from ${short(before)} to ${short(after)}`,
+  ];
 }
 
 const ALERT = "dependency_changed";
@@ -76,8 +91,13 @@ const ALERT = "dependency_changed";
  */
 function fieldOf(change: Change, fields: readonly Field[]): Field | undefined {
   const prefix = `${change.subject_kind.toLowerCase()}_`;
-  const bare = change.kind.startsWith(prefix) ? change.kind.slice(prefix.length) : change.kind;
-  return fields.find((field) => field.name === change.kind) ?? fields.find((field) => field.name === bare);
+  const bare = change.kind.startsWith(prefix)
+    ? change.kind.slice(prefix.length)
+    : change.kind;
+  return (
+    fields.find((field) => field.name === change.kind) ??
+    fields.find((field) => field.name === bare)
+  );
 }
 
 function edgePhrase(change: Change, detail: Detail, topology: EdgeTopology): Phrase {
@@ -88,10 +108,18 @@ function edgePhrase(change: Change, detail: Detail, topology: EdgeTopology): Phr
   const rule = topology[edgeKind];
   const direction = edgeDirection({ change, detail, id, edgeKind, peerKind, rule });
   // A removed edge's neighbour may still be linked by another edge, which names it.
-  const linked = [...Object.values(detail.edges), ...Object.values(detail.backlinks)].flat();
-  const mention: Mention = { id, kind: peerKind, peer: linked.find((peer) => peer.id === id) };
+  const linked = [
+    ...Object.values(detail.edges),
+    ...Object.values(detail.backlinks),
+  ].flat();
+  const mention: Mention = {
+    id,
+    kind: peerKind,
+    peer: linked.find((peer) => peer.id === id),
+  };
   if (change.kind === ALERT) return ["upstream change in ", mention];
-  const verb = { edge_added: "added", edge_removed: "removed" }[change.kind] ?? "annotated";
+  const verb =
+    { edge_added: "added", edge_removed: "removed" }[change.kind] ?? "annotated";
   // The change row does not say which end this inquiry was on; unknown, the
   // phrase names the edge kind alone rather than guess a direction.
   const relation =
@@ -100,8 +128,14 @@ function edgePhrase(change: Change, detail: Detail, topology: EdgeTopology): Phr
       : `${verb} relation ${sentence((direction === "out" ? rule?.forward : rule?.inverse) ?? edgeKind)} `;
   if (verb !== "annotated") return [relation, mention];
   const edits = Object.keys({ ...change.old, ...change.new })
-    .filter((key) => key.startsWith("edge_") && short(change.old[key]) !== short(change.new[key]))
-    .map((key) => `${key.slice("edge_".length)} ${short(change.old[key])} → ${short(change.new[key])}`);
+    .filter(
+      (key) =>
+        key.startsWith("edge_") && short(change.old[key]) !== short(change.new[key]),
+    )
+    .map(
+      (key) =>
+        `${key.slice("edge_".length)} ${short(change.old[key])} → ${short(change.new[key])}`,
+    );
   return [relation, mention, ...(edits.length ? [`: ${edits.join(", ")}`] : [])];
 }
 
@@ -133,8 +167,10 @@ function edgeDirection({
   if (detail.backlinks[edgeKind]?.some((peer) => peer.id === id)) return "in";
   if (change.caused_by === null) return "out";
   if (!rule) return null;
-  const out = rule.from_kinds.includes(change.subject_kind) && rule.to_kinds.includes(peerKind);
-  const inbound = rule.to_kinds.includes(change.subject_kind) && rule.from_kinds.includes(peerKind);
+  const out =
+    rule.from_kinds.includes(change.subject_kind) && rule.to_kinds.includes(peerKind);
+  const inbound =
+    rule.to_kinds.includes(change.subject_kind) && rule.from_kinds.includes(peerKind);
   return out === inbound ? null : out ? "out" : "in";
 }
 
@@ -162,7 +198,10 @@ function costText(change: Change): string {
 
 function costOf(side: Snapshot, axis: string): number {
   const cost = side.marginal_cost;
-  const value = typeof cost === "object" && cost !== null ? (cost as { [axis: string]: unknown })[axis] : 0;
+  const value =
+    typeof cost === "object" && cost !== null
+      ? (cost as { [axis: string]: unknown })[axis]
+      : 0;
   return typeof value === "number" ? value : 0;
 }
 

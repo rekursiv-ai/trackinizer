@@ -6,6 +6,7 @@ import type { Ancestor } from "../api/inquiries";
 import { stubFetch } from "../api/testing";
 import { testClient, uuid } from "../live/testing";
 import { AncestryLive, ancestryKey, useAncestry } from "./ancestry";
+import { must } from "../must";
 
 afterEach(() => {
   cleanup();
@@ -24,16 +25,24 @@ const parent = (n: number, child: string): Ancestor => ({
 /** Answer each read with every id its filter names, each under parent 900, and a look-alike row it did not ask for. */
 function serveAncestry() {
   return stubFetch((request) => {
-    const filter = JSON.parse(new URL(request.url).searchParams.get("filter")!) as { value: string };
+    const filter = JSON.parse(
+      must(new URL(request.url).searchParams.get("filter")),
+    ) as {
+      value: string;
+    };
     const ends = filter.value.slice(1, -2).split("|");
     const rows = ends.map((end) => uuid(Number(end.slice(-7))));
-    return Response.json([...rows.map((id) => ({ id, ancestors: [parent(900, id)] })), { id: uuid(999_999), ancestors: [] }]);
+    return Response.json([
+      ...rows.map((id) => ({ id, ancestors: [parent(900, id)] })),
+      { id: uuid(999_999), ancestors: [] },
+    ]);
   });
 }
 
 function ancestryOf(ids: readonly string[] | null) {
   const client = testClient();
-  const wrapper = ({ children }: { children: ReactNode }) => createElement(QueryClientProvider, { client }, children);
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client }, children);
   return renderHook(() => useAncestry(ids), { wrapper });
 }
 
@@ -45,13 +54,16 @@ test("a page's ancestry is one read of its ids: Issues, with ancestors=narrows a
   // A row whose id only ends like an asked one's is not taken.
   expect(result.current.ancestry.has(uuid(999_999))).toBe(false);
   expect(sent).toHaveLength(1);
-  const query = new URLSearchParams(sent[0]!.query);
+  const query = new URLSearchParams(must(sent[0]).query);
   expect(query.getAll("kind")).toEqual(["Issue"]);
   expect(query.getAll("fields")).toEqual(["id"]);
   expect(query.get("ancestors")).toBe("narrows");
   // Room for rows whose ids end alike, as the live layer's membership checks leave.
   expect(query.get("limit")).toBe("4");
-  expect(JSON.parse(query.get("filter")!)).toMatchObject({ field: "id", op: "re" });
+  expect(JSON.parse(must(query.get("filter")))).toMatchObject({
+    field: "id",
+    op: "re",
+  });
 });
 
 test("over 63 ids, the ancestry is read in parts the server's filter length allows", async () => {
@@ -59,7 +71,9 @@ test("over 63 ids, the ancestry is read in parts the server's filter length allo
   const ids = Array.from({ length: 64 }, (_, n) => uuid(n + 1));
   const { result } = ancestryOf(ids);
   await waitFor(() => expect(result.current.ancestry.size).toBe(64));
-  expect(sent.map((request) => new URLSearchParams(request.query).get("limit")).toSorted()).toEqual(["126", "2"]);
+  expect(
+    sent.map((request) => new URLSearchParams(request.query).get("limit")).toSorted(),
+  ).toEqual(["126", "2"]);
 });
 
 test("no ids reads nothing", async () => {

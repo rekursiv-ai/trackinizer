@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
 import { FakeEventSource } from "../live/testing";
 import { App } from "./App";
+import { must } from "../must";
 
 /** Serve boot for a user of `role`, and an empty list; a preference change answers as the server merges it. */
 function serve(role = "writer") {
@@ -11,12 +12,19 @@ function serve(role = "writer") {
     "/api/meta/enums": { inquiry_kind_all: ["Issue"], status: ["active"] },
     "/api/meta/fields": {},
     "/api/meta/edges": {},
-    "/api/me/profile": { user_id: "u", email: "ada@example.com", name: "Ada", role, last_login: null },
+    "/api/me/profile": {
+      user_id: "u",
+      email: "ada@example.com",
+      name: "Ada",
+      role,
+      last_login: null,
+    },
     "/api/inquiries": [],
   };
   return stubFetch(async (request) => {
     const path = new URL(request.url).pathname;
-    if (request.method === "PATCH" && path === "/api/me/preferences") return Response.json({ theme: "dark", ...(await request.json()) });
+    if (request.method === "PATCH" && path === "/api/me/preferences")
+      return Response.json({ theme: "dark", ...(await request.json()) });
     return Response.json(bodies[path]);
   });
 }
@@ -37,22 +45,38 @@ test("the sidebar lists Graph, Console, Activity, each kind and Your settings; A
   render(<App assign={vi.fn()} />);
   await screen.findByRole("heading", { level: 1 });
   const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
-  expect([...sidebar.querySelectorAll("a.nav-item")].map((entry) => entry.textContent)).toEqual(["Graph", "Console", "Activity", "Issues", "Your settings"]);
-  expect(within(sidebar).getByRole("link", { current: "page" }).textContent).toBe("Issues");
-  expect(within(sidebar).getByRole("link", { name: "Graph" }).getAttribute("href")).toBe("/trax/graph");
+  expect(
+    [...sidebar.querySelectorAll("a.nav-item")].map((entry) => entry.textContent),
+  ).toEqual(["Graph", "Console", "Activity", "Issues", "Your settings"]);
+  expect(within(sidebar).getByRole("link", { current: "page" }).textContent).toBe(
+    "Issues",
+  );
+  expect(
+    within(sidebar).getByRole("link", { name: "Graph" }).getAttribute("href"),
+  ).toBe("/trax/graph");
   cleanup();
   serve("admin");
   render(<App assign={vi.fn()} />);
   await screen.findByRole("heading", { level: 1 });
-  expect(within(screen.getByRole("navigation", { name: "Sidebar" })).getByRole("link", { name: "Admin" }).getAttribute("href")).toBe("/trax/admin");
+  expect(
+    within(screen.getByRole("navigation", { name: "Sidebar" }))
+      .getByRole("link", { name: "Admin" })
+      .getAttribute("href"),
+  ).toBe("/trax/admin");
 });
 
 test("Your settings opens as the page, in place of the list", async () => {
   serve();
   render(<App assign={vi.fn()} />);
   await screen.findByRole("heading", { level: 1, name: "Issues" });
-  await userEvent.setup().click(within(screen.getByRole("navigation", { name: "Sidebar" })).getByRole("link", { name: "Your settings" }));
-  expect(await screen.findByRole("heading", { level: 1, name: "Your settings" })).toBeTruthy();
+  await userEvent.setup().click(
+    within(screen.getByRole("navigation", { name: "Sidebar" })).getByRole("link", {
+      name: "Your settings",
+    }),
+  );
+  expect(
+    await screen.findByRole("heading", { level: 1, name: "Your settings" }),
+  ).toBeTruthy();
   expect(screen.queryByRole("heading", { level: 1, name: "Issues" })).toBeNull();
   expect(location.pathname).toBe("/trax/settings");
 });
@@ -65,11 +89,15 @@ test("the sidebar's button, or ⌘B / Ctrl+B, collapses it to a rail of its entr
   const sidebar = screen.getByRole("navigation", { name: "Sidebar" });
   const toggle = () => within(sidebar).getByRole("button", { name: /sidebar$/ });
   const entries = () => [...sidebar.querySelectorAll("a.nav-item")];
-  const named = () => entries().map((entry) => [entry.getAttribute("aria-label"), entry.getAttribute("title")]);
+  const named = () =>
+    entries().map((entry) => [
+      entry.getAttribute("aria-label"),
+      entry.getAttribute("title"),
+    ]);
   const names = entries().map((entry) => entry.textContent);
   expect(toggle().getAttribute("aria-label")).toBe("Collapse sidebar");
   await user.click(toggle());
-  expect(document.querySelector(".app")!.classList).toContain("sidebar-collapsed");
+  expect(must(document.querySelector(".app")).classList).toContain("sidebar-collapsed");
   // The same nav, as a rail: the button that expands it comes first, in the
   // keyboard's order too, and takes the focus of the one clicked.
   expect(screen.getAllByRole("navigation", { name: "Sidebar" })).toEqual([sidebar]);
@@ -80,14 +108,22 @@ test("the sidebar's button, or ⌘B / Ctrl+B, collapses it to a rail of its entr
   expect(document.activeElement).toBe(toggle());
   // Each entry stays a link, its icon alone shown: named, with its name as its tooltip.
   expect(named()).toEqual(names.map((name) => [name, name]));
-  expect(within(sidebar).getByRole("link", { current: "page" }).getAttribute("aria-label")).toBe("Issues");
-  expect(within(sidebar).getByRole("group", { name: "Signed in" }).getAttribute("title")).toBe("ada@example.com (writer)");
+  expect(
+    within(sidebar).getByRole("link", { current: "page" }).getAttribute("aria-label"),
+  ).toBe("Issues");
+  expect(
+    within(sidebar).getByRole("group", { name: "Signed in" }).getAttribute("title"),
+  ).toBe("ada@example.com (writer)");
   // jsdom's platform is not a Mac's, so $mod is Ctrl.
   await user.keyboard("{Control>}b{/Control}");
-  expect(document.querySelector(".app")!.classList).not.toContain("sidebar-collapsed");
+  expect(must(document.querySelector(".app")).classList).not.toContain(
+    "sidebar-collapsed",
+  );
   expect(toggle().getAttribute("aria-label")).toBe("Collapse sidebar");
   expect(named()).toEqual(names.map(() => [null, null]));
-  expect(within(sidebar).getByRole("group", { name: "Signed in" }).getAttribute("title")).toBeNull();
+  expect(
+    within(sidebar).getByRole("group", { name: "Signed in" }).getAttribute("title"),
+  ).toBeNull();
 });
 
 test("the sidebar's theme button switches dark to light and back, kept in the user's preferences, and stays in the rail", async () => {
@@ -97,12 +133,19 @@ test("the sidebar's theme button switches dark to light and back, kept in the us
   await screen.findByRole("heading", { level: 1 });
   const user = userEvent.setup();
   const sidebar = within(screen.getByRole("navigation", { name: "Sidebar" }));
-  const themes = () => server.filter(({ method, path }) => method === "PATCH" && path === "/api/me/preferences").map(({ body }) => body);
+  const themes = () =>
+    server
+      .filter(
+        ({ method, path }) => method === "PATCH" && path === "/api/me/preferences",
+      )
+      .map(({ body }) => body);
   await user.click(sidebar.getByRole("button", { name: "Switch to light theme" }));
   expect(document.documentElement.dataset.theme).toBe("light");
   await waitFor(() => expect(themes()).toEqual([{ theme: "light" }]));
   await user.click(sidebar.getByRole("button", { name: "Collapse sidebar" }));
   await user.click(sidebar.getByRole("button", { name: "Switch to dark theme" }));
   expect(document.documentElement.dataset.theme).toBe("dark");
-  await waitFor(() => expect(themes()).toEqual([{ theme: "light" }, { theme: "dark" }]));
+  await waitFor(() =>
+    expect(themes()).toEqual([{ theme: "light" }, { theme: "dark" }]),
+  );
 });

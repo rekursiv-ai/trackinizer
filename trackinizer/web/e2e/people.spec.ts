@@ -1,5 +1,6 @@
 import type { APIRequestContext, Locator, Page, Request } from "@playwright/test";
 import { expect, openProperties, test } from "./fixtures";
+import { must } from "../src/must";
 
 // People and agents in owner and subscriber pickers against the e2e server,
 // where --no-auth makes every request the admin no-auth@localhost. Each test
@@ -8,13 +9,21 @@ import { expect, openProperties, test } from "./fixtures";
 
 const suffix = () => crypto.randomUUID().slice(0, 8);
 
-async function createIssue(request: APIRequestContext, fields: object): Promise<string> {
-  const response = await request.post("/api/inquiries/issue", { data: { ...fields, idempotency_key: crypto.randomUUID() } });
+async function createIssue(
+  request: APIRequestContext,
+  fields: object,
+): Promise<string> {
+  const response = await request.post("/api/inquiries/issue", {
+    data: { ...fields, idempotency_key: crypto.randomUUID() },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   return (await response.json()).id;
 }
 
-async function stored(request: APIRequestContext, id: string): Promise<{ owner: string | null; subscribers: string[] | null }> {
+async function stored(
+  request: APIRequestContext,
+  id: string,
+): Promise<{ owner: string | null; subscribers: string[] | null }> {
   return (await request.get(`/api/inquiries/${id}`)).json();
 }
 
@@ -25,14 +34,22 @@ async function openDetail(page: Page, id: string): Promise<void> {
 }
 
 const propButton = (page: Page, field: string) =>
-  page.getByRole("complementary", { name: "Properties" }).locator(`[data-field="${field}"] button.prop-btn`);
+  page
+    .getByRole("complementary", { name: "Properties" })
+    .locator(`[data-field="${field}"] button.prop-btn`);
 
 /** Open the picker behind `trigger`, pick `row` ("New person…"), and fill the dialog it opens. */
-async function addThrough(page: Page, trigger: Locator, row: string, fields: { [label: string]: string }): Promise<Locator> {
+async function addThrough(
+  page: Page,
+  trigger: Locator,
+  row: string,
+  fields: { [label: string]: string },
+): Promise<Locator> {
   await trigger.click();
   await page.getByRole("option", { name: row }).click();
   const dialog = page.getByRole("dialog", { name: /^New (owner|subscriber)$/ });
-  for (const [label, value] of Object.entries(fields)) await dialog.getByRole("textbox", { name: label }).fill(value);
+  for (const [label, value] of Object.entries(fields))
+    await dialog.getByRole("textbox", { name: label }).fill(value);
   return dialog;
 }
 
@@ -41,7 +58,12 @@ function writesOf(page: Page): Request[] {
   const writes: Request[] = [];
   page.on("request", (sent) => {
     // The names are kept in the user's preferences: that write is not one to an inquiry.
-    if (sent.method() !== "GET" && sent.url().includes("/api/") && !sent.url().endsWith("/api/me/preferences")) writes.push(sent);
+    if (
+      sent.method() !== "GET" &&
+      sent.url().includes("/api/") &&
+      !sent.url().endsWith("/api/me/preferences")
+    )
+      writes.push(sent);
   });
   return writes;
 }
@@ -56,12 +78,17 @@ test("from a detail: a new person owns it by email, a new agent subscribes by ha
   const id = await createIssue(request, { title: `G3 detail ${run}` });
   await openDetail(page, id);
 
-  const person = await addThrough(page, propButton(page, "owner"), "New person…", { Name: `Grace ${run}`, "Email (optional)": email });
+  const person = await addThrough(page, propButton(page, "owner"), "New person…", {
+    Name: `Grace ${run}`,
+    "Email (optional)": email,
+  });
   await person.getByRole("button", { name: /^Add as owner/ }).click();
   await expect(propButton(page, "owner")).toContainText(email);
   expect((await stored(request, id)).owner).toBe(email);
 
-  const agent = await addThrough(page, propButton(page, "subscribers"), "New agent…", { Handle: handle });
+  const agent = await addThrough(page, propButton(page, "subscribers"), "New agent…", {
+    Handle: handle,
+  });
   await expect(agent).toContainText("New agent");
   await agent.getByRole("button", { name: /^Add as subscriber/ }).click();
   await expect(propButton(page, "subscribers")).toContainText(handle);
@@ -75,37 +102,67 @@ test("from a detail: a new person owns it by email, a new agent subscribes by ha
   await expect(grace.locator(".hint")).toHaveText(email);
   await page.keyboard.press("Escape");
   await propButton(page, "subscribers").click();
-  await expect(page.getByRole("option", { name: new RegExp(`^${handle}`) }).locator(".hint")).toHaveText("agent");
+  await expect(
+    page.getByRole("option", { name: new RegExp(`^${handle}`) }).locator(".hint"),
+  ).toHaveText("agent");
 });
 
-test("from a create form: a new agent as owner and a new person without an email as subscriber, in the one create", async ({ page, request }) => {
+test("from a create form: a new agent as owner and a new person without an email as subscriber, in the one create", async ({
+  page,
+  request,
+}) => {
   const run = suffix();
   await page.goto("/trax/new/Issue");
   const form = page.getByRole("dialog", { name: "New issue" });
   await form.getByRole("textbox", { name: "Title" }).fill(`G3 create ${run}`);
   const writes = writesOf(page);
 
-  const agent = await addThrough(page, form.getByRole("button", { name: "Owner: No owner" }), "New agent…", { Handle: `g3-owner-${run}` });
+  const agent = await addThrough(
+    page,
+    form.getByRole("button", { name: "Owner: No owner" }),
+    "New agent…",
+    { Handle: `g3-owner-${run}` },
+  );
   await agent.getByRole("button", { name: /^Add as owner/ }).click();
-  await expect(form.getByRole("button", { name: `Owner: g3-owner-${run}` })).toBeVisible();
-  const person = await addThrough(page, form.getByRole("button", { name: "Subscribers: No subscribers" }), "New person…", {
-    Name: `Ada ${run}`,
-  });
+  await expect(
+    form.getByRole("button", { name: `Owner: g3-owner-${run}` }),
+  ).toBeVisible();
+  const person = await addThrough(
+    page,
+    form.getByRole("button", { name: "Subscribers: No subscribers" }),
+    "New person…",
+    {
+      Name: `Ada ${run}`,
+    },
+  );
   await person.getByRole("button", { name: /^Add as subscriber/ }).click();
-  await expect(form.getByRole("button", { name: `Subscribers: Ada ${run}` })).toBeVisible();
+  await expect(
+    form.getByRole("button", { name: `Subscribers: Ada ${run}` }),
+  ).toBeVisible();
   expect(writes).toEqual([]);
 
   await form.getByRole("button", { name: /^Create issue/ }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(`G3 create ${run}`);
   expect(writes).toHaveLength(1);
-  const { id } = (await (await writes[0]!.response())!.json()) as { id: string };
-  expect(await stored(request, id)).toMatchObject({ owner: `g3-owner-${run}`, subscribers: [`Ada ${run}`] });
+  const { id } = (await must(await must(writes[0]).response()).json()) as {
+    id: string;
+  };
+  expect(await stored(request, id)).toMatchObject({
+    owner: `g3-owner-${run}`,
+    subscribers: [`Ada ${run}`],
+  });
 });
 
-test("from the bulk bar: a new person owns every selected row, by email", async ({ page, request }) => {
+test("from the bulk bar: a new person owns every selected row, by email", async ({
+  page,
+  request,
+}) => {
   const run = suffix();
   const label = `g3-bulk-${run}`;
-  const ids = [await createIssue(request, { title: `G3 bulk ${run} 1`, labels: [label] }), await createIssue(request, { title: `G3 bulk ${run} 2`, labels: [label] })];
+  const ids = [
+    await createIssue(request, { title: `G3 bulk ${run} 1`, labels: [label] }),
+    await createIssue(request, { title: `G3 bulk ${run} 2`, labels: [label] }),
+  ];
   await page.goto("/trax/list/Issue");
   await page.getByRole("button", { name: /^Filter$/ }).click();
   await page.getByRole("option", { name: "Label", exact: true }).click();
@@ -120,31 +177,54 @@ test("from the bulk bar: a new person owns every selected row, by email", async 
   await expect(bar).toContainText("2 selected");
 
   const email = `g3-bulk-${run}@example.com`;
-  const dialog = await addThrough(page, bar.getByRole("button", { name: "Owner" }), "New person…", { Name: `Bulk ${run}`, "Email (optional)": email });
+  const dialog = await addThrough(
+    page,
+    bar.getByRole("button", { name: "Owner" }),
+    "New person…",
+    { Name: `Bulk ${run}`, "Email (optional)": email },
+  );
   await dialog.getByRole("button", { name: /^Add as owner/ }).click();
-  await expect(page.locator(".toast-text", { hasText: `Owner set to ${email}` })).toBeVisible();
+  await expect(
+    page.locator(".toast-text", { hasText: `Owner set to ${email}` }),
+  ).toBeVisible();
   for (const id of ids) expect((await stored(request, id)).owner).toBe(email);
 });
 
-test("an admin invites a new person to sign in as a writer; a writer is offered no invite", async ({ page, request }) => {
+test("an admin invites a new person to sign in as a writer; a writer is offered no invite", async ({
+  page,
+  request,
+}) => {
   const run = suffix();
   const email = `g3-invite-${run}@example.com`;
   const id = await createIssue(request, { title: `G3 invite ${run}` });
   await openDetail(page, id);
-  const dialog = await addThrough(page, propButton(page, "owner"), "New person…", { Name: `Invitee ${run}`, "Email (optional)": email });
+  const dialog = await addThrough(page, propButton(page, "owner"), "New person…", {
+    Name: `Invitee ${run}`,
+    "Email (optional)": email,
+  });
   await expect(dialog).toContainText("No account yet");
   await dialog.getByRole("checkbox", { name: /^Invite to sign in/ }).check();
   await dialog.getByRole("button", { name: /^Add as owner/ }).click();
-  await expect(page.locator(".toast-text", { hasText: `Invited ${email} to sign in as a writer` })).toBeVisible();
+  await expect(
+    page.locator(".toast-text", { hasText: `Invited ${email} to sign in as a writer` }),
+  ).toBeVisible();
   await expect(propButton(page, "owner")).toContainText(email);
-  const entries = (await (await request.get("/api/admin/allowlist")).json()).entries as { email_or_pattern: string; role: string }[];
-  expect(entries.find((entry) => entry.email_or_pattern === email)?.role).toBe("writer");
+  const entries = (await (await request.get("/api/admin/allowlist")).json())
+    .entries as { email_or_pattern: string; role: string }[];
+  expect(entries.find((entry) => entry.email_or_pattern === email)?.role).toBe(
+    "writer",
+  );
   // Leave the shared server's allowlist as it was.
-  expect((await request.delete(`/api/admin/allowlist/${encodeURIComponent(email)}`)).ok()).toBe(true);
+  expect(
+    (await request.delete(`/api/admin/allowlist/${encodeURIComponent(email)}`)).ok(),
+  ).toBe(true);
 
   await page.route("**/api/me/profile", async (route) => {
     const response = await route.fetch();
-    await route.fulfill({ response, json: { ...(await response.json()), role: "writer" } });
+    await route.fulfill({
+      response,
+      json: { ...(await response.json()), role: "writer" },
+    });
   });
   const admin: Request[] = [];
   page.on("request", (sent) => {
@@ -152,25 +232,41 @@ test("an admin invites a new person to sign in as a writer; a writer is offered 
   });
   await page.reload();
   await openProperties(page);
-  const writer = await addThrough(page, propButton(page, "owner"), "New person…", { "Email (optional)": `g3-other-${run}@example.com` });
+  const writer = await addThrough(page, propButton(page, "owner"), "New person…", {
+    "Email (optional)": `g3-other-${run}@example.com`,
+  });
   await expect(writer.getByRole("button", { name: /^Add as owner/ })).toBeVisible();
   await expect(writer.getByRole("checkbox")).toHaveCount(0);
   expect(admin).toEqual([]);
   await page.unrouteAll({ behavior: "ignoreErrors" });
 });
 
-test("people added by hand follow the user to a fresh browser", async ({ page, browser, request }) => {
+test("people added by hand follow the user to a fresh browser", async ({
+  page,
+  browser,
+  request,
+}) => {
   const run = suffix();
   const email = `g3-export-${run}@example.com`;
   const id = await createIssue(request, { title: `G3 export ${run}` });
   await openDetail(page, id);
-  const dialog = await addThrough(page, propButton(page, "owner"), "New person…", { Name: `Exported ${run}`, "Email (optional)": email });
+  const dialog = await addThrough(page, propButton(page, "owner"), "New person…", {
+    Name: `Exported ${run}`,
+    "Email (optional)": email,
+  });
   await dialog.getByRole("button", { name: /^Add as owner/ }).click();
   await expect(propButton(page, "owner")).toContainText(email);
-  const agent = await addThrough(page, propButton(page, "subscribers"), "New agent…", { Handle: `g3-exported-${run}` });
+  const agent = await addThrough(page, propButton(page, "subscribers"), "New agent…", {
+    Handle: `g3-exported-${run}`,
+  });
   await agent.getByRole("button", { name: /^Add as subscriber/ }).click();
   await expect(propButton(page, "subscribers")).toContainText(`g3-exported-${run}`);
-  const kept = async () => ((await (await request.get("/api/me/profile")).json()) as { preferences: { people: unknown } }).preferences.people;
+  const kept = async () =>
+    (
+      (await (await request.get("/api/me/profile")).json()) as {
+        preferences: { people: unknown };
+      }
+    ).preferences.people;
   await expect.poll(kept).toEqual({
     [email]: { name: `Exported ${run}`, type: "person" },
     [`g3-exported-${run}`]: { name: `g3-exported-${run}`, type: "agent" },
@@ -185,6 +281,10 @@ test("people added by hand follow the user to a fresh browser", async ({ page, b
   await expect(exported.locator(".hint")).toHaveText(email);
   await other.keyboard.press("Escape");
   await propButton(other, "subscribers").click();
-  await expect(other.getByRole("option", { name: new RegExp(`^g3-exported-${run}`) }).locator(".hint")).toHaveText("agent");
+  await expect(
+    other
+      .getByRole("option", { name: new RegExp(`^g3-exported-${run}`) })
+      .locator(".hint"),
+  ).toHaveText("agent");
   await fresh.close();
 });

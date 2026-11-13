@@ -1,4 +1,3 @@
-
 // Which account this page was read as, and which the browser is signed in as now. One browser shares one session
 // cookie across its tabs: a tab left open while another tab signs in as someone else would show the first account and
 // act as the second. So every request names the page's account (`X-Page-Account`), and each stream its user
@@ -117,5 +116,7 @@ function stored(): string | null | undefined {
 function write(account: string): void {
   try {
     localStorage.setItem(SIGNED_IN_KEY, account);
-  } catch { /* Storage is unavailable: the requests' header still keeps the page to its account. */ }
+  } catch {
+    /* Storage is unavailable: the requests' header still keeps the page to its account. */
+  }
 }

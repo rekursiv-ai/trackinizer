@@ -1,6 +1,16 @@
 import { expect, test } from "vitest";
-import { CHECK_IDS, idFilter, isPageOf, newerRow, type Page, placeRow, seqRanges, serverOrder } from "./rows";
+import {
+  CHECK_IDS,
+  idFilter,
+  isPageOf,
+  newerRow,
+  type Page,
+  placeRow,
+  seqRanges,
+  serverOrder,
+} from "./rows";
 import { issue, mount, testClient, uuid } from "./testing";
+import { must } from "../must";
 
 test("seqs become the fewest inclusive ranges", () => {
   expect(seqRanges([9, 3, 4, 5, 4, 12, 11])).toEqual(["3..5", "9..9", "11..12"]);
@@ -12,10 +22,15 @@ test("a membership check names 63 ids by their last seven hex digits, within the
   const ids = Array.from({ length: CHECK_IDS + 1 }, (_, n) => uuid(n));
   const filter = idFilter(ids.slice(0, CHECK_IDS));
   expect(filter).toMatchObject({ field: "id", op: "re" });
-  expect(filter.value).toBe(`(${ids.slice(0, CHECK_IDS).map((id) => id.slice(-7)).join("|")})$`);
+  expect(filter.value).toBe(
+    `(${ids
+      .slice(0, CHECK_IDS)
+      .map((id) => id.slice(-7))
+      .join("|")})$`,
+  );
   expect(filter.value.length).toBe(506);
-  expect(new RegExp(filter.value).test(ids[5]!)).toBe(true);
-  expect(new RegExp(filter.value).test(ids[CHECK_IDS]!)).toBe(false);
+  expect(new RegExp(filter.value).test(must(ids[5]))).toBe(true);
+  expect(new RegExp(filter.value).test(must(ids[CHECK_IDS]))).toBe(false);
   // 64 would make 514 characters, which the server refuses.
   expect(`(${ids.map((id) => id.slice(-7)).join("|")})$`.length).toBe(514);
   expect(() => idFilter(ids)).toThrow("at most 63 ids");
@@ -25,7 +40,9 @@ test("rows sort as the server lists them: newest created first, then the larger 
   const older = issue(1);
   const newer = issue(2);
   const twin = { ...issue(3), created: newer.created };
-  expect([older, newer, twin].toSorted(serverOrder).map((row) => row.seq)).toEqual([3, 2, 1]);
+  expect([older, newer, twin].toSorted(serverOrder).map((row) => row.seq)).toEqual([
+    3, 2, 1,
+  ]);
 });
 
 test("rows created within one millisecond sort by their microseconds, as the server's order does", () => {
@@ -33,16 +50,31 @@ test("rows created within one millisecond sort by their microseconds, as the ser
   const older = { ...issue(9), created: "2026-09-20T00:00:00.000100+00:00" };
   const newer = { ...issue(1), created: "2026-09-20T00:00:00.000900+00:00" };
   const whole = { ...issue(5), created: "2026-09-20T00:00:00+00:00" };
-  expect([older, whole, newer].toSorted(serverOrder).map((row) => row.seq)).toEqual([1, 9, 5]);
+  expect([older, whole, newer].toSorted(serverOrder).map((row) => row.seq)).toEqual([
+    1, 9, 5,
+  ]);
 });
 
 test("a list's pages are those with exactly its filters, not a longer list of them", () => {
   const client = testClient();
   const active = [{ field: "status", op: "is", value: "active" }] as const;
   mount(client, ["inquiries", "list", active, "Issue", 50, 0], []);
-  mount(client, ["inquiries", "list", [...active, { field: "owner", op: "is", value: "dan" }], "Issue", 50, 0], []);
+  mount(
+    client,
+    [
+      "inquiries",
+      "list",
+      [...active, { field: "owner", op: "is", value: "dan" }],
+      "Issue",
+      50,
+      0,
+    ],
+    [],
+  );
   mount(client, ["detail", uuid(1)], {});
-  const pages = client.getQueryCache().findAll({ predicate: (query) => isPageOf(query, active) });
+  const pages = client
+    .getQueryCache()
+    .findAll({ predicate: (query) => isPageOf(query, active) });
   expect(pages.map((query) => query.queryKey[2])).toEqual([active]);
 });
 
@@ -72,7 +104,9 @@ test("a row that entered goes where the server would list it, or nowhere when be
 
 test("a row read afresh replaces the one held, unless the one held is a later version, to the microsecond", () => {
   const held = issue(1, { modified: "2026-09-21T00:00:00.000002+00:00" });
-  expect(newerRow(issue(1, { modified: "2026-09-21T00:00:00.000001+00:00" }), held)).toBe(held);
+  expect(
+    newerRow(issue(1, { modified: "2026-09-21T00:00:00.000001+00:00" }), held),
+  ).toBe(held);
   const later = issue(1, { modified: "2026-09-21T00:00:00.000003+00:00" });
   expect(newerRow(later, held)).toBe(later);
 });

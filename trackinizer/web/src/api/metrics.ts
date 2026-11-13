@@ -32,11 +32,17 @@ export type MetricsPage = {
  * nearby one, so two steps could print and draw as one. A page with such a step
  * is an `ApiError` with code `unreadable`, not a chart that is wrong.
  */
-export async function readMetrics(experimentId: string, { signal }: CallOptions = {}): Promise<MetricsPage> {
+export async function readMetrics(
+  experimentId: string,
+  { signal }: CallOptions = {},
+): Promise<MetricsPage> {
   const page = (offset: number, limit: number) =>
     send(TIMEOUT_MS.read, signal, (signal) =>
       client.GET("/api/experiments/{experiment_id}/metrics", {
-        params: { path: { experiment_id: experimentId }, query: offset ? { limit, offset } : { limit } },
+        params: {
+          path: { experiment_id: experimentId },
+          query: offset ? { limit, offset } : { limit },
+        },
         signal,
       }),
     );

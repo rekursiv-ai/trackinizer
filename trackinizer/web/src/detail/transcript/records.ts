@@ -1,4 +1,5 @@
 import type { SessionPart, SessionRecord } from "../../api/sessions";
+import { must } from "../../must";
 
 /**
  * How one record shows, read from its payload: prose, reasoning, a tool call, a
@@ -34,7 +35,17 @@ export type RecordView = Shape & {
  * vocabulary (`trackinizer/sagent/session/types.py`), else from its call's name;
  * `call` when neither says.
  */
-export type ToolKind = "command" | "read" | "edit" | "write" | "search" | "list" | "web" | "fetch" | "agent" | "call";
+export type ToolKind =
+  | "command"
+  | "read"
+  | "edit"
+  | "write"
+  | "search"
+  | "list"
+  | "web"
+  | "fetch"
+  | "agent"
+  | "call";
 
 /** What a record shows but its attachments (`RecordView`). */
 type Shape =
@@ -64,7 +75,12 @@ type Shape =
       readonly stderr: string;
       readonly exit: number | null;
     }
-  | { readonly shape: "edit"; readonly label: "File edit"; readonly source: string; readonly lines: readonly DiffLine[] }
+  | {
+      readonly shape: "edit";
+      readonly label: "File edit";
+      readonly source: string;
+      readonly lines: readonly DiffLine[];
+    }
   | {
       readonly shape: "clear";
       readonly label: "Context cleared";
@@ -74,8 +90,18 @@ type Shape =
       /** The provider's id of the session this one continues. */
       readonly continues: string;
     }
-  | { readonly shape: "search"; readonly label: "Web search"; readonly source: string; readonly results: readonly SearchResult[] }
-  | { readonly shape: "folded"; readonly label: string; readonly summary: string; readonly text: string }
+  | {
+      readonly shape: "search";
+      readonly label: "Web search";
+      readonly source: string;
+      readonly results: readonly SearchResult[];
+    }
+  | {
+      readonly shape: "folded";
+      readonly label: string;
+      readonly summary: string;
+      readonly text: string;
+    }
   | {
       readonly shape: "output";
       readonly label: string;
@@ -86,20 +112,32 @@ type Shape =
   | { readonly shape: "note"; readonly label: string; readonly meta: string };
 
 /** One web search result. */
-export type SearchResult = { readonly url: string; readonly title: string; readonly snippet: string };
+export type SearchResult = {
+  readonly url: string;
+  readonly title: string;
+  readonly snippet: string;
+};
 
 /**
  * What the canvas appends to a message it sends (`render_inbound` in
  * the agent runner's `inbound.py`), and the record it names, when it names one.
  */
-export type CanvasContext = { readonly text: string; readonly recordId: string; readonly title: string };
+export type CanvasContext = {
+  readonly text: string;
+  readonly recordId: string;
+  readonly title: string;
+};
 
 /**
  * One line of a unified diff, its mark included, and its number in the file it
  * is in (the new file's, or the old one's for a removed line) when the provider
  * gave a header or a line to count from.
  */
-export type DiffLine = { readonly kind: "hunk" | "ctx" | "del" | "add"; readonly text: string; readonly line: number | null };
+export type DiffLine = {
+  readonly kind: "hunk" | "ctx" | "del" | "add";
+  readonly text: string;
+  readonly line: number | null;
+};
 
 type Fields = { readonly [field: string]: unknown };
 
@@ -107,14 +145,25 @@ type Fields = { readonly [field: string]: unknown };
 export function recordView(record: SessionRecord): RecordView {
   const payload = record.payload ?? {};
   // A message has an `attachments` field; a tool call's attachments are typed items in `stdout`.
-  const attached = payload.attachments ?? toolResultFields(payload).typedItems.filter((item) => item["py/object"] === "Attachment");
-  return { ...shapeOf(record), attachments: attachmentsChip(attached), tool: toolKind(record), failed: failedOf(payload) };
+  const attached =
+    payload.attachments ??
+    toolResultFields(payload).typedItems.filter(
+      (item) => item["py/object"] === "Attachment",
+    );
+  return {
+    ...shapeOf(record),
+    attachments: attachmentsChip(attached),
+    tool: toolKind(record),
+    failed: failedOf(payload),
+  };
 }
 
 /** What `record` did as a tool step (`ToolKind`); null when it is no tool call or result. */
 export function toolKind(record: SessionRecord): ToolKind | null {
   if (record.kind !== "ToolCall") return TOOL_RESULTS.get(record.kind) ?? null;
-  const name = stringField(record.payload ?? {}, "name").toLowerCase().replaceAll("_", "");
+  const name = stringField(record.payload ?? {}, "name")
+    .toLowerCase()
+    .replaceAll("_", "");
   return TOOL_NAMES.get(name) ?? "call";
 }
 
@@ -124,11 +173,20 @@ export function toolKind(record: SessionRecord): ToolKind | null {
  * leave out), and a codex peer message codex sealed (`peerPayload`) with no
  * attachment. A summary is what sealed reasoning shows.
  */
-export function unreadable({ kind, payload }: Pick<SessionRecord, "kind" | "payload">): boolean {
+export function unreadable({
+  kind,
+  payload,
+}: Pick<SessionRecord, "kind" | "payload">): boolean {
   const fields = payload ?? {};
-  if (kind === "Thinking") return !stringField(fields, "content") && !stringField(fields, "summary");
+  if (kind === "Thinking")
+    return !stringField(fields, "content") && !stringField(fields, "summary");
   const content = stringField(fields, "content");
-  return kind === "AgentToAgentMessage" && peerPayload(content) !== content && !peerPayload(content).trim() && !attachmentsChip(fields.attachments);
+  return (
+    kind === "AgentToAgentMessage" &&
+    peerPayload(content) !== content &&
+    !peerPayload(content).trim() &&
+    !attachmentsChip(fields.attachments)
+  );
 }
 
 /**
@@ -159,10 +217,16 @@ export function markBookkeeping(records: readonly SessionRecord[]): boolean[] {
         return true;
       case "UserMessage":
         if (codexContext(stringField(payload, "content"))) return true;
-        return !stringField(payload, "content").trim() && !attachmentsChip(payload.attachments);
+        return (
+          !stringField(payload, "content").trim() &&
+          !attachmentsChip(payload.attachments)
+        );
       case "AssistantMessage":
       case "AgentToAgentMessage":
-        return !stringField(payload, "content").trim() && !attachmentsChip(payload.attachments);
+        return (
+          !stringField(payload, "content").trim() &&
+          !attachmentsChip(payload.attachments)
+        );
       case "UncategorizedRecord":
         return !stringField(payload, "kind").startsWith("legacy/");
       default:
@@ -178,12 +242,17 @@ export function markBookkeeping(records: readonly SessionRecord[]): boolean[] {
  * `MESSAGE`, keeping its payload only as ciphertext.
  */
 export function peerPayload(content: string): string {
-  return content.replace(/^Message Type: [A-Z_]+\nTask name: [^\n]*\nSender: [^\n]*\nPayload:\n?/, "");
+  return content.replace(
+    /^Message Type: [A-Z_]+\nTask name: [^\n]*\nSender: [^\n]*\nPayload:\n?/,
+    "",
+  );
 }
 
 /** Whether `text` is wholly the context codex writes on the user's turn, in its own tag, which no person typed. */
 export function codexContext(text: string): boolean {
-  return /^<codex_internal_context(?: [a-z_]+="[^"]*")*>[\s\S]*<\/codex_internal_context>$/.test(text.trim());
+  return /^<codex_internal_context(?: [a-z_]+="[^"]*")*>[\s\S]*<\/codex_internal_context>$/.test(
+    text.trim(),
+  );
 }
 
 /**
@@ -191,10 +260,18 @@ export function codexContext(text: string): boolean {
  * background task ends (`<task-notification>`), by tag (`status`, `summary`,
  * `result`, …); null when `text` is not wholly one.
  */
-export function taskNotification(text: string): { readonly [field: string]: string } | null {
-  const notice = /^<task-notification>([\s\S]*)<\/task-notification>$/.exec(text.trim());
+export function taskNotification(
+  text: string,
+): { readonly [field: string]: string } | null {
+  const notice = /^<task-notification>([\s\S]*)<\/task-notification>$/.exec(
+    text.trim(),
+  );
   if (!notice) return null;
-  return Object.fromEntries([...notice[1]!.matchAll(/<([a-z-]+)>([\s\S]*?)<\/\1>/g)].map(([, tag, value]) => [tag!, value!.trim()]));
+  return Object.fromEntries(
+    [...must(notice[1]).matchAll(/<([a-z-]+)>([\s\S]*?)<\/\1>/g)].map(
+      ([, tag, value]) => [must(tag), must(value).trim()],
+    ),
+  );
 }
 
 /** Whether a message runs over 1,500 characters or 20 lines, so it shows its first lines until asked. */
@@ -207,14 +284,20 @@ export function isLong(text: string): boolean {
  * The marker is the poller's, and the last one wins, since a person's own text
  * comes first.
  */
-export function canvasContext(content: string): { readonly text: string; readonly context: CanvasContext | null } {
+export function canvasContext(content: string): {
+  readonly text: string;
+  readonly context: CanvasContext | null;
+} {
   const marker = "\nTrackinizer context (verify with trax): ";
   const at = content.lastIndexOf(marker);
   if (at < 0) return { text: content, context: null };
   const folded = content.slice(at + marker.length);
-  const about = parsed(folded.split("\n", 1)[0]!);
+  const about = parsed(must(folded.split("\n", 1)[0]));
   const record = isFields(about) && isFields(about.record) ? about.record : {};
-  const ref = typeof record.seq === "number" ? `${stringField(record, "kind")}#${record.seq}` : "";
+  const ref =
+    typeof record.seq === "number"
+      ? `${stringField(record, "kind")}#${record.seq}`
+      : "";
   return {
     text: content.slice(0, at),
     context: {
@@ -258,19 +341,32 @@ export function transcriptRows(records: readonly SessionRecord[]): TranscriptRow
   let minute = Number.NaN;
   let k = 0;
   while (k < records.length) {
-    const record = records[k]!;
+    const record = must(records[k]);
     let end = k + 1;
-    while (TERMINAL.has(record.kind) && end < records.length && TERMINAL.has(records[end]!.kind)) end++;
+    while (
+      TERMINAL.has(record.kind) &&
+      end < records.length &&
+      TERMINAL.has(must(records[end]).kind)
+    )
+      end++;
     if (!answered.has(record)) {
-      const result = record.kind === "ToolCall" ? (results.get(stringField(record.payload ?? {}, "call_id")) ?? null) : null;
+      const result =
+        record.kind === "ToolCall"
+          ? (results.get(stringField(record.payload ?? {}, "call_id")) ?? null)
+          : null;
       if (result) answered.add(result);
-      const at = record.timestamp ? Math.floor(Date.parse(record.timestamp) / 60_000) : Number.NaN;
+      const at = record.timestamp
+        ? Math.floor(Date.parse(record.timestamp) / 60_000)
+        : Number.NaN;
       rows.push({
         record,
         result,
         stream: TERMINAL.has(record.kind) ? records.slice(k, end) : null,
         // A model switch's note names the model itself.
-        showModel: Boolean(record.model) && record.model !== model && record.kind !== "TurnContext",
+        showModel:
+          Boolean(record.model) &&
+          record.model !== model &&
+          record.kind !== "TurnContext",
         showTime: !Number.isNaN(at) && at !== minute,
       });
       model = record.model || model;
@@ -282,7 +378,9 @@ export function transcriptRows(records: readonly SessionRecord[]): TranscriptRow
 }
 
 /** A run of terminal records as lines: what the command read, wrote, and wrote as errors. */
-export function terminalLines(records: readonly SessionRecord[]): { readonly kind: "in" | "out" | "err"; readonly text: string }[] {
+export function terminalLines(
+  records: readonly SessionRecord[],
+): { readonly kind: "in" | "out" | "err"; readonly text: string }[] {
   return records.map((record) => ({
     kind: record.kind === "Stdin" ? "in" : record.kind === "Stderr" ? "err" : "out",
     text: stringField(record.payload ?? {}, "text") || (record.text ?? ""),
@@ -299,11 +397,14 @@ export function terminalLines(records: readonly SessionRecord[]): { readonly kin
  * code, fenced or inline, which is the code's text; a block's own text is not
  * Markdown, and shows as it is.
  */
-export function harnessBlocks(text: string): { readonly tag: string; readonly text: string }[] {
+export function harnessBlocks(
+  text: string,
+): { readonly tag: string; readonly text: string }[] {
   const blocks: { tag: string; text: string }[] = [];
   let at = 0;
   // A fence opens a line, and a backtick one's info string has no backtick (CommonMark).
-  const marks = /^ {0,3}(`{3,}(?!.*`)|~{3,})|(`+)|<([a-z][a-z0-9]*[-_][a-z0-9_-]*|[A-Z][A-Z0-9_-]+)((?: [a-z_]+="[^"]*")*)>/gm;
+  const marks =
+    /^ {0,3}(`{3,}(?!.*`)|~{3,})|(`+)|<([a-z][a-z0-9]*[-_][a-z0-9_-]*|[A-Z][A-Z0-9_-]+)((?: [a-z_]+="[^"]*")*)>/gm;
   for (let mark = marks.exec(text); mark; mark = marks.exec(text)) {
     const [, fence, ticks, tag, attributes] = mark;
     if (fence) marks.lastIndex = fenceEnd(text, fence, marks.lastIndex);
@@ -311,9 +412,17 @@ export function harnessBlocks(text: string): { readonly tag: string; readonly te
     else {
       const close = text.indexOf(`</${tag}>`, marks.lastIndex);
       if (close < 0) continue;
-      const named = [tag!, ...[...attributes!.matchAll(/="([^"]*)"/g)].map(([, value]) => value!)].join(" · ");
-      blocks.push({ tag: "", text: text.slice(at, mark.index) }, { tag: named, text: text.slice(marks.lastIndex, close).trim() });
-      at = marks.lastIndex = close + tag!.length + 3;
+      const named = [
+        must(tag),
+        ...[...must(attributes).matchAll(/="([^"]*)"/g)].map(([, value]) =>
+          must(value),
+        ),
+      ].join(" · ");
+      blocks.push(
+        { tag: "", text: text.slice(at, mark.index) },
+        { tag: named, text: text.slice(marks.lastIndex, close).trim() },
+      );
+      at = marks.lastIndex = close + must(tag).length + 3;
     }
   }
   blocks.push({ tag: "", text: text.slice(at) });
@@ -345,7 +454,13 @@ export function ansiReader(): (text: string) => AnsiRun[] {
   return (text) => {
     const runs: { text: string; style: string }[] = [];
     const push = (part: string) => {
-      const style = [bold && "a-bold", dim && "a-dim", italic && "a-italic", underline && "a-underline", colour && `a-${colour}`]
+      const style = [
+        bold && "a-bold",
+        dim && "a-dim",
+        italic && "a-italic",
+        underline && "a-underline",
+        colour && `a-${colour}`,
+      ]
         .filter(Boolean)
         .join(" ");
       const last = runs.at(-1);
@@ -353,14 +468,17 @@ export function ansiReader(): (text: string) => AnsiRun[] {
       else if (part) runs.push({ text: part, style });
     };
     let at = 0;
-    for (const code of text.matchAll(/\u001b(?:\[([0-9;?]*)([A-Za-z])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?)/g)) {
+    for (const code of text.matchAll(
+      /\u001b(?:\[([0-9;?]*)([A-Za-z])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?)/g,
+    )) {
       push(text.slice(at, code.index));
       at = code.index + code[0].length;
       if (code[2] !== "m") continue;
       const params = (code[1] || "0").split(";").map(Number);
       for (let k = 0; k < params.length; k++) {
-        const param = params[k]!;
-        if (param === 0) [bold, dim, italic, underline, colour] = [false, false, false, false, ""];
+        const param = must(params[k]);
+        if (param === 0)
+          [bold, dim, italic, underline, colour] = [false, false, false, false, ""];
         else if (param === 1) bold = true;
         else if (param === 2) dim = true;
         else if (param === 3) italic = true;
@@ -371,7 +489,8 @@ export function ansiReader(): (text: string) => AnsiRun[] {
         else if (param === 38 || param === 48) {
           colour = param === 38 ? "" : colour;
           k += params[k + 1] === 5 ? 2 : 4;
-        } else if ((param >= 30 && param <= 37) || (param >= 90 && param <= 97)) colour = ANSI_COLOURS[param % 10]!;
+        } else if ((param >= 30 && param <= 37) || (param >= 90 && param <= 97))
+          colour = must(ANSI_COLOURS[param % 10]);
         else if (param === 39) colour = "";
       }
     }
@@ -385,13 +504,17 @@ export function ansiReader(): (text: string) => AnsiRun[] {
  * -n`'s `     1\t`, or Claude's `1→`), when every line has one, each one more
  * than the last; else no numbers and the text as it is.
  */
-export function lineNumbers(text: string): { readonly numbers: readonly number[] | null; readonly text: string } {
+export function lineNumbers(text: string): {
+  readonly numbers: readonly number[] | null;
+  readonly text: string;
+} {
   const lines = text.split("\n");
   const numbers: number[] = [];
   for (const [k, line] of lines.entries()) {
     if (k === lines.length - 1 && !line) break;
     const number = /^ *(\d+)(?:\t|→)/.exec(line);
-    if (!number || (k && Number(number[1]) !== numbers[0]! + k)) return { numbers: null, text };
+    if (!number || (k && Number(number[1]) !== must(numbers[0]) + k))
+      return { numbers: null, text };
     numbers.push(Number(number[1]));
     lines[k] = line.slice(number[0].length);
   }
@@ -400,7 +523,7 @@ export function lineNumbers(text: string): { readonly numbers: readonly number[]
 
 /** The first line of `text`, as a reasoning block's label: its Markdown heading or emphasis marks left out. */
 export function headline(text: string): string {
-  const line = text.trim().split("\n", 1)[0]!;
+  const line = must(text.trim().split("\n", 1)[0]);
   return line.replace(/^#+\s*/, "").replace(/^(\*\*|__)(.*)\1$/, "$2");
 }
 
@@ -408,15 +531,22 @@ export function headline(text: string): string {
 export function partLabel(part: SessionPart): string {
   const count = `${part.records.toLocaleString("en")} ${part.records === 1 ? "record" : "records"}`;
   if (part.part === -1) return `Legacy turns, backfilled · ${count}`;
-  return [`Part ${part.part}`, part.name, part.format, count].filter(Boolean).join(" · ");
+  return [`Part ${part.part}`, part.name, part.format, count]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 /**
  * At most `limit` characters of `text`, and how many it left out: tool output
  * can be whole files, and the raw record has the rest.
  */
-export function clipText(text: string, limit = 2000): { readonly shown: string; readonly hidden: number } {
-  return text.length > limit ? { shown: text.slice(0, limit), hidden: text.length - limit } : { shown: text, hidden: 0 };
+export function clipText(
+  text: string,
+  limit = 2000,
+): { readonly shown: string; readonly hidden: number } {
+  return text.length > limit
+    ? { shown: text.slice(0, limit), hidden: text.length - limit }
+    : { shown: text, hidden: 0 };
 }
 
 /**
@@ -431,7 +561,11 @@ export function clipLines(
   const lines = text.replace(/\n$/, "").split("\n");
   const hidden = lines.length - head - tail;
   return hidden > 0
-    ? { head: lines.slice(0, head).join("\n"), hidden, tail: tail ? lines.slice(-tail).join("\n") : "" }
+    ? {
+        head: lines.slice(0, head).join("\n"),
+        hidden,
+        tail: tail ? lines.slice(-tail).join("\n") : "",
+      }
     : { head: text, hidden: 0, tail: "" };
 }
 
@@ -457,7 +591,8 @@ function shapeOf(record: SessionRecord): Shape {
   // `shown` is the text the model read instead of the output: a pending call's note, or what a prune left.
   if (typeof payload.shown === "string") return output(record.kind, payload.shown);
   // All empty for a record that is not a tool call.
-  const { result, stdoutText, stderrText, typedItems, exitCode } = toolResultFields(payload);
+  const { result, stdoutText, stderrText, typedItems, exitCode } =
+    toolResultFields(payload);
   // A tool call keeps its path, URL or query in `result`; any other record, in its payload.
   const sourceField = (name: string) => stringField(result, name) || field(name);
   // What a record shows when its kind's case has nothing to show: the error text,
@@ -469,23 +604,44 @@ function shapeOf(record: SessionRecord): Shape {
   switch (record.kind) {
     case "UserMessage": {
       const text = field("content");
-      if (codexContext(text)) return harnessText("Harness", text, harnessBlocks(text)[0]!.tag);
+      if (codexContext(text))
+        return harnessText("Harness", text, must(harnessBlocks(text)[0]).tag);
       if (extra.isMeta !== true) return typed(text);
       // Claude marks what the harness writes on the user's turn `isMeta`: no
       // person typed it. Its first line says what it is, a skill's text or a
       // hook's condition, as a length would not.
-      const line = text.split("\n", 1)[0]!;
-      return harnessText("Harness", text, line.length > 120 ? `${line.slice(0, 119)}…` : line);
+      const line = must(text.split("\n", 1)[0]);
+      return harnessText(
+        "Harness",
+        text,
+        line.length > 120 ? `${line.slice(0, 119)}…` : line,
+      );
     }
     case "AssistantMessage":
-      return { shape: "message", label: "Assistant", text: field("content"), context: null, long: false };
+      return {
+        shape: "message",
+        label: "Assistant",
+        text: field("content"),
+        context: null,
+        long: false,
+      };
     case "AgentToAgentMessage":
-      return said(field("sender") ? `From ${field("sender")}` : "Agent message", { text: peerPayload(field("content")), context: null });
+      return said(field("sender") ? `From ${field("sender")}` : "Agent message", {
+        text: peerPayload(field("content")),
+        context: null,
+      });
     case "SystemMessage":
-      return harnessText(field("subtype") ? `System · ${field("subtype")}` : "System", field("content"));
+      return harnessText(
+        field("subtype") ? `System · ${field("subtype")}` : "System",
+        field("content"),
+      );
     case "Thinking":
       // A sealed block's ciphertext is not read (`plaintext_only`), so it has nothing to show.
-      return { shape: "thinking", label: "Thinking", text: field("content") || field("summary") };
+      return {
+        shape: "thinking",
+        label: "Thinking",
+        text: field("content") || field("summary"),
+      };
     case "ToolCall":
       return toolCall(field("name") || "?", plain(payload.arguments));
     case "BashResult":
@@ -500,8 +656,14 @@ function shapeOf(record: SessionRecord): Shape {
     case "EditResult": {
       const edits = typedItems.filter((item) => item["py/object"] === "Splice");
       // A failed edit that changed nothing shows why, as what the model read.
-      if (!edits.length && (stderrText || failedOf(payload))) return fallback(stderrText);
-      return { shape: "edit", label: "File edit", source: sourceField("path"), lines: edits.flatMap(spliceLines) };
+      if (!edits.length && (stderrText || failedOf(payload)))
+        return fallback(stderrText);
+      return {
+        shape: "edit",
+        label: "File edit",
+        source: sourceField("path"),
+        lines: edits.flatMap(spliceLines),
+      };
     }
     case "ReadResult":
       // A read with no output falls back only when it has error text or is flagged
@@ -517,7 +679,10 @@ function shapeOf(record: SessionRecord): Shape {
       return {
         ...output(record.kind, stdoutText),
         source: sourceField("url"),
-        meta: [typeof result.code === "number" ? `HTTP ${result.code}` : "", typeof result.size === "number" ? bytes(result.size) : ""]
+        meta: [
+          typeof result.code === "number" ? `HTTP ${result.code}` : "",
+          typeof result.size === "number" ? bytes(result.size) : "",
+        ]
           .filter(Boolean)
           .join(" · "),
       };
@@ -528,7 +693,11 @@ function shapeOf(record: SessionRecord): Shape {
         shape: "search",
         label: "Web search",
         source: sourceField("query"),
-        results: hits.map((hit) => ({ url: stringField(hit, "url"), title: stringField(hit, "title"), snippet: stringField(hit, "snippet") })),
+        results: hits.map((hit) => ({
+          url: stringField(hit, "url"),
+          title: stringField(hit, "title"),
+          snippet: stringField(hit, "snippet"),
+        })),
       };
     }
     case "AgentSpawnResult":
@@ -540,7 +709,9 @@ function shapeOf(record: SessionRecord): Shape {
         meta: [
           stringField(result, "state"),
           stringField(result, "agent_kind"),
-          typeof result.duration_sec === "number" ? `${Math.round(result.duration_sec)} s` : "",
+          typeof result.duration_sec === "number"
+            ? `${Math.round(result.duration_sec)} s`
+            : "",
         ]
           .filter(Boolean)
           .join(" · "),
@@ -550,7 +721,10 @@ function shapeOf(record: SessionRecord): Shape {
       return { ...output(record.kind, text), label: "Tool result", meta };
     }
     case "ToolErrorResult":
-      return { ...output(record.kind, stdoutText + stderrText || (record.text ?? "")), label: "Tool error" };
+      return {
+        ...output(record.kind, stdoutText + stderrText || (record.text ?? "")),
+        label: "Tool error",
+      };
     case "ContextClear":
       return {
         shape: "clear",
@@ -560,7 +734,11 @@ function shapeOf(record: SessionRecord): Shape {
         continues: field("cleared_session_id"),
       };
     case "TurnContext":
-      return { shape: "note", label: field("model") ? `Model: ${field("model")}` : "Turn context", meta: "" };
+      return {
+        shape: "note",
+        label: field("model") ? `Model: ${field("model")}` : "Turn context",
+        meta: "",
+      };
     case "TokenUsage":
       return { shape: "note", label: "Token usage", meta: "" };
     case "ContextState": {
@@ -568,17 +746,29 @@ function shapeOf(record: SessionRecord): Shape {
         // State with no prose, such as codex's `world_state`, keeps what it
         // stated in `extra`: codex's under `state`, Claude's under `attachment`.
         const stated = field("content") || fieldsText(extra.state ?? extra.attachment);
-        return { shape: "folded", label: "Context state", summary: field("kind") || "Context state", text: stated };
+        return {
+          shape: "folded",
+          label: "Context state",
+          summary: field("kind") || "Context state",
+          text: stated,
+        };
       }
       // A message sent while the agent worked, which Claude delivers as an
       // attachment: a person's, or the harness's notice that a task ended. A
       // capture that did not read the attachment's `prompt` kept it there.
       const attachment = isFields(extra.attachment) ? extra.attachment : {};
-      const origin = isFields(attachment.origin) ? stringField(attachment.origin, "kind") : "";
+      const origin = isFields(attachment.origin)
+        ? stringField(attachment.origin, "kind")
+        : "";
       const text = field("content") || stringField(attachment, "prompt");
       const notice = taskNotification(text);
       if (notice) return taskNotice(notice);
-      return said(origin === "human" ? "User · queued" : ["Queued", origin].filter(Boolean).join(" · "), canvasContext(text));
+      return said(
+        origin === "human"
+          ? "User · queued"
+          : ["Queued", origin].filter(Boolean).join(" · "),
+        canvasContext(text),
+      );
     }
     case "ContextCompaction": {
       // Claude states why and how in `extra`; the summary is on the ContextClear that follows.
@@ -586,12 +776,20 @@ function shapeOf(record: SessionRecord): Shape {
       return {
         shape: "note",
         label: "Context compacted",
-        meta: [stringField(extra, "trigger"), directions ? `directions: ${directions}` : ""].filter(Boolean).join(" · "),
+        meta: [
+          stringField(extra, "trigger"),
+          directions ? `directions: ${directions}` : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
       };
     }
     case "UncategorizedRecord":
       // A legacy turn backfilled to part -1 names its old kind, `legacy/<Kind>`.
-      return { ...output(record.kind, record.text || fieldsText(payload.payload)), label: field("kind") || "Uncategorized" };
+      return {
+        ...output(record.kind, record.text || fieldsText(payload.payload)),
+        label: field("kind") || "Uncategorized",
+      };
   }
   return fallback();
 }
@@ -621,7 +819,8 @@ function toolResultFields(payload: Fields): ToolResultFields {
   const stdout = Array.isArray(payload.stdout) ? payload.stdout : [];
   const stderr = Array.isArray(payload.stderr) ? payload.stderr : [];
   const exitCode = result.exit_code;
-  const text = (stream: readonly unknown[]) => stream.filter((item) => typeof item === "string").join("");
+  const text = (stream: readonly unknown[]) =>
+    stream.filter((item) => typeof item === "string").join("");
   return {
     resultClass: stringField(result, "py/object"),
     result,
@@ -639,17 +838,28 @@ function toolResultFields(payload: Fields): ToolResultFields {
  */
 function failedOf(payload: Fields): boolean {
   const extra = isFields(payload.extra) ? payload.extra : {};
-  const block = isFields(extra.$result) && isFields(extra.$result.block) ? extra.$result.block : {};
+  const block =
+    isFields(extra.$result) && isFields(extra.$result.block) ? extra.$result.block : {};
   const { resultClass, exitCode } = toolResultFields(payload);
-  return (resultClass === "BashResult" && exitCode !== null && exitCode !== 0) || extra.is_error === true || block.is_error === true;
+  return (
+    (resultClass === "BashResult" && exitCode !== null && exitCode !== 0) ||
+    extra.is_error === true ||
+    block.is_error === true
+  );
 }
 
 /**
  * Text the harness wrote, under `label`: folded under `summary` when it runs to
  * several screens, as a system prompt or a skill does.
  */
-function harnessText(label: string, text: string, summary = `${text.length.toLocaleString("en")} characters`): Shape {
-  return text.length > 1000 ? { shape: "folded", label, summary, text } : { shape: "message", label, text, context: null, long: false };
+function harnessText(
+  label: string,
+  text: string,
+  summary = `${text.length.toLocaleString("en")} characters`,
+): Shape {
+  return text.length > 1000
+    ? { shape: "folded", label, summary, text }
+    : { shape: "message", label, text, context: null, long: false };
 }
 
 /**
@@ -660,10 +870,16 @@ function harnessText(label: string, text: string, summary = `${text.length.toLoc
  * appended.
  */
 function typed(text: string): Shape {
-  const command = /^<command-name>([^<]*)<\/command-name>\s*<command-message>[^<]*<\/command-message>\s*<command-args>([\s\S]*)<\/command-args>$/.exec(text.trim());
-  if (command) return said("User", { text: `${command[1]} ${command[2]}`.trim(), context: null });
-  const printed = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/.exec(text.trim());
-  if (printed) return said("Command output", { text: printed[1]!, context: null });
+  const command =
+    /^<command-name>([^<]*)<\/command-name>\s*<command-message>[^<]*<\/command-message>\s*<command-args>([\s\S]*)<\/command-args>$/.exec(
+      text.trim(),
+    );
+  if (command)
+    return said("User", { text: `${command[1]} ${command[2]}`.trim(), context: null });
+  const printed = /^<local-command-stdout>([\s\S]*)<\/local-command-stdout>$/.exec(
+    text.trim(),
+  );
+  if (printed) return said("Command output", { text: must(printed[1]), context: null });
   const notice = taskNotification(text);
   if (notice) return taskNotice(notice);
   return said("User", canvasContext(text));
@@ -672,11 +888,17 @@ function typed(text: string): Shape {
 /** A background task's notice (`taskNotification`) by its status, summary and result, not its ids and file. */
 function taskNotice(notice: { readonly [field: string]: string }): Shape {
   const label = ["Task notification", notice.status].filter(Boolean).join(" · ");
-  return said(label, { text: [notice.summary, notice.result].filter(Boolean).join("\n\n"), context: null });
+  return said(label, {
+    text: [notice.summary, notice.result].filter(Boolean).join("\n\n"),
+    context: null,
+  });
 }
 
 /** A person's or another agent's message, under `label`, folded when long (`isLong`). */
-function said(label: string, { text, context }: { readonly text: string; readonly context: CanvasContext | null }): Shape {
+function said(
+  label: string,
+  { text, context }: { readonly text: string; readonly context: CanvasContext | null },
+): Shape {
   return { shape: "message", label, text, context, long: isLong(text) };
 }
 
@@ -688,7 +910,11 @@ function said(label: string, { text, context }: { readonly text: string; readonl
  */
 function toolOutput(content: string): { readonly text: string; readonly meta: string } {
   const script = /^(Script [^\n]*)\n(Wall time [^\n]*)\nOutput:\n?\n?/.exec(content);
-  if (script) return { text: scriptOutput(content.slice(script[0].length)), meta: `${script[1]} · ${script[2]}` };
+  if (script)
+    return {
+      text: scriptOutput(content.slice(script[0].length)),
+      meta: `${script[1]} · ${script[2]}`,
+    };
   const value = /^\s*\{/.test(content) ? parsed(content) : null;
   return { text: isFields(value) ? fieldsText(value) : content, meta: "" };
 }
@@ -713,7 +939,10 @@ function scriptOutput(printed: string): string {
           typeof session === "number" ? `session ${session}` : "",
         ].filter(Boolean);
         const said = stringField(run, "output").replace(/\n$/, "");
-        return [...(marks.length ? [`[${marks.join(" · ")}]`] : []), ...(said ? [said] : [])];
+        return [
+          ...(marks.length ? [`[${marks.join(" · ")}]`] : []),
+          ...(said ? [said] : []),
+        ];
       });
     })
     .join("\n");
@@ -726,7 +955,11 @@ function scriptOutput(printed: string): string {
 function commandRuns(value: unknown): Fields[] {
   if (Array.isArray(value)) return value.flatMap(commandRuns);
   if (!isFields(value)) return [];
-  if (typeof value.output === "string" && ("chunk_id" in value || "wall_time_seconds" in value)) return [value];
+  if (
+    typeof value.output === "string" &&
+    ("chunk_id" in value || "wall_time_seconds" in value)
+  )
+    return [value];
   return Object.values(value).flatMap(commandRuns);
 }
 
@@ -745,23 +978,38 @@ function fieldLines(value: unknown, indent: string): string {
   if (Array.isArray(value)) {
     // An item's first line takes the dash in place of its indent.
     return value
-      .map((item) => `${indent}- ${nests(item) ? fieldLines(item, deeper).slice(deeper.length) : display(item)}`)
+      .map(
+        (item) =>
+          `${indent}- ${nests(item) ? fieldLines(item, deeper).slice(deeper.length) : display(item)}`,
+      )
       .join("\n");
   }
   if (!isFields(value)) return `${indent}${display(value)}`;
   return Object.entries(value)
-    .map(([name, item]) => `${indent}${name}:${nests(item) ? `\n${fieldLines(item, deeper)}` : ` ${display(item)}`}`)
+    .map(
+      ([name, item]) =>
+        `${indent}${name}:${nests(item) ? `\n${fieldLines(item, deeper)}` : ` ${display(item)}`}`,
+    )
     .join("\n");
 }
 
 /** Whether `value` holds fields, so `fieldLines` draws it under its name rather than beside it. */
 function nests(value: unknown): boolean {
-  return (isFields(value) && Object.keys(value).length > 0) || (Array.isArray(value) && value.some(nests));
+  return (
+    (isFields(value) && Object.keys(value).length > 0) ||
+    (Array.isArray(value) && value.some(nests))
+  );
 }
 
 /** A tool's or another record's `text`, under its kind's name. */
 function output(kind: string, text: string): Shape & { readonly shape: "output" } {
-  return { shape: "output", label: sentence(kind.replace(/Results?$/, "")), source: "", meta: "", text };
+  return {
+    shape: "output",
+    label: sentence(kind.replace(/Results?$/, "")),
+    source: "",
+    meta: "",
+    text,
+  };
 }
 
 /** Where a fence opened with `fence` ends: past the line that closes it, or at the end of `text`. */
@@ -787,8 +1035,12 @@ function attachmentsChip(attachments: unknown): string {
   const each = plain(attachments);
   if (!Array.isArray(each) || each.length === 0) return "";
   const named = each.filter(isFields).map((attachment) => {
-    const data = isFields(attachment.data) ? stringField(attachment.data, "py/b64") : "";
-    const size = Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
+    const data = isFields(attachment.data)
+      ? stringField(attachment.data, "py/b64")
+      : "";
+    const size =
+      Math.floor((data.length * 3) / 4) -
+      (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
     return `${stringField(attachment, "mime_descriptor") || "file"}, ${bytes(size)}`;
   });
   return `${named.length} ${named.length === 1 ? "attachment" : "attachments"} (${named.join("; ")})`;
@@ -797,13 +1049,25 @@ function attachmentsChip(attachments: unknown): string {
 /** `count` bytes as `512 B`, `2.1 KB` or `3.4 MB`. */
 function bytes(count: number): string {
   if (count < 1024) return `${count} B`;
-  return count < 1024 ** 2 ? `${(count / 1024).toFixed(1)} KB` : `${(count / 1024 ** 2).toFixed(1)} MB`;
+  return count < 1024 ** 2
+    ? `${(count / 1024).toFixed(1)} KB`
+    : `${(count / 1024 ** 2).toFixed(1)} MB`;
 }
 
 /** A tool call: the argument that says what it does, then the rest. */
 function toolCall(name: string, args: unknown): Shape {
   const fields = isFields(args) ? args : {};
-  const primary = ["command", "cmd", "file_path", "pattern", "path", "url", "query", "description", "input"].find((key) => key in fields);
+  const primary = [
+    "command",
+    "cmd",
+    "file_path",
+    "pattern",
+    "path",
+    "url",
+    "query",
+    "description",
+    "input",
+  ].find((key) => key in fields);
   return {
     shape: "tool",
     label: "Tool call",
@@ -827,9 +1091,18 @@ function spliceLines(splice: unknown): DiffLine[] {
   const lead = lines(stringField(splice, "lead"));
   const { start, count } = splice;
   const named = typeof start === "number" && !lead[0]?.startsWith("@@");
-  let [old, next] = named ? [start - lead.length, start - lead.length] : [Number.NaN, Number.NaN];
+  let [old, next] = named
+    ? [start - lead.length, start - lead.length]
+    : [Number.NaN, Number.NaN];
   const marked: (readonly [DiffLine["kind"], string])[] = [
-    ...(named ? [["hunk", `@@ -${start}${typeof count === "number" ? `,${count}` : ""} @@`] as const] : []),
+    ...(named
+      ? [
+          [
+            "hunk",
+            `@@ -${start}${typeof count === "number" ? `,${count}` : ""} @@`,
+          ] as const,
+        ]
+      : []),
     ...lead.map(contextLine),
     ...lines(stringField(splice, "before")).map((line) => ["del", `-${line}`] as const),
     ...lines(stringField(splice, "after")).map((line) => ["add", `+${line}`] as const),
@@ -837,7 +1110,8 @@ function spliceLines(splice: unknown): DiffLine[] {
   ];
   return marked.map(([kind, text], k): DiffLine => {
     if (kind === "hunk") {
-      const header = named && k === 0 ? null : /^@@ -(\d+)(?:,\d+)? (?:\+(\d+))?/.exec(text);
+      const header =
+        named && k === 0 ? null : /^@@ -(\d+)(?:,\d+)? (?:\+(\d+))?/.exec(text);
       if (header) [old, next] = [Number(header[1]), Number(header[2] ?? header[1])];
       return { kind, text, line: null };
     }
@@ -867,9 +1141,15 @@ function display(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (Array.isArray(value) && value.every((word) => typeof word === "string")) {
     // A one-word argv is a whole command line, as sagent writes one.
-    if (value.length === 1) return value[0]!;
+    if (value.length === 1) return must(value[0]);
     const [shell, flag, script, ...rest] = value;
-    if (/(^|\/)(ba|z)?sh$/.test(shell ?? "") && (flag === "-lc" || flag === "-c") && script !== undefined && !rest.length) return script;
+    if (
+      /(^|\/)(ba|z)?sh$/.test(shell ?? "") &&
+      (flag === "-lc" || flag === "-c") &&
+      script !== undefined &&
+      !rest.length
+    )
+      return script;
     return value.map(shellWord).join(" ");
   }
   return JSON.stringify(value, null, 2);

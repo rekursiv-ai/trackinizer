@@ -6,7 +6,9 @@
 import { openStream, type StreamListener } from "../api/stream";
 
 /** A stream listener that hears, on an open it heard of late, when the stream opened. */
-export type OpenListener = Omit<StreamListener, "open"> & { readonly open: (at?: number) => void };
+export type OpenListener = Omit<StreamListener, "open"> & {
+  readonly open: (at?: number) => void;
+};
 
 /**
  * Open the live stream now, for the app's live layer to take when it mounts
@@ -57,4 +59,7 @@ export function attachStream(listener: OpenListener): () => void {
 }
 
 /** The stream main.tsx opened, until the live layer takes it. */
-let early: { readonly close: () => void; readonly attach: (listener: OpenListener) => void } | null = null;
+let early: {
+  readonly close: () => void;
+  readonly attach: (listener: OpenListener) => void;
+} | null = null;

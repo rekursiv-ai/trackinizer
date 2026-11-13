@@ -1,13 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
-import { createToken, type Role, revokeToken, setTokenRole, type Token } from "../api/me";
+import {
+  createToken,
+  type Role,
+  revokeToken,
+  setTokenRole,
+  type Token,
+} from "../api/me";
 import { useProfile } from "../app/boot";
 import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
 import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { useCopy } from "../ui/toast";
 import { unsettled, WriteStatus } from "../writes/WriteStatus";
-import { accountEdit, ConfirmDialog, ReadError, RoleCell, RoleSelect, Section, useAccountWriter } from "./account";
+import {
+  accountEdit,
+  ConfirmDialog,
+  ReadError,
+  RoleCell,
+  RoleSelect,
+  Section,
+  useAccountWriter,
+} from "./account";
 import { settingsQueries } from "./queries";
 import { rolesUpTo } from "./roles";
 
@@ -23,9 +37,16 @@ const TOKENS = settingsQueries.tokens.queryKey;
 export function TokensSection() {
   const tokens = useQuery(settingsQueries.tokens);
   const [making, setMaking] = useState(false);
-  const [made, setMade] = useState<{ readonly id: string; readonly secret: string } | null>(null);
+  const [made, setMade] = useState<{
+    readonly id: string;
+    readonly secret: string;
+  } | null>(null);
   // A revoked token's secret is no use to copy.
-  if (made !== null && tokens.data?.some((listed) => listed.id === made.id && listed.revoked_at)) setMade(null);
+  if (
+    made !== null &&
+    tokens.data?.some((listed) => listed.id === made.id && listed.revoked_at)
+  )
+    setMade(null);
   const secret = made?.secret ?? null;
   const now = useMinuteClock();
   return (
@@ -52,9 +73,13 @@ export function TokensSection() {
       ) : null}
       <ReadError read={tokens} />
       {tokens.data === undefined ? (
-        tokens.isError ? null : <p className="st-note">Loading…</p>
+        tokens.isError ? null : (
+          <p className="st-note">Loading…</p>
+        )
       ) : tokens.data.length === 0 ? (
-        <p className="st-note">No tokens yet. A token lets trax and scripts act as you.</p>
+        <p className="st-note">
+          No tokens yet. A token lets trax and scripts act as you.
+        </p>
       ) : (
         <table className="st-t">
           <thead>
@@ -88,7 +113,11 @@ function Secret({ secret, onDone }: { secret: string; onDone: () => void }) {
       <Icon name="check" size={14} />
       <span>Copy this secret now; it won't be shown again:</span>
       <code>{secret}</code>
-      <button type="button" className="btn ghost" onClick={() => void copy(secret, "Copied the token's secret")}>
+      <button
+        type="button"
+        className="btn ghost"
+        onClick={() => void copy(secret, "Copied the token's secret")}
+      >
         <Icon name="copy" size={13} />
         Copy
       </button>
@@ -104,13 +133,21 @@ function Secret({ secret, onDone }: { secret: string; onDone: () => void }) {
  * again: with no sure answer, the refetched list shows whether it was made.
  * Cancel is off while it is pending, since closing the form would lose the secret.
  */
-function NewTokenForm({ onMade, onCancel }: { onMade: (id: string, secret: string) => void; onCancel: () => void }) {
+function NewTokenForm({
+  onMade,
+  onCancel,
+}: {
+  onMade: (id: string, secret: string) => void;
+  onCancel: () => void;
+}) {
   const ceiling = useProfile().role;
   const online = useOnline();
   const writer = useAccountWriter(TOKENS);
   const [label, setLabel] = useState("");
   // The weaker of writer and the caller's own role: least privilege by default.
-  const [role, setRole] = useState<Role>(() => rolesUpTo(ceiling).slice(0, 2).at(-1) ?? "viewer");
+  const [role, setRole] = useState<Role>(
+    () => rolesUpTo(ceiling).slice(0, 2).at(-1) ?? "viewer",
+  );
   const pending = unsettled(writer.state);
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -131,7 +168,11 @@ function NewTokenForm({ onMade, onCancel }: { onMade: (id: string, secret: strin
     if (landed && id !== undefined && secret !== undefined) onMade(id, secret);
   };
   return (
-    <form className="st-form" aria-label="New token" onSubmit={(event) => void submit(event)}>
+    <form
+      className="st-form"
+      aria-label="New token"
+      onSubmit={(event) => void submit(event)}
+    >
       <input
         className="field"
         aria-label="Label"
@@ -142,7 +183,12 @@ function NewTokenForm({ onMade, onCancel }: { onMade: (id: string, secret: strin
         onChange={(event) => setLabel(event.target.value)}
       />
       <RoleSelect label="Role" value={role} ceiling={ceiling} onChange={setRole} />
-      <button type="submit" className="btn primary" disabled={!online} aria-disabled={pending || undefined}>
+      <button
+        type="submit"
+        className="btn primary"
+        disabled={!online}
+        aria-disabled={pending || undefined}
+      >
         Create token
       </button>
       <button type="button" className="btn ghost" onClick={onCancel} disabled={pending}>
@@ -177,7 +223,12 @@ function TokenRow({ token, now }: { token: Token; now: number }) {
             ceiling={ceiling}
             disabled={!online}
             writer={roleWriter}
-            edit={(role) => accountEdit(() => setTokenRole(token.id, role), `${name}: role set to ${role}`)}
+            edit={(role) =>
+              accountEdit(
+                () => setTokenRole(token.id, role),
+                `${name}: role set to ${role}`,
+              )
+            }
           />
         )}
       </td>
@@ -207,11 +258,15 @@ function TokenRow({ token, now }: { token: Token; now: number }) {
             confirm="Revoke"
             writer={revokeWriter}
             disabled={!online}
-            onConfirm={() => revokeWriter.run(accountEdit(() => revokeToken(token.id), `Revoked “${name}”`))}
+            onConfirm={() =>
+              revokeWriter.run(
+                accountEdit(() => revokeToken(token.id), `Revoked “${name}”`),
+              )
+            }
             onClose={() => setConfirming(false)}
           >
-            Anything using the token {token.prefix}… stops working at once. A revoked token cannot be restored; make a
-            new one instead.
+            Anything using the token {token.prefix}… stops working at once. A revoked
+            token cannot be restored; make a new one instead.
           </ConfirmDialog>
         ) : null}
       </td>

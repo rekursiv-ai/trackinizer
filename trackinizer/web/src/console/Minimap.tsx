@@ -1,5 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type PointerEvent, type RefObject, useContext, useEffect, useEffectEvent, useRef, useState } from "react";
+import {
+  type PointerEvent,
+  type RefObject,
+  useContext,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+} from "react";
 import type { HistogramRead } from "../api/histogram";
 import type { FeedFilters } from "../api/sessions";
 import { dateTime } from "../detail/time";
@@ -7,8 +15,22 @@ import { LiveContext } from "../live";
 import type { Registration } from "../live/hub";
 import { ReadFailure } from "../ui/failure";
 import { HistogramLive, histogramQuery, iso, spanRead } from "./histogram";
-import { at, bucketsFor, fractionOf, markOf, moveTo, type Span, spanOf, ticks, trackOf, type View, ZOOMS, zoomTo } from "./timeline";
+import {
+  at,
+  bucketsFor,
+  fractionOf,
+  markOf,
+  moveTo,
+  type Span,
+  spanOf,
+  ticks,
+  trackOf,
+  type View,
+  ZOOMS,
+  zoomTo,
+} from "./timeline";
 import "./Minimap.css";
+import { must } from "../must";
 
 export type MinimapProps = {
   /** The feed's filters: the band counts the records they pass. */
@@ -50,18 +72,29 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
     enabled: width > 0,
     // The counts shown stay while the next load, as the band scrolls; coarser
     // ones, after a zoom in, would stretch one bar across the band.
-    placeholderData: (shown) => (shown && shown.bucket_seconds <= bucketing.seconds ? shown : undefined),
+    placeholderData: (shown) =>
+      shown && shown.bucket_seconds <= bucketing.seconds ? shown : undefined,
   });
   useLiveBand(settled.end === null && view.end === null ? read : null);
-  const feed = shown && { start: Date.parse(shown.since), end: shown.until === null ? now : Date.parse(shown.until) };
+  const feed = shown && {
+    start: Date.parse(shown.since),
+    end: shown.until === null ? now : Date.parse(shown.until),
+  };
   const mark = markOf(span, feed);
   const track = trackOf(view, history);
   const along = (event: PointerEvent<HTMLElement>) =>
-    Math.min(1, Math.max(0, (event.clientX - event.currentTarget.getBoundingClientRect().left) / width));
+    Math.min(
+      1,
+      Math.max(
+        0,
+        (event.clientX - event.currentTarget.getBoundingClientRect().left) / width,
+      ),
+    );
 
   const scroll = useEffectEvent((event: WheelEvent) => {
     event.preventDefault();
-    const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
+    const delta =
+      Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY;
     const px = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? delta * LINE_PX : delta;
     setView((view) => {
       const { start, end } = spanOf(view, history);
@@ -71,7 +104,7 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
   useEffect(() => {
     // Not React's onWheel, which listens passively: a horizontal swipe the
     // band does not cancel would take the browser back a page.
-    const element = root.current!;
+    const element = must(root.current);
     const listener = (event: WheelEvent) => scroll(event);
     element.addEventListener("wheel", listener, { passive: false });
     return () => element.removeEventListener("wheel", listener);
@@ -99,7 +132,11 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
           ))}
         </div>
         {view.end !== null ? (
-          <button type="button" className="minimap-now" onClick={() => setView({ zoom: view.zoom, end: null })}>
+          <button
+            type="button"
+            className="minimap-now"
+            onClick={() => setView({ zoom: view.zoom, end: null })}
+          >
             Now
           </button>
         ) : null}
@@ -116,7 +153,11 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
           if (!held) return;
           held.dragged ||= Math.abs(event.clientX - held.x) >= DRAG_PX;
           const to = along(event);
-          if (held.dragged) setPicking({ start: Math.min(held.from, to), end: Math.max(held.from, to) });
+          if (held.dragged)
+            setPicking({
+              start: Math.min(held.from, to),
+              end: Math.max(held.from, to),
+            });
         }}
         onPointerUp={(event) => {
           const held = pick.current;
@@ -125,7 +166,10 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
           if (!held) return;
           const to = along(event);
           if (held.dragged || Math.abs(event.clientX - held.x) >= DRAG_PX) {
-            onWindow(iso(at(span, Math.min(held.from, to))), iso(at(span, Math.max(held.from, to))));
+            onWindow(
+              iso(at(span, Math.min(held.from, to))),
+              iso(at(span, Math.max(held.from, to))),
+            );
           } else onSeek(iso(at(span, to)));
         }}
         onPointerCancel={() => {
@@ -133,15 +177,37 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
           setPicking(null);
         }}
       >
-        {mark ? <div className="minimap-mark" style={{ left: percent(mark.left), width: percent(mark.right - mark.left) }} /> : null}
+        {mark ? (
+          <div
+            className="minimap-mark"
+            style={{ left: percent(mark.left), width: percent(mark.right - mark.left) }}
+          />
+        ) : null}
         {picking ? (
-          <div className="minimap-pick" style={{ left: percent(picking.start), width: percent(picking.end - picking.start) }} />
+          <div
+            className="minimap-pick"
+            style={{
+              left: percent(picking.start),
+              width: percent(picking.end - picking.start),
+            }}
+          />
         ) : null}
         {counts.error && !counts.data ? (
           <ReadFailure error={counts.error} retry={() => void counts.refetch()} />
         ) : width > 0 && counts.data ? (
-          <svg className="minimap-bars" viewBox={`0 0 ${width} ${BAND_PX}`} preserveAspectRatio="none" aria-hidden="true">
-            <Bars counts={counts.data.counts} bucketMs={counts.data.bucket_seconds * 1000} span={span} width={width} feed={feed} />
+          <svg
+            className="minimap-bars"
+            viewBox={`0 0 ${width} ${BAND_PX}`}
+            preserveAspectRatio="none"
+            aria-hidden="true"
+          >
+            <Bars
+              counts={counts.data.counts}
+              bucketMs={counts.data.bucket_seconds * 1000}
+              span={span}
+              width={width}
+              feed={feed}
+            />
           </svg>
         ) : null}
       </div>
@@ -166,7 +232,10 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
           event.currentTarget.setPointerCapture(event.pointerId);
           const time = at(track, along(event));
           // Held by the thumb, the band moves with the pointer; pressed elsewhere, it centres there.
-          grab.current = time >= span.start && time <= span.end ? time - span.end : (span.start - span.end) / 2;
+          grab.current =
+            time >= span.start && time <= span.end
+              ? time - span.end
+              : (span.start - span.end) / 2;
           setView(moveTo(view, time - grab.current, history));
         }}
         onPointerMove={(event) => {
@@ -192,7 +261,10 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
       >
         <div
           className="minimap-thumb"
-          style={{ left: percent(fractionOf(track, span.start)), width: percent((span.end - span.start) / (track.end - track.start)) }}
+          style={{
+            left: percent(fractionOf(track, span.start)),
+            width: percent((span.end - span.start) / (track.end - track.start)),
+          }}
         />
       </div>
     </div>
@@ -215,7 +287,10 @@ function Bars({
 }) {
   const shown = counts
     .map(({ start, count }) => ({ start: Date.parse(start), count }))
-    .filter(({ start, count }) => count > 0 && start + bucketMs > span.start && start < span.end);
+    .filter(
+      ({ start, count }) =>
+        count > 0 && start + bucketMs > span.start && start < span.end,
+    );
   const most = Math.max(1, ...shown.map(({ count }) => count));
   const barWidth = Math.max(1, (bucketMs / (span.end - span.start)) * width - GAP_PX);
   return shown.map(({ start, count }) => {
@@ -278,8 +353,10 @@ function useClock(): number {
 function useWidth(element: RefObject<HTMLElement | null>): number {
   const [width, setWidth] = useState(0);
   useEffect(() => {
-    const observer = new ResizeObserver(([entry]) => setWidth(entry!.contentRect.width));
-    observer.observe(element.current!);
+    const observer = new ResizeObserver(([entry]) =>
+      setWidth(must(entry).contentRect.width),
+    );
+    observer.observe(must(element.current));
     return () => observer.disconnect();
   }, [element]);
   return width;

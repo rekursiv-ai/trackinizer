@@ -2,6 +2,7 @@ import type { ElementContent, Root } from "hast";
 import { common, createLowlight } from "lowlight";
 import { codeBlocks } from "./code";
 import "./highlight.css";
+import { must } from "../must";
 
 /** highlight.js, its `common` languages, aliases included (`sh`, `py`, `ts`, `yml`), registered by `prepare`. */
 const lowlight = createLowlight();
@@ -21,7 +22,9 @@ export function prepare(): Promise<void> {
   return (prepared ??= (async () => {
     const languages = Object.entries(common);
     for (let k = 0; k < languages.length; k += REGISTERED_PER_TASK) {
-      lowlight.register(Object.fromEntries(languages.slice(k, k + REGISTERED_PER_TASK)));
+      lowlight.register(
+        Object.fromEntries(languages.slice(k, k + REGISTERED_PER_TASK)),
+      );
       await nextTask();
     }
     for (const name of DETECTED) {
@@ -46,7 +49,16 @@ function nextTask(): Promise<void> {
  * scored 9 as SQL, over a real query's 7, and a Python traceback scored 9 as SQL
  * against 5 as Python. With all of `common`, plain Python came out as CSS.
  */
-const DETECTED = ["python", "python-repl", "shell", "bash", "typescript", "javascript", "yaml", "diff"];
+const DETECTED = [
+  "python",
+  "python-repl",
+  "shell",
+  "bash",
+  "typescript",
+  "javascript",
+  "yaml",
+  "diff",
+];
 
 /**
  * A rehype plugin that colours each code block but JSON (`rehypeJsonBlocks`)
@@ -58,10 +70,18 @@ export function rehypeHighlightCode() {
   return (tree: Root) => {
     for (const { pre, code, language, text } of codeBlocks(tree)) {
       if (pre.data?.json) continue;
-      const result = language === undefined ? detect(text) : lowlight.registered(language) ? lowlight.highlight(language, text) : undefined;
+      const result =
+        language === undefined
+          ? detect(text)
+          : lowlight.registered(language)
+            ? lowlight.highlight(language, text)
+            : undefined;
       if (!result) continue;
-      code.children = result.children.filter((child): child is ElementContent => child.type !== "doctype");
-      if (language === undefined) code.properties.className = [`language-${result.data?.language}`];
+      code.children = result.children.filter(
+        (child): child is ElementContent => child.type !== "doctype",
+      );
+      if (language === undefined)
+        code.properties.className = [`language-${result.data?.language}`];
     }
   };
 }
@@ -74,10 +94,24 @@ export function rehypeHighlightCode() {
  * text is over `HIGHLIGHT_LIMIT` characters, past which highlighting would hold
  * the page (Codex's TUI likewise skips a diff past 10,000 lines).
  */
-export function highlightLines(text: string, language: string): ElementContent[][] | undefined {
+export function highlightLines(
+  text: string,
+  language: string,
+): ElementContent[][] | undefined {
   if (text.length > HIGHLIGHT_LIMIT) return undefined;
-  const result = language ? (lowlight.registered(language) ? lowlight.highlight(language, text) : undefined) : detect(text);
-  return result && splitLines(result.children.filter((child): child is ElementContent => child.type !== "doctype"));
+  const result = language
+    ? lowlight.registered(language)
+      ? lowlight.highlight(language, text)
+      : undefined
+    : detect(text);
+  return (
+    result &&
+    splitLines(
+      result.children.filter(
+        (child): child is ElementContent => child.type !== "doctype",
+      ),
+    )
+  );
 }
 
 /**
@@ -93,13 +127,17 @@ function splitLines(nodes: readonly ElementContent[]): ElementContent[][] {
   for (const node of nodes) {
     const parts: ElementContent[][] =
       node.type === "text"
-        ? node.value.split("\n").map((value) => (value ? [{ type: "text", value }] : []))
+        ? node.value
+            .split("\n")
+            .map((value) => (value ? [{ type: "text", value }] : []))
         : node.type === "element"
-          ? splitLines(node.children).map((children) => (children.length ? [{ ...node, children }] : []))
+          ? splitLines(node.children).map((children) =>
+              children.length ? [{ ...node, children }] : [],
+            )
           : [[node]];
     parts.forEach((part, k) => {
       if (k) lines.push([]);
-      lines.at(-1)!.push(...part);
+      must(lines.at(-1)).push(...part);
     });
   }
   return lines;
@@ -117,8 +155,11 @@ function splitLines(nodes: readonly ElementContent[]): ElementContent[][] {
  * Python, TypeScript, shell and YAML; pseudo-code with math stayed plain.
  */
 function detect(text: string): Root | undefined {
-  if (/^\s*Traceback \(most recent call last\):/.test(text)) return lowlight.highlight("python", text);
+  if (/^\s*Traceback \(most recent call last\):/.test(text))
+    return lowlight.highlight("python", text);
   const result = lowlight.highlightAuto(text, { subset: DETECTED });
   const relevance = result.data?.relevance ?? 0;
-  return relevance >= 3 && relevance * 5 >= text.trim().split(/\s+/).length ? result : undefined;
+  return relevance >= 3 && relevance * 5 >= text.trim().split(/\s+/).length
+    ? result
+    : undefined;
 }

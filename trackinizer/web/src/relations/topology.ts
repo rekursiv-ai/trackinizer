@@ -2,6 +2,7 @@ import type { Detail, Peer } from "../api/detail";
 import type { EdgeRef } from "../api/edges";
 import type { EdgeTopology, FieldOwners } from "../api/meta";
 import { sentence } from "../detail/relationGroups";
+import { must } from "../must";
 
 /**
  * One relation an inquiry can take, from `/api/meta/edges`: an edge kind, which
@@ -26,15 +27,33 @@ export type RelationChoice = {
  * The server refuses an edge whose ends are the wrong kinds, so only these are
  * offered.
  */
-export function relationChoices(kind: string, topology: EdgeTopology): RelationChoice[] {
+export function relationChoices(
+  kind: string,
+  topology: EdgeTopology,
+): RelationChoice[] {
   return Object.entries(topology).flatMap(([edgeKind, rule]) => {
     const sides = [
-      { direction: "out", ends: rule.from_kinds, targetKinds: rule.to_kinds, name: rule.forward },
-      { direction: "in", ends: rule.to_kinds, targetKinds: rule.from_kinds, name: rule.inverse },
+      {
+        direction: "out",
+        ends: rule.from_kinds,
+        targetKinds: rule.to_kinds,
+        name: rule.forward,
+      },
+      {
+        direction: "in",
+        ends: rule.to_kinds,
+        targetKinds: rule.from_kinds,
+        name: rule.inverse,
+      },
     ] as const;
     return sides
       .filter(({ ends }) => ends.includes(kind))
-      .map(({ direction, targetKinds, name }) => ({ edgeKind, direction, label: sentence(name), targetKinds }));
+      .map(({ direction, targetKinds, name }) => ({
+        edgeKind,
+        direction,
+        label: sentence(name),
+        targetKinds,
+      }));
   });
 }
 
@@ -44,7 +63,9 @@ export function relationEdge(
   { edgeKind, direction }: Pick<RelationChoice, "edgeKind" | "direction">,
   other: string,
 ): EdgeRef {
-  return direction === "out" ? { from: self, kind: edgeKind, to: other } : { from: other, kind: edgeKind, to: self };
+  return direction === "out"
+    ? { from: self, kind: edgeKind, to: other }
+    : { from: other, kind: edgeKind, to: self };
 }
 
 /**
@@ -56,11 +77,21 @@ export function relationEdge(
  * child's priority under that parent", which only an Issue-to-Issue edge can
  * hold. The server refuses a priority anywhere else with its own message.
  */
-export function carriesPriority(edgeKind: string, topology: EdgeTopology, fieldOwners: FieldOwners): boolean {
+export function carriesPriority(
+  edgeKind: string,
+  topology: EdgeTopology,
+  fieldOwners: FieldOwners,
+): boolean {
   const owner = fieldOwners.priority;
   const rule = topology[edgeKind];
-  const onlyOwner = (kinds: readonly string[]) => kinds.length === 1 && kinds[0]!.toLowerCase() === owner;
-  return owner !== undefined && rule !== undefined && onlyOwner(rule.from_kinds) && onlyOwner(rule.to_kinds);
+  const onlyOwner = (kinds: readonly string[]) =>
+    kinds.length === 1 && must(kinds[0]).toLowerCase() === owner;
+  return (
+    owner !== undefined &&
+    rule !== undefined &&
+    onlyOwner(rule.from_kinds) &&
+    onlyOwner(rule.to_kinds)
+  );
 }
 
 /**
@@ -71,10 +102,15 @@ export function carriesPriority(edgeKind: string, topology: EdgeTopology, fieldO
  * `produced_by` the older, and removing that edge does not remove the inferred
  * one. Whether a given provenance edge was inferred or drawn by hand, it stays.
  */
-export function provenanceLeft(detail: Detail, edge: EdgeRef, peer: Peer): EdgeRef | null {
+export function provenanceLeft(
+  detail: Detail,
+  edge: EdgeRef,
+  peer: Peer,
+): EdgeRef | null {
   if (edge.kind === PROVENANCE) return null;
   const self = detail.self.id;
-  if (detail.edges[PROVENANCE]?.some((origin) => origin.id === peer.id)) return { from: self, kind: PROVENANCE, to: peer.id };
+  if (detail.edges[PROVENANCE]?.some((origin) => origin.id === peer.id))
+    return { from: self, kind: PROVENANCE, to: peer.id };
   if (detail.backlinks[PROVENANCE]?.some((product) => product.id === peer.id)) {
     return { from: peer.id, kind: PROVENANCE, to: self };
   }

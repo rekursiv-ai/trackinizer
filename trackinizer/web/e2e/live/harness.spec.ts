@@ -39,7 +39,9 @@ test("a readiness probe of a server that takes the request and never answers giv
   const silent = createServer(() => {});
   await new Promise<void>((listening) => silent.listen(0, "127.0.0.1", listening));
   const from = Date.now();
-  expect(await answers(`http://127.0.0.1:${(silent.address() as AddressInfo).port}/trax/`)).toBe(false);
+  expect(
+    await answers(`http://127.0.0.1:${(silent.address() as AddressInfo).port}/trax/`),
+  ).toBe(false);
   expect(Date.now() - from).toBeLessThan(3_000);
   silent.closeAllConnections();
   silent.close();

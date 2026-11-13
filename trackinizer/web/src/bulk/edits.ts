@@ -5,6 +5,7 @@ import { type FieldWrite, getInquiry, type InquiryRow } from "../api/inquiries";
 import { isUnset } from "../detail/fields";
 import { type Edit, fieldEdit, listEdit, reconciled } from "../writes/edits";
 import { purgeRequest } from "../writes/requests";
+import { must } from "../must";
 
 /**
  * One change applied to every selected row: its `title`, for the toast and the
@@ -25,10 +26,16 @@ export type BulkChange = {
 export function setEach(
   field: "status" | "owner" | "priority",
   to: unknown,
-  { label, show, reason }: { label: string; show: (value: unknown) => string; reason?: string },
+  {
+    label,
+    show,
+    reason,
+  }: { label: string; show: (value: unknown) => string; reason?: string },
 ): BulkChange {
   return {
-    title: isUnset(to) ? `Cleared ${label.toLowerCase()}` : `${label} set to ${show(to)}`,
+    title: isUnset(to)
+      ? `Cleared ${label.toLowerCase()}`
+      : `${label} set to ${show(to)}`,
     edit: (row) => {
       const from = isUnset(row[field]) ? undefined : row[field];
       const route = editableFields(row.kind)[field];
@@ -48,7 +55,14 @@ export function toggleLabel(label: string, rows: readonly InquiryRow[]): BulkCha
   return {
     title: remove ? `Removed label ${label}` : `Added label ${label}`,
     edit: (row) =>
-      listEdit({ id: row.id, field: "labels", route: editableFields(row.kind).labels!, label: "Labels", op: remove ? "sub" : "add", value: label }),
+      listEdit({
+        id: row.id,
+        field: "labels",
+        route: must(editableFields(row.kind).labels),
+        label: "Labels",
+        op: remove ? "sub" : "add",
+        value: label,
+      }),
   };
 }
 
@@ -57,8 +71,16 @@ export function toggleLabel(label: string, rows: readonly InquiryRow[]): BulkCha
  * purge an owned row (409). No toast and no undo, since the purge follows.
  */
 export function clearOwnerEdit(row: DetailRow, reason: string): Edit<FieldWrite> {
-  const route = editableFields(row.kind).owner!;
-  const edit = fieldEdit({ id: row.id, field: "owner", route, label: "Owner", from: row.owner, to: null, reason });
+  const route = must(editableFields(row.kind).owner);
+  const edit = fieldEdit({
+    id: row.id,
+    field: "owner",
+    route,
+    label: "Owner",
+    from: row.owner,
+    to: null,
+    reason,
+  });
   return { ...edit, done: undefined, undo: undefined };
 }
 
@@ -67,7 +89,10 @@ export function clearOwnerEdit(row: DetailRow, reason: string): Edit<FieldWrite>
  * lost answer first reads the row: gone (404) means the purge landed, since the
  * server answers a second purge 404 too.
  */
-export function purgeEdit(row: Pick<DetailRow, "id" | "kind" | "seq">, reason: string): Edit<FieldWrite> {
+export function purgeEdit(
+  row: Pick<DetailRow, "id" | "kind" | "seq">,
+  reason: string,
+): Edit<FieldWrite> {
   const request = purgeRequest(row.id, { reason });
   const present = async () => {
     try {
@@ -80,7 +105,13 @@ export function purgeEdit(row: Pick<DetailRow, "id" | "kind" | "seq">, reason: s
   };
   const landed = { id: row.id, change_id: request.key };
   return {
-    request: reconciled(request, { read: present, from: true, to: false, label: "the row", landed }),
+    request: reconciled(request, {
+      read: present,
+      from: true,
+      to: false,
+      label: "the row",
+      landed,
+    }),
     touches: [row.id],
     done: `Purged ${row.kind}#${row.seq}`,
   };

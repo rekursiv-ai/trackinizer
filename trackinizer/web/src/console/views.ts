@@ -1,6 +1,11 @@
 import { useCallback, useMemo, useState } from "react";
 import { newUuid } from "../api/idempotency";
-import { choosePreferences, preferences, receivePreferences, usePreferences } from "../preferences";
+import {
+  choosePreferences,
+  preferences,
+  receivePreferences,
+  usePreferences,
+} from "../preferences";
 import type { KeptView } from "./legacyViews";
 import type { Selection } from "./facets";
 import type { Range } from "./feed";
@@ -23,7 +28,9 @@ export type View = Selection & {
 
 /** The views in the rail's order: pinned first, then the rest, each newest first. */
 export function orderViews(views: readonly View[]): View[] {
-  return views.toSorted((a, b) => Number(b.pinned) - Number(a.pinned) || b.created.localeCompare(a.created));
+  return views.toSorted(
+    (a, b) => Number(b.pinned) - Number(a.pinned) || b.created.localeCompare(a.created),
+  );
 }
 
 /**
@@ -55,7 +62,9 @@ export function useViews(): {
   const [openId, setOpenId] = useState(readOpenId);
   // The view this tab holds unstored: a fresh one, or a change the server refused.
   const [unsaved, setUnsaved] = useState(freshView);
-  const open = views.find(({ id }) => id === openId) ?? (unsaved.id === openId ? unsaved : (views[0] ?? unsaved));
+  const open =
+    views.find(({ id }) => id === openId) ??
+    (unsaved.id === openId ? unsaved : (views[0] ?? unsaved));
   const show = useCallback((id: string) => {
     setOpenId(id);
     try {
@@ -70,9 +79,11 @@ export function useViews(): {
     change: (view) => {
       // Shown as the stored one now; a later delete in any tab must not leave a copy here.
       setUnsaved(freshView());
-      void store((all) => [...all.filter(({ id }) => id !== view.id), kept(view)]).then((saved) => {
-        if (!saved) setUnsaved(view);
-      });
+      void store((all) => [...all.filter(({ id }) => id !== view.id), kept(view)]).then(
+        (saved) => {
+          if (!saved) setUnsaved(view);
+        },
+      );
       show(view.id);
     },
     openView: (id) => {
@@ -93,7 +104,9 @@ export function useViews(): {
  * Show and send `change` of the views the preferences hold now; whether the
  * server kept it. One it refused is taken back, so the rail lists what is kept.
  */
-async function store(change: (views: readonly KeptView[]) => KeptView[]): Promise<boolean> {
+async function store(
+  change: (views: readonly KeptView[]) => KeptView[],
+): Promise<boolean> {
   const before = preferences().console_views;
   if (await choosePreferences({ console_views: change(before) })) return true;
   receivePreferences({ ...preferences(), console_views: before });
@@ -102,7 +115,12 @@ async function store(change: (views: readonly KeptView[]) => KeptView[]): Promis
 
 /** `view` as the preferences keep it: lists the page may not change are copied. */
 function kept(view: View): KeptView {
-  return { ...view, agents: [...view.agents], rooms: [...view.rooms], clis: [...view.clis] };
+  return {
+    ...view,
+    agents: [...view.agents],
+    rooms: [...view.rooms],
+    clis: [...view.clis],
+  };
 }
 
 /** The id this tab kept in its `sessionStorage`, or null when there is none or storage is off. */

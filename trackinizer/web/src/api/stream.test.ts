@@ -184,7 +184,9 @@ test("a stream opened before the profile was read reconnects naming the page's u
   const { heard, listener } = recorder();
   // This stream's own sources: the earlier tests' streams, left open, are not this test's.
   const made: FakeEventSource[] = [];
-  stream.openStream(listener, { connect: (url) => made[made.push(new FakeEventSource(url)) - 1]! });
+  stream.openStream(listener, {
+    connect: (url) => made[made.push(new FakeEventSource(url)) - 1]!,
+  });
   const early = made[0]!;
   early.open();
   expect(new URL(early.url).searchParams.has(PAGE_USER_PARAM)).toBe(false);
@@ -197,7 +199,9 @@ test("a stream opened before the profile was read reconnects naming the page's u
   expect(made).toHaveLength(2);
   const url = new URL(made[1]!.url);
   expect(url.pathname).toBe("/api/web/subscribe");
-  expect(url.searchParams.get(PAGE_USER_PARAM)).toBe("00000000-0000-4000-8000-000000000001");
+  expect(url.searchParams.get(PAGE_USER_PARAM)).toBe(
+    "00000000-0000-4000-8000-000000000001",
+  );
   expect(url.search).not.toContain("ada");
   made[1]!.open();
   expect(heard).toEqual(["open", "drop", "open"]);

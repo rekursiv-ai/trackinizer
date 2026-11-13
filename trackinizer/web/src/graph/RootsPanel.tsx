@@ -5,6 +5,7 @@ import { Icon } from "../ui/icons";
 import { KindIcon } from "../ui/kinds";
 import type { RootGroup, Roots } from "./roots";
 import "./roots.css";
+import { must } from "../must";
 
 /**
  * The graph's roots in a list to scan, one row each: the root's kind glyph,
@@ -43,7 +44,8 @@ export function RootsPanel({
   const shown = sorted(roots.groups, order).filter((group) => matches(group, query));
   const at = shown.findIndex((group) => group.key === marked);
   useEffect(() => {
-    if (at >= 0) document.getElementById(`${id}-${at}`)?.scrollIntoView({ block: "nearest" });
+    if (at >= 0)
+      document.getElementById(`${id}-${at}`)?.scrollIntoView({ block: "nearest" });
   }, [id, at]);
 
   const pick = (group: RootGroup | undefined) => {
@@ -60,10 +62,13 @@ export function RootsPanel({
     const typing = event.target === filter.current;
     // The sort's buttons take their own Enter.
     if (!typing && event.target !== list.current) return;
-    if (event.nativeEvent.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
-    const step = { ArrowDown: 1, ArrowUp: -1, ...(typing ? {} : { j: 1, k: -1 }) }[event.key];
+    if (event.nativeEvent.isComposing || event.metaKey || event.ctrlKey || event.altKey)
+      return;
+    const step = { ArrowDown: 1, ArrowUp: -1, ...(typing ? {} : { j: 1, k: -1 }) }[
+      event.key
+    ];
     if (step !== undefined && shown.length > 0) {
-      setMarked(shown[Math.min(Math.max(at + step, 0), shown.length - 1)]!.key);
+      setMarked(must(shown[Math.min(Math.max(at + step, 0), shown.length - 1)]).key);
     } else if (event.key === "Enter") {
       pick(shown[Math.max(at, 0)]);
     } else if (event.key === "Escape" && typing && query !== "") {
@@ -80,15 +85,27 @@ export function RootsPanel({
 
   const count = roots.groups.filter((group) => group.root).length;
   return (
-    <aside id={panelId} className={compact ? "roots is-compact" : "roots"} aria-label="Roots" onKeyDown={onKeyDown}>
+    <aside
+      id={panelId}
+      className={compact ? "roots is-compact" : "roots"}
+      aria-label="Roots"
+      onKeyDown={onKeyDown}
+    >
       {compact ? null : (
         <>
           <div className="roots-head">
-            <span className="roots-count">{count === 1 ? "1 root" : `${count} roots`}</span>
+            <span className="roots-count">
+              {count === 1 ? "1 root" : `${count} roots`}
+            </span>
             <span className="spacer" />
             <div className="view-seg" role="group" aria-label="Sort roots">
               {SORTS.map(([value, label]) => (
-                <button key={value} type="button" aria-pressed={order === value} onClick={() => setOrder(value)}>
+                <button
+                  key={value}
+                  type="button"
+                  aria-pressed={order === value}
+                  onClick={() => setOrder(value)}
+                >
                   {label}
                 </button>
               ))}
@@ -129,12 +146,23 @@ export function RootsPanel({
             title={compact ? name(group) : undefined}
             onClick={() => pick(group)}
           >
-            {group.root ? <KindIcon kind={group.root.kind} size={14} /> : <Icon name="layers" size={14} />}
+            {group.root ? (
+              <KindIcon kind={group.root.kind} size={14} />
+            ) : (
+              <Icon name="layers" size={14} />
+            )}
             {compact ? null : (
               <>
-                <span className="roots-ref">{group.root ? `${group.root.kind}#${group.root.seq}` : ""}</span>
-                <span className="roots-title">{group.root ? group.root.title || "(untitled)" : "Unrooted"}</span>
-                <span className="roots-size" title={[...group.kinds].map(([kind, n]) => `${n} ${kind}`).join(", ")}>
+                <span className="roots-ref">
+                  {group.root ? `${group.root.kind}#${group.root.seq}` : ""}
+                </span>
+                <span className="roots-title">
+                  {group.root ? group.root.title || "(untitled)" : "Unrooted"}
+                </span>
+                <span
+                  className="roots-size"
+                  title={[...group.kinds].map(([kind, n]) => `${n} ${kind}`).join(", ")}
+                >
                   {group.members.length}
                 </span>
                 <span className="roots-age" title={`Newest ${dateTime(group.newest)}`}>
@@ -145,7 +173,11 @@ export function RootsPanel({
           </li>
         ))}
       </ul>
-      {shown.length === 0 && <p className="roots-none">{roots.groups.length === 0 ? "No roots" : "No matches"}</p>}
+      {shown.length === 0 && (
+        <p className="roots-none">
+          {roots.groups.length === 0 ? "No roots" : "No matches"}
+        </p>
+      )}
     </aside>
   );
 }
@@ -156,9 +188,17 @@ function name({ root }: RootGroup): string {
 }
 
 /** The groups in `order`, those under no root last whatever it is; `findRoots` gives them in Recent's. */
-function sorted(groups: readonly RootGroup[], order: "recent" | "size"): readonly RootGroup[] {
+function sorted(
+  groups: readonly RootGroup[],
+  order: "recent" | "size",
+): readonly RootGroup[] {
   if (order === "recent") return groups;
-  return [...groups.filter((group) => group.root).toSorted((a, b) => b.members.length - a.members.length), ...groups.filter((group) => !group.root)];
+  return [
+    ...groups
+      .filter((group) => group.root)
+      .toSorted((a, b) => b.members.length - a.members.length),
+    ...groups.filter((group) => !group.root),
+  ];
 }
 
 /** Whether `query` is in the group's `Kind#seq` and title, in any case; blank matches all. */

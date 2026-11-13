@@ -1,4 +1,8 @@
-import { type QueryKey, type UseQueryResult, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryKey,
+  type UseQueryResult,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { AlertDialog } from "radix-ui";
 import { type ReactNode, useState } from "react";
 import type { Role } from "../api/me";
@@ -14,8 +18,15 @@ import { rolesUpTo } from "./roles";
  * it: through `useWrite`, never retried on its own, since the server keeps no
  * key for these routes. `done` is the toast once it lands.
  */
-export function accountEdit<Result>(send: () => Promise<Result>, done?: string): Edit<Result> {
-  return { request: { route: "account", send }, touches: [], ...(done !== undefined && { done }) };
+export function accountEdit<Result>(
+  send: () => Promise<Result>,
+  done?: string,
+): Edit<Result> {
+  return {
+    request: { route: "account", send },
+    touches: [],
+    ...(done !== undefined && { done }),
+  };
 }
 
 /** One control's account writes: its state, and `run`, which resolves true once one landed. */
@@ -49,7 +60,11 @@ export function useAccountWriter(list: QueryKey): AccountWriter {
  * failed. It goes above what the read shows, not in its place: rows already read
  * stay on screen through a failed refetch.
  */
-export function ReadError({ read }: { read: Pick<UseQueryResult, "error" | "refetch"> }) {
+export function ReadError({
+  read,
+}: {
+  read: Pick<UseQueryResult, "error" | "refetch">;
+}) {
   if (!read.error) return null;
   return (
     <p className="st-note form-err" role="alert">
@@ -63,7 +78,15 @@ export function ReadError({ read }: { read: Pick<UseQueryResult, "error" | "refe
 }
 
 /** A settings section: a heading, its actions, and its body. */
-export function Section({ title, actions, children }: { title: string; actions?: ReactNode; children: ReactNode }) {
+export function Section({
+  title,
+  actions,
+  children,
+}: {
+  title: string;
+  actions?: ReactNode;
+  children: ReactNode;
+}) {
   return (
     <section className="st-sec" aria-label={title}>
       <div className="st-h">

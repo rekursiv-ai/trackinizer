@@ -35,10 +35,21 @@ test("a preset typed as a count, as 1,000, 5,000 or 5k, picks that preset", () =
   expect(typeLimit(100, "1,000")).toEqual({ offered: ["1k nodes"], picked: [1000] });
   expect(typeLimit(100, "5,000")).toEqual({ offered: ["5k nodes"], picked: [5000] });
   expect(typeLimit(100, "5k")).toEqual({ offered: ["5k nodes"], picked: [5000] });
-  expect(typeLimit(2500, "2,500")).toEqual({ offered: ["2,500 nodes"], picked: [2500] });
+  expect(typeLimit(2500, "2,500")).toEqual({
+    offered: ["2,500 nodes"],
+    picked: [2500],
+  });
 });
 
 test("text that is no count matches the options' names", () => {
-  expect(typeLimit(1000, "all")).toEqual({ offered: ["All nodes"], picked: [ALL_NODES] });
-  expect(typeLimit(1000, "nodes").offered).toEqual(["100 nodes", "1k nodes", "5k nodes", "All nodes"]);
+  expect(typeLimit(1000, "all")).toEqual({
+    offered: ["All nodes"],
+    picked: [ALL_NODES],
+  });
+  expect(typeLimit(1000, "nodes").offered).toEqual([
+    "100 nodes",
+    "1k nodes",
+    "5k nodes",
+    "All nodes",
+  ]);
 });

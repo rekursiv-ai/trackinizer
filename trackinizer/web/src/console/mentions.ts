@@ -1,4 +1,5 @@
 import type { FeedActorFacet, FeedEvent } from "../api/sessions";
+import { must } from "../must";
 
 /**
  * The target the caret is in, in the line's address: from its `@` (`start`) to
@@ -6,7 +7,12 @@ import type { FeedActorFacet, FeedEvent } from "../api/sessions";
  * (`query`), and whether it is the address's only target (`whole`), the one
  * place `@*` may go.
  */
-export type Mention = { readonly start: number; readonly end: number; readonly query: string; readonly whole: boolean };
+export type Mention = {
+  readonly start: number;
+  readonly end: number;
+  readonly query: string;
+  readonly whole: boolean;
+};
 
 /**
  * What the console knows when `@` is typed: every agent the facets have listed
@@ -37,7 +43,12 @@ export function mentionAt(line: string, caret: number): Mention | null {
   const comma = line.indexOf(",", caret);
   const end = comma < 0 || comma > address ? address : comma;
   if (line[start] !== "@" || caret === start) return null;
-  return { start, end, query: line.slice(start + 1, caret), whole: start === lead && end === address };
+  return {
+    start,
+    end,
+    query: line.slice(start + 1, caret),
+    whole: start === lead && end === address,
+  };
 }
 
 /**
@@ -57,25 +68,41 @@ export function mentionAt(line: string, caret: number): Mention | null {
  * when the target is the whole address and the feed shows more than one agent,
  * after the agents, as Mattermost lists `@channel` after people.
  */
-export function suggest(context: Context, { query, whole }: Pick<Mention, "query" | "whole">): string[] {
+export function suggest(
+  context: Context,
+  { query, whole }: Pick<Mention, "query" | "whole">,
+): string[] {
   const needle = query.toLowerCase();
   const said = latestLines(context.lines);
   const agents = known(context.agents, said);
   const shown = new Set([...context.shown, ...said.keys()]);
-  const rooms = new Set(context.rooms.length ? context.rooms : [...shown].flatMap((actor) => agents.get(actor)?.rooms ?? []));
+  const rooms = new Set(
+    context.rooms.length
+      ? context.rooms
+      : [...shown].flatMap((actor) => agents.get(actor)?.rooms ?? []),
+  );
   const offered = [...agents].flatMap(([actor, { rooms: in_, last }]) => {
     const tier = shown.has(actor) ? 0 : in_.some((room) => rooms.has(room)) ? 1 : 2;
     const line = said.get(actor);
     const order = [tier, line ? 0 : 1, -Date.parse(line?.created ?? last)];
-    const names = in_.length > 1 ? in_.map((room) => [`${actor}:${room}`, rooms.has(room) ? 0 : 1] as const) : [[actor, 0] as const];
-    return names.map(([name, elsewhere]) => ({ name, key: [match(name, needle), ...order, elsewhere] }));
+    const names =
+      in_.length > 1
+        ? in_.map((room) => [`${actor}:${room}`, rooms.has(room) ? 0 : 1] as const)
+        : [[actor, 0] as const];
+    return names.map(([name, elsewhere]) => ({
+      name,
+      key: [match(name, needle), ...order, elsewhere],
+    }));
   });
   const ranked = offered
-    .filter(({ key }) => key[0]! < NO_MATCH)
+    .filter(({ key }) => must(key[0]) < NO_MATCH)
     .toSorted((a, b) => compareKeys(a.key, b.key) || a.name.localeCompare(b.name))
     .slice(0, 8)
     .map(({ name }) => name);
-  const every = whole && "*".startsWith(needle) && new Set(context.lines.map(({ actor }) => actor)).size > 1;
+  const every =
+    whole &&
+    "*".startsWith(needle) &&
+    new Set(context.lines.map(({ actor }) => actor)).size > 1;
   return every ? [...ranked, "*"] : ranked;
 }
 
@@ -89,7 +116,9 @@ export function addressed(line: string, name: string): string {
   const lead = line.length - line.trimStart().length;
   if (line[lead] !== "@") return line.trim() ? `${target} ${line}` : `${target} `;
   const end = lead + line.slice(lead).search(/\s|$/);
-  return line.slice(lead, end).split(",").includes(target) ? line : `${line.slice(0, end)},${target}${line.slice(end)}`;
+  return line.slice(lead, end).split(",").includes(target)
+    ? line
+    : `${line.slice(0, end)},${target}${line.slice(end)}`;
 }
 
 /** `match` for a name that does not hold the query. */
@@ -106,7 +135,8 @@ function latestLines(lines: readonly FeedEvent[]): Map<string, FeedEvent> {
   const said = new Map<string, FeedEvent>();
   for (const line of lines) {
     const held = said.get(line.actor);
-    if (!held || Date.parse(line.created) > Date.parse(held.created)) said.set(line.actor, line);
+    if (!held || Date.parse(line.created) > Date.parse(held.created))
+      said.set(line.actor, line);
   }
   return said;
 }
@@ -116,15 +146,25 @@ function latestLines(lines: readonly FeedEvent[]): Map<string, FeedEvent> {
  * heard from: the facets' agents that have not ended, and the agents with lines
  * the facets have not listed, in their latest line's rooms.
  */
-function known(agents: readonly FeedActorFacet[], said: ReadonlyMap<string, FeedEvent>): Map<string, { rooms: readonly string[]; last: string }> {
+function known(
+  agents: readonly FeedActorFacet[],
+  said: ReadonlyMap<string, FeedEvent>,
+): Map<string, { rooms: readonly string[]; last: string }> {
   const listed = new Set(agents.map(({ actor }) => actor));
   return new Map([
-    ...agents.filter(({ ended }) => !ended).map(({ actor, rooms, last }) => [actor, { rooms, last }] as const),
-    ...[...said.values()].filter(({ actor }) => !listed.has(actor)).map(({ actor, rooms, created }) => [actor, { rooms: rooms ?? [], last: created }] as const),
+    ...agents
+      .filter(({ ended }) => !ended)
+      .map(({ actor, rooms, last }) => [actor, { rooms, last }] as const),
+    ...[...said.values()]
+      .filter(({ actor }) => !listed.has(actor))
+      .map(
+        ({ actor, rooms, created }) =>
+          [actor, { rooms: rooms ?? [], last: created }] as const,
+      ),
   ]);
 }
 
 function compareKeys(a: readonly number[], b: readonly number[]): number {
-  for (const [k, value] of a.entries()) if (value !== b[k]) return value - b[k]!;
+  for (const [k, value] of a.entries()) if (value !== b[k]) return value - must(b[k]);
   return 0;
 }

@@ -10,6 +10,14 @@ test("the highlighter registers its languages a few a task, once however often a
   expect(highlightLines("ls -la", "bash")).toBeDefined();
   expect(highlightLines("x = 1", "python")).toBeUndefined();
   await prepared;
-  expect(highlightLines("x = 1", "py")?.flat().some((node) => node.type === "element")).toBe(true);
-  expect(highlightLines("def read(path):\n    return path.read_text()", "")?.[0]?.some((node) => node.type === "element")).toBe(true);
+  expect(
+    highlightLines("x = 1", "py")
+      ?.flat()
+      .some((node) => node.type === "element"),
+  ).toBe(true);
+  expect(
+    highlightLines("def read(path):\n    return path.read_text()", "")?.[0]?.some(
+      (node) => node.type === "element",
+    ),
+  ).toBe(true);
 });

@@ -7,7 +7,11 @@ import type { QueryClient, QueryFilters } from "@tanstack/react-query";
  * own (the caller's `Serial` retries). Nothing keeps the entry: it is gone once
  * the answer is taken.
  */
-export function readOnce<T>(client: QueryClient, key: readonly unknown[], read: (signal: AbortSignal) => Promise<T>): Promise<T> {
+export function readOnce<T>(
+  client: QueryClient,
+  key: readonly unknown[],
+  read: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   return client.fetchQuery({
     queryKey: ["live", ...key],
     queryFn: ({ signal }) => read(signal),
@@ -27,13 +31,21 @@ export function readOnce<T>(client: QueryClient, key: readonly unknown[], read: 
  * refetch rejects, as TanStack otherwise swallows it: the caller's `Serial`
  * then tries again, where a swallowed failure would leave the view stale.
  */
-export async function refetchFresh(client: QueryClient, filters: QueryFilters): Promise<void> {
+export async function refetchFresh(
+  client: QueryClient,
+  filters: QueryFilters,
+): Promise<void> {
   const underWay = client
     .getQueryCache()
     .findAll(filters)
     .filter((query) => query.state.fetchStatus === "fetching");
   await client.refetchQueries(filters, { cancelRefetch: false, throwOnError: true });
   await Promise.all(
-    underWay.map((query) => client.refetchQueries({ queryKey: query.queryKey, exact: true }, { cancelRefetch: false, throwOnError: true })),
+    underWay.map((query) =>
+      client.refetchQueries(
+        { queryKey: query.queryKey, exact: true },
+        { cancelRefetch: false, throwOnError: true },
+      ),
+    ),
   );
 }

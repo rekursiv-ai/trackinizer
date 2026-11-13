@@ -6,13 +6,14 @@ import { useCommands } from "../commands/registry";
 import { detailQueries } from "../detail/queries";
 import { useLiveDetail } from "../live";
 import { routeHref } from "../router/addressBar";
-import { formatRoute } from "../router/route";
+import type { formatRoute } from "../router/route";
 import { useRouter } from "../router/router";
 import { ReadFailure } from "../ui/failure";
 import { StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { KindIcon } from "../ui/kinds";
 import "./columns.css";
+import { must } from "../must";
 
 /** An Issue a column lists. */
 type Item = Pick<Peer, "id" | "kind" | "seq" | "title" | "status">;
@@ -40,38 +41,78 @@ type Column = {
  * without adding to the history, and Enter opens the Issue selected last. Each
  * column stays current as an open detail does.
  */
-export function ColumnsView({ kind, roots, path }: { kind: string; roots: readonly InquiryRow[]; path: readonly number[] }) {
+export function ColumnsView({
+  kind,
+  roots,
+  path,
+}: {
+  kind: string;
+  roots: readonly InquiryRow[];
+  path: readonly number[];
+}) {
   const { navigate } = useRouter();
   const queryClient = useQueryClient();
   const refs = useQueries({ queries: path.map((seq) => detailQueries.ref(kind, seq)) });
   const details = useQueries({
-    queries: refs.map((ref) => ({ ...detailQueries.detail(ref.data ?? ""), enabled: ref.data !== undefined })),
+    queries: refs.map((ref) => ({
+      ...detailQueries.detail(ref.data ?? ""),
+      enabled: ref.data !== undefined,
+    })),
   });
   const columns: Column[] = [
-    { heading: "Root issues", items: roots, selected: path[0] ?? null, outputs: [], loading: false, error: null, retry: () => {} },
+    {
+      heading: "Root issues",
+      items: roots,
+      selected: path[0] ?? null,
+      outputs: [],
+      loading: false,
+      error: null,
+      retry: () => {},
+    },
     ...path.map((seq, index) => {
       const read = refs[index]?.error ? refs[index] : details[index];
-      return childColumn(seq, details[index]?.data, path[index + 1] ?? null, index === path.length - 1, {
-        error: read?.error ?? null,
-        retry: () => void read?.refetch(),
-      });
+      return childColumn(
+        seq,
+        details[index]?.data,
+        path[index + 1] ?? null,
+        index === path.length - 1,
+        {
+          error: read?.error ?? null,
+          retry: () => void read?.refetch(),
+        },
+      );
     }),
   ];
   const select = (column: number, item: Item, replace = false) => {
     // A seq never moves to another row, so the link's lookup is known already.
     queryClient.setQueryData(detailQueries.ref(item.kind, item.seq).queryKey, item.id);
-    navigate({ name: "list", kind, columns: [...path.slice(0, column), item.seq] }, { replace });
+    navigate(
+      { name: "list", kind, columns: [...path.slice(0, column), item.seq] },
+      { replace },
+    );
   };
   const deepest = Math.max(0, path.length - 1);
   const move = (step: number) => {
-    const { items, selected } = columns[deepest]!;
+    const { items, selected } = must(columns[deepest]);
     const index = items.findIndex((item) => item.seq === selected);
     const next = items[Math.min(items.length - 1, Math.max(0, index + step))];
     if (next) select(deepest, next, true);
   };
   useCommands([
-    { id: "columns.next", title: "Next in the column", keys: ["j", "ArrowDown"], repeat: true, run: () => move(1) },
-    { id: "columns.previous", title: "Previous in the column", keys: ["k", "ArrowUp"], repeat: true, run: () => move(-1) },
+    {
+      id: "columns.next",
+      title: "Next in the column",
+      keys: ["j", "ArrowDown"],
+      repeat: true,
+      run: () => move(1),
+    },
+    {
+      id: "columns.previous",
+      title: "Previous in the column",
+      keys: ["k", "ArrowUp"],
+      repeat: true,
+      run: () => move(-1),
+    },
     {
       id: "columns.in",
       title: "Into the next column",
@@ -85,13 +126,15 @@ export function ColumnsView({ kind, roots, path }: { kind: string; roots: readon
       id: "columns.out",
       title: "Back a column",
       keys: ["ArrowLeft"],
-      run: () => path.length > 0 && navigate({ name: "list", kind, columns: path.slice(0, -1) }),
+      run: () =>
+        path.length > 0 && navigate({ name: "list", kind, columns: path.slice(0, -1) }),
     },
     {
       id: "columns.open",
       title: "Open the selected issue",
       keys: ["Enter", "o"],
-      run: () => path.length > 0 && navigate({ name: "ref", kind, seq: path.at(-1)! }),
+      run: () =>
+        path.length > 0 && navigate({ name: "ref", kind, seq: must(path.at(-1)) }),
     },
   ]);
   const shelf = useRef<HTMLDivElement>(null);
@@ -114,7 +157,11 @@ export function ColumnsView({ kind, roots, path }: { kind: string; roots: readon
           key={index}
           column={column}
           rows={index === 0}
-          link={(item) => ({ name: "list", kind, columns: [...path.slice(0, index), item.seq] })}
+          link={(item) => ({
+            name: "list",
+            kind,
+            columns: [...path.slice(0, index), item.seq],
+          })}
           onSelect={(item) => select(index, item)}
         />
       ))}
@@ -133,9 +180,18 @@ function childColumn(
   const children = detail?.backlinks.narrows ?? [];
   const shown = new Set(children.map((child) => child.id));
   // Most children both narrow and were produced by their parent: they show once, as children.
-  const outputs = last ? (detail?.backlinks.produced_by ?? []).filter((output) => !shown.has(output.id)) : [];
+  const outputs = last
+    ? (detail?.backlinks.produced_by ?? []).filter((output) => !shown.has(output.id))
+    : [];
   const loading = !detail && !read.error;
-  return { heading: detail ? `Under ${detail.self.title}` : `Under #${seq}`, items: children, selected, outputs, loading, ...read };
+  return {
+    heading: detail ? `Under ${detail.self.title}` : `Under #${seq}`,
+    items: children,
+    selected,
+    outputs,
+    loading,
+    ...read,
+  };
 }
 
 function ColumnList({
@@ -150,7 +206,11 @@ function ColumnList({
   link: (item: Item) => Parameters<typeof formatRoute>[0];
   onSelect: (item: Item) => void;
 }) {
-  const empty = !column.loading && !column.error && column.items.length === 0 && column.outputs.length === 0;
+  const empty =
+    !column.loading &&
+    !column.error &&
+    column.items.length === 0 &&
+    column.outputs.length === 0;
   return (
     <section className="c-column" aria-label={column.heading}>
       <h3 className="c-heading">{column.heading}</h3>
@@ -169,7 +229,8 @@ function ColumnList({
           onMouseDown={(event: MouseEvent) => event.preventDefault()}
           onClick={(event: MouseEvent) => {
             // A plain click selects; one with a modifier opens a tab or window, as links do.
-            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+            if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey)
+              return;
             event.preventDefault();
             onSelect(item);
           }}
@@ -183,7 +244,11 @@ function ColumnList({
       {empty && <p className="c-note">No issues narrow it.</p>}
       {column.outputs.length > 0 && <h4 className="c-subheading">Outputs</h4>}
       {column.outputs.map((output) => (
-        <a key={output.id} className="c-output" href={routeHref({ name: "ref", kind: output.kind, seq: output.seq })}>
+        <a
+          key={output.id}
+          className="c-output"
+          href={routeHref({ name: "ref", kind: output.kind, seq: output.seq })}
+        >
           <KindIcon kind={output.kind} size={14} />
           {output.title}
         </a>

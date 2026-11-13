@@ -5,12 +5,23 @@ import { caretPoint } from "./caretPoint";
 import { mentionAt } from "../console/mentions";
 import { type Completion, splice, type Target, useCompletion } from "./CompletionField";
 import type { FieldProps } from "./Composer";
+import { must } from "../must";
 
-vi.mock("./caretPoint", async (real) => ({ ...(await real<typeof import("./caretPoint")>()), caretPoint: vi.fn() }));
+vi.mock("./caretPoint", async (real) => ({
+  ...(await real<typeof import("./caretPoint")>()),
+  caretPoint: vi.fn(),
+}));
 
 beforeEach(() => {
   // jsdom has no ResizeObserver; the list follows the window's resize here.
-  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
   vi.mocked(caretPoint).mockReturnValue({ left: 0, top: 0, height: 16 });
 });
 
@@ -25,14 +36,23 @@ function hashAt(value: string, caret: number): Target | null {
   const start = value.lastIndexOf("#", caret - 1);
   if (start < 0 || /\s/.test(value.slice(start, caret))) return null;
   const space = value.slice(start).search(/\s/);
-  return { start, end: space < 0 ? value.length : start + space, query: value.slice(start + 1, caret) };
+  return {
+    start,
+    end: space < 0 ? value.length : start + space,
+    query: value.slice(start + 1, caret),
+  };
 }
 
 const WORDS = ["apple", "apricot"];
 
 function words(target: Target | null): Completion[] {
   return target
-    ? WORDS.filter((word) => word.startsWith(target.query)).map((word) => ({ key: word, title: word, label: word, insert: `#${word}` }))
+    ? WORDS.filter((word) => word.startsWith(target.query)).map((word) => ({
+        key: word,
+        title: word,
+        label: word,
+        insert: `#${word}`,
+      }))
     : [];
 }
 
@@ -49,7 +69,8 @@ function show() {
       rows: 3,
       onChange: (event) => setValue(event.currentTarget.value),
       onKeyDown: (event) => {
-        if (!event.defaultPrevented && event.key === "Enter") sent(event.altKey ? "alt" : "plain");
+        if (!event.defaultPrevented && event.key === "Enter")
+          sent(event.altKey ? "alt" : "plain");
       },
     };
     const { target, render } = useCompletion({ field, edit: setValue, find: hashAt });
@@ -59,7 +80,11 @@ function show() {
   const box = screen.getByRole<HTMLTextAreaElement>("textbox");
   box.focus();
 
-  return { sent, box, type: (text: string) => fireEvent.change(box, { target: { value: text } }) };
+  return {
+    sent,
+    box,
+    type: (text: string) => fireEvent.change(box, { target: { value: text } }),
+  };
 }
 
 function offered(): string[] {
@@ -110,21 +135,47 @@ test("while an input method composes, keys are its own", () => {
 });
 
 test.each<[string, string, number, string, { text: string; caret: number }]>([
-  ["at the end of the line, with a space to type the message after", "@ti", 3, "@tiles-a", { text: "@tiles-a ", caret: 9 }],
-  ["before the message, the caret past its space", "@ti hello", 3, "@tiles-a", { text: "@tiles-a hello", caret: 9 }],
-  ["the whole word, from the caret in its middle", "@tixx hello", 3, "@tiles-a", { text: "@tiles-a hello", caret: 9 }],
-  ["a list item, the caret before its comma", "@a,@b hi", 2, "@alpha", { text: "@alpha,@b hi", caret: 6 }],
+  [
+    "at the end of the line, with a space to type the message after",
+    "@ti",
+    3,
+    "@tiles-a",
+    { text: "@tiles-a ", caret: 9 },
+  ],
+  [
+    "before the message, the caret past its space",
+    "@ti hello",
+    3,
+    "@tiles-a",
+    { text: "@tiles-a hello", caret: 9 },
+  ],
+  [
+    "the whole word, from the caret in its middle",
+    "@tixx hello",
+    3,
+    "@tiles-a",
+    { text: "@tiles-a hello", caret: 9 },
+  ],
+  [
+    "a list item, the caret before its comma",
+    "@a,@b hi",
+    2,
+    "@alpha",
+    { text: "@alpha,@b hi", caret: 6 },
+  ],
   ["the last of a list", "@a,@b", 5, "@beta:ops", { text: "@a,@beta:ops ", caret: 13 }],
   ["every agent shown", "@", 1, "@*", { text: "@* ", caret: 3 }],
   ["after leading space", "  @t", 4, "@tiles-a", { text: "  @tiles-a ", caret: 11 }],
 ])("splice: %s", (_, text, caret, insert, spliced) => {
-  expect(splice(text, mentionAt(text, caret)!, insert)).toEqual(spliced);
+  expect(splice(text, must(mentionAt(text, caret)), insert)).toEqual(spliced);
 });
 
 test("the list opens just above the caret's line, from the caret, and follows it as the box scrolls or the window resizes", () => {
   // jsdom lays nothing out: the box and its holder sit at 0, 0 with no size, in a 1000px viewport.
   vi.spyOn(document.documentElement, "clientWidth", "get").mockReturnValue(1000);
-  const point = vi.mocked(caretPoint).mockReturnValue({ left: 50, top: 32, height: 16 });
+  const point = vi
+    .mocked(caretPoint)
+    .mockReturnValue({ left: 50, top: 32, height: 16 });
   const { box, type } = show();
   type("one\ntwo #ap");
   const list = screen.getByRole("listbox");
@@ -145,7 +196,15 @@ test("the empty hint opens at the caret too", () => {
   vi.mocked(caretPoint).mockReturnValue({ left: 24, top: 0, height: 16 });
   function Host() {
     const [value, setValue] = useState("");
-    const field: FieldProps = { id: "box", value, placeholder: "", disabled: false, rows: 3, onChange: (event) => setValue(event.currentTarget.value), onKeyDown: () => {} };
+    const field: FieldProps = {
+      id: "box",
+      value,
+      placeholder: "",
+      disabled: false,
+      rows: 3,
+      onChange: (event) => setValue(event.currentTarget.value),
+      onKeyDown: () => {},
+    };
     const { render: draw } = useCompletion({ field, edit: setValue, find: hashAt });
     return draw([], "Words", "No words");
   }
@@ -162,13 +221,32 @@ test("a pick closes the list on the picked word whatever its sigil's length", ()
     const start = value.lastIndexOf("::", caret - 2);
     if (start < 0 || /\s/.test(value.slice(start, caret))) return null;
     const space = value.slice(start).search(/\s/);
-    return { start, end: space < 0 ? value.length : start + space, query: value.slice(start + 2, caret) };
+    return {
+      start,
+      end: space < 0 ? value.length : start + space,
+      query: value.slice(start + 2, caret),
+    };
   };
   function Host() {
     const [value, setValue] = useState("");
-    const field: FieldProps = { id: "box", value, placeholder: "", disabled: false, rows: 3, onChange: (event) => setValue(event.currentTarget.value), onKeyDown: () => {} };
-    const { target, render: draw } = useCompletion({ field, edit: setValue, find: colons });
-    return draw(target ? [{ key: "x", title: "::apple", label: "x", insert: "::apple" }] : [], "Words");
+    const field: FieldProps = {
+      id: "box",
+      value,
+      placeholder: "",
+      disabled: false,
+      rows: 3,
+      onChange: (event) => setValue(event.currentTarget.value),
+      onKeyDown: () => {},
+    };
+    const { target, render: draw } = useCompletion({
+      field,
+      edit: setValue,
+      find: colons,
+    });
+    return draw(
+      target ? [{ key: "x", title: "::apple", label: "x", insert: "::apple" }] : [],
+      "Words",
+    );
   }
   render(<Host />);
   const box = screen.getByRole<HTMLTextAreaElement>("textbox");
@@ -186,8 +264,23 @@ test("the target useCompletion hands back is the one find made, with what find p
   const seen: (Tagged | null)[] = [];
   function Host() {
     const [value, setValue] = useState("");
-    const field: FieldProps = { id: "box", value, placeholder: "", disabled: false, rows: 3, onChange: (event) => setValue(event.currentTarget.value), onKeyDown: () => {} };
-    const { target, render: draw } = useCompletion<Tagged>({ field, edit: setValue, find: (text, at) => { const found = hashAt(text, at); return found && { ...found, tag: "mine" }; } });
+    const field: FieldProps = {
+      id: "box",
+      value,
+      placeholder: "",
+      disabled: false,
+      rows: 3,
+      onChange: (event) => setValue(event.currentTarget.value),
+      onKeyDown: () => {},
+    };
+    const { target, render: draw } = useCompletion<Tagged>({
+      field,
+      edit: setValue,
+      find: (text, at) => {
+        const found = hashAt(text, at);
+        return found && { ...found, tag: "mine" };
+      },
+    });
     seen.push(target);
     return draw([], "Words");
   }
@@ -200,7 +293,18 @@ test("the target useCompletion hands back is the one find made, with what find p
 
 test("the list's observers are set up once while it shows, not again on every render, and go when it closes", () => {
   const observed: string[] = [];
-  vi.stubGlobal("ResizeObserver", class { observe() { observed.push("observe"); } unobserve() {} disconnect() { observed.push("disconnect"); } });
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {
+        observed.push("observe");
+      }
+      unobserve() {}
+      disconnect() {
+        observed.push("disconnect");
+      }
+    },
+  );
   const added = vi.spyOn(window, "addEventListener");
   const { box, type } = show();
   type("#a");
