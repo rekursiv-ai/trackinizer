@@ -1371,47 +1371,29 @@ def _write_agent_blocks(
     shape: Mapping[str, object],
 ) -> list[object]:
     """Replay agent prose blocks while preserving their boundaries."""
-    stored = from_plain(
-        shape.get("agent_blocks"),
-        list[object],
-        default=list[object](),  # pragma: no mutate -- None is as empty.
-    )
+    stored = cast("Sequence[object]", shape.get("agent_blocks") or ())
     content = "".join(text for text in item.stdout if isinstance(text, str))
     if not stored:
         return [{"type": "text", "text": content}]
-    originals = [
-        from_plain(
-            block.get("text"),
-            str,
-            default="",  # pragma: no mutate -- read only for its line count.
-        )
-        for value in stored
-        if (
-            block := from_plain(
-                value,
-                dict[str, object],
-                default=dict[str, object](),  # pragma: no mutate -- None is as empty.
-            )
-        )
+    text_blocks = {
+        index: block
+        for index, value in enumerate(stored)
+        if (block := read_or_default(value, dict[str, object], default=None))
+        is not None
         and block.get("type") == "text"
+    }
+    own_texts = [
+        from_plain(block.get("text"), str, default="") for block in text_blocks.values()
     ]
-    texts = iter(_split_like(content, originals))
+    # Prose edited out of the blocks' shape comes back whole, as one text: the
+    # first block takes it and each later block keeps its own.
+    split = _split_like(content, own_texts)
+    texts = iter([*split, *own_texts[len(split) :]])
     return [
-        _replace_key(
-            block,
-            "text",
-            next(texts, from_plain(block.get("text"), str, default="")),
-        )
-        if (
-            block := from_plain(
-                value,
-                dict[str, object],
-                default=dict[str, object](),  # pragma: no mutate -- None is as empty.
-            )
-        )
-        and block.get("type") == "text"
+        _replace_key(text_blocks[index], "text", next(texts))
+        if index in text_blocks
         else value
-        for value in stored
+        for index, value in enumerate(stored)
     ]
 
 

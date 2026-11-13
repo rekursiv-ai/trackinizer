@@ -2145,7 +2145,7 @@ def test_agent_blocks_replay_edited_prose_inside_their_boundaries() -> None:
     report = ToolResult(
         call_id="c",
         state="done",
-        stdout=("x\ny\nz",),
+        stdout=("x\ny", "\nz"),
         result=AgentSpawnResult(),
     )
 
