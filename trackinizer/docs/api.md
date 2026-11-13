@@ -1288,8 +1288,9 @@ multipart field `file`. An assistant that does not answer within 15 s is 503
 already waiting, another is 503 `uploads_busy` at once. A `line` then names the
 box paths in `attachments` (at most 20 absolute, normal paths of at most 512
 characters; 422 otherwise, and on any other `kind`), which reach the assistant in
-the line's context; on a `claude` or `codex` chat such a line is 409
-`uploads_unsupported` and nothing is queued. The assistant's key alone holds
+the line's context. A `claude`, `codex` or `sagent` chat's page writes each file to
+the run's host instead, over its `files` terminal, and names those host paths; they
+reach the run the same way. The assistant's key alone holds
 `GET /api/chats/uploads/wait?wait_sec=N` (0 to 25, default 20) for the next ask,
 `{request_id, canvas_id, conversation_id, workspace_id, asker, asker_role, action,
 files, path}` or `null`, where `workspace_id` is the canvas's workspace or the asker's
