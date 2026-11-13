@@ -50,7 +50,6 @@ from trackinizer.server.auth import (
     seed_no_auth_user,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ConflictError
 from trackinizer.wire.bodies import SubmitIssue
@@ -526,7 +525,6 @@ async def _serve(
     for name, value in (
         ("engine", engine),
         ("store", store),
-        ("inbound", InboundQueue()),
     ):
         patch_state(monkeypatch, name, value)
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)

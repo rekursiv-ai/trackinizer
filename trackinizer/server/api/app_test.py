@@ -35,10 +35,13 @@ from trackinizer.server.api.app import (
     unique_violation_handler,
     validation_handler,
 )
+from trackinizer.server.api.session_relay_routes import ProcessKeySweep
 from trackinizer.server.config import Config, ConfigError, ServiceKeys
 from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.route_iter import iter_routes
 from trackinizer.server.secrets import FileSecrets, SecretRef
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.terminals import TerminalRelay
 from trackinizer.server.tool_relay import ToolRelay
 from trackinizer.server.visuals.catalog import Canvas, default_canvas
@@ -691,7 +694,7 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     monkeypatch.setattr(
         app,
-        "push_changes_to_live_subscribers",
+        "authority_sweep_loop",
         AsyncMock(side_effect=RuntimeError("background failed")),
     )
     services = (
@@ -715,7 +718,7 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
 
 
 @pytest.mark.asyncio
-async def test_lifespan_sweeps_the_terminals_and_the_tool_connections(
+async def test_lifespan_sweeps_the_terminals_tool_connections_and_live_sessions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, engine = make_store()
@@ -732,11 +735,20 @@ async def test_lifespan_sweeps_the_terminals_and_the_tool_connections(
         await asyncio.sleep(0)
 
     relays: list[object] = [call.args[0] for call in sweeping.call_args_list]
-    assert [type(relay) for relay in relays] == [TerminalRelay, ToolRelay]
-    # The tool connections are swept as the configuration says; the terminals as they were.
+    assert [type(relay) for relay in relays] == [
+        TerminalRelay,
+        ToolRelay,
+        ProcessKeySweep,
+    ]
+    # The live sessions' relay is swept, then the process keys it holds none of.
+    swept = relays[2]
+    assert isinstance(swept, ProcessKeySweep)
+    assert (type(swept.relay), swept.store) == (SessionRelay, store)
+    # Tool connections are swept as the configuration says; the rest as terminals are.
     assert [call.kwargs for call in sweeping.call_args_list] == [
         {},
         {"interval_sec": 7.0},
+        {},
     ]
 
 
@@ -1004,6 +1016,32 @@ async def test_warming_the_session_embedder_embeds_one_query() -> None:
     )
 
     embed_query.assert_awaited_once_with("warm")
+
+
+def test_the_old_runners_chat_and_run_routes_are_registered_nowhere() -> None:
+    """A session's agent process and its relay replaced these; none answers."""
+    removed = {
+        ("POST", "/api/sessions/{session_id}/inbound"),
+        ("GET", "/api/sessions/{session_id}/inbound"),
+        ("POST", "/api/sessions/{session_id}/run-state"),
+        ("PUT", "/api/sessions/{session_id}/partial"),
+        ("GET", "/api/sessions/{session_id}/partial"),
+        ("DELETE", "/api/sessions/{session_id}/partial/{turn}"),
+        ("POST", "/api/sessions/{session_id}/runs/{run_id}/output"),
+        ("GET", "/api/sessions/{session_id}/runs/{run_id}/output"),
+        ("POST", "/api/sessions/{session_id}/reattach"),
+        ("GET", "/api/chat-models"),
+        ("POST", "/api/chats/uploads"),
+        ("GET", "/api/chats/uploads/wait"),
+        ("POST", "/api/chats/uploads/{request_id}"),
+        ("POST", "/api/chats/files/link"),
+        ("POST", "/api/chats/files/remove"),
+    }
+    registered = {
+        (method, path) for path, methods in iter_routes(app.app) for method in methods
+    }
+
+    assert registered & removed == set()
 
 
 def _lifespan_state(

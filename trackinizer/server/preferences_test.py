@@ -75,7 +75,6 @@ _DEFAULTS: dict[str, JsonValue] = {
     "terminal_tab_chords": False,
     "terminal_placement": "bottom",
     "home": "graph",
-    "chat_provider": "assistant",
     "assistant_prompt": "sagent",
     "cli_folder": "",
     "chat_view": {
@@ -297,13 +296,6 @@ def test_the_assistants_keys_are_exactly_the_settings_the_document_shows() -> No
     assert marked == ASSISTANT_KEYS
 
 
-def test_a_new_chat_starts_on_the_assistant_unless_the_user_picked_a_cli() -> None:
-    assert stored_preferences(None).chat_provider == "assistant"
-    assert stored_preferences({"chat_provider": "codex"}).chat_provider == "codex"
-    with pytest.raises(pydantic.ValidationError):
-        Preferences.model_validate({"chat_provider": "gemini"})
-
-
 @pytest.mark.parametrize("folder", ["", "~", "~/work/web", "/srv/repo"])
 def test_a_run_folder_is_home_or_a_path_a_run_takes(folder: str) -> None:
     assert stored_preferences({"cli_folder": folder}).cli_folder == folder
@@ -316,36 +308,23 @@ def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_write_sets_the_chat_provider_a_new_chat_starts_on() -> None:
-    conn = cast(
-        MockConnection,
-        AsyncMock(
-            fetchrow=AsyncMock(
-                return_value={"preferences": {"chat_provider": "claude"}},
-            ),
-        ),
+async def test_the_retired_chat_provider_reads_as_nothing_and_is_written_as_none() -> (
+    None
+):
+    assert (
+        "chat_provider"
+        not in stored_preferences(
+            {"chat_provider": "codex"},
+        ).model_dump()
     )
-    written = await write_preferences(
-        cast("Conn", conn),
-        user_id=_USER,
-        change={"chat_provider": "claude"},
-    )
-    assert written is not None
-    assert written.chat_provider == "claude"
-    conn.fetchrow.assert_awaited_once_with(
-        "UPDATE users SET preferences = "
-        "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
-        "WHERE id = $3 RETURNING preferences",
-        {"chat_provider": "claude"},
-        ["chat_style", "chat_tool_calls"],
-        _USER,
-    )
-    with pytest.raises(ValueError, match="chat_provider: "):
+    conn = cast(MockConnection, AsyncMock())
+    with pytest.raises(ValueError, match="No such preference: chat_provider"):
         await write_preferences(
             cast("Conn", conn),
             user_id=_USER,
-            change={"chat_provider": "gemini"},
+            change={"chat_provider": "claude"},
         )
+    conn.fetchrow.assert_not_awaited()
 
 
 _TERMINAL: Final = {
@@ -430,7 +409,7 @@ async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_k
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"chat_view": _TERMINAL},
-        ["chat_style", "chat_tool_calls"],
+        ["chat_style", "chat_tool_calls", "chat_provider"],
         _USER,
     )
     conn.fetchrow = cast(
@@ -449,7 +428,7 @@ async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_k
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_view", "chat_style", "chat_tool_calls"],
+        ["chat_view", "chat_style", "chat_tool_calls", "chat_provider"],
         _USER,
     )
 
@@ -592,7 +571,7 @@ async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_side", "chat_style", "chat_tool_calls"],
+        ["chat_side", "chat_style", "chat_tool_calls", "chat_provider"],
         _USER,
     )
 

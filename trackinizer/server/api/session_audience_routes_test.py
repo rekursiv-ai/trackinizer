@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
@@ -24,7 +24,6 @@ from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import install_identity, make_test_identity
 from trackinizer.server.config import Assistant, Config
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import ConflictError
 from trackinizer.types.inquiries import AgentSession
@@ -246,26 +245,18 @@ async def test_an_admin_cannot_reassign_a_run_to_inject_commands(
     session_id = await served.session(opener=_ANN)
     session = await served.store.get_inquiry(session_id)
     assert isinstance(session, AgentSession)
-    inbound = cast(object, app.state.inbound)
-    assert isinstance(inbound, InboundQueue)
-    inbound.mark_poller(session_id, runs=True, account=_ANN)
     served.act_as(_ADA, "admin")
 
     reassigned = await served.http.put(
         f"/api/inquiries/{session_id}/account",
         json={"value": _ADA},
     )
-    direct = await served.http.post(
-        f"/api/sessions/{session_id}/inbound",
-        json={"text": "AUDIT_COMMAND"},
-    )
     routed = await served.http.post(
         "/api/messages",
         json={"actor": session.owner, "text": "AUDIT_PROMPT"},
     )
 
-    assert [r.status_code for r in (reassigned, direct, routed)] == [403, 403, 403]
-    assert inbound.pending(session_id) == 0
+    assert [r.status_code for r in (reassigned, routed)] == [403, 403]
     kept = await served.store.get_inquiry(session_id)
     assert isinstance(kept, AgentSession)
     assert kept.account == _ANN

@@ -5,8 +5,7 @@ A conversation is one open AgentSession whose ``cli_session_id`` is
 are the people's lines (each from its poster), the assistant's tool calls and results,
 and its answers. There is no second store: its members read the session's records and
 post lines (its starter, the people they share it with, and whoever else the server's
-setting lets), and the assistant opens the session when it first hears the
-conversation. The session's row, which every key reads, says only who started it and
+setting lets), and its starter opens the session when they start it. The session's row, which every key reads, says only who started it and
 who posted: its title is :data:`CHAT_TITLE`. A share names a person by email and
 follows the conversation, and the starter deletes the conversation while every
 person's line in it is theirs.
@@ -16,19 +15,12 @@ with a ``produced_by`` edge to the original, labelled :data:`FORK_EDGE_LABEL` an
 :func:`fork_point_label`, and it opens with copies of the original's lines up to and
 including the fork point, a record named by its part and position.
 
-A line goes to ``POST /api/chats``. Who answers it is the canvas's provider
-(:data:`ChatProvider`). For ``assistant`` the server queues it for the
-conversation's own session while the assistant keeps one open, and for the
-assistant's service session otherwise, which opens or resumes the conversation's
-session before it answers. For ``claude`` or ``codex`` it queues it for the
-conversation's session, which the person's own run on a host of theirs drains.
-The answer to a post is the conversation id at once; ``GET /api/chats/{id}`` answers
-404 until some session carries the conversation.
-
-While a turn runs, the assistant puts the answer it is writing at
-:data:`CHAT_PARTIAL_PATH`, where the chat's readers wait for it to change. The server
-keeps it in memory alone, for a minute after its last change: it is no record, and
-the stored answer replaces it.
+A chat starts with ``POST /api/chats`` (:class:`ChatStart`), which binds a new
+conversation to the canvas, or forks one onto a new canvas, and opens its session at
+once under its starter's key, as a ``sagent`` session; the answer (:class:`ChatSent`)
+names it. Its agent is the session's agent process, which the starter brings up on
+``PUT /api/sessions/{id}/process``, and every line goes to that agent as an input on
+``POST /api/sessions/{id}/inputs`` (``wire_session_relay``).
 
 This package is part of the publishable client distribution, so it must not
 import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -36,79 +28,45 @@ import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from typing import Annotated, Final, Literal, Self
+from typing import Final, Literal
 
 import uuid
 
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-    StringConstraints,
-    ValidationError,
-    field_validator,
-    model_validator,
-)
-
-from trackinizer.wire.wire_chat_uploads import MAX_UPLOAD_FILES, BoxPath
+from pydantic import BaseModel, ConfigDict, Field
 
 
 __all__ = [
     "CHATS_PATH",
     "CHAT_ACTOR_PREFIX",
-    "CHAT_MODELS_PATH",
-    "CHAT_PARTIAL_CHARS",
-    "CHAT_PARTIAL_PATH",
-    "CHAT_PARTIAL_TURN_PATH",
-    "CHAT_PARTIAL_WAIT_SEC",
     "CHAT_PATH",
     "CHAT_SESSION_PREFIX",
     "CHAT_SHARE_PATH",
     "CHAT_TITLE",
     "FORK_EDGE_LABEL",
     "FORK_POINT_PREFIX",
+    "NO_KEY",
     "POSTER_LABEL_PREFIX",
-    "RUN_COMMAND_CHARS",
     "SCIENCE_CHAT_LABEL",
     "AssistantPrompt",
-    "ChatAnswer",
     "ChatForkAt",
     "ChatHead",
-    "ChatLineKind",
-    "ChatModel",
-    "ChatModels",
-    "ChatPartial",
-    "ChatPartialState",
-    "ChatProvider",
-    "ChatRun",
-    "ChatSend",
     "ChatSent",
-    "ChatSettings",
+    "ChatStart",
     "chat_actor",
     "chat_conversation_id",
     "chat_session_id",
     "fork_point_label",
     "poster_label",
-    "run_refusal",
 ]
 
 
 CHATS_PATH: Final = "/api/chats"
 CHAT_PATH: Final = "/api/chats/{conversation_id}"
 CHAT_SHARE_PATH: Final = "/api/chats/{conversation_id}/shares/{email}"
-CHAT_PARTIAL_PATH: Final = "/api/sessions/{session_id}/partial"
-CHAT_PARTIAL_TURN_PATH: Final = "/api/sessions/{session_id}/partial/{turn}"
-CHAT_MODELS_PATH: Final = "/api/chat-models"
 
-CHAT_PARTIAL_CHARS: Final = 16_384
-"""The most text a partial carries; the assistant clips what it has written to it."""
-
-CHAT_PARTIAL_WAIT_SEC: Final = 25.0
-"""The longest a read of a partial is held for a change, under the edge's idle cutoff."""
-
-RUN_COMMAND_CHARS: Final = 2_000
-"""The longest command a Run button runs."""
+NO_KEY: Final = "no_key"
+"""The ``code`` of a 409 for a chat started by someone with no live API key: its
+session is opened under one."""
 
 SCIENCE_CHAT_LABEL: Final = "science-chat"
 """The label every science chat session carries."""
@@ -132,22 +90,6 @@ CHAT_TITLE: Final = "Science chat"
 """The title of every science chat's session, whatever its opener asks for. Every key
 reads a session's row, while a chat's lines are its members' alone."""
 
-_ROUTE: Final = r"^#/[^\s\x00-\x1f\x7f]*$"
-"""A `#/...` hash with no space or control character."""
-
-
-type ChatProvider = Literal["assistant", "claude", "codex", "sagent"]
-"""Who answers a canvas's Chat, and the ``cli`` of the sessions and parts it writes.
-
-Values:
-  assistant: The server's shared assistant.
-  claude: The person's own claude agent run on a host of theirs, attached to
-    the chat's session.
-  codex: The same with codex.
-  sagent: The same with sagent.
-"""
-
-
 type AssistantPrompt = Literal["lead", "sagent"]
 """The assistant's system prompt in a conversation, as its poster chose it.
 
@@ -156,122 +98,6 @@ Values:
   sagent: sagent's system prompt, followed by a note of the canvas like the one a
     claude or codex run is given, in place of the lead prompt.
 """
-
-
-# ``wire_sessions`` imports this module for ``ChatForkAt``, so this one cannot import
-# its ``InboundKind`` back; ``wire_science_chat_test`` holds the two equal.
-type ChatLineKind = Literal["line", "command", "answer", "settings", "interrupt", "run"]
-"""What a Chat post is: the values of ``wire_sessions.InboundKind``, which a run
-delivers each its own way. Only ``line`` is a person's chat line."""
-
-
-class ChatAnswer(BaseModel):
-    """The payload of an ``answer`` post: a choice on an ask the run is showing.
-
-    It names the choice by ``option``, the id of one of the ask's own options, or in
-    the older form by ``decision``, which the run reads as the option of that kind.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    prompt_id: str = Field(min_length=1, max_length=200)
-    option: str = Field(default="", max_length=200)
-    """The id of the option taken, or a kind such as ``allow_once``; empty when
-    ``decision`` names the choice."""
-
-    decision: Literal["allow", "deny"] | None = None
-    """The older form of ``option``: ``allow`` is ``allow_once``, ``deny`` is ``deny``."""
-
-    updated_input: JsonValue = None
-    """The tool input the prompt's answer replaces, such as the answers to a
-    question; ``None`` leaves it as asked."""
-
-    message: str = Field(default="", max_length=16_384)
-    """Why, for a deny; the run passes it to the CLI."""
-
-    @model_validator(mode="after")
-    def _names_one_choice(self) -> Self:
-        if bool(self.option) == (self.decision is not None):
-            raise ValueError("an answer names exactly one of an option and a decision")
-        return self
-
-
-class ChatSettings(BaseModel):
-    """The payload of a ``settings`` post: a model or effort change, or both."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    model: str | None = Field(default=None, min_length=1, max_length=120)
-    effort: str | None = Field(default=None, min_length=1, max_length=20)
-
-    @model_validator(mode="after")
-    def _changes_something(self) -> Self:
-        if self.model is None and self.effort is None:
-            raise ValueError("a settings post names a model, an effort, or both")
-        return self
-
-
-class ChatRun(BaseModel):
-    """The payload of a ``run`` post: start a command the agent wrote, or stop it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    run_id: str = Field(pattern=r"^[0-9a-f]{32}$")
-    """Minted by the browser that clicked, so the run's records find their block."""
-
-    block: str = Field(default="", max_length=200)
-    """Where the block is drawn, as the browser names it; the run's records repeat it,
-    so a reload shows the output under the same block."""
-
-    stop: bool = False
-    """Stop the run ``run_id`` names instead of starting one."""
-
-
-def run_refusal(command: str) -> str:
-    """Say why a Run button does not run ``command``; empty when it does.
-
-    A command runs as it reads: one line of printable ASCII, so no control, format,
-    bidi or look-alike character makes it do other than what the person sees.
-
-    Args:
-      command: The command, as the agent wrote it in its block.
-
-    Returns:
-      reason: Why it is refused, or empty to run it.
-
-    """
-    if len(command) > RUN_COMMAND_CHARS:
-        return f"A Run command holds at most {RUN_COMMAND_CHARS:,} characters"
-    if any(c < " " or c > "~" for c in command):
-        return "A Run command is one line of printable ASCII"
-    return ""
-
-
-class ChatModel(BaseModel):
-    """A model Chat offers a ``claude`` or ``codex`` chat, as ``/model`` takes it."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    id: str
-    """What ``/model`` takes: the model's wire id, as ``claude-fable-5-2``."""
-
-    label: str
-    """Its name on a person's screen, as ``Opus 5.5``."""
-
-    efforts: list[str]
-    """The levels ``/effort`` takes with it, lowest first; empty for a model with none."""
-
-    default: bool = False
-    """The CLI's own default, which a chat runs before any ``/model``."""
-
-
-class ChatModels(BaseModel):
-    """The models Chat offers each CLI provider, best first; the assistant takes none."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    claude: list[ChatModel]
-    codex: list[ChatModel]
 
 
 def chat_session_id(conversation_id: uuid.UUID) -> str:
@@ -363,144 +189,33 @@ class ChatForkAt(BaseModel):
     of the session up to and including this one."""
 
 
-class ChatSend(BaseModel):
-    """One line a signed-in writer posts to a science chat from their canvas."""
+class ChatStart(BaseModel):
+    """A chat to start on a canvas, or to fork from a line of another onto a new one.
 
-    model_config = ConfigDict(extra="forbid")
-
-    kind: ChatLineKind = "line"
-    """What the post is; a person's line unless the client names another kind. Only a
-    ``claude`` or ``codex`` canvas takes a kind other than ``line``."""
-
-    payload: dict[str, object] | None = None
-    """The kind's structured data: a :class:`ChatAnswer` for ``answer``, a
-    :class:`ChatSettings` for ``settings``, ``None`` for the other kinds."""
-
-    canvas_id: uuid.UUID
-    """The poster's own canvas, which the line is sent from."""
-
-    text: str = Field(pattern=r"\S", max_length=16_384)
-    conversation_id: uuid.UUID | None = None
-    """The conversation to post into; none starts one, named by the request's
-    ``Idempotency-Key`` so a retry starts the same one."""
-
-    fork: ChatForkAt | None = None
-    """Start a new conversation from this line of another, and post there. It names
-    the new conversation by the key, so it excludes ``conversation_id``."""
-
-    page: str | None = Field(default=None, max_length=512, pattern=_ROUTE)
-    """The `#/...` address the sender is on as they send."""
-
-    trail: list[Annotated[str, Field(max_length=512, pattern=_ROUTE)]] = Field(
-        default_factory=list,
-        max_length=8,
-    )
-    """The addresses the sender came through before it, oldest first."""
-
-    attachments: list[BoxPath] = Field(
-        default_factory=list,
-        max_length=MAX_UPLOAD_FILES,
-    )
-    """Box paths of the files the sender uploaded for this line
-    (:mod:`~trackinizer.wire.wire_chat_uploads`); a ``line`` alone carries
-    them."""
-
-    # The web sent ``"science"`` here, the conversation's kind, until the field named
-    # the post's; a browser not yet reloaded still does, and its line is a line.
-    @field_validator("kind", mode="before")
-    @classmethod
-    def _read_science_as_line(cls, value: object) -> object:
-        """Read the retired ``science`` kind as ``line``."""
-        return "line" if value == "science" else value
-
-    @model_validator(mode="after")
-    def _forks_a_new_conversation(self) -> ChatSend:
-        if self.fork is not None and self.conversation_id is not None:
-            raise ValueError("a fork starts a new conversation; it cannot name one")
-        if self.fork is not None and self.kind != "line":
-            raise ValueError("a fork starts from a person's line")
-        if self.attachments and self.kind != "line":
-            raise ValueError(f"a {self.kind} post carries no attachments")
-        return self
-
-    # The payload's own error is raised as a ValueError: a ValidationError raised in
-    # a validator is not folded into the body's, so the route would answer 500.
-    @model_validator(mode="after")
-    def _payload_fits_the_kind(self) -> ChatSend:
-        shapes = {"answer": ChatAnswer, "settings": ChatSettings, "run": ChatRun}
-        shape = shapes.get(self.kind)
-        if shape is None and self.payload is not None:
-            raise ValueError(f"a {self.kind} post carries no payload")
-        try:
-            read = None if shape is None else shape.model_validate(self.payload)
-        except ValidationError as error:
-            raise ValueError(f"the {self.kind} payload: {error}") from error
-        if (
-            isinstance(read, ChatRun)
-            and not read.stop
-            and (refusal := run_refusal(self.text))
-        ):
-            raise ValueError(refusal)
-        return self
-
-
-class ChatPartial(BaseModel):
-    """What a chat's assistant is doing on a turn, as far as it has done it.
-
-    Each text is vetted for secrets, as a stored answer is, and clipped.
+    The request's ``Idempotency-Key`` names a new conversation, so a retry starts the
+    same one.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    turn: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    """The delivery the answer is for, new for each: a reader that saw its answer
-    stored shows no partial of it again."""
+    canvas_id: uuid.UUID
+    """The starter's own canvas: it holds the new chat, or a fork is copied from it."""
 
-    text: str = Field(max_length=CHAT_PARTIAL_CHARS)
-    """The answer so far, without the notes the model keeps."""
-
-    done: bool = False
-    """Whether ``text`` is the whole answer, which the assistant is now storing."""
-
-    thinking: str = Field(default="", max_length=CHAT_PARTIAL_CHARS)
-    """The reasoning the model's call is writing, as its provider summarizes it."""
-
-    calls: list[Annotated[str, StringConstraints(max_length=1_000)]] = Field(
-        default_factory=list[str],
-        max_length=50,
-    )
-    """The tool calls running now, each by its label."""
-
-    status: str = Field(default="", max_length=200)
-    """The status line sagent's terminal UI shows: time, tokens, spend, the wait."""
-
-
-class ChatPartialState(BaseModel):
-    """What the server holds of a chat's answer in writing, and how new it is."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    seq: int
-    """Names the partial held: drawn at random, below 2**53, when the chat held none,
-    and one more with each put after it, so a put always names a new one and says
-    nothing of other chats; 0 when the server holds none for the chat. A reader
-    passes the last it saw to wait for a change, and compares it for equality only."""
-
-    partial: ChatPartial | None
+    fork: ChatForkAt | None = None
+    """The line of another chat the new one starts from; ``None`` starts the canvas's
+    own chat, or answers the one it holds."""
 
 
 class ChatSent(BaseModel):
-    """What a posted line was queued for."""
+    """A chat started, or the one its canvas already held: where it is and its session."""
 
     conversation_id: uuid.UUID
     canvas_id: uuid.UUID
-    """The canvas the line went to: the one it was sent from, or for a fork the new
+    """The canvas that holds it: the one it was started from, or for a fork the new
     one made for it."""
 
-    session_id: uuid.UUID | None
-    """The conversation's session when the line was queued on it: the assistant had it
-    open, or the canvas's provider is a CLI; otherwise ``None``, and the session
-    appears when the assistant opens it."""
+    session_id: uuid.UUID
+    """The conversation's session, opened by the start."""
 
 
 class ChatHead(BaseModel):
@@ -522,7 +237,7 @@ class ChatHead(BaseModel):
 
     account: str
     live: bool
-    """Whether the assistant still has the session open."""
+    """Whether the session is open: not ended."""
 
     forks: int
     """How many times the conversation has been forked."""

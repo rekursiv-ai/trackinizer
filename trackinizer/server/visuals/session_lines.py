@@ -15,6 +15,8 @@ import uuid
 from pydantic import BaseModel
 from treekle import from_plain
 
+from trackinizer.wire.wire_sessions import CONTEXT_TRAILER
+
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -154,12 +156,8 @@ def _delivered(row: Record, *, prefix: str) -> str:
         from_plain(row[f"{prefix}content"], str, default="")
         .removeprefix(f"[{room}] " if room else "")
         .removeprefix(f"{source}: " if source else "")
-        .split(_TRAILER, 1)[0]
+        .split(CONTEXT_TRAILER, 1)[0]
     )
-
-
-_TRAILER: Final = "\nTrackinizer context (verify with trax): "
-"""Where a delivered line's context trailer begins (``client/conversation.py``)."""
 
 
 def _line(text: str) -> str | None:

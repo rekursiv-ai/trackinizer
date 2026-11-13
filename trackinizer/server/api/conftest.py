@@ -40,7 +40,6 @@ from trackinizer.server.api.session_access import (
     require_session_access,
 )
 from trackinizer.server.api.session_identity import Asker
-from trackinizer.server.asks import open_ask_ids
 from trackinizer.server.auth import (
     AuthIdentity,
     Role,
@@ -49,7 +48,6 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.config import Assistant, Config
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
 from trackinizer.server.session_reaper import STALE_AFTER, reap_silent_sessions
 from trackinizer.server.store.core import Store
@@ -384,9 +382,6 @@ class TerminalWorld:
         origin: str | None = TERMINAL_ORIGIN,
         requested_by: str | None = None,
         surface: str | None = None,
-        command: str | None = None,
-        attach: uuid.UUID | None = None,
-        run_name: str | None = None,
         cwd: str | None = None,
         kind: str | None = None,
     ) -> httpx2.Response:
@@ -398,12 +393,6 @@ class TerminalWorld:
             body["surface"] = surface
         if requested_by is not None:
             body["requested_by"] = requested_by
-        if command is not None:
-            body["command"] = command
-        if attach is not None:
-            body["attach"] = str(attach)
-        if run_name is not None:
-            body["run_name"] = run_name
         if cwd is not None:
             body["cwd"] = cwd
         if canvas is not None:
@@ -490,38 +479,9 @@ REAP_WINDOW = STALE_AFTER + timedelta(minutes=1)
 """Long enough from now that anything seen so far counts as silent."""
 
 
-async def reap(store: Store, *, inbound: InboundQueue, after: timedelta) -> int:
+async def reap(store: Store, *, after: timedelta) -> int:
     """Run one reaper pass as of ``after`` from now."""
-    now = datetime.now(UTC) + after
-    return await reap_silent_sessions(store, inbound=inbound, now=now)
-
-
-AWAIT_MESSAGES = InboundQueue.await_messages
-"""The wait itself, as it is before a test wraps it."""
-
-
-@dataclass(slots=True, kw_only=True)
-class Holds:
-    """The requests that parked on the inbound queue to wait for a message."""
-
-    parked: asyncio.Event = field(default_factory=asyncio.Event)
-    """Set once a request has begun waiting."""
-
-    asked_sec: list[float] = field(default_factory=list)
-    """How long each request asked to wait."""
-
-
-async def parked_wait(
-    queue: InboundQueue,
-    holds: Holds,
-    session_id: uuid.UUID,
-    *,
-    timeout_sec: float,
-) -> list[Inbound]:
-    """Wait on ``queue`` as it does, noting that the wait began."""
-    holds.asked_sec.append(timeout_sec)
-    holds.parked.set()
-    return await AWAIT_MESSAGES(queue, session_id, timeout_sec=timeout_sec)
+    return await reap_silent_sessions(store, now=datetime.now(UTC) + after)
 
 
 def opens_a_part(name: str) -> dict[str, object]:
@@ -552,26 +512,6 @@ async def attach_run(
         "/api/sessions/start",
         json={"cli": "claude", "attach": str(session_id)},
     )
-
-
-async def report_state(
-    client: httpx2.AsyncClient,
-    *,
-    session_id: uuid.UUID,
-    state: str,
-    instance: str,
-) -> httpx2.Response:
-    """Report a run's state as the installed identity."""
-    return await client.post(
-        f"/api/sessions/{session_id}/run-state",
-        json={"state": state, "instance": instance},
-    )
-
-
-async def open_asks(store: Store, session_id: uuid.UUID) -> list[str]:
-    """Return the asks open in a session."""
-    async with store.engine.acquire() as conn:
-        return await open_ask_ids(conn, session_id=session_id)
 
 
 async def waited_on_locks(store: Store, *, count: int, wait_sec: float = 5) -> bool:
@@ -748,10 +688,8 @@ def _serving(
     """Serve ``store`` from the global ``app`` to ``identity``, for one test."""
     prev_engine = getattr(app.state, "engine", None)
     prev_store = getattr(app.state, "store", None)
-    prev_inbound = getattr(app.state, "inbound", None)
     app.state.engine = engine
     app.state.store = store
-    app.state.inbound = InboundQueue()
     install_identity(identity)
     try:
         yield
@@ -765,10 +703,6 @@ def _serving(
             del app.state.store
         else:
             app.state.store = prev_store
-        if prev_inbound is None:
-            del app.state.inbound
-        else:
-            app.state.inbound = prev_inbound
 
 
 def _refused_lifespan(app: FastAPI) -> NoReturn:

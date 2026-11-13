@@ -1,8 +1,8 @@
 """The caller's own sessions, newest activity first, each with its run and its place.
 
 What a person reads to find their work: every session they started that was active
-lately or is still open, with whether a run drains it now and on which host (the
-poller's lease, which the server holds in memory), when it last took a turn, the goal
+lately or is still open, with whether an agent process serves it now and on which host
+(the session relay's, which the server holds in memory), when it last took a turn, the goal
 its CLI's log last reported, the first line a person wrote in it, the last line said in
 it and by whom, and the canvas and workspace it sits in. The Issues the sessions were
 produced by come with the Issues those narrow or were produced by, so a reader can
@@ -29,9 +29,8 @@ from trackinizer.server.visuals.session_lines import (
     SessionLines,
     session_lines,
 )
-from trackinizer.server.visuals.session_runs import live_run_states
 from trackinizer.wire.wire_science_chat import chat_conversation_id
-from trackinizer.wire.wire_sessions import CANVAS_LABEL_PREFIX, RunState
+from trackinizer.wire.wire_sessions import CANVAS_LABEL_PREFIX
 
 
 if TYPE_CHECKING:
@@ -42,7 +41,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.server.audience import SessionReader
-    from trackinizer.server.inbound import InboundQueue
+    from trackinizer.server.session_relay import SessionRelay
 
 
 MAX_SESSIONS: Final = 500
@@ -88,14 +87,11 @@ class ListedSession(BaseModel):
     """The last line said in it, tool calls and their output left out."""
 
     live: bool
-    """A run drains it now: its poller's lease holds."""
+    """An agent process serves it now: the session relay holds one attached."""
 
     host: str | None
-    """The host the agent process names, else the one it last ran on since the server
-    started; None when no run of it named one."""
-
-    state: RunState
-    """What the agent process is doing; ``idle`` when no run is live."""
+    """The host its agent process runs on, or last ran on since the server started;
+    None when no process of it has."""
 
 
 class ListedIssue(BaseModel):
@@ -124,7 +120,7 @@ async def list_own_sessions(
     *,
     email: str,
     reader: SessionReader,
-    inbound: InboundQueue,
+    relay: SessionRelay,
     days: int,
     limit: int,
     policy: AccessPolicy | None = None,
@@ -138,7 +134,8 @@ async def list_own_sessions(
       user_id: The caller, whose canvases place the sessions.
       reader: The caller as the transcript test reads them; a session they do not
         read is left out.
-      inbound: In-process poller leases, which say which runs are live and where.
+      relay: The live session relay, which says which sessions a process serves and
+        where.
       days: How far back the last activity may be, 1 to :data:`MAX_DAYS`.
       limit: The most sessions to list, 1 to :data:`MAX_SESSIONS`.
       policy: Deployment policy; None preserves trusted reads.
@@ -174,7 +171,6 @@ async def list_own_sessions(
             policy=policy,
             principal=principal,
         )
-        states = await live_run_states(conn, inbound=inbound, session_ids=ids)
     return SessionList(
         sessions=[
             _listed(
@@ -182,8 +178,7 @@ async def list_own_sessions(
                 lines=lines.get(session_id, SessionLines()),
                 places=places,
                 produced_by=produced.get(session_id, []),
-                inbound=inbound,
-                state=states.get(session_id),
+                relay=relay,
             )
             for row, session_id in zip(rows, ids, strict=True)
         ],
@@ -329,8 +324,7 @@ def _listed(
     lines: SessionLines,
     places: _Places,
     produced_by: list[uuid.UUID],
-    inbound: InboundQueue,
-    state: RunState | None,
+    relay: SessionRelay,
 ) -> ListedSession:
     """Build one listed session from its row and what was read beside it."""
     session_id = from_plain(row["id"], uuid.UUID)
@@ -340,7 +334,7 @@ def _listed(
         if conversation
         else _placed(row, places=places)
     )
-    where = inbound.poller_run(session_id) or inbound.last_run(session_id)
+    process = relay.process(session_id)
     return ListedSession(
         id=session_id,
         seq=from_plain(row["seq"], int),
@@ -357,9 +351,8 @@ def _listed(
         goal=lines.goal,
         first_line=lines.first_line,
         last_line=lines.last_line,
-        live=state is not None,
-        host=None if where is None else where.host,
-        state=state or "idle",
+        live=process is not None and process.state == "attached",
+        host=None if process is None else process.host,
     )
 
 

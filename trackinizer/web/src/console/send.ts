@@ -1,6 +1,5 @@
 import { isChatHandle } from "../api/chats";
-import type { FeedEvent, MessageTarget } from "../api/sessions";
-import { must } from "../must";
+import type { FeedActorFacet, FeedEvent, MessageTarget } from "../api/sessions";
 
 /** The text a line sends, and each target it names; or why it cannot be sent. */
 export type Parsed =
@@ -76,40 +75,47 @@ export function targetName({ actor, room }: MessageTarget): string {
 }
 
 /**
- * What a send to `targets` came to, from each one's result: how many sessions it
- * reached, and the targets no live session matched. A target whose send failed
- * fails the whole send, which its Retry sends again under the same keys, so the
- * ones that went through are not sent twice.
+ * The session `target` names among `agents`, the facets' one row per agent: its own while it has not ended and is in
+ * the room the target names, if it names one; null for none.
  */
-export function receipt(
-  targets: readonly MessageTarget[],
-  results: readonly PromiseSettledResult<{ readonly delivered: readonly string[] }>[],
-): string {
-  const failed = results.flatMap((result, k) =>
-    result.status === "rejected"
-      ? [`${targetName(must(targets[k]))} (${messageOf(result.reason)})`]
-      : [],
+export function sessionOf(
+  { actor, room }: MessageTarget,
+  agents: readonly FeedActorFacet[],
+): string | null {
+  const agent = agents.find(
+    (each) =>
+      each.actor === actor &&
+      each.ended === null &&
+      (room === null || each.rooms.includes(room)),
   );
-  if (failed.length) {
-    const them = failed.length === 1 ? "it" : "them";
-    throw new Error(
-      `Not sent to ${failed.join(", ")}. Retry sends ${them} again; no session gets a message twice.`,
-    );
-  }
-  const reached = results.reduce(
-    (sum, result) =>
-      sum + (result.status === "fulfilled" ? result.value.delivered.length : 0),
-    0,
-  );
-  const missed = results.flatMap((result, k) =>
-    result.status === "fulfilled" && result.value.delivered.length === 0
-      ? [targetName(must(targets[k]))]
-      : [],
-  );
-  const sent = `Sent to ${reached} ${reached === 1 ? "session" : "sessions"}`;
-  return missed.length ? `${sent}; no live session for ${missed.join(", ")}` : sent;
+  return agent?.session_id ?? null;
 }
 
-function messageOf(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason);
+/**
+ * How a line went to one target: the session that took it, null when no running agent did (none named, or its
+ * session refused it as not live), or why its send failed.
+ */
+export type Outcome = {
+  readonly target: MessageTarget;
+  readonly reached: string | null | Error;
+};
+
+/**
+ * What a line came to, from each target's outcome: how many sessions took it, each once, and the targets no running
+ * agent took it for. A target whose send failed fails the whole line, naming it and what went: an input is sent once,
+ * so the draft stays for the person to send again where it did not go.
+ */
+export function receipt(outcomes: readonly Outcome[]): string {
+  const reached = new Set(
+    outcomes.flatMap(({ reached }) => (typeof reached === "string" ? [reached] : [])),
+  );
+  const sent = `Sent to ${reached.size} ${reached.size === 1 ? "session" : "sessions"}`;
+  const failed = outcomes.flatMap(({ target, reached }) =>
+    reached instanceof Error ? [`${targetName(target)} (${reached.message})`] : [],
+  );
+  if (failed.length) throw new Error(`Not sent to ${failed.join(", ")}. ${sent}.`);
+  const missed = outcomes.flatMap(({ target, reached }) =>
+    reached === null ? [targetName(target)] : [],
+  );
+  return missed.length ? `${sent}; no live session for ${missed.join(", ")}` : sent;
 }

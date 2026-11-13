@@ -118,8 +118,8 @@ class ToolConnection:
     asker: str
     """The person the assistant opened this tool connection for."""
 
-    api_key_id: UUID
-    """The assistant's key that opened it."""
+    api_key_id: UUID | None
+    """The key that opened it; ``None`` for the asker's own browser, signed in."""
 
     inbound: Inbound
     opened: float
@@ -244,7 +244,7 @@ class ToolRelay:
         *,
         agent: ToolSocket,
         asker: str,
-        api_key_id: UUID,
+        api_key_id: UUID | None,
         inbound: Inbound,
     ) -> ToolConnection:
         """Queue an offer of a new tool connection for the daemon.
@@ -256,7 +256,8 @@ class ToolRelay:
           host_id: The host the agent asks for.
           agent: The agent's socket.
           asker: The person the assistant opens it for.
-          api_key_id: The assistant's key that opens it.
+          api_key_id: The key that opens it; ``None`` for the asker's own browser,
+            signed in.
           inbound: Checks what the agent sends.
 
         Returns:

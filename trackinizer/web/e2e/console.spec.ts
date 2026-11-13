@@ -4,11 +4,10 @@ import { must } from "../src/must";
 import { PAGE_MUST } from "./pageMust";
 
 // The console (#/console): every session's captured records as one live feed,
-// narrowed by a view that saves itself, and a line that messages agents. The test
-// stands in for each session's run: a drain that returns at once
-// (`GET .../inbound?wait_sec=0`) marks the session polled and reads what reached
-// it. Other spec files write to the same feed, so each test names its own agents,
-// one name family per test, and picks that family.
+// narrowed by a view that saves itself, and a line that messages agents. A line
+// reaches a session's agent process, and this suite runs none, so every send here
+// reaches no session. Other spec files write to the same feed, so each test names
+// its own agents, one name family per test, and picks that family.
 
 const TAG = crypto.randomUUID().slice(0, 8);
 
@@ -53,15 +52,6 @@ async function capture(
   };
   const appended = await request.post(`/api/sessions/${id}/records`, { data });
   expect(appended.ok(), await appended.text()).toBe(true);
-}
-
-/** Take what is queued for the session, as its run does; the first take marks it polled. */
-async function drain(request: APIRequestContext, id: string): Promise<string[]> {
-  const drained = await request.get(`/api/sessions/${id}/inbound?wait_sec=0`);
-  expect(drained.ok(), await drained.text()).toBe(true);
-  return (await drained.json()).messages.map(
-    (message: { text: string }) => message.text,
-  );
 }
 
 /** Open the console once the live stream is connected. */
@@ -212,32 +202,16 @@ test("a view saved in one browser is in a fresh browser of the same user, and no
   }
 });
 
-test("a line goes to the view's agents, each once with a retry, @ lists them, and @agent and @* still work", async ({
+test("a line goes to the view's agents, @ lists them, and @agent and @* still work", async ({
   page,
   allowErrors,
 }) => {
   const family = `send-${TAG}`;
   const room = `ops-${TAG}`;
-  const a = await startSession(page.request, `${family}-a`, [room], "Ready.");
-  const b = await startSession(page.request, `${family}-b`, [], "Ready too.");
-  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([
-    [],
-    [],
-  ]);
-  const keys: { [actor: string]: string[] } = {};
-  let lost = false;
-  // The first send to b reaches the server, which queues it, but its answer never reaches the page.
-  await page.route("**/api/messages", async (route) => {
-    const { actor } = route.request().postDataJSON();
-    keys[actor] ??= [];
-    keys[actor].push(route.request().headers()["idempotency-key"] ?? "");
-    if (actor !== `${family}-b` || lost) return route.continue();
-    lost = true;
-    await route.fetch();
-    return route.abort();
-  });
-  // The browser's own line for the request whose answer was cut.
-  allowErrors(failedResource("/api/messages", "ERR_FAILED"));
+  await startSession(page.request, `${family}-a`, [room], "Ready.");
+  await startSession(page.request, `${family}-b`, [], "Ready too.");
+  // The browser's own lines for the server's 409: no agent process serves either.
+  allowErrors(failedResource("/inputs", 409));
   await openConsole(page);
   await pickFamily(page, family);
   await expect(lines(page)).toHaveCount(2);
@@ -262,28 +236,20 @@ test("a line goes to the view's agents, each once with a retry, @ lists them, an
   await expect(page.getByRole("listbox", { name: "Agents" })).toBeHidden();
   await box.fill("rerun the suite");
   await box.press("Enter");
-  await expect(page.getByRole("alert")).toContainText(`Not sent to @${family}-b`);
-  await page.getByRole("button", { name: "Retry message" }).click();
-  await expect(page.locator(".composer-receipt")).toHaveText("Sent to 2 sessions");
-  const [ka, kb] = [must(keys[`${family}-a`]), must(keys[`${family}-b`])];
-  expect([ka.length, new Set(ka).size, kb.length, new Set(kb).size]).toEqual([
-    2, 1, 2, 1,
-  ]);
-  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([
-    ["rerun the suite"],
-    ["rerun the suite"],
-  ]);
+  await expect(page.locator(".composer-receipt")).toContainText(
+    "Sent to 0 sessions; no live session for",
+  );
 
   await box.fill(`@${family}-a:${room} only you`);
   await box.press("Enter");
-  await expect(page.locator(".composer-receipt")).toHaveText("Sent to 1 session");
+  await expect(page.locator(".composer-receipt")).toHaveText(
+    `Sent to 0 sessions; no live session for @${family}-a:${room}`,
+  );
   await box.fill("@* stop and summarize");
   await box.press("Enter");
-  await expect(page.locator(".composer-receipt")).toHaveText("Sent to 2 sessions");
-  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([
-    ["only you", "stop and summarize"],
-    ["stop and summarize"],
-  ]);
+  await expect(page.locator(".composer-receipt")).toContainText(
+    "Sent to 0 sessions; no live session for",
+  );
 
   await box.fill(`@nobody-${TAG} hello`);
   await box.press("Enter");

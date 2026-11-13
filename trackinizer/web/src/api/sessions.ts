@@ -65,26 +65,28 @@ export async function readSessionRecords(
   return body.records ?? [];
 }
 
-/** What the server answers a message it queued: how many wait for the session's poller. */
-export type InboundReceipt = components["schemas"]["InboundEnqueueResponse"];
+/** The 409 code of an input to a session no agent process serves: nothing was delivered. */
+export const NOT_LIVE = "not_live";
 
 /**
- * Send `POST /api/sessions/{id}/inbound`: queue `text` for the session's
- * the agent runner to type into its terminal, under idempotency `key`, which a retry
- * reuses so the message lands once. The server records the signed-in user as
- * the sender, and answers 409 when the session has ended or no run is
- * polling it.
+ * Send `POST /api/sessions/{id}/inputs`: `text` as one message to the session's
+ * agent, under the id `input`, from the signed-in user, whom the server names its
+ * sender. An input is delivered at most once and never again: a second send is a
+ * second message. 409 `not_live` when no agent process serves the session.
  */
-export async function sendSessionMessage(
+export async function sendMessage(
   sessionId: string,
   text: string,
-  key: string,
-): Promise<InboundReceipt> {
-  return send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.POST("/api/sessions/{session_id}/inbound", {
+  input: string,
+): Promise<void> {
+  await send(TIMEOUT_MS.write, undefined, (signal) =>
+    client.POST("/api/sessions/{session_id}/inputs", {
       params: { path: { session_id: sessionId } },
-      body: { text },
-      headers: { "Idempotency-Key": key },
+      body: {
+        id: input,
+        kind: "UserMessage",
+        payload: { "py/object": "UserMessage", content: text, extra: {} },
+      },
       signal,
     }),
   );
@@ -182,10 +184,7 @@ export async function readFeed(
   );
 }
 
-/**
- * One session's share of a feed window: its records, how many are conversation, its newest, and when it ended;
- * and, for a chat's session, whether it waits on the person or its run was taken over in a terminal.
- */
+/** One session's share of a feed window: its records, how many are conversation, its newest, and when it ended. */
 export type FeedActorFacet = components["schemas"]["FeedActorFacet"];
 
 /** What a window of the feed holds, by session (newest first), room and record kind (largest first). */
@@ -276,25 +275,5 @@ export async function setSessionAudience(
   );
 }
 
-/** Where a routed message goes: an agent's routing name, in one of its rooms or `null` for its only one. */
+/** Where the Console sends a line: an agent's routing name, in one of its rooms or `null` for any. */
 export type MessageTarget = { readonly actor: string; readonly room: string | null };
-
-/**
- * Send `POST /api/messages`: queue `text` for every live session `target` names,
- * under idempotency `key`, which a retry reuses. The answer lists the sessions
- * it was queued for; none means no live session matched. A bare agent in more
- * than one room is a 409.
- */
-export async function sendRoutedMessage(
-  target: MessageTarget,
-  text: string,
-  key: string,
-): Promise<components["schemas"]["SendMessageResponse"]> {
-  return send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.POST("/api/messages", {
-      body: { actor: target.actor, room: target.room, text },
-      headers: { "Idempotency-Key": key },
-      signal,
-    }),
-  );
-}

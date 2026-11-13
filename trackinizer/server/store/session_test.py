@@ -896,6 +896,37 @@ class TestPrivateResume:
         assert isinstance(row, AgentSession)
         assert (row.audience, row.ended) == ("staff", ended)
 
+    @pytest.mark.parametrize("held", ["open", "staff"])
+    async def test_a_resume_that_keeps_the_audience_hides_and_refuses_none(
+        self,
+        store: Store,
+        held: str,
+    ) -> None:
+        policy = RecordingPolicy()
+        store.access_policy = policy
+        session_id = await _open(store, cli_session_id=f"cli-{held}")
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "UPDATE inquiries SET agentsession_audience = $2 WHERE id = $1",
+                session_id,
+                held,
+            )
+
+        resumed = await _resume(
+            store,
+            f"cli-{held}",
+            audience="private",
+            keep_audience=True,
+        )
+
+        assert resumed == session_id
+        row = await store.get_inquiry(session_id)
+        assert isinstance(row, AgentSession)
+        assert row.audience == held
+        assert await _audits(store, session_id, "agentsession_audience") == []
+        assert policy.of("prepare_audience_change") == []
+        assert policy.of("on_audience") == []
+
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
@@ -968,6 +999,7 @@ async def _resume(
     *,
     audience: str,
     principal: Principal | None = None,
+    keep_audience: bool = False,
 ) -> UUID:
     """Resume the session ``cli_session_id`` names, asking for ``audience``."""
     session_id, _, _ = await store.start_session(
@@ -980,6 +1012,7 @@ async def _resume(
         requested_actor="agent",
         audience=audience,
         principal=principal,
+        keep_audience=keep_audience,
     )
     return session_id
 
@@ -1043,9 +1076,11 @@ async def test_actor_reservation_uses_the_first_gap_in_taken_suffixes() -> None:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("attach", [False, True])
 @pytest.mark.parametrize("found", [False, True])
+@pytest.mark.parametrize("keep_audience", [False, True])
 async def test_start_routes_attach_and_cli_resume_before_reserving(
     attach: bool,
     found: bool,
+    keep_audience: bool,
 ) -> None:
     store, _engine = make_store()
     session_id = uuid4()
@@ -1067,6 +1102,7 @@ async def test_start_routes_attach_and_cli_resume_before_reserving(
                     requested_actor="agent",
                     audience="private",
                     attach=session_id if attach else None,
+                    keep_audience=keep_audience,
                 )
                 == receipt
             )
@@ -1077,6 +1113,7 @@ async def test_start_routes_attach_and_cli_resume_before_reserving(
                     requested_actor="agent",
                     audience="private",
                     attach=session_id,
+                    keep_audience=keep_audience,
                 )
         else:
             with pytest.raises(ConflictError, match="after 0 attempts"):
@@ -1085,14 +1122,35 @@ async def test_start_routes_attach_and_cli_resume_before_reserving(
                     requested_actor="agent",
                     audience="private",
                     max_reserve_attempts=0,
+                    keep_audience=keep_audience,
                 )
     reserve.assert_not_awaited()
     assert resume.await_args is not None
-    assert resume.await_args.kwargs["hide"] is True
+    assert resume.await_args.kwargs["hide"] is (not keep_audience)
     assert resume.await_args.kwargs["actor"] == "agent"
     assert resume.await_count == 1
     assert resume.await_args.args == (body,)
     assert resume.await_args.kwargs.get("attach") == (session_id if attach else None)
+
+
+@pytest.mark.asyncio
+async def test_a_private_start_hides_the_session_it_resumes_unless_told_to_keep() -> (
+    None
+):
+    store, _engine = make_store()
+    resume = cast(
+        AsyncMockProtocol[tuple[UUID, str, int] | None],
+        AsyncMock(return_value=(uuid4(), "original", 0)),
+    )
+    with patch.object(store, "_resume_session", new=resume):
+        _ = await store.start_session(
+            SubmitAgentSession(title="s", cli_session_id="cli-1", account="t@e"),
+            requested_actor="agent",
+            audience="private",
+        )
+
+    assert resume.await_args is not None
+    assert resume.await_args.kwargs["hide"] is True
 
 
 @pytest.mark.asyncio
@@ -1249,7 +1307,7 @@ async def test_liveness_writes_the_poll_place_or_only_refreshes_a_watched_sessio
         session_id,
         at=at,
         polled=polled,
-        place=RunPlace(host="box", run="r", cli="codex", cwd="/work"),
+        place=RunPlace(host="box", cli="sagent"),
     )
     assert engine.conn.execute.await_args is not None
     sql, *args = engine.conn.execute.await_args.args
@@ -1257,7 +1315,7 @@ async def test_liveness_writes_the_poll_place_or_only_refreshes_a_watched_sessio
         session_id,
         at,
         at - timedelta(minutes=1),
-        *(["box", "r", "codex", "/work"] if polled else []),
+        *(["box", "sagent"] if polled else []),
     ]
     assert ("INSERT INTO session_liveness" in str(sql)) == polled
 
@@ -1514,8 +1572,6 @@ async def test_a_poll_without_place_stores_empty_location_fields() -> None:
         session_id,
         at,
         at - timedelta(minutes=1),
-        None,
-        None,
         None,
         None,
     )

@@ -1,19 +1,19 @@
 """The rule's checks, in order, over a stand-in connection.
 
-That each part of its query reads what it should is ``tool_routes_pglite_test``'s: there,
-each change that breaks the rule is applied to a real database, at the open and at the
-sweep.
+That each part of its query reads what it should is the hand-run
+``private/tool_routes_parity.py``'s: there, each change that breaks the rule is applied
+to a real database, at the open and at the sweep.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, Literal, cast
 from uuid import UUID, uuid4
 
 import pytest
 
 from trackinizer.conftest import make_conn
-from trackinizer.server.api.tool_access import serves_tools, tool_access
+from trackinizer.server.api.tool_access import _RULE, serves_tools, tool_access
 from trackinizer.server.config import Assistant
 
 
@@ -50,7 +50,7 @@ async def _ask(
     conn: MockConnection,
     *,
     assistant: Assistant | None = _KB,
-    api_key_id: UUID | None = _KEY,
+    api_key_id: UUID | Literal["browser"] | None = _KEY,
     asker: str | None = "ada@x.y",
     host: UUID | str = _HOST,
     instance: UUID | None = None,
@@ -110,8 +110,15 @@ async def test_one_query_names_the_key_assistant_asker_and_host(
     conn = _answering(_HOLDS)
     _ = await _ask(conn, asker="Ada@X.Y", host=host)
     (asked,) = conn.fetch.await_args_list
-    _, *arguments = asked.args
+    query, *arguments = asked.args
+    assert query is _RULE
     assert arguments == [_KEY, "kb@x.y", "ada@x.y", by_id, by_name]
+
+
+@pytest.mark.asyncio
+async def test_a_host_id_a_driver_hands_as_text_is_read_as_a_uuid() -> None:
+    access = await _ask(_answering(_HOLDS | {"id": str(_HOST)}))
+    assert access.host_id == _HOST
 
 
 @pytest.mark.asyncio
@@ -123,12 +130,49 @@ async def test_no_key_or_asker_is_bound_as_none() -> None:
     assert access.failed == "key"
 
 
+@pytest.mark.parametrize("instance", [None, _DAEMON])
 @pytest.mark.asyncio
-async def test_a_server_with_no_assistant_fails_at_once_and_asks_nothing() -> None:
+async def test_no_key_is_refused_unless_the_caller_says_it_is_the_askers_browser(
+    instance: UUID | None,
+) -> None:
+    """At the open and at the sweep alike: no key is no browser."""
+    keyless = _HOLDS | {"key": False}
+    refused = await _ask(_answering(keyless), api_key_id=None, instance=instance)
+    assert refused.failed == "key"
+
+    conn = _answering(keyless)
+    access = await _ask(conn, api_key_id="browser", instance=instance)
+
+    (asked,) = conn.fetch.await_args_list
+    assert asked.args[1:4] == (None, "kb@x.y", "ada@x.y")
+    assert (access.host_id, access.failed) == (_HOST, None)
+
+
+@pytest.mark.parametrize(
+    ("changed", "check"),
+    [
+        ({"asker": False}, "asker"),
+        ({"id": None}, "host"),
+        ({"facts": {"exec": True}}, "tools"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_the_askers_browser_still_needs_an_active_writer_and_a_host_of_theirs(
+    changed: dict[str, object],
+    check: Check,
+) -> None:
+    keyless = _HOLDS | {"key": False}
+    access = await _ask(_answering(keyless | changed), api_key_id="browser")
+    assert access.failed == check
+
+
+@pytest.mark.asyncio
+async def test_with_no_assistant_a_key_reaches_its_own_askers_host_alone() -> None:
     conn = _answering(_HOLDS)
     access = await _ask(conn, assistant=None)
-    assert (access.host_id, access.failed) == (None, "assistant")
-    conn.fetch.assert_not_awaited()
+    (asked,) = conn.fetch.await_args_list
+    assert asked.args[1:4] == (_KEY, None, "ada@x.y")
+    assert (access.host_id, access.failed) == (_HOST, None)
 
 
 @pytest.mark.parametrize(

@@ -1,4 +1,4 @@
-"""Authorize who may read, write, drain and message an AgentSession.
+"""Authorize who may read, write and message an AgentSession.
 
 Who reads a session's transcript is one rule,
 :func:`~trackinizer.server.audience.visible_sql`, which every reader of session
@@ -6,7 +6,7 @@ content takes: its audience, and as the server's organisation mode
 (``TRACKINIZER_CHAT_ORGS``) says, its owner, its organisation, the people who oversee
 and, for a science chat, its members. Reading a session controls nothing, since a run
 keeps its input, its records and its life there: only its account or opening key sends
-it input, regardless of transcript visibility, and only they write, drain or end it. The
+it input, regardless of transcript visibility, and only they write or end it. The
 opening key always passes, whatever the audience, so a key whose owner lost ``staff`` can
 still run the session it opened; its account must read it too. Only the transcript is
 gated: a hidden session still has an open envelope, and the rows it files stay open.
@@ -21,12 +21,8 @@ lands in the chat, so every destination reader must be allowed to read it; a
 (:func:`~trackinizer.server.private.chat_audience.raise_chat_audience`), which
 only the chat's starter makes it; and any other session only when everyone who
 reads the chat reads it too
-(:func:`~trackinizer.server.private.science_chats.chat_readers`). The
-assistant reads a chat one of its own keys opened by its id and audience alone, as it
-must to answer and fork chats an earlier key of its own opened. It reads, writes and
-drains, by its id and audience alone too, a chat a CLI began under its starter's key
-once the starter's canvas answers it with the assistant: it runs there as the CLI's
-run did. Any other chat it reads only as the transcript test lets it.
+(:func:`~trackinizer.server.private.science_chats.chat_readers`). Any chat it
+reads only as the transcript test lets it.
 
 A session opens into the audience its key is pinned to, else ``open``, and only into
 one its caller may open into: :func:`granted_audience` refuses a pin the caller no
@@ -34,17 +30,16 @@ longer holds instead of lowering the session to ``open``. A caller asks for
 ``private`` to start a session hidden.
 
 A viewer key mutates only the session it opened. A science chat is stricter: only the
-key that opened it, or the assistant on a chat it runs, edits its row, and only that
-key or an admin purges it by id. Other rows are purged by their account or an admin.
-Only a session's account may reassign it, since the account controls its input;
-other rows may also be reassigned by an admin. A chat's lines name their poster,
-and its labels and account say who started it and
-who posted, so a second writer's write would forge a poster or hide the chat from
-History. Its transcript is one part per run that answered in it: a new part, or a run
-attaching to it, comes from its opening key, the configured assistant's or its
-starter's, and each part is written by the key that opened it alone, so no run
-rewrites another's lines. A chat is known by its ``chat:`` id alone, whoever opened
-it and whether or not an assistant is configured.
+key that opened it edits its row, and only that key or an admin purges it by id.
+Other rows are purged by their account or an admin. Only a session's account may
+reassign it, since the account controls its input; other rows may also be
+reassigned by an admin. A chat's lines name their poster, and its labels and account
+say who started it and who posted, so a second writer's write would forge a poster
+or hide the chat from History. Its transcript is one part per journal of its agent
+process: a new part comes from its opening key, the configured assistant's or its
+starter's, and each part is written by a key of the account that opened it, so no
+other account rewrites its lines. A chat is known by its ``chat:`` id alone, whoever
+opened it and whether or not an assistant is configured.
 
 Every rule above stays where it is. On top of them, a field edit, a lock and a
 purge by id ask the deployment's access policy (:func:`require_row_write`), whose
@@ -120,9 +115,9 @@ __all__ = [
 ]
 
 
-type SessionAccess = Literal["read", "write", "drain", "input"]
-"""What a caller does to a session: read its transcript, write or end it, drain its
-inbound queue, or send it input."""
+type SessionAccess = Literal["read", "write", "input", "post"]
+"""What a caller does to a session: read its transcript, write or end it, run its
+agent (start, stop or serve it), or post it a line or a message."""
 
 
 async def resolve_asker(
@@ -271,15 +266,15 @@ async def require_session_access(
     Input requires the session's account or opening key; transcript visibility,
     organisation membership and admin status grant no input rights. When the
     assistant names an asker, only a writer whose account holds the session passes.
+    A post asks the same, but of a science chat, which takes a line from whoever may
+    post into it (:func:`~trackinizer.server.api.private.chat_sessions.require_poster`).
     Reading asks the database's transcript rule, with the opening key exempt; writing
-    and draining ask it of the session's account, for the reason input does. A science
-    chat's own rules (:mod:`~trackinizer.server.api.private.chat_sessions`) narrow
-    a reader's writes and drains instead.
+    asks it of the session's account, for the reason input does. A science chat's own
+    rules (:mod:`~trackinizer.server.api.private.chat_sessions`) narrow a reader's
+    writes instead.
 
     The configured assistant acts for an ``asker`` on the asker's rights alone: it
-    reads a session for one only if they read it. On its own rights it reads a chat
-    it opened, and reads, writes and drains a chat a CLI began that its starter gave it
-    (:func:`~trackinizer.server.api.private.chat_sessions.assistant_runs_chat`).
+    reads a session for one only if they read it.
 
     Args:
       request: The request, which carries the store and the configuration.
@@ -297,7 +292,7 @@ async def require_session_access(
     """
     assistant = get_assistant(request)
     lender = asker if is_the_assistant(identity, assistant) else None
-    if mode == "input":
+    if mode in {"input", "post"}:
         _require_input(identity, session=session, asker=lender)
         return
     if mode == "read" and lender is not None:
@@ -445,9 +440,8 @@ async def require_session_row_write(
 
     One query reads the row's kind, audience, opening key and ``cli_session_id``,
     so a generic route (a field edit, a purge) learns whether the id is a session
-    before it acts. A science chat is then written by its opening key, or the
-    assistant on a chat it runs, and any session by a caller who opened it or reads its
-    audience.
+    before it acts. A science chat is then written by its opening key, and any session
+    by a caller who opened it or reads its audience.
 
     Args:
       request: The request, which carries the store.

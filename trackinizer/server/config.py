@@ -45,14 +45,16 @@ __all__ = [
     "Config",
     "ConfigError",
     "ConfigFlags",
+    "RemoteAgentService",
     "ServiceKeys",
     "build_embedder",
     "build_engine",
     "parse_assistant",
     "parse_chat_orgs",
-    "parse_chat_streaming",
     "parse_compute",
+    "parse_default_remote_agent_service",
     "parse_engine",
+    "parse_remote_agent_services",
     "parse_service_keys",
     "parse_staff",
     "parse_terminal_stun",
@@ -126,6 +128,25 @@ class ServiceKeys:
     directory: Path
 
 
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RemoteAgentService:
+    """A service that runs remote agents: agents for accounts other than its own.
+
+    It is enrolled as a host, whose daemon confines each agent it starts.
+
+    Attributes:
+      name: The name it is enrolled under, as a host's.
+      account: The service account it is enrolled under, which owns it.
+      admits: Who may start an agent on it or use its login, as patterns of the kind
+        ``staff`` holds.
+
+    """
+
+    name: str
+    account: str
+    admits: tuple[str, ...] = ()
+
+
 class ConfigFlags(Protocol):
     """The parsed CLI flags :meth:`Config.from_args` reads."""
 
@@ -175,7 +196,7 @@ class Config:
       session_max_age_seconds: Session cookie TTL; defaults to 30 days.
       auth_disabled: Bypass auth -- every request becomes a synthetic
         admin. Local demos only; never in production.
-      assistant: The Chat partner of every canvas; none when unset.
+      assistant: The service account that acts for an ``asker``; none when unset.
       staff: Who holds the ``staff`` audience: patterns, each ``user@host`` or
         ``*@domain``, lowercase. A domain pattern also needs Google's ``hd`` claim
         to name the domain. Empty means nobody is staff and no staff session can
@@ -191,10 +212,6 @@ class Config:
         every caller reads every open session and every person every open chat;
         only a server whose users are all one organisation sets it. Environment
         only (``TRACKINIZER_CHAT_ORGS``).
-      chat_streaming: Hold the answer a chat's assistant is writing, in memory, for
-        the chat's readers to read as it grows. Off refuses its routes with 404
-        ``chat_partials_off``, and the assistant stops sending it. Environment
-        only (``TRACKINIZER_CHAT_STREAMING``, ``on`` or ``off``).
       terminal_stun: STUN servers the browser and a daemon use to reach each
         other direct, as ``stun:HOST[:PORT]`` URLs. Empty (the default) means a
         direct link forms on one network only. Environment only
@@ -216,7 +233,15 @@ class Config:
       tool_line_bytes: The longest line the server reads from an agent's tool connection;
         a longer one ends the tool connection. The default fits a ``Write`` of 8 MiB. Each line
         is parsed inline, on the one process, so a line this long stalls it for a
-        moment; only the configured assistant's key can send one.
+        moment; only a writer's or an admin's key can send one.
+      remote_agent_services: The services that run agents for accounts other than
+        their own, and whom each admits. Environment only
+        (``TRACKINIZER_REMOTE_AGENT_SERVICES``, a JSON list of
+        ``{"name", "account", "admits"}`` objects).
+      default_remote_agent_service: The remote agent service an agent runs on when
+        its start names no host; empty when this server names none, and such a
+        start finds no place. Environment only
+        (``TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE``).
 
     """
 
@@ -256,7 +281,6 @@ class Config:
     assistant: Assistant | None = None
     staff: tuple[str, ...] = ()
     chat_orgs: ChatOrgs = "individual"
-    chat_streaming: bool = True
     terminal_stun: tuple[str, ...] = ()
     compute: tuple[ComputeNote, ...] = ()
     service_keys: ServiceKeys | None = None
@@ -264,6 +288,8 @@ class Config:
     tool_dial_back_sec: float = 20.0
     tool_sweep_sec: float = 60.0
     tool_line_bytes: int = 16 << 20
+    remote_agent_services: tuple[RemoteAgentService, ...] = ()
+    default_remote_agent_service: str = ""
 
     @classmethod
     def from_env(cls) -> Self:
@@ -273,6 +299,9 @@ class Config:
           result: Config with settings from TRACKINIZER_* env vars.
 
         """
+        remote_agent_services = parse_remote_agent_services(
+            os.environ.get("TRACKINIZER_REMOTE_AGENT_SERVICES", ""),
+        )
         return cls(
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
@@ -302,9 +331,6 @@ class Config:
             assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
             staff=parse_staff(os.environ.get("TRACKINIZER_STAFF", "")),
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
-            chat_streaming=parse_chat_streaming(
-                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
-            ),
             terminal_stun=parse_terminal_stun(
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
@@ -312,6 +338,11 @@ class Config:
             service_keys=parse_service_keys(
                 os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
                 os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
+            remote_agent_services=remote_agent_services,
+            default_remote_agent_service=parse_default_remote_agent_service(
+                os.environ.get("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", ""),
+                services=remote_agent_services,
             ),
         )
 
@@ -327,6 +358,9 @@ class Config:
             environment only.
 
         """
+        remote_agent_services = parse_remote_agent_services(
+            os.environ.get("TRACKINIZER_REMOTE_AGENT_SERVICES", ""),
+        )
         return cls(
             engine=parse_engine(flags.engine),
             datadir=flags.datadir,
@@ -347,9 +381,6 @@ class Config:
             staff=parse_staff(flags.staff),
             # Like the secrets, deployment properties that no flag overrides.
             chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
-            chat_streaming=parse_chat_streaming(
-                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
-            ),
             terminal_stun=parse_terminal_stun(
                 os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
             ),
@@ -357,6 +388,11 @@ class Config:
             service_keys=parse_service_keys(
                 os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
                 os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
+            remote_agent_services=remote_agent_services,
+            default_remote_agent_service=parse_default_remote_agent_service(
+                os.environ.get("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", ""),
+                services=remote_agent_services,
             ),
         )
 
@@ -623,6 +659,82 @@ def parse_compute(value: str) -> tuple[ComputeNote, ...]:
     return notes
 
 
+def parse_remote_agent_services(value: str) -> tuple[RemoteAgentService, ...]:
+    """Parse ``$TRACKINIZER_REMOTE_AGENT_SERVICES``: a JSON list of services.
+
+    Each is ``{"name", "account", "admits"}``, and is enrolled under a service
+    account, since a person's host that took other accounts' sessions would hand them
+    its owner. ``admits`` lists patterns of the kind ``$TRACKINIZER_STAFF`` holds,
+    read by :func:`parse_staff`.
+
+    Args:
+      value: The variable; blank means none.
+
+    Returns:
+      services: The services, in order, each name trimmed and each account
+        lowercase.
+
+    Raises:
+      ConfigError: The value is not such a list, a name or an account is blank or
+        names no service account, a name is given twice, or a pattern is malformed.
+
+    """
+    if not value.strip():
+        return ()
+    shape = (
+        "TRACKINIZER_REMOTE_AGENT_SERVICES must be a JSON list of "
+        '{"name", "account", "admits"} objects'
+    )
+    try:
+        read = json_loads(value, tuple[RemoteAgentService, ...])
+    except ValueError as error:
+        raise ConfigError(f"{shape}: {error}") from None
+    services = tuple(
+        RemoteAgentService(
+            name=each.name.strip(),
+            account=each.account.strip().lower(),
+            admits=parse_staff(",".join(each.admits)),
+        )
+        for each in read
+    )
+    for each in services:
+        if not each.name or not wire_service_accounts.is_service_address(each.account):
+            raise ConfigError(
+                f"{shape}, each named and enrolled under a service account, "
+                f"NAME@{wire_service_accounts.SERVICE_DOMAIN}: got {each!r}",
+            )
+    if len({each.name for each in services}) != len(services):
+        raise ConfigError("TRACKINIZER_REMOTE_AGENT_SERVICES names a service twice")
+    return services
+
+
+def parse_default_remote_agent_service(
+    value: str,
+    *,
+    services: tuple[RemoteAgentService, ...],
+) -> str:
+    """Parse ``$TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE``: where an agent runs by default.
+
+    Args:
+      value: The variable; blank means none.
+      services: The remote agent services the server names.
+
+    Returns:
+      name: The service's name, trimmed; empty for none.
+
+    Raises:
+      ConfigError: It names no remote agent service.
+
+    """
+    name = value.strip()
+    if name and name not in {each.name for each in services}:
+        raise ConfigError(
+            f"TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE names {name!r}, which "
+            "TRACKINIZER_REMOTE_AGENT_SERVICES does not name",
+        )
+    return name
+
+
 def parse_service_keys(accounts: str, directory: str) -> ServiceKeys | None:
     """Parse ``$TRACKINIZER_SERVICE_KEYS`` and ``$TRACKINIZER_SERVICE_KEY_DIR``.
 
@@ -660,30 +772,6 @@ def parse_service_keys(accounts: str, directory: str) -> ServiceKeys | None:
             "TRACKINIZER_SERVICE_KEYS names accounts; set TRACKINIZER_SERVICE_KEY_DIR",
         )
     return ServiceKeys(accounts=tuple(named.items()), directory=Path(directory.strip()))
-
-
-def parse_chat_streaming(value: str) -> bool:
-    """Parse ``$TRACKINIZER_CHAT_STREAMING``: ``on`` or ``off``; blank is ``on``.
-
-    Args:
-      value: The variable.
-
-    Returns:
-      streaming: Whether a chat's answer in writing is held for its readers.
-
-    Raises:
-      ConfigError: The value is neither.
-
-    """
-    match value.strip():
-        case "" | "on":
-            return True
-        case "off":
-            return False
-        case other:
-            raise ConfigError(
-                f"TRACKINIZER_CHAT_STREAMING must be on or off, got {other!r}",
-            )
 
 
 def parse_engine(value: str) -> Literal["pglite", "pg"]:

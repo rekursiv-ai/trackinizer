@@ -1,16 +1,18 @@
-"""Host-run routes against a mocked connection and the app's real inbound queue.
+"""Host-run routes against a mocked connection and a session relay of the test's own.
 
-``host_runs_routes_pglite_test.py`` runs the same routes against a real
-database; these pin what each route asks of the connection and the queue, and
-that a refusal stops nothing.
+``host_runs_routes_pglite_test.py`` runs the same routes against a real database;
+these pin what each route asks of the connection and the relay, and that a refusal
+stops nothing.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, cast, override
+from typing import TYPE_CHECKING, override
+from unittest.mock import call
 
+import asyncio
 import uuid
 
 import pytest
@@ -22,7 +24,7 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.server.access_policy import Principal
-from trackinizer.server.api.app import app
+from trackinizer.server.api._deps import Later
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     TEST_USER_ID,
@@ -31,6 +33,7 @@ from trackinizer.server.api.conftest import (
     patch_state,
 )
 from trackinizer.server.api.host_runs_routes import named_runs
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.wire.wire_hosts import (
     HOST_DISCONNECT_PATH,
     HOST_LOGOUT_PATH,
@@ -41,53 +44,76 @@ from trackinizer.wire.wire_hosts import (
     HostRun,
     HostRuns,
 )
+from trackinizer.wire.wire_session_relay import AgentProcess, ProcessSpec
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.access_policy import ResourceKind
-    from trackinizer.server.inbound import InboundQueue
     from trackinizer.server.store.core import Store
 
 
 _HOST_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
-_CLAUDE = uuid.UUID("00000000-0000-0000-0000-00000000000b")
-_CODEX = uuid.UUID("00000000-0000-0000-0000-00000000000a")
-_THEIRS = uuid.UUID("00000000-0000-0000-0000-00000000000c")
+_OTHER_HOST_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
+_FIRST = uuid.UUID("00000000-0000-0000-0000-00000000000a")
+_SECOND = uuid.UUID("00000000-0000-0000-0000-00000000000b")
+_ELSEWHERE = uuid.UUID("00000000-0000-0000-0000-00000000000c")
 _PAST = uuid.UUID("00000000-0000-0000-0000-00000000000d")
 _CHAT = uuid.UUID("00000000-0000-0000-0000-0000000000c4")
 _SEEN = datetime(2026, 11, 1, 9, 0, tzinfo=UTC)
+_HOST_SQL = "SELECT id, owner FROM hosts WHERE name = $1"
 
 
-class _Hub:
-    """The app's event streams, counting nudges."""
+class _Later(Later):
+    """The app's delayed work, kept for the test to read instead of run."""
 
     def __init__(self) -> None:
-        self.nudges = 0
+        super().__init__()
+        self.asked: list[tuple[float, Callable[[], Awaitable[None]]]] = []
 
-    def nudge(self) -> None:
-        self.nudges += 1
+    @override
+    def run(
+        self,
+        delay_sec: float,
+        work: Callable[[], Awaitable[None]],
+    ) -> asyncio.Task[None]:
+        self.asked.append((delay_sec, work))
+        return asyncio.ensure_future(_nothing())
+
+
+async def _nothing() -> None:
+    """Do nothing, in place of work the test only reads."""
 
 
 @pytest.fixture
-def hub(monkeypatch: pytest.MonkeyPatch) -> _Hub:
-    streams = _Hub()
-    patch_state(monkeypatch, "hub", streams)
-    return streams
+def relay(monkeypatch: pytest.MonkeyPatch) -> SessionRelay:
+    started = SessionRelay()
+    patch_state(monkeypatch, "session_relay", started)
+    return started
 
 
-def test_listing_shows_the_owners_live_runs_sorted_then_the_past_ones(
+@pytest.fixture
+def later(monkeypatch: pytest.MonkeyPatch) -> _Later:
+    kept = _Later()
+    patch_state(monkeypatch, "later", kept)
+    return kept
+
+
+def test_listing_shows_the_hosts_live_processes_by_session_then_its_past_runs(
     route_client: tuple[TestClient, Store, FakeEngine],
+    relay: SessionRelay,
 ) -> None:
     client, _, engine = route_client
     _own(engine, owner=TEST_USER_EMAIL.upper())
-    _live_runs()
+    _live_runs(relay)
     engine.conn.fetch.side_effect = [
-        [_past_row(_CLAUDE), _past_row(_PAST)],
+        [_past_row(_SECOND), _past_row(_PAST)],
         [
-            _session_row(_CLAUDE, seq=7, chat=f"chat:{_CHAT}"),
+            _session_row(_SECOND, seq=7, chat=f"chat:{_CHAT}"),
             _session_row(_PAST, seq=5),
         ],
     ]
@@ -96,21 +122,9 @@ def test_listing_shows_the_owners_live_runs_sorted_then_the_past_ones(
 
     assert response.status_code == 200, response.text
     runs = HostRuns.model_validate_json(response.text)
-    assert [(run.cli, run.session_id) for run in runs.runs] == [
-        ("claude", _CLAUDE),
-        ("codex", _CODEX),
-    ]
     assert runs.runs == [
-        HostRun(
-            session_id=_CLAUDE,
-            cli="claude",
-            run="chat-b",
-            cwd="~/w",
-            state="idle",
-            seq=7,
-            conversation_id=_CHAT,
-        ),
-        HostRun(session_id=_CODEX, cli="codex"),
+        HostRun(session_id=_FIRST, cli="sagent"),
+        HostRun(session_id=_SECOND, cli="sagent", seq=7, conversation_id=_CHAT),
     ]
     assert runs.past == [
         HostRun(
@@ -122,9 +136,10 @@ def test_listing_shows_the_owners_live_runs_sorted_then_the_past_ones(
             seq=5,
         ),
     ]
+    assert engine.conn.fetchrow.call_args_list == [call(_HOST_SQL, "box")]
     past, sessions = engine.conn.fetch.call_args_list
     assert past.args[1:] == ("box", TEST_USER_EMAIL.upper(), 1 + 2)
-    assert sessions.args[1:] == ([_CLAUDE, _CODEX, _PAST], TEST_USER_EMAIL.upper())
+    assert sessions.args[1:] == ([_FIRST, _SECOND, _PAST], TEST_USER_EMAIL.upper())
 
 
 @pytest.mark.asyncio
@@ -198,9 +213,12 @@ async def test_named_runs_names_only_a_session_the_callers_policy_reads() -> Non
 
 def test_listing_with_no_runs_reads_no_sessions(
     route_client: tuple[TestClient, Store, FakeEngine],
+    relay: SessionRelay,
 ) -> None:
     client, _, engine = route_client
     _own(engine, owner=TEST_USER_EMAIL)
+    # Another host's process is no run of this one.
+    _start(relay, _ELSEWHERE, host_id=_OTHER_HOST_ID)
     engine.conn.fetch.return_value = []
 
     response = client.get(HOST_RUNS_PATH.format(name="box"))
@@ -210,21 +228,34 @@ def test_listing_with_no_runs_reads_no_sessions(
     assert engine.conn.fetch.call_count == 1
 
 
-@pytest.mark.parametrize("owner", [None, "eve@example.com"], ids=["absent", "theirs"])
+@pytest.mark.parametrize(
+    "row",
+    [
+        None,
+        {"id": str(_HOST_ID), "owner": None},
+        {"id": str(_HOST_ID), "owner": "eve@example.com"},
+    ],
+    ids=["absent", "nobody's", "theirs"],
+)
 def test_a_host_that_is_not_the_callers_reads_as_none(
     route_client: tuple[TestClient, Store, FakeEngine],
-    owner: str | None,
+    relay: SessionRelay,
+    later: _Later,
+    row: dict[str, object] | None,
 ) -> None:
     client, _, engine = route_client
-    _own(engine, owner=owner)
-    _live_runs()
+    set_field_row(engine.conn, row)
+    _live_runs(relay)
+    running = relay.processes(_HOST_ID)
 
     listed = client.get(HOST_RUNS_PATH.format(name="box"))
-    stopped = client.post(_stop_path("box", _CLAUDE))
+    stopped = client.post(_stop_path("box", _FIRST))
 
     assert (listed.status_code, stopped.status_code) == (404, 404)
+    assert stopped.json() == {"detail": "no host box of yours", "code": "not_found"}
     assert engine.conn.fetch.call_count == 0
-    assert _CLAUDE in _inbound().runs_on("box", account=TEST_USER_EMAIL)
+    assert relay.processes(_HOST_ID) == running
+    assert later.asked == []
 
 
 def test_a_reserved_name_is_refused_unread(
@@ -236,164 +267,180 @@ def test_a_reserved_name_is_refused_unread(
     response = client.get(HOST_RUNS_PATH.format(name=reserved))
 
     assert response.status_code == 422
-    assert engine.conn.fetchval.call_count == 0
+    assert engine.conn.fetchrow.call_count == 0
 
 
-def test_stopping_a_live_run_refuses_its_drains_and_nudges_the_streams(
+def test_stopping_a_live_process_stops_it_as_its_sessions_own_stop_does(
     route_client: tuple[TestClient, Store, FakeEngine],
-    hub: _Hub,
+    relay: SessionRelay,
+    later: _Later,
 ) -> None:
     client, _, engine = route_client
     _own(engine, owner=TEST_USER_EMAIL)
-    _live_runs()
+    _live_runs(relay)
 
-    stopped = client.post(_stop_path("box", _CLAUDE))
-    again = client.post(_stop_path("box", _CLAUDE))
-    theirs = client.post(_stop_path("box", _THEIRS))
+    stopped = client.post(_stop_path("box", _FIRST))
+    again = client.post(_stop_path("box", _FIRST))
+    elsewhere = client.post(_stop_path("box", _ELSEWHERE))
 
     assert (stopped.status_code, stopped.content) == (204, b"")
-    assert (again.status_code, theirs.status_code) == (404, 404)
-    assert _inbound().stopped(_CLAUDE, instance="b" * 32)
-    assert not _inbound().stopped(_THEIRS, instance="c" * 32)
-    assert hub.nudges == 1
+    assert again.json() == {
+        "detail": f"no live session {_FIRST} on box",
+        "code": "not_found",
+    }
+    assert (again.status_code, elsewhere.status_code) == (404, 404)
+    detached = _process(relay, _FIRST)
+    assert (detached.state, detached.reason) == ("detached", "stopped")
+    assert relay.processes(_HOST_ID) == [_process(relay, _SECOND)]
+    assert relay.processes(_OTHER_HOST_ID) == [_process(relay, _ELSEWHERE)]
+    # Its key's revoke waits the minute the session's own stop gives it.
+    assert [delay_sec for delay_sec, _ in later.asked] == [60.0]
 
 
-def test_the_assistants_drain_of_a_session_is_no_run_to_stop(
+def test_disconnect_revokes_the_host_and_lists_the_processes_it_stopped(
     route_client: tuple[TestClient, Store, FakeEngine],
-    hub: _Hub,
+    relay: SessionRelay,
 ) -> None:
     client, _, engine = route_client
-    _own(engine, owner=TEST_USER_EMAIL)
-    assistant = uuid.uuid4()
-    # The assistant's poller names no CLI, even where it names the host.
-    _inbound().mark_poller(assistant, host="box", account=TEST_USER_EMAIL)
-
-    response = client.post(_stop_path("box", assistant))
-
-    assert response.status_code == 404
-    assert _inbound().has_poller(assistant)
-    assert hub.nudges == 0
-
-
-def test_disconnect_revokes_the_host_and_stops_every_owner_run(
-    route_client: tuple[TestClient, Store, FakeEngine],
-    hub: _Hub,
-) -> None:
-    client, _, engine = route_client
-    set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
-    _live_runs()
+    set_field_row(engine.conn, _host_row(owner=TEST_USER_EMAIL))
+    _live_runs(relay)
 
     response = client.post(HOST_DISCONNECT_PATH.format(name="box"))
 
     assert response.status_code == 200, response.text
-    stopped = HostRuns.model_validate_json(response.text)
-    assert [run.session_id for run in stopped.runs] == [_CLAUDE, _CODEX]
-    assert stopped.past == []
-    assert _inbound().stopped(_CLAUDE, instance="b" * 32)
-    assert _inbound().stopped(_CODEX, instance="a" * 32)
-    assert list(_inbound().runs_on("box", account="eve@example.com")) == [_THEIRS]
-    assert hub.nudges == 1
+    assert HostRuns.model_validate_json(response.text) == HostRuns(
+        runs=[
+            HostRun(session_id=_FIRST, cli="sagent"),
+            HostRun(session_id=_SECOND, cli="sagent"),
+        ],
+    )
+    assert [
+        (each.state, each.reason)
+        for each in (_process(relay, _FIRST), _process(relay, _SECOND))
+    ] == [("detached", "host revoked")] * 2
+    assert relay.processes(_OTHER_HOST_ID) == [_process(relay, _ELSEWHERE)]
 
 
-@pytest.mark.parametrize("owner", [None, TEST_USER_EMAIL], ids=["no owner", "no runs"])
-def test_disconnect_that_stops_nothing_nudges_nothing(
+@pytest.mark.parametrize("running", [False, True], ids=["nothing", "a process"])
+def test_an_admin_disconnects_a_host_nobody_owns_and_lists_what_it_stopped(
     route_client: tuple[TestClient, Store, FakeEngine],
-    hub: _Hub,
-    owner: str | None,
+    relay: SessionRelay,
+    *,
+    running: bool,
 ) -> None:
     client, _, engine = route_client
     install_identity(make_test_identity(role="admin"))
-    set_field_row(engine.conn, {"id": _HOST_ID, "owner": owner})
+    set_field_row(engine.conn, _host_row(owner=None))
+    if running:
+        _start(relay, _FIRST, host_id=_HOST_ID, remote=True)
 
     response = client.post(HOST_DISCONNECT_PATH.format(name="box"))
 
     assert response.status_code == 200, response.text
-    assert HostRuns.model_validate_json(response.text).runs == []
-    assert hub.nudges == 0
+    assert HostRuns.model_validate_json(response.text) == HostRuns(
+        runs=[HostRun(session_id=_FIRST, cli="sagent")] if running else [],
+    )
 
 
 def test_logout_disconnects_and_revokes_the_keys_its_logins_made(
     route_client: tuple[TestClient, Store, FakeEngine],
+    relay: SessionRelay,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client, store, engine = route_client
-    _own(engine, owner=TEST_USER_EMAIL)
-    set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
-    _live_runs()
-    keys = [uuid.uuid4(), uuid.uuid4()]
-    engine.conn.fetch.return_value = [{"id": key} for key in keys]
+    set_field_row(engine.conn, _host_row(owner=TEST_USER_EMAIL))
+    _live_runs(relay)
+    processes, keys = [uuid.uuid4()], [uuid.uuid4(), uuid.uuid4()]
+    # The disconnect revokes the host's process keys first, then the logout its logins'.
+    engine.conn.fetch.side_effect = [
+        [{"id": key} for key in processes],
+        [{"id": key} for key in keys],
+    ]
     forgotten: list[uuid.UUID] = []
     monkeypatch.setattr(store, "forget_bearer_identity_for_key", forgotten.append)
 
     response = client.post(HOST_LOGOUT_PATH.format(name="box"))
 
     assert response.status_code == 200, response.text
-    logout = HostLogout.model_validate_json(response.text)
-    assert ([run.session_id for run in logout.runs], logout.keys) == (
-        [_CLAUDE, _CODEX],
-        2,
+    assert HostLogout.model_validate_json(response.text) == HostLogout(
+        runs=[
+            HostRun(session_id=_FIRST, cli="sagent"),
+            HostRun(session_id=_SECOND, cli="sagent"),
+        ],
+        keys=2,
     )
-    assert forgotten == keys
-    call = engine.conn.fetch.call_args
-    assert call is not None
-    sql = call.args[0]
+    assert relay.processes(_HOST_ID) == []
+    assert forgotten == [*processes, *keys]
+    revoked = engine.conn.fetch.call_args
+    assert revoked is not None
+    sql = revoked.args[0]
     assert isinstance(sql, str)
     assert sql.startswith("UPDATE api_keys SET revoked_at = clock_timestamp()")
     assert "api_keys.revoked_at IS NULL" in sql
-    assert call.args[1:] == ("box", TEST_USER_EMAIL, TEST_USER_ID)
+    assert revoked.args[1:] == ("box", TEST_USER_EMAIL, TEST_USER_ID)
 
 
 def test_logout_of_a_host_that_is_not_the_callers_revokes_nothing(
     route_client: tuple[TestClient, Store, FakeEngine],
+    relay: SessionRelay,
 ) -> None:
     client, _, engine = route_client
-    _own(engine, owner="eve@example.com")
-    _live_runs()
+    set_field_row(engine.conn, _host_row(owner="eve@example.com"))
+    _live_runs(relay)
+    running = relay.processes(_HOST_ID)
 
     response = client.post(HOST_LOGOUT_PATH.format(name="box"))
 
     assert response.status_code == 404
-    assert (engine.conn.fetchrow.call_count, engine.conn.fetch.call_count) == (0, 0)
+    assert engine.conn.fetchrow.call_args_list == [call(_HOST_SQL, "box")]
+    assert engine.conn.fetch.call_count == 0
+    assert relay.processes(_HOST_ID) == running
 
 
-def _own(engine: FakeEngine, *, owner: str | None) -> None:
-    """Answer the host's owner lookup with ``owner``."""
-    engine.conn.fetchval.return_value = owner
+def _own(engine: FakeEngine, *, owner: str) -> None:
+    """Answer the host's lookup with ``box``, owned by ``owner``."""
+    set_field_row(engine.conn, _host_row(owner=owner))
 
 
-def _live_runs() -> None:
-    """Renew the caller's two runs on ``box``, another person's there, and one elsewhere."""
-    inbound = _inbound()
-    inbound.mark_poller(
-        _CODEX,
+def _host_row(*, owner: str | None) -> dict[str, object]:
+    # The id as text, as a driver may hand it: the relay holds the host by its UUID.
+    return {"id": str(_HOST_ID), "owner": owner}
+
+
+def _live_runs(relay: SessionRelay) -> None:
+    """Start two processes on ``box``, the one listed second first, and one elsewhere."""
+    for session_id, host_id in (
+        (_SECOND, _HOST_ID),
+        (_FIRST, _HOST_ID),
+        (_ELSEWHERE, _OTHER_HOST_ID),
+    ):
+        _start(relay, session_id, host_id=host_id)
+
+
+def _start(
+    relay: SessionRelay,
+    session_id: uuid.UUID,
+    *,
+    host_id: uuid.UUID,
+    remote: bool = False,
+) -> None:
+    """Offer a new process of ``session_id`` to the host, as a start does."""
+    process_id = uuid.uuid4()
+    _ = relay.start(
+        session_id,
+        ProcessSpec(),
+        process_id=process_id,
+        host_id=host_id,
         host="box",
-        cli="codex",
-        instance="a" * 32,
-        account=TEST_USER_EMAIL,
+        token=f"key-{process_id.hex}",
+        remote=remote,
     )
-    inbound.mark_poller(
-        _CLAUDE,
-        run="chat-b",
-        host="box",
-        cwd="~/w",
-        cli="claude",
-        instance="b" * 32,
-        account=TEST_USER_EMAIL,
-    )
-    inbound.mark_poller(
-        _THEIRS,
-        host="box",
-        cli="claude",
-        instance="c" * 32,
-        account="eve@example.com",
-    )
-    inbound.mark_poller(
-        uuid.uuid4(),
-        host="gx10",
-        cli="claude",
-        instance="d" * 32,
-        account=TEST_USER_EMAIL,
-    )
+
+
+def _process(relay: SessionRelay, session_id: uuid.UUID) -> AgentProcess:
+    process = relay.process(session_id)
+    assert process is not None
+    return process
 
 
 def _past_row(session_id: uuid.UUID) -> dict[str, object]:
@@ -432,10 +479,6 @@ def _session_row(
     chat: str | None = None,
 ) -> dict[str, object]:
     return {"id": session_id, "seq": seq, "chat": chat}
-
-
-def _inbound() -> InboundQueue:
-    return cast("InboundQueue", app.state.inbound)
 
 
 def _stop_path(name: str, session_id: uuid.UUID) -> str:

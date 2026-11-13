@@ -19,6 +19,7 @@ from treekle import PlainTree, immutable, json_loads
 
 from trackinizer.sagent.session.jsonl import read_record, record_line
 from trackinizer.sagent.session.types import (
+    RENAMED_KINDS,
     IncompleteRecord,
     SessionRecord,
     UncategorizedRecord,
@@ -103,7 +104,8 @@ def is_sagent(head: str) -> bool:
             return False
         if not isinstance(record, dict):
             return False
-        if record.get("py/object") in record_classes():
+        # A record type sagent names now, or named once: its journals keep those.
+        if record.get("py/object") in {*record_classes(), *RENAMED_KINDS}:
             return True
         kind = record.get("kind")
         return isinstance(kind, str) and (
@@ -119,7 +121,10 @@ def _read(line: str) -> SessionRecord:
         record = json_loads(line, dict[str, PlainTree])
     except (json.JSONDecodeError, ValueError, TypeError):
         return IncompleteRecord(text=line)
-    if record.get("py/object") in record_classes():
+    # Today's journal tags every record with its type, as ``py/object``, and only
+    # sagent's own decoder reads it: a type stored under a former name is read as
+    # its name now. An untagged record is an old sagent's.
+    if "py/object" in record:
         return read_record(line.encode())
     kind = record.get("kind")
     return UncategorizedRecord(

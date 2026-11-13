@@ -106,42 +106,70 @@ class ClaudeAdapter:
           path: File path to check.
 
         Returns:
-          result: True for ``<project>/<session>.jsonl`` and a sub-agent's transcript.
+          result: True for ``<project>/<session>.jsonl`` and a sub-agent's transcript,
+            each under claude's home.
 
         """
         if path.suffix != ".jsonl":
             return False
+        if path.parent.parent == self._projects_dir:
+            return True
+        folder = self.session_folder(path)
         return (
-            path.parent.parent == self._projects_dir or self.subagent(path) is not None
+            folder is not None
+            and folder.parent.parent == self._projects_dir
+            and self.subagent(path) is not None
         )
 
-    # Measured on claude 2.1.312: a sub-agent's transcript is
-    # ``<project>/<session>/subagents/agent-<id>.jsonl``, beside ``agent-<id>.meta.json``.
-    # A nested one lands in the same folder; its meta names the agent that spawned it
+    # Measured on claude 2.1.312: a session keeps its sub-agents' files in
+    # ``<project>/<session>/subagents/``, and those of the agents a workflow ran in
+    # ``subagents/workflows/<workflow>/``, beside that workflow's ``journal.jsonl``.
+    #
+    # By the layout alone, wherever the folders sit: an upload reads a copy of them in
+    # ``~/Downloads`` as it reads them in claude's home.
+    def session_folder(self, path: Path) -> Path | None:
+        """Return the folder of the session whose sub-agents' files ``path`` is among.
+
+        Args:
+          path: Any file, in claude's home or a copy of its folders.
+
+        Returns:
+          folder: ``<session>`` for a file in its ``subagents`` folder or in a
+            workflow's folder there; ``None`` for a file anywhere else.
+
+        """
+        folder = path.parent
+        if folder.name != "subagents" and folder.parent.name == "workflows":
+            folder = folder.parent.parent
+        return folder.parent if folder.name == "subagents" else None
+
+    # Measured on claude 2.1.312: a sub-agent's transcript is ``agent-<id>.jsonl`` among
+    # its session's sub-agents' files, beside ``agent-<id>.meta.json``. A nested one
+    # lands in the same folder; its meta names the agent that spawned it
     # (``parentAgentId``, the bare ``<id>``), where the folder names only the session at
     # the root. Each is named by its file's stem, as ``session_id_from_path`` names it.
     def subagent(self, path: Path) -> Subagent | None:
         """Return the sub-agent whose transcript ``path`` is; ``None`` for any other file.
 
         Args:
-          path: Session file path.
+          path: Session file path, in claude's home or a copy of its folders.
 
         Returns:
           result: The sub-agent and its parent, by claude's own ids, or ``None``.
 
         """
+        folder = self.session_folder(path)
         if (
-            path.suffix != ".jsonl"
-            or path.parent.name != "subagents"
+            folder is None
+            or path.suffix != ".jsonl"
             or not path.stem.startswith("agent-")
-            or path.parent.parent.parent.parent != self._projects_dir
         ):
             return None
         meta = _meta(path.with_name(f"{path.stem}.meta.json"))
         spawner = _text(meta.get("parentAgentId"))
         return Subagent(
             child=path.stem,
-            parent=f"agent-{spawner}" if spawner else path.parent.parent.name,
+            parent=f"agent-{spawner}" if spawner else folder.name,
             note=_spawned(meta),
         )
 

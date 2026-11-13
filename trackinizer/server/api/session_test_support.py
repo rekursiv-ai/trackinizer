@@ -8,15 +8,16 @@ the ``hd`` claim Google gives its login: its email's domain, unless a consumer o
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, override
 
+import asyncio
 import uuid
 
 from treekle import from_plain, json_loads
 
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -26,18 +27,22 @@ from trackinizer.server.api.conftest import (
 )
 from trackinizer.server.audience import CONSUMER_DOMAINS
 from trackinizer.server.config import Assistant, Config
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.values import canonical_strs
+from trackinizer.wire.wire_session_relay import AgentProcess, Hello, ProcessLine
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import AsyncGenerator, Sequence
 
     import httpx2
 
     from trackinizer.server.auth import AuthIdentity, Role
     from trackinizer.server.store.core import Store
+    from trackinizer.wire.json_types import JSON
+    from trackinizer.wire.wire_session_relay import NewInput
+    from trackinizer.wire.wire_sessions import MessageKind
 
 
 OTHER_USER_ID: Final = uuid.UUID("33333333-3333-3333-3333-333333333333")
@@ -135,7 +140,7 @@ async def start_session(
     cli_session_id: str | None = None,
     account: str | None = None,
 ) -> uuid.UUID:
-    """Open a session as the installed agent identity and poll once so it is live.
+    """Open a session as the installed agent identity.
 
     Args:
       client: The test client.
@@ -159,14 +164,9 @@ async def start_session(
     )
     if started.status_code != 201:
         raise ValueError(f"session start answered {started.status_code}")
-    session_id = from_plain(
-        json_loads(started.content, dict[str, object])["id"],
-        str,
+    return uuid.UUID(
+        from_plain(json_loads(started.content, dict[str, object])["id"], str),
     )
-    polled = await client.get(f"/api/sessions/{session_id}/inbound")
-    if polled.status_code != 200:
-        raise ValueError(f"inbound poll answered {polled.status_code}")
-    return uuid.UUID(session_id)
 
 
 async def seed_session(
@@ -179,14 +179,13 @@ async def seed_session(
     account: str | None = None,
     labels: Sequence[str] = (),
     polled: bool = True,
-    drained_by: str | None = None,
 ) -> uuid.UUID:
-    """Open a session for ``agent`` straight in the store, and poll it once if asked.
+    """Open a session for ``agent`` straight in the store, watched for silence if asked.
 
     What ``start_session`` does through the routes, for a test whose subject is not
-    the session start: the same row, the same live poller and the same nudge of the
-    open event streams, in two statements instead of a dozen requests' worth. The
-    routing name is taken as given, so it must be free among the live sessions.
+    the session start: the same row, in one statement instead of a dozen requests'
+    worth, and the reaper's watch an attached process starts. The routing name is taken as given, so it
+    must be free among the live sessions.
 
     Args:
       store: The test database.
@@ -196,9 +195,8 @@ async def seed_session(
       cli_session_id: The id the session is known by across restarts.
       account: The person the session is attributed to; the key's owner by default.
       labels: The labels the row carries.
-      polled: Whether the session's runner polls its inbound queue.
-      drained_by: The CLI its poller names, as an agent run does; none, as the
-        assistant's does.
+      polled: Whether the reaper watches the session, as it does one a process
+        attached to.
 
     Returns:
       session_id: The new session.
@@ -224,9 +222,6 @@ async def seed_session(
             },
         )
     if polled:
-        inbound = getattr(app.state, "inbound", None)
-        assert isinstance(inbound, InboundQueue)
-        inbound.mark_poller(session_id, cli=drained_by)
         await store.record_session_seen(
             session_id,
             at=datetime.now(UTC),
@@ -235,39 +230,87 @@ async def seed_session(
     return session_id
 
 
-async def drain(
-    client: httpx2.AsyncClient,
-    *,
-    session_id: uuid.UUID,
-    cli: str | None = None,
-    instance: str | None = None,
-    host: str | None = None,
-) -> httpx2.Response:
-    """Drain a session's inbound queue as the installed identity.
+class ServingRelay(SessionRelay):
+    """A relay whose every session has an attached agent process, noting each send.
 
-    Args:
-      client: The test client.
-      session_id: The session.
-      cli: The CLI the draining run says it is; none, as an older ``trax`` sends.
-      instance: The draining run's own id; none, as an older ``trax`` sends.
-      host: The host the draining run says it is on; none by default.
-
-    Returns:
-      response: The raw response.
+    Attributes:
+      sent: Each input sent, as its session, its payload and its author, in order.
 
     """
-    return await client.get(
-        f"/api/sessions/{session_id}/inbound",
-        params={
-            name: value
-            for name, value in (
-                ("cli", cli),
-                ("instance", instance),
-                ("host", host),
-            )
-            if value is not None
-        },
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sent: list[tuple[uuid.UUID, JSON, str]] = []
+
+    @override
+    def process(self, session_id: uuid.UUID) -> AgentProcess | None:
+        return AgentProcess(
+            session_id=session_id,
+            process_id=uuid.UUID(int=1),
+            host="lab",
+            state="attached",
+            since=datetime(2026, 11, 12, tzinfo=UTC),
+        )
+
+    @override
+    def send_input(
+        self,
+        session_id: uuid.UUID,
+        new: NewInput,
+        *,
+        author: str,
+        recipient: str = "",
+        booked: MessageKind | None = None,
+    ) -> uuid.UUID:
+        del recipient, booked
+        self.sent.append((session_id, new.payload, author))
+        return new.id
+
+
+@asynccontextmanager
+async def attached_process(
+    relay: SessionRelay,
+    session_id: uuid.UUID,
+    *,
+    host: str = "gx10",
+    key: uuid.UUID | None = None,
+) -> AsyncGenerator[AgentProcess]:
+    """Hold an agent process attached to a session, through the relay's own socket.
+
+    A process a person started at a terminal says ``Hello`` on its socket and is
+    attached; the block ends with the process closing its socket, which detaches it.
+
+    Args:
+      relay: The relay to attach to.
+      session_id: The session the process serves.
+      host: The host the process names in its ``Hello``.
+      key: The key it holds its socket with; ``None`` for none.
+
+    Yields:
+      process: The process, ``attached``.
+
+    """
+    lines = relay.lines(session_id, allowed=_always)
+    _ = await anext(lines)
+    socket = _OpenSocket()
+    served = asyncio.ensure_future(
+        relay.serve_process(
+            session_id,
+            socket,
+            Hello(process_id=uuid.uuid4(), version="test", host=host),
+            host_id=None,
+            allowed=_always,
+            key=key,
+        ),
     )
+    attached = await anext(lines)
+    assert isinstance(attached, ProcessLine)
+    try:
+        yield attached.process
+    finally:
+        await socket.close()
+        await served
+        await lines.aclose()
 
 
 def _agent(key_id: uuid.UUID, *, user_id: uuid.UUID, email: str, role: Role) -> None:
@@ -291,3 +334,26 @@ def _signed_in(identity: AuthIdentity) -> AuthIdentity:
         identity,
         hosted_domain=None if domain in CONSUMER_DOMAINS else domain,
     )
+
+
+async def _always() -> bool:
+    """Answer yes: the rule that let the process in always holds."""
+    return True
+
+
+class _OpenSocket:
+    """A process socket that sends nothing and stays open until it is closed."""
+
+    def __init__(self) -> None:
+        self._closed: asyncio.Future[int] = asyncio.get_running_loop().create_future()
+
+    async def receive(self) -> str | bytes | int:
+        return await asyncio.shield(self._closed)
+
+    async def send_text(self, text: str) -> None:
+        del text
+
+    async def close(self, code: int = 1000, reason: str = "") -> None:
+        del reason
+        if not self._closed.done():
+            self._closed.set_result(code)

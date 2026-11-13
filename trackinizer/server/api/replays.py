@@ -11,7 +11,6 @@ from uuid import UUID
 import asyncio
 import time
 
-from trackinizer.server.inbound import Inbound
 from trackinizer.wire.wire_terminals import TerminalWait
 
 
@@ -117,7 +116,9 @@ class Replay[T]:
 class Replays:
     """The independently typed receipts for each consuming API operation."""
 
-    inbound: Replay[list[Inbound]] = field(default_factory=Replay)
+    messages: Replay[list[UUID]] = field(default_factory=Replay)
+    """``POST /api/messages``: the sessions one send went to."""
+
     terminal_waits: Replay[TerminalWait | None] = field(default_factory=Replay)
     terminal_opens: Replay[UUID] = field(default_factory=Replay)
 

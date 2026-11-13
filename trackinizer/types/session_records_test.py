@@ -8,7 +8,8 @@ what the ciphertext table exists to isolate.
 
 from __future__ import annotations
 
-from types import MappingProxyType
+from datetime import UTC, datetime
+from types import MappingProxyType, SimpleNamespace
 from typing import Final, get_args
 from uuid import uuid4
 
@@ -50,6 +51,7 @@ from trackinizer.types.session_records import (
     MAX_SEARCH_TEXT_BYTES,
     SessionRecordRow,
     record_kind,
+    record_time,
     search_text,
     served_payload,
     stored_payload,
@@ -499,6 +501,18 @@ def test_an_unparseable_timestamp_stores_null_and_keeps_the_string() -> None:
 
     assert row.timestamp is None
     assert row.record() == record
+
+
+def test_a_records_time_is_its_iso_timestamp_read_and_none_without_one() -> None:
+    assert record_time(UserMessage(timestamp="2026-09-02T01:02:03+00:00")) == (
+        datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    )
+    assert record_time(UserMessage(timestamp="yesterday")) is None
+    assert record_time(UserMessage()) is None
+    assert record_time(Stdout(text="ok\n")) is None
+    # What states no time, or states one that is no text, has none.
+    assert record_time(object()) is None
+    assert record_time(SimpleNamespace(timestamp=5)) is None
 
 
 def test_row_strips_ciphertext_from_its_payload() -> None:

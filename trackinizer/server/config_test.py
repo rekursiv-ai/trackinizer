@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import cast
 
@@ -20,6 +21,7 @@ from trackinizer.server.config import (
     Config,
     ConfigError,
     ConfigFlags,
+    RemoteAgentService,
     ServiceKeys,
     _prune_stale_ephemeral_dirs,
     auth_disabled_from_env,
@@ -27,9 +29,10 @@ from trackinizer.server.config import (
     build_engine,
     parse_assistant,
     parse_chat_orgs,
-    parse_chat_streaming,
     parse_compute,
+    parse_default_remote_agent_service,
     parse_engine,
+    parse_remote_agent_services,
     parse_service_keys,
     parse_staff,
     parse_terminal_stun,
@@ -257,7 +260,8 @@ class TestFromEnv:
         "TRACKINIZER_SESSION_MAX_AGE_SECONDS",
         "TRACKINIZER_NO_AUTH",
         "TRACKINIZER_ASSISTANT",
-        "TRACKINIZER_CHAT_STREAMING",
+        "TRACKINIZER_REMOTE_AGENT_SERVICES",
+        "TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE",
     )
 
     def test_unset_environment_is_the_default_config(
@@ -288,7 +292,6 @@ class TestFromEnv:
             "TRACKINIZER_SESSION_MAX_AGE_SECONDS": "99",
             "TRACKINIZER_NO_AUTH": "1",
             "TRACKINIZER_ASSISTANT": "kb=KB@Service.Invalid",
-            "TRACKINIZER_CHAT_STREAMING": "off",
         }
         for name, value in values.items():
             monkeypatch.setenv(name, value)
@@ -308,7 +311,6 @@ class TestFromEnv:
             session_max_age_seconds=99,
             auth_disabled=True,
             assistant=Assistant(actor="kb", email="kb@service.invalid"),
-            chat_streaming=False,
         )
 
     def test_every_flag_reaches_its_field(
@@ -491,35 +493,6 @@ class TestChatOrgs:
         monkeypatch.setenv("TRACKINIZER_CHAT_ORGS", "single")
         assert Config.from_env().chat_orgs == "single"
         assert Config.from_args(_server_args(assistant="")).chat_orgs == "single"
-
-
-class TestChatStreaming:
-    """``$TRACKINIZER_CHAT_STREAMING`` holds a chat's answer in writing; on unless off."""
-
-    @pytest.mark.parametrize(("raw", "streaming"), [("", True), (" on ", True)])
-    def test_a_server_streams_unless_it_says_off(
-        self,
-        raw: str,
-        streaming: bool,
-    ) -> None:
-        assert parse_chat_streaming(raw) is streaming
-        assert parse_chat_streaming("off") is False
-        assert Config().chat_streaming is True
-
-    @pytest.mark.parametrize("raw", ["no", "1", "On", "false"])
-    def test_anything_else_is_a_config_error(self, raw: str) -> None:
-        with pytest.raises(ConfigError, match="CHAT_STREAMING must be on or off"):
-            parse_chat_streaming(raw)
-
-    def test_both_ways_to_build_a_config_read_the_environment(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_CHAT_STREAMING", "off")
-        assert Config.from_env().chat_streaming is False
-        assert Config.from_args(_server_args()).chat_streaming is False
-        monkeypatch.delenv("TRACKINIZER_CHAT_STREAMING")
-        assert Config.from_args(_server_args()).chat_streaming is True
 
 
 class TestAssistant:
@@ -802,6 +775,113 @@ class TestCompute:
         monkeypatch.setenv("TRACKINIZER_COMPUTE", "not json")
         with pytest.raises(ConfigError, match="TRACKINIZER_COMPUTE"):
             Config.from_env()
+
+
+class TestRemoteAgentServices:
+    """Where agents run: ``$TRACKINIZER_REMOTE_AGENT_SERVICES`` and its default."""
+
+    _SERVICE = (
+        '{"name": " remote-agents ", "account": "Agents@Service.Invalid", "admits": %s}'
+    )
+
+    def test_unset_means_no_service_and_no_default(self) -> None:
+        assert parse_remote_agent_services(" ") == ()
+        assert parse_default_remote_agent_service(" ", services=()) == ""
+        assert (
+            Config().remote_agent_services,
+            Config().default_remote_agent_service,
+        ) == ((), "")
+
+    def test_each_service_reads_trimmed_with_its_admits_read_as_staff_patterns(
+        self,
+    ) -> None:
+        raw = "[" + self._SERVICE % '["*@X.Y", " ada@z.w ", "*@x.y"]' + ","
+        raw += '{"name": "lab", "account": "lab@service.invalid"}]'
+
+        assert parse_remote_agent_services(raw) == (
+            RemoteAgentService(
+                name="remote-agents",
+                account="agents@service.invalid",
+                admits=("*@x.y", "ada@z.w"),
+            ),
+            RemoteAgentService(name="lab", account="lab@service.invalid"),
+        )
+
+    _SHAPE = (
+        "TRACKINIZER_REMOTE_AGENT_SERVICES must be a JSON list of "
+        '{"name", "account", "admits"} objects'
+    )
+    _NAMED = (
+        f"{_SHAPE}, each named and enrolled under a service account, "
+        "NAME@service.invalid: got "
+    )
+
+    @pytest.mark.parametrize(
+        ("raw", "says"),
+        [
+            ("remote-agents", f"{_SHAPE}: "),
+            ('[{"name": "remote-agents"}]', f"{_SHAPE}: "),
+            ('[{"name": "c", "account": "a@service.invalid", "x": 1}]', f"{_SHAPE}: "),
+            ('[{"name": " ", "account": "a@service.invalid"}]', _NAMED),
+            ('[{"name": "c", "account": "ada@x.y"}]', _NAMED),
+            (
+                '[{"name": "c", "account": "a@service.invalid", "admits": ["*"]}]',
+                "--staff",
+            ),
+            (
+                (
+                    '[{"name": "c", "account": "a@service.invalid"},'
+                    ' {"name": "c", "account": "b@service.invalid"}]'
+                ),
+                "TRACKINIZER_REMOTE_AGENT_SERVICES names a service twice",
+            ),
+        ],
+    )
+    def test_anything_else_is_a_config_error(self, raw: str, says: str) -> None:
+        """Each refusal names the variable and the shape it wants."""
+        with pytest.raises(ConfigError, match=f"^{re.escape(says)}"):
+            _ = parse_remote_agent_services(raw)
+
+    def test_the_default_must_be_a_service_the_server_names(self) -> None:
+        services = (
+            RemoteAgentService(name="remote-agents", account="a@service.invalid"),
+        )
+
+        assert (
+            parse_default_remote_agent_service(" remote-agents ", services=services)
+            == "remote-agents"
+        )
+        with pytest.raises(ConfigError) as refused:
+            _ = parse_default_remote_agent_service("lab", services=services)
+        assert str(refused.value) == (
+            "TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE names 'lab', which "
+            "TRACKINIZER_REMOTE_AGENT_SERVICES does not name"
+        )
+
+    def test_both_ways_to_build_a_config_read_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv(
+            "TRACKINIZER_REMOTE_AGENT_SERVICES",
+            "[" + self._SERVICE % "[]" + "]",
+        )
+        monkeypatch.setenv("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", "remote-agents")
+        services = (
+            RemoteAgentService(name="remote-agents", account="agents@service.invalid"),
+        )
+        for config in (Config.from_env(), Config.from_args(_server_args())):
+            assert (
+                config.remote_agent_services,
+                config.default_remote_agent_service,
+            ) == (services, "remote-agents")
+        monkeypatch.setenv("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", "lab")
+        for build in (Config.from_env, partial(Config.from_args, _server_args())):
+            with pytest.raises(
+                ConfigError,
+                match="TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE",
+            ):
+                _ = build()
 
 
 class TestServiceKeys:

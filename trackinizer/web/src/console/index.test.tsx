@@ -214,12 +214,11 @@ function passes(event: FeedEvent, query: URLSearchParams): boolean {
 
 /**
  * Serve the feed of `events` (its first page, filtered as the server filters;
- * later pages are empty), the facets as of now, and each routed message with
- * `message`.
+ * later pages are empty), the facets as of now, and each input to a session with
+ * `input`.
  */
 function serve(
-  message: (body: { actor: string; room: string | null }) => Response = () =>
-    Response.json({ delivered: ["s1"] }),
+  input: (session: string) => Response = () => Response.json({ id: "i" }),
   events: readonly FeedEvent[] = EVENTS,
 ): Sent[] {
   const now = Date.now();
@@ -260,7 +259,8 @@ function serve(
         counts: [],
       });
     }
-    if (url.pathname === "/api/messages") return message(await request.json());
+    const sending = /^\/api\/sessions\/([^/]+)\/inputs$/.exec(url.pathname);
+    if (sending && request.method === "POST") return input(must(sending[1]));
     const hiding = /^\/api\/sessions\/([^/]+)\/audience$/.exec(url.pathname);
     if (hiding && request.method === "POST") {
       const { audience } = (await request.json()) as { audience: string };
@@ -307,6 +307,15 @@ async function lines(count: number): Promise<HTMLElement[]> {
     return shown;
   });
 }
+
+/** Each message the console sent, as the session it went to and its words. */
+const told = (sent: readonly Sent[]) =>
+  sent
+    .filter((request) => request.method === "POST" && request.path.endsWith("/inputs"))
+    .map((request) => [
+      request.path.split("/")[3],
+      (request.body as { payload: { content: string } }).payload.content,
+    ]);
 
 /** Each feed read's query, a repeated parameter's values joined by commas. */
 const feedReads = (sent: readonly Sent[]) =>
@@ -692,28 +701,25 @@ test("To follows the view's agents that have not ended; a line with no target go
   const send = screen.getByText("Send message", { selector: "button" });
   fireEvent.change(box, { target: { value: "rerun the suite" } });
   fireEvent.click(send);
-  await waitFor(() =>
-    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
-      "Sent to 2 sessions",
-    ),
-  );
-  fireEvent.click(to.getByLabelText("Leave out @tiles-a:lab"));
-  fireEvent.change(box, { target: { value: "stop" } });
-  fireEvent.click(send);
+  // Both chips name tiles-a's one session, which takes the line once.
   await waitFor(() =>
     expect(document.querySelector(".composer-receipt")?.textContent).toBe(
       "Sent to 1 session",
     ),
   );
-  expect(
-    sent
-      .filter((request) => request.path === "/api/messages")
-      .map((request) => request.body),
-  ).toEqual([
-    { actor: "tiles-a", room: "ops", text: "rerun the suite" },
-    { actor: "tiles-a", room: "lab", text: "rerun the suite" },
-    { actor: "tiles-a", room: "ops", text: "stop" },
-  ]);
+  expect(told(sent)).toEqual([[TILES_A, "rerun the suite"]]);
+  fireEvent.click(to.getByLabelText("Leave out @tiles-a:lab"));
+  fireEvent.change(box, { target: { value: "stop" } });
+  fireEvent.click(send);
+  await waitFor(() =>
+    expect(told(sent)).toEqual([
+      [TILES_A, "rerun the suite"],
+      [TILES_A, "stop"],
+    ]),
+  );
+  expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+    "Sent to 1 session",
+  );
 });
 
 test("a chip left out stays left out of its own view only, however views are switched", async () => {
@@ -746,17 +752,10 @@ test("a chip left out stays left out of its own view only, however views are swi
   fireEvent.click(screen.getByText("Send message", { selector: "button" }));
   await waitFor(() =>
     expect(document.querySelector(".composer-receipt")?.textContent).toBe(
-      "Sent to 2 sessions",
+      "Sent to 1 session",
     ),
   );
-  expect(
-    sent
-      .filter((request) => request.path === "/api/messages")
-      .map((request) => request.body),
-  ).toEqual([
-    { actor: "tiles-a", room: "ops", text: "stop" },
-    { actor: "tiles-a", room: "lab", text: "stop" },
-  ]);
+  expect(told(sent)).toEqual([[TILES_A, "stop"]]);
 });
 
 test("the facets' window only finds agents: a narrower one keeps every agent the view picked, its records and its To chips", async () => {
@@ -936,12 +935,11 @@ test("a view kept as a window of history opens on that window, its times in the 
   ).toEqual([local, ""]);
 });
 
-test("a line goes to each target under its own key; Retry sends them again under the same keys; the receipt counts sessions", async () => {
-  let refuse = true;
-  const sent = serve(({ actor }) =>
-    refuse && actor === "claude"
+test("a line goes once to the session each target names, each its own input; a failure says where it went, keeps the draft and offers no Retry", async () => {
+  const sent = serve((session) =>
+    session === CLAUDE
       ? Response.json({ detail: "statement timeout" }, { status: 500 })
-      : Response.json({ delivered: ["s1"] }),
+      : Response.json({ id: "i" }),
   );
   renderConsole();
   await lines(3);
@@ -949,38 +947,52 @@ test("a line goes to each target under its own key; Retry sends them again under
   fireEvent.change(box, { target: { value: "@tiles-a:ops,@claude rerun the suite" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
   expect((await screen.findByRole("alert")).textContent).toBe(
-    "Not sent to @claude (statement timeout). Retry sends it again; no session gets a message twice.",
+    "Not sent to @claude (statement timeout). Sent to 1 session.",
   );
-  refuse = false;
-  fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
-  await waitFor(() =>
-    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
-      "Sent to 2 sessions",
-    ),
-  );
-  const posts = sent.filter((request) => request.path === "/api/messages");
-  const keyOf = (actor: string) =>
-    posts
-      .filter((post) => (post.body as { actor: string }).actor === actor)
-      .map((post) => post.headers["idempotency-key"]);
-  expect(posts.map((post) => post.body)).toEqual(
-    expect.arrayContaining([
-      { actor: "tiles-a", room: "ops", text: "rerun the suite" },
-      { actor: "claude", room: null, text: "rerun the suite" },
-    ]),
-  );
-  expect(posts).toHaveLength(4);
-  const [tiles, claude] = [keyOf("tiles-a"), keyOf("claude")];
-  expect([
-    tiles.length,
-    new Set(tiles).size,
-    claude.length,
-    new Set(claude).size,
-  ]).toEqual([2, 1, 2, 1]);
-  expect(tiles[0]).not.toBe(claude[0]);
+  expect(screen.queryByRole("button", { name: "Retry message" })).toBeNull();
+  expect(box).toHaveProperty("value", "@tiles-a:ops,@claude rerun the suite");
+  expect(told(sent)).toEqual([
+    [TILES_A, "rerun the suite"],
+    [CLAUDE, "rerun the suite"],
+  ]);
+  const ids = sent
+    .filter((request) => request.path.endsWith("/inputs"))
+    .map((request) => (request.body as { id: string }).id);
+  expect(new Set(ids).size).toBe(2);
 });
 
-test("a line with no target and no agents picked says why; @* sends to each agent-and-room pair shown", async () => {
+test("a target whose session no agent process serves is named in the receipt; the rest are counted", async () => {
+  const sent = serve((session) =>
+    session === CLAUDE
+      ? Response.json(
+          {
+            detail: {
+              code: "not_live",
+              message: "No agent process serves this session.",
+            },
+          },
+          { status: 409 },
+        )
+      : Response.json({ id: "i" }),
+  );
+  renderConsole();
+  await lines(3);
+  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+    target: { value: "@tiles-a:ops,@claude,@nobody rerun" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  await waitFor(() =>
+    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
+      "Sent to 1 session; no live session for @claude, @nobody",
+    ),
+  );
+  expect(told(sent)).toEqual([
+    [TILES_A, "rerun"],
+    [CLAUDE, "rerun"],
+  ]);
+});
+
+test("a line with no target and no agents picked says why; @* sends to each session shown, once", async () => {
   const sent = serve();
   renderConsole();
   await lines(3);
@@ -997,63 +1009,13 @@ test("a line with no target and no agents picked says why; @* sends to each agen
   await lines(2);
   fireEvent.change(box, { target: { value: "@* stop" } });
   fireEvent.click(screen.getByRole("button", { name: "Send message" }));
+  // @* names tiles-a in each of its rooms, and its one session takes the line once.
   await waitFor(() =>
     expect(document.querySelector(".composer-receipt")?.textContent).toBe(
-      "Sent to 2 sessions",
+      "Sent to 1 session",
     ),
   );
-  expect(
-    sent
-      .filter((request) => request.path === "/api/messages")
-      .map((request) => request.body),
-  ).toEqual([
-    { actor: "tiles-a", room: "ops", text: "stop" },
-    { actor: "tiles-a", room: "lab", text: "stop" },
-  ]);
-});
-
-test("Retry sends @* to the targets it first went to, under the same keys, whatever shows by then (CR-01)", async () => {
-  let refuse = true;
-  const sent = serve(({ room }) =>
-    refuse && room === "lab"
-      ? Response.json({ detail: "statement timeout" }, { status: 500 })
-      : Response.json({ delivered: ["s1"] }),
-  );
-  renderConsole();
-  await lines(3);
-  const agents = rail("Agents");
-  fireEvent.click(agents.getByRole("checkbox", { name: "tiles-a" }));
-  await lines(2);
-  fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
-    target: { value: "@* stop" },
-  });
-  fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-  expect((await screen.findByRole("alert")).textContent).toBe(
-    "Not sent to @tiles-a:lab (statement timeout). Retry sends it again; no session gets a message twice.",
-  );
-  // Every agent shows now, tiles-b too.
-  fireEvent.click(agents.getByRole("checkbox", { name: "tiles-a" }));
-  await lines(3);
-  refuse = false;
-  fireEvent.click(screen.getByRole("button", { name: "Retry message" }));
-  await waitFor(() =>
-    expect(document.querySelector(".composer-receipt")?.textContent).toBe(
-      "Sent to 2 sessions",
-    ),
-  );
-  const posts = sent.filter((request) => request.path === "/api/messages");
-  const [ops, lab] = [
-    { actor: "tiles-a", room: "ops", text: "stop" },
-    { actor: "tiles-a", room: "lab", text: "stop" },
-  ];
-  expect(posts.map((post) => post.body)).toEqual([ops, lab, ops, lab]);
-  const keys = (room: string) =>
-    new Set(
-      posts
-        .filter((post) => (post.body as { room: string }).room === room)
-        .map((post) => post.headers["idempotency-key"]),
-    );
-  expect([keys("ops").size, keys("lab").size]).toEqual([1, 1]);
+  expect(told(sent)).toEqual([[TILES_A, "stop"]]);
 });
 
 test("@ lists the agents the view shows first, then the rest, then @*; Enter completes one, and the line goes there", async () => {
@@ -1079,11 +1041,7 @@ test("@ lists the agents the view shows first, then the rest, then @*; Enter com
       "Sent to 1 session",
     ),
   );
-  expect(
-    sent
-      .filter((request) => request.path === "/api/messages")
-      .map((request) => request.body),
-  ).toEqual([{ actor: "tiles-a", room: "ops", text: "rerun" }]);
+  expect(told(sent)).toEqual([[TILES_A, "rerun"]]);
   // A view of claude alone ranks it first, though none of its lines show at Messages.
   fireEvent.click(rail("Agents").getByRole("checkbox", { name: "claude" }));
   await waitFor(() =>
@@ -1399,11 +1357,10 @@ test("a line to a chat, named or by @*, is refused: only its own Chat posts to i
   await waitFor(() =>
     expect(document.querySelector(".composer-receipt")).not.toBeNull(),
   );
-  const told = sent
-    .filter((request) => request.path === "/api/messages")
-    .map((request) => (request.body as { actor: string }).actor);
-  expect(told).not.toContain(OTHER_CHAT);
-  expect(told).not.toContain(OWN_CHAT);
+  const sessions = told(sent).map(([session]) => session);
+  expect(sessions.length).toBeGreaterThan(0);
+  expect(sessions).not.toContain(CHAT_A);
+  expect(sessions).not.toContain(CHAT_B);
 });
 
 test("the box names its targets: Message lead-2, or each of several, never a count", async () => {

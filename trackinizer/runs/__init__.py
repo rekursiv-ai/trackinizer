@@ -1,7 +1,6 @@
-"""The run model trackinizer shares with the agent runner: asks, redaction, adapters.
+"""What a run's records need on every side of the wire: redaction, refusals, adapters.
 
-The agent runner is its own package, and imports this one.
-What the server and other readers of a run's records also need -- the records an ask
-writes, the secrets a transcript must not carry, the readers of each CLI's session
-log -- stays here, so none of them depends on the agent runner.
+The secrets a transcript must not carry, the stand-in for a record the server
+refused, and the readers of each CLI's session log stay here, so the client, the
+server and other readers of a run's records share them.
 """

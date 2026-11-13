@@ -7,6 +7,16 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Added
 
+- Remote agents: a service that starts the agents of other accounts, each confined.
+  `TRACKINIZER_REMOTE_AGENT_SERVICES` names each, `{"name", "account", "admits"}`,
+  enrolled as a host under a service account and confirmed as it enrolls;
+  `TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE` is where a start that names no host
+  runs. Its daemon reports the fact `remote_agents`, and each start it is handed says
+  `ServeSession.remote`.
+- A start is not lost: a held `GET /api/hosts/{id}/sessions/wait` hands no start to
+  a caller that has gone (`SessionRelay.wait` asks `dropped`), and a start handed
+  out that neither attached nor was reported within 30 seconds is detached as
+  `not started` and its key revoked (`SessionRelay.give_up`).
 - `Client.capture_canvas(canvas_id)` asks the canvas owner's open page for a
   picture of the canvas and returns a `CaptureImage` (new `wire_capture`): the
   picture as `data` (base64) and `picture` (bytes), the red `boxes` on it, the
@@ -18,6 +28,8 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- `ChangeIdMiddleware` is a plain ASGI middleware: Starlette's `BaseHTTPMiddleware`
+  hid a caller's going from `Request.is_disconnected`.
 - **Breaking:** the session readers and writers moved from
   `trackinizer.lib.agent.sessions` to `trackinizer.sagent.scripts.convert_session`.
 - **Breaking:** a computer enrolled with the server is a *host*, not a *machine*, and
@@ -56,6 +68,14 @@ All notable trackinizer changes are documented here. This project follows
   asks the rule again, and closes a connection it no longer holds for with 4403. Every
   refusal closes with 4403 and a reason saying which, save a revoked host's 4410; a
   socket that left closes with 4000 or 4004.
+- A writer's or admin's own browser opens `WS /api/hosts/{name}/tools/ws` too, for a
+  host of their own: signed in, with this server's own `Origin`, as no service
+  account, naming no other `asker`. Its `Hello` carries no token; the host rules are
+  a key's, and the sweep asks them again of it, so a demoted or disabled account
+  loses the connection. `tool_access` takes `api_key_id="browser"` for it, which its
+  caller states; no key alone still fails `key`. `ToolConnection.api_key_id` and
+  `ToolRelay.join`'s are `None` for such a connection. Its log line says
+  `key=browser`.
 - Each tool call the gate judges is logged, one line with fixed `key=value` fields and
   its arguments by their size alone; its `session` and `call_id` join it to what the
   session recorded the tool doing. A tool connection's opening and end, each refusal, a
@@ -73,11 +93,144 @@ All notable trackinizer changes are documented here. This project follows
 - `JobView` carries a GPU job's charge as `gpu_seconds`. The server still sends
   `gpu_minutes`, the seconds rounded up to the minute, because 0.1.13 and
   earlier refuse a job answer without it.
+- A host's live runs are the agent processes the session relay holds on it, not the
+  sessions whose drain names it. `GET /api/hosts/{name}/runs` lists each process that
+  may still run there to the host's owner, as a `HostRun` with `cli` `sagent` and no
+  `run` or `cwd`; `POST …/runs/{session_id}/stop` stops one as
+  `DELETE /api/sessions/{id}/process` does, revoking its key a minute later; and
+  `POST …/disconnect` and `…/logout` answer the processes the revoke stopped.
+- A listed session (`GET /api/sessions`) is `live` while the session relay holds
+  an agent process attached to it, and its `host` is the one that process runs or
+  last ran on; a poller's lease no longer makes it live.
+- `POST /api/messages` is the one way to message a session, from a person or from
+  another session's agent.
+  - A body names one target: `to`, an agent of one session (`SessionAgent`: its
+    label and the session's number or UUID), or `actor` with an optional `room`;
+    both or neither is 422. A `to` that names no session is 404 `no_session`.
+  - Each live session it names is sent the text by the agent process serving it
+    (an `Input`, held while the process starts); `delivered` lists those, and a
+    session no process serves is not in it. A repeated `Idempotency-Key` answers
+    the first send's receipt and sends nothing again.
+  - An agent process names `from_session`, `from_label` and `booked` (`ask`, `reply`
+    or `tell`). The server takes the session only from the key its attached process
+    holds its socket with (403 `not_its_process`) and writes the sender
+    `label#<that session's number>`; any other key sends as its email.
+  - `Input` names the agent it is for (`recipient`, empty for the root) and how it
+    was booked (`booked`); `author` is `label#number` for an agent.
+  - `Client.message_agent` sends to one agent of a session. `trax send lead#412` and
+    `trax send lead#UUID` do too; a bare `name#N` is now a session's agent, and
+    `@name#N` the routing name `name#N`.
+  - `SessionRelay.serve_process` takes the `key` its socket was opened with, and
+    `SessionRelay.socket_key` tells it; `Store.inquiry_id` reads a `kind#seq`.
+- **Breaking:** `client.session_upload.record_bodies` takes any session reader's
+  records, not sagent journal lines, and `append_batch` takes its batch second, so
+  `partial(append_batch, client, ...)` is the `send` `send_batches` calls.
+- `ClaudeAdapter.subagent` reads a sub-agent by its folders alone, so a copy of
+  claude's home names its sub-agents too; `matches_session_file` still takes only
+  claude's home. Both now take the agents a workflow ran
+  (`subagents/workflows/<workflow>/agent-<id>.jsonl`) as the session's sub-agents,
+  and `ClaudeAdapter.session_folder` names the session a sub-agent's file belongs
+  to. The session sniffer no longer reads claude's `history.jsonl` as a
+  session, and `convert` exposes `sniff`, `transcripts` and `die_with_parent`;
+  `types.session_records.record_time` reads a record's time.
+- `POST /api/sessions/start` takes `keep_audience`: a start that re-opens a session
+  leaves it in the audience it has, so `private` hides only a session the start
+  mints. Without it a `private` start still hides the `open` session it re-opens.
+- Codex's compressed rollouts (`rollout-<ISO>-<uuid>.jsonl.zst`) are transcripts:
+  `convert.transcripts` finds them, `sniff`, `convert` and `verify` read them
+  through `convert.open_transcript`, and `CodexAdapter` names one as the rollout it
+  was (`convert.transcript_name`). `lib.zstd_compat.open_text` reads a compressed
+  file as text a frame at a time; a bad, cut-off or empty file raises `ValueError`.
+
+### Fixed
+
+- The sagent session reader reads every record tagged with a type through sagent's
+  own decoder, so one a journal stores under a former type name (`FileReadResult`,
+  `ShellCommandResult`, ...) reads as today's type rather than an
+  `UncategorizedRecord`, and a journal opening with one is recognized as sagent's.
+- Reading a Claude Code transcript is linear in its lines: the reader kept the escaping
+  bitmap by walking every line read on each line, so a 40,000-line transcript took
+  47 s; it takes 7.6 s, and its records are the same.
+- An append returns the keys it wrote (`AppendedPart.written`), and the server reads
+  the records back for a live push only when a viewer follows the session
+  (`SessionRelay.watched`): a payload is no longer frozen, thawed and re-parsed for
+  each record of an upload no one watches.
 
 ### Removed
 
+- **Breaking:** the old message queue. `server/inbound.py` (`InboundQueue`) and
+  `server/subscriber.py` (the subscriber sweep and its lifespan task) are gone, and
+  with them:
+  - Routes: `POST` and `GET /api/sessions/{id}/inbound`.
+  - Wire: `InboundEnqueueRequest`, `InboundEnqueueResponse`, `InboundDrainItem`,
+    `DrainInboundResponse`, `InboundKind`, `CanvasMessageContext`, `SESSION_INBOUND_PATH` and
+    `session_inbound_path`; `inbound_read_timeout` is `held_read_timeout`.
+  - `Client`: `enqueue_inbound` and `drain_inbound`.
+  - `ServerContext.inbound`, `Replays.inbound` and `_deps.get_inbound`; the
+    `inbound=` arguments of the session record routes and the canvas and chat
+    stores.
+  - Its readers of who posted: a chat's starter is told from the database alone.
+  - A change to a subscribed row is no longer pushed into a live session; the
+    subscriptions and the `change_log` catch-up stay.
+- **Breaking:** the add-on routes a key reached by having taken a person's Chat line
+  from that queue: `openai_login`'s `POST /lease` and `POST /campaign/grant`,
+  `github`'s `POST /turn/repositories` and `/turn/capabilities` (and
+  `github.turn_minters`), and `jobs`' `POST /service/box-credentials` (and
+  `jobs.box_max_live`, `box_max_hours` and `box_slack_minutes`).
+- **Breaking:** the choice of who answers a canvas's Chat, and the canvas's partner.
+  A chat is its session, answered by the session's agent process:
+  - A canvas's state has no `provider`, `partner`, `available`, `reasons` or
+    `assistant`; a stored `provider` is ignored. `POST /api/canvases/new` takes
+    `workspace_id` alone, and the `provider` operation is gone.
+  - The `chat_provider` preference is gone; a stored one is dropped on the next
+    write.
+  - `wire_science_chat.ChatProvider`, `ChatLineKind` and `ChatSend`;
+    `wire_sessions.PROVIDER_IS_CLI`, `PROVIDER_IS_ASSISTANT`,
+    `PROVIDER_IS_OTHER_CLI`, `CHAT_RUN_LIVE`, `CLI_REQUIRED`, `SESSION_ENDED`,
+    `RUN_ENDING_REFUSALS` and `SessionEnd.failed`.
+  - The assistant no longer reads, writes or drains a chat it opened or was given,
+    and uses no canvas; it acts for an `asker` as before.
+
 - `Client.exec_command`, `POST /api/machines/{name}/exec` and
   `POST /api/machines/{id}/exec/{exec_id}/result`, with no replacement.
+- **Breaking:** the `files` terminal: `OpenTerminal.kind` and `TerminalWait.kind`
+  (`wire_terminals.TerminalKind`), the 409 `files_not_enabled`, and `TerminalHost.files`.
+  A terminal is a shell; a host's files are read with its tools (`TerminalHost.tools`).
+  An open naming a `kind` is 422.
+- **Breaking:** the old agent runner's transport. A session's agent process now
+  speaks through the session relay (`GET …/lines`, `POST …/inputs`,
+  `PUT`/`DELETE …/process`), so these go with no replacement:
+  - `POST /api/sessions/{id}/run-state`, with `wire_sessions.RunState`,
+    `SessionRunState`, `SessionRunOutput`, `CHAT_TAKEN_OVER` and the paths' helpers;
+    the `state` of a host's run (`HostRun`), of a feed facet's agent
+    (`FeedActorFacet`) and of a listed session.
+  - A terminal that starts a detached agent run: `OpenTerminal` and `TerminalWait`
+    lose `command`, `attach` and `run_name`, and `TerminalCommand` goes. A
+    terminal's `cwd` is the folder its shell starts in.
+  - The asks a run wrote (`trackinizer.runs.asks`) and the server's release of
+    them on a session's end; the reaper no longer empties a closed session's
+    inbound queue.
+  - The capture adapters of a process's own IO and of sagent's journals
+    (`runs/adapters/iostream.py`, `scrape.py`, `sagent.py`), `types/line_capture.py`
+    and `custom_types.StreamAdapter`.
+  - `TRACKINIZER_CHAT_STREAMING` and `Config.chat_streaming`.
+  - A run stopped through its drain: the drain's 403 `run_stopped`
+    (`wire_sessions.RUN_STOPPED`), and `InboundQueue.runs_on`, `stop_run` and
+    `stopped`.
+  - A drain that names its run: `GET …/inbound` takes `wait_sec` alone, without
+    `run`, `host`, `cwd`, `cli`, `instance` or `runs`, and so does
+    `Client.drain_inbound`. `SessionEnd` loses `cli` and `instance`, so an end no
+    longer leaves a session to the run that took it over.
+    `wire_sessions.RUN_NAME_PATTERN`, `InboundQueue.poller_run` and
+    `held_by_another`, `inbound.PollerRun`, and `RunPlace.run` and `cwd` go too:
+    the `run` and `cwd` of `session_liveness` keep what older drains wrote and take
+    no new value.
+  - `AppendRecordsRequest.restart` and `slash_commands`, with `SlashCommandBody`,
+    `AppendRecordsResponse.slash_commands` and the `Client.append_records`
+    arguments: a stored record is final, and an append skips a key already
+    stored. `append_session_records` answers `(written, skipped)`. The
+    `session_slash_commands` table takes no new rows; its rows stay readable and
+    exported.
 
 ## 0.1.13 - 2026-11-05
 

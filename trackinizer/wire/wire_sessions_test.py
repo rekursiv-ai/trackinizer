@@ -18,22 +18,16 @@ from trackinizer.wire.wire_sessions import (
     ConsoleTarget,
     FeedCursor,
     FeedEvent,
-    InboundDrainItem,
-    InboundEnqueueRequest,
     SendMessage,
+    SessionAgent,
     SessionEnd,
-    SessionRunState,
     SessionStart,
     campaign_asker_label,
-    inbound_read_timeout,
+    held_read_timeout,
     session_audience_path,
     session_end_path,
-    session_inbound_path,
     session_place_path,
-    session_reattach_path,
     session_records_path,
-    session_run_output_path,
-    session_run_state_path,
 )
 
 
@@ -113,16 +107,6 @@ class TestSessionEnd:
             with pytest.raises(ValidationError):
                 SessionEnd(actor=bad)
         assert SessionEnd(actor=None).actor is None
-
-    @pytest.mark.parametrize("instance", ["", "A" * 32, "a" * 31, "g" * 32, "a" * 33])
-    def test_rejects_an_instance_that_is_not_32_lowercase_hex_digits(
-        self,
-        instance: str,
-    ) -> None:
-        with pytest.raises(ValidationError):
-            SessionEnd(cli="claude", instance=instance)
-        assert SessionEnd(cli="claude", instance="a" * 32).instance == "a" * 32
-        assert SessionEnd().instance is None
 
 
 class TestFeedEvent:
@@ -214,7 +198,7 @@ class TestFeedCursor:
 class TestRoomValidation:
     """Room scope rejects blank/whitespace consistently across bodies.
 
-    Matches ``SessionStart.rooms``' element validator so all three carriers
+    Matches ``SessionStart.rooms``' element validator so the carriers
     agree (a whitespace room can never match ``agentsession_rooms``).
     """
 
@@ -225,29 +209,6 @@ class TestRoomValidation:
         # A real room and an absent room both pass.
         assert SendMessage(actor="scientist", room="sear", text="hi").room == "sear"
         assert SendMessage(actor="scientist", text="hi").room is None
-
-    def test_enqueue_request_forbids_room(self) -> None:
-        # The enqueue route has no room semantics (it discards body.room), so a
-        # client-sent ``room`` is a 422 (extra="forbid"), not an accepted-then-
-        # dropped field -- the request shape carries only what the server uses.
-        with pytest.raises(ValidationError):
-            InboundEnqueueRequest(text="hi", room="lab")  # ty: ignore[unknown-argument] -- The test passes an extra field to verify rejection.  # pyright: ignore[reportCallIssue] -- The test passes an extra field to verify rejection.  # pyrefly: ignore[unexpected-keyword] -- The test passes an extra field to verify rejection.
-        # The bare request still constructs.
-        assert InboundEnqueueRequest(text="hi").text == "hi"
-
-    def test_drain_item_rejects_blank_room(self) -> None:
-        # The drain RESPONSE item keeps ``room`` (the poller renders the
-        # ``[room] sender:`` prefix); a blank one is still a bug.
-        for bad in ("", "  ", "\n"):
-            with pytest.raises(ValidationError):
-                InboundDrainItem(text="hi", room=bad)
-        assert InboundDrainItem(text="hi", room="lab").room == "lab"
-        assert InboundDrainItem(text="hi").room is None
-
-    def test_drain_item_carries_the_senders_role_or_none(self) -> None:
-        assert InboundDrainItem(text="hi").source_role is None
-        item = InboundDrainItem(text="hi", source="a@x", source_role="writer")
-        assert InboundDrainItem.model_validate_json(item.model_dump_json()) == item
 
     def test_session_start_rejects_comma_in_room(self) -> None:
         # A room name carrying ',' is ambiguous once serialized: the runner
@@ -275,48 +236,111 @@ class TestRoomValidation:
         assert SendMessage(actor="scientist", text="hi").actor == "scientist"
 
 
-class TestInboundKind:
-    def test_each_kind_is_drained(self) -> None:
-        for kind in ("line", "command", "answer", "settings", "interrupt", "run"):
-            item = InboundDrainItem.model_validate({"text": "hi", "kind": kind})
-            assert item.kind == kind
+_UUID = uuid.UUID("0b1c2d3e-0000-4000-8000-000000000412")
 
-    @pytest.mark.parametrize(
-        "extra",
-        [{"kind": "line"}, {"kind": "run"}, {"payload": {}}],
-        ids=["line", "run", "payload"],
+
+@pytest.mark.parametrize(
+    ("named", "label", "session"),
+    [
+        ("lead#412", "lead", 412),
+        (f"lead#{_UUID}", "lead", _UUID),
+        ("lead#a#412", "lead#a", 412),
+    ],
+    ids=["a number", "a UUID", "a label that holds #"],
+)
+def test_an_agent_of_a_session_is_its_label_then_the_session_after_the_last_hash(
+    named: str,
+    label: str,
+    session: int | uuid.UUID,
+) -> None:
+    agent = SessionAgent.parse(named)
+
+    assert (agent.label, agent.session, str(agent)) == (label, session, named)
+
+
+@pytest.mark.parametrize(
+    "named",
+    ["#412", " #412", "lead", "lead#", "lead#abc", "lead#0", "lead#-1", "lead#٤١٢"],
+    ids=[
+        "an empty label",
+        "a blank label",
+        "no session",
+        "an empty session",
+        "a session neither number nor UUID",
+        "session zero",
+        "a negative session",
+        "digits that are not ASCII",
+    ],
+)
+def test_a_name_that_is_no_agent_of_a_session_is_refused(named: str) -> None:
+    with pytest.raises(ValueError, match=r"label|session|greater|names no agent"):
+        _ = SessionAgent.parse(named)
+
+
+def test_a_session_neither_number_nor_uuid_is_refused_saying_how_to_name_one() -> None:
+    with pytest.raises(ValueError, match="names no agent") as refused:
+        _ = SessionAgent.parse("lead#next")
+
+    assert str(refused.value) == (
+        "'lead#next' names no agent of a session: write label#number, such as "
+        "lead#412, or label#UUID"
     )
-    def test_an_enqueue_names_no_kind_and_no_payload(
-        self,
-        extra: dict[str, object],
-    ) -> None:
-        with pytest.raises(ValidationError):
-            InboundEnqueueRequest.model_validate({"text": "hi", **extra})
 
-    def test_drain_kind_defaults_to_a_line_with_no_payload(self) -> None:
-        item = InboundDrainItem(text="hi")
-        assert (item.kind, item.payload) == ("line", None)
 
-    def test_a_kind_outside_them_is_refused(self) -> None:
-        good = {"text": "/compact", "kind": "command"}
-        assert InboundDrainItem.model_validate(good).kind == "command"
-        with pytest.raises(ValidationError):
-            InboundDrainItem.model_validate({**good, "kind": "keys"})
+def test_a_session_target_reads_from_json_as_a_number_or_a_uuid() -> None:
+    by_number = SendMessage.model_validate_json(
+        '{"to": {"label": "lead", "session": 412}, "text": "status?"}',
+    )
+    by_uuid = SendMessage.model_validate_json(
+        f'{{"to": {{"label": "lead", "session": "{_UUID}"}}, "text": "status?"}}',
+    )
 
-    def test_an_answer_carries_its_prompt_and_decision_in_the_payload(self) -> None:
-        payload: dict[str, object] = {
-            "prompt_id": "p-1",
-            "decision": "deny",
-            "updated_input": None,
-            "message": "use the other file",
-        }
-        drained = InboundDrainItem.model_validate(
-            {"text": "No: use the other file", "kind": "answer", "payload": payload},
-        )
-        assert drained.payload == payload
-        assert (
-            InboundDrainItem.model_validate_json(drained.model_dump_json()) == drained
-        )
+    assert (by_number.to, by_uuid.to) == (
+        SessionAgent(label="lead", session=412),
+        SessionAgent(label="lead", session=_UUID),
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"text": "hi"},
+        {"to": {"label": "lead", "session": 412}, "actor": "lead", "text": "hi"},
+        {"to": {"label": "lead", "session": 412}, "room": "sear", "text": "hi"},
+        {"actor": "lead", "text": "hi", "from_label": "Agent", "booked": "ask"},
+        {"actor": "lead", "text": "hi", "from_session": str(_UUID)},
+        {"actor": "lead", "text": "hi", "sender": "Agent#415"},
+        {"actor": "lead", "text": "hi", "source": "ada@x.y"},
+        {"actor": "lead", "text": "hi", "author": "ada@x.y"},
+    ],
+    ids=[
+        "no target",
+        "two targets",
+        "a room with no actor",
+        "a label with no session",
+        "a session with no label",
+        "a sender",
+        "a source",
+        "an author",
+    ],
+)
+def test_a_send_names_one_target_and_a_sender_only_whole_and_checked(
+    body: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _ = SendMessage.model_validate(body)
+
+
+def test_an_agent_s_send_names_its_session_its_label_and_its_booking() -> None:
+    sent = SendMessage(
+        to=SessionAgent(label="lead", session=412),
+        text="status?",
+        from_session=_UUID,
+        from_label="Agent",
+        booked="ask",
+    )
+
+    assert SendMessage.model_validate_json(sent.model_dump_json()) == sent
 
 
 class TestPaths:
@@ -325,7 +349,6 @@ class TestPaths:
         assert str(sid) in session_records_path(sid)
         assert session_records_path(sid).endswith("/records")
         assert session_end_path(sid) == f"/api/sessions/{sid}/end"
-        assert session_inbound_path(sid) == f"/api/sessions/{sid}/inbound"
         assert session_audience_path(sid) == f"/api/sessions/{sid}/audience"
 
 
@@ -385,63 +408,25 @@ class TestConsoleRelay:
                 ConsoleTarget.model_validate(bad)
 
 
-class TestInboundReadTimeout:
+class TestHeldReadTimeout:
     @pytest.mark.parametrize("wait_sec", [0.5, 5.0, 30.0, 120.0])
-    def test_a_drain_that_waits_gets_a_read_timeout_beyond_the_hold(
+    def test_a_held_request_gets_a_read_timeout_beyond_the_hold(
         self,
         wait_sec: float,
     ) -> None:
-        timeout = inbound_read_timeout(wait_sec)
+        timeout = held_read_timeout(wait_sec)
 
         assert timeout is not None
         assert timeout > wait_sec
 
-    def test_a_drain_that_does_not_wait_keeps_the_transport_timeout(self) -> None:
-        assert inbound_read_timeout(0.0) is None
+    def test_a_request_that_does_not_wait_keeps_the_transport_timeout(self) -> None:
+        assert held_read_timeout(0.0) is None
 
 
-class TestRunState:
-    @pytest.mark.parametrize(
-        "state",
-        ["idle", "running", "requires_action", "taken_over"],
-    )
-    def test_a_run_reports_one_of_four_states_and_its_own_id(self, state: str) -> None:
-        reported = SessionRunState.model_validate(
-            {"state": state, "instance": "a" * 32},
-        )
+def test_a_placement_has_a_path_of_the_session() -> None:
+    session = uuid.UUID(int=7)
 
-        assert (reported.state, reported.instance) == (state, "a" * 32)
-
-    @pytest.mark.parametrize(
-        "body",
-        [
-            {"state": "asleep", "instance": "a" * 32},
-            {"state": "idle"},
-            {"state": "idle", "instance": "A" * 32},
-            {"state": "idle", "instance": "a" * 32, "extra": 1},
-        ],
-    )
-    def test_any_other_report_is_refused(self, body: dict[str, object]) -> None:
-        with pytest.raises(ValidationError):
-            SessionRunState.model_validate(body)
-
-    def test_a_run_reports_to_its_sessions_run_state_path_and_reattaches_by_its_own(
-        self,
-    ) -> None:
-        session = uuid.UUID(int=7)
-
-        assert session_run_state_path(session) == f"/api/sessions/{session}/run-state"
-        assert session_reattach_path(session) == f"/api/sessions/{session}/reattach"
-
-    def test_a_clicked_commands_output_and_a_placement_have_paths_of_the_session(
-        self,
-    ) -> None:
-        session = uuid.UUID(int=7)
-
-        assert session_run_output_path(session, "r1") == (
-            f"/api/sessions/{session}/runs/r1/output"
-        )
-        assert session_place_path(session) == f"/api/sessions/{session}/place"
+    assert session_place_path(session) == f"/api/sessions/{session}/place"
 
 
 def test_a_campaigns_asker_label_joins_its_slug_and_lowercased_email() -> None:

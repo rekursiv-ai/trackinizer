@@ -51,10 +51,10 @@ logger = logging.getLogger(__name__)
 def main() -> int:
     """Parse args, configure the app, and run uvicorn in THIS process.
 
-    One process serves everything. The inbound message queue
-    (:mod:`trackinizer.server.inbound`) and the subscriber sweep
-    (:mod:`trackinizer.server.subscriber`) are in-process state, so
-    uvicorn's fork-based fan-out would lose and duplicate messages; the app
+    One process serves everything. The relays that pair a session's agent process,
+    a host's tools and a terminal with their viewers
+    (:mod:`trackinizer.server.session_relay`) are in-process state, so
+    uvicorn's fork-based fan-out would split one session's sockets; the app
     object is handed to uvicorn directly rather than through a re-import
     factory.
 
@@ -314,9 +314,9 @@ def _parse_args(
         default=os.environ.get("TRACKINIZER_ASSISTANT", ""),
         metavar="ACTOR=EMAIL",
         help=(
-            "The shared Chat partner: a live session whose granted actor is "
-            "ACTOR (or ACTOR#N) and whose API key belongs to the account EMAIL "
-            "is the Chat partner of every canvas. EMAIL is a service account's, "
+            "The assistant: the account EMAIL, whose keys act for an asker, and "
+            "whose live session with the granted actor ACTOR (or ACTOR#N) is its "
+            "service session. EMAIL is a service account's, "
             "NAME@service.invalid "
             "(default: $TRACKINIZER_ASSISTANT; empty means none)."
         ),

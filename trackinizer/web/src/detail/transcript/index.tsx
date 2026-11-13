@@ -22,10 +22,12 @@ import {
 } from "react";
 import { ApiError } from "../../api/client";
 import type { DetailRow } from "../../api/detail";
+import { newUuid } from "../../api/idempotency";
 import {
   listSessionParts,
+  NOT_LIVE,
   readSessionRecords,
-  sendSessionMessage,
+  sendMessage,
   type SessionPart,
   type SessionRecord,
 } from "../../api/sessions";
@@ -275,11 +277,11 @@ function ChangedFile({ record, mode }: { record: SessionRecord; mode: DiffMode }
 }
 
 /**
- * A writer's box for messaging the session (`POST /api/sessions/{id}/inbound`):
- * its run types each message into the session's terminal, from the
- * signed-in user. None once the session has ended, nor for a viewer, whose sends
- * the server refuses. It never reads the session's queue (`GET .../inbound`):
- * that read takes the agent's messages, and passes for a run polling.
+ * A writer's box for messaging the session's agent (`POST /api/sessions/{id}/inputs`),
+ * from the signed-in user. A message is sent once and never again: a send that got no
+ * answer keeps its draft and says it may not have been delivered. None once the
+ * session has ended, nor for a viewer, whose sends the server refuses; a session no
+ * agent process serves refuses each message, and the box says so.
  */
 function SessionComposer({ row }: { row: DetailRow }) {
   const mode = useWriteMode();
@@ -295,17 +297,23 @@ function SessionComposer({ row }: { row: DetailRow }) {
   return (
     <div className="tr-composer">
       <Composer
-        send={async (text, key) => {
-          await sendSessionMessage(row.id, text, key);
-          return `Queued for ${owner}`;
+        send={async (text) => {
+          await sendMessage(row.id, text, newUuid());
+          return `Sent to ${owner}`;
         }}
         target={row.id}
         enabled={mode === "enabled"}
-        placeholder="Message the agent: its run types it into the session's terminal"
+        retryable={() => false}
+        placeholder="Message the agent"
         failure={(error) =>
-          error instanceof ApiError && error.status === 409
-            ? `Not connected: no run is polling this session (${error.detail}).`
-            : `Could not send: ${error.message}. Retry sends the same message once.`
+          error instanceof ApiError && error.status === 409 && error.code === NOT_LIVE
+            ? "No agent is running in this session, so nothing was sent."
+            : error instanceof ApiError &&
+                error.status >= 400 &&
+                error.status < 500 &&
+                error.detail
+              ? error.detail
+              : "The message may not have been delivered. Check the session before sending it again."
         }
       />
     </div>

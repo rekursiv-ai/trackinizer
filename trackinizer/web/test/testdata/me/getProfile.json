@@ -26,7 +26,6 @@
         "autofix": true,
         "automerge": false,
         "canvas_text_size": 14,
-        "chat_provider": "assistant",
         "chat_side": "left",
         "chat_text_size": 13,
         "chat_view": {

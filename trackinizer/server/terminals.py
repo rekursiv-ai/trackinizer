@@ -1,7 +1,7 @@
 """The relay that pairs a browser with a host's daemon and relays a terminal's bytes.
 
 A terminal lives only while its sockets do, so its state is in memory, in this one
-process, like the inbound queue's (``server/inbound.py``). The relay never touches the
+process, like the session relay's (``server/session_relay.py``). The relay never touches the
 database or a real socket: the routes hand it :class:`Socket` adapters and an
 :class:`Observer`, and the clock and sleep are injected, so every limit is tested
 without waiting for it.
@@ -106,20 +106,8 @@ class Terminal:
     workspace: UUID | None = None
     requested_by: str | None = None
     surface: str | None = None
-    command: wire_terminals.TerminalCommand | None = None
-    """The CLI the host runs, as a detached agent run."""
-
-    attach: UUID | None = None
-    """The AgentSession the detached run re-opens."""
-
-    run_name: str | None = None
-    """The detached run's name; set whenever ``command`` is."""
-
     cwd: str | None = None
-    """The folder the run starts in, as the browser named it; the host resolves it."""
-
-    kind: wire_terminals.TerminalKind = "shell"
-    """A shell, or the daemon's answers to file requests."""
+    """The folder the shell starts in, as the browser named it; the host resolves it."""
 
     detached_at: float | None = None
     """When no browser was attached since; ``None`` while one is."""
@@ -179,11 +167,7 @@ class Opening:
     workspace: UUID | None = None
     requested_by: str | None = None
     surface: str | None = None
-    command: wire_terminals.TerminalCommand | None = None
-    attach: UUID | None = None
-    run_name: str | None = None
     cwd: str | None = None
-    kind: wire_terminals.TerminalKind = "shell"
 
 
 def decode_attach(payload: bytes) -> tuple[str, int]:
@@ -289,22 +273,6 @@ class TerminalRelay:
             if term.user == user and term.canvas == canvas and not term.stopping
         ]
 
-    def attached_to(self, session_id: UUID) -> list[Terminal]:
-        """Return the live sessions that re-attach this session, oldest first.
-
-        Args:
-          session_id: The AgentSession a detached run re-opens.
-
-        Returns:
-          terminals: Those opened with it as their ``attach`` and not told to stop.
-
-        """
-        return [
-            term
-            for term in self._terminals.values()
-            if term.attach == session_id and not term.stopping
-        ]
-
     def check(self, *, user: str) -> None:
         """Refuse an open past the open rate.
 
@@ -315,12 +283,14 @@ class TerminalRelay:
           TerminalLimitError: The user opened too many terminals in the last minute.
 
         """
-        opens = self._opens.get(user, deque())
+        opens = self._opens.get(user)
+        if opens is None:
+            return
+        # The one place an open a minute old is dropped: what is kept is what counts.
         now = self._clock()
-        if (
-            sum(now - at < 60.0 for at in opens)
-            >= wire_terminals.MAX_OPENS_PER_MIN_PER_USER
-        ):
+        while opens and now - opens[0] >= 60.0:
+            opens.popleft()
+        if len(opens) >= wire_terminals.MAX_OPENS_PER_MIN_PER_USER:
             raise TerminalLimitError
 
     def open(self, opening: Opening) -> Terminal:
@@ -340,16 +310,8 @@ class TerminalRelay:
         now = self._clock()
         user = opening.user
         host_id = opening.host_id
-        term_id = uuid4()
-        run_name = opening.run_name
-        if opening.command is not None and run_name is None:
-            run_name = (
-                f"run-{term_id.hex[:8]}"
-                if opening.attach is None
-                else f"chat-{opening.attach.hex[:8]}"
-            )
         term = Terminal(
-            id=term_id,
+            id=uuid4(),
             user=user,
             host_id=host_id,
             host=opening.host,
@@ -360,20 +322,13 @@ class TerminalRelay:
             workspace=opening.workspace,
             requested_by=opening.requested_by,
             surface=opening.surface,
-            command=opening.command,
-            attach=opening.attach,
-            run_name=run_name,
             cwd=opening.cwd,
-            kind=opening.kind,
             detached_at=now,
             last_input_at=now,
         )
         self._terminals[term.id] = term
         self._pending.setdefault(host_id, deque()).append(term)
-        opens = self._opens.setdefault(user, deque())
-        while opens and now - opens[0] >= 60.0:
-            opens.popleft()
-        opens.append(now)
+        self._opens.setdefault(user, deque()).append(now)
         for waiter in self._waiters.get(host_id, []):
             if not waiter.done():
                 waiter.set_result(None)

@@ -26,8 +26,6 @@ from pydantic import (
     field_validator,
 )
 
-from trackinizer.wire.wire_sessions import RunState
-
 
 __all__ = [
     "HOSTS_PATH",
@@ -211,10 +209,10 @@ class HostLabels(BaseModel):
 
 
 class HostRun(BaseModel):
-    """A run of a CLI that names the host, under its owner's account: live, or past.
+    """A session's run on the host: its agent process, live, or a past run.
 
-    The host is the run's own word on each poll, shown to the owner and stopped by
-    them, never a grant.
+    A live one is a process the session relay holds on the host. A past one is a
+    session of the owner's account that last said it ran there, on its own word.
     """
 
     # ``wire_terminals.TerminalHosts`` holds it, which the configured assistant reads
@@ -223,23 +221,22 @@ class HostRun(BaseModel):
     model_config = ConfigDict(extra="ignore", frozen=True)
 
     session_id: uuid.UUID
-    """The session the run drains, which its chat names."""
+    """The session the run serves, which its chat names."""
 
     cli: str
-    """The CLI the run is: ``claude`` or ``codex``."""
+    """What the run is: ``sagent`` for an agent process; a past run of a CLI's,
+    ``claude`` or ``codex``."""
 
     run: str | None = None
-    """The detached host's name, which an attach takes; ``None`` for a run in a terminal
-    of its own."""
+    """A past CLI run's detached name, as it said it; ``None`` for an agent process and
+    a run in a terminal of its own."""
 
     cwd: str | None = None
-    """Its working directory, ``~/...`` under its home."""
-
-    state: RunState = "idle"
-    """What the run last reported of itself."""
+    """A past CLI run's working directory, ``~/...`` under its home, as it said it;
+    ``None`` for an agent process."""
 
     last_seen: datetime | None = None
-    """A past run's: when its session last polled; ``None`` for a live session."""
+    """A past run's: when its session was last heard from; ``None`` for a live one."""
 
     ended: datetime | None = None
     """A past run's: when its session ended; ``None`` while it is open."""
@@ -254,7 +251,7 @@ class HostRun(BaseModel):
 
 
 class HostRuns(BaseModel):
-    """The live sessions of one of the caller's hosts, and the ones it had before."""
+    """The agent processes on one of the caller's hosts, and the runs it had before."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -271,7 +268,7 @@ class HostLogout(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     runs: list[HostRun]
-    """The live sessions it stopped."""
+    """The agent processes it stopped."""
 
     keys: int
     """How many of the caller's keys it revoked: those a device login made for it."""

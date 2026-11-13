@@ -15,7 +15,7 @@ from trackinizer.server.api.session_identity import (
     session_reader,
 )
 from trackinizer.server.config import Config
-from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.visuals.session_list import SessionList
 
 
@@ -24,7 +24,7 @@ async def test_list_forwards_scoped_reader_policy_and_limits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, engine = make_store()
-    inbound = InboundQueue()
+    relay = SessionRelay()
     request = Request(
         {
             "type": "http",
@@ -32,7 +32,7 @@ async def test_list_forwards_scoped_reader_policy_and_limits(
                 state=SimpleNamespace(
                     store=store,
                     engine=engine,
-                    inbound=inbound,
+                    session_relay=relay,
                     config=Config(),
                 ),
             ),
@@ -55,7 +55,7 @@ async def test_list_forwards_scoped_reader_policy_and_limits(
         engine,
         email=identity.email,
         reader=session_reader(request, identity),
-        inbound=inbound,
+        relay=relay,
         days=2,
         limit=3,
         policy=store.access_policy,

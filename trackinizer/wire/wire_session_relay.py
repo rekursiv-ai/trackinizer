@@ -23,7 +23,9 @@ A session is live while an agent process holds a socket on
 
 - A viewer reads :data:`SESSION_LINES_PATH`, a stream of server-sent frames.
 - A person posts to :data:`SESSION_INPUTS_PATH`, and starts, reads and stops the
-  process on :data:`SESSION_PROCESS_PATH`.
+  process on :data:`SESSION_PROCESS_PATH`. A message sent to the session through
+  ``POST /api/messages`` (``wire_sessions.SendMessage``), a person's or another
+  session's agent's, comes down as an :class:`Input` too.
 - The daemon is handed a start on its held ``GET`` of
   :data:`HOST_SESSIONS_WAIT_PATH`, and reports the process's end to
   :data:`HOST_SESSIONS_ENDED_PATH`.
@@ -67,24 +69,26 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
 from trackinizer.wire.wire_session_ir import RecordBody
+from trackinizer.wire.wire_sessions import MessageKind
 from trackinizer.wire.wire_terminals import RunFolder
 
 
 __all__ = [
     "HOST_SESSIONS_ENDED_PATH",
     "HOST_SESSIONS_WAIT_PATH",
+    "INPUT_REFUSED",
     "LINES_PING_SEC",
     "LOGINS_FACT",
     "MAX_FRAME_BYTES",
     "MAX_REASON_CHARS",
     "NOT_LIVE",
     "NO_PLACE",
+    "REMOTE_AGENTS_FACT",
     "SESSIONS_FACT",
     "SESSION_INPUTS_PATH",
     "SESSION_LINES_PATH",
     "SESSION_PROCESS_PATH",
     "SESSION_PROCESS_WS_PATH",
-    "SHARED_FACT",
     "STALE_PART",
     "AgentProcess",
     "AgentState",
@@ -131,9 +135,10 @@ HOST_SESSIONS_ENDED_PATH: Final = "/api/hosts/{host_id}/sessions/ended"
 SESSIONS_FACT: Final = "sessions"
 """The fact a daemon reports as ``true`` when it starts agent processes."""
 
-SHARED_FACT: Final = "shared"
-"""The fact a daemon reports as ``true`` when it confines each agent process it
-starts, so that it may run agents for accounts other than its own."""
+REMOTE_AGENTS_FACT: Final = "remote_agents"
+"""The fact a daemon reports as ``true`` when it is a remote agent service: it
+confines each agent process it starts, so that it may run agents for accounts other
+than its own."""
 
 LOGINS_FACT: Final = "logins"
 """The fact a daemon reports as ``true`` when its host's model login answers the
@@ -141,6 +146,10 @@ model calls of agents that run elsewhere."""
 
 NOT_LIVE: Final = "not_live"
 """The ``code`` of a 409 for an input to a session no process serves."""
+
+INPUT_REFUSED: Final = "input_refused"
+"""The ``code`` of a 409 for an input the server will not hold for the session's
+process: larger than a frame, or past what it holds unread; its message says which."""
 
 NO_PLACE: Final = "no_place"
 """The ``code`` of a 409 for a start a named place cannot serve: its host starts
@@ -302,7 +311,11 @@ class ProcessLine(BaseModel):
 
 
 class Opened(BaseModel):
-    """The first frame of a viewer's stream: where the session stands as it opens."""
+    """The first frame of a viewer's stream: where the session stands as it opens.
+
+    The event lines of a reply still being written follow it, if one is; a finished
+    reply is a record, read with the records.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -321,7 +334,8 @@ type ViewerFrame = Annotated[
     Opened | EventLine | StateLine | SettingsLine | RecordLine | ProcessLine,
     Field(discriminator="type"),
 ]
-"""One frame of a viewer's stream: an :class:`Opened` first, then each line."""
+"""One frame of a viewer's stream: an :class:`Opened` first, then the event lines of a
+reply still being written, then each line."""
 
 type ProcessFrame = Annotated[
     Hello | EventLine | StateLine | SettingsLine,
@@ -378,10 +392,16 @@ class Input(BaseModel):
     type: Literal["input"] = "input"
     id: UUID
     author: str
-    """The sender's email, attested by the server."""
+    """Who sent it, as the server attests: a person's email, or ``label#number`` for
+    an agent of another session."""
 
     kind: InputKind
     payload: JSON
+    recipient: str = ""
+    """The agent it is for, by its label in the session; empty for the root."""
+
+    booked: MessageKind | None = None
+    """How the sending agent's team booked it; ``None`` for a person's input."""
 
 
 class ProcessSpec(BaseModel):
@@ -419,6 +439,9 @@ class ServeSession(BaseModel):
     """An API key for this process alone, revoked when it is stopped or ends."""
 
     spec: ProcessSpec
+    remote: bool = False
+    """Whether the server placed it with a remote agent service, whose daemon must
+    confine it: one that confines nothing refuses it."""
 
 
 class ProcessEnded(BaseModel):

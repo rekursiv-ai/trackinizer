@@ -7,7 +7,7 @@ test client cannot share the session event loop that owns the database.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import asyncio
 import uuid
@@ -37,7 +37,7 @@ from trackinizer.wire.wire_daemon import (
     REVOKE_PATH,
 )
 from trackinizer.wire.wire_hosts import HOSTS_PATH
-from trackinizer.wire.wire_terminals import HostsVersion
+from trackinizer.wire.wire_terminals import HostsVersion, TerminalHosts
 
 
 if TYPE_CHECKING:
@@ -46,8 +46,6 @@ if TYPE_CHECKING:
     from starlette.types import Message
 
     import httpx2
-
-    from trackinizer.server.inbound import InboundQueue
 
 
 pytestmark = [
@@ -404,7 +402,6 @@ async def test_the_listing_names_every_live_terminal_of_the_canvas_with_its_surf
             "clis": [],
             "runs": [],
             "daemon_outdated": False,
-            "files": False,
             "tools": False,
         },
     ]
@@ -495,7 +492,6 @@ async def test_the_assistant_lists_the_hosts_of_the_person_it_answers(
                 "clis": [],
                 "runs": [],
                 "daemon_outdated": False,
-                "files": False,
                 "tools": False,
             },
             {
@@ -506,16 +502,45 @@ async def test_the_assistant_lists_the_hosts_of_the_person_it_answers(
                 "clis": [],
                 "runs": [],
                 "daemon_outdated": False,
-                "files": False,
                 "tools": False,
             },
         ],
         "terminals": [],
     }
     assert from_plain(for_bob.json(), dict[str, object])["hosts"] == []
-    refused = (for_viewer, as_itself, ada_names_herself, bob_names_ada)
-    assert [each.status_code for each in refused] == [403] * 4
+    # A key names no owner to list its own account's hosts: the assistant owns none.
+    assert (as_itself.status_code, _names(as_itself)) == (200, [])
+    refused = (for_viewer, ada_names_herself, bob_names_ada)
+    assert [each.status_code for each in refused] == [403] * 3
     assert {refusal_detail_code(each) for each in refused} == {"terminal_forbidden"}
+
+
+async def test_a_writers_key_lists_and_follows_its_own_accounts_hosts_alone(
+    world: TerminalWorld,
+) -> None:
+    ada = await world.person("ada@x.y")
+    bob = await world.person("bob@x.y")
+    await world.join(world.cookie(ada), name="laptop")
+    key = {"Authorization": f"Bearer {await world.key(ada)}"}
+    bobs = {"Authorization": f"Bearer {await world.key(bob)}"}
+    hosts, changes = (
+        wire_terminals.TERMINAL_HOSTS_PATH,
+        wire_terminals.TERMINAL_HOSTS_CHANGES_PATH,
+    )
+
+    listed = await world.call("GET", hosts, headers=key)
+    version = await world.call("GET", changes, headers=key)
+    naming_bob = await world.call("GET", f"{hosts}?owner=bob@x.y", headers=key)
+    as_bob = await world.call("GET", hosts, headers=bobs)
+
+    assert listed.status_code == 200, listed.text
+    assert _names(listed) == ["laptop"]
+    assert version.status_code == 200, version.text
+    assert (naming_bob.status_code, refusal_detail_code(naming_bob)) == (
+        403,
+        "terminal_forbidden",
+    )
+    assert _names(as_bob) == []
 
 
 async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
@@ -563,7 +588,6 @@ async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
     for_bob = await version("bob@x.y", f"&since={bob_now}&wait_sec=0.01")
     refused = [
         await world.call("GET", f"{path}?owner=vic@x.y", headers=assistant),
-        await world.call("GET", path, headers=assistant),
         await world.call(
             "GET",
             f"{path}?owner=ada@x.y",
@@ -571,13 +595,15 @@ async def test_the_assistant_waits_on_the_listing_of_the_person_it_answers(
         ),
     ]
     own = await world.call("GET", path, headers=world.browser(world.cookie(ada)))
+    itself = await world.call("GET", path, headers=assistant)
 
     assert woken != now
     assert unchanged == joined
     assert for_bob == bob_now
-    assert [each.status_code for each in refused] == [403] * 3
+    assert [each.status_code for each in refused] == [403] * 2
     assert {refusal_detail_code(each) for each in refused} == {"terminal_forbidden"}
     assert HostsVersion.model_validate(own.json()).version == joined
+    assert itself.status_code == 200
 
 
 async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_that_person_alone(
@@ -649,64 +675,7 @@ async def test_a_box_the_assistant_enrolls_for_a_person_opens_a_terminal_for_tha
     assert bob_opens.status_code == 404
 
 
-async def test_the_assistant_opens_only_a_detached_run_on_its_askers_host(
-    world: TerminalWorld,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setitem(
-        app.state._state,
-        "config",
-        Config(
-            session_secret=TERMINAL_SESSION_KEY,
-            session_max_age_seconds=600,
-            assistant=Assistant(actor="kb", email="kb@x.y"),
-        ),
-    )
-    ada = await world.person("ada@x.y")
-    assistant = await world.person("kb@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie, facts={"clis": ["claude"]})
-    await world.wait()
-    canvas, _ = await world.canvas(ada)
-    session = uuid.uuid4()
-    body = {
-        "host": "gx10",
-        "rows": 40,
-        "cols": 120,
-        "canvas": str(canvas),
-        "command": "claude",
-        "attach": str(session),
-        "run_name": "campaign-issue-7",
-        "cwd": "~/work",
-    }
-    headers = {"Authorization": f"Bearer {await world.key(assistant)}"}
-    before = host_changes(app).version("ada@x.y")
-
-    opened = await world.call(
-        "POST",
-        f"{wire_terminals.TERMINALS_PATH}?asker=ada@x.y",
-        headers=headers,
-        body=body,
-    )
-
-    _opened(opened)
-    # The folder a run names is the listing's ``cwd``.
-    assert host_changes(app).version("ada@x.y") == before + 1
-    waiting = from_plain((await world.wait()).json(), dict[str, object])
-    assert (
-        waiting["command"],
-        waiting["attach"],
-        waiting["run_name"],
-        waiting["cwd"],
-    ) == (
-        "claude",
-        str(session),
-        "campaign-issue-7",
-        "~/work",
-    )
-
-
-async def test_the_assistant_cannot_open_a_shell_or_another_askers_host(
+async def test_the_assistant_opens_no_terminal_for_anyone(
     world: TerminalWorld,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -731,9 +700,6 @@ async def test_the_assistant_cannot_open_a_shell_or_another_askers_host(
         "rows": 40,
         "cols": 120,
         "canvas": str(canvas),
-        "command": "claude",
-        "attach": str(uuid.uuid4()),
-        "run_name": "campaign-issue-7",
         "cwd": "~/work",
     }
     headers = {"Authorization": f"Bearer {await world.key(assistant)}"}
@@ -762,17 +728,10 @@ async def test_the_assistant_cannot_open_a_shell_or_another_askers_host(
         headers=headers,
         body=body,
     )
-    bad_run = await world.call(
-        "POST",
-        f"{wire_terminals.TERMINALS_PATH}?asker=bob@x.y",
-        headers=headers,
-        body=body | {"run_name": None},
-    )
 
-    assert foreign.status_code == 404
     assert [
         (each.status_code, refusal_detail_code(each))
-        for each in (viewer, shell, no_asker, bad_run)
+        for each in (foreign, viewer, shell, no_asker)
     ] == [
         (403, "terminal_forbidden"),
     ] * 4
@@ -1242,45 +1201,20 @@ async def test_a_token_joins_while_its_owner_is_active_and_not_after(
     assert refused.status_code == 401
 
 
-async def test_a_run_opens_only_where_the_host_facts_list_its_cli(
+async def test_a_terminal_is_a_shell_and_an_open_that_asks_for_files_is_refused(
     world: TerminalWorld,
 ) -> None:
+    """A host's files are read with its tools now, as an agent's are."""
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    await world.join(cookie, facts={"clis": ["claude"]})
+    await world.join(cookie, facts={"files": True})
     await world.wait()
 
-    missing = await world.open(cookie, command="codex")
-    assert (missing.status_code, refusal_detail_code(missing)) == (
-        409,
-        "cli_not_installed",
-    )
-    _opened(await world.open(cookie, command="claude"))
+    refused = await world.open(cookie, kind="files")
     _opened(await world.open(cookie))
-
-
-async def test_files_open_only_where_the_facts_say_files_and_the_host_is_told(
-    world: TerminalWorld,
-) -> None:
-    ada = await world.person("ada@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie, name="old")
-    await world.join(cookie, name="new", facts={"files": True})
-    await world.wait()
-
-    refused = await world.open(cookie, host="old", kind="files")
-    _opened(await world.open(cookie, host="new", kind="files"))
-    files = from_plain((await world.wait()).json(), dict[str, object])
-    _opened(await world.open(cookie, host="new"))
     shell = from_plain((await world.wait()).json(), dict[str, object])
 
-    assert (refused.status_code, refusal_detail_code(refused)) == (
-        409,
-        "files_not_enabled",
-    )
-    assert files["kind"] == "files"
-    # A shell's wait names no kind, so a host on an older wire, which refuses a key it
-    # does not know, still opens it.
+    assert refused.status_code == 422
     assert "kind" not in shell
 
 
@@ -1307,123 +1241,24 @@ async def test_the_listing_says_which_hosts_serve_tools(
     assert {m["name"]: m["tools"] for m in hosts} == {"served": True, "bare": False}
 
 
-async def test_files_open_from_no_canvas_and_never_for_a_key(
+async def test_the_host_is_handed_the_folder_each_shell_starts_in_as_named(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
-    await world.join(cookie, facts={"files": True, "clis": ["claude"]})
+    await world.join(cookie)
     await world.wait()
-    canvas, _ = await world.canvas(ada)
 
-    on_canvas = await world.open(cookie, canvas=canvas, kind="files")
-    run = await world.open(cookie, command="claude", kind="files")
-    keyed = await world.call(
-        "POST",
-        wire_terminals.TERMINALS_PATH,
-        headers={
-            "Authorization": f"Bearer {await world.key(ada)}",
-            "Origin": TERMINAL_ORIGIN,
-        },
-        body={"host": "gx10", "rows": 24, "cols": 80, "kind": "files"},
-    )
-
-    assert (on_canvas.status_code, run.status_code) == (422, 422)
-    assert (keyed.status_code, refusal_detail_code(keyed)) == (
-        403,
-        "terminal_forbidden",
-    )
-
-
-async def test_the_host_is_handed_each_run_with_its_session_and_its_name(
-    world: TerminalWorld,
-) -> None:
-    ada = await world.person("ada@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie, facts={"clis": ["claude", "codex"]})
-    await world.wait()
-    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
-
-    _opened(await world.open(cookie, command="claude", attach=session_id))
-    chat = from_plain((await world.wait()).json(), dict[str, object])
-    _opened(await world.open(cookie, command="codex"))
-    codex = from_plain((await world.wait()).json(), dict[str, object])
-    _opened(await world.open(cookie, command="claude", run_name="nightly"))
+    refused = await world.open(cookie, cwd="project")
+    assert refused.status_code == 422
+    _opened(await world.open(cookie, cwd="~/project"))
     named = from_plain((await world.wait()).json(), dict[str, object])
     _opened(await world.open(cookie))
-    shell = from_plain((await world.wait()).json(), dict[str, object])
-
-    assert (chat["command"], chat["attach"], chat["run_name"]) == (
-        "claude",
-        str(session_id),
-        "chat-9f1c2e3a",
-    )
-    assert (codex["command"], codex.get("attach")) == ("codex", None)
-    assert from_plain(codex["run_name"], str).startswith("run-")
-    assert len(from_plain(codex["run_name"], str)) == len("run-") + 8
-    assert (named["command"], named["run_name"]) == ("claude", "nightly")
-    # A shell's wait names none of a run's fields, so a host on an older wire, which
-    # refuses a key it does not know, opens it.
-    assert not {"command", "attach", "run_name", "cwd"} & set(shell)
-
-
-async def test_a_session_has_one_run_open_at_a_time(world: TerminalWorld) -> None:
-    """A run opened on a session another run is attached to is refused, until it ends."""
-    ada = await world.person("ada@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie, facts={"clis": ["claude", "codex"]})
-    await world.wait()
-    session_id = uuid.uuid4()
-
-    first, _ = _opened(await world.open(cookie, command="claude", attach=session_id))
-    refused = await world.open(cookie, command="codex", attach=session_id)
-    _opened(await world.open(cookie, command="codex", attach=uuid.uuid4()))
-    relay = terminal_relay(app)
-    term = relay.terminal(first)
-    assert term is not None
-    await relay.stop(term)
-
-    assert (refused.status_code, refusal_detail_code(refused)) == (409, "chat_run_live")
-    _opened(await world.open(cookie, command="codex", attach=session_id))
-
-
-async def test_a_run_a_trax_started_by_hand_holds_its_session_against_a_second(
-    world: TerminalWorld,
-) -> None:
-    """The lease its drain takes counts: the browser may not start another beside it."""
-    ada = await world.person("ada@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie, facts={"clis": ["claude"]})
-    await world.wait()
-    session_id = uuid.uuid4()
-    inbound = cast("InboundQueue", app.state.inbound)
-
-    # The assistant's lease names no CLI: it is not a run of the chat.
-    inbound.mark_poller(session_id)
-    _opened(await world.open(cookie, command="claude", attach=session_id))
-    inbound.mark_poller(session_id, cli="claude", instance="a" * 32)
-    refused = await world.open(cookie, command="claude", attach=session_id)
-    inbound.forget_poller(session_id)
-
-    assert (refused.status_code, refusal_detail_code(refused)) == (409, "chat_run_live")
-
-
-async def test_the_host_is_handed_the_folder_each_run_starts_in_as_named(
-    world: TerminalWorld,
-) -> None:
-    ada = await world.person("ada@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie, facts={"clis": ["claude"]})
-    await world.wait()
-
-    refused = await world.open(cookie, cwd="~/project")
-    assert refused.status_code == 422
-    _opened(await world.open(cookie, command="claude", cwd="~/project"))
-    run = from_plain((await world.wait()).json(), dict[str, object])
-    _opened(await world.open(cookie, command="claude"))
     plain = from_plain((await world.wait()).json(), dict[str, object])
 
-    assert (run["cwd"], plain.get("cwd")) == ("~/project", None)
+    # A shell's wait names no folder unless asked, so a host on an older wire, which
+    # refuses a key it does not know, opens it.
+    assert (named["cwd"], "cwd" in plain) == ("~/project", False)
 
 
 async def test_a_host_listing_keeps_the_folder_its_owner_named(
@@ -1432,9 +1267,10 @@ async def test_a_host_listing_keeps_the_folder_its_owner_named(
     ada = await world.person("ada@x.y")
     cookie = world.cookie(ada)
     await world.join(cookie, facts={"clis": ["claude"]})
-    await world.wait()
-
-    _opened(await world.open(cookie, command="claude", cwd="~/work"))
+    async with world.store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE hosts SET last_run_cwd = '~/work' WHERE name = 'gx10'",
+        )
     listed = await world.call(
         "GET",
         wire_terminals.TERMINAL_HOSTS_PATH,
@@ -1468,31 +1304,6 @@ async def test_the_host_list_names_the_clis_its_facts_list(
 
     hosts = from_plain(listed["hosts"], list[dict[str, object]])
     assert hosts[0]["clis"] == ["claude", "git"]
-
-
-async def test_the_host_list_says_which_hosts_serve_files(
-    world: TerminalWorld,
-) -> None:
-    ada = await world.person("ada@x.y")
-    cookie = world.cookie(ada)
-    await world.join(cookie, name="old")
-    await world.join(cookie, name="new", facts={"files": True})
-
-    listed = from_plain(
-        (
-            await world.call(
-                "GET",
-                wire_terminals.TERMINAL_HOSTS_PATH,
-                headers=world.browser(cookie),
-            )
-        ).json(),
-        dict[str, object],
-    )
-
-    assert {
-        from_plain(each["name"], str): each["files"]
-        for each in from_plain(listed["hosts"], list[dict[str, object]])
-    } == {"old": False, "new": True}
 
 
 async def test_the_host_list_names_a_host_older_than_the_wire_supports(
@@ -1727,6 +1538,11 @@ async def test_a_host_socket_taken_over_while_starting_relays_no_more(
     second.leave()
     browser.leave()
     await asyncio.gather(browser_task, second_task)
+
+
+def _names(listing: httpx2.Response) -> list[str]:
+    """Return the name of each host a listing answered."""
+    return [host.name for host in TerminalHosts.model_validate(listing.json()).hosts]
 
 
 if __name__ == "__main__":

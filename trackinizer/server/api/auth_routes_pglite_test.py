@@ -94,7 +94,6 @@ _DEFAULTS: dict[str, object] = {
     "terminal_tab_chords": False,
     "terminal_placement": "bottom",
     "home": "graph",
-    "chat_provider": "assistant",
     "assistant_prompt": "sagent",
     "cli_folder": "",
     "chat_view": {

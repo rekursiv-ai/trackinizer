@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol, cast
 
+import asyncio
 import dataclasses
 import datetime as dt
 import functools
@@ -22,11 +24,12 @@ from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from fastapi import FastAPI, Request
     from starlette.requests import HTTPConnection
 
-    from trackinizer.server.config import Assistant, ChatOrgs
-    from trackinizer.server.inbound import InboundQueue
+    from trackinizer.server.config import Assistant, ChatOrgs, RemoteAgentService
     from trackinizer.server.secrets import SecretBackend
     from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
@@ -37,7 +40,6 @@ _logger = logging.getLogger(__name__)
 
 class _State(Protocol):
     store: Store
-    inbound: InboundQueue
     secrets: SecretBackend | None
 
 
@@ -53,32 +55,6 @@ def get_store(request: HTTPConnection) -> Store:
     """
     app = cast(_App, request.app)
     return app.state.store
-
-
-def get_inbound(request: Request) -> InboundQueue:
-    """Return the inbound-message queue held on the FastAPI app state.
-
-    Args:
-      request: Request.
-
-    Returns:
-      result: The InboundQueue.
-
-    """
-    app = cast(_App, request.app)
-    return app.state.inbound
-
-
-def nudge_streams(request: Request) -> None:
-    """Wake the event streams the app holds, if any, to read what changed.
-
-    Args:
-      request: The request that changed a session, a run or a host.
-
-    """
-    streams: object = getattr(cast("FastAPI", request.app).state, "hub", None)
-    if isinstance(streams, _Streams):
-        streams.nudge()
 
 
 def get_replays(request: Request) -> Replays:
@@ -191,15 +167,16 @@ def host_idle_sec(app: FastAPI, host_id: uuid.UUID) -> float:
 
 
 async def host_closed(app: FastAPI, host_id: uuid.UUID) -> None:
-    """End the tool connections and terminals of a host taken out of service.
+    """End the tool connections, terminals and agent processes of a host taken out of service.
 
     Args:
-      app: The application, whose state holds both relays.
+      app: The application, whose state holds the relays.
       host_id: The host.
 
     """
     tool_relay(app).close_host(host_id)
     await terminal_relay(app).close_host(host_id)
+    await session_relay(app).stop_host(host_id)
 
 
 def host_changes(app: FastAPI) -> HostChanges:
@@ -262,6 +239,22 @@ def get_relay(request: Request) -> CaptureRelay:
     return relay
 
 
+def session_relay(app: FastAPI) -> SessionRelay:
+    """Return the app's live-session relay, made on first use.
+
+    Args:
+      app: The application.
+
+    Returns:
+      result: The relay.
+
+    """
+    relay = cast(object, getattr(app.state, "session_relay", None))
+    if not isinstance(relay, SessionRelay):
+        relay = app.state.session_relay = SessionRelay()
+    return relay
+
+
 def get_session_relay(request: HTTPConnection) -> SessionRelay:
     """Return the live-session relay held on the app state, made on first use.
 
@@ -272,11 +265,78 @@ def get_session_relay(request: HTTPConnection) -> SessionRelay:
       result: The relay.
 
     """
+    return session_relay(cast("FastAPI", request.app))
+
+
+type Sleep = Callable[[float], Awaitable[None]]
+"""Waits the given seconds."""
+
+
+@dataclass(slots=True, kw_only=True, eq=False)
+class Later:
+    """Work the app runs after a delay, past the request that asked for it.
+
+    Its own sleep is the one place a route's delays wait on, so each is tested with a
+    stand-in, never a real wait. Held in memory alone: work still waiting when the
+    server stops is not done.
+    """
+
+    sleep: Sleep = asyncio.sleep
+    _waiting: set[asyncio.Task[None]] = field(
+        default_factory=set[asyncio.Task[None]],
+        init=False,
+        repr=False,
+    )
+    """The work still waiting, held so none is collected before it runs."""
+
+    def run(
+        self,
+        delay_sec: float,
+        work: Callable[[], Awaitable[None]],
+    ) -> asyncio.Task[None]:
+        """Run ``work`` once ``delay_sec`` has passed; a failure is logged, not raised.
+
+        Args:
+          delay_sec: How long to wait first.
+          work: What to do then.
+
+        Returns:
+          task: The work, waiting.
+
+        """
+        task = asyncio.ensure_future(self._after(delay_sec, work))
+        self._waiting.add(task)
+        task.add_done_callback(self._waiting.discard)
+        return task
+
+    async def _after(
+        self,
+        delay_sec: float,
+        work: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Wait, then do the work, logging what it raised."""
+        await self.sleep(delay_sec)
+        try:
+            await work()
+        except Exception:
+            _logger.exception("delayed work failed")
+
+
+def get_later(request: HTTPConnection) -> Later:
+    """Return the app's delayed work, made on first use.
+
+    Args:
+      request: Request or websocket.
+
+    Returns:
+      later: The one the app holds.
+
+    """
     app = cast("FastAPI", request.app)
-    relay = cast(object, getattr(app.state, "session_relay", None))
-    if not isinstance(relay, SessionRelay):
-        relay = app.state.session_relay = SessionRelay()
-    return relay
+    held = cast(object, getattr(app.state, "later", None))
+    if not isinstance(held, Later):
+        held = app.state.later = Later()
+    return held
 
 
 def get_assistant(request: HTTPConnection) -> Assistant | None:
@@ -329,6 +389,34 @@ def get_staff(request: HTTPConnection) -> tuple[str, ...]:
 
     """
     return _config(cast("FastAPI", request.app)).staff
+
+
+def get_remote_agent_services(
+    request: HTTPConnection,
+) -> tuple[RemoteAgentService, ...]:
+    """Return the services that run agents for other accounts; none without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      services: The configured remote agent services.
+
+    """
+    return _config(cast("FastAPI", request.app)).remote_agent_services
+
+
+def get_default_remote_agent_service(request: HTTPConnection) -> str:
+    """Return the remote agent service an agent runs on by default; empty without one.
+
+    Args:
+      request: Request.
+
+    Returns:
+      name: The service's name, or empty when the server names none.
+
+    """
+    return _config(cast("FastAPI", request.app)).default_remote_agent_service
 
 
 def get_chat_orgs(request: Request) -> ChatOrgs:
@@ -499,14 +587,18 @@ async def _alive(term: Terminal, *, store: Store) -> bool:
 
 # The rule ``tool_routes`` opens a tool connection under, asked again of a tool connection that may outlive it.
 # A tool connection no host has dialed back for has no instance to compare yet, and its timer is short.
-# One that does not is logged, naming the check it failed, before the sweep ends it.
+# One that does not is logged, naming the check it failed, before the sweep ends it. A tool
+# connection no key opened is its asker's own browser's (``ToolRelay.join``), so it is asked
+# the browser form again: the asker still an active writer or admin, and the host theirs.
 async def _connection_alive(connection: ToolConnection, *, app: FastAPI) -> bool:
-    """Whether the assistant's key, its asker and the attached host still qualify."""
+    """Whether the key or browser that opened it, its asker and the attached host still qualify."""
     async with cast("_State", app.state).store.engine.acquire() as conn:
         access = await tool_access(
             conn,
             assistant=_assistant(app),
-            api_key_id=connection.api_key_id,
+            api_key_id="browser"
+            if connection.api_key_id is None
+            else connection.api_key_id,
             asker=connection.asker,
             host=connection.host_id,
             instance=connection.instance,
@@ -519,12 +611,3 @@ async def _connection_alive(connection: ToolConnection, *, app: FastAPI) -> bool
             access.failed,
         )
     return access.failed is None
-
-
-@runtime_checkable
-class _Streams(Protocol):
-    """Event streams that read what they show again when nudged."""
-
-    def nudge(self) -> None:
-        """Have every open stream read its state again."""
-        ...

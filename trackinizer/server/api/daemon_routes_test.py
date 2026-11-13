@@ -1,14 +1,15 @@
 """Daemon routes against a mocked connection: the SQL each route sends.
 
-``daemon_routes_pglite_test.py`` runs the same routes against a real database;
-these pin what the routes and the credential check ask of the connection, and that
-a refusal sends nothing further.
+The hand-run ``private/daemon_routes_parity.py`` runs the same routes against a real
+database, and ``private/daemon_routes_races_parity.py`` races them on PostgreSQL; these
+pin what the routes and the credential check ask of the connection, and that a
+refusal sends nothing further.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import asyncio
 import uuid
@@ -20,6 +21,7 @@ import pytest
 
 from trackinizer.conftest import executed_sql, make_conn, set_field_row
 from trackinizer.server.api import daemon_routes
+from trackinizer.server.api._deps import host_changes
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
@@ -32,13 +34,17 @@ from trackinizer.server.api.daemon_routes import (
     issue_enrollment,
     unregister_host,
 )
-from trackinizer.server.config import Assistant, Config
+from trackinizer.server.auth import PROCESS_KEY_SQL
+from trackinizer.server.config import Assistant, Config, RemoteAgentService
 from trackinizer.server.host_auth import (
     MintedSecret,
     mint_secret,
     parse_credential,
     parse_enrollment,
 )
+from trackinizer.server.session_relay import SessionRelay
+from trackinizer.server.terminals import TerminalRelay
+from trackinizer.server.tool_relay import ToolRelay
 from trackinizer.wire.wire_daemon import (
     CREDENTIAL_PREFIX,
     ENROLL_PATH,
@@ -391,6 +397,53 @@ def test_a_writer_cannot_enroll_a_host_that_belongs_to_someone_else(
     assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
 
+_SERVICE_ACCOUNT = "remote-agents@service.invalid"
+
+
+@pytest.mark.parametrize(
+    ("name", "email", "confirmed"),
+    [
+        ("remote-agents", _SERVICE_ACCOUNT, True),
+        ("remote-agents", "other@service.invalid", False),
+        ("lab", _SERVICE_ACCOUNT, False),
+    ],
+    ids=[
+        "the name and account the config names",
+        "that name under another account",
+        "another name under that account",
+    ],
+)
+def test_the_remote_agent_service_the_config_names_is_confirmed_as_it_enrolls(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    name: str,
+    email: str,
+    confirmed: bool,
+) -> None:
+    """A service account has no web app to confirm a host of its own in."""
+    client, _, engine = route_client
+    monkeypatch.setitem(
+        app.state._state,
+        "config",
+        Config(
+            remote_agent_services=(
+                RemoteAgentService(name="remote-agents", account=_SERVICE_ACCOUNT),
+            ),
+        ),
+    )
+    install_identity(make_test_identity(role="writer", email=email))
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": email})
+    engine.conn.fetchval.side_effect = [_BEAT]
+
+    response = client.post(ENROLL_PATH, json={"name": name})
+
+    assert response.status_code == 201, response.text
+    upsert = engine.conn.fetchrow.call_args
+    assert upsert is not None
+    assert upsert.args[1:] == (name, email, "personal", confirmed)
+
+
 def test_join_checks_the_token_unlocked_then_locks_the_host_and_claims_it(
     route_client: tuple[TestClient, Store, FakeEngine],
 ) -> None:
@@ -415,16 +468,16 @@ def test_join_checks_the_token_unlocked_then_locks_the_host_and_claims_it(
     # must be refused before it queues for the host row.
     sql = check.args[0]
     assert isinstance(sql, str)
-    assert "FOR UPDATE" not in sql
-    assert "FROM host_enrollments e JOIN hosts m ON m.id = e.host_id" in sql
-    assert "e.id = $1 AND m.name = $2 AND e.used_at IS NULL" in sql
-    assert "AND e.expires_at > now()" in sql
-    assert (
-        "FROM users u WHERE u.email = e.created_by "
+    assert sql == (
+        "SELECT e.secret_sha256 FROM host_enrollments e "
+        "JOIN hosts m ON m.id = e.host_id "
+        "WHERE e.id = $1 AND m.name = $2 AND e.used_at IS NULL "
+        "AND e.expires_at > now() "
+        "AND EXISTS (SELECT 1 FROM users u WHERE u.email = e.created_by "
         "AND u.status = 'active' AND ((u.role = 'admin' "
         "AND (m.owner IS NULL OR m.owner = u.email)) "
-        "OR (u.email = m.owner AND m.role = $3))"
-    ) in sql
+        "OR (u.email = m.owner AND m.role = $3)))"
+    )
     assert check.args[1:] == (parsed_enrollment.id, "dev-1", "personal")
     # The same first lock as enroll, revoke and delete take, or a join racing one of
     # them deadlocks.
@@ -457,8 +510,10 @@ def test_join_checks_the_token_unlocked_then_locks_the_host_and_claims_it(
         "UPDATE hosts",
         "COMMIT",
     ]
-    assert "revoked_at = now()" in sent[1]
-    assert "revoked_at IS NULL" in sent[1]
+    assert sent[1] == (
+        "UPDATE host_credentials SET revoked_at = now() "
+        "WHERE host_id = $1 AND revoked_at IS NULL"
+    )
     insert, update = engine.conn.execute.call_args_list[-3:-1]
     assert insert.args[1:] == (credential.id, _HOST_ID, credential.digest)
     assert update.args[1:] == (
@@ -776,34 +831,95 @@ def test_another_hosts_credential_is_404_and_updates_nothing(
 
 def test_revoke_closes_credentials_enrollments_and_the_daemon_instance(
     route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _, engine = route_client
+    client, store, engine = route_client
     _as("admin")
-    set_field_row(engine.conn, {"id": _HOST_ID, "owner": "other@x.y"})
+    # The row's id as text, as a driver may hand it: the host is named by its UUID.
+    set_field_row(engine.conn, {"id": str(_HOST_ID), "owner": "other@x.y"})
+    keys = [uuid.uuid4(), uuid.uuid4()]
+    engine.conn.fetch.return_value = [{"id": key} for key in keys]
+    forgotten: list[uuid.UUID] = []
+    monkeypatch.setattr(store, "forget_bearer_identity_for_key", forgotten.append)
 
     response = client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert (response.status_code, response.content) == (204, b"")
+    # Each process key revoked stops being honoured now, not when its cache entry ends.
+    assert forgotten == keys
     select = engine.conn.fetchrow.call_args
     assert select is not None
-    sql = select.args[0]
-    assert isinstance(sql, str)
-    assert "FROM hosts WHERE name = $1 FOR UPDATE" in sql
-    assert select.args[1:] == ("dev-1",)
+    assert select.args == (
+        "SELECT id, owner FROM hosts WHERE name = $1 FOR UPDATE",
+        "dev-1",
+    )
     sent = executed_sql(engine.conn)
     assert [sql.split(" SET")[0] for sql in sent] == [
         "BEGIN",
         "UPDATE host_credentials",
+        "UPDATE api_keys AS credential",
         "UPDATE host_enrollments",
         "UPDATE hosts",
         "COMMIT",
     ]
     assert "revoked_at = now()" in sent[1]
     assert "revoked_at IS NULL" in sent[1]
-    assert "daemon_instance = NULL" in sent[3]
+    assert sent[3] == (
+        "UPDATE host_enrollments SET used_at = now() "
+        "WHERE host_id = $1 AND used_at IS NULL"
+    )
+    assert "daemon_instance = NULL" in sent[4]
     assert [c.args[1:] for c in engine.conn.execute.call_args_list[1:4]] == [
         (_HOST_ID,),
-    ] * 3
+        (_HOST_ID,),
+        (_HOST_ID,),
+    ]
+    revoked = engine.conn.fetch.call_args
+    assert revoked is not None
+    # The host's keys minted for its agent processes, by the one predicate.
+    assert PROCESS_KEY_SQL in cast("str", revoked.args[0])
+    assert revoked.args[1:] == (_HOST_ID,)
+
+
+def test_revoke_tells_the_owners_listing_then_ends_what_the_host_served(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, engine = route_client
+    _as("admin")
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": "other@x.y"})
+    ended: list[tuple[str, uuid.UUID]] = []
+
+    def connections_closed(relay: ToolRelay, host_id: uuid.UUID) -> None:
+        del relay
+        ended.append(("tool connections", host_id))
+
+    async def terminals_closed(relay: TerminalRelay, host_id: uuid.UUID) -> None:
+        del relay
+        ended.append(("terminals", host_id))
+
+    async def processes_stopped(
+        relay: SessionRelay,
+        host_id: uuid.UUID,
+    ) -> list[uuid.UUID]:
+        del relay
+        ended.append(("agent processes", host_id))
+        return []
+
+    monkeypatch.setattr(ToolRelay, "close_host", connections_closed)
+    monkeypatch.setattr(TerminalRelay, "close_host", terminals_closed)
+    monkeypatch.setattr(SessionRelay, "stop_host", processes_stopped)
+    listed = host_changes(app).version("other@x.y")
+
+    response = client.post(REVOKE_PATH.format(name="dev-1"))
+
+    assert response.status_code == 204
+    assert host_changes(app).version("other@x.y") == listed + 1
+    assert ended == [
+        ("tool connections", _HOST_ID),
+        ("terminals", _HOST_ID),
+        ("agent processes", _HOST_ID),
+    ]
 
 
 def test_revoke_of_an_absent_host_is_404_and_changes_nothing(
@@ -816,7 +932,33 @@ def test_revoke_of_an_absent_host_is_404_and_changes_nothing(
     response = client.post(REVOKE_PATH.format(name="nope"))
 
     assert response.status_code == 404
+    assert "'nope' is not registered" in response.text
     assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
+
+
+def test_revoke_of_a_reserved_name_is_refused_and_sends_nothing(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    _as("admin")
+
+    response = client.post(REVOKE_PATH.format(name="enroll"))
+
+    assert response.status_code == 422
+    _assert_untouched(engine)
+
+
+def test_an_admin_revokes_a_host_nobody_owns(
+    route_client: tuple[TestClient, Store, FakeEngine],
+) -> None:
+    client, _, engine = route_client
+    _as("admin")
+    set_field_row(engine.conn, {"id": _HOST_ID, "owner": None})
+
+    response = client.post(REVOKE_PATH.format(name="dev-1"))
+
+    assert response.status_code == 204
+    assert executed_sql(engine.conn)[-1] == "COMMIT"
 
 
 def test_revoke_by_a_viewer_sends_nothing(
@@ -839,7 +981,10 @@ def test_a_writer_revokes_their_own_host_and_not_another_users(
 
     refused = client.post(REVOKE_PATH.format(name="dev-1"))
 
-    assert refused.status_code == 403
+    assert (refused.status_code, refused.json()) == (
+        403,
+        {"detail": "host belongs to another user"},
+    )
     assert executed_sql(engine.conn) == ["BEGIN", "ROLLBACK"]
 
     set_field_row(engine.conn, {"id": _HOST_ID, "owner": TEST_USER_EMAIL})
@@ -861,10 +1006,20 @@ async def test_unregister_takes_the_owners_host_out_of_service_then_deletes_it(
     assert host_id == _HOST_ID
     assert [call.args[1:] for call in engine.conn.execute.call_args_list] == [
         (_HOST_ID,),
-    ] * 4
+        (_HOST_ID,),
+        (_HOST_ID,),
+        (_HOST_ID,),
+    ]
+    revoked = engine.conn.fetch.call_args
+    assert revoked is not None
+    assert PROCESS_KEY_SQL in cast("str", revoked.args[0])
+    assert revoked.args[1:] == (_HOST_ID,)
     assert all(
         isinstance(call.args[1], uuid.UUID)
-        for call in engine.conn.execute.call_args_list
+        for call in [
+            *engine.conn.execute.call_args_list,
+            *engine.conn.fetch.call_args_list,
+        ]
     )
     select = engine.conn.fetchrow.call_args
     assert select is not None
@@ -875,6 +1030,7 @@ async def test_unregister_takes_the_owners_host_out_of_service_then_deletes_it(
     )
     assert [sql.split(" SET")[0] for sql in executed_sql(engine.conn)] == [
         "UPDATE host_credentials",
+        "UPDATE api_keys AS credential",
         "UPDATE host_enrollments",
         "UPDATE hosts",
         "DELETE FROM hosts WHERE id = $1",

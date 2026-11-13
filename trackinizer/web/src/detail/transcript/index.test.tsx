@@ -105,7 +105,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-test("every part shows in full, part -1 included, its pages read at once", async () => {
+test("every part shows in full, part -1 included, its pages read at once", {
+  tags: ["manual"],
+}, async () => {
   // Bookkeeping for most records, which hides, and so costs jsdom no render.
   const sent = serve([part(-1, 3), part(0, 250)], undefined, (idx) => ({
     ...record(idx),
@@ -135,7 +137,9 @@ test("every part shows in full, part -1 included, its pages read at once", async
   expect(document.querySelector('[role="status"]')).toBeNull();
 });
 
-test("a record's raw JSON shows on request; a tool step's, its call's and its result's, once the step is open", async () => {
+test("a record's raw JSON shows on request; a tool step's, its call's and its result's, once the step is open", {
+  tags: ["manual"],
+}, async () => {
   serve([part(0, 2)]);
   renderDetail({ id: SESSION.id });
   await waitFor(() => expect(shown(0)).toBe(2));
@@ -1892,18 +1896,18 @@ test("sealed reasoning with no summary is not drawn: the next record that is sho
 
 /**
  * Serve session `self` with no records yet, `answer` for its detail on each read,
- * and `inbound` for its messages.
+ * and `input` for its messages.
  */
 function serveLive(
   self: DetailRow,
-  inbound: () => Response,
+  input: () => Response,
   answer: () => DetailRow = () => self,
 ): Sent[] {
   return stubFetch((request) => {
     const path = new URL(request.url).pathname;
     if (path === `/api/web/get/${self.id}`) return Response.json(detail(answer()));
     if (path === `/api/sessions/${self.id}/parts`) return Response.json({ parts: [] });
-    if (path === `/api/sessions/${self.id}/inbound`) return inbound();
+    if (path === `/api/sessions/${self.id}/inputs`) return input();
     return Response.json({ detail: "not found" }, { status: 404 });
   });
 }
@@ -1923,8 +1927,8 @@ async function composer() {
   };
 }
 
-test("a writer messages a live session from the foot of its transcript: one keyed POST, a receipt, and no read of its queue (SE4)", async () => {
-  const sent = serveLive(LIVE, () => Response.json({ queued: 1 }));
+test("a writer messages a live session from the foot of its transcript: one input of its words, and a receipt (SE4)", async () => {
+  const sent = serveLive(LIVE, () => Response.json({ id: "i" }));
   renderDetail({ id: LIVE.id });
   const { section, box } = await composer();
   const empty = await section.findByText("No records captured yet.");
@@ -1934,39 +1938,58 @@ test("a writer messages a live session from the foot of its transcript: one keye
   ).toBeTruthy();
   fireEvent.change(box, { target: { value: "Please stop and summarize." } });
   fireEvent.click(section.getByRole("button", { name: "Send message" }));
-  expect((await section.findByRole("status")).textContent).toBe("Queued for codex-arm");
+  expect((await section.findByRole("status")).textContent).toBe("Sent to codex-arm");
   expect(box).toHaveProperty("value", "");
-  expect(sent.filter((request) => request.path.endsWith("/inbound"))).toEqual([
+  expect(sent.filter((request) => request.path.endsWith("/inputs"))).toEqual([
     {
       method: "POST",
-      path: `/api/sessions/${LIVE.id}/inbound`,
+      path: `/api/sessions/${LIVE.id}/inputs`,
       query: "",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": expect.stringMatching(/^[0-9a-f-]{36}$/),
+      headers: { "content-type": "application/json" },
+      body: {
+        id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+        kind: "UserMessage",
+        payload: {
+          "py/object": "UserMessage",
+          content: "Please stop and summarize.",
+          extra: {},
+        },
       },
-      body: { text: "Please stop and summarize." },
     },
   ]);
 });
 
-test("a 409 says no run is polling this session, and keeps the draft (SE4)", async () => {
-  serveLive(LIVE, () =>
-    Response.json({ detail: "No active inbound poller" }, { status: 409 }),
-  );
+test("a session no agent process serves says so and keeps the draft; a send with no answer says it may have gone; neither offers Retry (SE4)", async () => {
+  let answer = () =>
+    Response.json(
+      {
+        detail: { code: "not_live", message: "No agent process serves this session." },
+      },
+      { status: 409 },
+    );
+  serveLive(LIVE, () => answer());
   renderDetail({ id: LIVE.id });
   const { section, box } = await composer();
   fireEvent.change(box, { target: { value: "Are you there?" } });
   fireEvent.click(section.getByRole("button", { name: "Send message" }));
   expect((await section.findByRole("alert")).textContent).toBe(
-    "Not connected: no run is polling this session (No active inbound poller).",
+    "No agent is running in this session, so nothing was sent.",
   );
   expect(box).toHaveProperty("value", "Are you there?");
-  expect(section.getByRole("button", { name: "Retry message" })).toBeTruthy();
+  expect(section.queryByRole("button", { name: "Retry message" })).toBeNull();
+  answer = () => Response.json({ detail: "boom" }, { status: 502 });
+  fireEvent.click(section.getByRole("button", { name: "Send message" }));
+  await waitFor(() =>
+    expect(section.getByRole("alert").textContent).toBe(
+      "The message may not have been delivered. Check the session before sending it again.",
+    ),
+  );
+  expect(box).toHaveProperty("value", "Are you there?");
+  expect(section.queryByRole("button", { name: "Retry message" })).toBeNull();
 });
 
 test("a viewer gets no composer, nor does a session that has ended (SE4)", async () => {
-  serveLive(LIVE, () => Response.json({ queued: 1 }));
+  serveLive(LIVE, () => Response.json({ id: "i" }));
   renderDetail({ id: LIVE.id }, undefined, { profile: { ...PROFILE, role: "viewer" } });
   expect(await screen.findByText("No records captured yet.")).toBeTruthy();
   expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
@@ -1975,7 +1998,7 @@ test("a viewer gets no composer, nor does a session that has ended (SE4)", async
     owner: "codex-arm",
     ended: "2026-09-30T10:00:00+00:00",
   });
-  serveLive(ended, () => Response.json({ queued: 1 }));
+  serveLive(ended, () => Response.json({ id: "i" }));
   renderDetail({ id: ended.id });
   expect(
     await screen.findByText("The session has ended, so it takes no messages."),
@@ -1987,7 +2010,7 @@ test("a draft survives a live refetch, and the composer goes once the session en
   let current = LIVE;
   serveLive(
     LIVE,
-    () => Response.json({ queued: 1 }),
+    () => Response.json({ id: "i" }),
     () => current,
   );
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });

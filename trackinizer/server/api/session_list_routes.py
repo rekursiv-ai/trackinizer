@@ -6,7 +6,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from trackinizer.server.api._deps import get_inbound, get_store
+from trackinizer.server.api._deps import get_session_relay, get_store
 from trackinizer.server.api._routes_shared import request_engine
 from trackinizer.server.api.session_identity import (
     request_principal,
@@ -34,14 +34,14 @@ async def list_sessions_route(
 ) -> SessionList:
     """List the caller's sessions active in the last ``days`` days or still open.
 
-    Each says whether a run drains it now and on which host (the run's lease,
-    else where it last ran), when it last took a turn, its goal and first line, the
+    Each says whether an agent process serves it now and on which host (the session
+    relay's, else where it last ran), when it last took a turn, its goal and first line, the
     canvas and workspace it sits in, and the Issues it was produced by; the Issues
     come once each, with the Issues they narrow or were produced by. A session the
     caller does not read is left out.
 
     Args:
-      request: Request carrying the database engine and the poller leases.
+      request: Request carrying the database engine and the session relay.
       identity: The caller, whose account the sessions carry.
       days: How far back the last activity may be.
       limit: The most sessions to list, newest activity first.
@@ -55,7 +55,7 @@ async def list_sessions_route(
         request_engine(request),
         email=identity.email,
         reader=session_reader(request, identity),
-        inbound=get_inbound(request),
+        relay=get_session_relay(request),
         days=days,
         limit=limit,
         policy=get_store(request).access_policy,

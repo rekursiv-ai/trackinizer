@@ -162,7 +162,27 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
         "author": "ada@example.com",
         "kind": "Halt",
         "payload": {},
+        "recipient": "",
+        "booked": None,
     }
+
+
+def test_an_input_from_another_session_s_agent_names_its_agent_and_booking() -> None:
+    """A process that predates the fields reads a person's input as before."""
+    sent = Input(
+        id=UUID(int=7),
+        author="worker#415",
+        kind="UserMessage",
+        payload={"py/object": "UserMessage", "content": "status?"},
+        recipient="lead",
+        booked="ask",
+    )
+    older = {"type": "input", "id": str(UUID(int=7)), "author": "a@x.y", "kind": "Halt"}
+
+    assert Input.model_validate_json(sent.model_dump_json()) == sent
+    assert Input.model_validate({**older, "payload": {}}).booked is None
+    with pytest.raises(pydantic.ValidationError):
+        _ = Input.model_validate({**older, "payload": {}, "booked": "shout"})
 
 
 def test_an_action_is_a_setting_with_no_value_and_a_name_of_at_least_one_part() -> None:
@@ -325,6 +345,21 @@ def test_a_serve_session_does_not_print_its_token() -> None:
     assert ServeSession.model_validate_json(serve.model_dump_json()) == serve
 
 
+def test_a_serve_session_says_whether_it_was_placed_for_remote_agents() -> None:
+    """One from a server that does not say is no remote agent's."""
+    plain = {
+        "session_id": str(_SESSION),
+        "process_id": str(_PROCESS),
+        "token": "t",
+        "spec": {"host": "remote-agents"},
+    }
+    remote = ServeSession.model_validate({**plain, "remote": True})
+
+    assert ServeSession.model_validate(plain).remote is False
+    assert remote.remote is True
+    assert ServeSession.model_validate_json(remote.model_dump_json()) == remote
+
+
 def test_a_process_that_never_started_ends_with_no_exit_code() -> None:
     ended = ProcessEnded(process_id=_PROCESS, exit_code=None, reason="no client")
 
@@ -362,9 +397,9 @@ def test_a_host_says_each_thing_it_offers_by_a_fact_of_its_own() -> None:
     """A daemon and a server of different versions must agree on these names."""
     assert (
         wire_session_relay.SESSIONS_FACT,
-        wire_session_relay.SHARED_FACT,
+        wire_session_relay.REMOTE_AGENTS_FACT,
         wire_session_relay.LOGINS_FACT,
-    ) == ("sessions", "shared", "logins")
+    ) == ("sessions", "remote_agents", "logins")
 
 
 if __name__ == "__main__":

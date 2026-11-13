@@ -2964,6 +2964,112 @@ def test_claude_user_reader_preserves_unknown_blocks() -> None:
     assert records[0].extra["$content_value"] == {"future": 1}
 
 
+# ``A`` is a line that spells its text in ``\u`` escapes, ``U`` one in raw UTF-8: the
+# escaped lines are the exceptions, however many there are and wherever they come.
+@pytest.mark.parametrize(
+    "pattern",
+    ["AUUAAAAUUUUUUAU", "UAAUUUUAAAAAAUA", "AAAAAAAAAU", "UA"],
+)
+def test_escaped_and_raw_lines_each_write_back_as_they_were_read(pattern: str) -> None:
+    escaped = "caf" + chr(92) + "u00e9"  # codespell:ignore caf.
+    raw = "caf" + chr(0xE9)  # codespell:ignore caf.
+    native = "".join(
+        _line(
+            type='"user"',
+            message=f'{{"role":"user","content":"{escaped if kind == "A" else raw}"}}',
+        )
+        for kind in pattern
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+    output = StringIO()
+    claude.denormalize(records, output)
+
+    bits = bytearray((len(pattern) + 7) // 8)
+    for index, kind in enumerate(pattern):
+        if kind == "A":
+            bits[index // 8] |= 1 << (index % 8)
+    last = [r.encoding for r in records if isinstance(r, TurnContext) and r.encoding][
+        -1
+    ]
+    assert output.getvalue() == native
+    assert (last["ascii_escaped"], last["ascii_escape_exceptions"]) == (
+        False,
+        base64.b64encode(bytes(bits).rstrip(b"\0")).decode(),
+    )
+
+
+# A line that escapes is a new spelling: the points a reader restates it at are part of
+# the stored records, whose positions name them. Lines 2 and 9 escape here.
+def test_the_spelling_is_stated_first_then_restated_only_as_it_changes() -> None:
+    escaped = "caf" + chr(92) + "u00e9"  # codespell:ignore caf.
+    native = "".join(
+        _line(
+            type='"user"',
+            message=f'{{"role":"user","content":"{escaped if n in (2, 9) else n}"}}',
+        )
+        for n in range(10)
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+
+    encodings = [
+        r.encoding for r in records if isinstance(r, TurnContext) and r.encoding
+    ]
+    assert [e["ascii_escape_exceptions"] for e in encodings] == [
+        "",
+        base64.b64encode(b"\x04").decode(),
+        base64.b64encode(b"\x04\x02").decode(),
+    ]
+    assert all(e["newline_terminated"] is True for e in encodings)
+    assert all(e["ascii_escaped"] is False for e in encodings)
+    assert isinstance(records[0], TurnContext)
+    assert records[0].encoding == encodings[0]
+    assert isinstance(records[1], ContextClear)
+    assert records[1].extra == {"$opens": True}
+    settings = [r for r in records if isinstance(r, TurnContext) and not r.encoding]
+    assert len(settings) == 1
+
+
+def test_a_transcript_without_a_final_newline_says_so_and_writes_back() -> None:
+    native = _line(type='"user"', message='{"role":"user","content":"a"}') + _line(
+        type='"user"',
+        message='{"role":"user","content":"b"}',
+    ).removesuffix("\n")
+
+    records = list(claude.normalize(StringIO(native)))
+    output = StringIO()
+    claude.denormalize(records, output)
+
+    encodings = [
+        r.encoding for r in records if isinstance(r, TurnContext) and r.encoding
+    ]
+    assert encodings[-1]["newline_terminated"] is False
+    assert output.getvalue() == native
+
+
+def test_what_the_harness_gives_at_the_head_is_the_opening_clears_prompt() -> None:
+    native = (
+        json.dumps(
+            {
+                "type": "attachment",
+                "attachment": {"type": "skill_listing", "content": "- tdd: write it"},
+                "uuid": "11111111-1111-1111-1111-111111111111",
+                "timestamp": "2026-01-01T00:00:00Z",
+            },
+            separators=(",", ":"),
+        )
+        + "\n"
+        + _line(type='"user"', message='{"role":"user","content":"hi"}')
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+
+    opening = records[1]
+    assert isinstance(opening, ContextClear)
+    assert opening.system_prompt == "- tdd: write it"
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

@@ -58,6 +58,7 @@ class _CanvasClient:
         self.reads: list[str] = []
         self.visuals: list[object] = []
         self.focused: str | None = None
+        self.page: str | None = None
         self.unlabeled = uuid.uuid4()
         self.canvas = uuid.uuid4()
         self.captures = 0
@@ -176,6 +177,7 @@ class _CanvasClient:
             "revision": revision,
             "visuals": visuals,
             "focused_instance": self.focused,
+            "page": self.page,
         }
 
     def _at(self, canvas_id: uuid.UUID) -> None:
@@ -830,6 +832,54 @@ def test_canvas_prints_each_visual_with_its_placement_and_record(
         f"  trax.subgraph i1 side record={record}",
         "  trax.browse i2 main",
     ]
+
+
+def test_canvas_prints_the_page_it_is_on_after_its_revision(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    client.page = "#/lookup/c5286865-67b6-4bd8-ab51-e06e10c326c5"
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"canvas {client.canvas} revision 8 focused none",
+        "  page #/lookup/c5286865-67b6-4bd8-ab51-e06e10c326c5",
+        "  (no visuals)",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("state", "printed"),
+    [
+        (
+            dict[str, object](),
+            ["canvas unknown revision 0 focused none", "  (no visuals)"],
+        ),
+        (
+            dict[str, object](visuals=[dict[str, object]()]),
+            ["canvas unknown revision 0 focused none", "  unknown unknown main"],
+        ),
+    ],
+    ids=["no-field", "a-visual-with-no-field"],
+)
+def test_canvas_prints_a_field_its_state_leaves_out_as_unknown(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    state: dict[str, object],
+    printed: list[str],
+) -> None:
+    client = _CanvasClient()
+
+    def read_canvas(canvas_id: uuid.UUID) -> dict[str, object]:
+        assert canvas_id == client.canvas
+        return state
+
+    monkeypatch.setattr(client, "read_canvas", read_canvas)
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == printed
 
 
 def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_own(

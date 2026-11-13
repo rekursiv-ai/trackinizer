@@ -451,12 +451,16 @@ def _print_canvas(payload: object) -> None:
     revision = from_plain(state.get("revision"), int, default=0)
     focused = from_plain(state.get("focused_instance"), str, default="none")
     echo(f"canvas {canvas_id} revision {revision} focused {focused}")
+    # The page a person's tab on the canvas is on, as their browser last saved it.
+    page = from_plain(state.get("page"), str, default="")
+    if page != "":
+        echo(f"  page {page}")
     preferences = from_plain(
         state.get("preferences"),
         dict[str, object],
         default=dict[str, object](),
     )
-    if preferences:
+    if preferences != {}:
         echo(
             "  preferences "
             + " ".join(
@@ -476,7 +480,7 @@ def _print_canvas(payload: object) -> None:
         visual_type = from_plain(visual.get("type"), str, default="unknown")
         placement = from_plain(visual.get("placement"), str, default="main")
         record_id = from_plain(visual.get("record_id"), str, default="")
-        target = f" record={record_id}" if record_id else ""
+        target = f" record={record_id}" if record_id != "" else ""
         echo(f"  {visual_type} {instance_id} {placement}{target}")
     _print_marks(state)
 

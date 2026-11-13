@@ -95,6 +95,7 @@ from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
+from trackinizer.wire.wire_sessions import SessionAgent
 
 
 if TYPE_CHECKING:
@@ -2734,28 +2735,35 @@ Options:
 
 
 class Send(Command):
-    """Send a message into a live agent session by routing name."""
+    """Send a message to one agent of a live session, or to sessions by routing name."""
 
     names = ("send",)
     help = """\
-Usage: trax send @ACTOR[:ROOM] TEXT...
+Usage: trax send LABEL#SESSION TEXT...
+       trax send @ACTOR[:ROOM] TEXT...
 
 Examples:
-  trax send @scientist "check the logs"         message a live session
+  trax send lead#412 "status?"                  the agent lead of session 412
+  trax send lead#0b1c...-uuid "status?"         the same session, by its UUID
+  trax send @scientist "check the logs"         every live session of a name
   trax send @scientist:sear "status?"           scope to a room
   trax send scientist hello                      the @ is optional
 
 Notes:
-  The target is an AgentSession's routing name (its --as owner). The message
-  is injected into the live CLI's input. Delivery is drop-if-absent: if no
-  live session matches, nothing is sent and the receipt says so.
+  LABEL#SESSION names one agent by its label in a session, the session by
+  its number or its UUID: what follows the last #. A bare name#N is
+  always a session's number; write @name#N for the routing name name#N.
+  @ACTOR is an AgentSession's routing name (its --as owner). The message
+  goes to the agent process serving each session, or into its live CLI's
+  input. Delivery is drop-if-absent: if no live session takes it, nothing
+  is sent and the receipt says so.
 """
 
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
         parser = argparse.ArgumentParser(prog="trax send", description=cls.__doc__)
-        parser.add_argument("target", help="@actor or @actor:room")
+        parser.add_argument("target", help="label#session, @actor or @actor:room")
         parser.add_argument("text", nargs="+", help="message body")
         return parser
 
@@ -2768,15 +2776,17 @@ Notes:
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        actor, room = _parse_target(_arg_str(args, "target"))
-        delivered = client_factory().send_message(
-            actor,
-            " ".join(_arg_text(args)),
-            room=room,
-        )
+        target, room = _parse_target(_arg_str(args, "target"))
+        text = " ".join(_arg_text(args))
+        client = client_factory()
+        if isinstance(target, SessionAgent):
+            delivered = client.message_agent(target, text)
+            scope = str(target)
+        else:
+            delivered = client.send_message(target, text, room=room)
+            scope = f"@{target}" if room is None else f"@{target}:{room}"
         if not delivered:
-            scope = f"@{actor}:{room}" if room is not None else f"@{actor}"
-            echo(f"undelivered: no live session matches {scope}")
+            echo(f"undelivered: no live session takes messages for {scope}")
             return
         echo(f"sent to {len(delivered)} session(s)")
 
@@ -2866,9 +2876,16 @@ Notes:
             echo(line)
 
 
-# The leading ``@`` is optional; a single ``:`` separates an optional room.
-def _parse_target(target: str) -> tuple[str, str | None]:
-    """Split a ``@actor[:room]`` target into ``(actor, room)``."""
+# Without ``@``, a ``#`` makes the target an agent of a session; with it, or with no
+# ``#``, a routing name, which may itself hold ``#`` (``scientist#2``). A single ``:``
+# separates a routing name's optional room.
+def _parse_target(target: str) -> tuple[str | SessionAgent, str | None]:
+    """Split a target into an agent of a session, or an actor and its room."""
+    if not target.startswith("@") and "#" in target:
+        try:
+            return SessionAgent.parse(target), None
+        except ValueError as error:
+            raise ClientError(str(error)) from None
     spec = target.removeprefix("@")
     actor, sep, room = spec.partition(":")
     if not actor:

@@ -1,11 +1,11 @@
 import { afterEach, expect, test, vi } from "vitest";
 import {
   listSessionParts,
+  NOT_LIVE,
   readFeed,
   readFeedFacets,
   readSessionRecords,
-  sendRoutedMessage,
-  sendSessionMessage,
+  sendMessage,
   setSessionAudience,
 } from "./sessions";
 import { stubFetch } from "./testing";
@@ -70,38 +70,39 @@ test("a session that is gone fails with the server's message", async () => {
   });
 });
 
-test("a message to a live session is one keyed POST of its text; the sender is the server's to attest", async () => {
-  const sent = stubFetch(() => Response.json({ queued: 2 }));
-  expect(
-    await sendSessionMessage(
-      ID,
-      "Please stop.",
-      "11111111-2222-4333-8444-555555555555",
-    ),
-  ).toEqual({ queued: 2 });
+test("a message to a session is one input of its text under its id; the sender is the server's to attest", async () => {
+  const sent = stubFetch(() =>
+    Response.json({ id: "11111111-2222-4333-8444-555555555555" }),
+  );
+  await sendMessage(ID, "Please stop.", "11111111-2222-4333-8444-555555555555");
   expect(sent).toEqual([
     {
       method: "POST",
-      path: `/api/sessions/${ID}/inbound`,
+      path: `/api/sessions/${ID}/inputs`,
       query: "",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": "11111111-2222-4333-8444-555555555555",
+      headers: { "content-type": "application/json" },
+      body: {
+        id: "11111111-2222-4333-8444-555555555555",
+        kind: "UserMessage",
+        payload: { "py/object": "UserMessage", content: "Please stop.", extra: {} },
       },
-      body: { text: "Please stop." },
     },
   ]);
 });
 
-test("a session no run is polling refuses a message with 409 and the server's reason", async () => {
+test("a session no agent process serves refuses a message with 409 not_live and the server's reason", async () => {
   stubFetch(() =>
-    Response.json({ detail: "No active inbound poller" }, { status: 409 }),
+    Response.json(
+      { detail: { code: NOT_LIVE, message: "No agent process serves this session." } },
+      { status: 409 },
+    ),
   );
   await expect(
-    sendSessionMessage(ID, "hi", "11111111-2222-4333-8444-555555555555"),
+    sendMessage(ID, "hi", "11111111-2222-4333-8444-555555555555"),
   ).rejects.toMatchObject({
     status: 409,
-    detail: "No active inbound poller",
+    code: NOT_LIVE,
+    detail: "No agent process serves this session.",
   });
 });
 
@@ -306,42 +307,5 @@ test("the facets count a window, either end open, under the feed's filters", asy
       ],
     ],
     ["GET", "/api/web/feed/facets", []],
-  ]);
-});
-
-test("a routed message is one keyed POST naming the agent, its room or null, and the text", async () => {
-  const sent = stubFetch(() => Response.json({ delivered: [ID] }));
-  expect(
-    await sendRoutedMessage(
-      { actor: "codex-arm", room: "ops" },
-      "hi",
-      "11111111-2222-4333-8444-555555555555",
-    ),
-  ).toEqual({ delivered: [ID] });
-  await sendRoutedMessage(
-    { actor: "codex-arm", room: null },
-    "hi",
-    "11111111-2222-4333-8444-666666666666",
-  );
-  expect(
-    sent.map((request) => [
-      request.method,
-      request.path,
-      request.headers["idempotency-key"],
-      request.body,
-    ]),
-  ).toEqual([
-    [
-      "POST",
-      "/api/messages",
-      "11111111-2222-4333-8444-555555555555",
-      { actor: "codex-arm", room: "ops", text: "hi" },
-    ],
-    [
-      "POST",
-      "/api/messages",
-      "11111111-2222-4333-8444-666666666666",
-      { actor: "codex-arm", room: null, text: "hi" },
-    ],
   ]);
 });

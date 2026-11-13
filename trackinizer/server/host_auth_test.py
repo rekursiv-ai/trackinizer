@@ -187,7 +187,14 @@ class TestCurrentHost:
             )
         )
         assert conn.fetchrow.await_args is not None
-        assert conn.fetchrow.await_args.args[1] == minted.id
+        assert conn.fetchrow.await_args.args == (
+            (
+                "SELECT c.secret_sha256, c.revoked_at, m.id AS host_id, m.name "
+                "FROM host_credentials c JOIN hosts m ON m.id = c.host_id "
+                "WHERE c.id = $1"
+            ),
+            minted.id,
+        )
         conn.execute.assert_awaited_once_with(
             "UPDATE host_credentials SET last_used = now() WHERE id = $1",
             minted.id,

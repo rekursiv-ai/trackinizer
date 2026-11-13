@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import cast
+from typing import TYPE_CHECKING, TextIO, cast
 
 import importlib
+import io
+import os
 import re
 import sys
 
@@ -13,6 +15,10 @@ import pytest
 import zstandard
 
 from trackinizer.lib import zstd_compat
+
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 try:
@@ -26,6 +32,7 @@ except ImportError:
             ZstdError=ValueError,
             compress=zstandard.compress,
             decompress=zstd_compat._decompress_frames,
+            open=zstd_compat._Frames,
         ),
     )
 
@@ -131,6 +138,86 @@ def test_import_without_stdlib_zstd_selects_the_wheel(
     finally:
         monkeypatch.undo()
         importlib.reload(zstd_compat)
+
+
+def test_open_text_reads_a_frame_larger_than_one_read(tmp_path: Path) -> None:
+    """A rollout's frame spans many of the file's reads, then the next frame starts."""
+    text = os.urandom(2 * io.DEFAULT_BUFFER_SIZE).hex() + "\n"
+    path = tmp_path / "t.jsonl.zst"
+    _ = path.write_bytes(zstd_compat.compress(text.encode()) + _STREAMING_FRAME)
+    assert path.stat().st_size > 2 * io.DEFAULT_BUFFER_SIZE
+    expected = text + "hello world " * 1000
+
+    with zstd_compat.open_text(path, encoding="utf-8") as handle:
+        assert _text(handle, most=len(expected)) == expected
+
+
+def test_open_text_reads_every_frame_as_text(tmp_path: Path) -> None:
+    path = tmp_path / "t.jsonl.zst"
+    _ = path.write_bytes(zstd_compat.compress("\u00e9\r\n".encode()) + _STREAMING_FRAME)
+    expected = "\u00e9\r\n" + "hello world " * 1000
+
+    with zstd_compat.open_text(path, encoding="utf-8", newline="") as handle:
+        assert _text(handle, most=len(expected)) == expected
+    with zstd_compat.open_text(path, encoding="utf-8") as handle:
+        assert handle.readline(len(expected)) == "\u00e9\n"
+
+
+def test_open_text_spells_bytes_as_its_errors_say(tmp_path: Path) -> None:
+    path = tmp_path / "t.zst"
+    _ = path.write_bytes(zstd_compat.compress(b"a\xffb\n"))
+    most = len(b"a\xffb\n")
+
+    with zstd_compat.open_text(path, encoding="utf-8", errors="replace") as handle:
+        assert _text(handle, most=most) == f"a{chr(0xFFFD)}b\n"
+    with zstd_compat.open_text(path, encoding="latin-1") as handle:
+        assert _text(handle, most=most) == f"a{chr(0xFF)}b\n"
+    with (
+        zstd_compat.open_text(path, encoding="utf-8") as handle,
+        pytest.raises(UnicodeDecodeError),
+    ):
+        _ = _text(handle, most=most)
+
+
+@pytest.mark.parametrize("data", ["junk", "truncated", "empty"])
+def test_open_text_reads_a_corrupt_file_as_a_value_error(
+    tmp_path: Path,
+    wheel: bool,
+    data: str,
+) -> None:
+    """Callers catch one exception, whichever library decoded, as ``decompress``'s do.
+
+    An empty file holds no frame, which the stdlib refuses as a frame cut short.
+    """
+    path = tmp_path / "t.zst"
+    _ = path.write_bytes(
+        {
+            "junk": b"not a zstandard frame",
+            "truncated": zstd_compat.compress(_PAYLOAD)[:-1],
+            "empty": b"",
+        }[data],
+    )
+    message = r"^Incomplete zstandard frame$" if wheel and data != "junk" else r".+"
+
+    with (
+        zstd_compat.open_text(path, encoding="utf-8") as handle,
+        pytest.raises(ValueError, match=message) as raised,
+    ):
+        _ = _text(handle, most=len(_PAYLOAD))
+    assert type(raised.value) is ValueError
+
+
+# Not ``handle.read()``: it trusts the reader to end, and one that never does, as a
+# mutant that hands back the same bytes again, took 14 GB in 6 s, nearly all of a
+# 16 GB CI runner, before any assertion could fail. Nor one ``read(most + 1)``: a
+# size that large reaches the reader as one request bigger than any frame it
+# decodes, so a reader that loses its place within a frame would go unseen.
+def _text(handle: TextIO, *, most: int) -> str:
+    """Return the rest of ``handle``, a buffer at a time, stopping past ``most`` chars."""
+    text = ""
+    while len(text) <= most and (part := handle.read(io.DEFAULT_BUFFER_SIZE)):
+        text += part
+    return text
 
 
 if __name__ == "__main__":

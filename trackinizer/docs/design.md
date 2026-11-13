@@ -424,10 +424,9 @@ the same cascade but never auto-flips it -- an author reviews and sets
 unmet (non-terminal) `requires` prerequisites.
 
 SSE (`/api/change_log/stream`, `/api/web/subscribe`) streams mutated-inquiry
-ids over Postgres `LISTEN/NOTIFY` (or PGlite's in-process bus). Subscribers
-with a live agent run's session receive change envelopes pushed into their
-stdin ([`design_subscriber.md`](design_subscriber.md)); offline agents catch
-up via the `change_log` filtered by `subscribers_snapshot`.
+ids over Postgres `LISTEN/NOTIFY` (or PGlite's in-process bus). A subscriber
+catches up via the `change_log` filtered by `subscribers_snapshot`; no change is
+pushed into a live session.
 
 ## Auth
 

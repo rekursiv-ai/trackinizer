@@ -83,7 +83,6 @@ from trackinizer.server.access_policy import AccessDeniedError
 from trackinizer.server.api.addons_routes import attach_deployment
 from trackinizer.server.auth import BOOTSTRAP_ADMIN_ENV, BOOTSTRAP_TOKEN_FILE_ENV
 from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
 from trackinizer.server.values import vetted_sql
@@ -554,7 +553,6 @@ class Hosted:
                 **self._built,
                 "engine": engine,
                 "store": store,
-                "inbound": InboundQueue(),
                 **state,
             },
         )

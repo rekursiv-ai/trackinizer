@@ -14,11 +14,12 @@ from trackinizer.server.api.session_test_support import (
     ASSISTANT_CONFIG,
     OTHER_AGENT,
     USER_AGENT,
+    attached_process,
     browser,
     seed_accounts,
     seed_session,
 )
-from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.session_relay import SessionRelay
 
 
 if TYPE_CHECKING:
@@ -32,9 +33,9 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def served(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Serve with a fresh poller table."""
+    """Serve with a fresh session relay."""
     patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
-    patch_state(monkeypatch, "inbound", InboundQueue())
+    patch_state(monkeypatch, "session_relay", SessionRelay())
 
 
 @pytest.mark.parametrize(
@@ -55,24 +56,28 @@ def test_a_window_or_limit_out_of_bounds_is_refused(
 async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
     pglite_route_client: tuple[httpx2.AsyncClient, Store],
 ) -> None:
+    """Live while the relay holds an agent process for it; then where it last ran."""
     client, store = pglite_route_client
     await seed_accounts(store)
-    mine = await seed_session(store, USER_AGENT, actor="Agent", cli="claude")
-    _ = await seed_session(store, OTHER_AGENT, actor="Other", cli="codex")
-    inbound = cast(InboundQueue, app.state.inbound)
-    inbound.mark_poller(mine, host="workstation", cli="claude")
+    mine = await seed_session(store, USER_AGENT, actor="Agent", polled=False)
+    theirs = await seed_session(store, OTHER_AGENT, actor="Other", polled=False)
+    relay = cast(SessionRelay, app.state.session_relay)
     browser()
 
-    answer = await client.get("/api/sessions")
+    async with (
+        attached_process(relay, mine, host="workstation"),
+        attached_process(relay, theirs, host="theirs"),
+    ):
+        served = await client.get("/api/sessions")
+    left = await client.get("/api/sessions")
 
-    assert answer.status_code == 200, answer.text
-    listed = json_loads(answer.content, _Listing)
+    listings = [json_loads(each.content, _Listing) for each in (served, left)]
+    assert (served.status_code, left.status_code) == (200, 200)
     assert [
-        (each["id"], each["live"], each["host"]) for each in listed["sessions"]
-    ] == [
-        (str(mine), True, "workstation"),
-    ]
-    assert (listed["issues"], listed["more"]) == ([], False)
+        [(each["id"], each["live"], each["host"]) for each in listed["sessions"]]
+        for listed in listings
+    ] == [[(str(mine), True, "workstation")], [(str(mine), False, "workstation")]]
+    assert (listings[0]["issues"], listings[0]["more"]) == ([], False)
 
 
 class _Session(TypedDict):

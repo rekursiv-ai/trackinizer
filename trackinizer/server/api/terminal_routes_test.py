@@ -7,11 +7,9 @@ may open, which CLIs its host offers, and whether it serves files.
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from functools import partial
-from typing import TYPE_CHECKING, Literal, cast, override
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, Mock
 
 import asyncio
@@ -34,7 +32,6 @@ from trackinizer.server.api.conftest import make_test_identity, patch_state
 from trackinizer.server.api.replays import Replays
 from trackinizer.server.api.session_identity import Asker
 from trackinizer.server.config import Config
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.terminals import (
     Opening,
     SocketClosedError,
@@ -48,12 +45,9 @@ from trackinizer.wire.wire_terminals import OpenTerminal, TerminalWait
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from starlette.types import Message
 
     from trackinizer.mock_test_support import AsyncMockProtocol
-    from trackinizer.wire.wire_terminals import TerminalKind
 
 
 pytestmark = pytest.mark.asyncio
@@ -67,17 +61,11 @@ def _request(conn: AsyncMock, monkeypatch: pytest.MonkeyPatch) -> Request:
     return Request({"type": "http", "app": app})
 
 
-async def test_a_confirmed_host_is_returned_with_its_facts(
+async def test_a_confirmed_host_is_returned_by_its_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = AsyncMock(
-        fetchrow=AsyncMock(
-            return_value={
-                "id": str(_HOST),
-                "facts": {"clis": ["claude", "git"]},
-                "confirmed": True,
-            },
-        ),
+        fetchrow=AsyncMock(return_value={"id": str(_HOST), "confirmed": True}),
     )
 
     found = await terminal_routes._owned_host(
@@ -86,20 +74,14 @@ async def test_a_confirmed_host_is_returned_with_its_facts(
         name="gx10",
     )
 
-    assert found == (_HOST, {"clis": ["claude", "git"]})
+    assert found == _HOST
 
 
 async def test_the_lookup_asks_for_an_online_host_of_the_caller_with_a_credential(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     raw = AsyncMock(
-        fetchrow=AsyncMock(
-            return_value={
-                "id": str(_HOST),
-                "facts": dict[str, object](),
-                "confirmed": True,
-            },
-        ),
+        fetchrow=AsyncMock(return_value={"id": str(_HOST), "confirmed": True}),
     )
     conn = cast(MockConnection, raw)
 
@@ -113,7 +95,7 @@ async def test_the_lookup_asks_for_an_online_host_of_the_caller_with_a_credentia
     # whose host is gone, be offered a terminal.
     assert conn.fetchrow.call_args is not None
     assert from_plain(conn.fetchrow.call_args.args[0], str) == (
-        "SELECT m.id, m.facts, m.confirmed_at IS NOT NULL AS confirmed "
+        "SELECT m.id, m.confirmed_at IS NOT NULL AS confirmed "
         "FROM hosts m WHERE m.name = $1 AND m.owner = $2 "
         "AND m.daemon_instance IS NOT NULL "
         "AND m.last_heartbeat > now() - make_interval(secs => $3) "
@@ -182,75 +164,16 @@ async def test_facts_whose_cli_list_is_not_a_list_offer_no_cli(listed: object) -
     assert terminal_routes._host_clis({"clis": listed}) == []
 
 
-@pytest.mark.parametrize(
-    ("facts", "serves"),
-    [({"files": True}, True), ({"files": "yes"}, False), ({}, False), (None, False)],
-)
-async def test_only_facts_that_say_files_serve_a_files_terminal(
-    facts: object,
-    serves: bool,
-) -> None:
-    assert terminal_routes._serves_files(facts) is serves
-
-
 async def _alive(term: Terminal) -> bool:
     del term
     return True
 
 
-async def _barrier_update(barrier: asyncio.Barrier, *args: object) -> str:
-    del args
-    await barrier.wait()
-    return "UPDATE 1"
-
-
-class _ConcurrentEngine(FakeEngine):
-    @override
-    @asynccontextmanager
-    async def acquire(self) -> AsyncGenerator[AsyncMock]:
-        """Model independent connections in the production pool."""
-        yield self.conn
-
-
-async def test_concurrent_opens_reserve_one_run_for_a_chat(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    conn = AsyncMock(
-        execute=AsyncMock(side_effect=partial(_barrier_update, asyncio.Barrier(2))),
-    )
-    request = _request(conn, monkeypatch)
-    patch_state(monkeypatch, "engine", _ConcurrentEngine(conn))
-    patch_state(monkeypatch, "terminals", TerminalRelay(alive=_alive))
-    patch_state(monkeypatch, "inbound", InboundQueue())
-    opening = Opening(
-        user=_IDENTITY.email,
-        host_id=_HOST,
-        host="gx10",
-        rows=24,
-        cols=80,
-        command="claude",
-        attach=uuid.uuid4(),
-    )
-
-    answers = await asyncio.gather(
-        terminal_routes._open_terminal(request, opening=opening),
-        terminal_routes._open_terminal(request, opening=opening),
-        return_exceptions=True,
-    )
-
-    assert sum(isinstance(answer, uuid.UUID) for answer in answers) == 1
-    [refused] = [answer for answer in answers if isinstance(answer, HTTPException)]
-    assert refused.status_code == 409
-    assert from_plain(refused.detail, dict[str, str])["code"] == "chat_run_live"
-
-
-@pytest.mark.parametrize(("kind", "offered"), [("files", "files"), ("shell", None)])
-async def test_the_next_open_is_offered_to_the_host_with_all_it_was_opened_with(
-    kind: TerminalKind,
-    offered: Literal["files"] | None,
-) -> None:
+async def test_the_next_open_is_offered_to_the_host_with_all_it_was_opened_with() -> (
+    None
+):
     relay = TerminalRelay(alive=_alive, ice_servers=("stun:stun.example:3478",))
-    canvas, workspace, session = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    canvas, workspace = uuid.uuid4(), uuid.uuid4()
     term = relay.open(
         Opening(
             user="ada@x.y",
@@ -261,11 +184,7 @@ async def test_the_next_open_is_offered_to_the_host_with_all_it_was_opened_with(
             canvas=canvas,
             workspace=workspace,
             requested_by="helper-1",
-            command="codex",
-            attach=session,
-            run_name="campaign-1",
             cwd="~/work",
-            kind=kind,
         ),
     )
 
@@ -279,11 +198,7 @@ async def test_the_next_open_is_offered_to_the_host_with_all_it_was_opened_with(
         canvas=canvas,
         workspace=workspace,
         requested_by="helper-1",
-        command="codex",
-        attach=session,
-        run_name="campaign-1",
         cwd="~/work",
-        kind=offered,
         ice_servers=["stun:stun.example:3478"],
     )
 
@@ -368,44 +283,9 @@ async def test_only_a_well_formed_attach_frame_names_a_ticket(
     assert terminal_routes._parse_attach(frame) is None
 
 
-async def test_with_authentication_off_no_one_opens_a_run_for_an_asker(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Every caller is a synthetic admin then, so none is trusted to name an asker."""
-    patch_state(monkeypatch, "config", Config(auth_disabled=True))
-
-    with pytest.raises(HTTPException) as refused:
-        await terminal_routes._terminal_owner(
-            Request({"type": "http", "app": app, "headers": []}),
-            _IDENTITY,
-            asker="ada@x.y",
-            body=OpenTerminal(host="gx10", rows=24, cols=80),
-        )
-
-    assert refused.value.status_code == 403
-
-
-async def test_a_session_is_live_while_a_cli_polls_it_and_for_no_other(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    request = _browser_request(monkeypatch)
-    queue = InboundQueue()
-    patch_state(monkeypatch, "inbound", queue)
-    patch_state(monkeypatch, "terminals", TerminalRelay(alive=_alive))
-    held, nameless, other = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
-    queue.mark_poller(held, cli="claude", instance="a" * 32)
-    queue.mark_poller(nameless)
-
-    assert [
-        terminal_routes._is_attached_to_a_live_session(request, session_id=session)
-        for session in (held, nameless, other)
-    ] == [True, False, False]
-
-
 def _browser_request(monkeypatch: pytest.MonkeyPatch) -> Request:
     patch_state(monkeypatch, "config", Config(auth_disabled=False))
     patch_state(monkeypatch, "replays", Replays())
-    patch_state(monkeypatch, "inbound", InboundQueue())
     return Request(
         {
             "type": "http",
@@ -438,7 +318,7 @@ async def test_open_route_queues_once_and_mints_fresh_replay_tickets(
     monkeypatch.setattr(
         terminal_routes,
         "_owned_host",
-        AsyncMock(return_value=(_HOST, {})),
+        AsyncMock(return_value=_HOST),
     )
     body = OpenTerminal(host="gx10", rows=2, cols=3, surface="chat")
     human = replace(_IDENTITY, api_key_id=None)
@@ -462,8 +342,8 @@ async def test_open_route_queues_once_and_mints_fresh_replay_tickets(
     assert ended.value.status_code == 410
 
 
-@pytest.mark.parametrize("failure", ["cli", "files", "offline", "limit"])
-async def test_open_route_reports_capability_readiness_and_rate_refusals(
+@pytest.mark.parametrize("failure", ["offline", "limit"])
+async def test_open_route_reports_readiness_and_rate_refusals(
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
 ) -> None:
@@ -478,15 +358,9 @@ async def test_open_route_reports_capability_readiness_and_rate_refusals(
     monkeypatch.setattr(
         terminal_routes,
         "_owned_host",
-        AsyncMock(return_value=(_HOST, {})),
+        AsyncMock(return_value=_HOST),
     )
-    body = OpenTerminal(
-        host="gx10",
-        rows=2,
-        cols=3,
-        command="claude" if failure == "cli" else None,
-        kind="files" if failure == "files" else "shell",
-    )
+    body = OpenTerminal(host="gx10", rows=2, cols=3)
     with pytest.raises(HTTPException) as refused:
         await terminal_routes.open_terminal_route(
             body,
@@ -497,8 +371,6 @@ async def test_open_route_reports_capability_readiness_and_rate_refusals(
     assert (
         from_plain(refused.value.detail, dict[str, str])["code"]
         == {
-            "cli": "cli_not_installed",
-            "files": "files_not_enabled",
             "offline": "terminal_not_enabled",
             "limit": "terminal_limit",
         }[failure]
@@ -524,7 +396,7 @@ async def test_host_listing_filters_owner_sorts_and_includes_canvas_terminals(
         "owner": _IDENTITY.email,
         "status": "online",
         "confirmed_at": created,
-        "facts": {"clis": ["claude"], "files": True},
+        "facts": {"clis": ["claude"], "tools": True},
         "last_run_cwd": "~/work",
         "daemon_version": MIN_DAEMON_VERSION,
         "created": created,
@@ -554,7 +426,7 @@ async def test_host_listing_filters_owner_sorts_and_includes_canvas_terminals(
     assert [host.terminal_ready for host in listing.hosts] == [True, False]
     assert [host.confirmed for host in listing.hosts] == [True, False]
     assert listing.hosts[0].clis == ["claude"]
-    assert listing.hosts[0].files is True
+    assert listing.hosts[0].tools is True
     assert listing.hosts[0].cwd == "~/work"
     assert [(live.terminal_id, live.surface) for live in listing.terminals] == [
         (term.id, "chat"),
@@ -612,10 +484,6 @@ async def test_attach_and_close_require_a_live_terminal_of_the_human_owner(
     assert term.ended
     with pytest.raises(NotFoundError):
         await terminal_routes.attach_terminal_route(term.id, request, human)
-    assert (
-        terminal_routes._is_attached_to_a_live_session(request, session_id=None)
-        is False
-    )
 
 
 @pytest.mark.parametrize("disabled", [False, True])
@@ -660,7 +528,7 @@ async def test_host_wait_checks_authentication_and_clamps_the_hold(
 
 
 @pytest.mark.parametrize("bad", ["key", "service", "origin", "disabled"])
-async def test_terminal_owner_rejects_nonhuman_and_foreign_browser_requests(
+async def test_an_open_refuses_nonhuman_and_foreign_browser_requests(
     monkeypatch: pytest.MonkeyPatch,
     bad: str,
 ) -> None:
@@ -675,88 +543,24 @@ async def test_terminal_owner_rejects_nonhuman_and_foreign_browser_requests(
     else:
         patch_state(monkeypatch, "config", Config(auth_disabled=True))
     with pytest.raises(HTTPException) as refused:
-        await terminal_routes._terminal_owner(
+        await terminal_routes.open_terminal_route(
+            OpenTerminal(host="gx10", rows=2, cols=3),
             request,
             identity,
-            asker=None,
-            body=OpenTerminal(host="gx10", rows=2, cols=3),
         )
     assert refused.value.status_code == 403
 
 
 @pytest.mark.parametrize(
-    "missing",
-    [
-        "none",
-        "role",
-        "command",
-        "attach",
-        "canvas",
-        "cwd",
-        "run_name",
-        "prefix",
-        "valid",
-    ],
+    "mode",
+    ["human", "key", "foreign", "viewer", "writer", "disabled"],
 )
-async def test_attested_terminal_owner_requires_the_complete_campaign_shape(
-    monkeypatch: pytest.MonkeyPatch,
-    missing: str,
-) -> None:
-    request = _browser_request(monkeypatch)
-    asker = Asker(
-        email="ada@example.com",
-        role="viewer" if missing == "role" else "writer",
-        read_audiences=frozenset(),
-    )
-    monkeypatch.setattr(
-        terminal_routes,
-        "resolve_asker",
-        AsyncMock(return_value=None if missing == "none" else asker),
-    )
-    body = OpenTerminal.model_construct(
-        host="gx10",
-        rows=2,
-        cols=3,
-        command=None if missing == "command" else "claude",
-        attach=None if missing == "attach" else uuid.uuid4(),
-        canvas=None if missing == "canvas" else uuid.uuid4(),
-        cwd=None if missing == "cwd" else "~/work",
-        run_name=(
-            None
-            if missing == "run_name"
-            else "run-x"
-            if missing == "prefix"
-            else "campaign-x"
-        ),
-    )
-    if missing == "valid":
-        assert (
-            await terminal_routes._terminal_owner(
-                request,
-                _IDENTITY,
-                asker=asker.email,
-                body=body,
-            )
-            == asker.email
-        )
-    else:
-        with pytest.raises(HTTPException) as refused:
-            await terminal_routes._terminal_owner(
-                request,
-                _IDENTITY,
-                asker=asker.email,
-                body=body,
-            )
-        assert refused.value.status_code == 403
-
-
-@pytest.mark.parametrize("mode", ["human", "foreign", "viewer", "writer", "disabled"])
 async def test_host_owner_refuses_unattested_names_and_viewers(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
     request = _browser_request(monkeypatch)
-    human = replace(_IDENTITY, api_key_id=None)
+    caller = _IDENTITY if mode == "key" else replace(_IDENTITY, api_key_id=None)
     found = Asker(
         email="ada@example.com",
         role="viewer" if mode == "viewer" else "writer",
@@ -768,16 +572,16 @@ async def test_host_owner_refuses_unattested_names_and_viewers(
         AsyncMock(return_value=found if mode in {"viewer", "writer"} else None),
     )
     patch_state(monkeypatch, "config", Config(auth_disabled=mode == "disabled"))
-    owner = None if mode == "human" else found.email
-    if mode in {"human", "writer"}:
+    owner = None if mode in {"human", "key", "disabled"} else found.email
+    if mode in {"human", "key", "writer"}:
         assert await terminal_routes._hosts_owner(
             request,
-            human,
+            caller,
             owner=owner,
-        ) == (human.email if mode == "human" else found.email)
+        ) == (found.email if mode == "writer" else caller.email)
     else:
         with pytest.raises(HTTPException) as refused:
-            await terminal_routes._hosts_owner(request, human, owner=owner)
+            await terminal_routes._hosts_owner(request, caller, owner=owner)
         assert refused.value.status_code == 403
 
 

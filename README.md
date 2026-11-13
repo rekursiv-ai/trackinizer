@@ -422,7 +422,7 @@ trackinizer                        # pglite (default)
 trackinizer --engine pg --dsn ...  # against real Postgres
 trackinizer --no-auth              # single-user local mode: everyone is admin
 trackinizer --app-dir DIR          # the web app built in DIR at /trax/
-trackinizer --assistant ACTOR=EMAIL  # the shared Chat partner (or $TRACKINIZER_ASSISTANT)
+trackinizer --assistant ACTOR=EMAIL  # the service account that acts for an asker (or $TRACKINIZER_ASSISTANT)
 trackinizer --staff PATTERNS         # who is staff: user@host or *@domain (or $TRACKINIZER_STAFF)
 trackinizer --no-web               # without /api/web, /trax/ or the login page
 ```

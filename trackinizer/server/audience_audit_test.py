@@ -82,6 +82,7 @@ _CUT: Final = re.compile(r"^(?:@|(?:async[ \t]+)?def\b|class\b)", re.MULTILINE)
 # The store methods that read or write a session's content for any id they are given.
 _CONTENT_METHODS: Final = frozenset(
     {
+        "append_session_part",
         "append_session_records",
         "read_recent_session_turns",
         "read_session_manifests",
@@ -120,7 +121,7 @@ _ENFORCED_AGGREGATES: Final = frozenset(
         # A writer whose commit pings every live stream. The ping names the
         # session's audience, so a stream holds it back from a viewer who does not
         # read it; ``untagged_notifiers`` fails a writer that pings without one.
-        ("server/store/session_ir.py", "_SessionIRMixin.append_session_records"),
+        ("server/store/session_ir.py", "_SessionIRMixin.append_session_part"),
     },
 )
 

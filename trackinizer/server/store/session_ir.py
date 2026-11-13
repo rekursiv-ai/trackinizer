@@ -15,9 +15,9 @@ back where it already was instead of appending a second copy.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import json
@@ -37,6 +37,7 @@ from trackinizer.server.store.session_bodies import decode_body, spliced_payload
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.wire_session_relay import STALE_PART
 
 
 if TYPE_CHECKING:
@@ -52,12 +53,53 @@ else:
 
 
 __all__ = [
+    "AppendedPart",
+    "PartFile",
     "PartPrefix",
     "RecentSessionTurn",
     "SessionManifest",
     "SlashCommandRow",
+    "StalePartError",
     "_SessionIRMixin",
 ]
+
+
+class StalePartError(ConflictError):
+    """A write to a ``sagent`` journal's part the session has a newer part than."""
+
+    code = STALE_PART
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class PartFile:
+    """The file a write's records come from, as its client names it."""
+
+    name: str
+    """The file's basename, which the server resolves a part from."""
+
+    metadata: Mapping[str, PlainTree]
+    """The encoding in force for the prefix read so far."""
+
+    ir_id: UUID
+    format: str
+    """The ``convert`` adapter that reads it, or ``""``."""
+
+    records: int
+    """How many records the part holds now."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class AppendedPart:
+    """What one append stored."""
+
+    part: int | None
+    """The part its file resolved to; ``None`` for a write that named no file."""
+
+    written: tuple[int, ...]
+    """The ``idx`` of each record it inserted, which a read returns."""
+
+    skipped: int
+    """Records an existing key already covered."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -153,59 +195,72 @@ class _SessionIRMixin(_CascadeAuditMixin):
         self,
         session_id: UUID,
         rows: Sequence[SessionRecordRow],
-        *,
-        restart: bool = False,
-        slash_commands: Sequence[SlashCommandRow] = (),
-    ) -> tuple[int, int, int]:
-        """Store records idempotently; return ``(written, skipped, slash)``.
+    ) -> tuple[int, int]:
+        """Store records of parts already resolved; return ``(written, skipped)``.
 
-        ``restart`` says this batch re-derived its part from offset 0, which
-        selects the conflict policy. A normal append is ``DO NOTHING`` -- the
-        runner re-feeds lines routinely and the stored row is already correct.
-        A restart is ``DO UPDATE``, because a compaction is a REPLACEMENT: it
-        keeps the turns it did not summarize away, so a record re-derived at a
-        given ``idx`` may legitimately differ, and disk is truth.
+        :meth:`append_session_part` with no file named: each row keeps its own part.
+
+        Args:
+          session_id: The owning AgentSession.
+          rows: Records to store, each carrying its part and derived ``idx``.
+
+        Returns:
+          written: Rows this call inserted.
+          skipped: Rows an existing key already covered.
+
+        """
+        appended = await self.append_session_part(session_id, file=None, rows=rows)
+        return (len(appended.written), appended.skipped)
+
+    # Audience: gated -- audience_audit_test requires every server caller to call
+    # require_session_access first.
+    async def append_session_part(
+        self,
+        session_id: UUID,
+        *,
+        file: PartFile | None,
+        rows: Sequence[SessionRecordRow],
+        api_key_id: UUID | None = None,
+    ) -> AppendedPart:
+        """Store one file's manifest and its records, in one transaction.
+
+        The manifest goes first, under the session's row lock: it assigns the part
+        the records are keyed by, and it bounds every reader (``idx < records``). As
+        one transaction, a crash leaves neither half, so a part's ``records`` never
+        runs ahead of its rows.
+
+        A record whose key is already stored is skipped (``DO NOTHING``): a stored
+        record is final, and a writer that sends one again sends the same record.
 
         Ciphertext rides in ``rows`` but lands in ``session_ciphertext``, under
         each record's own key. Both writes share one transaction, so a record
         can never be readable while its ciphertext is missing.
-
-        ``slash_commands`` share that transaction for the same reason: a
-        command is typed BETWEEN the turns around it, so a crash that stored
-        one half would leave a transcript that never happened. They are not
-        records -- they carry no ``idx`` and the server assigns their ``seq``,
-        because a sink counter restarts at 0 on a resumed run and would
-        collide.
 
         Every NUL this writes, in a column or inside a payload, is stored as
         U+FFFD: Postgres text cannot hold one (see :func:`_nul_free`).
 
         Args:
           session_id: The owning AgentSession.
-          rows: Records to store, each carrying its derived ``idx``.
-          restart: Whether this batch re-derived the part from its start.
-          slash_commands: Commands typed since the last batch.
+          file: The file the records come from, whose part this resolves; ``None``
+            for rows that each name their part.
+          rows: Records to store, each carrying its derived ``idx``; with a
+            ``file``, their part is the one it resolves to.
+          api_key_id: The key writing this batch, kept as the opener of a new part.
 
         Returns:
-          written: Rows this call inserted or updated.
-          skipped: Rows an existing key already covered.
-          slash: Slash commands stored.
+          appended: The part, the ``idx`` of each record written, and how many an
+            existing key already covered.
 
         Raises:
           NotFoundError: The session does not exist (or was purged mid-write).
           ConflictError: The id is not an ``AgentSession``, or the session has
             already ended.
+          StalePartError: ``file`` is a ``sagent`` journal's part the session has a
+            newer part than.
 
         """
-        if not rows and not slash_commands:
-            return (0, 0, 0)
-        conflict = (
-            "DO UPDATE SET kind = EXCLUDED.kind, context_id = EXCLUDED.context_id, "
-            "timestamp = EXCLUDED.timestamp, model = EXCLUDED.model, "
-            "payload = EXCLUDED.payload, text = EXCLUDED.text"
-            if restart
-            else "DO NOTHING"
-        )
+        if file is None and not rows:
+            return AppendedPart(part=None, written=(), skipped=0)
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
@@ -238,19 +293,28 @@ class _SessionIRMixin(_CascadeAuditMixin):
                 raise ConflictError(
                     f"session {session_id} has ended; cannot append records",
                 )
+            part = (
+                None
+                if file is None
+                else await self._upsert_manifest(
+                    conn,
+                    session_id,
+                    file=file,
+                    api_key_id=api_key_id,
+                )
+            )
+            if part is not None:
+                rows = [replace(row, part=part) for row in rows]
             try:
-                written = (
+                inserted = (
                     await conn.fetch(
-                        vetted_sql(
-                            "INSERT INTO session_records (session_id, part, idx, "
-                            "kind, context_id, timestamp, model, payload, text) "
-                            "SELECT * FROM unnest($1::uuid[], $2::int[], $3::int[], "
-                            "$4::text[], $5::int[], $6::timestamptz[], $7::text[], "
-                            "$8::json[], $9::text[]) "
-                            "ON CONFLICT (session_id, part, idx) ",
-                            conflict,
-                            " RETURNING idx",
-                        ),
+                        "INSERT INTO session_records (session_id, part, idx, "
+                        "kind, context_id, timestamp, model, payload, text) "
+                        "SELECT * FROM unnest($1::uuid[], $2::int[], $3::int[], "
+                        "$4::text[], $5::int[], $6::timestamptz[], $7::text[], "
+                        "$8::json[], $9::text[]) "
+                        "ON CONFLICT (session_id, part, idx) DO NOTHING "
+                        "RETURNING idx",
                         [row.session_id for row in rows],
                         [row.part for row in rows],
                         [row.idx for row in rows],
@@ -290,54 +354,21 @@ class _SessionIRMixin(_CascadeAuditMixin):
                     [row.idx for row, _ in encrypted],
                     [sealed for _, sealed in encrypted],
                 )
-            stored = await self._append_slash_commands(conn, session_id, slash_commands)
-            if written or stored:
+            if inserted:
                 # The ping names the session's audience, which a live stream holds
                 # back from a viewer who does not read it: the session's own row is
                 # open, but when it receives a record is part of its transcript.
                 audience = session["agentsession_audience"]
                 assert isinstance(audience, str)
                 self._buffer_notification(session_id, audience=audience)
-        return (len(written), len(rows) - len(written), stored)
-
-    # Server-assigned rather than client-counted: a resumed run's sink restarts at 0, so
-    # a client-supplied ``seq`` would collide with the earlier run's and the PK would
-    # silently drop every command.
-    #
-    # Runs on the caller's connection so it shares the record transaction -- a command
-    # sits BETWEEN the turns around it, and storing one half of that is a transcript
-    # that never happened.
-    # Audience: gated -- append_session_records is gated.
-    @classmethod
-    async def _append_slash_commands(
-        cls,
-        conn: Conn,
-        session_id: UUID,
-        commands: Sequence[SlashCommandRow],
-    ) -> int:
-        """Store typed commands, numbering them from the session's own max."""
-        if not commands:
-            return 0
-        # ``generate_series`` off one ``max(seq)`` read INSIDE the transaction:
-        # numbering in Python would need a second round trip and could not see
-        # a concurrent append's rows.
-        stored = await conn.fetch(
-            "INSERT INTO session_slash_commands "
-            "(session_id, seq, timestamp, command, args) "
-            "SELECT $1, "
-            "  (SELECT coalesce(max(seq) + 1, 0) FROM session_slash_commands "
-            "   WHERE session_id = $1) + ordinality - 1, "
-            "  t.timestamp, t.command, t.args "
-            "FROM unnest($2::timestamptz[], $3::text[], $4::text[]) "
-            "  WITH ORDINALITY AS t(timestamp, command, args, ordinality) "
-            "ON CONFLICT (session_id, seq) DO NOTHING "
-            "RETURNING seq",
-            session_id,
-            [row.timestamp for row in commands],
-            [_nul_free(row.command) for row in commands],
-            [_nul_free(row.args) for row in commands],
+        # Keys alone, not the records rebuilt as a read returns them: a caller that
+        # shows them to a viewer reads them back, and an upload has none.
+        written = tuple(from_plain(row["idx"], int) for row in inserted)
+        return AppendedPart(
+            part=part,
+            written=written,
+            skipped=len(rows) - len(written),
         )
-        return len(stored)
 
     # Audience: internal -- no route calls it; audience_audit_test requires a server
     # caller to call require_session_access first.
@@ -395,9 +426,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
         largest thing on the row.
 
         Bounded by the manifest's ``records``, the part's LIVE PREFIX. A
-        compaction rewrites a file shorter and the re-derived batch overwrites
-        positions 0..n, but nothing deletes the rows beyond n -- ``restart``
-        is an overwrite, not a truncate. Reading past the bound therefore
+        compaction rewrote a file shorter, and nothing deletes the rows beyond
+        its new length. Reading past the bound therefore
         returns the new prefix followed by the previous file's suffix: a
         transcript that never existed, which ``resume`` would hand back to the
         CLI as conversation.
@@ -588,20 +618,12 @@ class _SessionIRMixin(_CascadeAuditMixin):
         format: str,
         records: int,
         api_key_id: UUID | None = None,
-        exclusive: bool = False,
     ) -> int:
         """Record what one part's file is; return its server-assigned ``part``.
 
-        The client names the FILE and the server resolves the part, so a
-        restarted or resumed client cannot invent a conflicting number. The session
-        row serializes allocation before any filename or next-part read: competing
-        files then receive distinct parts, and a resumed file keeps its own part.
-
-        Re-upserted per batch rather than written once: ``metadata`` is only
-        correct for the prefix consumed -- claude's escaped lines keep
-        arriving -- and ``records`` grows with the
-        file. The key of the first write is kept as the part's opener; a later
-        batch never changes it.
+        The manifest alone, in a transaction of its own, under the session's row lock
+        (:meth:`_upsert_manifest`); :meth:`append_session_part` writes it with its
+        records.
 
         Args:
           session_id: The owning AgentSession.
@@ -611,30 +633,15 @@ class _SessionIRMixin(_CascadeAuditMixin):
           format: The ``convert`` adapter that reads it, or ``""``.
           records: How many records the part currently holds.
           api_key_id: The key writing this batch, kept as the opener of a new part.
-          exclusive: Refuse the write when another key opened the part, as a
-            science chat's part is written by its opener alone. A part with no
-            recorded opener is left to the caller's check.
 
         Returns:
           part: The part number this file resolved to.
 
         Raises:
-          ConflictError: ``exclusive`` and another key opened the part.
+          NotFoundError: The session does not exist.
+          StalePartError: A ``sagent`` journal's part the session has a newer one than.
 
         """
-        # Serialized here, not handed over as a mapping: the column is
-        # ``json`` to keep the provider's key order (see the schema), and the
-        # driver's own codec would round-trip it through a dict.
-        encoded = _encoded_payload(metadata)
-        # The route refuses another key's part before this runs; the guard holds the
-        # rule for a write that raced the route's read, where the update would
-        # otherwise rewrite the other key's manifest.
-        guard = (
-            " WHERE session_manifests.opened_by_api_key_id IS NULL "
-            "OR session_manifests.opened_by_api_key_id = EXCLUDED.opened_by_api_key_id"
-            if exclusive
-            else ""
-        )
         async with self.engine.acquire() as conn, tx(conn):
             session = await conn.fetchval(
                 "SELECT id FROM inquiries WHERE id = $1 FOR UPDATE",
@@ -642,49 +649,91 @@ class _SessionIRMixin(_CascadeAuditMixin):
             )
             if session is None:
                 raise NotFoundError(f"session {session_id} not found")
-            found: object = await conn.fetchval(
-                "SELECT part FROM session_manifests "
-                "WHERE session_id = $1 AND name = $2",
+            return await self._upsert_manifest(
+                conn,
                 session_id,
-                name,
+                file=PartFile(
+                    name=name,
+                    metadata=metadata,
+                    ir_id=ir_id,
+                    format=format,
+                    records=records,
+                ),
+                api_key_id=api_key_id,
             )
-            if found is not None:
-                assert isinstance(found, int)
-                part = found
-            else:
-                next_part: object = await conn.fetchval(
-                    "SELECT coalesce(max(part) + 1, 0) FROM session_manifests "
-                    "WHERE session_id = $1",
+
+    # Audience: gated -- its callers hold the session's row lock, for a caller that
+    # called require_session_access first.
+    #
+    # The client names the FILE and the server resolves the part, so a restarted or
+    # resumed client cannot invent a conflicting number. The caller's lock on the
+    # session's row serializes allocation before any filename or next-part read:
+    # competing files then receive distinct parts, and a resumed file keeps its own.
+    # Re-upserted per batch rather than written once: ``metadata`` is only correct for
+    # the prefix consumed -- claude's ascii-escaping majority is not decided until the
+    # stream ends -- and ``records`` grows with the file. The key of the first write is
+    # kept as the part's opener; a later batch never changes it.
+    @classmethod
+    async def _upsert_manifest(
+        cls,
+        conn: Conn,
+        session_id: UUID,
+        *,
+        file: PartFile,
+        api_key_id: UUID | None,
+    ) -> int:
+        """Record what one part's file is, on the caller's locked transaction."""
+        found: object = await conn.fetchval(
+            "SELECT part FROM session_manifests WHERE session_id = $1 AND name = $2",
+            session_id,
+            file.name,
+        )
+        if found is not None:
+            assert isinstance(found, int)
+            part = found
+            # A sagent journal is continued in one part at a time: one another host
+            # has since continued in a newer part is stale, and two writers of one
+            # session would otherwise interleave its turns.
+            if file.format == "sagent":
+                newest: object = await conn.fetchval(
+                    "SELECT max(part) FROM session_manifests WHERE session_id = $1",
                     session_id,
                 )
-                assert isinstance(next_part, int)
-                part = next_part
-            # No foreign-key handler: the session row is held ``FOR UPDATE`` above, so
-            # it cannot be purged before this insert, the table's one foreign key.
-            written: object = await conn.fetchval(
-                vetted_sql(
-                    "INSERT INTO session_manifests (session_id, part, name, "
-                    "metadata, ir_id, format, records, opened_by_api_key_id) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
-                    "ON CONFLICT (session_id, name) DO UPDATE SET "
-                    "metadata = EXCLUDED.metadata, ir_id = EXCLUDED.ir_id, "
-                    "format = EXCLUDED.format, records = EXCLUDED.records",
-                    guard,
-                    " RETURNING part",
-                ),
+                assert isinstance(newest, int)
+                if part < newest:
+                    raise StalePartError(
+                        f"part {part} of session {session_id} is not its newest, "
+                        f"{newest}: another process continued the session",
+                    )
+        else:
+            next_part: object = await conn.fetchval(
+                "SELECT coalesce(max(part) + 1, 0) FROM session_manifests "
+                "WHERE session_id = $1",
                 session_id,
-                part,
-                name,
-                encoded,
-                ir_id,
-                format,
-                records,
-                api_key_id,
             )
-            if written is None:
-                raise ConflictError(
-                    f"part {part} of session {session_id} was opened by another key",
-                )
+            assert isinstance(next_part, int)
+            part = next_part
+        # No foreign-key handler: the caller holds the session row ``FOR UPDATE``, so
+        # it cannot be purged before this insert, the table's one foreign key.
+        await conn.execute(
+            "INSERT INTO session_manifests (session_id, part, name, "
+            "metadata, ir_id, format, records, opened_by_api_key_id) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7, $8) "
+            "ON CONFLICT (session_id, name) DO UPDATE SET "
+            "metadata = EXCLUDED.metadata, ir_id = EXCLUDED.ir_id, "
+            "format = EXCLUDED.format, records = EXCLUDED.records",
+            session_id,
+            part,
+            file.name,
+            # Serialized here, not handed over as a mapping: the column is ``json``
+            # to keep the provider's key order (see the schema), and the driver's
+            # own codec would round-trip it through a dict.
+            _encoded_payload(file.metadata),
+            file.ir_id,
+            file.format,
+            file.records,
+            api_key_id,
+        )
         return part
 
     # Audience: gated -- audience_audit_test requires every server caller to call
@@ -848,15 +897,24 @@ def _manifest(row: asyncpg.Record) -> SessionManifest:
 # (not ``jsonb``) precisely to keep the provider's key order, and the driver's own codec
 # would round-trip it through a dict whose ordering is no longer the file's.
 # ``separators`` drops the whitespace ``json.dumps`` adds by default -- the text is
-# stored verbatim, so the padding would be too.
+# stored verbatim, so the padding would be too. A frozen mapping becomes a dict as the
+# encoder reaches it, and a tuple is already a JSON array: thawing the whole payload
+# first was a third of an append's time.
 def _encoded_payload(payload: Mapping[str, PlainTree]) -> str:
     """One record's payload as NUL-free JSON text, key order intact."""
-    encoded = json.dumps(mutable(payload), separators=(",", ":"))
+    encoded = json.dumps(payload, separators=(",", ":"), default=_json_object)
     # ``json.dumps`` writes every NUL as the escape ``\u0000``, so a payload whose
     # text lacks it holds none, and the common path skips the walk.
     if "\\u0000" not in encoded:
         return encoded
     return json.dumps(_nul_free_tree(mutable(payload)), separators=(",", ":"))
+
+
+def _json_object(value: object) -> dict[str, object]:
+    """Return a frozen mapping as the dict ``json.dumps`` writes; refuse anything else."""
+    if isinstance(value, Mapping):
+        return dict(cast("Mapping[str, object]", value))
+    raise TypeError(f"{type(value).__name__} is not JSON")
 
 
 # Postgres text cannot hold NUL, and ``->>`` cannot extract one escaped inside a

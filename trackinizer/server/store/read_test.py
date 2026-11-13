@@ -674,6 +674,36 @@ class TestPolicyGatedReads:
         )
 
     @pytest.mark.asyncio
+    async def test_a_short_reference_names_a_row_the_reader_may_read_alone(
+        self,
+    ) -> None:
+        store, conn = _restricted()
+        store.access_policy = _Binding()
+        found = new_uuid()
+        conn.fetchrow.side_effect = [None, {"id": found}, {"id": found}]
+
+        unseen = await store.inquiry_id("AgentSession", 412, principal=_READER)
+        seen = await store.inquiry_id("AgentSession", 412, principal=_READER)
+        sql, binds = _last_sql(conn.fetchrow), _last_binds(conn.fetchrow)
+        store.access_policy = DefaultPolicy()
+        trusted = await store.inquiry_id("Issue", 7)
+
+        bound = ["AgentSession", 412, _READER.email]
+        gate = "readable_inquiry.owner = $3"
+        assert (unseen, seen, trusted) == (None, found, found)
+        head = (
+            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2 AND (EXISTS "
+            "(SELECT 1 FROM inquiries readable_inquiry WHERE readable_inquiry.id = "
+            "inquiries.id AND ("
+        )
+        assert (sql[: len(head)], sql[len(head) :]) == (head, gate + ")))")
+        assert binds == tuple(bound)
+        assert _last_sql(conn.fetchrow) == (
+            "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2"
+        )
+        assert _last_binds(conn.fetchrow) == ("Issue", 7)
+
+    @pytest.mark.asyncio
     async def test_history_is_gated_by_its_subject_and_each_present_peer(self) -> None:
         store, conn = _restricted()
         params: list[object] = []

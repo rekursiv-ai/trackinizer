@@ -425,6 +425,24 @@ async def test_dial_tools_dials_what_its_arguments_name(
     ]
 
 
+@pytest.mark.asyncio
+async def test_a_dial_that_names_no_asker_opens_for_the_keys_own_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    dialed: list[str] = []
+
+    async def refuse(url: str, **kwargs: object) -> None:
+        del kwargs
+        dialed.append(url)
+        raise InvalidHandshake("no upgrade")
+
+    monkeypatch.setattr(tool_bridge, "connect", refuse)
+    with pytest.raises(ToolsRefusedError):
+        await dial_tools("http://box", api_key="k", host="lab", limit=_LIMIT)
+
+    assert dialed == ["ws://box/api/hosts/lab/tools/ws"]
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 

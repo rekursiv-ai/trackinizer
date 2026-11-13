@@ -25,8 +25,9 @@ import {
   type FeedFacets,
   type FeedFilters,
   type MessageTarget,
+  NOT_LIVE,
   readFeedFacets,
-  sendRoutedMessage,
+  sendMessage,
   SESSION_NOT_OWNER,
   SESSION_STAFF,
   type SessionAudienceChange,
@@ -62,7 +63,7 @@ import { ConsoleFeed, type FeedState, type Held, type Range } from "./feed";
 import { type Level, LEVELS, levelCounts, levelOf } from "./levels";
 import { MentionField } from "./MentionField";
 import { Minimap } from "./Minimap";
-import { parseLine, receipt, targetName } from "./send";
+import { type Outcome, parseLine, receipt, sessionOf, targetName } from "./send";
 import { useViews } from "./views";
 import { ViewsSection } from "./ViewsRail";
 import "./console.css";
@@ -91,9 +92,10 @@ import { must } from "../must";
  * A line with no target goes to the To chips, the view's agents that have not
  * ended, less those left out of that view; `@agent`, `@agent:room`, `@a,@b`, and
  * `@*` for every agent shown, still work, and `@` lists what it may complete
- * to, the view's own agents first (`MentionField`). One request goes per
- * target, each under a key. A retry goes to the targets the first send went
- * to, under the same keys, whatever shows by then.
+ * to, the view's own agents first (`MentionField`). Each target names its
+ * agent's session, and the line goes to each session once, as an input
+ * (`sendMessage`), which is never sent again: a line that failed somewhere
+ * keeps its draft and says where it went.
  */
 export function ConsoleView() {
   const hub = useContext(LiveContext);
@@ -186,26 +188,34 @@ export function ConsoleView() {
   const to = targets.filter((target) => !out.has(targetName(target)));
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
-  // Each draft's route, by the key the composer gave the draft, so its Retry
-  // sends to the targets it first went to, each under the key it went under.
-  const routes = useRef(new Map<string, Route>());
   const shownEvents = useMemo(() => visible.map(({ event }) => event), [visible]);
   // The line whose agent was last clicked, for the message box to address; stable, so the lines stay memoised.
   const [adding, setAdding] = useState<{ readonly line: FeedEvent } | null>(null);
   const mention = useCallback((line: FeedEvent) => setAdding({ line }), []);
 
-  async function send(line: string, key: string): Promise<string> {
-    const route = routes.current.get(key) ?? routeOf(line, shownEvents, to);
-    routes.current.set(key, route);
-    const results = await Promise.allSettled(
-      route.targets.map((target) =>
-        sendRoutedMessage(target.target, route.text, target.key),
-      ),
+  async function send(line: string): Promise<string> {
+    const parsed = parseLine(line, shownEvents, to);
+    if ("problem" in parsed) throw new Error(parsed.problem);
+    // Each session takes the line once, however many targets name it.
+    const sends = new Map<string, Promise<boolean>>();
+    const outcomes = await Promise.all(
+      parsed.targets.map(async (target): Promise<Outcome> => {
+        const session = sessionOf(target, seen);
+        if (session === null) return { target, reached: null };
+        const sending =
+          sends.get(session) ?? delivered(sendMessage(session, parsed.text, newUuid()));
+        sends.set(session, sending);
+        try {
+          return { target, reached: (await sending) ? session : null };
+        } catch (error) {
+          return {
+            target,
+            reached: error instanceof Error ? error : new Error(String(error)),
+          };
+        }
+      }),
     );
-    return receipt(
-      route.targets.map(({ target }) => target),
-      results,
-    );
+    return receipt(outcomes);
   }
 
   return (
@@ -386,6 +396,7 @@ export function ConsoleView() {
                 }}
                 target="console"
                 enabled={mode === "enabled"}
+                retryable={() => false}
                 placeholder={
                   to.length
                     ? `Message ${to.map(({ actor, room }) => (room === null ? actor : `${actor}:${room}`)).join(", ")}… (@agent, @agent:room and @* still work)`
@@ -827,24 +838,16 @@ function RangeControls({
   );
 }
 
-/** Where a line goes: its text, and each target with the idempotency key it goes under. */
-type Route = {
-  readonly text: string;
-  readonly targets: readonly { readonly target: MessageTarget; readonly key: string }[];
-};
-
-/** `line` read against the events `shown` and the To targets (`parseLine`), each under a fresh key; a line it cannot send throws why. */
-function routeOf(
-  line: string,
-  shown: readonly FeedEvent[],
-  to: readonly MessageTarget[],
-): Route {
-  const parsed = parseLine(line, shown, to);
-  if ("problem" in parsed) throw new Error(parsed.problem);
-  return {
-    text: parsed.text,
-    targets: parsed.targets.map((target) => ({ target, key: newUuid() })),
-  };
+/** Whether a session took an input: true once it did, false when no agent process serves it (409 `not_live`). */
+async function delivered(sending: Promise<void>): Promise<boolean> {
+  try {
+    await sending;
+    return true;
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 409 && error.code === NOT_LIVE)
+      return false;
+    throw error;
+  }
 }
 
 /** Each CLI among `agents`, with its records, the busiest first. */

@@ -13,7 +13,6 @@ import pytest
 
 from trackinizer.conftest import make_store
 from trackinizer.server.api import session_test_support
-from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -29,17 +28,19 @@ from trackinizer.server.api.session_test_support import (
     OTHER_EMAIL,
     OTHER_KEY_ID,
     OTHER_USER_ID,
+    ServingRelay,
     act_as_assistant,
     act_as_other_agent,
     act_as_user_agent,
+    attached_process,
     browser,
-    drain,
     seed_accounts,
     seed_session,
     start_session,
 )
 from trackinizer.server.auth import AuthIdentity
-from trackinizer.server.inbound import InboundQueue
+from trackinizer.server.session_relay import SessionRelay
+from trackinizer.wire.wire_session_relay import NewInput
 
 
 @pytest.fixture
@@ -143,17 +144,15 @@ def test_seeding_makes_three_active_writers_each_with_one_writer_key() -> None:
     ]
 
 
-def test_a_seeded_session_is_the_agents_live_and_polled_row(
+def test_a_seeded_session_is_the_agents_live_and_watched_row(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, engine = make_store()
     seen = AsyncMock()
     monkeypatch.setattr(store, "record_session_seen", seen)
-    inbound = InboundQueue()
-    monkeypatch.setattr(app.state, "inbound", inbound, raising=False)
 
     session_id = asyncio.run(
-        seed_session(store, OTHER_AGENT, cli="claude", drained_by="claude"),
+        seed_session(store, OTHER_AGENT, cli="claude"),
     )
 
     assert engine.conn.execute.await_args is not None
@@ -162,7 +161,6 @@ def test_a_seeded_session_is_the_agents_live_and_polled_row(
     assert {"claude session", OTHER_EMAIL, OTHER_KEY_ID, "open", "claude"} <= {
         value for value in inserted if isinstance(value, str | uuid.UUID)
     }
-    assert inbound.has_poller(session_id)
     assert seen.await_args is not None
     assert seen.await_args.args == (session_id,)
     assert seen.await_args.kwargs["polled"] is True
@@ -174,10 +172,8 @@ def test_an_unpolled_seeded_session_takes_the_given_actor_and_account(
     store, engine = make_store()
     seen = AsyncMock()
     monkeypatch.setattr(store, "record_session_seen", seen)
-    inbound = InboundQueue()
-    monkeypatch.setattr(app.state, "inbound", inbound, raising=False)
 
-    session_id = asyncio.run(
+    asyncio.run(
         seed_session(
             store,
             OTHER_AGENT,
@@ -191,17 +187,13 @@ def test_an_unpolled_seeded_session_takes_the_given_actor_and_account(
     inserted = engine.conn.execute.await_args.args
     assert {"ranger", "lead@example.com"} <= set(inserted)
     assert OTHER_EMAIL not in inserted
-    assert not inbound.has_poller(session_id)
     seen.assert_not_awaited()
 
 
-def test_a_started_session_is_polled_once_so_it_is_live() -> None:
+def test_a_started_session_is_opened_through_the_route() -> None:
     session_id = uuid.uuid4()
     server = RecordingServer(
-        answers={
-            ("POST", "/api/sessions/start"): (201, {"id": str(session_id)}),
-            ("GET", f"/api/sessions/{session_id}/inbound"): (200, {"messages": []}),
-        },
+        answers={("POST", "/api/sessions/start"): (201, {"id": str(session_id)})},
     )
 
     assert run_on(server, call=lambda client: start_session(client, actor="scout")) == (
@@ -209,7 +201,7 @@ def test_a_started_session_is_polled_once_so_it_is_live() -> None:
     )
     assert run_on(server, call=start_session) == session_id
 
-    started, polled, started_bare, _ = server.asked
+    started, started_bare = server.asked
     assert json_loads(started.content) == {
         "cli": "codex",
         "actor": "scout",
@@ -222,46 +214,72 @@ def test_a_started_session_is_polled_once_so_it_is_live() -> None:
         "cli_session_id": None,
         "account": None,
     }
-    assert (polled.method, polled.url.path) == (
-        "GET",
-        f"/api/sessions/{session_id}/inbound",
-    )
 
 
-@pytest.mark.parametrize(
-    ("start", "poll", "refusal"),
-    [(403, 200, "session start answered 403"), (201, 500, "inbound poll answered 500")],
-)
-def test_a_session_that_does_not_open_and_poll_is_an_error(
-    start: int,
-    poll: int,
-    refusal: str,
-) -> None:
-    session_id = uuid.uuid4()
+def test_a_session_that_does_not_open_is_an_error() -> None:
     server = RecordingServer(
-        answers={
-            ("POST", "/api/sessions/start"): (start, {"id": str(session_id)}),
-            ("GET", f"/api/sessions/{session_id}/inbound"): (poll, {}),
-        },
+        answers={("POST", "/api/sessions/start"): (403, {"id": str(uuid.uuid4())})},
     )
 
-    with pytest.raises(ValueError, match=refusal):
+    with pytest.raises(ValueError, match="session start answered 403"):
         run_on(server, call=start_session)
 
 
-def test_draining_reads_the_session_inbound_queue() -> None:
-    session_id = uuid.uuid4()
-    server = RecordingServer(
-        answers={
-            ("GET", f"/api/sessions/{session_id}/inbound"): (200, {"messages": []}),
-        },
+@pytest.mark.asyncio
+async def test_an_attached_process_serves_its_session_for_the_block_alone() -> None:
+    relay = SessionRelay()
+    session = uuid.uuid4()
+
+    async with attached_process(relay, session, host="lab") as process:
+        during = relay.process(session)
+
+    after = relay.process(session)
+    assert during == process
+    assert (process.session_id, process.state, process.host) == (
+        session,
+        "attached",
+        "lab",
+    )
+    assert after is not None
+    assert (after.process_id, after.state, after.reason) == (
+        process.process_id,
+        "detached",
+        "exited",
     )
 
-    drained = run_on(server, call=lambda client: drain(client, session_id=session_id))
 
-    assert drained.status_code == 200
-    assert [(each.method, each.url.path) for each in server.asked] == [
-        ("GET", f"/api/sessions/{session_id}/inbound"),
+@pytest.mark.asyncio
+async def test_an_open_socket_takes_what_it_is_sent_and_closes_once() -> None:
+    """The process the support attaches is let in by a rule that always holds."""
+    assert await session_test_support._always()
+    socket = session_test_support._OpenSocket()
+
+    await socket.send_text("ignored")
+    await socket.close(1001)
+    await socket.close(1000)
+
+    assert await socket.receive() == 1001
+
+
+def test_a_serving_relay_serves_every_session_and_notes_each_send_in_order() -> None:
+    relay = ServingRelay()
+    first, second = uuid.UUID(int=7), uuid.UUID(int=8)
+    line = NewInput(kind="UserMessage", payload={"content": "hi"})
+
+    sent = [
+        relay.send_input(first, line, author="ann@example.com"),
+        relay.send_input(second, line, author="lead#4", recipient="x", booked="ask"),
+    ]
+    served = [relay.process(each) for each in (first, second)]
+
+    assert sent == [line.id, line.id]
+    assert relay.sent == [
+        (first, {"content": "hi"}, "ann@example.com"),
+        (second, {"content": "hi"}, "lead#4"),
+    ]
+    assert [(each.session_id, each.state) for each in served if each is not None] == [
+        (first, "attached"),
+        (second, "attached"),
     ]
 
 

@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 from treekle import from_plain
 
-from trackinizer.client.conversation import attested_delivery, delivered_text
+from trackinizer.client.conversation import (
+    Delivery,
+    attested_delivery,
+    delivered_text,
+)
 from trackinizer.wire.wire_science_chat import FORK_EDGE_LABEL, fork_point_label
 
 
@@ -183,7 +187,8 @@ def _fork_line(record: RecordBody) -> ForkLine | None:
         return ForkLine(
             role="user",
             author=sender,
-            text=content,
+            # Unprefixed, but the agent process put the line's canvas after the words.
+            text=delivered_text(content, Delivery()),
             created=record.timestamp,
         )
     if record.kind == "UserMessage":
@@ -195,7 +200,7 @@ def _fork_line(record: RecordBody) -> ForkLine | None:
         delivery = attested_delivery(extra)
         if delivery is None:
             author = from_plain(extra.get("author"), str, default="")
-            if not author or not content:
+            if author == "" or not content:
                 return None
             return ForkLine(
                 role="user",

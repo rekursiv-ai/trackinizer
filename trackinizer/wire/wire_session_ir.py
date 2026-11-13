@@ -34,7 +34,6 @@ __all__ = [
     "ReadRecordsResponse",
     "RecentTurnBody",
     "RecordBody",
-    "SlashCommandBody",
     "session_parts_path",
     "session_records_path",
 ]
@@ -198,26 +197,6 @@ class PartBody(BaseModel):
     """
 
 
-class SlashCommandBody(BaseModel):
-    """One slash command the human typed, as the wire carries it.
-
-    It is NOT a record: a slash command is handled inside the CLI's TUI and
-    never written to the session log, so it cannot be re-derived and cannot
-    hold an ``idx``. It carries no ``seq`` either -- the server assigns one,
-    because a sink counter restarts at 0 on a resumed run and would collide.
-    """
-
-    timestamp: UtcDatetime
-    """The submit-time clock the keystroke detector stamped. Required: a typed
-    command has no CLI-recorded time, so this is the only one there is."""
-
-    command: str = Field(min_length=1)
-    """The verb without its leading slash (``exit``, ``model``)."""
-
-    args: str = ""
-    """Everything after the verb; empty for a bare command."""
-
-
 class AppendRecordsRequest(BaseModel):
     """One file's records, plus what that file currently is.
 
@@ -227,12 +206,8 @@ class AppendRecordsRequest(BaseModel):
     """
 
     name: str = ""
-    """The source file's basename; the server resolves ``part`` from it.
-
-    Empty only on a slash-command-only append: a typed command belongs to the
-    SESSION, not to any file, so a run that types one before its CLI has
-    written a transcript names no part.
-    """
+    """The source file's basename; the server resolves ``part`` from it. Empty only
+    with no manifest and no records: such an append stores nothing."""
 
     manifest: ManifestBody | None = None
     """Re-sent every batch, because it changes as the file grows. ``None``
@@ -247,28 +222,7 @@ class AppendRecordsRequest(BaseModel):
             raise ValueError("'name' and 'manifest' are given together or not at all")
         return self
 
-    restart: bool = False
-    """Whether this batch re-derived the part from offset 0.
-
-    Batch-level rather than per-record: it describes how the records were
-    PRODUCED, and it selects the conflict policy. A restart overwrites,
-    because a compaction is a replacement -- claude keeps the turns it did not
-    summarize away, so a record re-derived at a position may legitimately
-    differ from the stored one, and disk is truth.
-    """
-
     records: list[RecordBody] = Field(default_factory=list, max_length=MAX_RECORD_BATCH)
-
-    slash_commands: list[SlashCommandBody] = Field(
-        default_factory=list,
-        max_length=MAX_RECORD_BATCH,
-    )
-    """Commands typed since the last batch, committed with these records.
-
-    They ride the record append rather than a route of their own so a run that
-    is interrupted mid-flush cannot leave a command stored without the turns
-    around it, or the reverse.
-    """
 
 
 class AppendRecordsResponse(BaseModel):
@@ -276,12 +230,10 @@ class AppendRecordsResponse(BaseModel):
 
     part: int | None = None
     """The part the named file resolved to, or ``None`` when the request named
-    no file (a slash-command-only append). Unbounded, as in :class:`PartBody`."""
+    no file. Unbounded, as in :class:`PartBody`."""
 
     written: int = Field(ge=0)
     skipped: int = Field(ge=0)
-    slash_commands: int = Field(default=0, ge=0)
-    """How many slash commands this request stored."""
 
 
 class ReadPartsResponse(BaseModel):

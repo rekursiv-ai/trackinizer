@@ -2,7 +2,6 @@
 
 from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, cast
 
@@ -11,27 +10,21 @@ import os
 
 import asyncpg
 import pytest
-import pytest_asyncio
 
 from trackinizer import conftest
 from trackinizer.conftest import (
     BEGIN,
     COMMIT,
-    CORE,
     ROLLBACK,
     TRANSACTION_BEGIN,
     TRANSACTION_COMMIT,
     TRANSACTION_ROLLBACK,
-    Baselines,
     Build,
     ExchangeEngine,
     RecordingPolicy,
     Says,
-    _approximately_indexed,
-    _copy,
 )
 from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine, PostgresEngine
-from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server.access_policy import (
     AccessDeniedError,
     AccessPolicy,
@@ -562,350 +555,32 @@ class _BuildError(Exception):
     """Raised by a build the test forbids, to show the restore chose to build."""
 
 
-@dataclass(slots=True, kw_only=True)
-class _BuildFills:
-    """Counts each build's fill, so a test can tell a put-back from a remake."""
-
-    made: list[str] = field(default_factory=list[str])
-
-    async def root(
-        self,
-        engine: DatabaseEngine,
-        migrations: Sequence[tuple[str, str]],
-    ) -> Mapping[str, str]:
-        del migrations
-        self.made.append("root")
-        async with engine.acquire() as conn:
-            await conn.execute(
-                "CREATE TABLE items (id INTEGER GENERATED ALWAYS AS IDENTITY, "
-                "name TEXT NOT NULL, twice INTEGER GENERATED ALWAYS AS (id * 2) STORED)",
-            )
-            await conn.execute("CREATE SEQUENCE tickets START 100")
-            await conn.execute("""CREATE SEQUENCE "tick'ets" START 7""")
-            # Copied in name order: an empty table before the filled one.
-            await conn.execute("CREATE TABLE aaa_empty (x INTEGER)")
-            await conn.execute("INSERT INTO items (name) VALUES ('kept')")
-            # Empty, and named as only a quoted identifier can be.
-            await conn.execute('CREATE TABLE "odd""name" (x INTEGER)')
-            # Restored only with foreign keys off: the parent empties first.
-            await conn.execute("CREATE TABLE a_parent (id INTEGER PRIMARY KEY)")
-            await conn.execute(
-                "CREATE TABLE b_child (parent INTEGER REFERENCES a_parent (id))",
-            )
-            await conn.execute("INSERT INTO a_parent VALUES (1)")
-            await conn.execute("INSERT INTO b_child VALUES (1)")
-        return {"who": "root"}
-
-    async def migrated(
-        self,
-        engine: DatabaseEngine,
-        migrations: Sequence[tuple[str, str]],
-    ) -> Mapping[str, str]:
-        self.made.append(f"{len(migrations)} migrations")
-        async with engine.acquire() as conn:
-            for _name, body in migrations:
-                await conn.execute(body)
-        return dict[str, str]()
-
-    async def child(
-        self,
-        engine: DatabaseEngine,
-        migrations: Sequence[tuple[str, str]],
-    ) -> Mapping[str, str]:
-        self.made.append("child")
-        async with engine.acquire() as conn:
-            for _name, body in migrations:
-                await conn.execute(body)
-            await conn.execute("INSERT INTO extra.notes (body) VALUES ('child')")
-            await conn.execute("INSERT INTO extra.items VALUES ('extra')")
-            await conn.execute("INSERT INTO items (name) VALUES ('child')")
-        return {"who": "child"}
-
-
-_EXTRA: tuple[tuple[str, str], ...] = (
-    ("schema", "CREATE SCHEMA extra"),
-    ("table", "CREATE TABLE extra.notes (body TEXT)"),
-    ("namesake", "CREATE TABLE extra.items (label TEXT)"),
-)
-
-
-def _made(
-    fills: _BuildFills,
-    engine: PGliteEngine,
-) -> tuple[Baselines[PGliteEngine], Build]:
-    root = Build(name="root", fill=fills.root)
-    child = Build(name="child", migrations=_EXTRA, fill=fills.child)
-    return Baselines(engine, root=root, schemas=("public", "extra")), child
-
-
-@pytest_asyncio.fixture(loop_scope="session")
-async def fresh_engine(pglite_engine: PGliteEngine) -> PGliteEngine:
-    """Return the shared engine with no build recorded: each test here makes its own."""
-    async with pglite_engine.acquire() as conn:
-        await conn.execute("DROP SCHEMA IF EXISTS test_baselines CASCADE")
-    return pglite_engine
-
-
-async def _names(engine: DatabaseEngine) -> list[str]:
-    async with engine.acquire() as conn:
-        return [str(row["name"]) for row in await conn.fetch("SELECT name FROM items")]
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_build_is_made_once_and_its_rows_come_back(
-    fresh_engine: PGliteEngine,
-) -> None:
-    fills = _BuildFills()
-    baselines, _ = _made(fills, fresh_engine)
-    root = Build(name="root", fill=fills.root)
-
-    assert await baselines.ready(root) == {"who": "root"}
-    async with fresh_engine.acquire() as conn:
-        await conn.execute("INSERT INTO items (name) VALUES ('stray')")
-        await conn.execute('INSERT INTO "odd""name" VALUES (1)')
-        assert await conn.fetchval("SELECT nextval('tickets')") == 100
-        assert await conn.fetchval("""SELECT nextval('"tick''ets"')""") == 7
-        await conn.execute("CREATE TEMP TABLE scratch (x INTEGER)")
-    assert await baselines.ready(root) == {"who": "root"}
-
-    assert fills.made == ["root"]
-    assert await _names(fresh_engine) == ["kept"]
-    async with fresh_engine.acquire() as conn:
-        assert await conn.fetchval('SELECT count(*) FROM "odd""name"') == 0
-        # The identity, the sequence and the generated column are as the build left.
-        assert (
-            await conn.fetchval("INSERT INTO items (name) VALUES ('new') RETURNING id")
-            == 2
-        )
-        assert await conn.fetchval("SELECT twice FROM items WHERE name = 'kept'") == 2
-        assert await conn.fetchval("SELECT nextval('tickets')") == 100
-        assert await conn.fetchval("""SELECT nextval('"tick''ets"')""") == 7
-        assert await conn.fetchval("SELECT to_regclass('pg_temp.scratch')") is None
-        assert await conn.fetchval("SELECT count(*) FROM b_child") == 1
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_child_build_is_made_over_the_root_and_put_back_from_either(
-    fresh_engine: PGliteEngine,
-) -> None:
-    fills = _BuildFills()
-    baselines, child = _made(fills, fresh_engine)
-    root = Build(name="root", fill=fills.root)
-
-    assert await baselines.ready(child) == {"who": "child"}
-    assert await baselines.ready(root) == {"who": "root"}
-    async with fresh_engine.acquire() as conn:
-        assert await conn.fetchval("SELECT to_regnamespace('extra')") is None
-    assert await baselines.ready(child) == {"who": "child"}
-
-    # The child came back from the root's database and its own migrations, each build
-    # with its own rows of the tables they share, and of the namesakes in two schemas.
-    assert fills.made == ["root", "child"]
-    assert await _names(fresh_engine) == ["kept", "child"]
-    async with fresh_engine.acquire() as conn:
-        assert await conn.fetchval("SELECT body FROM extra.notes") == "child"
-        assert await conn.fetchval("SELECT label FROM extra.items") == "extra"
-    await baselines.ready(Build(name="root", fill=fills.root))
-    assert await _names(fresh_engine) == ["kept"]
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_changed_catalog_makes_the_build_again(
-    fresh_engine: PGliteEngine,
-) -> None:
-    fills = _BuildFills()
-    baselines, _ = _made(fills, fresh_engine)
-    root = Build(name="root", fill=fills.root)
-    await baselines.ready(root)
-    async with fresh_engine.acquire() as conn:
-        await conn.execute("ALTER TABLE items ADD COLUMN later TEXT DEFAULT 'x'")
-
-    await baselines.ready(root)
-
-    assert fills.made == ["root", "root"]
-    async with fresh_engine.acquire() as conn:
-        assert await conn.fetchval("SELECT to_regclass('items')") is not None
-        columns = await conn.fetch(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'items' ORDER BY ordinal_position",
-        )
-    assert [str(row["column_name"]) for row in columns] == ["id", "name", "twice"]
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_view_another_schema_keeps_over_a_table_makes_the_build_again(
-    fresh_engine: PGliteEngine,
-) -> None:
-    fills = _BuildFills()
-    baselines, _ = _made(fills, fresh_engine)
-    root = Build(name="root", fill=fills.root)
-    await baselines.ready(root)
-    async with fresh_engine.acquire() as conn:
-        await conn.execute("CREATE SCHEMA other")
-        await conn.execute("CREATE VIEW other.names AS SELECT name FROM public.items")
-
-    try:
-        await baselines.ready(root)
-    finally:
-        async with fresh_engine.acquire() as conn:
-            await conn.execute("DROP SCHEMA IF EXISTS other CASCADE")
-
-    assert fills.made == ["root", "root"]
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_build_is_given_its_catalog_from_the_longest_build_it_extends(
-    fresh_engine: PGliteEngine,
-) -> None:
-    fills = _BuildFills()
-    root = Build(name="root", fill=fills.root)
-    first = (
-        ("schema", "CREATE SCHEMA extra"),
-        ("ran", "INSERT INTO outside.ran VALUES ('first')"),
-    )
-    one = Build(name="one", migrations=first, fill=fills.migrated)
-    two = Build(name="two", migrations=(*first, _EXTRA[1]), fill=fills.migrated)
-    baselines = Baselines(fresh_engine, root=root, schemas=("public", "extra"))
-    async with fresh_engine.acquire() as conn:
-        await conn.execute("CREATE SCHEMA outside")
-        await conn.execute("CREATE TABLE outside.ran (step TEXT)")
-    try:
-        await baselines.ready(two)
-        await baselines.ready(one)
-        async with fresh_engine.acquire() as conn:
-            await conn.execute("DELETE FROM outside.ran")
-        await baselines.ready(two)
-        async with fresh_engine.acquire() as conn:
-            ran = await conn.fetch("SELECT step FROM outside.ran")
-            notes = await conn.fetchval("SELECT to_regclass('extra.notes')")
-    finally:
-        async with fresh_engine.acquire() as conn:
-            await conn.execute("DROP SCHEMA outside CASCADE")
-
-    # ``two`` was put back from ``one``'s database, so ``one``'s step did not run again.
-    assert fills.made == ["root", "3 migrations", "2 migrations"]
-    assert ran == []
-    assert notes is not None
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_builds_shape_is_read_once_from_its_own_database(
-    fresh_engine: PGliteEngine,
-) -> None:
-    fills = _BuildFills()
-    baselines, child = _made(fills, fresh_engine)
-
-    found = await baselines.shape(child)
-    await baselines.ready(Build(name="root", fill=fills.root))
-    again = await baselines.shape(child)
-
-    assert again is found
-    assert ("extra", "notes", "r") in found["relations"]
-    assert ("public", "items", "r") in found["relations"]
-    async with fresh_engine.acquire() as conn:
-        # Read once: the second ask put nothing back.
-        assert await conn.fetchval("SELECT to_regnamespace('extra')") is None
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_the_core_root_is_trackinizers_own_bootstrap(
-    fresh_engine: PGliteEngine,
-) -> None:
-    baselines = Baselines(fresh_engine, root=CORE, schemas=("public",))
-
-    assert await baselines.ready(CORE) == {}
-    assert baselines.engine is fresh_engine
-
-    async with fresh_engine.acquire() as conn:
-        assert await conn.fetchval("SELECT to_regclass('public.inquiries')") is not None
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_copy_that_lost_a_column_makes_the_build_again(
-    fresh_engine: PGliteEngine,
-) -> None:
-    """Dropping an extension drops its columns from the copies; their rows are gone."""
-    fills = _BuildFills()
-    baselines, _ = _made(fills, fresh_engine)
-    root = Build(name="root", fill=fills.root)
-    await baselines.ready(root)
-    async with fresh_engine.acquire() as conn:
-        copies = await conn.fetch(
-            "SELECT c.relname FROM pg_class c "
-            "JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE n.nspname = 'test_baselines' AND c.relname LIKE '%\\_\\_public\\_\\_items'",
-        )
-        assert copies
-        for row in copies:
-            await conn.execute(
-                f'ALTER TABLE test_baselines."{row["relname"]}" DROP COLUMN name',
-            )
-
-    await baselines.ready(root)
-
-    assert fills.made == ["root", "root"]
-    assert await _names(fresh_engine) == ["kept"]
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_table_under_an_approximate_index_is_truncated_not_deleted_from(
-    fresh_engine: PGliteEngine,
-) -> None:
-    """A deleted row stays in an HNSW index, which then answers searches with it."""
-    await reset_schema(fresh_engine)
-    async with fresh_engine.acquire() as conn:
-        await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        await conn.execute("CREATE TABLE near (e vector(2))")
-        await conn.execute("CREATE INDEX ON near USING hnsw (e vector_l2_ops)")
-        await conn.execute("CREATE TABLE plain (x INTEGER)")
-        await conn.execute("INSERT INTO near VALUES ('[1,2]')")
-        baseline = await _copy(conn, prefix="t", keys={}, schemas=("public",))
-        indexed = await _approximately_indexed(conn, schemas=("public",))
-
-    assert indexed == {("public", "near")}
-    assert 'TRUNCATE "public"."near"' in baseline.reset.split(";\n")
-    assert 'DELETE FROM "public"."plain"' in baseline.reset.split(";\n")
-
-
-@pytest.mark.asyncio(loop_scope="session")
-async def test_two_packages_sharing_an_engine_keep_their_own_copies(
-    fresh_engine: PGliteEngine,
-) -> None:
-    """One root key over different schemas, as access control's and KnowHost's share."""
-    other_fills = _BuildFills()
-
-    async def other_root(
-        engine: DatabaseEngine,
-        migrations: Sequence[tuple[str, str]],
-    ) -> Mapping[str, str]:
-        # The same tables as ours, with other rows: one catalog, two databases.
-        await other_fills.root(engine, migrations)
-        async with engine.acquire() as conn:
-            await conn.execute("UPDATE items SET name = 'theirs'")
-        return dict[str, str]()
-
-    fills = _BuildFills()
-    root = Build(name="root", fill=fills.root)
-    ours = Baselines(fresh_engine, root=root, schemas=("public",))
-    other = Build(name="root", fill=other_root)
-    theirs = Baselines(fresh_engine, root=other, schemas=("public", "other"))
-
-    await ours.ready(root)
-    await theirs.ready(other)
-    await ours.ready(root)
-
-    assert await _names(fresh_engine) == ["kept"]
-    await theirs.ready(other)
-    assert await _names(fresh_engine) == ["theirs"]
-
-
 def test_a_builds_key_follows_its_name_and_migrations() -> None:
-    fills = _BuildFills()
-    first = Build(name="a", migrations=_EXTRA, fill=fills.child)
+    steps = (
+        ("schema", "CREATE SCHEMA extra"),
+        ("table", "CREATE TABLE extra.t (x INT)"),
+    )
+    first = Build(name="a", migrations=steps, fill=_one_fill)
 
-    assert first.key == Build(name="a", migrations=_EXTRA, fill=fills.root).key
-    assert first.key != Build(name="b", migrations=_EXTRA, fill=fills.child).key
-    assert first.key != Build(name="a", migrations=_EXTRA[:1], fill=fills.child).key
+    assert first.key == Build(name="a", migrations=steps, fill=_another_fill).key
+    assert first.key != Build(name="b", migrations=steps, fill=_one_fill).key
+    assert first.key != Build(name="a", migrations=steps[:1], fill=_one_fill).key
+
+
+async def _one_fill(
+    engine: DatabaseEngine,
+    migrations: Sequence[tuple[str, str]],
+) -> Mapping[str, str]:
+    del engine, migrations
+    return {"who": "one"}
+
+
+async def _another_fill(
+    engine: DatabaseEngine,
+    migrations: Sequence[tuple[str, str]],
+) -> Mapping[str, str]:
+    del engine, migrations
+    return {"who": "another"}
 
 
 if __name__ == "__main__":

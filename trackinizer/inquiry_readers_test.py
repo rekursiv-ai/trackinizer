@@ -29,10 +29,7 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
         "policy",
         "the seq and chat of the owner's own sessions its host's runs drain",
     ),
-    "server/api/query.py": ("policy", "by-seq lookup"),
     "server/api/session_access.py": ("audience", "session authorization"),
-    "server/api/sessions_routes.py": ("audience", "session rows by audience"),
-    "server/asks.py": ("audience", "asks on sessions the caller reads"),
     "server/audience.py": ("audience", "the audience test itself"),
     "server/authority_sweep.py": ("trusted", "background authority worker"),
     "server/primitives.py": (
@@ -69,8 +66,9 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
     "server/store/read.py": (
         "policy",
         (
-            "every request read; what_changed_for_me and _for_anyone serve the "
-            "subscriber worker, which has no request principal"
+            "every request read, the by-seq lookup (inquiry_id) among them; "
+            "what_changed_for_me and _for_anyone serve the subscriber worker, which "
+            "has no request principal"
         ),
     ),
     "server/store/session.py": ("audience", "session lifecycle and listing"),

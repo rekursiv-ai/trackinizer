@@ -153,19 +153,13 @@ def test_records_need_a_named_file_and_its_manifest(
         AppendRecordsRequest.model_validate(body)
 
 
-def test_a_slash_command_alone_names_no_file() -> None:
-    request = AppendRecordsRequest.model_validate(
-        {"slash_commands": [{"timestamp": "2026-11-06T12:00:00Z", "command": "exit"}]},
-    )
+def test_an_append_of_nothing_names_no_file_and_one_of_records_names_it() -> None:
+    request = AppendRecordsRequest.model_validate({})
     named = AppendRecordsRequest.model_validate(
         {"name": "s.jsonl", "manifest": _MANIFEST, "records": [_RECORD]},
     )
 
-    assert (request.name, request.manifest, len(request.slash_commands)) == (
-        "",
-        None,
-        1,
-    )
+    assert (request.name, request.manifest, request.records) == ("", None, [])
     assert named.manifest is not None
     assert named.manifest.name == "s.jsonl"
 
