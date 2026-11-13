@@ -40,6 +40,7 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
 from urllib.parse import quote, urlparse
 
+import ipaddress
 import json
 import logging
 import threading
@@ -228,7 +229,8 @@ def server_url(raw: str, source: str) -> str:
         )
     if parsed.query or parsed.fragment:
         raise ClientError(f"{source} URL must not contain query or fragment")
-    if parsed.hostname is None:
+    host = parsed.hostname
+    if host is None:
         raise ClientError(f"{source} has invalid URL {raw!r}: missing host")
     # ``parsed.port`` raises ``ValueError`` for a non-numeric or out-of-range
     # port (urllib only validates it on access), so a malformed port would
@@ -237,6 +239,14 @@ def server_url(raw: str, source: str) -> str:
         _ = parsed.port
     except ValueError as err:
         raise ClientError(f"{source} has invalid URL {raw!r}: {err}") from err
+    # Every client URL passes here, so this one check keeps each key, cookie and
+    # command off a plain-http hop. The edge's 301 to https comes too late: the first
+    # request has crossed in clear, with its key, before the redirect answers.
+    if parsed.scheme == "http" and not _on_this_computer(host):
+        raise ClientError(
+            f"{source} {raw!r} is plain http; a key or command sent over it can be "
+            "read or rewritten on the way. Use https.",
+        )
     return url
 
 
@@ -3310,6 +3320,18 @@ class Client:
                 "error_type": type(error).__name__,
             },
         )
+
+
+# Loopback by address, not by name resolution: ``localhost`` is the one name kept, and
+# ``localhost.example.com`` is someone else's host.
+def _on_this_computer(host: str) -> bool:
+    """Return whether ``host`` is a loopback address or ``localhost``."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 # The template lives in :func:`wire.routes.inquiry_field_path`, so the client never

@@ -68,12 +68,12 @@ def test_serial_reads_preserve_queries_and_measure_total_wall_time(
         return httpx2.Response(200, content=iter([b'{"x":1}']))
 
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(answer),
     ) as http:
         sample = _serial(http, (("/a", (("limit", 2),)), ("/b", (("kind", "Issue"),))))
 
-    assert requests == ["http://server/a?limit=2", "http://server/b?kind=Issue"]
+    assert requests == ["https://server/a?limit=2", "https://server/b?kind=Issue"]
     assert sample == Sample(seconds=6.0, status=200, json_bytes=14, wire_bytes=14)
 
 
@@ -169,7 +169,7 @@ def test_stream_stops_at_the_window_and_counts_only_data_frames(
         )
 
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(answer),
     ) as http:
         with patch.object(http, "stream", wraps=http.stream) as requests:
@@ -193,7 +193,7 @@ def test_a_quiet_stream_read_timeout_preserves_frames_already_received(
         raise httpx2.ReadTimeout("quiet")
 
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(lambda _: httpx2.Response(200, content=body())),
     ) as http:
         stream = sample_stream(http, seconds=2.0)
@@ -215,7 +215,7 @@ def test_a_stream_timeout_before_headers_reports_no_http_status(
         raise httpx2.ReadTimeout("no headers")
 
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(answer),
     ) as http:
         stream = sample_stream(http, seconds=2.0)
@@ -225,7 +225,7 @@ def test_a_stream_timeout_before_headers_reports_no_http_status(
 def test_every_request_is_a_get_and_every_baseline_is_measured() -> None:
     methods: list[str] = []
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(lambda request: _answer(request, methods)),
     ) as http:
         rows = measure(http, repeats=1, queries=("hub",), hub="")
@@ -277,7 +277,7 @@ def test_reads_of_the_newest_issues_are_named_for_the_issues_there_are(
         return _answer(request, [])
 
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(answer),
     ) as http:
         names = [row.name for row in measure(http, repeats=1, queries=(), hub="")]
@@ -291,7 +291,7 @@ def test_reads_of_the_newest_issues_are_named_for_the_issues_there_are(
 def test_measure_keeps_nonempty_issue_reads_when_narrows_is_missing() -> None:
     paths: list[str] = []
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(partial(_answer_without_narrows, paths=paths)),
     ) as http:
         rows = measure(http, repeats=1, queries=(), hub="")
@@ -329,7 +329,7 @@ def test_moved_flags_a_median_time_or_size_over_2x_either_way() -> None:
                     row("gone", 1.0, 1000),
                 ],
                 stream=Stream(seconds=20.0, frames=0, distinct_ids=0, status=200),
-                url="http://server",
+                url="https://server",
                 sha="abc",
             ),
         ),
@@ -425,7 +425,7 @@ def test_an_error_answer_of_any_shape_is_kept_with_its_message(
 ) -> None:
     """N1-02: an error body that is not a dict with a string detail still samples."""
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(
             lambda _: httpx2.Response(status, content=iter([body])),
         ),
@@ -446,7 +446,7 @@ def test_the_profile_token_goes_to_its_server_however_its_url_is_spelled() -> No
 def test_a_refused_stream_is_its_answer_not_a_quiet_stream() -> None:
     """WEB-06: a 401 on the stream is not zero frames a second."""
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(
             lambda _: httpx2.Response(401, content=iter([b'{"detail": "no"}'])),
         ),
@@ -469,8 +469,8 @@ def test_a_count_or_a_window_of_zero_is_refused_before_measuring(flag: str) -> N
 
 def test_two_reports_in_one_second_never_overwrite_each_other(tmp_path: Path) -> None:
     """WEB-22: host and second name a report, and two runs can share both."""
-    first = _write({"run": 1}, url="http://server:8765", folder=tmp_path)
-    second = _write({"run": 2}, url="http://server:8765", folder=tmp_path)
+    first = _write({"run": 1}, url="https://server:8765", folder=tmp_path)
+    second = _write({"run": 2}, url="https://server:8765", folder=tmp_path)
 
     assert first != second
     assert [
@@ -491,7 +491,7 @@ def test_a_content_coding_is_read_in_any_case_and_as_a_list() -> None:
     }
     for coding, raw in codings.items():
         with httpx2.Client(
-            base_url="http://server",
+            base_url="https://server",
             transport=httpx2.MockTransport(
                 lambda _, raw=raw, coding=coding: httpx2.Response(
                     200,
@@ -507,7 +507,7 @@ def test_a_content_coding_is_read_in_any_case_and_as_a_list() -> None:
 def test_a_coding_it_cannot_undo_is_named_rather_than_mismeasured() -> None:
     with (
         httpx2.Client(
-            base_url="http://server",
+            base_url="https://server",
             transport=httpx2.MockTransport(
                 lambda _: httpx2.Response(
                     200,
@@ -548,7 +548,7 @@ def test_measure_preserves_request_parameters_and_sample_identities(
 ) -> None:
     server = _MeasurementServer(empty=empty)
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(server.answer),
     ) as http:
         rows = measure(http, repeats=2, queries=("alpha", "beta gamma"), hub=hub)
@@ -584,12 +584,12 @@ def test_measure_preserves_request_parameters_and_sample_identities(
         report(
             rows,
             stream=Stream(seconds=2.0, frames=3, distinct_ids=2, status=200),
-            url="http://server",
+            url="https://server",
             sha="build-123",
         ),
         _MeasurementReport,
     )
-    assert (document["url"], document["server_sha"]) == ("http://server", "build-123")
+    assert (document["url"], document["server_sha"]) == ("https://server", "build-123")
     assert [row["name"] for row in document["rows"]] == [row.name for row in rows]
     assert {row["name"]: len(row["samples"]) for row in document["rows"]} == expected
     assert document["stream"]["frames_per_sec"] == 1.5
@@ -775,7 +775,7 @@ def test_measure_times_serial_boot_to_the_last_byte(
     server = _MeasurementServer(empty=True)
     monkeypatch.setattr(measurement, "time", SimpleNamespace(perf_counter=server.clock))
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(server.answer),
     ) as http:
         rows = measure(http, repeats=2, queries=("alpha",), hub="")
@@ -790,7 +790,7 @@ def test_measure_parallel_rows_use_outer_elapsed_not_summed_worker_times(
     clock = partial(_thread_tick, main=get_ident(), ticks={})
     monkeypatch.setattr(measurement, "time", SimpleNamespace(perf_counter=clock))
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(server.answer),
     ) as http:
         rows = measure(http, repeats=2, queries=("alpha", "beta gamma"), hub="")
@@ -805,7 +805,7 @@ def test_measure_aggregates_compressed_search_status_sizes_and_messages(
 ) -> None:
     server = _MeasurementServer(empty=True, search_status=status)
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(server.answer),
     ) as http:
         rows = measure(http, repeats=2, queries=("alpha", "beta gamma"), hub="")
@@ -873,7 +873,7 @@ def test_measure_aggregates_compressed_search_status_sizes_and_messages(
 def test_measure_starts_every_parallel_search_before_releasing_any() -> None:
     server = _LatchedSearchServer()
     with httpx2.Client(
-        base_url="http://server",
+        base_url="https://server",
         transport=httpx2.MockTransport(server.answer),
     ) as http:
         rows = measure(http, repeats=1, queries=("alpha",), hub="")
@@ -908,7 +908,7 @@ def test_main_preserves_effective_config_provenance_and_endpoint_credentials(
     if external:
         argv += [
             "--url",
-            "http://preview.test:8765/",
+            "https://preview.test:8765/",
             "--repeats",
             "2",
             "--query",
@@ -930,7 +930,7 @@ def test_main_preserves_effective_config_provenance_and_endpoint_credentials(
         tmp_path / "reports" / f"{_fixed_now(UTC).astimezone():%Y-%m-%d}"
     )
     document = json_loads(paths[0].read_text(), _MeasurementReport)
-    url = "http://preview.test:8765" if external else profile.url
+    url = "https://preview.test:8765" if external else profile.url
     assert (document["url"], document["server_sha"]) == (url, "build-main")
     assert document["measured_at"] == _fixed_now(UTC).astimezone().isoformat(
         timespec="seconds",
@@ -1034,7 +1034,7 @@ def test_three_fixed_second_reports_skip_existing_suffix_one_without_overwriting
     sentinel = folder / f"server-8765-{clock}-1.json"
     sentinel.write_text("existing suffix one\n", encoding="utf-8")
     paths = [
-        _write({"run": run}, url="http://server:8765", folder=folder)
+        _write({"run": run}, url="https://server:8765", folder=folder)
         for run in (1, 2, 3)
     ]
     assert [path.name for path in paths] == [

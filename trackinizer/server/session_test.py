@@ -13,6 +13,7 @@ from trackinizer.server.session import (
     OAUTH_STATE_COOKIE_NAME,
     OAUTH_STATE_MAX_AGE_SECONDS,
     SESSION_COOKIE_NAME,
+    SessionCookie,
     clear_oauth_state_cookie,
     clear_session_cookie,
     issue_oauth_state,
@@ -22,7 +23,10 @@ from trackinizer.server.session import (
 )
 
 
-@pytest.mark.parametrize("payload", [{}, [], {"user_id": 3}, None])
+@pytest.mark.parametrize(
+    "payload",
+    [{}, [], {"user_id": 3}, None, {"user_id": "u-1", "generation": "1"}],
+)
 def test_session_rejects_unknown_signed_payload(payload: object) -> None:
     secret = uuid4().hex
     signed = URLSafeTimedSerializer(secret, salt="trackinizer.session.v1").dumps(
@@ -110,15 +114,38 @@ class TestSessionCookie:
         secret = uuid4().hex
         response = _Response()
 
-        set_session_cookie(response, user_id="u-1", secret=secret, max_age_seconds=60)
+        set_session_cookie(
+            response,
+            user_id="u-1",
+            generation=3,
+            secret=secret,
+            max_age_seconds=60,
+        )
 
         _, attributes = response.set[SESSION_COOKIE_NAME]
         assert attributes == {"max_age": 60, **_ATTRIBUTES}
         jar = response.jar()
-        assert read_session_cookie(jar, secret=secret, max_age_seconds=60) == "u-1"
+        assert read_session_cookie(
+            jar,
+            secret=secret,
+            max_age_seconds=60,
+        ) == SessionCookie(user_id="u-1", generation=3)
         assert read_session_cookie(jar, secret=uuid4().hex, max_age_seconds=60) is None
         replayed = {OAUTH_STATE_COOKIE_NAME: jar[SESSION_COOKIE_NAME]}
         assert read_oauth_state_cookie(replayed, secret=secret) is None
+
+    def test_a_cookie_signed_before_generations_is_of_the_first(self) -> None:
+        """A cookie signed before logout ended sessions is good until the next logout."""
+        secret = uuid4().hex
+        signed = URLSafeTimedSerializer(secret, salt="trackinizer.session.v1").dumps(
+            {"user_id": "u-1"},
+        )
+
+        assert read_session_cookie(
+            {SESSION_COOKIE_NAME: signed},
+            secret=secret,
+            max_age_seconds=60,
+        ) == SessionCookie(user_id="u-1", generation=0)
 
     def test_no_cookie_is_no_session(self) -> None:
         assert read_session_cookie({}, secret=uuid4().hex, max_age_seconds=60) is None
@@ -180,17 +207,20 @@ def test_issued_session_cookie_round_trips_with_secure_attributes() -> None:
     response = Response()
     secret = uuid4().hex
     user = str(uuid4())
-    set_session_cookie(response, user_id=user, secret=secret, max_age_seconds=120)
+    set_session_cookie(
+        response,
+        user_id=user,
+        generation=0,
+        secret=secret,
+        max_age_seconds=120,
+    )
     header = response.headers["set-cookie"]
     raw = header.split(";", 1)[0].split("=", 1)[1]
-    assert (
-        read_session_cookie(
-            {SESSION_COOKIE_NAME: raw},
-            secret=secret,
-            max_age_seconds=120,
-        )
-        == user
-    )
+    assert read_session_cookie(
+        {SESSION_COOKIE_NAME: raw},
+        secret=secret,
+        max_age_seconds=120,
+    ) == SessionCookie(user_id=user, generation=0)
     for attribute in ("HttpOnly", "Secure", "SameSite=lax", "Path=/", "Max-Age=120"):
         assert attribute in header
     assert read_session_cookie({}, secret=secret, max_age_seconds=120) is None

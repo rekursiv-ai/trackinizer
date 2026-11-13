@@ -90,7 +90,7 @@ _CALLS: Final[tuple[tuple[str, str, Callable[[Client], object]], ...]] = (
 
 
 def _client(answer: Callable[[httpx2.Request], httpx2.Response]) -> Client:
-    found = Client("http://relay.test")
+    found = Client("https://relay.test")
     found._http.close()
     found._http = httpx2.Client(
         base_url=found.base_url,

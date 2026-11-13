@@ -10,7 +10,7 @@ enrollment token the same approval returns.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import re
@@ -45,11 +45,7 @@ if TYPE_CHECKING:
     from pydantic import BaseModel
 
 
-__all__ = ["LoginResult", "login", "secure_url"]
-
-
-_LOOPBACK: Final = frozenset({"localhost", "127.0.0.1", "::1"})
-"""Hosts a key may cross in clear text: they never leave this computer."""
+__all__ = ["LoginResult", "login"]
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -101,7 +97,9 @@ def login(
         something unexpected, the person denies the login, or the code expires first.
 
     """
-    base = secure_url(server_url(url, "login URL"), what="login URL")
+    # ``server_url`` refuses plain http beyond this computer: the key, and the link
+    # this prints, would be readable on the way, and a hop could swap the link.
+    base = server_url(url, "login URL")
     name = profile or _server_profile(base)
     validate_profile_name(name)
     request = _validated(
@@ -116,7 +114,7 @@ def login(
     with Client(base) as http:
         code = _validated(
             DeviceCode,
-            http.post(DEVICE_CODE_PATH, body=request.model_dump(mode="json")),
+            http.post(DEVICE_CODE_PATH, body=request.model_dump()),
             where=DEVICE_CODE_PATH,
         )
         echo(f"To log in to {base}, open {code.verification_uri_complete}")
@@ -137,31 +135,6 @@ def login(
         role=issued.role,
         host_token=issued.host_token,
     )
-
-
-# A key sent over plain http is readable on the way, and so is the link it prints, which
-# a hostile hop could swap for a look-alike page.
-def secure_url(base: str, *, what: str) -> str:
-    """Return ``base``, or refuse plain ``http`` to a server beyond this computer.
-
-    Args:
-      base: The server's normalized URL.
-      what: What the URL is, for the refusal (``login URL``, ``--server``).
-
-    Returns:
-      base: The URL, unchanged.
-
-    Raises:
-      ClientError: ``base`` is plain ``http`` to a host that is not this computer.
-
-    """
-    parts = urlsplit(base)
-    if parts.scheme == "http" and parts.hostname not in _LOOPBACK:
-        raise ClientError(
-            f"{what} {base!r} is plain http; a key or command sent over it can be "
-            "read or rewritten on the way. Use https.",
-        )
-    return base
 
 
 def _saved_author(name: str) -> str:

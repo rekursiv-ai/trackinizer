@@ -93,6 +93,7 @@ __all__ = [
     "current_human",
     "current_user",
     "effective_role",
+    "end_session",
     "extract_bearer",
     "generate_token",
     "hash_secret",
@@ -462,12 +463,12 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
             raise HTTPException(status_code=401, detail="invalid bearer token")
         _require_process_route(request, identity)
         return identity
-    session_user_id = _try_read_session_user_id(request)
-    if session_user_id is not None:
+    session = _try_read_session(request)
+    if session is not None:
         require_own_page_write(request)
         identity = await _resolve_session_identity(
             store.engine,
-            session_user_id,
+            *session,
             staff=staff,
         )
         if identity is not None:
@@ -986,6 +987,7 @@ async def lookup_user_by_id(
     conn: Conn,
     *,
     user_id: uuid.UUID,
+    generation: int,
     staff: Sequence[str],
 ) -> AuthIdentity | None:
     """Resolve a ``users.id`` to an :class:`AuthIdentity` for session auth.
@@ -993,21 +995,25 @@ async def lookup_user_by_id(
     Session requests have no ``api_keys`` row, so ``api_key_id`` is ``None``.
     A missing or disabled user returns ``None`` -- indistinguishable cases,
     so a stolen-cookie attacker learns nothing. A service account is one of them: only
-    a person has a browser session.
+    a person has a browser session. So is a cookie a logout ended: one signed at
+    another ``generation`` than the user's now (:func:`end_session`).
 
     Args:
       conn: Open database connection.
       user_id: User UUID to look up.
+      generation: The session generation the cookie was signed at.
       staff: The configured staff patterns, which decide whether the user holds
         ``staff``.
 
     Returns:
-      result: AuthIdentity if active; None if not found or disabled.
+      result: AuthIdentity if active; None if not found, disabled, or logged out.
 
     """
     row = await conn.fetchrow(
-        "SELECT id, email, role, status, hosted_domain FROM users WHERE id = $1",
+        "SELECT id, email, role, status, hosted_domain FROM users "
+        "WHERE id = $1 AND session_generation = $2",
         user_id,
+        generation,
     )
     # A browser session is a person's. A service account's row answers as an absent one,
     # so a cookie naming it opens nothing, whoever signed it.
@@ -1032,6 +1038,31 @@ async def lookup_user_by_id(
         open_audiences=owner,
         hosted_domain=hosted_domain,
     )
+
+
+# A cookie is signed and stateless, so one alone cannot be revoked without a record of
+# each session; the user's generation ends them all. A cookie a logout already ended
+# matches no row, so a copy of it cannot end the person's later sessions.
+async def end_session(request: HTTPConnection) -> None:
+    """End every browser session of the session cookie's user, if the cookie is live.
+
+    Raises ``users.session_generation``, so :func:`lookup_user_by_id` refuses every
+    cookie signed before, on each route and socket. API keys are untouched.
+
+    Args:
+      request: The request carrying the session cookie; one with none changes nothing.
+
+    """
+    session = _try_read_session(request)
+    if session is None:
+        return
+    store = cast("_AppLike", request.app).state.store
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET session_generation = session_generation + 1 "
+            "WHERE id = $1 AND session_generation = $2",
+            *session,
+        )
 
 
 async def assert_account_active(engine: DatabaseEngine, account: str) -> None:
@@ -1233,20 +1264,20 @@ def publish_token_file(token_path: Path) -> None:
 # The session path is off when ``app.state.config`` is absent (tests that skip the
 # lifespan) or ``Config.session_secret`` is unset (OAuth not configured); bearer auth is
 # unaffected either way.
-def _try_read_session_user_id(request: HTTPConnection) -> uuid.UUID | None:
-    """Return the ``users.id`` from the signed session cookie, or ``None``."""
+def _try_read_session(request: HTTPConnection) -> tuple[uuid.UUID, int] | None:
+    """Return the ``users.id`` and generation of the signed session cookie, or ``None``."""
     config = _config(cast("_AppLike", request.app).state)
     if config is None or not config.session_secret:
         return None
-    raw = read_session_cookie(
+    cookie = read_session_cookie(
         request.cookies,
         secret=config.session_secret,
         max_age_seconds=config.session_max_age_seconds,
     )
-    if raw is None:
+    if cookie is None:
         return None
     try:
-        return uuid.UUID(raw)
+        return uuid.UUID(cookie.user_id), cookie.generation
     except ValueError:
         return None
 
@@ -1310,12 +1341,18 @@ def _require_process_route(connection: HTTPConnection, identity: AuthIdentity) -
 async def _resolve_session_identity(
     engine: DatabaseEngine,
     user_id: uuid.UUID,
+    generation: int,
     *,
     staff: Sequence[str],
 ) -> AuthIdentity | None:
     """Look up the ``users`` row for a session-cookie principal."""
     async with engine.acquire() as conn:
-        return await lookup_user_by_id(conn, user_id=user_id, staff=staff)
+        return await lookup_user_by_id(
+            conn,
+            user_id=user_id,
+            generation=generation,
+            staff=staff,
+        )
 
 
 # Returns ``None`` (a 401 at the route) when no live key matches. Disabled users also

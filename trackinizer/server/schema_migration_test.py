@@ -881,9 +881,10 @@ async def test_migration_040_matches_the_baseline_audience_columns(
     assert "open_into" in {c["column_name"] for c in baseline["api_keys"][0]}
     await _make_host_old(conn)
 
+    # ``session_generation`` (078) comes after ``preferences``, so it goes too.
     await conn.execute(
         "ALTER TABLE users DROP COLUMN hosted_domain, DROP COLUMN google_sub, "
-        "DROP COLUMN preferences",
+        "DROP COLUMN preferences, DROP COLUMN session_generation",
     )
     # ``machine_id`` (060) comes after ``open_into``, so it goes too and comes back.
     await conn.execute(
@@ -893,6 +894,7 @@ async def test_migration_040_matches_the_baseline_audience_columns(
     await conn.execute(load_sql("schema.044"))
     await conn.execute(load_sql("schema.060"))
     await conn.execute(load_sql("schema.076"))
+    await conn.execute(load_sql("schema.078"))
     migrated = {t: await _table_shape(conn, t) for t in ("users", "api_keys")}
     # Replaying it over the existing columns is a no-op, not an error.
     await conn.execute(load_sql("schema.040"))
@@ -1317,8 +1319,12 @@ async def test_migration_044_matches_the_baseline_users_table(
     conn = pglite_rollback_conn
     baseline = await _table_shape(conn, "users")
 
-    await conn.execute("ALTER TABLE users DROP COLUMN preferences")
+    # ``session_generation`` (078) comes after ``preferences``, so it goes too.
+    await conn.execute(
+        "ALTER TABLE users DROP COLUMN preferences, DROP COLUMN session_generation",
+    )
     await conn.execute(load_sql("schema.044"))
+    await conn.execute(load_sql("schema.078"))
     migrated = await _table_shape(conn, "users")
     # Replaying it over the existing column is a no-op, not an error.
     await conn.execute(load_sql("schema.044"))
@@ -1777,6 +1783,43 @@ async def test_migration_077_matches_the_baseline_filed_from_chat(
 
     assert await _inquiries_shape(conn) == baseline
     assert await _catalog_names_aside(conn) == fresh_install
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_078_gives_every_user_the_first_session_generation(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    """A 077 database migrated by 078, once or twice, has a fresh install's catalog.
+
+    A user from before 078 gets generation 0, the one a cookie signed before it reads
+    as, so the migration signs nobody out.
+    """
+    conn = pglite_rollback_conn
+    baseline = await _table_shape(conn, "users")
+    user = uuid.uuid4()
+    await conn.execute("ALTER TABLE users DROP COLUMN session_generation")
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.078.sql'")
+    await conn.execute(
+        "INSERT INTO users (id, email, name, role, status) "
+        "VALUES ($1, 'old@example.com', 'o', 'writer', 'active')",
+        user,
+    )
+    assert await _catalog_names_aside(conn) != fresh_install
+
+    await conn.execute(load_sql("schema.078"))
+    await conn.execute(load_sql("schema.078"))
+
+    assert await _table_shape(conn, "users") == baseline
+    assert await _catalog_names_aside(conn) == fresh_install
+    assert (
+        await conn.fetchval(
+            "SELECT session_generation FROM users WHERE id = $1",
+            user,
+        )
+        == 0
+    )
 
 
 @pytest.mark.db_pglite

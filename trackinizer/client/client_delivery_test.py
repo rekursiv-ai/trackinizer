@@ -66,7 +66,7 @@ def test_consuming_get_retains_its_delivery_identity_until_success(
         SimpleNamespace(monotonic=time.monotonic, sleep=_no_sleep),
     )
     server = _Server(lost=lost)
-    transport = Client("http://delivery.test")
+    transport = Client("https://delivery.test")
     transport._http.close()
     transport._http = httpx2.Client(
         base_url=transport.base_url,

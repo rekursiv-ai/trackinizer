@@ -268,7 +268,7 @@ class TestTokenIsNeverTheDaemons:
         monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
         seen: list[str | None] = []
         handle(
-            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            make_request(["x"], env={"TRACKINIZER_URL": "https://caller:1"}),
             run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
         )
 
@@ -280,7 +280,7 @@ class TestTokenIsNeverTheDaemons:
         handle(
             make_request(
                 ["x"],
-                env={"TRACKINIZER_URL": "http://caller:1", "TRACKINIZER_TOKEN": "k"},
+                env={"TRACKINIZER_URL": "https://caller:1", "TRACKINIZER_TOKEN": "k"},
             ),
             run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
         )
@@ -294,11 +294,11 @@ class TestTokenIsNeverTheDaemons:
         monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
         targets: list[Target] = []
         handle(
-            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            make_request(["x"], env={"TRACKINIZER_URL": "https://caller:1"}),
             run=lambda _argv: targets.append(connection.resolve_target(Namespace())),
         )
 
-        assert targets == [Target(url="http://caller:1", author="", api_key="")]
+        assert targets == [Target(url="https://caller:1", author="", api_key="")]
 
     def test_the_daemons_key_file_is_never_read(
         self,
@@ -311,11 +311,11 @@ class TestTokenIsNeverTheDaemons:
         monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(key_file))
         targets: list[Target] = []
         handle(
-            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            make_request(["x"], env={"TRACKINIZER_URL": "https://caller:1"}),
             run=lambda _argv: targets.append(connection.resolve_target(Namespace())),
         )
 
-        assert targets == [Target(url="http://caller:1", author="", api_key="")]
+        assert targets == [Target(url="https://caller:1", author="", api_key="")]
 
 
 class TestConcurrentRequests:

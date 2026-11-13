@@ -1,7 +1,7 @@
-"""``POST /auth/logout``: end the caller's browser session.
+"""``POST /auth/logout``: end the caller's browser sessions.
 
 Signing in is a deployment's choice of provider, but every server reads the
-session cookie (:func:`auth.current_user`), so every server can clear it. The
+session cookie (:func:`auth.current_user`), so every server can end it. The
 web app's sign-out posts here.
 """
 
@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from trackinizer.server.api._origin import is_same_origin
+from trackinizer.server.auth import end_session
 from trackinizer.server.session import clear_session_cookie
 
 
@@ -25,7 +26,10 @@ router = APIRouter()
 # compares with the live server's; a change to either is a schema change.
 @router.post("/auth/logout")
 async def auth_logout_route(request: Request) -> RedirectResponse:
-    """Clear the session cookie and redirect the user back to ``/``.
+    """End the user's browser sessions, clear the cookie, and redirect back to ``/``.
+
+    A live session cookie ends every browser session of its user, each copy of the
+    cookie included: a cookie cannot be revoked alone. API keys stay live.
 
     Logout mutates the session cookie, so it is a state-changing POST that a
     cross-origin page could trigger under ``SameSite=Lax`` (which allows
@@ -43,6 +47,7 @@ async def auth_logout_route(request: Request) -> RedirectResponse:
     """
     if not is_same_origin(request):
         raise HTTPException(status_code=403, detail="cross-origin logout rejected")
+    await end_session(request)
     response = RedirectResponse(url="/", status_code=302)
     clear_session_cookie(response)
     return response

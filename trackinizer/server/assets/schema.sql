@@ -633,7 +633,10 @@ CREATE TABLE IF NOT EXISTS users (
         CHECK (char_length(google_sub) BETWEEN 1 AND 255),
     -- The user's preferences: an object of the keys they set, defaults left out
     -- (``server/preferences.py``). NULL until they set one.
-    preferences JSONB CHECK (jsonb_typeof(preferences) = 'object')
+    preferences JSONB CHECK (jsonb_typeof(preferences) = 'object'),
+    -- Each browser session cookie carries this as it was when signed; a logout raises
+    -- it, so a cookie signed before is refused (``server/session.py``).
+    session_generation INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS api_keys (

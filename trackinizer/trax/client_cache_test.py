@@ -23,7 +23,7 @@ _KEY: Final = "tok-SENTINEL-5e2a10"
 
 def test_target_repr_and_str_hold_no_key_text() -> None:
     """A traceback or log line that shows a ``Target`` must not print its key."""
-    target = Target(url="http://prod:9000", author="alice", api_key=_KEY)
+    target = Target(url="https://prod:9000", author="alice", api_key=_KEY)
 
     assert _KEY not in repr(target)
     assert _KEY not in str(target)
@@ -31,8 +31,8 @@ def test_target_repr_and_str_hold_no_key_text() -> None:
 
 def test_target_still_keys_on_the_api_key() -> None:
     """Hiding the key from ``repr`` must not merge two keys into one client."""
-    first = Target(url="http://prod:9000", author="", api_key="key-a")
-    second = Target(url="http://prod:9000", author="", api_key="key-b")
+    first = Target(url="https://prod:9000", author="", api_key="key-a")
+    second = Target(url="https://prod:9000", author="", api_key="key-b")
 
     assert first != second
     assert len({first, second}) == 2
@@ -62,28 +62,28 @@ class TestSharedClient:
     """One client per connection identity, until ``close_clients`` drops them."""
 
     def test_same_target_returns_the_same_client(self) -> None:
-        target = Target(url="http://prod:9000", author="alice", api_key="k")
+        target = Target(url="https://prod:9000", author="alice", api_key="k")
 
         first = client_cache.shared_client(target)
         again = client_cache.shared_client(
-            Target(url="http://prod:9000", author="alice", api_key="k"),
+            Target(url="https://prod:9000", author="alice", api_key="k"),
         )
 
         assert first is again
-        assert cast(_FakeClient, first).identity == ("http://prod:9000", "alice", "k")
+        assert cast(_FakeClient, first).identity == ("https://prod:9000", "alice", "k")
 
     def test_distinct_targets_get_distinct_clients(self) -> None:
         first = client_cache.shared_client(
-            Target(url="http://a", author="", api_key=""),
+            Target(url="https://a", author="", api_key=""),
         )
         second = client_cache.shared_client(
-            Target(url="http://b", author="", api_key=""),
+            Target(url="https://b", author="", api_key=""),
         )
 
         assert first is not second
 
     def test_close_clients_closes_each_and_forgets_it(self) -> None:
-        target = Target(url="http://prod:9000", author="", api_key="")
+        target = Target(url="https://prod:9000", author="", api_key="")
         before = cast(_FakeClient, client_cache.shared_client(target))
 
         client_cache.close_clients()
