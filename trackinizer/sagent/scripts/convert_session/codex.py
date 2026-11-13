@@ -885,17 +885,17 @@ def _write_legacy_end(
             "exit_code": tool_result.exit_code,
         }
         if present is not None:
+            # A ``None`` is left out below in any case, so only the other
+            # values that say nothing are named here.
             defaults = {
                 "call_id": item.call_id == "",
-                "command": tool_result.command is None,
                 "stdout": stdout == "",
                 "stderr": stderr == "",
-                "exit_code": tool_result.exit_code is None,
             }
             payload = {
                 key: value
                 for key, value in payload.items()
-                if key == "type" or key in present or not defaults.get(key, False)
+                if key in present or defaults.get(key) is not True
             }
     elif isinstance(tool_result, WebSearchResult):
         payload["query"] = tool_result.query
@@ -904,14 +904,9 @@ def _write_legacy_end(
         # The residual holds the per-path structure, but the VALUE is the
         # record's own field -- an edit's splices, a write's content -- so an
         # edited one has to reach the entry it came from.
-        _ = extra.pop("$splice_counts", None)
         changes = _write_changes(
             by_path,
-            from_plain(
-                extra.get("changes"),
-                dict[str, object],
-                default=dict[str, object](),
-            ),
+            read_or_default(extra.get("changes"), dict[str, object], default=None),
         )
         if changes is not None:
             extra["changes"] = changes
@@ -923,34 +918,37 @@ def _write_legacy_end(
 # recovered: each record renders its own entry.
 def _write_changes(
     by_path: Mapping[str, ToolResult],
-    stored: Mapping[str, object],
+    stored: Mapping[str, object] | None,
 ) -> dict[str, MutablePlainTree] | None:
     """Return a patch's per-path entries carrying each record's current value."""
-    if not stored:
+    if stored is None:
         return None
+    # Only an object is an entry: the reader kept anything else as it found it.
+    entries = {
+        path: cast(Mapping[str, object], entry)
+        for path, entry in stored.items()
+        if isinstance(entry, Mapping)
+    }
     # WHICH key the record's field fills, as the reader recorded it. Guessing
     # by key presence picked the wrong one for an entry carrying both: the
     # reader emptied ``unified_diff`` and the writer rebuilt ``content``, so
     # the diff came back null and the content was overwritten.
     filled = {
         path: found
-        for path, entry in stored.items()
-        if (
-            found := from_plain(
-                (from_plain(entry, dict[str, object], default=dict[str, object]())).get(
-                    "$filled",
-                ),
-                str,
-                default="",
-            )
-        )
+        for path, entry in entries.items()
+        if isinstance(found := entry.get("$filled"), str)
     }
-    paths = list(filled)
-    if not paths:
+    if not filled:
         return None
     out: dict[str, MutablePlainTree] = {}
     for path, entry in stored.items():
-        found = dict(from_plain(entry, dict[str, object], default=dict[str, object]()))
+        if path not in entries:
+            out[path] = mutable(entry)
+            continue
+        # ``$filled`` is this reader's own note about the entry's shape, not a
+        # key codex wrote. ``_ordered`` strips ``$`` keys at the payload's top
+        # level; this one is nested inside ``changes``.
+        found = {key: value for key, value in entries[path].items() if key != "$filled"}
         owner = by_path.get(path)
         if path in filled and owner is not None:
             # Each entry from the record that owns THAT path: an add states the
@@ -964,10 +962,6 @@ def _write_changes(
                     tuple(item for item in owner.stdout if isinstance(item, Splice)),
                 )
             )
-        # This reader's own note about the entry's shape, not a key codex
-        # wrote. ``_ordered`` strips ``$`` keys at the payload's top level;
-        # this one is nested inside ``changes``.
-        found.pop("$filled", None)
         out[path] = mutable(found)
     return out
 
@@ -985,7 +979,7 @@ def _write_completed(
         if isinstance(present_value, list)
         else None
     )
-    inner: dict[str, object] = {"type": "", "id": item.call_id}
+    inner: dict[str, object] = {"id": item.call_id}
     tool_result = item.result
     shell = tool_result if isinstance(tool_result, BashResult) else None
     stdout = "".join(text for text in item.stdout if isinstance(text, str))
@@ -993,7 +987,6 @@ def _write_completed(
     if shell is not None:
         kind = "CommandExecution"
         inner |= {
-            "type": kind,
             "command": list(shell.command or ()) or None,
             "stdout": stdout,
             "stderr": stderr,
@@ -1007,7 +1000,6 @@ def _write_completed(
         # codex "FileRead" would put a shape on the wire codex never writes.
         kind = "CommandExecution"
         inner |= {
-            "type": kind,
             # ``--`` first: a file whose name begins with a dash is an OPERAND,
             # and ``cat -n`` runs a flag instead -- the act crossed as a command
             # that reads nothing, and the record lost its type coming back.
@@ -1022,17 +1014,15 @@ def _write_completed(
         # One act per path, and codex states both under ``changes``: an update
         # writes a diff, an add the file's whole bytes.
         kind = "FileChange"
-        inner["type"] = kind
         if "changes" in nested:
             # The residual holds the per-path structure, but the VALUE is the
             # record's own field, so an edited one has to reach its entry.
-            _ = nested.pop("$splice_counts", None)
             changes = _write_changes(
                 by_path,
-                from_plain(
+                read_or_default(
                     nested.get("changes"),
                     dict[str, object],
-                    default=dict[str, object](),
+                    default=None,
                 ),
             )
             if changes is not None:
@@ -1057,25 +1047,27 @@ def _write_completed(
             return None
     elif isinstance(tool_result, WebSearchResult):
         kind = "WebSearch"
-        inner |= {"type": kind, "query": tool_result.query}
+        inner["query"] = tool_result.query
     else:
         return None
     if present is not None:
+        # A ``None`` is left out below in any case, so only the other values
+        # that say nothing are named here.
         defaults = {
             "id": item.call_id == "",
-            "command": shell is not None and shell.command is None,
             "stdout": shell is not None and stdout == "",
             "stderr": shell is not None and stderr == "",
-            "exit_code": shell is not None and shell.exit_code is None,
-            "query": isinstance(tool_result, WebSearchResult)
-            and tool_result.query is None,
         }
         inner = {
             key: value
             for key, value in inner.items()
-            if key == "type" or key in present or not defaults.get(key, value is None)
+            if key in present or defaults.get(key) is not True
         }
-    payload = {key: value for key, value in inner.items() if value is not None} | nested
+    payload = (
+        {"type": kind}
+        | {key: value for key, value in inner.items() if value is not None}
+        | nested
+    )
     return _ordered(
         "item_completed",
         {"type": "item_completed", "item": _ordered(kind, payload), **extra},

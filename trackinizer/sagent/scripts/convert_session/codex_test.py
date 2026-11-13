@@ -709,6 +709,32 @@ def _event(payload: str) -> str:
             '{"type":"item_completed","item":{"type":"WebSearch","id":"w",'
             '"query":"q"}}',
         ),
+        META
+        + _event(
+            '{"type":"item_completed","thread_id":"t","turn_id":"u","item":'
+            '{"type":"CommandExecution","id":"e","process_id":"p","command":["ls"],'
+            '"cwd":"/w","stdout":"","stderr":"","exit_code":0}}',
+        ),
+        META
+        + _event(
+            '{"type":"item_completed","item":{"type":"CommandExecution",'
+            '"command":["ls"]}}',
+        ),
+        META
+        + _event('{"type":"item_completed","item":{"type":"FileChange","id":"e"}}'),
+        META
+        + _event(
+            '{"type":"item_completed","item":{"type":"FileChange","id":"e",'
+            '"changes":null}}',
+        ),
+        META
+        + _event(
+            '{"type":"exec_command_end","call_id":"c","process_id":"p","turn_id":"t",'
+            '"command":["ls"],"cwd":"/w","stdout":"","stderr":"","exit_code":0}',
+        ),
+        META + _event('{"type":"exec_command_end","command":["ls"]}'),
+        META
+        + _event('{"type":"web_search_end","call_id":"c","query":"q","results":[]}'),
     ],
     ids=[
         "launch-after-blank",
@@ -726,6 +752,13 @@ def _event(payload: str) -> str:
         "failed-completed-command",
         "patch-without-changes",
         "completed-web-search",
+        "completed-command-among-other-keys",
+        "completed-command-without-id-or-output",
+        "completed-patch-without-changes",
+        "completed-patch-with-null-changes",
+        "exec-command-end-among-other-keys",
+        "exec-command-end-without-id-or-output",
+        "web-search-end-with-a-query",
     ],
 )
 def test_each_rollout_shape_rewrites_to_its_own_bytes(native: str) -> None:
@@ -733,6 +766,39 @@ def test_each_rollout_shape_rewrites_to_its_own_bytes(native: str) -> None:
     out = StringIO()
 
     codex.denormalize(records, out)
+
+    assert out.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        '{"type":"patch_apply_end","call_id":"c","changes":CHANGES}',
+        (
+            '{"type":"item_completed","item":{"type":"FileChange","id":"e",'
+            '"changes":CHANGES}}'
+        ),
+    ],
+    ids=["patch-apply-end", "item-completed"],
+)
+@pytest.mark.parametrize(
+    "changes",
+    [
+        "7",
+        '{"/w/a.py":null,"/w/b.py":{"unified_diff":"@@ -1 +1 @@\\n-a\\n+A\\n"}}',
+        '{"/w/a.py":7,"/w/b.py":{"unified_diff":"@@ -1 +1 @@\\n-a\\n+A\\n"}}',
+    ],
+    ids=["no-object", "a-null-entry", "a-scalar-entry"],
+)
+def test_a_patch_whose_changes_hold_no_entry_rewrites_to_its_own_bytes(
+    event: str,
+    changes: str,
+) -> None:
+    """The reader keeps what is no entry as it is, so the writer has to as well."""
+    native = META + _event(event.replace("CHANGES", changes))
+    out = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), out)
 
     assert out.getvalue() == native
 
@@ -971,10 +1037,180 @@ def test_a_read_crosses_as_the_command_codex_reads_with() -> None:
         output,
     )
 
-    written = output.getvalue()
-    assert '"type":"CommandExecution"' in written
-    assert '"stdout":"x"' in written
-    assert "WebSearch" not in written
+    assert output.getvalue() == _event(
+        '{"type":"item_completed","item":{"type":"CommandExecution","id":"c",'
+        '"command":["/bin/cat","--","/a"],"stdout":"x","stderr":"","exit_code":0}}',
+    )
+
+
+def test_a_read_that_names_no_file_crosses_without_a_command() -> None:
+    read = ToolResult(call_id="c", state="done", stdout=("x",), result=ReadResult())
+
+    assert codex._write_completed(read, {}) == {
+        "type": "item_completed",
+        "item": {
+            "type": "CommandExecution",
+            "id": "c",
+            "stdout": "x",
+            "stderr": "",
+            "exit_code": 0,
+        },
+    }
+
+
+def test_a_command_is_written_with_every_text_item_of_each_stream() -> None:
+    shell = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("a", "b"),
+        stderr=("c", "d"),
+        result=BashResult(command=("ls",), exit_code=0),
+    )
+
+    assert codex._write_completed(shell, {}) == {
+        "type": "item_completed",
+        "item": {
+            "type": "CommandExecution",
+            "id": "c",
+            "command": ["ls"],
+            "stdout": "ab",
+            "stderr": "cd",
+            "exit_code": 0,
+        },
+    }
+    assert codex._write_legacy_end(shell, "exec_command_end", {}, {}) == {
+        "type": "exec_command_end",
+        "call_id": "c",
+        "command": ["ls"],
+        "stdout": "ab",
+        "stderr": "cd",
+        "exit_code": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("out",),
+                stderr=("err",),
+                result=BashResult(command=("ls",), exit_code=2),
+            ),
+            {
+                "type": "CommandExecution",
+                "id": "c",
+                "command": ["ls"],
+                "stdout": "out",
+                "stderr": "err",
+                "exit_code": 2,
+            },
+        ),
+        (
+            ToolResult(call_id="c", state="done", result=WebSearchResult(query="q")),
+            {"type": "WebSearch", "id": "c", "query": "q"},
+        ),
+    ],
+    ids=["command", "web-search"],
+)
+def test_a_completed_item_states_each_value_its_line_did_not(
+    record: ToolResult,
+    expected: dict[str, object],
+) -> None:
+    """A key the line lacked is left out only while its value says nothing."""
+    assert codex._write_completed(record, {"item": {"$present": ["type"]}}) == {
+        "type": "item_completed",
+        "item": expected,
+    }
+
+
+def test_a_legacy_command_end_states_each_value_its_line_did_not() -> None:
+    shell = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("out",),
+        stderr=("err",),
+        result=BashResult(command=("ls",), exit_code=2),
+    )
+
+    assert codex._write_legacy_end(
+        shell,
+        "exec_command_end",
+        {"$present": ["type"]},
+        {},
+    ) == {
+        "type": "exec_command_end",
+        "call_id": "c",
+        "command": ["ls"],
+        "stdout": "out",
+        "stderr": "err",
+        "exit_code": 2,
+    }
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [("x", "x"), (None, "")],
+    ids=["content", "no-content"],
+)
+def test_a_write_with_no_stored_entry_states_the_whole_content(
+    content: str | None,
+    expected: str,
+) -> None:
+    written = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("Wrote a.py.",),
+        result=WriteResult(path="a.py", content=content),
+    )
+
+    assert codex._write_completed(written, {}) == {
+        "type": "item_completed",
+        "item": {
+            "type": "FileChange",
+            "id": "c",
+            "changes": {"a.py": {"content": expected}},
+        },
+    }
+
+
+def test_each_patch_entry_is_filled_from_the_record_of_its_own_path() -> None:
+    """An entry the reader took no value from is written back as it is."""
+    stored: dict[str, object] = {
+        "a.py": {"type": "add", "content": None, "$filled": "content"},
+        "b.py": {"type": "update", "unified_diff": None, "$filled": "unified_diff"},
+        "c.py": {"other": 1},
+        "d.py": {"type": "add", "content": None, "$filled": "content"},
+    }
+    by_path = {
+        "a.py": ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("Wrote a.py.",),
+            result=WriteResult(path="a.py"),
+        ),
+        "b.py": ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("Edited b.py.", *parse_udiff("-old\n")),
+            result=EditResult(path="b.py"),
+        ),
+        "c.py": ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("Edited c.py.",),
+            result=EditResult(path="c.py"),
+        ),
+    }
+
+    assert codex._write_changes(by_path, stored) == {
+        "a.py": {"type": "add", "content": ""},
+        "b.py": {"type": "update", "unified_diff": "-old\n"},
+        "c.py": {"other": 1},
+        "d.py": {"type": "add", "content": None},
+    }
 
 
 def test_file_edit_diff_is_emitted_when_path_is_known() -> None:
