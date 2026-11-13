@@ -12,7 +12,7 @@ and writes it back out as any CLI's native format.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol
 
 
 if TYPE_CHECKING:
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from trackinizer.types.streams import TraxRecord
 
 
-__all__ = ["Adapter", "StreamAdapter", "Subagent"]
+__all__ = ["Adapter", "Subagent"]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -196,24 +196,3 @@ class Adapter(Protocol):
 
         """
         ...
-
-
-@runtime_checkable
-class StreamAdapter(Adapter, Protocol):
-    """An adapter whose session source is the child's own IO streams.
-
-    The wrapped command writes no session log, so the runner takes the
-    binary from the ``--`` args, tails nothing, and instead frames the child's
-    output bytes into lines (``LineCapture``), feeding each completed line to
-    this adapter's reader -- there the "line" is one line of output, never a
-    log line.
-
-    Structurally an :class:`Adapter` whose :attr:`cli_binary` is empty; the
-    marker :attr:`stream_source` is what the runner dispatches on
-    (``runtime_checkable`` isinstance only sees attribute presence, so a plain
-    file adapter never matches). A new stream dialect is one subclass with its
-    own reader plus a registry entry.
-    """
-
-    stream_source: bool
-    """Marker: True on every stream adapter; absent on file adapters."""

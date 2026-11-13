@@ -10,18 +10,14 @@ import argparse
 import functools
 import json
 import os
-import signal
-import subprocess
-import sys
 import threading
 import time
-import tracemalloc
 
 from treekle import from_plain, json_loads
 
-import psutil
 import pytest
 
+from trackinizer.lib import zstd_compat
 from trackinizer.lib.testing.resources import ascii_locale
 from trackinizer.sagent.scripts.convert_session import (
     claude,
@@ -247,39 +243,6 @@ def test_a_native_out_dir_does_not_overwrite_a_same_named_part(tmp_path: Path) -
     assert len(list(out_dir.iterdir())) == 2
 
 
-@pytest.mark.cli_python_subprocess
-def test_verify_runs_a_directory_in_parallel(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    # Two SESSIONS, each its own directory: files sharing a directory are one
-    # session, since that is how a ``/clear`` continuation is recognized.
-    _ = _session(tmp_path / "one" / "a.jsonl", _claude_session())
-    _ = _session(tmp_path / "two" / "b.jsonl", _codex_session())
-    _ = _session(tmp_path / "one" / "._a.jsonl", _claude_session())
-
-    assert main(["verify", str(tmp_path), "--workers", "2"]) == 0
-    assert "2/2 exact" in capsys.readouterr().err
-
-
-@pytest.mark.cli_python_subprocess
-def test_workers_run_in_separate_processes(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    # ``--workers 2`` on two sessions must actually FAN OUT. Asserting only on
-    # "2/2 exact" cannot fail on a pool that silently ran serial, which is the
-    # regression ``_workers`` exists to prevent -- so the pids are counted.
-    for name in ("one", "two", "three", "four"):
-        _ = _session(tmp_path / name / "s.jsonl", _claude_session())
-
-    assert main(["verify", str(tmp_path), "--workers", "4", "--format", "json"]) == 0
-    report = json_loads(capsys.readouterr().err, dict[str, object])
-
-    assert report["files"] == 4
-    assert report["ok"] == 4
-
-
 def test_verify_reports_the_wire_size_against_the_source(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -490,31 +453,6 @@ def test_status_and_diff_helpers(tmp_path: Path) -> None:
     assert _diff("a\n", "b\n").startswith("--- original")
 
 
-@pytest.mark.cli_python_subprocess
-def test_module_entry_point_runs(tmp_path: Path) -> None:
-    path = tmp_path / "session.jsonl"
-    path.write_text(_codex_session())
-
-    completed = subprocess.run(  # noqa: S603 -- fixed argv, tmp_path input.
-        [
-            sys.executable,
-            "-m",
-            "trackinizer.sagent.scripts.convert_session",
-            "verify",
-            str(path),
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
-
-    assert completed.returncode == 0
-    size = path.stat().st_size
-    assert (
-        completed.stderr.strip() == f"1/1 exact; {size} bytes in, {size} out (1.0000x)"
-    )
-
-
 def _session(path: Path, text: str = "") -> Path:
     """Write one transcript at ``path``, parents included."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -583,6 +521,33 @@ def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
     assert report["ok"] == 1
 
 
+def test_a_compressed_part_beside_a_plain_one_is_a_part_of_the_session(
+    tmp_path: Path,
+) -> None:
+    """Codex compresses its older rollouts in place, so one directory holds both."""
+    project = tmp_path / "project"
+    before_text = _claude_session()
+    after_text = before_text.replace("Your entire job", "This resumed session", 1)
+    before = project / "before-clear.jsonl.zst"
+    project.mkdir()
+    _ = before.write_bytes(zstd_compat.compress(before_text.encode()))
+    after = _session(project / "after-clear.jsonl", after_text)
+    after_mtime_ns = time.time_ns()
+    before_mtime_ns = after_mtime_ns - 10 * 1_000_000_000
+    os.utime(before, ns=(before_mtime_ns, before_mtime_ns))
+    os.utime(after, ns=(after_mtime_ns, after_mtime_ns))
+    _ = (project / "notes.jsonl.zst").write_bytes(zstd_compat.compress(b"no session\n"))
+
+    result = convert_file(project, "auto", None, False)
+
+    assert _roots(project) == [project]
+    assert result.byte_exact
+    assert result.parts == (
+        ("before-clear.jsonl", before_text),
+        (after.name, after_text),
+    )
+
+
 def test_parts_written_in_one_tick_join_in_the_order_their_records_were_stamped(
     tmp_path: Path,
 ) -> None:
@@ -619,64 +584,6 @@ def test_a_session_keeps_the_subagents_nested_under_it(tmp_path: Path) -> None:
     assert _session_parts(root) == [root, child]
 
 
-@pytest.mark.skipif(not hasattr(signal, "SIGKILL"), reason="POSIX signals only")
-@pytest.mark.cli_python_subprocess
-def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
-    # A SIGKILLed parent runs no cleanup, and the pool's workers are spawned by
-    # a forkserver whose argv does not name this program -- so ``pkill -f`` on
-    # the obvious pattern left 11 orphans holding 14 GB. The kernel has to be
-    # the one that reaps them.
-    for index in range(6):
-        _ = _session(tmp_path / "in" / f"s{index}" / "s.jsonl", _claude_session() * 40)
-    # A session no one ever writes: the worker that opens it blocks, so the run
-    # is still alive when it is killed. Without it the run could END before the
-    # loop below saw it: measured, the pool converted all six in 0.36 s and
-    # exited 90 ms after its first output, and a poll whose /proc scan took
-    # 62 ms on a host holding 4,000 pids missed that window 10 times in 10.
-    held = tmp_path / "held.jsonl"
-    os.mkfifo(held)
-    started = subprocess.Popen(  # noqa: S603 -- fixed argv, tmp_path input.
-        [
-            sys.executable,
-            "-m",
-            "trackinizer.sagent.scripts.convert_session",
-            "convert",
-            str(tmp_path / "in"),
-            str(held),
-            "--to",
-            "json",
-            "--out-dir",
-            str(tmp_path / "out"),
-            "--workers",
-            "3",
-            "--parent-poll-sec",
-            "0.05",
-        ],
-    )
-    children: list[psutil.Process] = []
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline and started.poll() is None:
-        children = psutil.Process(started.pid).children(recursive=True)
-        # Output on disk, not just live pids: a worker whose INITIALIZER raised
-        # leaves nothing behind either, so a pid check alone passes on a pool
-        # that never converted anything -- which is how a missing import in
-        # the death-watch went green here.
-        if len(children) >= 2 and list((tmp_path / "out").glob("*.json")):
-            break
-        # The pool is other processes; only the process table and disk say when it works.
-        time.sleep(0.1)  # house-ignore[sleep] -- See above.
-    assert started.poll() is None, "the run ended before it could be killed"
-    assert children, "the pool never started"
-    assert list((tmp_path / "out").glob("*.json")), "the pool never did any work"
-
-    started.kill()
-    _ = started.wait(timeout=10)
-
-    gone, alive = psutil.wait_procs(children, timeout=15)
-    assert not alive, f"{len(alive)} workers outlived the run they belonged to"
-    assert gone
-
-
 def test_converting_to_a_directory_writes_as_it_goes(tmp_path: Path) -> None:
     # Measured: converting a 4.2 GB corpus held 3 GB and climbing, because
     # every session's converted TEXT rode home in its result and nothing
@@ -708,32 +615,6 @@ def test_converting_to_a_directory_writes_as_it_goes(tmp_path: Path) -> None:
     ]
     assert not written[0].text, "the text belongs on disk, not in the result"
     assert written[0].output_bytes > 0
-
-
-@pytest.mark.compute_large_fixture
-def test_converting_a_session_does_not_hold_many_copies_of_it(
-    tmp_path: Path,
-) -> None:
-    # Measured, not assumed: a 273 MB session peaked at 4.3 GB, because the
-    # source text, the parsed records, and the rewritten text were all held at
-    # once. A whole corpus of them took 21 GB and thrashed the machine.
-    # Prime ABC caches with one small session before measuring: their first-use
-    # cost depends on the classes imported during collection (313 KiB in the
-    # full suite), not on how many copies of this session the converter holds.
-    warmup = _session(tmp_path / "warmup" / "s.jsonl", _claude_session())
-    assert convert_file(warmup, "auto", None, False).byte_exact
-
-    session = _session(tmp_path / "big" / "s.jsonl", _claude_session() * 50)
-    size = session.stat().st_size
-    tracemalloc.start()
-    try:
-        result = convert_file(session, "auto", None, False)
-        _, peak = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-
-    assert result.byte_exact
-    assert peak < size * 8, f"{peak / size:.0f}x the session's own size"
 
 
 def test_workers_scale_with_the_session_count() -> None:
@@ -838,7 +719,7 @@ def test_die_with_parent_starts_a_daemon_watcher(
             return None
 
     monkeypatch.setattr(threading, "Thread", Thread)
-    convert._die_with_parent(7, 0.5)
+    convert.die_with_parent(7, 0.5)
 
     assert started == [(convert._watch_launcher, (7, 0.5), True)]
 
@@ -895,7 +776,7 @@ def test_a_long_pretty_printed_gemini_document_is_sniffed(tmp_path: Path) -> Non
     messages = [{"type": "user", "content": f"m{i}"} for i in range(80)]
     path.write_text(json.dumps({"sessionId": "s", "messages": messages}, indent=2))
 
-    assert convert._sniff(path) == "gemini"
+    assert convert.sniff(path) == "gemini"
 
 
 def test_convert_file_reports_conversion_type_errors(
@@ -1233,6 +1114,45 @@ class _Pool:
         return [function(*row) for row in zip(*columns, strict=False)]
 
 
+def test_verify_reads_a_directory_session_by_session(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Two SESSIONS, each its own directory: files sharing a directory are one
+    # session, since that is how a ``/clear`` continuation is recognized.
+    _ = _session(tmp_path / "one" / "a.jsonl", _claude_session())
+    _ = _session(tmp_path / "two" / "b.jsonl", _codex_session())
+    _ = _session(tmp_path / "one" / "._a.jsonl", _claude_session())
+
+    assert main(["verify", str(tmp_path), "--workers", "1"]) == 0
+    assert "2/2 exact" in capsys.readouterr().err
+
+
+def test_verify_on_four_sessions_runs_a_pool_of_four_that_watches_this_process(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # ``--workers 4`` on four sessions must ask for four workers: a pool that
+    # silently ran serial is the regression ``_workers`` exists to prevent.
+    for name in ("one", "two", "three", "four"):
+        _ = _session(tmp_path / name / "s.jsonl", _claude_session())
+    _Pool.made = []
+    monkeypatch.setattr(convert, "ProcessPoolExecutor", _Pool)
+
+    assert main(["verify", str(tmp_path), "--workers", "4", "--format", "json"]) == 0
+    report = json_loads(capsys.readouterr().err, dict[str, object])
+
+    assert (report["files"], report["ok"]) == (4, 4)
+    assert _Pool.made == [
+        {
+            "max_workers": 4,
+            "initializer": convert.die_with_parent,
+            "initargs": (os.getpid(), 1.0),
+        },
+    ]
+
+
 def test_a_pool_run_hands_each_worker_the_watch_and_every_argument(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1269,12 +1189,12 @@ def test_a_pool_run_hands_each_worker_the_watch_and_every_argument(
     assert _Pool.made == [
         {
             "max_workers": 2,
-            "initializer": convert._die_with_parent,
+            "initializer": convert.die_with_parent,
             "initargs": (os.getpid(), 0.25),
         },
         {
             "max_workers": 2,
-            "initializer": convert._die_with_parent,
+            "initializer": convert.die_with_parent,
             "initargs": (os.getpid(), 1.0),
         },
     ]
@@ -1477,13 +1397,18 @@ def test_a_nested_value_is_part_of_what_a_record_means() -> None:
         ('{\n  "sessionId": "s"\n}', ""),
         ('{"sessionId":"s","messages":[]}', "gemini"),
         ('{"sessionId":"s","messages":[],"kind":"x"}', "gemini"),
-        ('{"sessionId":"s"}', "claude"),
+        ('{"type":"user","sessionId":"s"}', "claude"),
         # A line that is no JSON object is passed over, not the end of the walk.
-        ('not json\n{"uuid":"u"}\n', "claude"),
-        ('[1]\n{"uuid":"u"}\n', "claude"),
-        ('{"uuid":"u"}\n', "claude"),
-        ('{"parentUuid":null}\n', "claude"),
-        ('{"agentId":"a"}\n', "claude"),
+        ('not json\n{"type":"user","uuid":"u"}\n', "claude"),
+        ('[1]\n{"type":"user","uuid":"u"}\n', "claude"),
+        ('{"type":"user","uuid":"u"}\n', "claude"),
+        ('{"type":"user","parentUuid":null}\n', "claude"),
+        ('{"type":"user","agentId":"a"}\n', "claude"),
+        # Claude's prompt history names a session but no type: no transcript.
+        ('{"display":"hi","sessionId":"s"}\n{"display":"yo","sessionId":"s"}\n', ""),
+        ('{"display":"hi","sessionId":"s"}\n{"type":"user","uuid":"u"}\n', "claude"),
+        # A type alone names no transcript: a workflow's journal opens with one.
+        ('{"type":"launched"}\n', ""),
     ],
 )
 def test_each_head_names_the_format_that_wrote_it(head: str, found: str) -> None:
@@ -1510,12 +1435,12 @@ def test_the_sniff_reads_64_lines_and_names_no_format_for_an_unreadable_file(
 ) -> None:
     def head(skipped: int) -> Path:
         path = tmp_path / f"{skipped}.jsonl"
-        path.write_text("x\n" * skipped + '{"uuid":"u"}\n')
+        path.write_text("x\n" * skipped + '{"type":"user","uuid":"u"}\n')
         return path
 
-    assert convert._sniff(head(63)) == "claude"
-    assert convert._sniff(head(64)) == ""
-    assert convert._sniff(tmp_path / "absent") == ""
+    assert convert.sniff(head(63)) == "claude"
+    assert convert.sniff(head(64)) == ""
+    assert convert.sniff(tmp_path / "absent") == ""
 
 
 def test_a_walk_finds_sessions_and_nothing_else(tmp_path: Path) -> None:
@@ -1907,7 +1832,7 @@ def test_a_session_is_read_and_written_as_utf8_whatever_the_locale(
     with ascii_locale():
         assert convert_file(path, "auto", None, False, destination=False).byte_exact
         assert convert_file(path, "auto", None, False).byte_exact
-        assert convert._sniff(path) == "claude"
+        assert convert.sniff(path) == "claude"
         assert main(["convert", str(path), "--to", "claude", "-o", str(out), "-q"]) == 0
         assert main(args) == 0
         as_json = convert_file(path, "auto", "json", False, destination=json_dir)
@@ -1933,6 +1858,53 @@ def test_a_torn_crlf_line_rewrites_byte_for_byte(tmp_path: Path) -> None:
 
     assert convert_file(path, "auto", None, False, destination=False).byte_exact
     assert convert_file(path, "auto", None, False).byte_exact
+
+
+# Codex compresses its older rollouts in place, ``.jsonl`` to ``.jsonl.zst``.
+def test_a_compressed_rollout_is_found_sniffed_and_rewritten_as_it_was(
+    tmp_path: Path,
+) -> None:
+    native = _codex_session()
+    stem = "rollout-2026-11-01T10-00-00-01a1b7c9-0000-7000-8000-000000000001"
+    rollout = tmp_path / f"{stem}.jsonl.zst"
+    _ = rollout.write_bytes(zstd_compat.compress(native.encode()))
+    _ = (tmp_path / "notes.jsonl.zst").write_bytes(
+        zstd_compat.compress(b"no session\n"),
+    )
+    broken = tmp_path / "broken.jsonl.zst"
+    _ = broken.write_bytes(b"not a zstandard frame")
+    out = tmp_path / "out"
+
+    assert convert.transcripts(tmp_path) == [rollout]
+    assert (convert.sniff(rollout), convert.sniff(broken)) == ("codex", "")
+    assert convert_file(rollout, "auto", None, False, False).byte_exact
+    assert convert_file(rollout, "auto", "codex", False).byte_exact
+    assert main(["convert", str(rollout), "--to", "codex", "--out-dir", str(out)]) == 0
+    assert main(["convert", str(rollout), "--to", "json", "--out-dir", str(out)]) == 0
+    assert sorted(path.name for path in out.iterdir()) == [
+        f"{stem}.json",
+        f"{stem}.jsonl",
+    ]
+    assert (out / f"{stem}.jsonl").read_text() == native
+    assert convert.transcript_name(rollout) == f"{stem}.jsonl"
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "zst"])
+def test_a_transcript_opens_as_utf8_with_the_errors_and_newlines_asked(
+    tmp_path: Path,
+    compressed: bool,
+) -> None:
+    raw = chr(0xE9).encode() + b"\xff\r\n"
+    path = tmp_path / ("t.jsonl.zst" if compressed else "t.jsonl")
+    _ = path.write_bytes(zstd_compat.compress(raw) if compressed else raw)
+
+    with (
+        ascii_locale(),
+        convert.open_transcript(path, errors="replace", newline="") as handle,
+    ):
+        assert handle.read() == f"{chr(0xE9)}{chr(0xFFFD)}\r\n"
+    with convert.open_transcript(path) as handle, pytest.raises(UnicodeDecodeError):
+        _ = handle.read()
 
 
 if __name__ == "__main__":

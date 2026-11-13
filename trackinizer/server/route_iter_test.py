@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, FastAPI, WebSocket
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from starlette.routing import Host, Mount
 
 from trackinizer.server.route_iter import (
     iter_api_routes,
+    iter_route_leaves,
     iter_routes,
     registered_path_methods,
     registered_paths,
@@ -50,7 +52,8 @@ def test_every_leaf_carries_its_full_prefix_and_verbs() -> None:
 
 def test_a_host_route_has_no_path_and_is_skipped() -> None:
     app = FastAPI()
-    app.router.routes.append(Host("docs.example.com", app=FastAPI()))
+    # First: the routes after it are still walked.
+    app.router.routes.insert(0, Host("docs.example.com", app=FastAPI()))
 
     assert [path for path, _ in iter_routes(app)] == [
         "/openapi.json",
@@ -84,6 +87,19 @@ def test_api_routes_are_the_http_leaves_with_what_their_includes_add() -> None:
         _ok,
     ]
     assert leaves["/health"].include_dependencies == ()
+
+
+def test_each_leaf_is_the_route_a_request_reaches_with_its_full_prefix() -> None:
+    leaves = dict(iter_route_leaves(_app()))
+
+    socket = leaves["/ws"]
+    leaf = leaves["/api/inner/leaf"]
+    assert isinstance(socket, APIWebSocketRoute)
+    assert socket.endpoint is _socket
+    assert isinstance(leaf, APIRoute)
+    # The route keeps the path within its router; the leaf names it in full.
+    assert (leaf.path, leaf.endpoint) == ("/leaf", _ok)
+    assert isinstance(leaves["/static"], Mount)
 
 
 def test_registered_paths_are_the_distinct_templates() -> None:

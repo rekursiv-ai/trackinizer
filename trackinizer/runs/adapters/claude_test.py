@@ -253,6 +253,87 @@ class TestClaudeSubagents:
         assert not claude.matches_session_file(side)
         assert claude.subagent(side) is None
 
+    def test_a_copy_outside_claudes_home_names_its_subagents_but_is_not_captured(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "home"))
+        folder = tmp_path / "Downloads" / "-w" / "s1" / "subagents"
+        folder.mkdir(parents=True)
+        _ = (folder / "agent-a2.meta.json").write_text('{"parentAgentId": "a1"}')
+        claude = ClaudeAdapter()
+
+        assert claude.subagent(folder / "agent-a2.jsonl") == Subagent(
+            child="agent-a2",
+            parent="agent-a1",
+        )
+        assert claude.subagent(folder / "agent-a1.jsonl") == Subagent(
+            child="agent-a1",
+            parent="s1",
+        )
+        assert not claude.matches_session_file(folder / "agent-a2.jsonl")
+        assert not claude.matches_session_file(
+            tmp_path / "Downloads" / "-w" / "s1.jsonl",
+        )
+
+    def test_a_subagent_deeper_in_claudes_home_is_not_captured(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        deep = tmp_path / "projects" / "-w" / "x" / "s1" / "subagents" / "agent-a.jsonl"
+
+        assert ClaudeAdapter().subagent(deep) is not None
+        assert not ClaudeAdapter().matches_session_file(deep)
+
+    # Measured on claude 2.1.312: 264 such transcripts in one home, none with a
+    # ``parentAgentId``, each beside its workflow's ``journal.jsonl``.
+    def test_a_workflows_agent_is_matched_and_names_its_session(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        subagents = tmp_path / "projects" / "-w" / "s1" / "subagents"
+        folder = subagents / "workflows" / "wf_1"
+        folder.mkdir(parents=True)
+        meta = {"agentType": "workflow-subagent", "description": "audit:NODE"}
+        _ = (folder / "agent-a1.meta.json").write_text(json.dumps(meta))
+        claude = ClaudeAdapter()
+
+        assert claude.matches_session_file(folder / "agent-a1.jsonl")
+        assert claude.subagent(folder / "agent-a1.jsonl") == Subagent(
+            child="agent-a1",
+            parent="s1",
+            note="workflow-subagent: audit:NODE",
+        )
+        assert claude.session_folder(folder / "journal.jsonl") == subagents.parent
+        # A session's folder may be named as a workflow's parent is.
+        named = tmp_path / "workflows" / "subagents" / "agent-a1.jsonl"
+        assert claude.session_folder(named) == tmp_path / "workflows"
+        assert claude.subagent(folder / "journal.jsonl") is None
+        assert not claude.matches_session_file(folder / "journal.jsonl")
+        assert claude.subagent(subagents / "other" / "wf_1" / "agent-a1.jsonl") is None
+        assert (
+            claude.subagent(
+                subagents.parent / "side" / "workflows" / "wf_1" / "agent-a1.jsonl",
+            )
+            is None
+        )
+
+    def test_a_workflows_agent_deeper_in_claudes_home_is_not_captured(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path))
+        deep = tmp_path / "projects" / "-w" / "x" / "s1" / "subagents" / "workflows"
+
+        assert ClaudeAdapter().subagent(deep / "wf_1" / "agent-a.jsonl") is not None
+        assert not ClaudeAdapter().matches_session_file(deep / "wf_1" / "agent-a.jsonl")
+
     def test_a_file_that_is_not_jsonl_is_no_session(
         self,
         tmp_path: Path,

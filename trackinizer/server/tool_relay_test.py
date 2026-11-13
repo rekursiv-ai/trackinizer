@@ -139,7 +139,7 @@ class _World:
         self.tasks: list[asyncio.Task[object]] = []
         self.dead: set[uuid.UUID] = set()
         self.unknown: set[uuid.UUID] = set()
-        self.asked: list[tuple[str, uuid.UUID, uuid.UUID | None]] = []
+        self.asked: list[tuple[str, uuid.UUID | None, uuid.UUID | None]] = []
 
     async def _alive(self, connection: ToolConnection) -> bool:
         self.asked.append(
@@ -1129,10 +1129,18 @@ async def test_a_dial_back_that_times_out_warns_and_ends_the_connection_once(
     )
 
 
+def _refused_from(cause: Exception) -> ToolConnectionEndError:
+    """Return a refusal raised from ``cause``, as the agent socket's check raises one."""
+    refused = ToolConnectionEndError("refused")
+    refused.__cause__ = cause
+    return refused
+
+
 @pytest.mark.parametrize(
     ("error", "by", "cause"),
     [
         (ToolConnectionEndError("refused"), "agent", "-"),
+        (_refused_from(ValueError("not json")), "agent", "ValueError"),
         (ValueError("the line check broke"), "server", "ValueError"),
     ],
 )
@@ -1144,9 +1152,11 @@ async def test_a_connection_its_line_check_ends_names_the_socket_and_only_the_er
     cause: str,
 ) -> None:
     caplog.set_level(logging.INFO, logger=tool_relay.__name__)
+    checked: list[ToolConnection] = []
 
     async def failing(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
-        del connection, frame
+        del frame
+        checked.append(connection)
         raise error
 
     connection, agent = await world.agent(inbound=failing)
@@ -1156,6 +1166,7 @@ async def test_a_connection_its_line_check_ends_names_the_socket_and_only_the_er
     agent.push(b"secret-line\n")
     await _settle()
 
+    assert checked == [connection]
     (ended,) = _ended(caplog, connection)
     assert (ended["by"], ended["cause"]) == (by, cause)
     assert "secret-line" not in caplog.text

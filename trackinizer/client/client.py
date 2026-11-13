@@ -37,7 +37,6 @@ operation. Either way the raw httpx2 exception never escapes the
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from functools import partial
 from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
 from urllib.parse import quote, urlparse
 
@@ -138,7 +137,6 @@ if TYPE_CHECKING:
         ManifestBody,
         PartBody,
         RecordBody,
-        SlashCommandBody,
     )
     from trackinizer.wire.wire_session_relay import (
         AgentProcess,
@@ -149,7 +147,6 @@ if TYPE_CHECKING:
         ViewerFrame,
     )
     from trackinizer.wire.wire_sessions import (
-        InboundDrainItem,
         SessionEnd,
         SessionEndResponse,
         SessionStart,
@@ -1529,8 +1526,6 @@ class Client:
         name: str = "",
         manifest: ManifestBody | None = None,
         records: Sequence[RecordBody] = (),
-        restart: bool = False,
-        slash_commands: Sequence[SlashCommandBody] = (),
     ) -> AppendRecordsResponse:
         """Append one file's records; idempotent on ``(session_id, part, idx)``.
 
@@ -1540,17 +1535,11 @@ class Client:
 
         Args:
           session_id: The session these records belong to.
-          name: The source file's basename. Empty only on a
-            slash-command-only append: a typed command belongs to the SESSION,
-            so one submitted before the CLI has written a transcript names no
-            file. The request body rejects records without it.
+          name: The source file's basename. The request body rejects records
+            without it.
           manifest: What that file declares, re-sent every batch because it
             changes as the file grows. ``None`` exactly when ``name`` is empty.
           records: The records themselves, each carrying its derived position.
-          restart: Whether this batch re-derived the part from its start,
-            which makes the append overwrite rather than skip.
-          slash_commands: Commands the human typed since the last batch. They
-            ride this request so they commit with the turns around them.
 
         Returns:
           response: The resolved part, and how many records were written
@@ -1560,9 +1549,7 @@ class Client:
         req = wire_session_ir.AppendRecordsRequest(
             name=name,
             manifest=manifest,
-            restart=restart,
             records=list(records),
-            slash_commands=list(slash_commands),
         )
         where = wire_session_ir.session_records_path(session_id)
         response = self._request("POST", where, body=req.model_dump(mode="json"))
@@ -1838,103 +1825,6 @@ class Client:
         response = self._request("POST", where, body=payload)
         return _validate_model(wire_sessions.SessionEndResponse, response, where)
 
-    def enqueue_inbound(
-        self,
-        session_id: uuid.UUID,
-        text: str,
-    ) -> int:
-        """Enqueue a line to inject into a live session; return queued count.
-
-        The sender is attested server-side from the authenticated principal,
-        so the request carries no ``source`` -- the enqueue body forbids it.
-
-        Args:
-          session_id: AgentSession ID to message.
-          text: Message text to enqueue.
-
-        Returns:
-          result: Number of messages now queued for this session.
-
-        """
-        # This client never names an asker; an older server forbids the field.
-        body = wire_sessions.InboundEnqueueRequest(text=text).model_dump(
-            mode="json",
-            exclude={"asker"},
-        )
-        where = wire_sessions.session_inbound_path(session_id)
-        response = self._request("POST", where, body=body)
-        return _validate_model(
-            wire_sessions.InboundEnqueueResponse,
-            response,
-            where,
-        ).queued
-
-    def drain_inbound(
-        self,
-        session_id: uuid.UUID,
-        *,
-        wait_sec: float = 0.0,
-        run: str | None = None,
-        host: str | None = None,
-        cwd: str | None = None,
-        cli: str | None = None,
-        instance: str | None = None,
-        runs: bool = False,
-    ) -> list[InboundDrainItem]:
-        """Drain pending inbound messages for a session, oldest first.
-
-        Each item carries its kind and payload beside the text, attested sender,
-        room and canvas context, so the agent runner delivers each the way its CLI
-        expects. ``run``, ``host`` and ``cwd`` tell the server where the draining
-        run is, for Chat to show; ``cli`` and ``instance`` tell it which CLI polls and
-        which run it is, by which it routes a chat's lines and refuses a second run;
-        ``runs`` says the run takes ``run`` messages. Each is sent only when given.
-
-        Args:
-          session_id: Session whose queue to drain.
-          wait_sec: How long the server may hold the request open waiting for
-            a message. Zero returns whatever is pending now. A non-zero value
-            replaces repeated asking: one held request per session instead of
-            one round trip per interval, and delivery on arrival rather than
-            up to an interval late. The read timeout must exceed it, or the
-            client aborts the very wait it asked for.
-          run: The name of the detached run draining it, which an attach takes; None
-            for a run in a terminal of its own.
-          host: This computer's host name, as the daemon names it.
-          cwd: The run's working directory, ``~/...`` under its home.
-          cli: The CLI this run is, ``claude`` or ``codex``.
-          instance: An id the run minted for itself, the same on each of its drains.
-          runs: Whether this run takes ``run`` messages, the commands a chat's starter
-            clicks Run on.
-
-        Returns:
-          messages: The drained messages, as the server sent them.
-
-        """
-        where = wire_sessions.session_inbound_path(session_id)
-        drained = self._consume(
-            where,
-            scope=where,
-            # Each None is left out, so a run that knows none of these sends the query
-            # an older server always took.
-            params={
-                "wait_sec": wait_sec or None,
-                "run": run,
-                "host": host,
-                "cwd": cwd,
-                "cli": cli,
-                "instance": instance,
-                "runs": runs or None,
-            },
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
-            decode=partial(
-                _validate_model,
-                wire_sessions.DrainInboundResponse,
-                where=where,
-            ),
-        )
-        return drained.messages
-
     def send_message(
         self,
         actor: str,
@@ -1944,8 +1834,8 @@ class Client:
     ) -> list[uuid.UUID]:
         """Send ``text`` to live sessions named by ``@actor[:room]``.
 
-        Returns the session ids the server enqueued to (empty = no live
-        session matched: an honest undelivered signal).
+        Returns the session ids the server sent it to (empty = no live session
+        matched: an honest undelivered signal).
 
         Args:
           actor: Target actor name (targets all live sessions for actor).
@@ -1953,20 +1843,56 @@ class Client:
           room: Optional room filter (targets actor+room pair).
 
         Returns:
-          result: Session IDs the message was enqueued to.
+          result: Session IDs the message was sent to.
 
         """
-        # This client never names an asker, and an older server forbids the field.
-        body = wire_sessions.SendMessage(actor=actor, room=room, text=text).model_dump(
-            mode="json",
-            exclude={"asker"},
+        return self._posted_message(
+            wire_sessions.SendMessage(actor=actor, room=room, text=text),
         )
-        response = self._request("POST", wire_sessions.SEND_MESSAGE_PATH, body=body)
-        return _validate_model(
-            wire_sessions.SendMessageResponse,
-            response,
-            wire_sessions.SEND_MESSAGE_PATH,
-        ).delivered
+
+    def message_agent(
+        self,
+        to: wire_sessions.SessionAgent,
+        text: str,
+        *,
+        from_session: uuid.UUID | None = None,
+        from_label: str = "",
+        booked: wire_sessions.MessageKind | None = None,
+        key: uuid.UUID | None = None,
+    ) -> list[uuid.UUID]:
+        """Send ``text`` to one agent of a session: ``label#412``, as AgentSend names it.
+
+        Args:
+          to: The agent, by its label and its session's number or UUID.
+          text: What it says.
+          from_session: An agent process's own session, whose socket its key holds:
+            the server then names the sender ``from_label#<its number>``; ``None``
+            sends as the key's account.
+          from_label: The sending agent's label there.
+          booked: How the sending agent's team booked it.
+          key: The ``Idempotency-Key``: a send repeated under it is sent once and
+            answered as the first was; a fresh one when ``None``.
+
+        Returns:
+          delivered: The session's id when it took the message; empty when nothing
+            serves it now, an honest undelivered signal.
+
+        """
+        sender = (
+            {}
+            if from_session is None
+            else {
+                "from_session": from_session,
+                "from_label": from_label,
+                "booked": booked,
+            }
+        )
+        return self._posted_message(
+            wire_sessions.SendMessage.model_validate(
+                {"to": to, "text": text, **sender},
+            ),
+            key=key,
+        )
 
     def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:
         """Read a canvas: its revision, visuals and focus.
@@ -2366,7 +2292,7 @@ class Client:
             where,
             scope=f"{where}/{instance}",
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
             decode=lambda response: (
                 None
                 if response is None
@@ -2433,7 +2359,7 @@ class Client:
             where,
             params={"owner": owner, "since": since, "wait_sec": wait_sec},
             retry_attempts=1,
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
         return _validate_model(wire_terminals.HostsVersion, response, where)
 
@@ -2486,7 +2412,7 @@ class Client:
             "GET",
             where,
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
         return (
             None
@@ -2648,7 +2574,7 @@ class Client:
             "GET",
             where,
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
         return (
             None
@@ -2688,7 +2614,7 @@ class Client:
             where,
             scope=f"{where}/{instance}",
             params={"instance": str(instance), "wait_sec": wait_sec},
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
             decode=lambda response: (
                 None
                 if response is None
@@ -2732,23 +2658,24 @@ class Client:
         )
 
     def host_runs(self, name: str) -> list[HostRun]:
-        """Return the caller's live sessions that name their host; 404 for another's."""
+        """Return the agent processes on the caller's host; 404 for another's."""
         where = wire_hosts.HOST_RUNS_PATH.format(name=quote(name, safe=""))
         response = self._request("GET", where)
         return _validate_model(wire_hosts.HostRuns, response, where).runs
 
     def stop_host_run(self, name: str, session_id: uuid.UUID) -> None:
-        """Stop one of the caller's live sessions on one of their hosts.
+        """Stop the agent process of a session on one of the caller's hosts.
 
-        Its next drain is refused, so the run ends within one drain's hold.
+        It is stopped as ``DELETE /api/sessions/{id}/process`` stops it: its socket
+        closes, and its key is revoked a minute later.
 
         Args:
-          name: The host the run names.
-          session_id: The session the run drains.
+          name: The host the process runs on.
+          session_id: The session the process serves.
 
         Raises:
-          ClientError: 404 when the caller owns no such host, or no live session of
-            theirs on it drains that session.
+          ClientError: 404 when the caller owns no such host, or no process on it
+            serves that session.
 
         """
         self._request(
@@ -2760,7 +2687,7 @@ class Client:
         )
 
     def disconnect_host(self, name: str) -> list[HostRun]:
-        """Revoke a daemon and stop its owner's live sessions; return those stopped."""
+        """Revoke a daemon, stopping its host's agent processes; return those stopped."""
         where = wire_hosts.HOST_DISCONNECT_PATH.format(name=quote(name, safe=""))
         response = self._request("POST", where)
         return _validate_model(wire_hosts.HostRuns, response, where).runs
@@ -3113,7 +3040,7 @@ class Client:
             where,
             params={"instance": str(instance), "wait_sec": wait_sec},
             retry_attempts=1,
-            timeout=wire_sessions.inbound_read_timeout(wait_sec),
+            timeout=wire_sessions.held_read_timeout(wait_sec),
         )
         return _validate_model(wire_host_job.WorkOffer, response, where)
 
@@ -3216,6 +3143,27 @@ class Client:
         with self._request_count_lock:
             self._pending_reads.pop(pending, None)
         return result
+
+    # Only the fields it names: an older server forbids one it does not know, and this
+    # client never names an asker.
+    def _posted_message(
+        self,
+        message: wire_sessions.SendMessage,
+        *,
+        key: uuid.UUID | None = None,
+    ) -> list[uuid.UUID]:
+        """Post ``message`` to ``/api/messages``; return the sessions it went to."""
+        response = self._request(
+            "POST",
+            wire_sessions.SEND_MESSAGE_PATH,
+            body=message.model_dump(mode="json", exclude_unset=True),
+            change_id=key,
+        )
+        return _validate_model(
+            wire_sessions.SendMessageResponse,
+            response,
+            wire_sessions.SEND_MESSAGE_PATH,
+        ).delivered
 
     def _request(
         self,

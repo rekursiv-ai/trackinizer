@@ -138,7 +138,7 @@ inherited unchanged: a server outage never loses events.
 ### What this deliberately does not fix
 
 Out of scope here, tracked as separate issues: the process-local
-inbound queue on the server (`server/inbound.py`, drop-if-absent),
+inbound queue on the server (`server/inbound.py`, since removed),
 and remote human attach. ACP mode narrows the last one: a headless
 agent's turns are fully captured, so a read-only live view needs only
 the event stream, not a terminal. Session liveness, once on this list,

@@ -1,6 +1,6 @@
 """:class:`_ReadMixin` -- read-only inquiry, cost, and change queries.
 
-A pure leaf: :meth:`get_inquiry`, :meth:`list_kind`,
+A pure leaf: :meth:`get_inquiry`, :meth:`inquiry_id`, :meth:`list_kind`,
 :meth:`narrows_ancestors`, :meth:`next_issue`, :meth:`inquiry_cost`,
 :meth:`proves_belief`, :meth:`what_changed_for_me`, :meth:`get_change`, and
 :meth:`list_changes` all read through ``self.engine`` and call no other mixin.
@@ -194,6 +194,42 @@ class _ReadMixin(_StoreShared):
             {target_id: outbound},
             {target_id: inbound},
         )
+
+    async def inquiry_id(
+        self,
+        kind: Inquiry.InquiryKind,
+        seq: int,
+        *,
+        principal: Principal | None = None,
+    ) -> UUID | None:
+        """Return the id of the inquiry its short reference ``kind#seq`` names.
+
+        Args:
+          kind: Its kind, such as ``AgentSession``.
+          seq: Its number within the kind, from 1.
+          principal: Request reader; None for trusted internal reads.
+
+        Returns:
+          inquiry_id: Its id; ``None`` for no such inquiry, or one ``principal`` may
+            not read.
+
+        """
+        params: list[object] = [kind, seq]
+        predicate = inquiry_read_filter(
+            "inquiries.id",
+            policy=self.access_policy,
+            principal=principal,
+            params=params,
+        )
+        async with self.engine.acquire() as conn:
+            row = await conn.fetchrow(
+                vetted_sql(
+                    "SELECT id FROM inquiries WHERE kind = $1 AND seq = $2",
+                    "" if predicate == "TRUE" else f" AND ({predicate})",
+                ),
+                *params,
+            )
+        return None if row is None else cast(UUID, row["id"])
 
     async def list_kind(
         self,

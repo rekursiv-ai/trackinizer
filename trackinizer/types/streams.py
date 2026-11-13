@@ -1,20 +1,16 @@
-"""The three standard streams, as records a scrape can carry.
+"""The three standard streams, as records a scrape carried.
 
-The runner's ``sh -- CMD`` wraps a command that writes no session file, so the
-process's own IO IS the session. A line is not merely text: WHICH stream it
+A command that wrote no session file was once captured by its own IO, so its
+process's output WAS the session. A line is not merely text: WHICH stream it
 crossed is the only structure a scrape has, and it is what tells an answer from
-a question. Recording every line as one kind lost that -- a captured session
-showed replies with nothing prompting them.
+a question. Those sessions stay stored, and these records are how they read.
 
 These live in trackinizer rather than in ``trackinizer.sagent.session.types``
 because they describe a TRANSPORT this package owns, not an act a model
 performed. Every other IR record answers "what did the agent do"; these answer
-"which fd did these bytes cross", which no other adapter can ever emit.
-
-Which streams are distinguishable is decided by the capture mode, not by these
-types -- see :mod:`~trackinizer.runs.adapters.iostream`. A pty merges
-the child's stdout and stderr onto one tty before trax sees a byte, so a pty
-run emits no :class:`Stderr` at all.
+"which fd did these bytes cross", which no other adapter can ever emit. A pty
+merged the child's stdout and stderr onto one tty, so a pty capture holds no
+:class:`Stderr` at all.
 """
 
 from __future__ import annotations

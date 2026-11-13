@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, override
+from unittest.mock import Mock
 
 import argparse
 import io
@@ -35,6 +36,7 @@ from trackinizer.trax.verbs import (
     Board,
     Graph,
     Kind,
+    Send,
     _query_rows,
     resolve_actor,
 )
@@ -49,6 +51,7 @@ from trackinizer.wire.wire_metrics_query import (
     MetricRankRow,
 )
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
+from trackinizer.wire.wire_sessions import SessionAgent
 
 
 if TYPE_CHECKING:
@@ -2601,6 +2604,102 @@ def test_send_at_prefix_is_optional(client: FakeClient) -> None:
     run(["send", "scientist", "hi"], client)
     sends = [c for c in client.calls if c[0] == "send_message"]
     assert sends[0][1][0] == "scientist"
+
+
+_LEAD_UUID = uuid.UUID("0b1c2d3e-0000-4000-8000-000000000412")
+
+
+@pytest.mark.parametrize(
+    ("target", "agent"),
+    [
+        ("lead#412", SessionAgent(label="lead", session=412)),
+        (f"lead#{_LEAD_UUID}", SessionAgent(label="lead", session=_LEAD_UUID)),
+        ("lead#a#412", SessionAgent(label="lead#a", session=412)),
+    ],
+    ids=["a number", "a uuid", "a label that holds #"],
+)
+def test_send_messages_the_agent_of_a_session_a_bare_hash_names(
+    client: FakeClient,
+    target: str,
+    agent: SessionAgent,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["send", target, "status?"], client)
+
+    sends = [c for c in client.calls if c[0] in {"send_message", "message_agent"}]
+    unnamed = {"from_session": None, "from_label": "", "booked": None, "key": None}
+    assert sends == [("message_agent", (agent, "status?"), unnamed)]
+    assert capsys.readouterr().out == "sent to 1 session(s)\n"
+
+
+def test_send_takes_an_at_name_with_a_hash_as_a_routing_name(
+    client: FakeClient,
+) -> None:
+    run(["send", "@scientist#2", "status?"], client)
+    sends = [c for c in client.calls if c[0] == "send_message"]
+    assert sends == [("send_message", ("scientist#2", "status?"), {"room": None})]
+
+
+@pytest.mark.parametrize("target", ["#412", "lead#", "lead#abc", "lead#0"])
+def test_send_refuses_a_target_that_names_no_agent_of_a_session(
+    client: FakeClient,
+    target: str,
+) -> None:
+    with pytest.raises(ClientError, match=r"label|session|greater|names no agent"):
+        run(["send", target, "hi"], client)
+    assert [c for c in client.calls if c[0] == "message_agent"] == []
+
+
+@pytest.mark.parametrize(
+    ("target", "said"),
+    [
+        ("@", "send target must name an actor (e.g. @scientist)"),
+        (
+            "@scientist:",
+            (
+                "empty room after ':' in target '@scientist:'; drop the ':' or name a "
+                "room (e.g. @scientist:sear)"
+            ),
+        ),
+    ],
+    ids=["no actor", "an empty room"],
+)
+def test_send_refuses_a_routing_name_with_no_actor_or_an_empty_room(
+    client: FakeClient,
+    target: str,
+    said: str,
+) -> None:
+    with pytest.raises(ClientError) as refused:
+        run(["send", target, "hi"], client)
+    assert str(refused.value) == said
+    assert [c for c in client.calls if c[0] == "send_message"] == []
+
+
+def test_send_s_help_names_both_forms_of_target() -> None:
+    page = Send.help
+    assert isinstance(page, str)
+    assert "Usage: trax send LABEL#SESSION TEXT...\n" in page
+    assert "A bare name#N is\n  always a session's number" in page
+    assert "label#session, @actor or @actor:room" in Send.make_parser().format_help()
+
+
+@pytest.mark.parametrize(
+    ("target", "said"),
+    [("lead#412", "lead#412"), ("@ghost", "@ghost"), ("@ghost:sear", "@ghost:sear")],
+)
+def test_send_says_which_target_took_nothing(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    target: str,
+    said: str,
+) -> None:
+    monkeypatch.setattr(client, "send_message", Mock(return_value=[]))
+    monkeypatch.setattr(client, "message_agent", Mock(return_value=[]))
+    run(["send", target, "hi"], client)
+    assert capsys.readouterr().out == (
+        f"undelivered: no live session takes messages for {said}\n"
+    )
 
 
 def test_send_undelivered_when_no_match(

@@ -11,12 +11,10 @@ records route reads.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, TypedDict
-from unittest.mock import (
-    AsyncMock,
-    call,
-)
+from typing import TYPE_CHECKING, Final, TypedDict, cast
+from unittest.mock import AsyncMock, Mock, call
 
+import asyncio
 import uuid
 
 from fastapi import FastAPI
@@ -38,15 +36,27 @@ from trackinizer.server.api.conftest import (
     TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
+    patch_state,
 )
 from trackinizer.server.auth import AuthIdentity, current_user
-from trackinizer.server.store.session_ir import RecentSessionTurn, SessionManifest
+from trackinizer.server.session_relay import SessionRelay
+from trackinizer.server.store.session_ir import (
+    AppendedPart,
+    PartFile,
+    RecentSessionTurn,
+    SessionManifest,
+    StalePartError,
+)
 from trackinizer.types.inquiries import AgentSession, Issue
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_session_ir import (
     CLIENT_OUTDATED,
+    ManifestBody,
+    ReadRecordsResponse,
+    RecordBody,
 )
+from trackinizer.wire.wire_session_relay import STALE_PART, Opened, RecordLine
 
 
 if TYPE_CHECKING:
@@ -84,6 +94,8 @@ class _Parts(TypedDict):
 
 
 _CIPHERTEXT = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"
+_NOTHING: Final = AppendedPart(part=None, written=(), skipped=0)
+"""What an upload that named no file stored."""
 
 
 def _row(idx: int, record: SessionRecord | None = None) -> SessionRecordRow:
@@ -334,8 +346,8 @@ class TestAppendRevives:
         monkeypatch.setattr(session_ir_routes, "revive_if_reaped", revive)
         monkeypatch.setattr(
             store,
-            "append_session_records",
-            AsyncMock(return_value=(0, 0, 0)),
+            "append_session_part",
+            AsyncMock(return_value=_NOTHING),
         )
         session_id = uuid.uuid4()
 
@@ -681,8 +693,8 @@ class TestViewerOwnedCapture:
                 ),
             ),
         )
-        append = AsyncMock(return_value=(0, 0, 0))
-        monkeypatch.setattr(store, "append_session_records", append)
+        append = AsyncMock(return_value=_NOTHING)
+        monkeypatch.setattr(store, "append_session_part", append)
 
         response = client.post(
             f"/api/sessions/{uuid.uuid4()}/records",
@@ -739,10 +751,8 @@ class TestRetiredRecordFormat:
                 ),
             ),
         )
-        manifest = AsyncMock(return_value=0)
-        append = AsyncMock(return_value=(1, 0, 0))
-        monkeypatch.setattr(store, "upsert_session_manifest", manifest)
-        monkeypatch.setattr(store, "append_session_records", append)
+        append = AsyncMock(return_value=_NOTHING)
+        monkeypatch.setattr(store, "append_session_part", append)
 
         response = _append_one(
             client,
@@ -757,7 +767,6 @@ class TestRetiredRecordFormat:
             "Update this client and trax (uv tool upgrade --all): it writes "
             "session records in a retired format"
         )
-        manifest.assert_not_awaited()
         append.assert_not_awaited()
 
     def test_a_record_in_the_current_vocabulary_is_appended(
@@ -778,9 +787,8 @@ class TestRetiredRecordFormat:
                 ),
             ),
         )
-        monkeypatch.setattr(store, "upsert_session_manifest", AsyncMock(return_value=0))
-        append = AsyncMock(return_value=(1, 0, 0))
-        monkeypatch.setattr(store, "append_session_records", append)
+        append = AsyncMock(return_value=_NOTHING)
+        monkeypatch.setattr(store, "append_session_part", append)
         payload = {
             **_user_message(""),
             "content": "see trackinizer.lib.agent.types.sessions.UserMessage",
@@ -970,6 +978,226 @@ async def _legacy_session(store: Store, *, turns: int) -> uuid.UUID:
 async def _viewer() -> AuthIdentity:
     """Resolve every request to a read-only principal, as a browser viewer is."""
     return make_test_identity(role="viewer")
+
+
+# -- The four changes of Part 3: one transaction, stale parts, any key, the push ---------
+
+
+def _sagent_body(*indices: int, records: int, ir_id: uuid.UUID) -> dict[str, object]:
+    """Return a sagent journal's upload of the records at ``indices``."""
+    return {
+        "name": "a.jsonl",
+        "manifest": ManifestBody(
+            name="a.jsonl",
+            ir_id=ir_id,
+            format="sagent",
+            records=records,
+        ).model_dump(mode="json"),
+        "records": [
+            RecordBody.of(_row(idx)).model_dump(mode="json") for idx in indices
+        ],
+    }
+
+
+@pytest.mark.parametrize("watched", [False, True], ids=["unwatched", "watched"])
+def test_an_upload_is_one_store_call_whose_records_reach_only_a_watching_viewer(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+    watched: bool,
+) -> None:
+    client, store, _engine = route_client
+    session_id, ir_id = uuid.uuid4(), uuid.uuid4()
+    monkeypatch.setattr(
+        store,
+        "get_inquiry",
+        AsyncMock(
+            return_value=AgentSession(
+                cli="sagent",
+                opened_by_api_key_id=TEST_API_KEY_ID,
+            ),
+        ),
+    )
+    append = AsyncMock(
+        return_value=AppendedPart(part=4, written=(1, 2), skipped=1),
+    )
+    monkeypatch.setattr(store, "append_session_part", append)
+    # A read returns what the part's bound lets through: here 0 and 1 of 0..2.
+    read = AsyncMock(return_value=[_row(0), _row(1)])
+    monkeypatch.setattr(store, "read_session_records", read)
+    relay = SessionRelay()
+    publish = Mock()
+    monkeypatch.setattr(relay, "publish_records", publish)
+    monkeypatch.setattr(relay, "watched", Mock(return_value=watched))
+    patch_state(monkeypatch, "session_relay", relay)
+
+    response = client.post(
+        f"/api/sessions/{session_id}/records",
+        json=_sagent_body(0, 1, 2, records=2, ir_id=ir_id),
+    )
+
+    assert response.status_code == 200, response.text
+    assert from_plain(response.json(), dict[str, object]) == {
+        "part": 4,
+        "written": 2,
+        "skipped": 1,
+    }
+    assert append.await_args is not None
+    assert append.await_args.kwargs["file"] == PartFile(
+        name="a.jsonl",
+        metadata=immutable({}),
+        ir_id=ir_id,
+        format="sagent",
+        records=2,
+    )
+    assert append.await_args.kwargs["api_key_id"] == TEST_API_KEY_ID
+    if not watched:
+        read.assert_not_awaited()
+        publish.assert_not_called()
+        return
+    # Read back from the first record written: one the read returns but this write
+    # did not insert is not pushed again.
+    read.assert_awaited_once_with(session_id, part=4, after_idx=0, limit=2)
+    publish.assert_called_once_with(
+        session_id,
+        part=4,
+        records=[RecordBody.of(_row(1))],
+    )
+
+
+def test_a_legacy_tool_call_an_upload_stored_reaches_a_viewer_in_the_current_shape(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A viewer is pushed a record as ``GET .../records`` returns it, kind kept."""
+    client, store, _engine = route_client
+    monkeypatch.setattr(
+        store,
+        "get_inquiry",
+        AsyncMock(
+            return_value=AgentSession(
+                cli="sagent",
+                opened_by_api_key_id=TEST_API_KEY_ID,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        store,
+        "append_session_part",
+        AsyncMock(return_value=AppendedPart(part=0, written=(0,), skipped=0)),
+    )
+    # A client older than ``ToolResult`` still sends its former record's payload.
+    legacy = SessionRecordRow(
+        session_id=uuid.uuid4(),
+        idx=0,
+        kind="BashResult",
+        payload=immutable(
+            {"py/object": "BashResult", "call_id": "c", "stdout": "hi\n"},
+        ),
+        text="hi\n",
+    )
+    monkeypatch.setattr(store, "read_session_records", AsyncMock(return_value=[legacy]))
+    relay = SessionRelay()
+    publish = Mock()
+    monkeypatch.setattr(relay, "publish_records", publish)
+    monkeypatch.setattr(relay, "watched", Mock(return_value=True))
+    patch_state(monkeypatch, "session_relay", relay)
+
+    response = client.post(
+        f"/api/sessions/{uuid.uuid4()}/records",
+        json=_sagent_body(0, records=1, ir_id=uuid.uuid4()),
+    )
+
+    assert response.status_code == 200, response.text
+    assert publish.call_args is not None
+    [pushed] = cast(list[RecordBody], publish.call_args.kwargs["records"])
+    assert (pushed.kind, pushed.payload) == (
+        "BashResult",
+        immutable(
+            {
+                "py/object": "ToolResult",
+                "call_id": "c",
+                "state": "done",
+                "stdout": ["hi\n"],
+                "result": {"py/object": "BashResult"},
+                "extra": {},
+            },
+        ),
+    )
+
+
+def test_a_write_to_a_part_another_process_moved_on_from_is_refused_as_stale(
+    route_client: tuple[TestClient, Store, FakeEngine],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store, _engine = route_client
+    monkeypatch.setattr(
+        store,
+        "get_inquiry",
+        AsyncMock(
+            return_value=AgentSession(
+                cli="sagent",
+                opened_by_api_key_id=TEST_API_KEY_ID,
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        store,
+        "append_session_part",
+        AsyncMock(side_effect=StalePartError("part 0 is not its newest, 1")),
+    )
+
+    response = client.post(
+        f"/api/sessions/{uuid.uuid4()}/records",
+        json=_sagent_body(0, records=1, ir_id=uuid.uuid4()),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": {"code": STALE_PART, "message": "part 0 is not its newest, 1"},
+    }
+
+
+async def _sagent_session(store: Store, *, cli_session_id: str = "") -> uuid.UUID:
+    """Return the test user's open session, under ``cli_session_id`` if any."""
+    session_id = uuid.uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience, agentsession_cli, agentsession_cli_session_id) "
+            "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
+            "$2, 's', 'open', 'sagent', NULLIF($3, ''))",
+            session_id,
+            TEST_USER_EMAIL,
+            cli_session_id,
+        )
+    return session_id
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_each_stored_record_is_pushed_to_open_viewers_once(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, store = pglite_route_client
+    relay = SessionRelay()
+    patch_state(monkeypatch, "session_relay", relay)
+    session_id, ir_id = await _sagent_session(store), uuid.uuid4()
+    viewer = relay.lines(session_id, allowed=AsyncMock(return_value=True))
+    assert isinstance(await anext(viewer), Opened)
+
+    for indices in ((0, 1), (0, 1, 2)):
+        response = await client.post(
+            f"/api/sessions/{session_id}/records",
+            json=_sagent_body(*indices, records=len(indices), ir_id=ir_id),
+        )
+        assert response.status_code == 200, response.text
+    read = await client.get(f"/api/sessions/{session_id}/records", params={"part": 0})
+    stored = ReadRecordsResponse.model_validate(read.json()).records
+
+    pushed = [await asyncio.wait_for(anext(viewer), 1) for _ in stored]
+    assert pushed == [RecordLine(part=0, record=record) for record in stored]
+    await viewer.aclose()
 
 
 if __name__ == "__main__":

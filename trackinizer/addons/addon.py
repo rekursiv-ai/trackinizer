@@ -4,7 +4,7 @@ An addon is a trusted configgle-built object. Its manifest names the parts it
 contributes, and each part says where it runs:
 
 - A **server service** runs as a task inside the trackinizer server, beside
-  the subscriber push, with the server's own store.
+  the server's own sweeps, with the server's store.
 - A **standalone service** runs in its own process, as its own user, and
   reaches trax only through the HTTP API with a profile token. A service that
   holds third-party credentials or spawns agents belongs here.
@@ -37,7 +37,6 @@ from pydantic import BaseModel, Field
 
 from trackinizer.client.client import Client
 from trackinizer.server.access_policy import AccessPolicy
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
 
 
@@ -60,7 +59,6 @@ class ServerContext:
 
     Attributes:
       store: The server's graph store, opened and bootstrapped.
-      inbound: The live-session message queue, as the subscriber push uses it.
       host_idle_sec: How long a host, by id, has had no tool call or result and
         no terminal input or output, relayed or direct, as this process saw; a
         host with none since the process started is counted from its start.
@@ -72,7 +70,6 @@ class ServerContext:
     """
 
     store: Store
-    inbound: InboundQueue
     host_idle_sec: Callable[[UUID], float]
     hosts_changed: Callable[[str], None]
     host_closed: Callable[[UUID], Awaitable[None]]

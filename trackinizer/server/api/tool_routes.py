@@ -1,12 +1,15 @@
-"""Routes for tool connections: the assistant's socket, the daemon's wait, and the daemon's socket.
+"""Routes for tool connections: the agent's socket, the daemon's wait, and the daemon's socket.
 
-Only the configured assistant opens a tool connection, for an attested writer or admin ``asker``
-who owns the host, whose host reports ``tools: true`` in its facts: the rule of
-``tool_access``, which each sweep asks again. Its socket asks the relay
-(``server/tool_relay.py``) to queue an offer. The daemon holds a ``GET`` on the
-wait route, which returns the moment an offer is queued, and dials the daemon socket. The relay
-relays between the two. A person's own browser, an API key of anyone else, a service
-account and a server with authentication off open nothing here.
+A writer's or admin's key opens a tool connection to a host of its own account, such as
+the key minted for an agent process; the configured assistant opens one for an
+attested writer or admin ``asker`` who owns the host; and a writer's or admin's own
+browser, signed in from this server's pages, opens one to a host of their own, as a file
+explorer does. Either way the host reports ``tools: true`` in its facts: the rule
+of ``tool_access``, which each sweep asks again. Its socket asks the relay
+(``server/tool_relay.py``) to queue an offer. The daemon holds a ``GET`` on the wait
+route, which returns the moment an offer is queued, and dials the daemon socket. The
+relay relays between the two. A browser from another page or for another account, a key
+naming another account, and a server with authentication off open nothing here.
 
 Every line the agent sends is read by a ``ToolLines`` before it is relayed, and each
 ``Call`` is logged with the gate's verdict, its arguments by their size alone. What the
@@ -39,6 +42,7 @@ from trackinizer.server.api._deps import (
     get_tool_line_bytes,
     get_tool_relay,
 )
+from trackinizer.server.api._origin import is_strictly_same_origin
 from trackinizer.server.api._routes_shared import (
     refusal,
     request_engine,
@@ -64,6 +68,7 @@ from trackinizer.server.tool_relay import (
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire import wire_exec, wire_terminals, wire_tools
 from trackinizer.wire.wire_exec import HOST_EXEC_WAIT_PATH
+from trackinizer.wire.wire_service_accounts import is_service_address
 from trackinizer.wire.wire_tools import (
     HOST_TOOLS_WAIT_PATH,
     HOST_TOOLS_WS_PATH,
@@ -99,19 +104,23 @@ async def tools_agent_socket(
 ) -> None:
     """Relay an agent's tool calls to the asker's host, until either socket drops.
 
-    Only the configured assistant's key opens this, naming an attested writer or admin
-    ``asker`` who owns the host, which must not be revoked, be confirmed by its owner,
-    and report ``tools: true``; whether it is up is for its daemon's dial-back to say. A
-    host that does not is refused at once with a reason saying why. It holds a key
-    and no cookie, so it needs no same-origin check.
+    A writer's or admin's key opens this for a host of its own account; the
+    configured assistant's names an attested writer or admin ``asker`` who owns the
+    host. A person's own browser opens it for a host of their own: signed in, from
+    this server's pages, as no service account, naming no other ``asker``. The host
+    must not be revoked, be confirmed by its owner, and report ``tools: true``; whether
+    it is up is for its daemon's dial-back to say. A host that does not is refused at
+    once with a reason saying why.
 
     Each ``Call`` the agent sends is logged as the gate judges it, before it is
     forwarded; a line that cannot be read ends the tool connection.
 
     Args:
-      websocket: The agent's socket; it carries the assistant's key as a bearer.
+      websocket: The agent's socket; it carries the key as a bearer, or a browser's
+        session cookie and ``Origin``.
       name: The host's name.
-      asker: The person the assistant acts for.
+      asker: The person the assistant acts for; any other key is its own, and a
+        browser names its own or none.
 
     """
     await websocket.accept()
@@ -127,12 +136,30 @@ async def tools_agent_socket(
             host=name,
         )
         return
+    if identity.api_key_id is None and not _own_browser(
+        websocket,
+        email=identity.email,
+        asker=asker,
+    ):
+        await _refuse(
+            socket,
+            wire_terminals.CLOSE_REFUSED,
+            _FORBIDDEN,
+            socket_name="agent",
+            host=name,
+        )
+        return
+    assistant = get_assistant(websocket)
+    # A key that names nobody acts for its own account, as a browser does.
+    owner = (identity.email if asker is None else asker).lower()
     async with request_engine(websocket).acquire() as conn:
         access = await tool_access(
             conn,
-            assistant=get_assistant(websocket),
-            api_key_id=identity.api_key_id,
-            asker=asker,
+            assistant=assistant,
+            api_key_id="browser"
+            if identity.api_key_id is None
+            else identity.api_key_id,
+            asker=owner,
             host=name,
         )
     if access.failed is not None:
@@ -145,15 +172,9 @@ async def tools_agent_socket(
             check=access.failed,
         )
         return
-    # The rule holds only of a key, an asker, and a host of theirs.
+    # The rule holds only of a key or a browser, an asker, and a host of theirs.
     assert isinstance(access.host_id, UUID)
-    assert isinstance(identity.api_key_id, UUID)
-    assert isinstance(asker, str)
-    host_id, owner, api_key_id = (
-        access.host_id,
-        asker.lower(),
-        identity.api_key_id,
-    )
+    host_id, api_key_id = access.host_id, identity.api_key_id
     relay = get_tool_relay(websocket)
     try:
         connection = relay.join(
@@ -177,14 +198,13 @@ async def tools_agent_socket(
             host=name,
         )
         return
-    assistant = get_assistant(websocket)
     _logger.info(
         "tool connection opened: connection=%s host=%s host_id=%s asker=%s key=%s assistant=%s",
         connection.id,
         name,
         host_id,
         owner,
-        api_key_id,
+        "browser" if api_key_id is None else api_key_id,
         "-" if assistant is None else assistant.actor,
     )
     await relay.serve_agent(connection, partial(_read_bytes, socket))
@@ -312,10 +332,11 @@ async def exec_wait_route(
 
 
 # The assistant is trusted to say whom it acts for, as for a chat's settings, and the
-# server reads that person's role itself. Nobody else may name an asker, and there is no
-# route for a person's own session: a tool runs as the host's user, which only the
-# assistant, acting for that user, may ask for. A refusal of who is asking says no more
-# than the forbidden one; one of the host says what to do about it.
+# server reads that person's role itself. Any other key, and a browser, acts for its own
+# account alone: a tool runs as the host's user, which only that user's key or browser, or
+# the assistant acting for them, may ask for, as only they may open a terminal there. A
+# refusal of who is asking says no more than the forbidden one; one of the host says
+# what to do about it.
 _FORBIDDEN: Final = "tools are not available here"
 _REFUSED: Final[Mapping[Check, str]] = {
     "host": "no host {name} of yours",
@@ -446,3 +467,17 @@ def _close_reason(error: HTTPException | NotFoundError) -> str:
 def _forbidden() -> HTTPException:
     """Return the one refusal of a caller that may not reach tools here."""
     return refusal(403, code="tools_forbidden", message=_FORBIDDEN)
+
+
+# A browser sends its session cookie with every page's socket, so only this server's own
+# pages may open one, as for a terminal; with authentication off every caller is one admin.
+# A key may name another asker, which the rule checks; a browser names its own or none.
+# Whether its account may write is the rule's ``asker`` check, read fresh from the users.
+def _own_browser(websocket: WebSocket, *, email: str, asker: str | None) -> bool:
+    """Whether a caller with no key is a person's browser, from this server's pages."""
+    return (
+        not auth_is_disabled(websocket)
+        and is_strictly_same_origin(websocket)
+        and not is_service_address(email)
+        and (asker is None or asker.lower() == email.lower())
+    )

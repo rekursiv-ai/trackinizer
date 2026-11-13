@@ -11,7 +11,7 @@ real app, so a route that forgets the check answers 200 here.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final
 
 import uuid
 
@@ -28,7 +28,10 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
     patch_state,
 )
-from trackinizer.server.api.session_test_support import ASSISTANT_CONFIG
+from trackinizer.server.api.session_test_support import (
+    ASSISTANT_CONFIG,
+    ServingRelay,
+)
 from trackinizer.server.auth import create_api_key
 from trackinizer.server.config import Config
 from trackinizer.server.route_iter import iter_routes
@@ -40,7 +43,6 @@ if TYPE_CHECKING:
     import httpx2
 
     from trackinizer.server.auth import AuthIdentity
-    from trackinizer.server.inbound import InboundQueue
     from trackinizer.server.store.core import Store
 
 
@@ -99,11 +101,6 @@ ALL: Final = (STAFF_USER, WRITER, VIEWER, CAMPAIGN, ASSISTANT)
 _SERVING_STAFF: Final[Config] = replace(ASSISTANT_CONFIG, staff=(STAFF_USER.email,))
 
 
-def _inbound() -> InboundQueue:
-    """Return the queue the app under test is serving."""
-    return cast("InboundQueue", app.state.inbound)
-
-
 def _as(principal: _Principal) -> None:
     install_identity(principal.identity())
 
@@ -115,6 +112,11 @@ class _Hidden:
     lead: uuid.UUID
     campaign_own: uuid.UUID
     viewer_own: uuid.UUID
+    relay: ServingRelay
+
+    def sent_to(self, session_id: uuid.UUID) -> int:
+        """Return how many lines reached ``session_id``'s agent process."""
+        return [sent[0] for sent in self.relay.sent].count(session_id)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -125,6 +127,8 @@ async def hidden(
     """Seed the principals and three live staff sessions holding the canary."""
     _, store = pglite_route_client
     patch_state(monkeypatch, "config", ASSISTANT_CONFIG)
+    relay = ServingRelay()
+    patch_state(monkeypatch, "session_relay", relay)
     async with store.engine.acquire() as conn:
         for who in ALL:
             await conn.execute(
@@ -141,14 +145,12 @@ async def hidden(
                 who.user_id,
                 f"trax_{who.key_id.hex[:6]}",
             )
-    seeded = _Hidden(
+    return _Hidden(
         lead=await _staff_session(store, STAFF_USER, actor="lead"),
         campaign_own=await _staff_session(store, CAMPAIGN, actor="campaign"),
         viewer_own=await _staff_session(store, VIEWER, actor="viewer-run"),
+        relay=relay,
     )
-    for session_id in (seeded.lead, seeded.campaign_own, seeded.viewer_own):
-        _inbound().mark_poller(session_id)
-    return seeded
 
 
 # A session with no ``actor`` is unowned, which is what a purge requires.
@@ -234,7 +236,7 @@ async def test_an_open_reader_is_refused_a_staff_sessions_transcript(
     assert route in {"parts", "usage"} or _CANARY in allowed.text
 
 
-async def test_the_key_that_opened_a_staff_session_reads_appends_drains_and_ends_it(
+async def test_the_key_that_opened_a_staff_session_reads_appends_and_ends_it(
     pglite_route_client: _Client,
     hidden: _Hidden,
 ) -> None:
@@ -247,15 +249,10 @@ async def test_the_key_that_opened_a_staff_session_reads_appends_drains_and_ends
         for route in ("parts", "records", "turns")
     ]
     appended = await client.post(f"/api/sessions/{session}/records", json={})
-    drained = await client.get(f"/api/sessions/{session}/inbound")
     ended = await client.post(f"/api/sessions/{session}/end", json={})
 
     assert reads == [200, 200, 200]
-    assert (appended.status_code, drained.status_code, ended.status_code) == (
-        200,
-        200,
-        200,
-    )
+    assert (appended.status_code, ended.status_code) == (200, 200)
 
 
 async def test_a_viewer_key_runs_the_staff_session_it_opened(
@@ -384,7 +381,6 @@ async def test_staff_visibility_does_not_grant_the_assistants_asker_input(
     """The opening key sends input; the assistant's asker only reads the session."""
     patch_state(monkeypatch, "config", _SERVING_STAFF)
     client, _ = pglite_route_client
-    url = f"/api/sessions/{hidden.lead}/inbound"
     answers = {}
     for name, principal in (
         ("writer", WRITER),
@@ -393,35 +389,16 @@ async def test_staff_visibility_does_not_grant_the_assistants_asker_input(
         ("assistant", ASSISTANT),
     ):
         _as(principal)
-        body = {"text": "hi"}
+        body = {"actor": "lead", "room": "ops", "text": "hi"}
         if name == "assistant":
             body["asker"] = STAFF_USER.email
-        answers[name] = (await client.post(url, json=body)).status_code
+        answers[name] = (await client.post("/api/messages", json=body)).status_code
 
     assert answers == {"writer": 403, "viewer": 403, "staff": 200, "assistant": 403}
-    assert _inbound().pending(hidden.lead) == 1
+    assert hidden.sent_to(hidden.lead) == 1
 
 
-async def test_only_the_opener_or_a_holder_drains_a_staff_sessions_queue(
-    pglite_route_client: _Client,
-    hidden: _Hidden,
-) -> None:
-    client, _ = pglite_route_client
-    url = f"/api/sessions/{hidden.lead}/inbound"
-
-    _as(WRITER)
-    refused = await client.get(url)
-    _as(ASSISTANT)
-    assistant = await client.get(url)
-    _as(STAFF_USER)
-    allowed = await client.get(url)
-
-    assert _refusal(refused) == {"code": "session_audience", "audience": "staff"}
-    assert assistant.status_code == 403
-    assert allowed.status_code == 200
-
-
-async def test_a_message_to_a_staff_actor_is_refused_whole_and_queues_nothing(
+async def test_a_message_to_a_staff_actor_is_refused_whole_and_sends_nothing(
     pglite_route_client: _Client,
     hidden: _Hidden,
 ) -> None:
@@ -436,7 +413,7 @@ async def test_a_message_to_a_staff_actor_is_refused_whole_and_queues_nothing(
 
     assert _refusal(refused) == {"code": "session_audience", "audience": "staff"}
     assert by_room.status_code == 403
-    assert _inbound().pending(hidden.lead) == 0
+    assert hidden.sent_to(hidden.lead) == 0
 
 
 async def test_only_the_opening_key_messages_this_staff_actor(
@@ -466,7 +443,7 @@ async def test_only_the_opening_key_messages_this_staff_actor(
             delivered.append(from_plain(sent.json(), dict[str, object])["delivered"])
 
     assert delivered == [[str(hidden.lead)]]
-    assert _inbound().pending(hidden.lead) == 1
+    assert hidden.sent_to(hidden.lead) == 1
 
 
 async def test_a_staff_sessions_envelope_and_filed_rows_stay_open(

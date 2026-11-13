@@ -201,8 +201,10 @@ PRIMARY KEY (session_id, seq)
 ```
 
 A slash command (`/exit`, `/model gpt-5`) is handled inside the CLI's TUI and
-never written to its session log, so it is captured by observing the human's
-keystrokes on the PTY (the runner's `slash.py`). It is **not a record**: a record
+never written to its session log, so the old agent runner captured it by
+observing the human's keystrokes on the PTY. Nothing writes this table any more:
+the runner is gone and the append takes no commands, and its rows stay readable
+and exported. A command is **not a record**: a record
 has an `idx`, its position in a file's normalized stream, and a command that
 was never written to any file has none. Consuming an `idx` for one would
 renumber every record after it, and a replay -- which re-derives positions
@@ -262,8 +264,8 @@ idx_session_records_kind              (session_id, kind)
 ### 3.9 Properties
 
 ```
-append-only           records are never edited/superseded/cited; a restart
-                      OVERWRITES a part (§5.4), which is replacement, not edit
+append-only           records are never edited/superseded/cited; a stored
+                      record is final (§5.4)
 dedup key             (session_id, part, idx); re-append is ON CONFLICT
 adjacent universe     deliberately outside change_log; records are not Change
                       rows by design (see design.md "Everything is provenance"):
@@ -325,18 +327,7 @@ it CHANGES as the file grows: `records` counts what has arrived, and the
 metadata a normalizer reports is only correct for the prefix it consumed --
 claude's escaped lines keep arriving.
 
-### 4.3 `SlashCommandBody`
-
-```
-field      type       notes
-timestamp  datetime   required; the only clock a typed command has
-command    str        min_length 1; the verb without its slash
-args       str        default ''
-```
-
-No `seq`: the server assigns one (§3.4).
-
-### 4.4 `SessionStart` / `SessionEnd` (`wire/wire_sessions.py`)
+### 4.3 `SessionStart` / `SessionEnd` (`wire/wire_sessions.py`)
 
 ```
 SessionStart     cli (min_length 1), cli_session_id?, title?, started?,
@@ -349,12 +340,11 @@ stored verbatim, so `"   "` can never match and is a client bug. A `rooms`
 element additionally rejects a comma -- the runner exports rooms comma-joined
 into `TRAX_ROOMS`, so a room `'a,b'` is indistinguishable from two rooms.
 
-### 4.5 Response types
+### 4.4 Response types
 
 ```
 SessionStartResponse   {id: uuid, seq: int, cli_session_id: str?, actor: str?}
-AppendRecordsResponse  {part: int?, written: int, skipped: int,
-                        slash_commands: int}
+AppendRecordsResponse  {part: int?, written: int, skipped: int}
 ReadPartsResponse      {parts: [PartBody]}
 ReadRecordsResponse    {part: int, records: [RecordBody]}
 SessionEndResponse     {id: uuid, ended: datetime?}
@@ -396,26 +386,19 @@ POST /api/sessions/<id>/end         writer  SessionEnd            SessionEndResp
 
 ```
 {
-  "name": "<basename>",         // '' only on a slash-command-only append
+  "name": "<basename>",         // '' only on an append of nothing
   "manifest": <ManifestBody>,   // null exactly when name is ''
-  "restart": false,
-  "records": [<RecordBody>, ...],        // max 1000
-  "slash_commands": [<SlashCommandBody>] // max 1000
+  "records": [<RecordBody>, ...] // max 1000
 }
 ```
 
 ONE part per request. A model validator enforces the pairing: records need a
 part, and a part needs a named file with its manifest. A body naming no file
-carries only slash commands -- a command typed before the CLI has written a
-transcript belongs to the SESSION, not to any file.
+stores nothing.
 
 `MAX_RECORD_BATCH` is 1000. A tailer batches whatever a wake delivered and a
 claude compaction re-feeds a whole file at once, so the natural batch is
 unbounded unless the wire caps it.
-
-Slash commands ride the record append rather than a route of their own, so a
-run interrupted mid-flush cannot leave a command stored without the turns
-around it, or the reverse.
 
 ### 5.4 Semantics
 
@@ -424,11 +407,9 @@ start            mints an AgentSession row (server id); dedups on
                  idempotency_key; resumes an existing row when
                  cli_session_id matches one (§9.2)
 records (POST)   upserts the manifest FIRST (it assigns the part and bounds
-                 every reader), then appends. Normal batch: ON CONFLICT DO
-                 NOTHING -- the runner re-feeds routinely and the stored row
-                 is already correct. restart=true: ON CONFLICT DO UPDATE,
-                 because a compaction is a REPLACEMENT and disk is truth.
-                 Records and ciphertext share one transaction, so a record
+                 every reader), then appends: ON CONFLICT DO NOTHING -- a
+                 stored record is final, and a writer that sends one again
+                 sends the same record. Records and ciphertext share one transaction, so a record
                  can never be readable while its ciphertext is missing.
 end              backfills ended/cli_session_id; sets status=complete
 unknown session  any <id> not an AgentSession row -> 404
@@ -485,8 +466,7 @@ ciphertext       the ONE exception: split to its own table so retention can
 
 ```
 submit_agentsession(SubmitAgentSession, *, api_key_id=, actor=) -> UUID
-append_session_records(session_id, rows, *, restart=False,
-                       slash_commands=()) -> (written, skipped, slash)
+append_session_records(session_id, rows) -> (written, skipped)
 read_session_records(session_id, *, part, after_idx=-1, limit=500,
                      plaintext_only=False) -> list[SessionRecordRow]
 upsert_session_manifest(session_id, *, name, metadata, ir_id, format,
@@ -639,8 +619,8 @@ the guard can run.
 
 ```
 session_start(SessionStart) -> SessionStartResponse
-append_records(session_id, *, name='', manifest=None, records=(),
-               restart=False, slash_commands=()) -> AppendRecordsResponse
+append_records(session_id, *, name='', manifest=None, records=())
+    -> AppendRecordsResponse
 read_session_parts(session_id) -> list[PartBody]
 read_session_records(session_id, *, part=0, after_idx=-1, limit=1000,
                      plaintext_only=False) -> list[RecordBody]

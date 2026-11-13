@@ -140,7 +140,6 @@ class _World:
         host_id: uuid.UUID = _HOST,
         canvas: uuid.UUID | None = None,
         surface: str | None = None,
-        attach: uuid.UUID | None = None,
     ) -> Terminal:
         return self.relay.open(
             Opening(
@@ -151,8 +150,6 @@ class _World:
                 cols=80,
                 canvas=canvas,
                 surface=surface,
-                command=None if attach is None else "claude",
-                attach=attach,
             ),
         )
 
@@ -348,9 +345,17 @@ async def test_opens_per_minute_are_limited_and_the_window_slides() -> None:
         await world.relay.end(term, code=wire_terminals.CLOSE_ENDED)
     with pytest.raises(TerminalLimitError):
         world.open(host_id=uuid.uuid4())
+    world.clock.now += 59.5
+    with pytest.raises(TerminalLimitError):
+        world.open(host_id=uuid.uuid4())
 
-    world.clock.now += 60
-    world.open(host_id=uuid.uuid4())
+    # A minute after them, to the second, every one of those opens has left the window.
+    world.clock.now += 0.5
+    for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
+        term = world.open(host_id=uuid.uuid4())
+        await world.relay.end(term, code=wire_terminals.CLOSE_ENDED)
+    with pytest.raises(TerminalLimitError):
+        world.open(host_id=uuid.uuid4())
 
 
 @pytest.mark.asyncio
@@ -382,24 +387,6 @@ async def test_a_terminal_told_to_stop_is_no_longer_listed_for_its_canvas() -> N
     assert host.sent == [(Frame.STOP, b"")]
     assert not closing.ended
     assert world.relay.live_in("a@x.y", canvas=_CANVAS) == [other]
-
-
-@pytest.mark.asyncio
-async def test_the_runs_attached_to_a_session_are_those_still_live_for_it() -> None:
-    world = _World()
-    chat, other = uuid.UUID(int=7), uuid.UUID(int=8)
-    run = world.open(attach=chat)
-    stopping = world.open(attach=chat)
-    ended = world.open(attach=chat)
-    world.open(attach=other)
-    world.open()
-
-    await world.relay.stop(stopping)
-    await world.relay.end(ended, code=wire_terminals.CLOSE_ENDED)
-
-    assert world.relay.attached_to(chat) == [run]
-    assert [t.attach for t in world.relay.attached_to(other)] == [other]
-    assert world.relay.attached_to(uuid.UUID(int=9)) == []
 
 
 @pytest.mark.asyncio
@@ -1232,74 +1219,7 @@ async def test_only_an_ack_of_eight_bytes_restarts_the_ring() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_run_open_hands_the_wait_its_cli_its_session_and_its_name() -> None:
-    world = _World()
-    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
-    opened = world.relay.open(
-        Opening(
-            user="a@x.y",
-            host_id=_HOST,
-            host="gx10",
-            rows=24,
-            cols=80,
-            command="claude",
-            attach=session_id,
-            run_name="chat-9f1c2e3a",
-        ),
-    )
-
-    offered = await world.relay.wait(_HOST, wait_sec=0)
-
-    assert offered is opened
-    assert offered is not None
-    assert (offered.command, offered.attach, offered.run_name) == (
-        "claude",
-        session_id,
-        "chat-9f1c2e3a",
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_run_open_without_a_name_is_named_by_its_session_or_its_terminal() -> (
-    None
-):
-    world = _World()
-    session_id = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
-    chat = world.relay.open(
-        Opening(
-            user="a@x.y",
-            host_id=_HOST,
-            host="gx10",
-            rows=24,
-            cols=80,
-            command="codex",
-            attach=session_id,
-        ),
-    )
-    run = world.relay.open(
-        Opening(
-            user="a@x.y",
-            host_id=_HOST,
-            host="gx10",
-            rows=24,
-            cols=80,
-            command="claude",
-        ),
-    )
-
-    assert chat.run_name == "chat-9f1c2e3a"
-    assert run.run_name == f"run-{run.id.hex[:8]}"
-
-
-@pytest.mark.asyncio
-async def test_a_login_shell_open_names_no_run() -> None:
-    term = _World().open()
-
-    assert (term.command, term.attach, term.run_name) == (None, None, None)
-
-
-@pytest.mark.asyncio
-async def test_a_run_open_hands_the_wait_the_folder_it_starts_in_as_named() -> None:
+async def test_an_open_hands_the_wait_the_folder_its_shell_starts_in() -> None:
     world = _World()
     opened = world.relay.open(
         Opening(
@@ -1308,7 +1228,6 @@ async def test_a_run_open_hands_the_wait_the_folder_it_starts_in_as_named() -> N
             host="gx10",
             rows=24,
             cols=80,
-            command="claude",
             cwd="~/project",
         ),
     )
@@ -1522,11 +1441,9 @@ async def test_byte_rates_allow_the_cap_and_reset_at_exactly_one_second(
 
 
 @pytest.mark.asyncio
-async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_offer() -> (
-    None
-):
+async def test_an_open_keeps_its_context_in_the_canvas_listing_and_host_offer() -> None:
     world = _World()
-    workspace, session = uuid.UUID(int=13), uuid.UUID(int=17)
+    workspace = uuid.UUID(int=13)
     opened = world.relay.open(
         Opening(
             user="context@x.y",
@@ -1538,9 +1455,6 @@ async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_of
             workspace=workspace,
             requested_by="campaign-helper",
             surface="run-tile",
-            command="sagent",
-            attach=session,
-            run_name="campaign-context",
             cwd="~/context",
         ),
     )
@@ -1560,27 +1474,20 @@ async def test_a_run_keeps_its_opening_context_in_the_canvas_listing_and_host_of
         workspace,
         "campaign-helper",
     )
-    assert (offered.command, offered.attach, offered.run_name, offered.cwd) == (
-        "sagent",
-        session,
-        "campaign-context",
-        "~/context",
-    )
-    assert world.relay.attached_to(session) == [offered]
+    assert offered.cwd == "~/context"
 
 
 @pytest.mark.asyncio
-async def test_a_files_open_reaches_only_its_host_and_keeps_its_kind() -> None:
+async def test_an_open_reaches_only_its_host() -> None:
     world = _World()
     host = uuid.UUID(int=19)
     opened = world.relay.open(
         Opening(
-            user="files@x.y",
+            user="worker@x.y",
             host_id=host,
-            host="file-worker",
+            host="worker",
             rows=3,
             cols=5,
-            kind="files",
         ),
     )
 
@@ -1588,9 +1495,9 @@ async def test_a_files_open_reaches_only_its_host_and_keeps_its_kind() -> None:
     offered = await world.relay.wait(host, wait_sec=0)
     assert offered is opened
     assert offered is not None
-    assert (offered.host, offered.kind) == ("file-worker", "files")
-    assert (offered.command, offered.attach, offered.run_name) == (None, None, None)
-    assert world.relay.live_in("files@x.y", canvas=_CANVAS) == []
+    assert offered.host == "worker"
+    assert offered.cwd is None
+    assert world.relay.live_in("worker@x.y", canvas=_CANVAS) == []
     assert await world.relay.wait(host, wait_sec=0) is None
 
 

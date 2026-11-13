@@ -58,7 +58,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   terminal_tab_chords: false,
   terminal_placement: "bottom",
   home: "graph",
-  chat_provider: "assistant",
   assistant_prompt: "sagent",
   cli_folder: "",
   chat_view: {

@@ -18,35 +18,43 @@ from dataclasses import replace
 from functools import cache
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Final, Literal, NoReturn, cast
 from unittest.mock import AsyncMock, MagicMock
 
+import itertools
 import logging
 import os
 import uuid
 
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
 from starlette.requests import HTTPConnection
+from starlette.routing import BaseRoute, Route, WebSocketRoute
+from treekle import from_plain
 
 import pytest
 
 from trackinizer.conftest import (
+    ExchangeEngine,
     FakeEngine,
+    Says,
     executed_sql,
     make_conn,
 )
 from trackinizer.lib.postgres import Conn, DatabaseEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
-from trackinizer.server import auth
+from trackinizer.server import auth, web
 from trackinizer.server.access_policy import DefaultPolicy
+from trackinizer.server.api.app import app
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
     PAGE_ACCOUNT_HEADER,
     PAGE_USER_PARAM,
+    PROCESS_KEY_SQL,
     TOKEN_PREFIX_LEN,
     AudienceCeilingError,
     AuthIdentity,
+    ProcessKey,
     RoleCeilingError,
     allowlist_match,
     assert_account_active,
@@ -59,11 +67,16 @@ from trackinizer.server.auth import (
     hash_secret,
     key_within_caller,
     list_api_keys,
+    live_process_keys,
     lookup_user_by_id,
+    process_key_minted,
+    process_key_name,
     publish_token_file,
     request_user,
     require_role,
     revoke_api_key,
+    revoke_host_process_keys,
+    revoke_process_key,
     seed_no_auth_user,
     set_api_key_role,
     stage_token_file,
@@ -71,12 +84,16 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.config import Config
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.route_iter import iter_route_leaves
 from trackinizer.server.session import (
     SESSION_COOKIE_NAME,
     read_session_cookie,
     set_session_cookie,
 )
 from trackinizer.server.store.core import Store
+from trackinizer.server.values import vetted_sql
+from trackinizer.wire.wire_process_keys import PROCESS_KEY_ROUTES, WEBSOCKET
+from trackinizer.wire.wire_session_relay import SESSION_PROCESS_WS_PATH
 
 
 if TYPE_CHECKING:
@@ -112,10 +129,14 @@ class TestHashSecret:
         assert auth._b64encode(raw) == encoded
         assert auth._b64decode(encoded) == raw
 
-    @pytest.mark.compute_large_fixture
-    def test_distinct_hashes_for_same_secret(self) -> None:
+    def test_distinct_hashes_for_same_secret(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         # Salts must randomize per call; two hashes of the same input
-        # must differ -- otherwise the hash leaks a fingerprint.
+        # must differ -- otherwise the hash leaks a fingerprint. The work factor is
+        # no part of that, and four hashes at the server's cost 0.11 s on x86.
+        monkeypatch.setattr(auth, "_SCRYPT_N", 16)
         a = hash_secret("hunter2")
         b = hash_secret("hunter2")
         assert a != b
@@ -267,9 +288,15 @@ def _row(
     key_role: str | None = None,
     hosted_domain: str | None = None,
     open_into: str | None = None,
+    process: bool = False,
+    name: str = "k",
+    host_id: uuid.UUID | None = None,
 ) -> dict[str, object]:
     """Build one ``api_keys JOIN users`` row as ``_resolve_identity`` reads it."""
     return {
+        "process": process,
+        "name": name,
+        "host_id": host_id,
         "key_id": key_id or uuid.uuid4(),
         "secret_hash": secret_hash,
         "user_id": user_id or uuid.uuid4(),
@@ -289,6 +316,8 @@ def _row(
 # A fresh :class:`Store` is bound on ``app.state.store`` by default so the per-instance
 # ``last_used_at`` throttle is hermetic per call; tests that care about throttle
 # behaviour across multiple requests pass an explicit ``store`` to reuse one.
+# ``route`` is the route the router matched, and ``session_id`` the session its path
+# names; a ``WebSocketRoute`` makes it a socket's handshake.
 def _request_with(
     engine: FakeEngine,
     authorization: str | None,
@@ -300,6 +329,8 @@ def _request_with(
     origin: str | None = None,
     page_account: str | None = None,
     page_user: str | None = None,
+    route: BaseRoute | None = None,
+    session_id: uuid.UUID | None = None,
 ) -> Request:
     """Build a fake :class:`fastapi.Request` carrying its headers + the engine."""
     request = MagicMock()
@@ -313,7 +344,15 @@ def _request_with(
         ),
     )
     request.state = SimpleNamespace(request_id="")
-    request.scope = {"type": "http", "method": method}
+    request.scope = (
+        {"type": "websocket", "route": route}
+        if isinstance(route, WebSocketRoute)
+        else {"type": "http", "method": method, "route": route}
+    )
+    path_params: dict[str, str] = (
+        {} if session_id is None else {"session_id": str(session_id)}
+    )
+    request.path_params = path_params
     headers: dict[str, str] = {"host": "trax.test"}
     if authorization is not None:
         headers["Authorization"] = authorization
@@ -385,6 +424,63 @@ class TestCurrentUser:
         assert any("UPDATE api_keys SET last_used_at" in s for s in sqls)
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("named", [True, False], ids=["now", "before sessions"])
+    async def test_a_key_minted_for_an_agent_process_says_for_what(
+        self,
+        named: bool,
+    ) -> None:
+        secret, _ = generate_token()
+        process, session, host = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        row = _row(
+            secret_hash=hash_secret(secret),
+            process=True,
+            name=process_key_name(process, session_id=session)
+            if named
+            else f"agent process {process}",
+            host_id=host,
+        )
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=vetted_sql(
+                    "SELECT credential.id AS key_id, credential.secret_hash, "
+                    "credential.role AS key_role, credential.open_into, "
+                    "credential.name, credential.host_id, ",
+                    PROCESS_KEY_SQL,
+                    " AS process, u.id AS user_id, u.email, u.role AS user_role, "
+                    "u.status, u.hosted_domain "
+                    "FROM api_keys credential JOIN users u "
+                    "ON u.id = credential.user_id "
+                    "WHERE credential.prefix = $1 AND credential.revoked_at IS NULL",
+                ),
+                args=(secret[:TOKEN_PREFIX_LEN],),
+                answer=[row],
+            ),
+            Says(
+                method="execute",
+                sql="UPDATE api_keys SET last_used_at = clock_timestamp() "
+                "WHERE id = $1",
+                args=(row["key_id"],),
+                answer="UPDATE 1",
+            ),
+        )
+
+        identity = await auth._resolve_identity(
+            Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+            secret,
+            staff=(),
+            request_id="",
+        )
+
+        assert identity is not None
+        assert identity.process == ProcessKey(
+            process_id=process,
+            session_id=session if named else None,
+            host_id=host,
+        )
+        assert engine.done
+
+    @pytest.mark.asyncio
     async def test_bearer_auth_logs_correlated_stage_timings(
         self,
         caplog: pytest.LogCaptureFixture,
@@ -410,6 +506,75 @@ class TestCurrentUser:
         assert fields["query_sec"] >= 0
         assert fields["verify_sec"] >= 0
         assert fields["duration_sec"] >= fields["query_sec"] + fields["verify_sec"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("found", "logged"),
+        [
+            ("cache", ("cache", "success", 0.0, 0.0, 1.0)),
+            ("none", ("miss", "rejected", 1.0, 1.0, 5.0)),
+            ("two that do not verify", ("prefix", "rejected", 1.0, 2.0, 7.0)),
+            ("one that verifies", ("prefix", "success", 1.0, 1.0, 5.0)),
+        ],
+    )
+    async def test_each_resolution_logs_its_own_timings(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        found: str,
+        logged: tuple[str, str, float, float, float],
+    ) -> None:
+        """Each read of the clock is a second later than the last."""
+        secret, _ = generate_token()
+        engine = FakeEngine()
+        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        if found == "cache":
+            store.remember_bearer_identity(
+                secret,
+                AuthIdentity(
+                    user_id=uuid.uuid4(),
+                    api_key_id=uuid.uuid4(),
+                    email="ada@example.com",
+                    role="writer",
+                ),
+            )
+        engine.conn.fetch.return_value = {
+            "cache": [],
+            "none": [],
+            "two that do not verify": [
+                _row(secret_hash=hash_secret("another")) for _ in range(2)
+            ],
+            "one that verifies": [_row(secret_hash=hash_secret(secret))],
+        }[found]
+        # Not from zero: a duration of ``now + started`` must read differently.
+        ticks = itertools.count(100)
+        monkeypatch.setattr(
+            auth,
+            "time",
+            SimpleNamespace(perf_counter=lambda: float(next(ticks))),
+        )
+
+        with caplog.at_level(logging.INFO):
+            _ = await auth._resolve_identity(
+                store,
+                secret,
+                staff=(),
+                request_id="request-123",
+            )
+
+        [fields] = [
+            record.__dict__
+            for record in caplog.records
+            if getattr(record, "event", "") == "trackinizer_auth_completed"
+        ]
+        assert (
+            fields["request_id"],
+            fields["lookup_mode"],
+            fields["outcome"],
+            fields["query_sec"],
+            fields["verify_sec"],
+            fields["duration_sec"],
+        ) == ("request-123", *logged)
 
     @pytest.mark.asyncio
     async def test_effective_role_is_min_of_user_and_key(self) -> None:
@@ -1208,6 +1373,130 @@ class TestPageAccount:
 # ---- service accounts -----------------------------------------------------
 
 
+_OWN_SESSION: Final = uuid.UUID(int=2)
+"""The session the process of :func:`_let_through`'s key was started for."""
+
+
+@cache
+def _served_app() -> FastAPI:
+    """Return every route the live server serves: the API, and the web surface's."""
+    served = FastAPI()
+    served.router.routes.extend(app.routes)
+    web.attach(served)
+    return served
+
+
+def _calls(route: BaseRoute) -> list[str]:
+    """Return how a request reaches ``route``: each HTTP method, or the socket's."""
+    if isinstance(route, WebSocketRoute):
+        return [WEBSOCKET]
+    if isinstance(route, Route):
+        return sorted((route.methods or set()) - {"HEAD"})
+    return []
+
+
+async def _let_through(
+    route: BaseRoute | None,
+    *,
+    method: str = "GET",
+    named: uuid.UUID | None = None,
+    session_id: uuid.UUID | None = _OWN_SESSION,
+) -> bool:
+    """Say whether a process key of ``session_id`` is let through to ``route``."""
+    engine = FakeEngine()
+    store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+    store.remember_bearer_identity(
+        "trax_process",
+        AuthIdentity(
+            user_id=uuid.uuid4(),
+            api_key_id=uuid.uuid4(),
+            email="ada@example.com",
+            role="writer",
+            process=ProcessKey(
+                process_id=uuid.UUID(int=1),
+                session_id=session_id,
+                host_id=uuid.UUID(int=3),
+            ),
+        ),
+    )
+    request = _request_with(
+        engine,
+        "Bearer trax_process",
+        store=store,
+        method=method,
+        route=route,
+        session_id=named,
+    )
+    try:
+        _ = await request_user(request)
+    except HTTPException as error:
+        refused = error
+    else:
+        return True
+    assert (refused.status_code, refused.detail) == (
+        403,
+        (
+            "an agent process's key reaches only what its process calls, for its own "
+            "session"
+        ),
+    )
+    return False
+
+
+class TestProcessKeyRoutes:
+    """A process key reaches only what its process calls, for its own session alone."""
+
+    @pytest.mark.asyncio
+    async def test_every_route_of_the_server_refuses_it_unless_listed(self) -> None:
+        """A route added tomorrow is refused until someone lists it."""
+        passed: set[tuple[str, str]] = set()
+        refused: set[tuple[str, str]] = set()
+        for path, route in iter_route_leaves(_served_app()):
+            for method in _calls(route):
+                own = _OWN_SESSION if "{session_id}" in path else None
+                let = await _let_through(route, method=method, named=own)
+                (passed if let else refused).add((method, path))
+
+        assert passed == PROCESS_KEY_ROUTES
+        assert len(refused) > len(passed)
+
+    @pytest.mark.asyncio
+    async def test_a_listed_route_takes_it_for_its_own_session_alone(self) -> None:
+        routes = dict(iter_route_leaves(_served_app()))
+        records = routes["/api/sessions/{session_id}/records"]
+        socket = routes[SESSION_PROCESS_WS_PATH]
+        messages = routes["/api/messages"]
+
+        assert await _let_through(socket, named=_OWN_SESSION)
+        assert await _let_through(records, method="POST", named=_OWN_SESSION)
+        assert await _let_through(messages, method="POST")
+        assert not await _let_through(socket, named=uuid.UUID(int=9))
+        assert not await _let_through(records, method="POST", named=uuid.UUID(int=9))
+        # A key minted before keys named their session acts for none.
+        assert not await _let_through(messages, method="POST", session_id=None)
+        # A request no route matched names no route a process calls.
+        assert not await _let_through(None, method="POST")
+
+    @pytest.mark.asyncio
+    async def test_a_person_s_key_is_let_through_wherever_its_route_lets_it(
+        self,
+    ) -> None:
+        store = Store(cast(DatabaseEngine, FakeEngine()), embed=StubEmbedder())
+        person = AuthIdentity(
+            user_id=uuid.uuid4(),
+            api_key_id=uuid.uuid4(),
+            email="ada@example.com",
+            role="writer",
+        )
+        store.remember_bearer_identity("trax_person", person)
+
+        found = await request_user(
+            _request_with(FakeEngine(), "Bearer trax_person", store=store),
+        )
+
+        assert found is person
+
+
 class TestCurrentHuman:
     """Routes that manage credentials answer a person and never a service account."""
 
@@ -1231,8 +1520,10 @@ class TestCurrentHuman:
         )
         with pytest.raises(HTTPException) as refused:
             await current_human(service)
-        assert refused.value.status_code == 403
-        assert "service account" in refused.value.detail
+        assert (refused.value.status_code, refused.value.detail) == (
+            403,
+            "A service account cannot manage tokens; an admin does.",
+        )
 
     @pytest.mark.asyncio
     async def test_a_session_resolves_only_a_person(self) -> None:
@@ -2720,7 +3011,10 @@ class TestRequireRole:
         assert await require_role("viewer")(writer) is writer
         with pytest.raises(HTTPException) as caught:
             await require_role("admin")(writer)
-        assert caught.value.status_code == 403
+        assert (caught.value.status_code, caught.value.detail) == (
+            403,
+            "role 'writer' insufficient; need 'admin'",
+        )
 
 
 class TestSetApiKeyRole:
@@ -2921,6 +3215,308 @@ class TestCredentialEdges:
         store = Store(cast(DatabaseEngine, FakeEngine()), embed=StubEmbedder())
         with pytest.raises(ValueError, match="key_id is not None"):
             await auth._bump_last_used(store, None)
+
+
+class TestProcessKeys:
+    """A key minted for an agent process is found again by the name holding its id."""
+
+    @pytest.fixture
+    def cheap_scrypt(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("trackinizer.server.auth._SCRYPT_N", 2)
+
+    async def _keys(
+        self,
+        store: Store,
+        *names: tuple[str, uuid.UUID | None],
+    ) -> list[uuid.UUID]:
+        """Give one writer a key of each name, bound to each host; return their ids."""
+        user_id = uuid.uuid4()
+        async with store.engine.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO users (id, email, name, role, status) "
+                "VALUES ($1, 'ada@x.y', 'n', 'writer', 'active')",
+                user_id,
+            )
+            return [
+                (
+                    await create_api_key(
+                        conn,
+                        user_id=user_id,
+                        name=name,
+                        ceiling="writer",
+                        host_id=host_id,
+                    )
+                )[0]
+                for name, host_id in names
+            ]
+
+    async def _hosts(self, store: Store, count: int) -> list[uuid.UUID]:
+        async with store.engine.acquire() as conn:
+            return [
+                from_plain(
+                    await conn.fetchval(
+                        "INSERT INTO hosts (name, updated_by) VALUES ($1, 'x') "
+                        "RETURNING id",
+                        f"h{index}",
+                    ),
+                    uuid.UUID,
+                )
+                for index in range(count)
+            ]
+
+    async def _live(self, store: Store, keys: list[uuid.UUID]) -> list[bool]:
+        async with store.engine.acquire() as conn:
+            return [
+                await conn.fetchval(
+                    "SELECT revoked_at IS NULL FROM api_keys WHERE id = $1",
+                    key,
+                )
+                is True
+                for key in keys
+            ]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_the_live_process_keys_name_their_processes_and_no_other_key(
+        self,
+        store: Store,
+    ) -> None:
+        (host,) = await self._hosts(store, 1)
+        live, revoked, before = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=4)
+        keys = await self._keys(
+            store,
+            (process_key_name(live, session_id=_OWN_SESSION), host),
+            (process_key_name(revoked, session_id=_OWN_SESSION), host),
+            ("a device login", host),
+            (process_key_name(uuid.UUID(int=3), session_id=_OWN_SESSION), None),
+            # Named before keys named their session.
+            (f"agent process {before}", host),
+        )
+        async with store.engine.acquire() as conn:
+            _ = await revoke_process_key(conn, process_id=revoked)
+            found = await live_process_keys(conn)
+            # A person's own key named so is no process's: no stop of one revokes it.
+            mine = await revoke_process_key(conn, process_id=uuid.UUID(int=3))
+
+        assert sorted(found) == [live, before]
+        assert mine == []
+        assert await self._live(store, keys) == [True, False, True, True, True]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_process_is_minted_for_by_a_key_bound_to_its_host_alone(
+        self,
+        store: Store,
+    ) -> None:
+        """A person's own key named for a process locks no process out."""
+        (host,) = await self._hosts(store, 1)
+        minted, before, named = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        _ = await self._keys(
+            store,
+            (process_key_name(minted, session_id=_OWN_SESSION), host),
+            (f"agent process {before}", host),
+            (process_key_name(named, session_id=_OWN_SESSION), None),
+        )
+        async with store.engine.acquire() as conn:
+            _ = await revoke_process_key(conn, process_id=minted)
+            found = [
+                await process_key_minted(conn, process_id=process)
+                for process in (minted, before, named, uuid.UUID(int=4))
+            ]
+
+        assert found == [True, True, False, False]
+
+    def test_the_name_holds_the_process_and_its_session(self) -> None:
+        process = uuid.UUID(int=7)
+        assert (
+            process_key_name(process, session_id=_OWN_SESSION)
+            == f"agent process {process} for session {_OWN_SESSION}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_process_is_minted_for_when_a_host_bound_key_is_named_for_it(
+        self,
+    ) -> None:
+        process = uuid.UUID(int=1)
+        minted = vetted_sql(
+            "SELECT 1 FROM api_keys AS credential "
+            "WHERE starts_with(credential.name, $1) AND ",
+            PROCESS_KEY_SQL,
+        )
+        engine = ExchangeEngine(
+            *(
+                Says(
+                    method="fetchval",
+                    sql=minted,
+                    args=(f"agent process {process}",),
+                    answer=answer,
+                )
+                for answer in (1, None)
+            ),
+        )
+
+        found = [
+            await process_key_minted(engine.conn, process_id=process) for _ in (1, 2)
+        ]
+
+        assert found == [True, False]
+        assert engine.done
+
+    @pytest.mark.asyncio
+    async def test_the_live_process_keys_are_read_by_the_process_each_is_named_for(
+        self,
+    ) -> None:
+        named, before, host = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=vetted_sql(
+                    "SELECT credential.name, credential.host_id "
+                    "FROM api_keys AS credential "
+                    "WHERE credential.revoked_at IS NULL AND ",
+                    PROCESS_KEY_SQL,
+                ),
+                answer=[
+                    {
+                        "name": process_key_name(named, session_id=_OWN_SESSION),
+                        "host_id": host,
+                    },
+                    {"name": f"agent process {before}", "host_id": host},
+                ],
+            ),
+        )
+
+        assert await live_process_keys(engine.conn) == [named, before]
+        assert engine.done
+
+    @pytest.mark.asyncio
+    async def test_a_revoke_returns_each_key_it_revoked_for_the_cache_to_forget(
+        self,
+    ) -> None:
+        process, host, key = uuid.UUID(int=1), uuid.UUID(int=2), uuid.UUID(int=3)
+        by_name = vetted_sql(
+            "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
+            "WHERE starts_with(credential.name, $1) "
+            "AND credential.revoked_at IS NULL AND ",
+            PROCESS_KEY_SQL,
+            " AND ($2::uuid IS NULL OR credential.host_id = $2::uuid) "
+            "RETURNING credential.id",
+        )
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=by_name,
+                args=(f"agent process {process}", host),
+                answer=[{"id": key}],
+            ),
+            Says(
+                method="fetch",
+                sql=by_name,
+                args=(f"agent process {process}", None),
+                answer=[],
+            ),
+        )
+
+        revoked = await revoke_process_key(
+            engine.conn,
+            process_id=process,
+            host_id=host,
+        )
+        none = await revoke_process_key(engine.conn, process_id=process)
+
+        assert (revoked, none) == ([key], [])
+        assert engine.done
+
+    @pytest.mark.asyncio
+    async def test_a_hosts_revoke_returns_each_process_key_it_revoked(self) -> None:
+        host, keys = uuid.UUID(int=2), [uuid.UUID(int=3), uuid.UUID(int=4)]
+        engine = ExchangeEngine(
+            Says(
+                method="fetch",
+                sql=vetted_sql(
+                    "UPDATE api_keys AS credential SET revoked_at = clock_timestamp() "
+                    "WHERE credential.host_id = $1 AND credential.revoked_at IS NULL AND ",
+                    PROCESS_KEY_SQL,
+                    " RETURNING credential.id",
+                ),
+                args=(host,),
+                answer=[{"id": key} for key in keys],
+            ),
+        )
+
+        assert await revoke_host_process_keys(engine.conn, host_id=host) == keys
+        assert engine.done
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_process_key_is_revoked_by_its_name_and_no_other(
+        self,
+        store: Store,
+    ) -> None:
+        process, other = uuid.UUID(int=1), uuid.UUID(int=2)
+        (host,) = await self._hosts(store, 1)
+        keys = await self._keys(
+            store,
+            (process_key_name(process, session_id=_OWN_SESSION), host),
+            (process_key_name(other, session_id=_OWN_SESSION), host),
+            ("laptop", host),
+        )
+
+        async with store.engine.acquire() as conn:
+            assert await revoke_process_key(conn, process_id=process) == keys[:1]
+            assert await revoke_process_key(conn, process_id=process) == []
+
+        assert await self._live(store, keys) == [False, True, True]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_daemon_reaches_only_a_key_bound_to_its_own_host(
+        self,
+        store: Store,
+    ) -> None:
+        process = uuid.UUID(int=1)
+        host, other = await self._hosts(store, 2)
+        keys = await self._keys(
+            store,
+            (process_key_name(process, session_id=_OWN_SESSION), host),
+        )
+
+        async with store.engine.acquire() as conn:
+            assert (
+                await revoke_process_key(conn, process_id=process, host_id=other) == []
+            )
+        assert await self._live(store, keys) == [True]
+        async with store.engine.acquire() as conn:
+            assert (
+                await revoke_process_key(conn, process_id=process, host_id=host) == keys
+            )
+
+        assert await self._live(store, keys) == [False]
+
+    @pytest.mark.db_pglite
+    @pytest.mark.asyncio(loop_scope="session")
+    @pytest.mark.usefixtures("cheap_scrypt")
+    async def test_a_host_out_of_service_loses_its_process_keys_alone(
+        self,
+        store: Store,
+    ) -> None:
+        host, other = await self._hosts(store, 2)
+        keys = await self._keys(
+            store,
+            (process_key_name(uuid.UUID(int=1), session_id=_OWN_SESSION), host),
+            (process_key_name(uuid.UUID(int=2), session_id=_OWN_SESSION), other),
+            ("a device login", host),
+            (process_key_name(uuid.UUID(int=3), session_id=_OWN_SESSION), None),
+        )
+
+        async with store.engine.acquire() as conn:
+            assert await revoke_host_process_keys(conn, host_id=host) == keys[:1]
+
+        assert await self._live(store, keys) == [False, True, True, True]
 
 
 def _sql(call: MockCall) -> str:

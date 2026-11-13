@@ -1,11 +1,10 @@
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
 import { expect, failedResource, test, streamOpened } from "./fixtures";
 
-// Messaging a live AgentSession from the foot of its transcript. The test stands
-// in for the session's run: a drain that returns at once (`GET
-// .../inbound?wait_sec=0`) marks the session polled and reads what the page
-// sent, and the agent's turns are appended as its capture appends them. The
-// page itself never drains.
+// Messaging an AgentSession from the foot of its transcript. A line goes to the
+// session's agent process (`POST .../inputs`), and this suite runs none, so every
+// session here is one no agent serves: its turns are appended as its capture
+// appends them.
 
 /** Start a session as the agent runner does, with one captured turn; its id, seq, owner and file. */
 async function startSession(request: APIRequestContext, title: string) {
@@ -54,16 +53,6 @@ async function capture(
   expect(appended.ok(), await appended.text()).toBe(true);
 }
 
-/** Take what is queued for the session, as its run does; the first take marks it polled. */
-async function drain(
-  request: APIRequestContext,
-  id: string,
-): Promise<{ text: string; source: string }[]> {
-  const drained = await request.get(`/api/sessions/${id}/inbound?wait_sec=0`);
-  expect(drained.ok(), await drained.text()).toBe(true);
-  return (await drained.json()).messages;
-}
-
 /** Open the session's detail once the live stream is connected; its transcript section. */
 async function openSession(page: Page, seq: number): Promise<Locator> {
   const subscribed = streamOpened(page);
@@ -72,44 +61,16 @@ async function openSession(page: Page, seq: number): Promise<Locator> {
   return page.locator('[data-section="transcript"]');
 }
 
-test("a message from a live session's transcript reaches its run, and the reply shows live", async ({
-  page,
-}) => {
-  const { email } = await (await page.request.get("/api/me/profile")).json();
-  const session = await startSession(page.request, "E2E session chat");
-  expect(await drain(page.request, session.id)).toEqual([]);
-  const transcript = await openSession(page, session.seq);
-  const box = transcript.getByRole("textbox", { name: "Message" });
-  await box.fill("Please summarize what you changed.");
-  await box.press("Enter");
-  await expect(transcript.locator(".composer-receipt")).toHaveText(
-    `Queued for ${session.owner}`,
-  );
-  await expect(box).toHaveValue("");
-  expect(await drain(page.request, session.id)).toEqual([
-    expect.objectContaining({
-      text: "Please summarize what you changed.",
-      source: email,
-    }),
-  ]);
-  // the agent runner typed it into the CLI, which logged it and answered.
-  await capture(page.request, session.id, session.file, 1, [
-    { kind: "UserMessage", content: `${email}: Please summarize what you changed.` },
-    {
-      kind: "AssistantMessage",
-      content: "I replaced time.time() with time.monotonic().",
-    },
-  ]);
-  await expect(transcript.locator('[data-part="0"] [data-idx="2"]')).toContainText(
-    "I replaced time.time() with time.monotonic().",
-  );
+/** A line as the page sends one. */
+const line = (text: string) => ({
+  kind: "UserMessage",
+  payload: { "py/object": "UserMessage", content: text, extra: {} },
 });
 
 test("a session that ends while its detail is open takes no more messages", async ({
   page,
 }) => {
   const session = await startSession(page.request, "E2E session chat, ended");
-  await drain(page.request, session.id);
   const transcript = await openSession(page, session.seq);
   await expect(transcript.getByRole("textbox", { name: "Message" })).toBeVisible();
   const ended = await page.request.post(`/api/sessions/${session.id}/end`, {
@@ -120,63 +81,29 @@ test("a session that ends while its detail is open takes no more messages", asyn
     transcript.getByText("The session has ended, so it takes no messages."),
   ).toBeVisible();
   await expect(transcript.getByRole("textbox", { name: "Message" })).toHaveCount(0);
-  // And the server refuses a message sent anyway.
+  // And the server refuses a message sent anyway: no agent serves it.
   expect(
     (
-      await page.request.post(`/api/sessions/${session.id}/inbound`, {
-        data: { text: "Too late." },
+      await page.request.post(`/api/sessions/${session.id}/inputs`, {
+        data: line("Too late."),
       })
     ).status(),
   ).toBe(409);
 });
 
-test("a send whose answer is lost, retried, reaches the agent once", async ({
+test("a send to a session no agent serves says so, and keeps the draft", async ({
   page,
   allowErrors,
 }) => {
-  const session = await startSession(page.request, "E2E session chat, retried");
-  await drain(page.request, session.id);
-  const keys: string[] = [];
-  let lost = false;
-  // The first send reaches the server, which queues it, but its answer never reaches the page.
-  await page.route(`**/api/sessions/${session.id}/inbound`, async (route) => {
-    keys.push(route.request().headers()["idempotency-key"] ?? "");
-    if (lost) return route.continue();
-    lost = true;
-    await route.fetch();
-    return route.abort();
-  });
-  // The browser's own line for the request whose answer was cut.
-  allowErrors(failedResource(`/api/sessions/${session.id}/inbound`, "ERR_FAILED"));
-  const transcript = await openSession(page, session.seq);
-  const box = transcript.getByRole("textbox", { name: "Message" });
-  await box.fill("Run the suite again.");
-  await box.press("Enter");
-  await expect(transcript.getByRole("alert")).toContainText("Could not send");
-  await transcript.getByRole("button", { name: "Retry message" }).click();
-  await expect(transcript.locator(".composer-receipt")).toHaveText(
-    `Queued for ${session.owner}`,
-  );
-  expect(keys).toHaveLength(2);
-  expect(keys[1]).toBe(keys[0]);
-  expect(
-    (await drain(page.request, session.id)).map((message) => message.text),
-  ).toEqual(["Run the suite again."]);
-});
-
-test("a send to a session no run is polling says so, and keeps the draft", async ({
-  page,
-  allowErrors,
-}) => {
-  const session = await startSession(page.request, "E2E session chat, unpolled");
+  const session = await startSession(page.request, "E2E session chat, no agent");
   // The browser's own line for the server's 409.
-  allowErrors(failedResource(`/api/sessions/${session.id}/inbound`, 409));
+  allowErrors(failedResource(`/api/sessions/${session.id}/inputs`, 409));
   const transcript = await openSession(page, session.seq);
   const box = transcript.getByRole("textbox", { name: "Message" });
   await box.fill("Anyone there?");
   await box.press("Enter");
   await expect(transcript.getByRole("alert")).toHaveText(
-    "Not connected: no run is polling this session (No active inbound poller).",
+    "No agent is running in this session, so nothing was sent.",
   );
   await expect(box).toHaveValue("Anyone there?");
 });

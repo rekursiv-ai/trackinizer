@@ -64,10 +64,8 @@ _CODEX = (
 _GEMINI = '{"sessionId":"s1","messages":[{"type":"user","content":"hi"}]}'
 
 
-# The CLI dialects only. A captured stream obeys the same grammar but is not a dialect
-# -- it lives with the tool that spawns the process
-# (``trackinizer.runs.adapters.scrape``), which ``lib`` cannot import, and its
-# own tests pin the grammar there.
+# The CLI dialects only: a captured stream is not a dialect, and no converter reads
+# one.
 def _adapters() -> tuple[tuple[str, _Adapter, str], ...]:
     """Every native format, with a minimal session in it."""
     return (

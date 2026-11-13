@@ -9,7 +9,7 @@ builds requests from them, so neither can drift.
 
 It also carries the cross-session console feed (:class:`FeedEvent`,
 :class:`FeedCursor`), its counts (:class:`FeedFacetsResponse`,
-:class:`FeedHistogramResponse`) and the inbound/routed messaging bodies --
+:class:`FeedHistogramResponse`) and the messaging bodies --
 everything about a session that is not one of its records.
 
 This package is part of the publishable client distribution, so it must
@@ -19,24 +19,17 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Final, Literal, Self
+from typing import Annotated, Final, Literal, Self, override
 
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
-from trackinizer.wire.wire_science_chat import (
-    CHAT_PARTIAL_CHARS,
-    AssistantPrompt,
-    ChatForkAt,
-)
 
 
 _MAX_MESSAGE_CHARS: Final = 16_384
-"""Upper bound on an inbound/routed message body. Caps the bytes a single
-``inject`` writes to the PTY under the pump lock (each write stalls human
-keystrokes for its duration) and the memory a process-local queue holds."""
+"""Upper bound on a message body: what one send puts in front of an agent."""
 
 _MAX_ACCOUNT_CHARS: Final = 254
 """Upper bound on an account email, which RFC 5321 caps at 254 characters."""
@@ -58,45 +51,29 @@ def _reject_blank(value: str | None) -> str | None:
 __all__ = [
     "CAMPAIGN_ASKER_INFIX",
     "CANVAS_LABEL_PREFIX",
-    "CHAT_RUN_LIVE",
-    "CHAT_TAKEN_OVER",
-    "CHAT_TAKEN_OVER_MESSAGE",
-    "CLI_REQUIRED",
     "CONSOLE_RELAY_MARK",
+    "CONTEXT_TRAILER",
     "FEED_FACETS_PATH",
     "FEED_HISTOGRAM_PATH",
     "FEED_PATH",
     "GIT_LABEL_PREFIX",
-    "PROVIDER_IS_ASSISTANT",
-    "PROVIDER_IS_CLI",
-    "PROVIDER_IS_OTHER_CLI",
-    "RUN_ENDING_REFUSALS",
-    "RUN_NAME_PATTERN",
-    "RUN_STOPPED",
     "SEND_MESSAGE_PATH",
     "SESSIONS_PATH",
     "SESSION_API_PATHS",
     "SESSION_AUDIENCE_PATH",
-    "SESSION_ENDED",
     "SESSION_END_PATH",
-    "SESSION_INBOUND_PATH",
     "SESSION_PARTS_PATH",
     "SESSION_PLACE_PATH",
-    "SESSION_REATTACH_PATH",
     "SESSION_RECORDS_PATH",
-    "SESSION_RUN_OUTPUT_PATH",
-    "SESSION_RUN_STATE_PATH",
     "SESSION_START_PATH",
     "SESSION_WORKSPACE_PATH",
     "VERSION_PATH",
     "CanvasMark",
-    "CanvasMessageContext",
     "CanvasRecordContext",
     "CanvasVisibleVisual",
     "ConsoleRelay",
     "ConsoleRelayReceipt",
     "ConsoleTarget",
-    "DrainInboundResponse",
     "FeedActorFacet",
     "FeedBucket",
     "FeedCursor",
@@ -108,30 +85,22 @@ __all__ = [
     "FeedRoomFacet",
     "FeedWhose",
     "GitRef",
-    "InboundDrainItem",
-    "InboundEnqueueRequest",
-    "InboundEnqueueResponse",
-    "InboundKind",
+    "MessageKind",
     "MoveSession",
     "PlaceSession",
-    "RunState",
     "SendMessage",
     "SendMessageResponse",
+    "SessionAgent",
     "SessionAudienceChange",
     "SessionAudienceResponse",
     "SessionEnd",
     "SessionEndResponse",
     "SessionPlacement",
-    "SessionRunOutput",
-    "SessionRunState",
     "SessionStart",
     "SessionStartResponse",
     "campaign_asker_label",
     "session_audience_path",
     "session_place_path",
-    "session_reattach_path",
-    "session_run_output_path",
-    "session_run_state_path",
 ]
 
 
@@ -201,6 +170,11 @@ class SessionStart(BaseModel):
     oversee. A key pinned to another audience than ``open`` or ``private`` is refused
     (403 ``audience_not_held``). A server that predates the field ignores it, which
     :attr:`SessionStartResponse.audience` then shows."""
+
+    keep_audience: bool = False
+    """Leave a session this start re-opens in the audience it has, so ``private`` hides
+    only a session it mints: what an upload of a finished session asks. A server that
+    predates the field hides the ``open`` session a ``private`` start re-opens."""
 
     _reject_blank_scalars = field_validator(
         "cli",
@@ -392,18 +366,6 @@ class FeedResponse(BaseModel):
     next_after: FeedCursor | None = None
 
 
-type RunState = Literal["idle", "running", "requires_action", "taken_over"]
-"""What a chat's run says it is doing, so Chat can show it.
-
-Values:
-  idle: Waiting for the person's next line.
-  running: Working on a turn.
-  requires_action: Waiting for the person to answer an ask.
-  taken_over: Stopped as a headless run because someone opened its CLI in a terminal;
-    Chat refuses lines until the person reattaches.
-"""
-
-
 class FeedActorFacet(BaseModel):
     """One session's share of a feed window, as the console's agent list shows it."""
 
@@ -435,11 +397,6 @@ class FeedActorFacet(BaseModel):
     hideable: bool = False
     """Whether the caller may hide the session, or show it again: its owner, while it
     is not ``staff``. Never for a science chat, which is hidden from Chat."""
-
-    state: RunState = "idle"
-    """What its run is doing while a poller drains it: ``requires_action`` while an ask
-    is open, ``taken_over`` after its CLI was opened in a terminal, else what the run
-    last reported. ``idle`` for a session no run drains."""
 
 
 class FeedRoomFacet(BaseModel):
@@ -491,87 +448,6 @@ class FeedHistogramResponse(BaseModel):
     end: datetime
     bucket_seconds: int = Field(ge=1)
     counts: list[FeedBucket]
-
-
-type InboundKind = Literal["line", "command", "answer", "settings", "interrupt", "run"]
-"""What an inbound message is, so the run delivers it the way its CLI expects.
-
-Values:
-  line: A person's chat line, delivered with its sender.
-  command: A slash command typed verbatim, such as ``/compact``, with no sender.
-  answer: A decision on a pending prompt. Its payload names the prompt.
-  settings: A model or effort change.
-  interrupt: Stops the running turn.
-  run: A command the agent wrote that the chat's starter clicked Run on: the run
-    runs it on its own host and tells the agent how it ended. Only a run whose
-    drains say it takes runs is sent one.
-
-Payload by kind: ``answer`` is ``{"prompt_id": str, "option": str, "updated_input":
-object | null, "message": str}``, where ``option`` is the id of one of the ask's own
-options; the older ``"decision": "allow" | "deny"`` stands in for ``option``, and an
-answer names one of the two. ``settings`` is ``{"model": str | null, "effort": str |
-null}``. ``run`` is ``{"run_id": str, "block": str, "stop": bool}``, the command its
-text. The other kinds carry no payload.
-"""
-
-
-class SessionRunState(BaseModel):
-    """What a run reports of itself, between its drains of the session's queue."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    state: RunState
-    instance: str = Field(pattern=r"^[0-9a-f]{32}$")
-    """The run's own id, as its inbound drains name it. A report from a run other than
-    the one holding the session's lease changes nothing."""
-
-
-class SessionRunOutput(BaseModel):
-    """What a command clicked Run on has printed so far, as its run reports it."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    instance: str = Field(pattern=r"^[0-9a-f]{32}$")
-    """The run's own id, as its inbound drains name it. A report from a run other than
-    the one holding the session's lease changes nothing."""
-
-    text: str = Field(max_length=CHAT_PARTIAL_CHARS)
-    """The end of what it printed so far, as Chat shows it under the block."""
-
-
-class InboundEnqueueRequest(BaseModel):
-    """A line a client asks trackinizer to inject into a live session.
-
-    The enqueue **request** carries ``text`` -- the one field the route delivers --
-    and, from the configured assistant alone, the ``asker`` it sends for. It names no
-    kind: every other :data:`InboundKind` acts on the run's host, and comes from a
-    person in Chat (``POST /api/chats``) alone, so a key that leaked from an agent
-    sends its owner's run nothing but a line. ``source``
-    is attested by the route from the authenticated principal (a client cannot forge
-    another sender), and ``room`` has no enqueue semantics (the direct-session
-    enqueue route discards it; routed delivery is the separate ``@actor:room``
-    send-message path). ``extra="forbid"`` makes a client-sent ``source`` or ``room``
-    a 422 rather than a silently-ignored field -- the request and response shapes are
-    deliberately distinct (the response :class:`InboundDrainItem` carries both
-    ``source`` and ``room``), so neither can be confused for the other.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
-    """The line as a person reads it."""
-
-    asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
-    """The account of the user the configured assistant sends this line for.
-
-    The server lets the assistant relay input only for a writer whose account holds
-    the session, even if the assistant itself opened or reads it. Any other sender's
-    ``asker`` is ignored.
-    """
-
-    _validate_scalars = field_validator("asker", mode="after")(
-        staticmethod(_reject_blank),
-    )
 
 
 class CanvasRecordContext(BaseModel):
@@ -650,16 +526,18 @@ class ConsoleTarget(BaseModel):
 CONSOLE_RELAY_MARK: Final = "→ "
 """What a Console relay line starts with in a canvas's chat: an arrow, then a space.
 The web draws a line that starts with it as a relay, neither the person's nor the
-partner's."""
+agent's."""
+
+CONTEXT_TRAILER: Final = "\nTrackinizer context (verify with trax): "
+"""Where a person's line ends, as an agent reads it, and what it was told of where the
+line came from begins, as JSON. Whatever shows or summarizes the line cuts it here."""
 
 
 class ConsoleRelay(BaseModel):
     """What a person sent agents directly from the Console, told to their canvas's chat.
 
-    Posted by the browser after the per-agent sends, and carried in the context of
-    the message the chat's partner then receives. The partner records it in the
-    chat as :meth:`line` and answers nothing, but reads it in its next prompt, so it
-    never contradicts what the person told the agents.
+    Posted by the browser after the per-agent sends. No chat takes it: a chat's agent
+    answers every input it is sent, and no input is a silent one.
     """
 
     targets: list[ConsoleTarget] = Field(min_length=1, max_length=200)
@@ -681,115 +559,87 @@ class ConsoleRelay(BaseModel):
 
 
 class ConsoleRelayReceipt(BaseModel):
-    """Whether the canvas's chat partner took a Console relay."""
+    """Whether a Console relay reached the canvas's chat."""
 
     delivered: bool
-    """False when the canvas has no chat, or its partner is not running or is full.
-    The agents already have the message, so this is not an error."""
+    """Always false: no chat takes a relay. The agents already have the message, so
+    this is not an error."""
 
 
-class CanvasMessageContext(BaseModel):
-    """Server-derived canvas context attached to an inbound message."""
-
-    canvas_id: uuid.UUID
-    visible_visuals: list[CanvasVisibleVisual]
-    agent_instructions: str | None = Field(default=None, max_length=8_192)
-    continuation_record_id: uuid.UUID | None = None
-    conversation_id: uuid.UUID | None = None
-    """The Chat conversation the message belongs to; an assistant answers there."""
-
-    fork: ChatForkAt | None = None
-    """Set on the first line of a fork: the line of another conversation's session it
-    starts from. The assistant opens the conversation with the lines up to it."""
-
-    page: CanvasPage | None = None
-    """The page the sender is on as they send: what "this" means to them."""
-
-    trail: list[CanvasPage] = Field(default_factory=list)
-    """The pages they came through before it, oldest first."""
-
-    marks: list[CanvasMark] = Field(default_factory=list)
-    """The boxes drawn on the canvas since its last line, oldest first."""
-
-    attachments: list[str] = Field(default_factory=list)
-    """Box paths of the files the sender uploaded for the line, as it named them;
-    a client that predates the field ignores it."""
-
-    relay: ConsoleRelay | None = None
-    """Set when the message is not a question for the partner but a note of what the
-    person told agents from the Console; the message text is the relay's text."""
-
-    assistant_prompt: AssistantPrompt | None = None
-    """The system prompt the sender chose for the assistant, set on a line to it. A
-    conversation's agent starts on the one its first line chose; ``None`` for a line
-    to a run."""
+type MessageKind = Literal["ask", "reply", "tell"]
+"""How an agent's team booked a message to another agent: a request, owed a reply; a
+reply, which settles one; or news, owed nothing. sagent's own ``MessageKind``, which
+this package may not import."""
 
 
-class InboundDrainItem(BaseModel):
-    """One message drained for a session, with its attested sender.
+class SessionAgent(BaseModel):
+    """One agent of one session, as AgentSend and ``trax send`` name it: ``label#412``.
 
-    The drain **response** item: unlike the enqueue request, it carries
-    ``source`` -- the producer's attested ``--as`` / principal -- so the
-    poller can render the ``[room] sender:`` injection context. Inbound-only
-    and transient: it is **not** an ``agent_session_events`` row; when the
-    agent consumes it, the capture path logs it as a normal turn.
+    The session is its number or its UUID. A label may hold ``#`` itself: the session
+    is what follows the last one.
     """
 
-    text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
-    """The message as a person reads it; see :attr:`InboundEnqueueRequest.text`."""
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    kind: InboundKind = "line"
-    """What the message is, as the enqueue named it; see :data:`InboundKind`."""
+    label: str = Field(min_length=1)
+    """The agent's label in its session, such as ``Agent`` or ``lead``."""
 
-    payload: dict[str, object] | None = None
-    """The kind's structured data, as :data:`InboundKind` documents it."""
+    session: Annotated[int, Field(ge=1)] | uuid.UUID
+    """The session's number, or its UUID."""
 
-    source: str | None = None
-    source_role: str | None = None
-    """The sender's role (``viewer``, ``writer`` or ``admin``) as the server attested
-    it, beside ``source``; ``None`` for a sender the server cannot name, and from a
-    server that predates the field."""
+    _validate_label = field_validator("label", mode="after")(
+        staticmethod(_reject_blank),
+    )
 
-    room: str | None = None
-    """The room a routed message was scoped to, for the ``[room] sender:``
-    injection prefix; ``None`` for a direct (session-id) enqueue."""
+    @classmethod
+    def parse(cls, named: str) -> Self:
+        """Read ``label#session``, the session a number or a UUID.
 
-    context: CanvasMessageContext | None = None
+        Args:
+          named: Such as ``lead#412``.
 
-    _validate_room = field_validator("room", mode="after")(staticmethod(_reject_blank))
+        Returns:
+          agent: The agent it names.
 
+        Raises:
+          ValueError: It names no label, or no session after its last ``#``.
 
-class InboundEnqueueResponse(BaseModel):
-    """Receipt for an enqueued inbound message.
+        """
+        label, _, session = named.rpartition("#")
+        if session.isascii() and session.isdigit():
+            return cls(label=label, session=int(session))
+        try:
+            return cls(label=label, session=uuid.UUID(session))
+        except ValueError as error:
+            raise ValueError(
+                f"{named!r} names no agent of a session: write label#number, such as "
+                "lead#412, or label#UUID",
+            ) from error
 
-    ``queued`` is the current count pending for the session after this enqueue,
-    including on an idempotent retry. It is
-    an honest receipt -- the message is queued for the session's poller, not
-    proven delivered; a session whose run is gone never drains it.
-    """
-
-    queued: int
-
-
-class DrainInboundResponse(BaseModel):
-    """The inbound messages drained for one session (oldest first)."""
-
-    messages: list[InboundDrainItem]
+    @override
+    def __str__(self) -> str:
+        return f"{self.label}#{self.session}"
 
 
 class SendMessage(BaseModel):
-    """Send a message to live sessions named by ``@actor[:room]``.
+    """Send a message to one agent of a session, or to the live sessions of a name.
 
-    The server resolves the actor (optionally scoped to a room) to the live
-    sessions that match and enqueues the text to each. The sender is attested
-    by the route from the authenticated principal, never the body, so a forged
-    ``source`` / sender field is rejected (``extra="forbid"``) rather than
-    silently ignored -- symmetric with :class:`InboundEnqueueRequest`.
+    A body names one target: ``to``, an agent of one session, or ``actor`` (with an
+    optional ``room``), a routing name, which may reach several. The server sends the
+    text to each such live session through the agent process that serves it. The
+    sender is attested by the route, never the body, so a forged ``source`` / sender
+    field is rejected (``extra="forbid"``) rather than silently ignored. An agent
+    process names the session it sends from, its agent's label and how it booked the
+    message; the server checks the session against the calling key and writes the
+    sender as ``label#number`` itself.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    actor: str = Field(min_length=1)
+    to: SessionAgent | None = None
+    """The agent of one session it is for."""
+
+    actor: str | None = Field(default=None, min_length=1)
     """Target routing name (an ``AgentSession`` owner)."""
 
     room: str | None = None
@@ -801,21 +651,48 @@ class SendMessage(BaseModel):
     asker: str | None = Field(default=None, max_length=_MAX_ACCOUNT_CHARS)
     """The account of the user the configured assistant sends this message for.
 
-    See :attr:`InboundEnqueueRequest.asker`: the assistant names whom it speaks for,
-    and any other sender's ``asker`` is ignored.
+    The server lets the assistant relay input only for a writer whose account holds
+    the session, even if the assistant itself opened or reads it. Any other sender's
+    ``asker`` is ignored.
     """
 
-    _validate_scalars = field_validator("actor", "room", "asker", mode="after")(
-        staticmethod(_reject_blank),
-    )
+    from_session: uuid.UUID | None = None
+    """The session whose agent sends it: only a key that session's agent process holds
+    its socket with may name it."""
+
+    from_label: str | None = Field(default=None, min_length=1)
+    """The sending agent's label in ``from_session``."""
+
+    booked: MessageKind | None = None
+    """How the sending agent's team booked it, so the books are kept across sessions."""
+
+    _validate_scalars = field_validator(
+        "actor",
+        "room",
+        "asker",
+        "from_label",
+        mode="after",
+    )(staticmethod(_reject_blank))
+
+    @model_validator(mode="after")
+    def _one_target_and_a_whole_sender(self) -> Self:
+        """Refuse a body naming both targets or neither, or part of an agent sender."""
+        if (self.to is None) == (self.actor is None):
+            raise ValueError("name one target: to, or actor")
+        if self.room is not None and self.actor is None:
+            raise ValueError("room scopes an actor")
+        named = (self.from_session, self.from_label, self.booked)
+        if any(part is None for part in named) and any(p is not None for p in named):
+            raise ValueError("from_session, from_label and booked go together")
+        return self
 
 
 class SendMessageResponse(BaseModel):
-    """Receipt for a ``send``: which live sessions the message was queued to.
+    """Receipt for a ``send``: which live sessions the message went to.
 
-    ``delivered`` lists the session ids enqueued (drop-if-absent: a session
-    whose run is gone may never drain it). Empty means no live
-    session matched the target -- the honest "undelivered" signal.
+    ``delivered`` lists the session ids sent to: handed to the agent process serving
+    it, or held for one still starting. Empty means no agent process serves a live
+    session the target names now -- the honest "undelivered" signal.
     """
 
     delivered: list[uuid.UUID]
@@ -849,23 +726,9 @@ class SessionEnd(BaseModel):
 
     actor: str | None = None
 
-    cli: str | None = Field(default=None, min_length=1)
-    """The CLI of the run that ends the session, as its inbound drain names it."""
-
-    instance: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
-    """The id of the run that ends the session, as its inbound drain names it. With
-    ``cli``, it lets the server tell the end of a run it replaced, or of one beside
-    the run that holds the chat, from the end of the run that holds it."""
-
-    failed: str | None = Field(default=None, min_length=1, max_length=2_000)
-    """Why the run ended before it asked for its lines, which no one saw it do: its
-    CLI's status and the last line it wrote. A chat's canvas says it as its ``refused``,
-    so Chat, waiting for the run it started, says why it did not start."""
-
     _reject_blank_scalars = field_validator(
         "cli_session_id",
         "actor",
-        "failed",
         mode="after",
     )(staticmethod(_reject_blank))
 
@@ -884,10 +747,6 @@ SESSION_RECORDS_PATH: Final = "/api/sessions/{session_id}/records"
 SESSION_PARTS_PATH: Final = "/api/sessions/{session_id}/parts"
 SESSION_END_PATH: Final = "/api/sessions/{session_id}/end"
 SESSION_AUDIENCE_PATH: Final = "/api/sessions/{session_id}/audience"
-SESSION_INBOUND_PATH: Final = "/api/sessions/{session_id}/inbound"
-SESSION_RUN_STATE_PATH: Final = "/api/sessions/{session_id}/run-state"
-SESSION_RUN_OUTPUT_PATH: Final = "/api/sessions/{session_id}/runs/{run_id}/output"
-SESSION_REATTACH_PATH: Final = "/api/sessions/{session_id}/reattach"
 SESSION_PLACE_PATH: Final = "/api/sessions/{session_id}/place"
 SESSION_WORKSPACE_PATH: Final = "/api/sessions/{session_id}/workspace"
 SEND_MESSAGE_PATH: Final = "/api/messages"
@@ -895,56 +754,6 @@ VERSION_PATH: Final = "/api/version"
 FEED_PATH: Final = "/api/web/feed"
 FEED_FACETS_PATH: Final = "/api/web/feed/facets"
 FEED_HISTOGRAM_PATH: Final = "/api/web/feed/histogram"
-
-# The ``code`` of a science chat's refused drain (``GET /api/sessions/{id}/inbound``).
-# The chat's canvas names who answers it, and its queue has one drainer and one run.
-PROVIDER_IS_CLI: Final = "provider_is_cli"
-"""The canvas answers the chat with a CLI, and the assistant's key drained it."""
-
-PROVIDER_IS_ASSISTANT: Final = "provider_is_assistant"
-"""The canvas answers the chat with the assistant, and a run drained it."""
-
-PROVIDER_IS_OTHER_CLI: Final = "provider_is_other_cli"
-"""The canvas answers the chat with one CLI, and a run of the other drained it."""
-
-CHAT_RUN_LIVE: Final = "chat_run_live"
-"""Another run of the chat's CLI holds its lease: a chat has one agent process at a time."""
-
-CLI_REQUIRED: Final = "cli_required"
-"""The chat is answered by a CLI and the drain named none, as a ``trax`` older than the
-name does: the server cannot tell which CLI polls, so it takes no lease."""
-
-SESSION_ENDED: Final = "session_ended"
-"""The chat's session ended, as when the person closed the chat, and its run still polls."""
-
-RUN_STOPPED: Final = "run_stopped"
-"""The run's owner stopped it, or disconnected its host, and it still polls."""
-
-RUN_NAME_PATTERN: Final = r"^[A-Za-z0-9][A-Za-z0-9._@#+=:-]{0,127}$"
-"""A detached run's name: the server takes it on a drain, and a detached run takes it
-as a directory name. One rule, so a name the host takes never breaks its own drain."""
-
-RUN_ENDING_REFUSALS: Final = frozenset(
-    {
-        PROVIDER_IS_CLI,
-        PROVIDER_IS_ASSISTANT,
-        PROVIDER_IS_OTHER_CLI,
-        CHAT_RUN_LIVE,
-        SESSION_ENDED,
-    },
-)
-"""The refusals after which no drain of that run can succeed, so the runner stops
-the run it is polling for, instead of retrying a drain the chat will keep refusing."""
-
-
-CHAT_TAKEN_OVER: Final = "chat_taken_over"
-"""The ``code`` of a post refused because the chat's CLI was opened in a terminal."""
-
-CHAT_TAKEN_OVER_MESSAGE: Final = (
-    "taken over in a terminal; reattach from Chat or Console"
-)
-"""Why Chat refuses a post to a chat whose run is :data:`RunState` ``taken_over``."""
-
 
 # Every non-field API path the client, SPA, or deploy probe depends on, as a
 # FastAPI route template. These routes are hand-registered (unlike the derived
@@ -959,8 +768,6 @@ SESSION_API_PATHS: tuple[str, ...] = (
     SESSION_PARTS_PATH,
     SESSION_END_PATH,
     SESSION_AUDIENCE_PATH,
-    SESSION_INBOUND_PATH,
-    SESSION_RUN_STATE_PATH,
     SEND_MESSAGE_PATH,
     VERSION_PATH,
     FEED_PATH,
@@ -989,37 +796,17 @@ def session_audience_path(session_id: uuid.UUID) -> str:
     return SESSION_AUDIENCE_PATH.format(session_id=session_id)
 
 
-def session_inbound_path(session_id: uuid.UUID) -> str:
-    """Return the inbound-message path for one session (POST enqueue, GET drain)."""
-    return SESSION_INBOUND_PATH.format(session_id=session_id)
-
-
-def session_reattach_path(session_id: uuid.UUID) -> str:
-    """Return the path that reopens a chat's run headless."""
-    return SESSION_REATTACH_PATH.format(session_id=session_id)
-
-
-def session_run_state_path(session_id: uuid.UUID) -> str:
-    """Return the path a run reports its state to."""
-    return SESSION_RUN_STATE_PATH.format(session_id=session_id)
-
-
-def session_run_output_path(session_id: uuid.UUID, run_id: str) -> str:
-    """Return the path a clicked command's output so far is posted to and read from."""
-    return SESSION_RUN_OUTPUT_PATH.format(session_id=session_id, run_id=run_id)
-
-
-def inbound_read_timeout(wait_sec: float) -> float | None:
-    """Return the read timeout a drain that holds ``wait_sec`` needs.
+def held_read_timeout(wait_sec: float) -> float | None:
+    """Return the read timeout a request the server holds ``wait_sec`` needs.
 
     Args:
-      wait_sec: How long the server may hold the drain request open.
+      wait_sec: How long the server may hold the request open.
 
     Returns:
       timeout: Seconds the client may wait to read the response, or ``None``
-        to keep the transport's own timeout when the drain does not wait.
+        to keep the transport's own timeout when the request does not wait.
 
     """
-    # The server returns an empty drain AT ``wait_sec``, so a read deadline equal to
-    # it races that response and turns a normal empty result into a transport error.
+    # The server answers empty AT ``wait_sec``, so a read deadline equal to it races
+    # that response and turns a normal empty result into a transport error.
     return wait_sec + 10.0 if wait_sec else None

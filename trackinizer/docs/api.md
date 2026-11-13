@@ -577,8 +577,8 @@ paths.
 ### 1.21 Agent-session ingest
 
 The capture-and-messaging surface for the agent runner. A run opens a
-session, streams turn-grained events, and closes it; messages route back
-into a live session by routing name.
+session, streams turn-grained events, and closes it; a message reaches a
+session's agent process by the session or by routing name.
 
 ```
 GET    /api/sessions?days=N&limit=N
@@ -589,12 +589,6 @@ GET    /api/sessions/<uuid>/parts?asker=EMAIL&chat=UUID
 GET    /api/sessions/<uuid>/turns?limit=N&asker=EMAIL&chat=UUID
 POST   /api/sessions/<uuid>/end
 POST   /api/sessions/<uuid>/audience
-POST   /api/sessions/<uuid>/inbound
-GET    /api/sessions/<uuid>/inbound
-POST   /api/sessions/<uuid>/run-state
-POST   /api/sessions/<uuid>/runs/<run id>/output
-GET    /api/sessions/<uuid>/runs/<run id>/output?after=N&wait_sec=N
-POST   /api/sessions/<uuid>/reattach
 POST   /api/messages
 ```
 
@@ -602,8 +596,8 @@ POST   /api/messages
 turn is within `days` (1 to 365, default 14) or that are still open, newest activity
 first, at most `limit` (1 to 500, default 500), leaving out any the caller does not
 read; `more` says more matched. Each carries `last_activity` (its last turn's time,
-else when it was made), `live` (a run holds its lease now), `host` (the live session's,
-else where it last ran since the server started), the run's `state`, `goal` (the
+else when it was made), `live` (an agent process is attached to it now), `host`
+(the live session's, else where it last ran since the server started), `goal` (the
 last goal its CLI's log reported), `first_line` (the first line a person wrote),
 `conversation_id`, `canvas_id` and `workspace_id` (its chat's canvas, or the one it
 was placed in, and that canvas's workspace, null for a canvas in none, which is the
@@ -611,111 +605,11 @@ default workspace's) and `produced_by`, the
 Issues it was produced by, workspaces left out. `issues` lists those Issues once
 each, with the Issues they narrow or were produced by, each with its `parent_ids`.
 
-Each drained message carries the sender the server attested as `source` and,
-beside it, `source_role`, that sender's effective role (`viewer`, `writer` or
-`admin`) as the server saw it when the message was sent. Neither is taken from
-the request, and a message the server generates has no `source_role`.
-
-`POST .../inbound` takes a line alone: a body naming `kind` or `payload` is 422, so
-no key acts on a run's host without a person in Chat. `POST /api/chats` (section
-1.25) takes `kind`, what the message is: `line` (a person's chat line,
-the default, delivered with its sender), `command` (a slash command typed verbatim,
-which the server makes of a line, 422 when a client names it),
-`answer` (a decision on a pending prompt), `settings` (a model or effort change),
-`interrupt` (stops the running turn) or `run` (a command the agent wrote that the
-chat's starter clicked Run on, which the run runs on its host); any other value is
-422. `payload` carries the
-structured data of a kind and is `null` for the kinds that carry none. An `answer`
-is `{"prompt_id": "<text>", "option": "<id>", "updated_input": <object> | null,
-"message": "<text>"}`, where `option` is the id of one of the ask's own options (or a
-kind such as `allow_once`); the older `"decision": "allow" | "deny"` stands in for
-`option`, and an answer names exactly one of the two (422 otherwise). `settings` is
-`{"model": "<text>" | null, "effort": "<text>" | null}`. `run` is `{"run_id": "<32
-lowercase hex>", "block": "<text>", "stop": <bool>}`, its `text` the command: one line
-of printable ASCII, at most 2,000 characters (422 otherwise), unless `stop` asks the
-named run stopped. `text` stays required: for
-an `answer` it is the one-line form, "Yes" or "No: <reason>". A drained message
-carries `kind` and `payload` beside its `text`, `source` and `room`.
-
-`GET .../inbound` (the drain) takes `run`, `host` and `cwd`, where the draining
-run is: the name of the detached run an attach reaches (absent for a run in
-a terminal of its own), the host as the daemon names it, and the
-working directory, `~/...` under its home, at most 1,024 characters with no control
-character. A malformed one is 422. The poller lease keeps them while it holds, for
-Chat to show; they are the run's own word, shown and never a grant.
-
-The drain also takes `cli`, the CLI the run is (`claude` or `codex`), and `instance`,
-an id the run minted for itself (32 lowercase hexadecimal digits, the same on each of
-its drains). The lease keeps both. A chat answered by a CLI is live for that provider
-only while a poller that named it holds the lease, whatever the chat's newest part
-says; the run's own part after `/compact` has no format. On such a chat a drain that
-names no `cli`, as a `trax` older than the name sends, is 426 `cli_required` with a
-plain "Update trax" message and takes no lease; a drain by the other CLI is 409
-`provider_is_other_cli`; and a drain whose `instance` differs from that of the
-unexpired lease of the same CLI is 409 `chat_run_live`. A drain that takes `runs=true`
-says the run takes `run` messages; the lease keeps it, and a chat queues a `run` only
-while such a run holds it, since an older run fails to read a drain that carries one
-and loses every message in it. The runner ends its run on
-`provider_is_assistant`, `provider_is_other_cli` and `chat_run_live` instead of
-retrying, and leaves the chat's session open as it exits. `POST .../end` takes the
-ending run's `cli` too: on a chat whose canvas chose another provider it is a 200
-that changes nothing, so the exit of the run a switch stopped does not end the
-session the chosen provider drains. It takes the run's `instance` too: an end that
-names a `cli` and an `instance` is the same 200 that changes nothing when that run was
-replaced (a reattach) or another run of the CLI holds the lease, so the exit of the
-run a reattach took over does not end the chat, take the new run's lease or release
-its asks.
-
-An ask is a pair of records in the chat's session: `extra["$interaction"]` opens it
-and `extra["$interaction_resolved"]`, naming the same `id`, ends it. `POST .../end`
-writes an end with `by: released` for each ask the run left open, before it closes
-the session, which takes records no more; so does the server for a run whose lease
-lapsed or was revoked, within a few seconds, for the run a provider switch
-stopped, and, once, a lease's span (45 seconds) after the server starts, for each
-live `claude` or `codex` chat that no run holds a lease on: a run that died while the
-server was down. Those ends go in a part of the server's own, `trackinizer-asks`, with no
-format, and no run's file is edited.
-
-`POST .../run-state` takes `{"state": "idle" | "running" | "requires_action" |
-"taken_over", "instance": "<run id>"}` and answers 204. The run reports between its
-drains, and the state stays on the session's lease, through the run's later drains,
-until the lease lapses; a run says a state other than `idle` again every 15 s while it
-holds, so after a lapse or a server restart the state is back within 15 s of its next
-drain. A report from a run other than the one holding the lease, or
-while none does, changes nothing and is answered the same. It is held to the rules of
-the drain: the opening key, or for a chat the starter's own run, never the
-assistant's. A canvas's `partner.state`, an entry of `GET /api/canvases` and an
-agent of `GET /api/web/feed/facets` carry `state`: `taken_over` after a report of it,
-else `requires_action` while an ask is open in the chat (whatever the run reports,
-and for the assistant's chats, which report nothing), else what the run last
-reported, `idle` where no run polls. While a CLI chat's run is `taken_over`, a post to
-it (`POST /api/chats`, of any kind) is 409 `chat_taken_over` with the message "taken
-over in a terminal; reattach from Chat or Console", and nothing is queued.
-
-`POST .../runs/<run id>/output` takes `{"instance": "<run id>", "text": "<text>"}`,
-the end of what a command clicked Run on has printed so far (at most 16,384
-characters), and answers 204. The run posts it when it grows while the command runs.
-It is held in memory alone, as a chat's answer in writing is, for ten minutes after
-its last post, and the run's record of the command's end replaces it. It is held to the
-rules of `run-state`: the drain's caller, and a post from a run other than the one
-holding the lease, or while none does, changes nothing and is answered the same.
-`GET .../runs/<run id>/output` answers `{"seq": N, "partial": {"turn": "<run id>",
-"text": "<text>", "done": false} | null}` once `seq` is not `after`, holding the read
-up to `wait_sec` (at most 25) for a change, as `GET .../partial` does, to whoever reads
-the session's records (403 `session_audience` otherwise).
-
-`POST .../reattach` reopens a chat's run headless, where it ran, after a terminal took
-it over or it went away. Browser only, with the `Idempotency-Key` header; the chat's
-starter alone (403 `reattach_not_owner`). The run's lease is revoked and the run is
-turned away when it drains again, which ends its terminal; terminals this server
-opened for it are stopped; then the daemon is offered a new detached run of
-the chat's CLI attached to the session, in the folder the last run named, under that
-run's host name (`chat-<8 hex of the session>` when it named none). A launch of that
-name ends the old host and resumes the CLI session its terminal continued. A run that is live and not taken over is 409
-`chat_run_live`; a session that is no chat 409 `not_a_chat`; a chat the assistant
-answers 409 `provider_is_assistant`; a chat whose host and folder the server no
-longer knows (it restarts with the leases) 409 `reattach_place_unknown`; the host
-and CLI are held to the rules of `POST /api/terminals`. It answers 204.
+`POST /api/messages` sends a line to the agent process of each session it names, as
+an input. The server writes its author: the sender's email, or `label#<number>` for
+an agent of another session whose process holds the calling key. A session no agent
+process serves is not in `delivered`: nothing queues a message for later. A science
+chat takes its lines through `POST /api/sessions/{id}/inputs`.
 
 `POST /api/sessions/start` takes `attach`, the AgentSession a run re-opens: it is
 live again if it had ended, keeps its `cli_session_id`, and the run's file becomes its
@@ -724,11 +618,6 @@ next part; the answer names it as a fresh start's would. `attach` and
 write the session is 403. A science chat takes an attach only from its opening key,
 a key of the configured assistant, or a key of the account that started it (403
 otherwise).
-
-Inbound messages whose attested `source` is `trackinizer` are subscriber
-push envelopes -- JSON metadata for a committed change, generated
-server-side (no HTTP surface produces them). Shape and client-side
-handling: `design_subscriber.md`.
 
 An AgentSession carries an `audience` (`open`, `private` or `staff`) saying who may
 read its transcript. Only the transcript is gated: the session's title, actor, rooms,
@@ -749,11 +638,11 @@ that opened a session always reads it, so a key whose owner no longer holds `sta
 can still run the `staff` session it opened. Otherwise the session answers 403 with
 `{"detail": {"code": "session_audience", "audience": "<value>"}}` on
 `GET .../records`, `.../parts` and `.../turns`. Reading a session controls nothing:
-`POST .../records`, `POST .../end`, `GET .../inbound` (a drain), a run's reports and an
+`POST .../records`, `POST .../end`, a run's reports and an
 attach take its opening key, or its account where that account reads it, and answer
 the same 403 otherwise, an admin's included; `DELETE /api/inquiries/<uuid>` and a field
-edit of the row need the audience. Sending input (`POST .../inbound`,
-`POST /api/messages`) takes the session's opening key or account, whatever else the
+edit of the row need the audience. Sending a message (`POST /api/messages`) takes
+the session's opening key or account, whatever else the
 caller reads. The configured assistant (`--assistant`) relays a user's line only for an
 `asker`, an optional field of both bodies naming the user's account email. It passes
 on that user's rights, not its own, and the server reads them from its own tables: the
@@ -761,7 +650,7 @@ asker must be an active user and a writer or admin whose account holds the sessi
 whatever key they use. A send that names no asker, or one who does not qualify, is 403
 `session_audience`. A session the assistant's own key opened needs no asker, and another
 sender's `asker` is ignored. `POST /api/messages` is refused whole when any session
-its actor names is hidden from the sender: nothing is queued to the others.
+its actor names is hidden from the sender: nothing is sent to the others.
 
 A session opens into the audience its key is pinned to (`open_into`, see section
 1.17), else `open`; `"private": true` in the start body opens it `private` instead,
@@ -770,8 +659,10 @@ under the `chat:<id>` of a chat that is not `open` takes the chat's audience. Th
 start's answer names the session's `audience`, and the runner's `--private` stops before
 its CLI starts when it is not `private`, as an older server, which ignores the field,
 answers. A resume asked to be `private` hides the `open` session it re-attaches, as
-the key that opened it may, and is 409, leaving it as it was, for a `staff` one. A
-session's owner moves it between `open` and `private` with
+the key that opened it may, and is 409, leaving it as it was, for a `staff` one.
+`"keep_audience": true` leaves the session a start re-opens in the audience it has, so
+`private` hides only a session the start mints: what an upload of finished sessions
+sends, so a session sent again keeps its readers. A session's owner moves it between `open` and `private` with
 `POST .../audience` (`{"audience": "open" | "private"}`): its account, the person
 whose key opened it, or for a chat its starter, which moves every session under the
 chat's id. It answers `{"session_id", "audience", "sessions"}`, the sessions that
@@ -797,10 +688,8 @@ starter makes one so, as its members who hold no `staff` lose it then (403
 session is read into a chat only when everyone who reads the chat reads it too, as
 the assistant would read it for them: its starter, each person it is shared with, and
 while it is not `private` the starter's organisation or every member; else 409
-`chat_readers`. The assistant reads a chat by its id and audience alone only when a
-key of its own opened that chat's session, or when it runs on a chat a CLI began
-that its starter's canvas switched to the assistant (section 1.25), which it also
-writes and drains. Another caller's `asker`
+`chat_readers`. The assistant reads a chat as the transcript test lets it, as any
+reader does: it answers no chat. Another caller's `asker`
 and `chat` are ignored, and so is every bulk route's: the feed, its facets and
 histogram, session search, `GET /api/inquiries` and the export answer for the caller
 alone.
@@ -827,25 +716,17 @@ session receives a record is part of its transcript. A stream asks once per sess
 and audience and keeps the answer for 30 s, so a hide is heard at once, and a share,
 an unshare or an account move within 30 s. Every other change reaches every viewer.
 
-A subscriber push into a session that is not `open` carries no `actor` and no
-`reason`, and its `agent_message` omits "(by ...)": those are free text a writer sets,
-and an inbound line becomes the session's next user turn. The row is still named by
-`subject_ref` and `row`, so the session reads the change from the graph. A science
-chat's session takes no push at all: any writer may subscribe a chat's routing name to
-a row, and its run would type the push into its starter's CLI, which only they and
-the people they share the chat with speak to.
-
 Existing sessions migrate to `open`; the migration cannot tell a campaign lead or other
 staff session a running deployment already captured from any other. After it opens, a
 session's audience moves only between `open` and `private` by its owner, and to
 `staff` for a chat a staff session was read into; nothing lowers `staff`.
 
 A session whose run dies without calling `end` (killed, host crashed) is
-closed by the server: once a session that polls its inbound queue has gone
-15 minutes without a poll or a records upload, it is ended at the time it
-was last seen, audited as `trackinizer`. Its next poll or upload reopens it,
-so a run that was only cut off carries on as the same session. A session
-that never polls is never closed this way. Liveness is kept in the database,
+closed by the server: once a session an agent process attached to has gone
+15 minutes without word from that process or a records upload, it is ended at
+the time it was last seen, audited as `trackinizer`. Its next attach or upload
+reopens it, so a run that was only cut off carries on as the same session. A
+session no agent process ever attached to is never closed this way. Liveness is kept in the database,
 so a server restart neither hides a dead run nor strands a closed one.
 
 ### 1.22 Service meta
@@ -1024,17 +905,14 @@ with `trax.browse` in the main pane. Chat is not a visual: the browser draws it 
 column beside the canvas, and `show trax.chat` is refused as an unknown type. A
 stored canvas that still holds a `trax.chat` visual reads without it. The response
 has `id`, `revision`, `name`, `conversation_id`, `page`, `layout`, `visuals`,
-`focused_instance`, `assistant`, and `partner`.
+`focused_instance` and `preferences`, the owner's preferences its agent may see.
 `GET /api/canvases` lists the canvases, the one changed last first, as
 `{id, name, conversation_id, page, created_at, tabs, tab}`: `tabs` names each
 canvas tab in order as `{id, name}` (none until a second one is made) and `tab` is
 the open one's id or null, so the top bar shows every canvas's tabs without
 reading each canvas.
-`POST /api/canvases/new` makes a canvas. An optional body `{workspace_id,
-provider}` names its workspace (else the caller's default workspace, made if they
-have none) and the provider its chat starts on
-(else the caller's `chat_provider` preference); a CLI is taken with no host to
-run on, and nothing runs until one is picked.
+`POST /api/canvases/new` makes a canvas. An optional body `{workspace_id}` names
+its workspace (else the caller's default workspace, made if they have none).
 `PATCH /api/canvases/<uuid>` with `{"name"}` renames it: the name is trimmed
 and must then be 1 to 120 characters (else 422); a name the user already has is
 409.
@@ -1055,8 +933,8 @@ sends it at most every 500 ms.
 `POST /api/canvases/for-chat/<conversation uuid>` returns the user's canvas that
 holds that chat, or makes one bound to it. A canvas that is not the user's is 404;
 a deleted chat is 410 `chat_deleted`.
-`GET /api/canvases/<uuid>` returns that state to its owner, and to an
-assistant's key (below).
+`GET /api/canvases/<uuid>` returns that state to its owner, and to an agent key
+that may use the canvas (below).
 `GET /api/canvases/key/<key>` returns `{"id"}`, the canvas whose id starts with
 `key`, its first 12 hex digits: the short name a web app's addresses give a
 canvas (`wire_canvas_keys.py`). Anyone signed in may ask, since an id grants
@@ -1066,71 +944,28 @@ nothing; no such canvas is 404, and a key two canvases share is 409.
 and a required `Idempotency-Key` tells the canvas's chat what its owner sent
 agents directly from the Console, after the per-agent `POST /api/messages`
 sends; it is the browser's own and a canvas that is not the owner's is 404. One
-request is one Console line, however many targets. The partner it queues for is
-the one a Chat line of the canvas would go to: the chat's own session when the
-assistant has it open, else the assistant's service session. The message carries
-`context.relay` (`targets` and `text`) beside the usual `canvas_id` and
-`conversation_id`, and its `text` is the relay's text. The assistant records it in
-the chat as a line of the poster's that starts with `→ ` (an arrow and a
-space), then `actor` or `actor:room` for each target joined by `, `, then `: `
-and the text; it runs no turn, so there is no answer and no cost, and it reads
-the line with its next prompt. The response is `{"delivered": bool}`: false when
-the canvas has no chat, its chat was deleted, its owner may not post into its chat
-(a canvas may be bound to a chat to read it, section 1.25 says who posts), its
-partner is not running or its queue is full, which is never an error.
-A retry under the same key queues nothing again.
+request is one Console line, however many targets. No chat takes it: a chat's
+agent answers every input it is sent, and no input is a silent one. The response is
+`{"delivered": false}`, which is never an error.
 
-**The assistant and the partner.** The server's `--assistant ACTOR=EMAIL`, or
-`$TRACKINIZER_ASSISTANT`, names one assistant. A live AgentSession is the
-assistant's when its granted actor is `ACTOR` (or `ACTOR#N`, the suffix the
-server adds once a name has been used) and the API key that opened it belongs to
-the account `EMAIL`, compared lowercase. Every key of that account acts as the
-assistant, so `EMAIL` must be a service account's (`NAME@service.invalid`): the
-server refuses to start with a person's. A canvas on `assistant` talks to the
-assistant's newest live session. `assistant` in the state is its actor, or null when
-none is configured. `partner` is computed on every read and never stored:
-`session_id`, `actor`, `cli`, `status` (`live`, `unavailable`, or `offline` for a CLI
-no run holds), `provider`, `label` (`claude · gx10`), and for a live CLI run the
-`host`, `run_name` and `cwd` its last drain named (null otherwise). An offline CLI
-partner also says why the server refused the last drain by a run of the chat's own
-account: `refused`, its message, and `refused_at`, which a new refusal moves (empty and
-null when none was refused since a drain was let in).
+**The assistant.** The server's `--assistant ACTOR=EMAIL`, or
+`$TRACKINIZER_ASSISTANT`, names one assistant: the account `EMAIL`, whose keys act
+for an `asker`, and whose live AgentSession with the granted actor `ACTOR` (or
+`ACTOR#N`, the suffix the server adds once a name has been used) is its service
+session. Every key of that account acts as the assistant, so `EMAIL` must be a
+service account's (`NAME@service.invalid`): the server refuses to start with a
+person's. It answers no canvas's Chat, and uses no canvas.
 
-**The provider.** A canvas's `provider` (`assistant`, `claude` or `codex`) says who
-answers its Chat; a canvas stored with the retired `partner_choice` reads as
-`assistant`. A new canvas starts on the provider `POST /api/canvases/new` names,
-else on its owner's `chat_provider` preference; a fork keeps its source canvas's.
-The operation `{"kind": "provider", "provider": P}` is the owner's browser's alone
-(an API key is 422). A CLI no confirmed online host of the owner lists is 409
-`provider_unavailable` with the reason; choosing a CLI gives the canvas a chat and
-the chat a session at once, which an offline partner names for a run to attach to.
-A switch does not stop an assistant turn already running; its answer still lands.
-The state carries `available` and `reasons` per provider: a CLI is available while
-such a host lists it, and `assistant` always is here (its credit is the billing
-addon's to say).
-
-The partner's key may read and operate a canvas while that canvas's partner
-is the session the key opened, and the live science chat the canvas holds
-(`conversation_id`) is one that key opened, or its account drains, with the
-canvas's owner as its account or a poster (section 1.25). The check is per canvas: a
-canvas without a chat takes no key. Any other canvas is 404, so a user who never
-talked to the partner in that canvas gives it nothing. Only the key that opened a
-partner or science-chat session may drain its inbound queue, whatever the role,
-except that a chat on `claude` or `codex` is drained by its starter's run under any
-of their keys, and a chat a CLI began that is switched to `assistant` by the
-assistant, which attaches to it; the assistant then has that chat open. A science chat's queue has one drainer, the provider its starter's
-canvas names: for a CLI, the assistant's key is 409 `provider_is_cli`; for
-`assistant`, an opening key that is not the assistant's is 409
-`provider_is_assistant`. Either holds from the moment the canvas switches. A chat
-has one agent process at a time: a `provider` operation revokes the lease of the chat's
-run of any CLI it leaves and stops that canvas owner's terminals attached to the
-chat's session, and `POST /api/terminals` with `attach` is 409 `chat_run_live` while
-another terminal or lease holds the session. Only the starter's canvas says who
-answers a chat, so a `provider` operation on another person's canvas that holds it
-ends none of its runs, the assistant's included.
+**A canvas's agents.** An agent key may read and operate a canvas of its own
+account in two ways: it opened a live session placed on the canvas (labelled
+`canvas:<id>`), or the canvas holds a science chat that the key's account started
+and the chat's agent process is attached to its session in the session relay. Any
+other canvas is 404 to it, and the owner's own key that is neither is 403, saying
+why. A canvas stored with the `provider` or `partner_choice` a canvas once kept
+reads without it, and its next operation drops it.
 
 An operation body has `revision` and one `operation`: `show`, `hide`, `focus`,
-`place`, `provider`, `navigate`, `highlight`, or `chat`. The caller supplies a UUID `Idempotency-Key`
+`place`, `navigate`, `highlight`, or `chat`. The caller supplies a UUID `Idempotency-Key`
 header. The
 server locks the canvas, checks the revision, validates the visual type,
 parameters and record kind, and returns the new state. Retrying a recent body
@@ -1138,7 +973,7 @@ with the same key returns the original state and publishes nothing. The latest 6
 receipts are retained; an older retry receives a stale-revision 409 after its
 receipt expires. Reusing a retained key for another body returns 409. Both that
 conflict and a stale revision include `current` with the live canvas. An API
-key can operate only as the partner above; that check also runs before
+key can operate only as a canvas's agent above; that check also runs before
 replaying an idempotency receipt.
 
 `navigate` is `{"kind": "navigate", "route": "#/..."}` with a route of at most
@@ -1170,14 +1005,6 @@ GET    /api/chats/<uuid>
 DELETE /api/chats/<uuid>
 PUT    /api/chats/<uuid>/shares/<email>
 DELETE /api/chats/<uuid>/shares/<email>
-POST   /api/chats/uploads
-POST   /api/chats/files/link
-POST   /api/chats/files/remove
-GET    /api/chats/uploads/wait
-POST   /api/chats/uploads/<uuid>
-GET    /api/sessions/<uuid>/partial
-PUT    /api/sessions/<uuid>/partial
-DELETE /api/sessions/<uuid>/partial/<turn>
 GET    /api/canvases/<uuid>/events
 ```
 
@@ -1197,115 +1024,17 @@ it. Its session's row stays readable by every key, so its title is `Science chat
 whatever the assistant asks. Its starter deletes it while every person's line in it
 is theirs (Deleting below).
 
-`POST /api/chats` (browser only, writer role, with an `Idempotency-Key`) posts a
-line. The body is `{canvas_id, text, conversation_id, page, trail, kind,
-payload, attachments}`; `text` holds a non-space
-character and at most 16,384 characters, and `canvas_id` is the poster's own
-canvas. `kind` is `line` by default, or `answer`, `settings`, `interrupt` or `run`,
-with `payload` as section 1.21 describes it (a stale browser's `science` reads as
-`line`; `command` is 422, since a command is posted as a line). An `assistant` canvas takes a `line`, an
-`answer` or an `interrupt` (422 otherwise), an `answer` being a choice on a card the
-assistant asked, given by the chat's starter alone, as on a `claude` or `codex`
-canvas (403 `answer_not_owner`), and an `interrupt` stopping the turn it is on. Each
-is queued for the chat's own session, and is 409 `provider_offline` while the
-assistant does not have the chat open. A `claude` or
-`codex` canvas queues the post on the chat's session its run drains, with only a
-`line` carrying the canvas context, and while that run is taken over in a terminal
-refuses every post with 409 `chat_taken_over`. A `run` comes from the chat's starter
-alone, as an `answer` does (403 `answer_not_owner`, "Only <starter> can run commands
-on their host."), and is 409 `run_unsupported` while the run holding the chat did
-not say it takes runs. A canvas holds one chat: with none, the line's conversation becomes its
-chat in the transaction that queues the line; with one, a line that names another
-conversation is 409, as is one for a conversation another canvas of the poster
-holds, and a line that names none continues the canvas's chat. `page` is the `#/...` address the sender is on and `trail` the addresses
-they came through before it, oldest first, at most 8; a malformed address or a
-longer trail is 422. The server resolves them to records in the context. A
-`conversation_id` continues a chat, for a writer who may post into it (see Forking
-below). None starts one, and the key
-names it, so a retry names the same conversation. `fork: {session_id, part, idx}`
-instead starts a new conversation from that line of another chat, in a new canvas
-copied from the one the line was sent from (the receipt's `canvas_id`); it and
-`conversation_id` together are 422. The line's poster is the attested account,
-never the body. The server builds the typed canvas context (the canvas, its
-visible visuals, the page and the trail; it pins no record) and queues the line
-for the conversation's own session when the canvas's partner has it open
-and some poller drains it, and for the partner's service session otherwise. The
-receipt is `{conversation_id, canvas_id, session_id}` at once;
-`canvas_id` is the canvas the line went to; `session_id` is null until
-the assistant has the session open. The same key again returns the original receipt and queues nothing; a key
-reused for another line is 409. The de-duplication is in memory, so a retry after
-a server restart queues the line again. On `assistant`, no live assistant is 409; on
-a CLI, no live session is 409 `provider_offline`, except for a fork, whose line waits on
-its new session for the run the person starts. A full queue is 409 `partner busy`,
-and nothing is queued.
-
-Slash commands. A `line` whose very first character is `/` and whose first word
-is a built-in slash command of claude or codex (`goal`, `compact`, `model`,
-`resume`, `exit` and the rest, in any case) is judged by the chat's provider:
-the starter's canvas's in a chat someone else began, never the poster's.
-`/goal <condition>`, `/goal clear` (also typed as `stop`, `off`, `reset`, `none`
-or `cancel`), codex's `/goal pause` and `/goal resume`, claude's `/compact`,
-`/rename <name>` (and claude's bare `/rename`, which names the session from the
-conversation), and claude's `/rc [name]` or `/remote-control [name]`
-are queued as kind `command`, verb lowercased, with no canvas context and no
-marks, and the run types them bare. `/model <name>` and `/effort <level>` (one
-token; the level lowercased) are queued as kind `settings` with a `{"model", "effort"}`
-payload, likewise bare of context and marks; without the argument they are refused.
-Any other built-in, a command of more than
-one line or over 800 characters, and every command to `assistant` are 422
-`{"detail": {"code": "command_refused", "message": "<why>"}}`, before anything
-is queued or a canvas bound. Any other text, `/etc/hosts is broken` or a custom
-command among it, is a line. A post of any other `kind` is not judged.
-
-Answers. An `answer` to a `claude` or `codex` chat comes from the chat's starter
-alone, the owner of the run showing the prompt, since it runs a tool or grants
-trust on their host: anyone else, a person it is shared with included, is 403
-`{"detail": {"code": "answer_not_owner", "message": "Only <starter> can answer
-prompts from their host."}}`, and nothing is queued. An `answer` to a card the
-`assistant` asked comes from the person the card asked (its `$interaction` record's
-`input.asker`; the starter when it names nobody), since the card lists that
-person's own choices: anyone else is the same 403, "Only <asker> can answer this
-question.". It is queued for the chat's own session with the canvas context a
-line carries, and the assistant hears the pick as that person's line.
-
-Uploads. A page puts files into the assistant's workspace box for a line, and the
-bytes go from the page to the box, never through the server.
-`POST /api/chats/uploads` (browser only, writer role) takes `{canvas_id,
-conversation_id, files: [{name, size, dataset}]}`, 1 to 20 files, each a name with no
-folder (no `/`, `\`, control character, `.` or `..`, at most 255 characters) asked
-once; `dataset` (default false) asks for it as a dataset, which the assistant keeps in
-a folder of its own.
-Whoever may post a line to the chat from that canvas may ask, by the rule above: a
-foreign canvas is 404, a chat not theirs to post into 403 `chat_not_shared`, a
-deleted one 410, a chat other than the one the canvas holds 409, and a chat whose
-provider is not `assistant` 409 `uploads_unsupported` (a canvas with no chat yet
-asks for the chat its first line starts). The request is held, in memory and never stored, until the assistant
-answers: `{files: [{name, path, url}]}`, a box path and a link signed for that path
-alone per file, in the order asked; the page sends each file to its link as the
-multipart field `file`. An assistant that does not answer within 15 s is 503
-`uploads_unavailable`, its refusal 409 `upload_refused` with its reason in
-`message`, and slots for other files than those asked 502; while 64 asks are
-already waiting, another is 503 `uploads_busy` at once. A `line` then names the
-box paths in `attachments` (at most 20 absolute, normal paths of at most 512
-characters; 422 otherwise, and on any other `kind`), which reach the assistant in
-the line's context. A `claude`, `codex` or `sagent` chat's page writes each file to
-the run's host instead, over its `files` terminal, and names those host paths; they
-reach the run the same way. The assistant's key alone holds
-`GET /api/chats/uploads/wait?wait_sec=N` (0 to 25, default 20) for the next ask,
-`{request_id, canvas_id, conversation_id, workspace_id, asker, asker_role, action,
-files, path}` or `null`, where `workspace_id` is the canvas's workspace or the asker's
-default, as a chat's settings name it (`workspace_issue_id`), so it names the asker's
-box; and answers it with `POST /api/chats/uploads/<request_id>` and one of `{files}`,
-`{url}`, `{removed: true}` or `{error}` (204; 404 for an ask answered, given up or
-unknown); any other caller is 403.
-
-A file the page uploaded is asked about by its box path, `{canvas_id,
-conversation_id, path}`, by the same rule and with the same refusals as an upload:
-`POST /api/chats/files/link` answers `{url}`, a download link signed for that path
-alone, and `POST /api/chats/files/remove` answers 204 once the file is gone, as when an
-upload is cancelled. Each is relayed as an ask whose `action` is `link` or `remove`
-(an upload's is `upload`) and names `path` and no files; an answer of the wrong kind is
-502.
+`POST /api/chats` (browser only, writer role, with an `Idempotency-Key`) starts a
+chat on the poster's own canvas, `{canvas_id, fork}`, or answers the chat the canvas
+already holds, with its session. It takes no line: the chat's agent is its session's
+agent process, which its starter brings up (`PUT /api/sessions/{id}/process`), and
+each line goes to it as an input (`POST /api/sessions/{id}/inputs`); a slash line
+goes as a `Command` input. A canvas without a chat is bound to a new conversation
+the key names, and a retry under the same key answers what the first made.
+`fork: {session_id, part, idx}` instead starts a new conversation from that line of
+another chat, in a new canvas copied from the one the line was sent from. A canvas
+whose chat is not the starter's to post into is 403 `chat_not_shared`, and a starter
+with no live API key is 409 `no_key`.
 
 `GET /api/chats/<uuid>` returns `{conversation_id, session_id, title, account, live,
 forks, forked_from, forks_on_typing, audience, may_post, may_hide, shared_with,
@@ -1332,7 +1061,7 @@ forker's own key for a CLI one (409 `provider_offline` when the forker has none)
 with copies of every part of the original's records up to and including that line,
 in time order, keeping their times and `$inbound` stamps, and adds a `produced_by`
 edge from the fork's session to the original's, labelled `chat-fork` and
-`fork-at:<part>:<idx>`; the fork's line is queued once that commits. The original is not
+`fork-at:<part>:<idx>`. The original is not
 written, and a fork point is dropped for a conversation that already has lines. Spend,
 campaigns and the new canvas belong to the forker. `forks` on the original's head counts
 the conversations with such an edge to it, counting only an edge that the key that
@@ -1402,16 +1131,14 @@ that revision. A tombstone keeps the id, and nothing starts the chat again: its
 head, a later post naming it, a `fork` keyed by it or from one of its lines,
 `POST /api/canvases/for-chat/<uuid>` and `POST /api/sessions/start` with its
 `chat:<uuid>` id are each 410 `{"detail": {"code": "chat_deleted", "message":
-...}}`, and an append to one of its sessions is 404, as the session is gone. Lines
-still queued for it go with it. It answers 204, or 404 for a chat the
+...}}`, and an append to one of its sessions is 404, as the session is gone. It
+answers 204, or 404 for a chat the
 caller cannot find. An admin deletes any chat, and so does the key that opened
 every session under its id; any other API key is 403, so a person's browser deletes
 it otherwise. Its starter deletes it while every person's line in it is theirs,
 counting only the sessions the assistant or the starter's own key opened (a line a
-fork copied from its original counts as its original poster's, a line on its way
-in as posted, whether still queued or taken by the assistant in the last 10 minutes
-and not yet recorded in one of those sessions, and a session whose audience they do
-not read as someone else's); once someone else has posted, the starter is 403
+fork copied from its original counts as its original poster's, and a session whose
+audience they do not read as someone else's); once someone else has posted, the starter is 403
 `{"detail": {"code": "chat_has_other_posters"}}`. Anyone else is 403
 `{"detail": {"code": "chat_not_starter"}}`. A session that is locked, or linked to a
 locked row, needs an admin, as a purge does. The chat's forks stay. Its sessions'
@@ -1419,47 +1146,11 @@ locked row, needs an admin, as a purge does. The chat's forks stay. Its sessions
 title to `""`, a description to null): the log is append-only by convention, not
 by any constraint, and a deleted chat's words do not outlive it there.
 
-The answer in writing. While a turn runs, the assistant puts the answer it is
-writing at `PUT /api/sessions/<uuid>/partial`, a few times a second, with
-`{turn, text, done}`: `turn` is 1-64 of `A-Z a-z 0-9 _ -`, new for each line it
-answers; `text` is the answer so far, vetted and clipped, at most 16,384
-characters; `done` is true for the whole answer as posted, put once while its
-record is on its way. A put is refused, in this order: 404
-`{"detail": {"code": "chat_partials_off"}}` when the server streams no answers
-(`TRACKINIZER_CHAT_STREAMING=off`; `on` is the default, anything else stops the
-boot), 403 `not_the_assistant` from anyone but the configured assistant, 404 for
-no session, 404 `not_a_chat` for a session that is no science chat, 403 from a key
-that did not open it, unless the assistant runs on it (a chat a CLI began, switched to
-the assistant: section 1.25), and 409 `session_ended` once it ended. It answers 204.
-`DELETE /api/sessions/<uuid>/partial/<turn>` drops the partial if it is of `<turn>`
-and leaves a later turn's, with the same refusals but the last, and answers 204.
-`GET /api/sessions/<uuid>/partial?after=<seq>&wait_sec=<s>` answers `{seq, partial}`
-to whoever reads the session's records (403 `session_audience` otherwise, asked
-again before a changed partial is answered, so a reader unshared while the read
-was held sees none of what was written since): at once when the held `seq` is not
-`after`, else when the partial changes or expires, else after `wait_sec` (default
-0, at most 25) unchanged. `seq` names the partial held: drawn at random below
-2^53 when the chat held none, then one more per put, so it tells nothing of other
-chats; compare it for equality only. 0 and a null `partial` mean none is held. The
-server holds one partial per chat, in memory, for 60 s after its last put and at
-most 256 at once; none reaches the database, the change log or the event stream,
-and the stored answer is the record. It runs one process. Several would each hold
-their own partials and seqs, and a reader whose reads alternate between them would
-be answered at once every time, in a loop; they would need each session pinned to
-one process, or a channel they share.
-
-When a session ends with Chat lines it never drained, the unread lines of a
-science chat are queued again for the assistant's service session, which
-reopens the conversation's session. The unread lines of an assistant's service
-session that names itself (a `cli_session_id`) stay queued
-for the session its next start resumes; one that does not is released, and the
-lines it held are logged with their senders.
-
 A science chat (a session under a `chat:` id, a user's own chats included, whether or
 not an assistant is configured) holds one part per run. A chat a CLI began keeps its
 session when its starter's canvas switches it to the assistant: the assistant attaches
 to it (`attach` in the start) and runs on it as that run's key did, reading its parts,
-adding its own, draining it, writing its answer in writing, labelling it and using its
+adding its own, writing its answer in writing, labelling it and using its
 canvas, while that canvas stays on the assistant; it takes that chat's lines, as it
 does those of a chat it opened. Only the chat's session its starter's own key opened
 is so; on a CLI the chat is the CLI's alone. A file it holds no part for
@@ -1471,8 +1162,7 @@ any of its fields (its labels and account decide who may use it from a canvas an
 which canvases the assistant may use) and purging it by id are 403 from any key but
 its opening one (an admin may purge it), save that the assistant edits the fields of a
 chat it runs on, and
-`POST /api/sessions/<uuid>/inbound` and
-`/api/messages` refuse it with 409 because a line sent that way names no
+`/api/messages` refuses it with 409 because a line sent that way names no
 conversation. A browser's `/api/messages` send to a science chat, live or idle, is
 refused with the same 409 and the detail "Open its canvas to talk to this
 chat". A conversation has one session per assistant key that has spoken in it,
@@ -1483,7 +1173,7 @@ names the live one, else the newest.
 events (browser only), and is the tab's one stream. Each frame is `data: <json>`
 with `t`, the server's epoch milliseconds: `{type: "canvas", state}`
 on open, after every applied operation, and when the partner changes (a
-session starts or ends, or its poller lease lapses);
+session starts or ends);
 `{type: "navigate", route}`; `{type: "highlight", ids}`; `{type: "chat", hidden}`; and
 `{type: "changed", id}` for each inquiry
 id `/api/web/subscribe` relays. A record appended to a science chat's session
@@ -1621,17 +1311,16 @@ terminals within 45 seconds (the daemon does by default), else 409
 `terminal_not_enabled`. A canvas may hold any number of terminals; a user's 11th
 open within a minute answers 429. Every terminal refusal answers
 `detail: {code, message}`: `terminal_forbidden`, `terminal_not_enabled`,
-`terminal_unconfirmed`, `terminal_limit`, `cli_not_installed`, `files_not_enabled` and
-`chat_run_live`.
+`terminal_unconfirmed`, `terminal_limit`, `cli_not_installed` and `chat_run_live`.
 
 `POST /api/terminals` takes `{host, rows, cols, canvas?, surface?, command?,
-attach?, run_name?, cwd?, kind?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
+attach?, run_name?, cwd?}` and returns `{terminal_id, ticket}`. `command` is `claude` or
 `codex`: the terminal starts the runner of that CLI in place of a login shell, and
 any other value is 422. `attach` (the AgentSession the run re-opens), `run_name`
 (the detached run's name, which the runner's `attach NAME` reaches) and `cwd` need a
 `command`, else 422. A `command` the host's facts do not list is 409
-`cli_not_installed`; one whose `attach` session already has a live terminal, or a
-run that holds its poller lease, is 409 `chat_run_live`. With no `run_name` the server
+`cli_not_installed`; one whose `attach` session already has a live terminal is 409
+`chat_run_live`. With no `run_name` the server
 names the run `chat-<first 8 hex
 of attach>`, or `run-<8 hex of the terminal id>` without one. `cwd` is the folder the run starts in, on the host: absolute or
 `~`-relative, up to 1,024 characters with no control character. The host resolves `~`,
@@ -1639,7 +1328,8 @@ and a folder that is not there ends the terminal with one line saying so. The ho
 `wait` returns the same four fields, leaving out each one that is null, so a host on
 an older wire still opens a login shell. Each host in
 `GET /api/terminals/hosts` carries `clis`, the CLIs its facts name, so a picker
-offers only what is installed, and `files`, whether its facts say `files`.
+offers only what is installed, and `tools`, whether its facts say it serves tools
+(see [Tool connections](#tool-connections)).
 
 `GET /api/terminals/hosts/changes` answers `{version}`, the version of that listing,
 the moment it is not `since`, else when it moves, else after `wait_sec` (at most 25)
@@ -1652,12 +1342,7 @@ reads online changes by time, and moves nothing. The versions are this server
 process's own and a restart forgets them; each process starts them at a random
 number, so a version kept from before answers at once.
 
-`kind` is `shell` (the default) or `files`. A `files` terminal starts no shell: the
-host answers file requests the browser sends as `INPUT` with `OUTPUT`, over the same
-sockets, ring and limits, and the server reads neither. It takes no `canvas` and no
-`command` (422), only from the owner's browser, on a host whose facts say `files`,
-else 409 `files_not_enabled`. The host's `wait` carries `kind: files` for one and no
-`kind` for a shell. `surface` names the view that opened it;
+`surface` names the view that opened it;
 `GET /api/terminals/hosts?canvas=ID` lists the caller's live terminals for
 that canvas as `terminals` (`terminal_id`, `host`, `surface`), oldest first. The
 ticket is 256 random bits, valid once for 30 seconds; it never travels in a URL.
@@ -1711,9 +1396,13 @@ GET    /api/hosts/<uuid>/tools/wait?instance=<uuid>&wait_sec=25
 WS     /api/hosts/<uuid>/tools/<uuid>/ws?instance=<uuid>
 ```
 
-How an agent reaches the tools of a connected host. Only the configured assistant's
-key opens the first socket, naming an active writer or admin who owns the host, which
-must not be revoked, be confirmed and report `tools: true`; how lately it was heard from
+How an agent reaches the tools of a connected host. A writer's or admin's own key opens
+the first socket for a host of its own account; the configured assistant's key opens it
+naming an active writer or admin who owns the host. A writer's or admin's own browser
+opens it too, for a host of their own, signed in from this server's pages (its `Origin`,
+as for a terminal), naming no other `asker`: a file explorer reads the host's files with
+its tools, each read a call the server logs. Its `Hello` carries no token. The host must
+not be revoked, be confirmed and report `tools: true`; how lately it was heard from
 is not asked, as its host's dial-back says whether it is up. The daemon holds the wait,
 which returns `{connection_id}` the moment an agent arrives, and dials back with its host
 credential within 20 seconds. A host holds 16 connections at once. The server relays binary
@@ -1721,7 +1410,7 @@ frames of at most 64 KiB and keeps no buffer, so either socket dropping ends the
 the agent reconnects with a new one. The server asks the whole rule again every 60
 seconds, with whether the attached host is still the host's current instance, and
 ends a connection it no longer holds for: a revoked key or a disabled or demoted asker loses
-the host within that time. The dial-back, the connections a host holds and the sweep's
+the host within that time, a browser's as a key's. The dial-back, the connections a host holds and the sweep's
 interval are the server's settings (`Config.tool_dial_back_sec`,
 `tool_connections_per_host`, `tool_sweep_sec`); the numbers here are their defaults.
 

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
-import type { FeedEvent } from "../api/sessions";
-import { broadcastTargets, parseLine, receipt } from "./send";
+import type { FeedActorFacet, FeedEvent } from "../api/sessions";
+import { broadcastTargets, parseLine, receipt, sessionOf } from "./send";
 
 /** A feed event from `actor`'s session, in `rooms`. */
 function said(actor: string, rooms: string[] = []): FeedEvent {
@@ -93,23 +93,52 @@ test("a line that cannot be sent says why", () => {
   });
 });
 
-test("a receipt counts the sessions reached and names the targets no live session matched; any failure fails the send", () => {
-  const codex = { actor: "codex", room: "ops" };
+test("a receipt counts the sessions reached, each once, and names the targets no live session took; any failure fails the line", () => {
+  const ops = { actor: "codex", room: "ops" };
+  const lab = { actor: "codex", room: "lab" };
+  const claude = { actor: "claude", room: null };
   const nobody = { actor: "nobody", room: null };
-  const reached = (ids: number) => ({
-    status: "fulfilled" as const,
-    value: { delivered: Array.from({ length: ids }, (_, k) => `id-${k}`) },
-  });
-  expect(receipt([codex], [reached(1)])).toBe("Sent to 1 session");
-  expect(receipt([codex, nobody], [reached(2), reached(0)])).toBe(
-    "Sent to 2 sessions; no live session for @nobody",
-  );
+  expect(receipt([{ target: ops, reached: "s1" }])).toBe("Sent to 1 session");
+  expect(
+    receipt([
+      { target: ops, reached: "s1" },
+      { target: lab, reached: "s1" },
+      { target: claude, reached: "s2" },
+      { target: nobody, reached: null },
+    ]),
+  ).toBe("Sent to 2 sessions; no live session for @nobody");
   expect(() =>
-    receipt(
-      [codex, nobody],
-      [reached(1), { status: "rejected", reason: new Error("timed out") }],
-    ),
-  ).toThrow(
-    "Not sent to @nobody (timed out). Retry sends it again; no session gets a message twice.",
-  );
+    receipt([
+      { target: ops, reached: "s1" },
+      { target: nobody, reached: new Error("timed out") },
+    ]),
+  ).toThrow("Not sent to @nobody (timed out). Sent to 1 session.");
+});
+
+test("a target names its agent's session while it has not ended and is in the room it names", () => {
+  const agent = (
+    actor: string,
+    session_id: string,
+    rooms: string[],
+    ended: string | null = null,
+  ) =>
+    ({
+      actor,
+      session_id,
+      rooms,
+      ended,
+      cli: null,
+      count: 1,
+      conversation: 1,
+      last: "2026-10-01T10:00:00Z",
+    }) as FeedActorFacet;
+  const agents = [
+    agent("codex", "s1", ["ops"]),
+    agent("claude", "s2", [], "2026-10-01T11:00:00Z"),
+  ];
+  expect(sessionOf({ actor: "codex", room: null }, agents)).toBe("s1");
+  expect(sessionOf({ actor: "codex", room: "ops" }, agents)).toBe("s1");
+  expect(sessionOf({ actor: "codex", room: "lab" }, agents)).toBeNull();
+  expect(sessionOf({ actor: "claude", room: null }, agents)).toBeNull();
+  expect(sessionOf({ actor: "nobody", room: null }, agents)).toBeNull();
 });

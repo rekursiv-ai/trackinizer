@@ -34,10 +34,8 @@ from trackinizer.wire.wire_session_ir import (
     ManifestBody,
     PartBody,
     RecordBody,
-    SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import (
-    InboundDrainItem,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
@@ -55,6 +53,7 @@ if TYPE_CHECKING:
         MetricMaskClause,
         MetricRankRow,
     )
+    from trackinizer.wire.wire_sessions import MessageKind, SessionAgent
     from trackinizer.wire.wire_terminals import OpenTerminal
 
 
@@ -843,8 +842,6 @@ class FakeClient:
         name: str = "",
         manifest: ManifestBody | None = None,
         records: Sequence[RecordBody] = (),
-        restart: bool = False,
-        slash_commands: Sequence[SlashCommandBody] = (),
     ) -> AppendRecordsResponse:
         """Record an IR append; resolve a part per file, as the server does.
 
@@ -860,8 +857,6 @@ class FakeClient:
                     "name": name,
                     "manifest": manifest,
                     "records": records,
-                    "restart": restart,
-                    "slash_commands": slash_commands,
                 },
             ),
         )
@@ -870,7 +865,6 @@ class FakeClient:
             part=part,
             written=len(list(records)),
             skipped=0,
-            slash_commands=len(list(slash_commands)),
         )
 
     def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
@@ -1005,45 +999,6 @@ class FakeClient:
         self.calls.append(("session_end", (session_id, body), {}))
         return SessionEndResponse(id=session_id)
 
-    def enqueue_inbound(
-        self,
-        session_id: uuid.UUID,
-        text: str,
-    ) -> int:
-        """Enqueue inbound."""
-        self.calls.append(("enqueue_inbound", (session_id, text), {}))
-        return 1
-
-    def drain_inbound(
-        self,
-        session_id: uuid.UUID,
-        *,
-        wait_sec: float = 0.0,
-        run: str | None = None,
-        host: str | None = None,
-        cwd: str | None = None,
-        cli: str | None = None,
-        instance: str | None = None,
-        runs: bool = False,
-    ) -> list[InboundDrainItem]:
-        """Drain inbound."""
-        self.calls.append(
-            (
-                "drain_inbound",
-                (session_id,),
-                {
-                    "wait_sec": wait_sec,
-                    "run": run,
-                    "host": host,
-                    "cwd": cwd,
-                    "cli": cli,
-                    "instance": instance,
-                    "runs": runs,
-                },
-            ),
-        )
-        return []
-
     def terminal_hosts(
         self,
         *,
@@ -1071,6 +1026,31 @@ class FakeClient:
     ) -> list[uuid.UUID]:
         """Send message."""
         self.calls.append(("send_message", (actor, text), {"room": room}))
+        return [self.target_id]
+
+    def message_agent(
+        self,
+        to: SessionAgent,
+        text: str,
+        *,
+        from_session: uuid.UUID | None = None,
+        from_label: str = "",
+        booked: MessageKind | None = None,
+        key: uuid.UUID | None = None,
+    ) -> list[uuid.UUID]:
+        """Message agent."""
+        self.calls.append(
+            (
+                "message_agent",
+                (to, text),
+                {
+                    "from_session": from_session,
+                    "from_label": from_label,
+                    "booked": booked,
+                    "key": key,
+                },
+            ),
+        )
         return [self.target_id]
 
     def read_canvas(self, canvas_id: uuid.UUID) -> dict[str, PlainTree]:

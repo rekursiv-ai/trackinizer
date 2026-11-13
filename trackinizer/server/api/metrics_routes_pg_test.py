@@ -22,7 +22,6 @@ from trackinizer.server.api.conftest import (
     install_identity,
     make_test_identity,
 )
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.wire.bodies import SubmitExperiment
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_metrics_query import METRIC_RANK_PATH
@@ -45,7 +44,6 @@ async def served(integ_store: Store) -> AsyncIterator[httpx2.AsyncClient]:
     """Serve the whole app on the real engine, as a viewer-capable writer."""
     app.state.engine = integ_store.engine
     app.state.store = integ_store
-    app.state.inbound = InboundQueue()
     install_identity(make_test_identity(api_key_id=None))
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)
     try:
@@ -56,7 +54,7 @@ async def served(integ_store: Store) -> AsyncIterator[httpx2.AsyncClient]:
             yield http
     finally:
         clear_identity_override()
-        del app.state.engine, app.state.store, app.state.inbound
+        del app.state.engine, app.state.store
 
 
 async def test_rank_filter_regex_stops_at_the_statement_timeout(

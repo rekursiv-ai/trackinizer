@@ -28,7 +28,7 @@ from difflib import unified_diff
 from io import StringIO
 from itertools import islice, repeat
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, TextIO, cast, override
+from typing import TYPE_CHECKING, Final, Literal, Protocol, TextIO, cast, override
 
 import argparse
 import json
@@ -41,6 +41,7 @@ import time
 
 from treekle import json_loads
 
+from trackinizer.lib import zstd_compat
 from trackinizer.sagent.scripts.convert_session import (
     claude,
     codex,
@@ -68,11 +69,9 @@ type Format = str
 # than held as a module global.
 #
 # NOT ``sh``. A captured stream is not a CLI dialect -- it is whatever a
-# wrapped process printed -- and its reader lives with the tool that spawns
-# that process (``trackinizer.runs.adapters.scrape``). A converter in
-# ``lib`` cannot import it, and should not: converting INTO a scrape was always
-# lossy (a stream has no shape for a tool call), and converting out of one
-# yields text no CLI will load.
+# wrapped process printed. Converting INTO a scrape was always lossy (a stream
+# has no shape for a tool call), and converting out of one yields text no CLI
+# will load.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -250,12 +249,12 @@ def convert_file(
             # a stored-but-unconsumed one would resume on a closed handle.
             # ``newline=""``: translating ``\r\n`` made the reader see bytes
             # the file does not hold, and a CRLF file then verified as exact.
-            with part.open(encoding="utf-8", newline="") as handle:
+            with open_transcript(part, newline="") as handle:
                 stream = list(_adapter(found).normalize(handle))
         except (OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
             return FileResult(path=path, error=f"{type(exc).__name__}: {exc}")
         streams.append(stream)
-        filed[id(stream)] = part.name
+        filed[id(stream)] = transcript_name(part)
     detected = found_formats[0]
     into = target or detected
     # By the provider's clock first: its records carry stamps to the
@@ -336,9 +335,142 @@ def detect_format(native: str) -> Format:
         keys = set(record)
         if "payload" in keys:
             return "codex"
-        if {"sessionId", "uuid", "parentUuid", "agentId"} & keys:
+        # Every line of a claude transcript names its ``type``. Claude's prompt
+        # history, ``history.jsonl`` beside the projects, names a ``sessionId`` and
+        # no ``type``: without the type, a walk of ``~/.claude`` read it as a session.
+        if "type" in keys and {"sessionId", "uuid", "parentUuid", "agentId"} & keys:
             return "claude"
     return ""
+
+
+# A file that cannot be READ names no format, rather than raising. Sniffing is what
+# DISCOVERY now uses to tell a gemini document from claude's own ``.json`` sidecars, and
+# discovery runs before the per-file error handling ``convert_file`` has -- so one non-
+# UTF-8 blob or one unreadable file anywhere under a corpus root aborted the whole run.
+def sniff(path: Path) -> Format:
+    """Return the format that wrote ``path``, reading only its head.
+
+    Args:
+      path: Any file.
+
+    Returns:
+      source: What :func:`detect_format` reads in its first 64 lines; ``""`` when it
+        names none, or the file cannot be read as UTF-8.
+
+    """
+    try:
+        return detect_format(_head(path))
+    except (OSError, ValueError):
+        return ""
+
+
+# ``.json`` too: a gemini session is ONE object rather than a line stream, so a walk
+# that globbed only ``*.jsonl`` reported a directory of them as holding no sessions at
+# all. Not in ``_beneath``, which asks whether a directory's files are one session --
+# two gemini documents are two.
+#
+# Sniffed rather than taken on the extension, unlike ``.jsonl``: claude keeps its own
+# sidecars beside the transcripts -- ``sessions-index.json``, ``agent-<id>.meta.json``
+# -- and claiming those reported 46 files as sessions that failed to convert because
+# they never were any. A compressed ``.jsonl.zst`` is sniffed too: one that is no
+# session, or no zstandard, is passed over.
+def transcripts(directory: Path) -> list[Path]:
+    """Return every transcript file beneath ``directory``, nesting included, by path.
+
+    Args:
+      directory: Any folder, such as a CLI's home or a copy of one.
+
+    Returns:
+      paths: Each ``.jsonl`` file, and each ``.json`` or ``.jsonl.zst`` file that
+        sniffs as a session; macOS's ``._`` resource files left out.
+
+    """
+    return sorted(
+        candidate
+        for pattern in (*_LINE_STREAMS, "*.json")
+        for candidate in directory.rglob(pattern)
+        if _transcript(candidate)
+    )
+
+
+_LINE_STREAMS: Final = ("*.jsonl", "*.jsonl.zst")
+"""What a transcript written a line at a time is named: as written, or compressed in
+place as codex keeps its older rollouts. Every walk that lists ``.jsonl`` lists both,
+or a directory holding the two kinds drops the compressed ones without a word."""
+
+
+# Codex compresses its older rollouts in place, ``rollout-<ISO>-<uuid>.jsonl`` to
+# ``.jsonl.zst``: the same transcript, read through the decompressor.
+def open_transcript(
+    path: Path,
+    *,
+    errors: str = "strict",
+    newline: str | None = None,
+) -> TextIO:
+    """Open a transcript to read as UTF-8 text, decompressing one named ``*.zst``.
+
+    Args:
+      path: A transcript file, compressed or not.
+      errors: How bytes that are no UTF-8 are taken, as ``open`` takes it.
+      newline: How line endings are read, as ``open`` takes it.
+
+    Returns:
+      handle: Its text. A compressed file's bad frame raises ``ValueError`` as it
+        is read.
+
+    """
+    if path.suffix == ".zst":
+        return zstd_compat.open_text(
+            path,
+            encoding="utf-8",
+            errors=errors,
+            newline=newline,
+        )
+    return path.open(encoding="utf-8", errors=errors, newline=newline)
+
+
+def transcript_name(path: Path) -> str:
+    """Return the name ``path`` has uncompressed, which names what it holds.
+
+    Args:
+      path: A transcript file, compressed or not.
+
+    Returns:
+      name: Its name, less a ``.zst`` suffix.
+
+    """
+    return path.name.removesuffix(".zst")
+
+
+# A SIGKILLed parent runs no cleanup, and CPython leaves the pool behind
+# (python/cpython#111873, open, reproduced on Linux and macOS). The workers are children
+# of a FORKSERVER whose argv names neither this program nor its arguments, so ``pkill
+# -f`` on the obvious pattern misses them and they keep whatever they were holding --
+# measured here at 14 GB across 11 orphans.
+#
+# The launcher's pid is passed as a VALUE because nothing about it is inherited: under
+# the default ``forkserver`` start method a worker's ``getppid()`` is the forkserver,
+# and a pipe fd handed to the initializer reads EOF immediately, since the worker was
+# forked from the forkserver rather than from the process holding the write end. Both
+# were measured before this was written.
+#
+# Polling, not signalling: ``prctl(PR_SET_PDEATHSIG)`` is Linux-only and this runs on
+# macOS too. The cost is one ``kill(pid, 0)`` per ``poll_sec`` per worker.
+def die_with_parent(launcher: int, poll_sec: float) -> None:
+    """Exit this worker process when the process that started its pool goes away.
+
+    A pool's ``initializer``, given ``(os.getpid(), poll_sec)`` from the launcher.
+
+    Args:
+      launcher: The pid of the process that started the pool.
+      poll_sec: How often to check that it is still alive.
+
+    """
+    threading.Thread(
+        target=_watch_launcher,
+        args=(launcher, poll_sec),
+        daemon=True,
+    ).start()
 
 
 def _is_gemini_document(text: str) -> bool:
@@ -511,7 +643,7 @@ def _convert_all(
     if running > 1:
         with ProcessPoolExecutor(
             max_workers=running,
-            initializer=_die_with_parent,
+            initializer=die_with_parent,
             initargs=(os.getpid(), parent_poll_sec),
         ) as executor:
             return _collect(
@@ -529,29 +661,6 @@ def _convert_all(
         (convert_file(path, source, target, want_diff, destination) for path in paths),
         fail_fast=fail_fast,
     )
-
-
-# A SIGKILLed parent runs no cleanup, and CPython leaves the pool behind
-# (python/cpython#111873, open, reproduced on Linux and macOS). The workers are children
-# of a FORKSERVER whose argv names neither this program nor its arguments, so ``pkill
-# -f`` on the obvious pattern misses them and they keep whatever they were holding --
-# measured here at 14 GB across 11 orphans.
-#
-# The launcher's pid is passed as a VALUE because nothing about it is inherited: under
-# the default ``forkserver`` start method a worker's ``getppid()`` is the forkserver,
-# and a pipe fd handed to the initializer reads EOF immediately, since the worker was
-# forked from the forkserver rather than from the process holding the write end. Both
-# were measured before this was written.
-#
-# Polling, not signalling: ``prctl(PR_SET_PDEATHSIG)`` is Linux-only and this runs on
-# macOS too. The cost is one ``kill(pid, 0)`` per ``poll_sec`` per worker.
-def _die_with_parent(launcher: int, poll_sec: float) -> None:
-    """Exit this worker when the run that started it goes away."""
-    threading.Thread(
-        target=_watch_launcher,
-        args=(launcher, poll_sec),
-        daemon=True,
-    ).start()
 
 
 def _watch_launcher(launcher: int, poll_sec: float) -> None:
@@ -612,29 +721,13 @@ def _roots(path: Path) -> list[Path]:
         return []
     if not path.is_dir():
         return [path]
-    if _ordered(
-        candidate
-        for candidate in path.glob("*.jsonl")
-        if candidate.is_file() and not candidate.name.startswith("._")
+    if any(
+        _transcript(candidate)
+        for pattern in _LINE_STREAMS
+        for candidate in path.glob(pattern)
     ):
         return [path]
-    # ``.json`` too: a gemini session is ONE object rather than a line stream,
-    # so a walk that globbed only ``*.jsonl`` reported a directory of them as
-    # holding no sessions at all. Not in ``_transcripts``, which asks whether a
-    # directory's files are one session -- two gemini documents are two.
-    #
-    # Sniffed rather than taken on the extension, unlike ``.jsonl``: claude
-    # keeps its own sidecars beside the transcripts -- ``sessions-index.json``,
-    # ``agent-<id>.meta.json`` -- and claiming those reported 46 files as
-    # sessions that failed to convert because they never were any.
-    found = sorted(
-        candidate
-        for pattern in ("*.jsonl", "*.json")
-        for candidate in path.rglob(pattern)
-        if candidate.is_file()
-        and not candidate.name.startswith("._")
-        and (candidate.suffix == ".jsonl" or _sniff(candidate))
-    )
+    found = transcripts(path)
     claimed = {part for root in found for part in _session_parts(root)[1:]}
     return [root for root in found if root not in claimed]
 
@@ -810,7 +903,7 @@ def _compared(
     # forked from, while ``parts`` is oldest-first, so a fused session's parts
     # come back in a different order than the files were read in. Comparing
     # position for position then measured every part against the wrong file.
-    by_name = {part.name: part for part in parts}
+    by_name = {transcript_name(part): part for part in parts}
     for index, streamed_part in enumerate(unfuse(records)):
         # Materialized per PART, not per session: this loop rewrites the part
         # and then, when the bytes differ, normalizes the rewrite to measure
@@ -831,7 +924,7 @@ def _compared(
             matched, streamed = _rewrites(part, source_path, into)
             output_bytes += streamed
             if matched:
-                written.append((name or source_path.name, ""))
+                written.append((name or transcript_name(source_path), ""))
                 continue
             # Rewritten in full for the drop count and the diff; the comparison
             # below then fails as the stream's did.
@@ -848,8 +941,11 @@ def _compared(
             byte_exact = False
             lost.update(_dropped(part, text, into))
             if want_diff and not diff and source_path is not None:
-                diff = _diff(source_path.read_bytes().decode(), text)
-        written.append((name or (source_path.name if source_path else ""), text))
+                with open_transcript(source_path) as source:
+                    diff = _diff(source.read(), text)
+        written.append(
+            (name or (transcript_name(source_path) if source_path else ""), text),
+        )
     # Only when the caller wants it: ``verify`` asks whether the bytes agree,
     # and rendering a 273 MB session to answer that costs 2.6 GB.
     text = ""
@@ -920,12 +1016,13 @@ def _streamed(
 # -- 4 sessions became 1.
 def _destination(out_dir: Path, path: Path, suffix: str) -> Path:
     """Return a unique output path for one session."""
+    own = Path(transcript_name(path)).stem
     for depth in range(len(path.parts)):
-        stem = "-".join([*path.parts[-depth - 1 : -1], path.stem])
+        stem = "-".join([*path.parts[-depth - 1 : -1], own])
         candidate = out_dir / f"{stem.replace('/', '-')}{suffix}"
         if not candidate.exists():
             return candidate
-    return out_dir / f"{path.stem}-{abs(hash(str(path)))}{suffix}"
+    return out_dir / f"{own}-{abs(hash(str(path)))}{suffix}"
 
 
 class _Comparing(StringIO):
@@ -938,7 +1035,7 @@ class _Comparing(StringIO):
     """
 
     def __init__(self, path: Path) -> None:
-        self._handle = path.open(encoding="utf-8", newline="")
+        self._handle = open_transcript(path, newline="")
         self._pending = ""
         self.matched = True
         self.written = 0
@@ -984,27 +1081,16 @@ def _rewrites(
 # the answer is decided by the first line that differs.
 def _matches(path: Path, text: str) -> bool:
     """Whether ``path`` holds exactly ``text``, without reading it whole."""
-    if path.stat().st_size != len(text.encode("utf-8")):
+    # A compressed file's size says nothing of its text's.
+    if path.suffix != ".zst" and path.stat().st_size != len(text.encode("utf-8")):
         return False
     at = 0
-    with path.open(encoding="utf-8", newline="") as handle:
+    with open_transcript(path, newline="") as handle:
         for line in handle:
             if not text.startswith(line, at):
                 return False
             at += len(line)
     return at == len(text)
-
-
-# A file that cannot be READ names no format, rather than raising. Sniffing is what
-# DISCOVERY now uses to tell a gemini document from claude's own ``.json`` sidecars, and
-# discovery runs before the per-file error handling ``convert_file`` has -- so one non-
-# UTF-8 blob or one unreadable file anywhere under a corpus root aborted the whole run.
-def _sniff(path: Path) -> Format:
-    """Return the format that wrote ``path``, reading only its head."""
-    try:
-        return detect_format(_head(path))
-    except (OSError, UnicodeDecodeError):
-        return ""
 
 
 # Enough lines to find one carrying a key that names the provider, and no more: a whole
@@ -1013,7 +1099,7 @@ def _sniff(path: Path) -> Format:
 # it by its keys' spelling instead, wherever the head ends.
 def _head(path: Path) -> str:
     """Return the first 64 lines of ``path``."""
-    with path.open(encoding="utf-8") as handle:
+    with open_transcript(path) as handle:
         return "".join(islice(handle, 64))
 
 
@@ -1046,8 +1132,9 @@ def _beneath(directory: Path) -> list[Path]:
     """Every transcript under ``directory``, nesting included, oldest first."""
     return _ordered(
         path
-        for path in directory.rglob("*.jsonl")
-        if path.is_file() and not path.name.startswith("._")
+        for pattern in _LINE_STREAMS
+        for path in directory.rglob(pattern)
+        if _transcript(path)
     )
 
 
@@ -1127,3 +1214,12 @@ def _semantic_value(value: object) -> object:
         sequence = cast(list[object] | tuple[object, ...], value)
         return tuple(_semantic_value(item) for item in sequence)
     return value
+
+
+def _transcript(candidate: Path) -> bool:
+    """Whether a file a walk found is a transcript: ``.jsonl``, else one that sniffs."""
+    return (
+        candidate.is_file()
+        and not candidate.name.startswith("._")
+        and (candidate.suffix == ".jsonl" or bool(sniff(candidate)))
+    )

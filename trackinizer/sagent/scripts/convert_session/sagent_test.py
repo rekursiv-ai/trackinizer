@@ -14,8 +14,9 @@ import pytest
 
 from trackinizer.sagent.scripts.convert_session import sagent
 from trackinizer.sagent.scripts.convert_session.convert import detect_format, main
-from trackinizer.sagent.session.jsonl import record_line
+from trackinizer.sagent.session.jsonl import read_record, record_line
 from trackinizer.sagent.session.types import (
+    RENAMED_KINDS,
     AssistantMessage,
     ContextClear,
     IncompleteRecord,
@@ -161,6 +162,26 @@ def test_a_message_names_sagent_only_with_a_descriptor_or_a_role() -> None:
     assert sagent.is_sagent(json.dumps({"kind": "message", "descriptor": "x"}) + "\n")
     assert not sagent.is_sagent(json.dumps({"kind": "message"}) + "\n")
     assert not sagent.is_sagent(json.dumps({"kind": "other", "role": "user"}) + "\n")
+
+
+# Today's journals are sagent's own: every line tagged with a record type is read as
+# sagent reads it, a tool call stored as a record class it once had included.
+@pytest.mark.parametrize("former", sorted(RENAMED_KINDS))
+def test_a_record_stored_under_a_former_name_reads_as_today_s(former: str) -> None:
+    line = json.dumps({"py/object": former, "call_id": "c1"}) + "\n"
+
+    [record] = sagent.normalize(StringIO(line))
+
+    assert isinstance(record, ToolResult)
+    assert record.call_id == "c1"
+    assert record == read_record(line.encode())
+    assert sagent.is_sagent(line)
+
+
+def test_a_line_tagged_with_a_type_sagent_never_had_reads_as_sagent_reads_it() -> None:
+    line = '{"py/object": "NoSuchRecord", "content": "x"}\n'
+
+    assert list(sagent.normalize(StringIO(line))) == [read_record(line.encode())]
 
 
 if __name__ == "__main__":

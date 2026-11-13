@@ -493,7 +493,7 @@ class TestLogLevelReachesUvicorn:
 class TestMainAppliesEveryStartupInvariant:
     """One process serves everything, so ``main`` owns every startup step.
 
-    There is no worker fan-out: the inbound queue and the subscriber sweep are
+    There is no worker fan-out: the live session relay and the replay receipts are
     in-process state, so uvicorn is handed the configured app object rather
     than an import string it would re-import in forked children. Anything not
     applied here is applied nowhere.

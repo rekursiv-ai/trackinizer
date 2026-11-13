@@ -70,7 +70,6 @@ requireTool(
 mkdirSync(OUT, { recursive: true });
 const served = await serveSeeded(8829);
 try {
-  const agent = standIn(served.origin, served.seeded.session);
   const frames: Frame[] = [];
   const parts: Part[] = [];
   // No launch deadline of our own: Playwright still fails at once if the browser
@@ -80,7 +79,6 @@ try {
     await record(browser, served, { frames, parts });
   } finally {
     await browser.close();
-    await agent.stop();
   }
   for (const line of encode(frames, parts, served.data)) console.log(line);
 } finally {
@@ -126,7 +124,7 @@ async function record(
   await showGraph(page, seeded, part);
   await showIssue(page, part);
   await showArtifact(page, part);
-  await showConsole(page, seeded, part);
+  await showConsole(page, origin, seeded, part);
   await page.screencast.stop();
   await context.close();
 }
@@ -254,7 +252,12 @@ async function showArtifact(page: Page, part: Mark): Promise<void> {
 }
 
 /** Pick the agent in the console, ask it through @, and wait for its answer. */
-async function showConsole(page: Page, seeded: Seeded, part: Mark): Promise<void> {
+async function showConsole(
+  page: Page,
+  origin: string,
+  seeded: Seeded,
+  part: Mark,
+): Promise<void> {
   part("console", { speed: 2 });
   await clickNav(page, "Console");
   await page.locator(".console-line").last().waitFor();
@@ -275,40 +278,18 @@ async function showConsole(page: Page, seeded: Seeded, part: Mark): Promise<void
   await page.keyboard.type(QUESTION, { delay: 45 });
   await page.waitForTimeout(400);
   await page.keyboard.press("Enter");
+  // The messaged session's run is played by this script: no agent process serves
+  // it, so the script appends the turn the run would, the message as typed into the
+  // CLI and then the reply.
+  const { email } = (await (await fetch(`${origin}/api/me/profile`)).json()) as {
+    email: string;
+  };
+  await answer(origin, seeded.session, { text: QUESTION, source: email });
   await page
     .locator(".console-line")
     .filter({ hasText: REPLY.slice(0, 40) })
     .waitFor({ timeout: 30_000 });
   await page.waitForTimeout(2_400);
-}
-
-/**
- * The messaged session's run, played by this script: it waits on the
- * session's inbound queue, as the agent runner does, which marks the session polled
- * so the console may message it, and answers each message as the session's
- * next two records: the message as typed into the CLI, then the reply.
- */
-function standIn(origin: string, session: string): { stop(): Promise<void> } {
-  const stopped = new AbortController();
-  const loop = (async () => {
-    while (!stopped.signal.aborted) {
-      const drained = await fetch(
-        `${origin}/api/sessions/${session}/inbound?wait_sec=5`,
-        { signal: stopped.signal },
-      ).catch(() => null);
-      if (!drained?.ok) continue;
-      const { messages } = (await drained.json()) as {
-        messages: { text: string; source: string }[];
-      };
-      for (const message of messages) await answer(origin, session, message);
-    }
-  })();
-  return {
-    stop: async () => {
-      stopped.abort();
-      await loop;
-    },
-  };
 }
 
 /** Append `message` and the reply to `session`'s first file, after a moment's thought. */

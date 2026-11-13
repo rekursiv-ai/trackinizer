@@ -29,8 +29,10 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from treekle import from_plain, immutable
 
 from trackinizer.server.api._deps import (
+    get_session_relay,
     get_store,
 )
+from trackinizer.server.api._routes_shared import refusal
 from trackinizer.server.api.session_access import (
     require_session_access,
     require_session_write_access,
@@ -39,7 +41,10 @@ from trackinizer.server.api.session_access import (
 from trackinizer.server.api.session_identity import require_session
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
-from trackinizer.server.store.session_ir import SlashCommandRow
+from trackinizer.server.store.session_ir import (
+    PartFile,
+    StalePartError,
+)
 from trackinizer.server.visuals.session_usage import SessionUsage, session_usage
 from trackinizer.types.session_records import served_payload
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
@@ -54,6 +59,7 @@ from trackinizer.wire.wire_session_ir import (
     RecentTurnBody,
     RecordBody,
 )
+from trackinizer.wire.wire_session_relay import STALE_PART
 
 
 if TYPE_CHECKING:
@@ -76,23 +82,19 @@ async def append_session_records_route(
 ) -> AppendRecordsResponse:
     """Append one file's records, resolving its part server-side.
 
-    The manifest is upserted BEFORE the records, deliberately: it is what
-    assigns the part number the records are keyed by, and it bounds every
-    reader (``idx < records``). Writing records first would briefly expose
-    rows no manifest accounts for.
+    The manifest and the records are stored in one transaction, the manifest
+    first: it assigns the part number the records are keyed by, and it bounds
+    every reader (``idx < records``). Once it commits, each record it wrote is
+    pushed to the session's open viewers, as ``GET .../records`` returns it.
 
-    A body naming no file carries only slash commands -- a command is typed
-    into the SESSION, and one submitted before the CLI has written a
-    transcript has no part to belong to.
-
-    A science chat holds one part per run that answered in it, and the key whose
-    first write opened a part alone writes it after: another key's write is 403,
-    so one run never rewrites another's lines.
+    A ``sagent`` journal is written only to the session's newest part or a new
+    one: another process continued the session in a newer part, and an older one
+    is refused with 409 ``stale_part``.
 
     Args:
       session_id: AgentSession ID to append to.
       request: FastAPI request (carries auth and store).
-      body: Records, manifest, and slash commands to append.
+      body: Records and manifest to append.
       identity: Authenticated writer or viewer who opened this session.
 
     Returns:
@@ -109,42 +111,50 @@ async def append_session_records_route(
     if session.ended is not None:
         _ = await revive_if_reaped(store, session_id=session_id)
     manifest = body.manifest
-    part = (
-        None
-        if manifest is None
-        else await store.upsert_session_manifest(
+    try:
+        appended = await store.append_session_part(
             session_id,
-            name=body.name,
-            metadata=immutable(from_plain(manifest.metadata, dict[str, object])),
-            ir_id=manifest.ir_id,
-            format=manifest.format,
-            records=manifest.records,
+            file=None
+            if manifest is None
+            else PartFile(
+                name=body.name,
+                metadata=immutable(from_plain(manifest.metadata, dict[str, object])),
+                ir_id=manifest.ir_id,
+                format=manifest.format,
+                records=manifest.records,
+            ),
+            # The part each row names is the one its file resolves to.
+            rows=[record.row(session_id, 0) for record in body.records],
             api_key_id=identity.api_key_id,
         )
-    )
-    written, skipped, slash = await store.append_session_records(
-        session_id,
-        [record.row(session_id, part or 0) for record in body.records],
-        restart=body.restart,
-        slash_commands=[
-            SlashCommandRow(
-                timestamp=command.timestamp,
-                command=command.command,
-                args=command.args,
-            )
-            for command in body.slash_commands
-        ],
-    )
+    except StalePartError as error:
+        raise refusal(409, code=STALE_PART, message=str(error)) from error
+    # Stored first, then read back and pushed: a viewer is told only of what a read
+    # returns, the part's bound included. Only when one watches: rebuilding every
+    # record of an upload no one follows was most of an append's time.
+    relay = get_session_relay(request)
+    if appended.part is not None and appended.written and relay.watched(session_id):
+        shown = set(appended.written)
+        stored = await store.read_session_records(
+            session_id,
+            part=appended.part,
+            after_idx=min(shown) - 1,
+            limit=max(shown) - min(shown) + 1,
+        )
+        relay.publish_records(
+            session_id,
+            part=appended.part,
+            records=[_served(row) for row in stored if row.idx in shown],
+        )
     await store.record_session_seen(
         session_id,
         at=datetime.now(UTC),
         polled=False,
     )
     return AppendRecordsResponse(
-        part=part,
-        written=written,
-        skipped=skipped,
-        slash_commands=slash,
+        part=appended.part,
+        written=len(appended.written),
+        skipped=appended.skipped,
     )
 
 
@@ -313,16 +323,7 @@ async def read_session_records_route(
         limit=limit,
         plaintext_only=plaintext_only,
     )
-    # A legacy tool-call row holds a retired record class's payload, and clients read
-    # only the current ``ToolResult`` shape, so each payload is converted on the way
-    # out. The stored row is not rewritten.
-    return ReadRecordsResponse(
-        part=part,
-        records=[
-            RecordBody.of(replace(row, payload=served_payload(row.kind, row.payload)))
-            for row in rows
-        ],
-    )
+    return ReadRecordsResponse(part=part, records=[_served(row) for row in rows])
 
 
 @router.get("/api/sessions/{session_id}/turns")
@@ -371,6 +372,14 @@ async def read_recent_session_turns_route(
             for turn in turns
         ],
     )
+
+
+# A legacy tool-call row holds a retired record class's payload, and clients read
+# only the current ``ToolResult`` shape, so each payload is converted on the way
+# out, to a reader and to a viewer alike. The stored row is not rewritten.
+def _served(row: SessionRecordRow) -> RecordBody:
+    """Return ``row`` as a client reads it, a legacy payload in the current shape."""
+    return RecordBody.of(replace(row, payload=served_payload(row.kind, row.payload)))
 
 
 # A client older than short class tags names each class by its import path, which no

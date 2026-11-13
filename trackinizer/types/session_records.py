@@ -80,6 +80,7 @@ __all__ = [
     "SessionRecordRow",
     "payload_record",
     "record_kind",
+    "record_time",
     "search_text",
     "served_payload",
     "stored_payload",
@@ -198,6 +199,21 @@ def stored_payload(record: TraxRecord) -> Mapping[str, PlainTree]:
 def payload_record[R: TraxRecord](payload: object, target: type[R]) -> R:
     """Return the ``target`` record :func:`stored_payload` wrote as ``payload``."""
     return stored_record(payload, target, classes=_CLASSES)
+
+
+def record_time(record: object) -> datetime | None:
+    """Return when ``record`` says it happened, as its row's ``timestamp`` column holds.
+
+    Args:
+      record: Any :data:`TraxRecord` member.
+
+    Returns:
+      time: Its ISO-8601 ``timestamp`` read; ``None`` when it has none or no reader
+        reads it.
+
+    """
+    raw = getattr(record, "timestamp", None)
+    return _parsed(raw if isinstance(raw, str) else None)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

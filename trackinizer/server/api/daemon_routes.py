@@ -2,7 +2,8 @@
 
 An admin enrolls a host by name and hands the daemon a one-use, 15-minute token.
 A writer may enroll a host of their own the same way: it is theirs (``owner``) and
-personal, so only they and admins see it. The daemon joins with the token, once, and
+personal, so only they and admins see it. A remote agent service the configuration
+names enrolls so under its service account, and its host is confirmed at once. The daemon joins with the token, once, and
 receives a host credential. It then heartbeats with that credential, and its
 host reads online until it has been silent for 180 seconds or has released it.
 An admin, or the owner, revokes the host; the credential's row is kept, so every
@@ -22,6 +23,9 @@ from treekle import from_plain
 
 from trackinizer.server.api._deps import (
     auth_is_disabled,
+    get_remote_agent_services,
+    get_session_relay,
+    get_store,
     get_terminal_relay,
     get_tool_relay,
     hosts_changed,
@@ -33,7 +37,11 @@ from trackinizer.server.api.hosts_routes import (
     refuse_reserved,
 )
 from trackinizer.server.api.session_access import resolve_asker
-from trackinizer.server.auth import AuthIdentity, require_role
+from trackinizer.server.auth import (
+    AuthIdentity,
+    require_role,
+    revoke_host_process_keys,
+)
 from trackinizer.server.host_auth import (
     HostIdentity,
     MintedSecret,
@@ -114,7 +122,9 @@ async def enroll_host_route(
     host that is new, unowned or already theirs, and confirms it; one another person
     owns answers 409 ``host_owned``, naming the owner. A writer may enroll a host
     that is new, which becomes theirs with the role ``personal`` and stays unconfirmed
-    until they confirm it in the web app, or one that is already theirs.
+    until they confirm it in the web app, or one that is already theirs. A remote
+    agent service the configuration names, by its name and its account, is confirmed
+    as it enrolls: a service account has no web app to confirm it in.
 
     The configured assistant may name an ``asker``, a writer or admin it answers. The
     host is then the asker's: personal, confirmed, and theirs to open a terminal on,
@@ -140,13 +150,17 @@ async def enroll_host_route(
     asker = await _enrolled_asker(request, identity, asker=body.asker)
     who = identity.email if asker is None else asker
     admin = asker is None and identity.role == "admin"
+    service = any(
+        (each.name, each.account) == (body.name, who)
+        for each in get_remote_agent_services(request)
+    )
     async with request_engine(request).acquire() as conn, tx(conn):
         host_id = await claim_host(
             conn,
             name=body.name,
             email=who,
             admin=admin,
-            confirmed=asker is not None or admin,
+            confirmed=asker is not None or admin or service,
         )
         minted, expires_at = await issue_enrollment(
             conn,
@@ -388,8 +402,8 @@ async def revoke_host(
     *,
     name: str,
     identity: AuthIdentity,
-) -> str | None:
-    """Revoke a host as the revoke route does, and return its owner.
+) -> list[UUID]:
+    """Revoke a host as the revoke route does, and return what it stopped there.
 
     Args:
       request: Request carrying the database engine and the relays.
@@ -397,7 +411,7 @@ async def revoke_host(
       identity: Admin principal, or the host's owner.
 
     Returns:
-      owner: The host's owner; ``None`` for a host no person owns.
+      session_ids: The sessions whose agent process it stopped.
 
     Raises:
       NotFoundError: No such host.
@@ -419,9 +433,11 @@ async def revoke_host(
                 detail="host belongs to another user",
             )
         host_id = from_plain(host["id"], UUID)
-        await _out_of_service(conn, host_id)
-    await _closed(request, host_id=host_id, owner=owner)
-    return owner
+        revoked = await _out_of_service(conn, host_id)
+    store = get_store(request)
+    for key_id in revoked:
+        store.forget_bearer_identity_for_key(key_id)
+    return await _closed(request, host_id=host_id, owner=owner)
 
 
 async def unregister_host(conn: Conn, *, name: str, owner: str) -> UUID | None:
@@ -449,7 +465,9 @@ async def unregister_host(conn: Conn, *, name: str, owner: str) -> UUID | None:
     if host is None:
         return None
     host_id = from_plain(host["id"], UUID)
-    await _out_of_service(conn, host_id)
+    # Its callers hold no store to forget the processes' keys in, so each stays
+    # verified in this server's cache until its entry expires.
+    _ = await _out_of_service(conn, host_id)
     await conn.execute("DELETE FROM hosts WHERE id = $1", host_id)
     return host_id
 
@@ -468,7 +486,8 @@ async def claim_host(
     one with no role, and confirms it. Anyone else registers a new one as their own
     ``personal`` host, and may enroll only one that is already theirs. It is
     confirmed when ``confirmed`` is true, which defaults to ``admin``: a person who has
-    seen the host's name approve it, or the assistant enrolling for its asker.
+    seen the host's name approve it, the assistant enrolling for its asker, or a
+    remote agent service the configuration names.
     The caller opens the transaction, so a refusal keeps nothing.
 
     Args:
@@ -609,10 +628,14 @@ async def _token_is_usable(conn: Conn, *, parsed: ParsedSecret, name: str) -> bo
 
 
 # An enrollment token not yet used is closed too, so the revoke is not undone by a daemon
-# that joins with it.
-async def _out_of_service(conn: Conn, host_id: UUID) -> None:
-    """Revoke the host's credential, close its open enrollment, and free its daemon."""
+# that joins with it. The keys minted for its agent processes go with it, as a process
+# dies with its host; a host that joins again keeps them, since its processes outlive
+# their daemon. Their ids are returned: the verified-bearer cache would honour each for
+# up to a minute more, so the caller forgets them once the transaction commits.
+async def _out_of_service(conn: Conn, host_id: UUID) -> list[UUID]:
+    """Revoke the host's credential and its processes' keys, close its open enrollment, and free its daemon."""
     await _revoke_credentials(conn, host_id)
+    revoked = await revoke_host_process_keys(conn, host_id=host_id)
     await conn.execute(
         "UPDATE host_enrollments SET used_at = now() "
         "WHERE host_id = $1 AND used_at IS NULL",
@@ -622,14 +645,21 @@ async def _out_of_service(conn: Conn, host_id: UUID) -> None:
         "UPDATE hosts SET daemon_instance = NULL WHERE id = $1",
         host_id,
     )
+    return revoked
 
 
 # First, as nothing after the commit may keep a follower from hearing of it.
-async def _closed(request: Request, *, host_id: UUID, owner: str | None) -> None:
-    """Tell the owner's listing, then end the tool connections and terminals of a revoked host."""
+async def _closed(
+    request: Request,
+    *,
+    host_id: UUID,
+    owner: str | None,
+) -> list[UUID]:
+    """Tell the owner's listing, end a revoked host's tool connections, terminals and processes; return the processes' sessions."""
     hosts_changed(request, owner=owner)
     get_tool_relay(request).close_host(host_id)
     await get_terminal_relay(request).close_host(host_id)
+    return await get_session_relay(request).stop_host(host_id)
 
 
 async def _revoke_credentials(conn: Conn, host_id: UUID) -> None:

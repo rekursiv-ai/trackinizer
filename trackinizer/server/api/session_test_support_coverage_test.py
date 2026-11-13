@@ -9,20 +9,17 @@ import pytest
 from trackinizer.conftest import make_store
 from trackinizer.server.api import session_test_support
 from trackinizer.server.api.conftest import patch_state
-from trackinizer.server.inbound import InboundQueue, PollerRun
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("polled", [False, True])
 @pytest.mark.parametrize("custom", [False, True])
-async def test_seed_inserts_canonical_envelope_and_optionally_marks_poller(
+async def test_seed_inserts_canonical_envelope_and_optionally_starts_the_watch(
     monkeypatch: pytest.MonkeyPatch,
     polled: bool,
     custom: bool,
 ) -> None:
     store, engine = make_store()
-    inbound = InboundQueue()
-    patch_state(monkeypatch, "inbound", inbound)
     sightings: list[tuple[UUID, datetime, bool]] = []
 
     async def record_seen(session_id: UUID, *, at: datetime, polled: bool) -> None:
@@ -43,7 +40,6 @@ async def test_seed_inserts_canonical_envelope_and_optionally_marks_poller(
         cli_session_id="vendor-id",
         labels=("z", "a", "z"),
         polled=polled,
-        drained_by="codex",
     )
     insert.assert_awaited_once_with(
         engine.conn,
@@ -62,9 +58,6 @@ async def test_seed_inserts_canonical_envelope_and_optionally_marks_poller(
             "agentsession_opened_by_api_key_id": agent.key_id,
         },
     )
-    assert inbound.poller_run(session_id) == (
-        PollerRun(cli="codex") if polled else None
-    )
     if polled:
         seen.assert_awaited_once()
         assert seen.call_args.args == (session_id,)
@@ -77,12 +70,11 @@ async def test_seed_inserts_canonical_envelope_and_optionally_marks_poller(
 
 
 @pytest.mark.asyncio
-async def test_unpolled_seed_needs_no_runtime_hub_or_queue(
+async def test_unpolled_seed_needs_no_runtime_hub(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     store, _engine = make_store()
     patch_state(monkeypatch, "hub", None)
-    patch_state(monkeypatch, "inbound", None)
     insert, seen = AsyncMock(), AsyncMock()
     monkeypatch.setattr(session_test_support, "insert_inquiry", insert)
     monkeypatch.setattr(store, "record_session_seen", seen)

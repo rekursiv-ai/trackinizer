@@ -6,8 +6,6 @@ that person's host. Opening asks the relay (``server/terminals.py``) to queue th
 terminal for the daemon, which holds a ``GET`` on the wait route and dials the
 daemon WebSocket. The browser dials the browser WebSocket and sends ``ATTACH`` with the
 one-use ticket the open returned. The relay relays; the owner's last run folder is kept.
-A ``files`` terminal opens and relays the same way, on a host whose facts say
-``files``; its daemon answers file requests on it instead of starting a shell.
 
 A WebSocket cannot answer 404 or 410 after the handshake, so both sockets accept, and
 then refuse with a close code (``wire_terminals``).
@@ -32,7 +30,6 @@ from trackinizer.server import auth
 from trackinizer.server.api._deps import (
     auth_is_disabled,
     get_host_changes,
-    get_inbound,
     get_replays,
     get_store,
     get_terminal_relay,
@@ -70,9 +67,6 @@ from trackinizer.wire.wire_daemon import (
     older_than,
 )
 from trackinizer.wire.wire_service_accounts import is_service_address
-from trackinizer.wire.wire_sessions import (
-    CHAT_RUN_LIVE,
-)
 from trackinizer.wire.wire_terminals import (
     HOST_TERMINAL_WAIT_PATH,
     HOST_TERMINAL_WS_PATH,
@@ -121,55 +115,34 @@ async def open_terminal_route(
     body: OpenTerminal,
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
-    asker: str | None = None,
 ) -> TerminalOpened:
     """Open a terminal on one of the caller's hosts.
 
-    A browser session opens the owner's terminal. The configured assistant may open
-    only a detached campaign run for an attested writer or admin named as ``asker``;
-    every other key, service account or foreign origin is refused. The host must
-    be online and its daemon must have asked for terminals within 45 seconds
-    (the daemon does by default). Attach with the ticket within 30 seconds.
+    A browser session opens the owner's terminal; every key, service account or
+    foreign origin is refused. The host must be online and its daemon must have asked
+    for terminals within 45 seconds (the daemon does by default). Attach with the
+    ticket within 30 seconds.
 
     Args:
       body: The host, the terminal's size, and the canvas it opens from.
       request: Request carrying the store and the terminal relay.
       identity: The signed-in owner.
-      asker: The person the configured assistant starts a campaign for.
 
     Returns:
       opened: The terminal id and the one-use attach ticket.
 
     Raises:
-      HTTPException: 403 for an untrusted key, a service account or a foreign origin;
-        404 for no such host of the asker, or another user's canvas; 409 ``terminal_unconfirmed`` until the
-        owner confirms a host a key enrolled, ``cli_not_installed`` when the host's
-        facts do not list the CLI asked for, ``files_not_enabled`` for a ``files``
-        terminal when they do not say ``files``, ``terminal_not_enabled`` when the daemon
-        is not asking, ``chat_run_live`` when a run is already attached to the ``attach``
-        session, whether opened here or started by hand; 429 ``terminal_limit`` past 10
-        opens a minute. Every terminal route answers 403 on a server with authentication
-        off.
+      HTTPException: 403 for a key, a service account or a foreign origin; 404 for no
+        such host of the caller, or another user's canvas; 409 ``terminal_unconfirmed``
+        until the owner confirms a host a key enrolled, ``terminal_not_enabled`` when
+        the daemon is not asking; 429 ``terminal_limit`` past 10 opens a minute. Every
+        terminal route answers 403 on a server with authentication off.
 
     """
-    owner = await _terminal_owner(request, identity, asker=asker, body=body)
-    host_id, facts = await _owned_host(
-        request,
-        replace(identity, email=owner),
-        name=body.host,
-    )
-    if body.command is not None and body.command not in _host_clis(facts):
-        raise refusal(
-            409,
-            code="cli_not_installed",
-            message=f"the host reports no {body.command} on its PATH",
-        )
-    if body.kind == "files" and not _serves_files(facts):
-        raise refusal(
-            409,
-            code="files_not_enabled",
-            message=f"the daemon on {body.host} is too old to serve files; update it",
-        )
+    _require_human(request, identity)
+    _require_origin(request)
+    owner = identity.email
+    host_id = await _owned_host(request, identity, name=body.host)
     workspace: UUID | None = None
     relay = get_terminal_relay(request)
     if not relay.ready(host_id):
@@ -196,11 +169,7 @@ async def open_terminal_route(
                     workspace=workspace,
                     requested_by=body.requested_by,
                     surface=body.surface,
-                    command=body.command,
-                    attach=body.attach,
-                    run_name=body.run_name,
                     cwd=body.cwd,
-                    kind=body.kind,
                 ),
             ),
         )
@@ -229,13 +198,14 @@ async def list_terminal_hosts_route(
 ) -> TerminalHosts:
     """List the caller's own hosts, and their live terminals for a canvas.
 
-    The configured assistant names the person it answers as ``owner`` and lists that
-    person's hosts, so it offers a terminal only on one they have. It opens none:
-    only the person's own browser does.
+    A browser or a writer's key lists its own account's hosts. The configured
+    assistant names the person it answers as ``owner`` and lists that person's hosts,
+    so it offers a terminal only on one they have. It opens none: only the person's
+    own browser does.
 
     Args:
       request: Request carrying the store and the terminal relay.
-      identity: The signed-in owner, or the assistant's agent key.
+      identity: The owner, by a browser or a key, or the assistant's agent key.
       canvas: The canvas whose live terminals to list.
       owner: The person the assistant lists for, a writer or admin; only the
         assistant may name one.
@@ -246,8 +216,9 @@ async def list_terminal_hosts_route(
         ``canvas``.
 
     Raises:
-      HTTPException: 403 ``terminal_forbidden`` for a key, a service account, anyone
-        but the assistant naming an ``owner``, and an owner who is not a writer.
+      HTTPException: 403 ``terminal_forbidden`` for anyone but the assistant naming
+        an ``owner``, an owner who is not a writer, and a server with authentication
+        off.
 
     """
     email = await _hosts_owner(request, identity, owner=owner)
@@ -266,14 +237,14 @@ async def list_terminal_hosts_route(
             reverse=True,
         )
         runs = {
-            name: await named_runs(
+            from_plain(row["name"], str): await named_runs(
                 conn,
-                live_sessions(request, host=name, owner=email),
+                live_sessions(request, host_id=from_plain(row["id"], UUID)),
                 owner=email,
                 policy=get_store(request).access_policy,
                 principal=principal,
             )
-            for name in (from_plain(row["name"], str) for row in mine)
+            for row in mine
         }
     hosts = [
         TerminalHost.model_validate(
@@ -290,7 +261,6 @@ async def list_terminal_hosts_route(
                     from_plain(row["daemon_version"], str),
                     oldest=MIN_DAEMON_VERSION,
                 ),
-                "files": _serves_files(row["facts"]),
                 "tools": serves_tools(row["facts"]),
             },
         )
@@ -327,7 +297,7 @@ async def hosts_version_route(
 
     Args:
       request: Request carrying the host-list versions.
-      identity: The signed-in owner, or the assistant's agent key.
+      identity: The owner, by a browser or a key, or the assistant's agent key.
       owner: The person the assistant waits for; only the assistant may name one.
       since: The version the caller holds; left out, the answer comes at once.
       wait_sec: How long to hold, clamped to 25 seconds.
@@ -629,43 +599,12 @@ def _parse_attach(frame: tuple[Frame, bytes] | None) -> tuple[str, int] | None:
         return None
 
 
-# A browser opens any of its own terminal forms. The configured assistant is trusted
-# to name its asker, but only for the detached campaign shape: never a login shell or
-# a freely chosen command. The wire admits only claude/codex as ``command``; the other
-# fields make the daemon start a detached agent run with a named attached session.
-async def _terminal_owner(
-    request: Request,
-    identity: AuthIdentity,
-    *,
-    asker: str | None,
-    body: OpenTerminal,
-) -> str:
-    """Return the owner for a browser terminal or an attested campaign run."""
-    if asker is None:
-        _require_human(request, identity)
-        _require_origin(request)
-        return identity.email
-    if auth_is_disabled(request):
-        raise _forbidden()
-    found = await resolve_asker(request, identity, email=asker)
-    if (
-        found is None
-        or found.role not in {"writer", "admin"}
-        or body.command is None
-        or body.attach is None
-        or body.canvas is None
-        or body.cwd is None
-        or body.run_name is None
-        or not body.run_name.startswith("campaign-")
-    ):
-        raise _forbidden()
-    return found.email
-
-
 # The assistant is trusted to say whom it answers, as for a chat's settings, and the
 # server reads that person's role itself: a viewer opens no terminal, so the assistant
 # lists none for one. Anyone else naming an owner is refused, not ignored, so a person
-# never reads a listing they took for someone else's as their own.
+# never reads a listing they took for someone else's as their own. A writer's key lists
+# its own account's hosts, as an agent process's key does to follow the hosts it may
+# reach: reading them changes nothing, and the routes that do stay a person's.
 async def _hosts_owner(
     request: Request,
     identity: AuthIdentity,
@@ -673,15 +612,12 @@ async def _hosts_owner(
     owner: str | None,
 ) -> str:
     """Return whose hosts the caller lists: its own, or the assistant's asker's."""
-    asker = (
-        None
-        if auth_is_disabled(request)
-        else await resolve_asker(request, identity, email=owner)
-    )
+    if auth_is_disabled(request):
+        raise _forbidden()
+    asker = await resolve_asker(request, identity, email=owner)
     if asker is None:
         if owner is not None:
             raise _forbidden()
-        _require_human(request, identity)
         return identity.email
     if asker.role not in {"writer", "admin"}:
         raise _forbidden()
@@ -735,11 +671,11 @@ async def _owned_host(
     identity: AuthIdentity,
     *,
     name: str,
-) -> tuple[UUID, object]:
-    """Return the id and facts of the caller's online host with a live credential."""
+) -> UUID:
+    """Return the id of the caller's online host with a live credential."""
     async with request_engine(request).acquire() as conn:
         host = await conn.fetchrow(
-            "SELECT m.id, m.facts, m.confirmed_at IS NOT NULL AS confirmed "
+            "SELECT m.id, m.confirmed_at IS NOT NULL AS confirmed "
             "FROM hosts m WHERE m.name = $1 AND m.owner = $2 "
             "AND m.daemon_instance IS NOT NULL "
             "AND m.last_heartbeat > now() - make_interval(secs => $3) "
@@ -757,7 +693,7 @@ async def _owned_host(
             code="terminal_unconfirmed",
             message="confirm this host first",
         )
-    return from_plain(host["id"], UUID), host["facts"]
+    return from_plain(host["id"], UUID)
 
 
 def _host_clis(facts: object) -> list[str]:
@@ -774,56 +710,9 @@ def _host_clis(facts: object) -> list[str]:
         return []
 
 
-def _serves_files(facts: object) -> bool:
-    """Return whether a daemon's facts say its daemon answers a ``files`` terminal."""
-    try:
-        return from_plain(facts, dict[str, object]).get("files") is True
-    except ReadError:
-        return False
-
-
-# A session has one agent process at a time. A run the server opened is in the relay from the
-# open; one started by hand is known by the lease its drain takes, and a lease that
-# names no CLI is the assistant's, which is not a run.
-def _is_attached_to_a_live_session(
-    request: Request,
-    *,
-    session_id: UUID | None,
-) -> bool:
-    """Say whether a run is live on the session a new run would attach to."""
-    if session_id is None:
-        return False
-    held = get_inbound(request).poller_run(session_id)
-    return bool(get_terminal_relay(request).attached_to(session_id)) or (
-        held is not None and held.cli is not None
-    )
-
-
-# The check and the replacement run here, behind the receipt, for the reason
-# ``_open_terminal``'s check does: a retry of the same reattach finds the run its first
-# try queued, and must get that back, not retire it.
-# The live-session check runs here, behind the receipt, and not in the route: the run a
-# first open queued is attached to the session, so a retry of that open checked in
-# the route would be refused as a second run instead of getting its terminal back.
+# The open runs behind the receipt, so a retry of the same open gets its terminal back.
 async def _open_terminal(request: Request, *, opening: Opening) -> UUID:
-    """Queue one terminal unless a run is live on its session; return only its id."""
-    if opening.command is not None:
-        async with request_engine(request).acquire() as conn:
-            await conn.execute(
-                "UPDATE hosts SET last_run_cwd = $1 WHERE id = $2 AND owner = $3",
-                opening.cwd,
-                opening.host_id,
-                opening.user,
-            )
-        hosts_changed(request, owner=opening.user)
-        # Checking and reserving must share one event-loop turn: another open
-        # can pass the check while this request is awaiting its database update.
-        if _is_attached_to_a_live_session(request, session_id=opening.attach):
-            raise refusal(
-                409,
-                code=CHAT_RUN_LIVE,
-                message="another run is attached to this session; stop it first",
-            )
+    """Queue one terminal; return only its id."""
     return get_terminal_relay(request).open(opening).id
 
 
@@ -848,10 +737,6 @@ async def _next_terminal(
         canvas=term.canvas,
         workspace=term.workspace,
         requested_by=term.requested_by,
-        command=term.command,
-        attach=term.attach,
-        run_name=term.run_name,
         cwd=term.cwd,
-        kind="files" if term.kind == "files" else None,
         ice_servers=list(relay.ice_servers),
     )

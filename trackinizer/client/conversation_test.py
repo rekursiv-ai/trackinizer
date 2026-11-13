@@ -43,6 +43,7 @@ from trackinizer.types.session_records import (
 )
 from trackinizer.types.streams import Stdout
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
+from trackinizer.wire.wire_sessions import CONTEXT_TRAILER
 
 
 if TYPE_CHECKING:
@@ -314,6 +315,64 @@ def test_a_person_line_keeps_the_files_attached_to_it() -> None:
     assert [record.extra for record in people] == [
         {"provider": "bot", "attachments": (shot,)},
         {"provider": "bot"},
+    ]
+
+
+def test_a_person_line_is_its_words_without_the_context_its_agent_was_told() -> None:
+    """The agent process tells the agent the line's canvas after its words."""
+    segment = _segment(
+        0,
+        "bot",
+        [
+            AgentToAgentMessage(
+                timestamp=_at(1),
+                content=f"hi{CONTEXT_TRAILER}{{}}",
+                sender="ada@example.com",
+            ),
+        ],
+    )
+
+    spoken = _neutral_conversation([segment])
+
+    assert _people(spoken) == [("ada@example.com", "hi")]
+    assert _user_lines(projected(spoken, "claude")) == ["ada@example.com: hi"]
+
+
+def test_a_person_line_with_no_sender_or_words_is_unknowns_and_empty() -> None:
+    """A line of files alone has no words; one stored with no sender names no one."""
+    segment = _segment(0, "bot", [AgentToAgentMessage(timestamp=_at(1))])
+
+    assert _people(_neutral_conversation([segment])) == [("unknown", "")]
+
+
+def test_a_tool_result_failed_only_when_it_says_so() -> None:
+    segment = _segment(
+        0,
+        "codex",
+        [
+            ToolResult(
+                timestamp=_at(1),
+                call_id="c1",
+                state="done",
+                stdout=("ok",),
+                result=UncategorizedToolResult(),
+            ),
+            ToolResult(
+                timestamp=_at(2),
+                call_id="c2",
+                state="done",
+                stdout=("no such file",),
+                result=UncategorizedToolResult(),
+                extra=immutable({"is_error": True}),
+            ),
+        ],
+    )
+
+    results = _neutral_conversation([segment])
+
+    assert [r.extra for r in results if isinstance(r, ToolResult)] == [
+        {"provider": "codex", "is_error": False},
+        {"provider": "codex", "is_error": True},
     ]
 
 

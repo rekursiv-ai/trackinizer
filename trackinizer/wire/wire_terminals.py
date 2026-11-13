@@ -19,10 +19,6 @@ equal that module's ``Frame`` values; a test holds them equal.
   (u32 status).
 - Server to daemon: ``INPUT``, ``RESIZE``, ``STOP``. Daemon to server: ``OUTPUT``, ``EXIT``.
 
-A terminal of kind ``files`` carries no shell: the daemon answers the file requests
-the browser sends as ``INPUT`` with ``OUTPUT``, over the same sockets, ring and limits.
-The server never reads either; the daemon defines them.
-
 A direct link (a WebRTC data channel between the browser and the daemon) is set up
 over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`)
 and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The daemon
@@ -39,11 +35,11 @@ not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
 
 from __future__ import annotations
 
-from typing import Annotated, Final, Literal, Self
+from typing import Annotated, Final, Literal
 
 import uuid
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from trackinizer.wire.wire_hosts import NAME_PATTERN, HostRun, HostStatus
 
@@ -107,10 +103,8 @@ __all__ = [
     "HostsVersion",
     "LiveTerminal",
     "OpenTerminal",
-    "TerminalCommand",
     "TerminalHost",
     "TerminalHosts",
-    "TerminalKind",
     "TerminalOpened",
     "TerminalTicket",
     "TerminalWait",
@@ -233,17 +227,11 @@ type IceServers = Annotated[
 ]
 """STUN servers the browser and the daemon both use to find each other's address."""
 
-type TerminalCommand = Literal["claude", "codex", "sagent"]
-"""A CLI a terminal may start in place of a login shell; the daemon allows these."""
-
-type TerminalKind = Literal["shell", "files"]
-"""What a terminal carries: a shell, or the daemon's answers to file requests."""
-
 type RunFolder = Annotated[
     str,
     Field(max_length=1_024, pattern=r"^[/~][^\x00-\x1f\x7f]*$"),
 ]
-"""The folder a run starts in: absolute or ``~``-relative, with no control character,
+"""The folder a shell starts in: absolute or ``~``-relative, with no control character,
 since the daemon writes it into the terminal."""
 
 
@@ -267,40 +255,9 @@ class OpenTerminal(BaseModel):
     surface: Annotated[str, Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")] | None = None
     """The view that opened it (Chat's terminal side, or one tile): it re-attaches to its own."""
 
-    command: TerminalCommand | None = None
-    """Start a detached agent run of this CLI, in place of a login shell."""
-
-    attach: uuid.UUID | None = None
-    """The AgentSession the run re-opens; needs ``command``."""
-
-    run_name: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """The detached run's name, which an attach takes; needs ``command``."""
-
     cwd: RunFolder | None = None
-    """The run's folder on the host, absolute or ``~``; needs ``command``."""
-
-    kind: TerminalKind = "shell"
-    """``files`` starts no shell: the daemon answers file requests on it instead."""
-
-    @model_validator(mode="after")
-    def _run_fields_need_a_command(self) -> Self:
-        """Refuse an ``attach``, ``run_name`` or ``cwd`` that names no CLI."""
-        if self.command is None and (
-            self.attach is not None or self.run_name is not None or self.cwd is not None
-        ):
-            raise ValueError("attach, run_name and cwd need a command")
-        return self
-
-    # A files terminal belongs to no canvas, so a canvas's listing never offers it as a
-    # shell to re-attach; with no command it names no run either.
-    @model_validator(mode="after")
-    def _files_name_no_run(self) -> Self:
-        """Refuse a ``files`` terminal that names a CLI or a canvas."""
-        if self.kind == "files" and (
-            self.command is not None or self.canvas is not None
-        ):
-            raise ValueError("a files terminal takes no command or canvas")
-        return self
+    """The folder on the host the shell starts in, absolute or ``~``; its home when
+    ``None``."""
 
 
 class TerminalOpened(BaseModel):
@@ -350,7 +307,7 @@ class TerminalHost(BaseModel):
     """The folder its owner last chose for a CLI run; None until one is named."""
 
     runs: list[HostRun] = Field(default_factory=list)
-    """Its owner's live sessions that name it. They reach the server without its daemon, so
+    """The agent processes that run on it. Each reaches the server without its daemon, so
     the host is still connected while one is live, whatever ``status`` says."""
 
     daemon_outdated: bool = False
@@ -358,11 +315,9 @@ class TerminalHost(BaseModel):
     supports (``wire_daemon.MIN_DAEMON_VERSION``): it may never open a terminal
     until it is upgraded."""
 
-    files: bool = False
-    """Its facts say its daemon answers a ``files`` terminal."""
-
     tools: bool = False
-    """Its facts say its daemon serves tools to an agent's ``RemoteTool``."""
+    """Its facts say its daemon serves tools: to an agent's ``RemoteTool``, and to its
+    owner's browser, which reads the host's files with them."""
 
 
 class LiveTerminal(BaseModel):
@@ -420,22 +375,8 @@ class TerminalWait(BaseModel):
     canvas: uuid.UUID | None = None
     workspace: uuid.UUID | None = None
 
-    command: TerminalCommand | None = None
-    """As :attr:`OpenTerminal.command`: the CLI to start in place of a login shell."""
-
-    attach: uuid.UUID | None = None
-    """As :attr:`OpenTerminal.attach`: the AgentSession the run re-opens."""
-
-    run_name: str | None = Field(default=None, pattern=NAME_PATTERN)
-    """As :attr:`OpenTerminal.run_name`: the detached run's name."""
-
     cwd: RunFolder | None = None
-    """As :attr:`OpenTerminal.cwd`: the folder the run starts in, on this host."""
-
-    # Absent for a shell, so a host on an older wire, which refuses a key it does not
-    # know, still opens one; only a host whose facts say ``files`` is sent one.
-    kind: Literal["files"] | None = None
-    """``files``: answer file requests in place of starting a shell."""
+    """As :attr:`OpenTerminal.cwd`: the folder the shell starts in, on this host."""
 
 
 class DirectSignal(BaseModel):

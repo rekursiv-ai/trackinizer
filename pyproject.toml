@@ -59,8 +59,7 @@ dependencies = [
     "bashlex>=0.18",
     # lazy imports
     "wrapt>=2.5.2",
-    # the model catalog: `wire/chat_commands.py` reads its roles, and
-    # `sagent/providers/table.py` loads them from YAML.
+    # the model catalog: `sagent/providers/table.py` loads it from YAML.
     "pyyaml>=6.0.3",
 ]
 
@@ -234,7 +233,6 @@ exclude = [
     "trackinizer/lib/posix/testing.py",
     "trackinizer/lib/postgres/testing.py",
     "trackinizer/server/api/session_test_support.py",
-    "trackinizer/server/asks_test_support.py",
     "trackinizer/server/embedders/qwen_fakes.py",
 ]
 artifacts = ["trackinizer/web/dist/**", "trackinizer/py.typed"]

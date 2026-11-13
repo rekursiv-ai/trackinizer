@@ -1,6 +1,6 @@
-"""Who reads, writes and drains a session, and who opens one into which audience.
+"""Who reads and writes a session, and who opens one into which audience.
 
-A session is read, written and drained by the key that opened it and by a caller the
+A session is read and written by the key that opened it and by a caller the
 transcript test lets read it. Input requires its account or opening key; the assistant
 may relay input for a writer of that account, and read for a user who reads it.
 """
@@ -70,8 +70,8 @@ if TYPE_CHECKING:
     from trackinizer.server.access_policy import Principal
 
 
-MODES: tuple[SessionAccess, ...] = ("read", "write", "drain", "input")
-CONTROLS: tuple[SessionAccess, ...] = ("write", "drain", "input")
+MODES: tuple[SessionAccess, ...] = ("read", "write", "input")
+CONTROLS: tuple[SessionAccess, ...] = ("write", "input")
 
 
 class TestRequireSessionAccess:
@@ -87,10 +87,10 @@ class TestRequireSessionAccess:
         for mode in CONTROLS:
             assert await access_refused(reader, session, mode)
 
-    @pytest.mark.parametrize("mode", ["write", "drain"])
+    @pytest.mark.parametrize("mode", ["write"])
     @pytest.mark.parametrize("key", [None, uuid.UUID(int=10)])
     @pytest.mark.asyncio
-    async def test_the_account_writes_and_drains_what_it_still_reads(
+    async def test_the_account_writes_what_it_still_reads(
         self,
         mode: SessionAccess,
         key: uuid.UUID | None,
@@ -124,11 +124,24 @@ class TestRequireSessionAccess:
         )
 
     @pytest.mark.asyncio
+    async def test_a_post_asks_the_input_rule_of_a_session_that_is_no_chat(
+        self,
+    ) -> None:
+        session = AgentSession(account="owner@example.com", audience="open")
+
+        assert not await access_refused(
+            make_caller("open", email="owner@example.com"),
+            session,
+            "post",
+        )
+        assert await access_refused(make_caller("open"), session, "post")
+
+    @pytest.mark.asyncio
     async def test_the_opening_key_passes_every_mode_without_asking(self) -> None:
         session = AgentSession(audience="staff", opened_by_api_key_id=OPENER)
         opener = make_caller("open", key=OPENER)
 
-        assert [await access_refused(opener, session, m) for m in MODES] == [False] * 4
+        assert [await access_refused(opener, session, m) for m in MODES] == [False] * 3
 
     @pytest.mark.asyncio
     async def test_another_key_does_not_pass_as_the_opener(self) -> None:
@@ -292,7 +305,7 @@ class TestTheAssistantsAsker:
         )
 
     @pytest.mark.asyncio
-    async def test_an_asker_opens_neither_a_write_nor_a_drain(self) -> None:
+    async def test_an_asker_opens_no_write(self) -> None:
         """A read for an asker is ``TestTheAssistantReadsForAnAsker``'s."""
         asker = make_asker("open", "staff")
 
@@ -304,10 +317,10 @@ class TestTheAssistantsAsker:
                 assistant=SCOUT,
                 asker=asker,
             )
-            for mode in ("write", "drain")
+            for mode in ("write",)
         ]
 
-        assert refused == [True] * 2
+        assert refused == [True]
 
     @pytest.mark.parametrize("audience", ["open", "staff"])
     @pytest.mark.asyncio

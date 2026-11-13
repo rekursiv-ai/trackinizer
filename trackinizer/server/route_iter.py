@@ -68,8 +68,23 @@ def iter_routes(app: FastAPI) -> Iterator[tuple[str, frozenset[str]]]:
         set (empty for mounts and other verb-less routes).
 
     """
-    for path, route, _context in _walk(app.router.routes, context=None):
+    for path, route in iter_route_leaves(app):
         yield (path, frozenset(getattr(route, "methods", None) or ()))
+
+
+def iter_route_leaves(app: FastAPI) -> Iterator[tuple[str, BaseRoute]]:
+    """Yield every route of ``app`` with its fully-prefixed path: HTTP, socket and mount.
+
+    Args:
+      app: The application whose route tree to flatten.
+
+    Yields:
+      leaf: A ``(path, route)`` pair, the route the one a request that reaches it
+        carries as its scope's ``route``.
+
+    """
+    for path, route, _context in _walk(app.router.routes, context=None):
+        yield path, route
 
 
 def iter_api_routes(app: FastAPI) -> Iterator[ApiRouteLeaf]:

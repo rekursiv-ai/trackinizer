@@ -1,8 +1,6 @@
-"""The science chat wire: ids and labels, and what a posted line may say."""
+"""The science chat wire: ids and labels, and what a start may say."""
 
 from __future__ import annotations
-
-from typing import cast, get_args
 
 import uuid
 
@@ -11,21 +9,17 @@ from pydantic import ValidationError
 import pytest
 
 from trackinizer.wire.wire_science_chat import (
-    CHAT_PARTIAL_CHARS,
     CHAT_SESSION_PREFIX,
-    RUN_COMMAND_CHARS,
-    ChatLineKind,
-    ChatPartial,
-    ChatPartialState,
-    ChatSend,
+    NO_KEY,
+    ChatForkAt,
+    ChatSent,
+    ChatStart,
     chat_actor,
     chat_conversation_id,
     chat_session_id,
     fork_point_label,
     poster_label,
-    run_refusal,
 )
-from trackinizer.wire.wire_sessions import InboundKind
 
 
 _CANVAS = uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
@@ -66,260 +60,24 @@ def test_a_fork_point_label_names_the_records_part_and_position() -> None:
     assert fork_point_label(part=2, idx=17) == "fork-at:2:17"
 
 
-def test_a_post_is_a_persons_line_by_default() -> None:
-    sent = ChatSend(canvas_id=_CANVAS, text="hello")
-    assert (sent.kind, sent.payload, sent.conversation_id) == ("line", None, None)
+def test_a_start_names_its_canvas_and_a_fork_and_refuses_a_line() -> None:
+    fork = {"session_id": str(uuid.uuid4()), "part": 1, "idx": 2}
+
+    plain = ChatStart.model_validate({"canvas_id": str(_CANVAS)})
+    forked = ChatStart.model_validate({"canvas_id": str(_CANVAS), "fork": fork})
+
+    assert (plain.canvas_id, plain.fork) == (_CANVAS, None)
+    assert forked.fork == ChatForkAt.model_validate(fork)
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        _ = ChatStart.model_validate({"canvas_id": str(_CANVAS), "text": "hello"})
 
 
-def test_the_post_kinds_are_the_inbound_kinds() -> None:
-    """A post's kind is handed on as the queued message's, so the sets match."""
-    assert get_args(cast(object, ChatLineKind.__value__)) == get_args(
-        cast(object, InboundKind.__value__),
-    )
+def test_a_started_chat_always_names_its_session() -> None:
+    sent = {"conversation_id": str(uuid.uuid4()), "canvas_id": str(_CANVAS)}
 
-
-def test_a_browser_that_still_sends_science_posts_a_line() -> None:
-    sent = ChatSend.model_validate(
-        {"canvas_id": str(_CANVAS), "text": "hello", "kind": "science"},
-    )
-    assert sent.kind == "line"
-
-
-@pytest.mark.parametrize(
-    ("command", "refused"),
-    [
-        ("git status --short && echo 'done'", ""),
-        ("echo ~", ""),
-        ("echo \x7f", "one line of printable ASCII"),
-        ("x" * RUN_COMMAND_CHARS, ""),
-        ("x" * (RUN_COMMAND_CHARS + 1), "at most 2,000 characters"),
-        ("echo one\necho two", "one line of printable ASCII"),
-        ("echo\ttab", "one line of printable ASCII"),
-        ("rm -rf \u202e/", "one line of printable ASCII"),
-        ("ls r\u00e9sum\u00e9.txt", "one line of printable ASCII"),
-        ("ls\u200b", "one line of printable ASCII"),
-    ],
-)
-def test_a_run_command_is_one_line_of_printable_ascii(
-    command: str,
-    refused: str,
-) -> None:
-    """Nothing in the command can make it read other than it runs."""
-    reason = run_refusal(command)
-    assert bool(reason) == bool(refused)
-    assert refused in reason
-
-
-def test_a_run_post_refuses_a_command_it_would_not_run() -> None:
-    run: dict[str, object] = {"run_id": "a" * 32}
-    with pytest.raises(ValidationError, match="one line of printable ASCII"):
-        _ = ChatSend(canvas_id=_CANVAS, text="a\nb", kind="run", payload=run)
-    stop = ChatSend(
-        canvas_id=_CANVAS,
-        text="stop \u00e9",
-        kind="run",
-        payload=run | {"stop": True},
-    )
-    assert stop.kind == "run"
-
-
-def test_a_run_post_names_its_run() -> None:
-    with pytest.raises(ValidationError, match="run_id"):
-        _ = ChatSend(canvas_id=_CANVAS, text="ls", kind="run", payload={"run_id": "x"})
-
-
-@pytest.mark.parametrize(
-    ("kind", "payload"),
-    [
-        ("command", None),
-        ("interrupt", None),
-        ("answer", {"prompt_id": "p1", "decision": "allow"}),
-        (
-            "answer",
-            {
-                "prompt_id": "p1",
-                "decision": "deny",
-                "updated_input": None,
-                "message": "not that file",
-            },
-        ),
-        ("answer", {"prompt_id": "p1", "option": "allow_session"}),
-        (
-            "answer",
-            {
-                "prompt_id": "p1",
-                "option": "1",
-                "updated_input": {"answers": {"Which?": "Yes"}},
-                "message": "",
-            },
-        ),
-        ("settings", {"model": "opus"}),
-        ("settings", {"effort": "high"}),
-    ],
-)
-def test_each_kind_takes_the_payload_its_queue_documents(
-    kind: str,
-    payload: dict[str, object] | None,
-) -> None:
-    sent = ChatSend.model_validate(
-        {
-            "canvas_id": str(_CANVAS),
-            "text": "Yes",
-            "kind": kind,
-            "payload": payload,
-        },
-    )
-    assert (sent.kind, sent.payload) == (kind, payload)
-
-
-@pytest.mark.parametrize(
-    ("kind", "payload"),
-    [
-        ("line", {"model": "opus"}),
-        ("command", {"x": 1}),
-        ("answer", None),
-        ("answer", {"prompt_id": "p1", "decision": "maybe"}),
-        ("answer", {"prompt_id": "", "decision": "allow"}),
-        ("answer", {"prompt_id": "p1", "decision": "allow", "poster": "mallory"}),
-        ("answer", {"prompt_id": "p1"}),
-        ("answer", {"prompt_id": "p1", "option": ""}),
-        ("answer", {"prompt_id": "p1", "option": "allow_once", "decision": "allow"}),
-        ("settings", {}),
-        ("settings", None),
-        ("incognito", None),
-    ],
-)
-def test_a_payload_the_kind_does_not_take_is_refused(
-    kind: str,
-    payload: dict[str, object] | None,
-) -> None:
-    with pytest.raises(ValidationError):
-        ChatSend.model_validate(
-            {
-                "canvas_id": str(_CANVAS),
-                "text": "Yes",
-                "kind": kind,
-                "payload": payload,
-            },
-        )
-
-
-def test_a_fork_starts_from_a_line_only() -> None:
-    fork = {"session_id": str(uuid.uuid4()), "part": 0, "idx": 3}
-    assert ChatSend.model_validate(
-        {"canvas_id": str(_CANVAS), "text": "hi", "fork": fork},
-    ).fork
-    with pytest.raises(ValidationError):
-        ChatSend.model_validate(
-            {
-                "canvas_id": str(_CANVAS),
-                "text": "/compact",
-                "kind": "command",
-                "fork": fork,
-            },
-        )
-    with pytest.raises(ValidationError, match="cannot name one"):
-        ChatSend.model_validate(
-            {
-                "canvas_id": str(_CANVAS),
-                "text": "hi",
-                "fork": fork,
-                "conversation_id": str(uuid.uuid4()),
-            },
-        )
-
-
-def test_a_line_carries_up_to_twenty_box_paths_and_no_other_kind_any() -> None:
-    paths = [f"/home/user/uploads/{n}.png" for n in range(20)]
-    assert ChatSend(canvas_id=_CANVAS, text="see", attachments=paths).attachments == (
-        paths
-    )
-    assert ChatSend(canvas_id=_CANVAS, text="see").attachments == []
-
-    for refused in (
-        {"attachments": [*paths, "/home/user/uploads/20.png"]},
-        {"attachments": ["uploads/a.png"]},
-        {"attachments": ["/home/user/../a.png"]},
-        {"attachments": ["/a.png"], "kind": "interrupt"},
-    ):
-        with pytest.raises(ValidationError):
-            ChatSend.model_validate(
-                {"canvas_id": str(_CANVAS), "text": "see"} | refused,
-            )
-
-
-@pytest.mark.parametrize("text", ["", " ", "\n\t "])
-def test_a_line_must_hold_a_non_space_character(text: str) -> None:
-    """Whitespace alone is nothing to send."""
-    with pytest.raises(ValidationError):
-        ChatSend(canvas_id=_CANVAS, text=text)
-
-
-def test_a_line_is_at_most_16384_characters() -> None:
-    """The bound is exactly 16,384."""
-    assert ChatSend(canvas_id=_CANVAS, text="x" * 16_384).text
-    with pytest.raises(ValidationError):
-        ChatSend(canvas_id=_CANVAS, text="x" * 16_385)
-
-
-def test_a_line_names_no_poster_and_no_unknown_field() -> None:
-    """The poster is the attested identity, so the body has nowhere to put one."""
-    for field, value in (("source", "mallory@example.com"), ("poster", "mallory")):
-        with pytest.raises(ValidationError):
-            ChatSend.model_validate(
-                {"canvas_id": str(_CANVAS), "text": "hello", field: value},
-            )
-
-
-def test_a_partial_holds_at_most_16384_characters() -> None:
-    """The server keeps a partial per chat in memory, so its size is bounded."""
-    assert CHAT_PARTIAL_CHARS == 16_384
-    assert ChatPartial(turn="t1", text="x" * 16_384).done is False
-    with pytest.raises(ValidationError):
-        ChatPartial(turn="t1", text="x" * 16_385)
-
-
-@pytest.mark.parametrize("turn", ["", "a/b", "a b", "x" * 65])
-def test_a_partials_turn_is_a_short_word_that_fits_a_path(turn: str) -> None:
-    """The turn is a path segment of the delete, so it holds no slash or space."""
-    assert ChatPartial(turn="ab_C-9" + "x" * 58, text="").turn
-    with pytest.raises(ValidationError):
-        ChatPartial(turn=turn, text="")
-
-
-def test_a_partial_from_a_writer_that_sends_only_text_has_no_frame_beside_it() -> None:
-    partial = ChatPartial.model_validate({"turn": "t1", "text": "so far"})
-    assert (partial.thinking, partial.calls, partial.status) == ("", [], "")
-
-
-@pytest.mark.parametrize(
-    "field",
-    [
-        {"thinking": "x" * 16_385},
-        {"calls": ["Bash"] * 51},
-        {"calls": ["x" * 1_001]},
-        {"status": "x" * 201},
-    ],
-)
-def test_a_partials_frame_is_bounded(field: dict[str, object]) -> None:
-    """Each part of the frame the server holds in memory is bounded, as its text is."""
-    assert ChatPartial(
-        turn="t1",
-        text="",
-        thinking="x" * 16_384,
-        calls=["x" * 1_000] * 50,
-        status="x" * 200,
-    ).calls
-    with pytest.raises(ValidationError):
-        ChatPartial.model_validate({"turn": "t1", "text": "", **field})
-
-
-def test_a_partial_and_its_state_name_no_unknown_field() -> None:
-    with pytest.raises(ValidationError):
-        ChatPartial.model_validate({"turn": "t1", "text": "", "poster": "mallory"})
-    with pytest.raises(ValidationError):
-        ChatPartialState.model_validate({"seq": 0, "partial": None, "text": "x"})
-    assert ChatPartialState(seq=0, partial=None).partial is None
+    with pytest.raises(ValidationError, match="session_id"):
+        _ = ChatSent.model_validate({**sent, "session_id": None})
+    assert NO_KEY == "no_key"
 
 
 if __name__ == "__main__":

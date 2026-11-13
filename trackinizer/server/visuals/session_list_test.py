@@ -23,9 +23,10 @@ from trackinizer.sagent.session.types import (
     UserMessage,
 )
 from trackinizer.server.access_policy import Principal
+from trackinizer.server.api.session_test_support import attached_process
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.primitives import insert_inquiry
+from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.visuals import session_list
 from trackinizer.server.visuals.session_lines import (
     LINE_CHARS,
@@ -176,7 +177,7 @@ async def _edge(
 async def _list(
     store: Store,
     *,
-    inbound: InboundQueue | None = None,
+    relay: SessionRelay | None = None,
     reader: SessionReader = _OPEN,
     days: int = 14,
     limit: int = 500,
@@ -186,7 +187,7 @@ async def _list(
         store.engine,
         email=_EMAIL,
         reader=reader,
-        inbound=inbound or InboundQueue(),
+        relay=relay or SessionRelay(),
         days=days,
         limit=limit,
     )
@@ -242,27 +243,21 @@ async def test_a_session_the_caller_does_not_read_is_left_out(store: Store) -> N
 async def test_a_live_run_says_its_host_and_a_lapsed_one_where_it_last_ran(
     store: Store,
 ) -> None:
-    now = [0.0]
-    inbound = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+    relay = SessionRelay()
     live = await _session(store, records=[_turn(_NOW)])
     lapsed = await _session(store, records=[_turn(_NOW - timedelta(hours=1))])
     never = await _session(store, records=[_turn(_NOW - timedelta(hours=2))])
-    inbound.mark_poller(lapsed, host="build-box", cli="codex")
-    now[0] = 60.0
-    inbound.mark_poller(live, host="workstation", cli="claude", instance="a" * 32)
-    _ = inbound.report_state(live, instance="a" * 32, state="running")
+    async with attached_process(relay, lapsed, host="build-box"):
+        pass
 
-    sessions = {
-        each.id: each for each in (await _list(store, inbound=inbound)).sessions
-    }
+    async with attached_process(relay, live, host="workstation"):
+        sessions = {
+            each.id: each for each in (await _list(store, relay=relay)).sessions
+        }
 
-    assert (sessions[live].live, sessions[live].host, sessions[live].state) == (
-        True,
-        "workstation",
-        "running",
-    )
+    assert (sessions[live].live, sessions[live].host) == (True, "workstation")
     assert (sessions[lapsed].live, sessions[lapsed].host) == (False, "build-box")
-    assert (sessions[lapsed].state, sessions[never].host) == ("idle", None)
+    assert (sessions[never].live, sessions[never].host) == (False, None)
 
 
 @pytest.mark.db_pglite
@@ -399,7 +394,7 @@ async def test_campaign_sessions_name_their_issues_and_each_issue_its_parents(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("predicate", ["TRUE", "FALSE"])
-async def test_own_session_listing_joins_places_issues_and_live_state_without_a_database(
+async def test_own_session_listing_joins_places_issues_and_liveness_without_a_database(
     monkeypatch: pytest.MonkeyPatch,
     predicate: str,
 ) -> None:
@@ -450,27 +445,25 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
             ),
         },
     )
-    states = AsyncMock(return_value={chat: "running"})
     monkeypatch.setattr(session_list, "session_lines", lines)
-    monkeypatch.setattr(session_list, "live_run_states", states)
     policy = RecordingPolicy()
     monkeypatch.setattr(RecordingPolicy, "read_filter", Mock(return_value=predicate))
-    inbound = InboundQueue()
-    inbound.mark_poller(placed, host="old-box")
-    inbound.forget_poller(placed)
-    inbound.mark_poller(chat, host="live-box")
+    relay = SessionRelay()
+    async with attached_process(relay, placed, host="old-box"):
+        pass
     before = datetime.now(UTC)
 
-    listed = await list_own_sessions(
-        cast("DatabaseEngine", engine),
-        email=_EMAIL,
-        reader=_OPEN,
-        inbound=inbound,
-        days=2,
-        limit=3,
-        policy=policy,
-        principal=Principal(email=_EMAIL, role="viewer"),
-    )
+    async with attached_process(relay, chat, host="live-box"):
+        listed = await list_own_sessions(
+            cast("DatabaseEngine", engine),
+            email=_EMAIL,
+            reader=_OPEN,
+            relay=relay,
+            days=2,
+            limit=3,
+            policy=policy,
+            principal=Principal(email=_EMAIL, role="viewer"),
+        )
 
     assert listed.more
     assert [each.id for each in listed.sessions] == [chat, placed, foreign]
@@ -481,9 +474,9 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
         "Please fix",
         line,
     )
-    assert (first.live, first.state, first.host) == (True, "running", "live-box")
+    assert (first.live, first.host) == (True, "live-box")
     assert second.produced_by == [issue]
-    assert (second.live, second.state, second.host) == (False, "idle", "old-box")
+    assert (second.live, second.host) == (False, "old-box")
     assert (third.canvas_id, third.workspace_id, third.host) == (None, None, None)
     assert (third.goal, third.first_line, third.last_line, third.produced_by) == (
         None,
@@ -499,11 +492,6 @@ async def test_own_session_listing_joins_places_issues_and_live_state_without_a_
         engine.conn,
         session_ids=[chat, placed, foreign],
         account=_EMAIL,
-    )
-    states.assert_awaited_once_with(
-        engine.conn,
-        inbound=inbound,
-        session_ids=[chat, placed, foreign],
     )
     calls = engine.conn.fetch.await_args_list
     recent = calls[0]
@@ -529,12 +517,11 @@ async def test_no_matching_sessions_returns_empty_lists_without_more(
 ) -> None:
     engine = FakeEngine()
     monkeypatch.setattr(session_list, "session_lines", AsyncMock(return_value={}))
-    monkeypatch.setattr(session_list, "live_run_states", AsyncMock(return_value={}))
     listed = await list_own_sessions(
         cast("DatabaseEngine", engine),
         email=_EMAIL,
         reader=_OPEN,
-        inbound=InboundQueue(),
+        relay=SessionRelay(),
         days=1,
         limit=1,
     )

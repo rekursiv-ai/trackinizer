@@ -1,30 +1,31 @@
-"""Transport retries replay authorized queue deliveries and terminal creation."""
+"""Transport retries replay terminal waits and terminal creation."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import asyncio
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-import pytest
-
 from trackinizer.conftest import FakeEngine, make_store, set_field_row
-from trackinizer.server.api import sessions_routes, terminal_routes
+from trackinizer.server.api import terminal_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.auth import current_user
-from trackinizer.server.inbound import Inbound, InboundQueue
 from trackinizer.server.store.core import Store
 from trackinizer.server.terminals import Opening, Terminal, TerminalRelay
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_sessions import DrainInboundResponse
 from trackinizer.wire.wire_terminals import TerminalOpened, TerminalWait
+
+
+if TYPE_CHECKING:
+    import pytest
 
 
 _HOST = UUID(int=1)
@@ -51,7 +52,6 @@ class _Server:
     app: FastAPI
     store: Store
     engine: FakeEngine
-    inbound: InboundQueue
     relay: TerminalRelay
     clock: _Clock
 
@@ -77,12 +77,10 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
     monkeypatch.setattr(terminal_routes, "current_host", AsyncMock())
     app = FastAPI()
     app.add_middleware(ChangeIdMiddleware)
-    app.include_router(sessions_routes.router)
     app.include_router(terminal_routes.router)
     app.dependency_overrides[current_user] = lambda: _IDENTITY
     app.state.engine = engine
     app.state.store = store
-    app.state.inbound = inbound = InboundQueue()
     clock = _Clock()
     app.state.terminals = relay = TerminalRelay(alive=_alive, clock=clock)
     asyncio.run(relay.wait(_HOST, wait_sec=0))
@@ -90,7 +88,6 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
         app=app,
         store=store,
         engine=engine,
-        inbound=inbound,
         relay=relay,
         clock=clock,
     )
@@ -98,33 +95,6 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
 
 def _headers(key: UUID) -> dict[str, str]:
     return {"Idempotency-Key": str(key), "Origin": "http://testserver"}
-
-
-def test_inbound_retry_returns_the_original_batch_and_leaves_new_messages_queued(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    server = _server(monkeypatch)
-    server.inbound.enqueue(_SESSION, Inbound(text="original"))
-    headers = _headers(uuid4())
-    with TestClient(server.app) as browser:
-        first = browser.get(f"/api/sessions/{_SESSION}/inbound", headers=headers)
-        assert first.status_code == 200, first.text
-        server.inbound.enqueue(_SESSION, Inbound(text="next"))
-        retried = browser.get(f"/api/sessions/{_SESSION}/inbound", headers=headers)
-        assert retried.status_code == 200, retried.text
-        assert [
-            item.text
-            for item in DrainInboundResponse.model_validate(retried.json()).messages
-        ] == ["original"]
-        assert server.inbound.pending(_SESSION) == 1
-        monkeypatch.setattr(
-            sessions_routes,
-            "require_session_access",
-            AsyncMock(side_effect=HTTPException(403, "Access revoked")),
-        )
-        denied = browser.get(f"/api/sessions/{_SESSION}/inbound", headers=headers)
-        assert denied.status_code == 403
-        assert server.inbound.pending(_SESSION) == 1
 
 
 def test_terminal_wait_retry_returns_the_original_offer(
@@ -210,60 +180,25 @@ def test_terminal_open_retry_creates_one_terminal_with_a_fresh_attach_ticket(
         assert asyncio.run(server.relay.wait(_HOST, wait_sec=0)) is None
 
 
-def test_a_retried_run_open_replays_its_terminal_and_a_new_open_is_refused(
+def test_a_retried_open_replays_its_terminal_and_a_new_open_opens_another(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = _server(monkeypatch)
-    set_field_row(
-        server.engine.conn,
-        {"id": _HOST, "facts": {"clis": ["claude"]}, "confirmed": True},
-    )
-    run = {
-        "host": "gx10",
-        "rows": 24,
-        "cols": 80,
-        "command": "claude",
-        "attach": str(_SESSION),
-    }
+    set_field_row(server.engine.conn, {"id": _HOST, "facts": {}, "confirmed": True})
+    shell = {"host": "gx10", "rows": 24, "cols": 80}
     headers = _headers(uuid4())
     with TestClient(server.app) as browser:
-        first = browser.post("/api/terminals", json=run, headers=headers)
+        first = browser.post("/api/terminals", json=shell, headers=headers)
         assert first.status_code == 201, first.text
-        # The run the first open queued is now attached to the session, yet the
-        # retry of that same open is its receipt, not a second run.
-        retried = browser.post("/api/terminals", json=run, headers=headers)
+        retried = browser.post("/api/terminals", json=shell, headers=headers)
         assert retried.status_code == 201, retried.text
-        assert (
-            TerminalOpened.model_validate(retried.json()).terminal_id
-            == TerminalOpened.model_validate(first.json()).terminal_id
-        )
-        second = browser.post("/api/terminals", json=run, headers=_headers(uuid4()))
-        assert second.status_code == 409
-        assert second.json() == {
-            "detail": {
-                "code": "chat_run_live",
-                "message": "another run is attached to this session; stop it first",
-            },
-        }
-    assert len(server.relay.attached_to(_SESSION)) == 1
-
-
-@pytest.mark.asyncio
-async def test_a_session_end_before_receipt_work_starts_does_not_park_a_new_hold() -> (
-    None
-):
-    inbound = InboundQueue()
-    inbound.mark_poller(_SESSION)
-    consuming = asyncio.create_task(
-        sessions_routes._drain_inbound(
-            inbound,
-            session_id=_SESSION,
-            wait_sec=3_600,
-            taker=None,
-        ),
-    )
-    inbound.forget_poller(_SESSION)
-    assert await asyncio.wait_for(consuming, 0.05) == []
+        second = browser.post("/api/terminals", json=shell, headers=_headers(uuid4()))
+        assert second.status_code == 201, second.text
+    opened = [
+        TerminalOpened.model_validate(answer.json()).terminal_id
+        for answer in (first, retried, second)
+    ]
+    assert opened[0] == opened[1] != opened[2]
 
 
 if __name__ == "__main__":

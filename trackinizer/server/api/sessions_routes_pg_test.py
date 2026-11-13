@@ -1,4 +1,4 @@
-"""The session, message and inbound routes against a session-scoped Postgres."""
+"""The session and message routes against a session-scoped Postgres."""
 
 from __future__ import annotations
 
@@ -19,9 +19,9 @@ import pytest
 from trackinizer.server.api import edit, sessions_routes
 from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
+from trackinizer.server.api.session_test_support import ServingRelay
 from trackinizer.server.auth import current_user
 from trackinizer.server.config import Config
-from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.store_test_support import seed_active_user
 from trackinizer.types.errors import ConflictError
 from trackinizer.types.inquiries import AgentSession
@@ -45,7 +45,6 @@ class TestAgainstPostgres:
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
         app.include_router(sessions_routes.router)
 
@@ -112,7 +111,6 @@ class TestAgainstPostgres:
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
         app.include_router(sessions_routes.router)
         app.include_router(edit.router)
@@ -196,14 +194,14 @@ class TestAgainstPostgres:
         """``POST /api/messages`` resolves ``@actor:room`` to live sessions.
 
         Proves the step-9 name-resolution front door: a send addressed to a
-        routing name (optionally room-scoped) reaches the live session's queue,
-        and a non-matching room delivers nothing (drop-if-absent).
+        routing name (optionally room-scoped) reaches the live session's agent
+        process, and a non-matching room delivers nothing (drop-if-absent).
         """
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
+        app.state.session_relay = relay = ServingRelay()
         app.include_router(sessions_routes.router)
 
         async def _identity() -> object:
@@ -222,9 +220,6 @@ class TestAgainstPostgres:
                     json={"cli": "codex", "actor": "scientist", "rooms": ["sear"]},
                 )
                 sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
-                assert (
-                    await http.get(f"/api/sessions/{sid}/inbound")
-                ).status_code == 200
 
                 # Room-scoped send to the right room reaches the session.
                 hit = await http.post(
@@ -252,23 +247,15 @@ class TestAgainstPostgres:
                     == []
                 )
 
-                # The reaching send landed in the session's inbound queue,
-                # carrying the attested sender and the routed room so the
-                # poller can render the ``[room] sender:`` injection context.
-                drain = await http.get(f"/api/sessions/{sid}/inbound")
-                msgs = from_plain(
-                    from_plain(drain.json(), dict[str, object])["messages"],
-                    list[object],
-                )
-                assert [
-                    from_plain(from_plain(m, dict[str, object])["text"], str)
-                    for m in msgs
-                ] == [
-                    "go",
+                # The reaching send went to the session's agent process, under the
+                # attested sender.
+                assert relay.sent == [
+                    (
+                        UUID(sid),
+                        {"py/object": "UserMessage", "content": "go"},
+                        "sender@test",
+                    ),
                 ]
-                first_msg = from_plain(msgs[0], dict[str, object])
-                assert from_plain(first_msg["source"], str) == "sender@test"
-                assert from_plain(first_msg["room"], str) == "sear"
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -285,8 +272,8 @@ class TestAgainstPostgres:
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
+        app.state.session_relay = ServingRelay()
         app.include_router(sessions_routes.router)
 
         async def _identity() -> object:
@@ -304,13 +291,7 @@ class TestAgainstPostgres:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "multi", "rooms": ["a", "b"]},
                 )
-                sid = from_plain(
-                    from_plain(started.json(), dict[str, object])["id"],
-                    str,
-                )
-                assert (
-                    await http.get(f"/api/sessions/{sid}/inbound")
-                ).status_code == 200
+                assert started.status_code == 201, started.text
                 # Bare send: ambiguous across rooms a and b -> 409.
                 bare = await http.post(
                     "/api/messages",
@@ -340,18 +321,18 @@ class TestAgainstPostgres:
             app.dependency_overrides.pop(current_user, None)
 
     async def test_send_is_idempotent_on_key_replay(self, integ_store: Store) -> None:
-        """A replayed ``Idempotency-Key`` enqueues once, not once per retry.
+        """A replayed ``Idempotency-Key`` sends once, not once per retry.
 
         The send path writes no ``change_log`` row, so it cannot dedup the way
-        DB writes do; ``send_once`` records the delivered receipt per key and
-        short-circuits a replay. Without this a client retry (lost response)
-        double-injects into the live session.
+        DB writes do; the route's replay receipt answers a replay with the
+        first result. Without this a client retry (lost response) double-sends
+        into the live session.
         """
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
+        app.state.session_relay = relay = ServingRelay()
         # The dedup key reaches the route via request.state, set by the
         # middleware from the Idempotency-Key header.
         app.add_middleware(ChangeIdMiddleware)
@@ -373,9 +354,6 @@ class TestAgainstPostgres:
                     json={"cli": "codex", "actor": "idem", "rooms": ["sear"]},
                 )
                 sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
-                assert (
-                    await http.get(f"/api/sessions/{sid}/inbound")
-                ).status_code == 200
                 key = str(uuid.uuid4())
                 body = {"actor": "idem", "room": "sear", "text": "once"}
                 first = await http.post(
@@ -392,38 +370,32 @@ class TestAgainstPostgres:
                     from_plain(first.json(), dict[str, object])["delivered"],
                     list[str],
                 ) == [sid]
-                # Replay returns the same receipt, but does not enqueue again.
+                # Replay returns the same receipt, but does not send again.
                 assert from_plain(
                     from_plain(replay.json(), dict[str, object])["delivered"],
                     list[str],
                 ) == [sid]
-                drain = await http.get(f"/api/sessions/{sid}/inbound")
-                assert [
-                    from_plain(from_plain(m, dict[str, object])["text"], str)
-                    for m in from_plain(
-                        from_plain(drain.json(), dict[str, object])["messages"],
-                        list[object],
-                    )
-                ] == ["once"]
+                assert [payload for _, payload, _ in relay.sent] == [
+                    {"py/object": "UserMessage", "content": "once"},
+                ]
         finally:
             app.dependency_overrides.pop(current_user, None)
 
-    async def test_send_concurrent_same_key_enqueues_once(
+    async def test_send_concurrent_same_key_sends_once(
         self,
         integ_store: Store,
     ) -> None:
-        """Two concurrent same-key sends enqueue exactly one message.
+        """Two concurrent same-key sends send exactly one message.
 
-        The check->resolve->enqueue->record steps used to be separate, so two
-        racing same-``Idempotency-Key`` sends could both pass the dedup check
-        and double-enqueue. ``send_once`` makes dedup+enqueue+record one atomic
-        critical section, so the drain holds a single copy.
+        Two racing same-``Idempotency-Key`` sends must not both pass the dedup
+        check and double-send: the replay receipt holds the second until the
+        first is done, and answers it with the same result.
         """
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
+        app.state.session_relay = relay = ServingRelay()
         # The dedup key reaches the route via request.state, set by the
         # middleware from the Idempotency-Key header.
         app.add_middleware(ChangeIdMiddleware)
@@ -445,9 +417,6 @@ class TestAgainstPostgres:
                     json={"cli": "codex", "actor": "race", "rooms": ["sear"]},
                 )
                 sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
-                assert (
-                    await http.get(f"/api/sessions/{sid}/inbound")
-                ).status_code == 200
                 key = str(uuid.uuid4())
                 body = {"actor": "race", "room": "sear", "text": "once"}
                 first, second = await asyncio.gather(
@@ -470,15 +439,10 @@ class TestAgainstPostgres:
                     from_plain(second.json(), dict[str, object])["delivered"],
                     list[str],
                 ) == [sid]
-                drain = await http.get(f"/api/sessions/{sid}/inbound")
                 # Exactly one copy despite two concurrent same-key sends.
-                assert [
-                    from_plain(from_plain(m, dict[str, object])["text"], str)
-                    for m in from_plain(
-                        from_plain(drain.json(), dict[str, object])["messages"],
-                        list[object],
-                    )
-                ] == ["once"]
+                assert [payload for _, payload, _ in relay.sent] == [
+                    {"py/object": "UserMessage", "content": "once"},
+                ]
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -487,19 +451,19 @@ class TestAgainstPostgres:
         integ_store: Store,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A session ended between resolve and enqueue is not queued to.
+        """A session ended between resolve and send is not sent to.
 
-        ``resolve_live_sessions`` and the enqueue are separate steps; a
-        concurrent ``end`` in that window must not strand a message in a queue
-        nobody drains. The route re-checks ``ended`` immediately before
-        enqueue. Simulated by stubbing ``resolve`` to return the now-ended
-        session so the route's pre-enqueue liveness re-check fires.
+        ``resolve_live_sessions`` and the send are separate steps; a concurrent
+        ``end`` in that window must not hand a message to a session that is over.
+        The route re-checks ``ended`` immediately before it sends. Simulated by
+        stubbing ``resolve`` to return the now-ended session so the route's
+        pre-send liveness re-check fires.
         """
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
+        app.state.session_relay = relay = ServingRelay()
         app.include_router(sessions_routes.router)
 
         async def _identity() -> object:
@@ -542,7 +506,7 @@ class TestAgainstPostgres:
                     json={"actor": "ending", "room": "sear", "text": "late"},
                 )
                 assert from_plain(resp.json(), dict[str, object])["delivered"] == []
-                assert app.state.inbound.pending(sid) == 0
+                assert relay.sent == []
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -556,7 +520,6 @@ class TestAgainstPostgres:
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config()
         app.include_router(sessions_routes.router)
 
@@ -578,29 +541,18 @@ class TestAgainstPostgres:
         finally:
             app.dependency_overrides.pop(current_user, None)
 
-    async def test_inbound_enqueue_then_drain_round_trips(
+    async def test_an_end_with_no_time_stamps_a_real_one(
         self,
         integ_store: Store,
     ) -> None:
-        """``POST``/``GET`` ``/inbound`` round-trips; sender is route-attested.
-
-        The enqueued ``source`` is the authenticated principal -- the enqueue
-        request body carries no ``source`` field at all, so a client that
-        sends one is rejected (422) rather than having it silently ignored.
-        Draining empties the queue (drop-if-absent: a second drain is empty).
-        """
+        """REV-31: an end whose body names no ``ended`` still stamps a real time."""
         sid = await integ_store.submit_agentsession(
-            SubmitAgentSession(
-                account="router@test",
-                title="inbox",
-                cli="claude",
-            ),
+            SubmitAgentSession(account="router@test", title="inbox", cli="claude"),
             audience="open",
         )
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.state.config = Config(chat_orgs="single")
         app.include_router(sessions_routes.router)
 
@@ -614,69 +566,9 @@ class TestAgainstPostgres:
                 transport=transport,
                 base_url="http://testserver",
             ) as http:
-                # A client-sent ``source`` is forbidden, not ignored.
-                forged = await http.post(
-                    f"/api/sessions/{sid}/inbound",
-                    json={"text": "check the logs", "source": "forged"},
-                )
-                assert forged.status_code == 422, forged.text
-
-                assert (
-                    await http.get(f"/api/sessions/{sid}/inbound")
-                ).status_code == 200
-
-                enq = await http.post(
-                    f"/api/sessions/{sid}/inbound",
-                    json={"text": "check the logs"},
-                )
-                assert enq.status_code == 200, enq.text
-                assert (
-                    from_plain(from_plain(enq.json(), dict[str, object])["queued"], int)
-                    == 1
-                )
-
-                drain = await http.get(f"/api/sessions/{sid}/inbound")
-                assert drain.status_code == 200, drain.text
-                messages = from_plain(
-                    from_plain(drain.json(), dict[str, object])["messages"],
-                    list[object],
-                )
-                assert [
-                    from_plain(from_plain(m, dict[str, object])["text"], str)
-                    for m in messages
-                ] == ["check the logs"]
-                # Source is the authenticated principal, attested by the route.
-                assert (
-                    from_plain(
-                        from_plain(messages[0], dict[str, object])["source"],
-                        str,
-                    )
-                    == "router@test"
-                )
-
-                # Drain emptied it: a second drain returns nothing.
-                again = await http.get(f"/api/sessions/{sid}/inbound")
-                assert from_plain(again.json(), dict[str, object])["messages"] == []
-
-                # Unknown session -> 404 on both verbs.
-                missing = uuid.uuid4()
-                r404 = await http.post(
-                    f"/api/sessions/{missing}/inbound",
-                    json={"text": "x"},
-                )
-                assert r404.status_code == 404
-
-                # After the session ends, enqueue is rejected (REV-09): no
-                # poller will ever drain it, and the end drains any stragglers.
                 end = await http.post(f"/api/sessions/{sid}/end", json={})
                 assert end.status_code == 200, end.text
-                # REV-31: end with no ``ended`` body still stamps a real time.
                 assert from_plain(end.json(), dict[str, object])["ended"] is not None
-                rejected = await http.post(
-                    f"/api/sessions/{sid}/inbound",
-                    json={"text": "late"},
-                )
-                assert rejected.status_code == 409
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -695,7 +587,6 @@ class TestAgainstPostgres:
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.add_middleware(ChangeIdMiddleware)
 
         # The already-ended-different-key path raises ConflictError; translate
@@ -780,7 +671,6 @@ class TestAgainstPostgres:
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
-        app.state.inbound = InboundQueue()
         app.add_middleware(ChangeIdMiddleware)
 
         async def _conflict_to_409(request: Request, exc: Exception) -> JSONResponse:

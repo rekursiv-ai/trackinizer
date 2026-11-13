@@ -64,12 +64,10 @@ __all__ = [
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class RunPlace:
-    """Where a polling run said it ran, each part the run's own word, or ``None``."""
+    """Where a session's agent process runs: its host and its CLI, or ``None``."""
 
     host: str | None = None
-    run: str | None = None
     cli: str | None = None
-    cwd: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -102,19 +100,17 @@ _SEEN_WRITE_EVERY: Final = timedelta(minutes=1)
 
 # ``$3`` is the newest ``last_seen`` still worth rewriting. A poll starts watching a
 # session; any other sign of life only refreshes a session already watched. A poll also
-# keeps where the run said it ran (``$4``..``$7``), each kept until a poll names another:
-# the assistant drains a chat switched to it naming no host, and the chat's run stays
-# among its host's past runs. A poll that names another host is written at once, so
-# a run whose session was polled in the last minute without one, and that ends within
-# the minute, still is.
+# keeps where its agent process runs (``$4``, ``$5``), each kept until a poll names
+# another; an inbound drain names neither. A poll that names another host is written at
+# once, so a process whose session was polled in the last minute without one, and that
+# ends within the minute, still is. The ``run`` and ``cwd`` columns keep what older
+# drains said and take no new value.
 _SEEN_SQL: Final = (
-    "INSERT INTO session_liveness (session_id, last_seen, host, run, cli, cwd) "
-    "VALUES ($1, $2, $4, $5, $6, $7) "
+    "INSERT INTO session_liveness (session_id, last_seen, host, cli) "
+    "VALUES ($1, $2, $4, $5) "
     "ON CONFLICT (session_id) DO UPDATE SET last_seen = EXCLUDED.last_seen, "
     "host = COALESCE(EXCLUDED.host, session_liveness.host), "
-    "run = COALESCE(EXCLUDED.run, session_liveness.run), "
-    "cli = COALESCE(EXCLUDED.cli, session_liveness.cli), "
-    "cwd = COALESCE(EXCLUDED.cwd, session_liveness.cwd) "
+    "cli = COALESCE(EXCLUDED.cli, session_liveness.cli) "
     "WHERE session_liveness.last_seen < $3 OR (EXCLUDED.host IS NOT NULL "
     "AND session_liveness.host IS DISTINCT FROM EXCLUDED.host)"
 )
@@ -182,6 +178,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         audience: str,
         api_key_id: UUID | None = None,
         attach: UUID | None = None,
+        keep_audience: bool = False,
         max_reserve_attempts: int = 16,
         principal: Principal | None = None,
     ) -> tuple[UUID, str, int]:
@@ -200,7 +197,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         re-open it if ended (clear ``ended``, status back to ``active``), so the
         resumed run continues the original log. A resume asked to be ``private``
         hides the ``open`` session it re-attaches, as the key that opened it may,
-        and refuses one in any other audience before touching it. ``next_seq`` is
+        and refuses one in any other audience before touching it; ``keep_audience``
+        leaves the session in the audience it has instead. ``next_seq`` is
         always 0: record keys derive from their position in the source file, so a
         resumed run re-derives the same keys and needs no continuation point.
 
@@ -222,6 +220,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             ``private`` hides one it resumes too.
           api_key_id: API key that opened this session; used in resume correlation.
           attach: The session to re-open by its id, or ``None`` to open or resume.
+          keep_audience: Whether a session this call resumes or attaches keeps the
+            audience it has, so ``audience`` is for one it mints alone.
           max_reserve_attempts: Max retries on live-owner unique constraint.
           principal: The caller the access policy records as a new session's
             creator, or hears hide one it resumes; None for the system.
@@ -235,16 +235,17 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         Raises:
           ConflictError: Max reserve attempts exhausted; cannot acquire a name. Or
             a ``private`` resume or attach of a session in an audience other than
-            ``open``.
+            ``open``, unless ``keep_audience``.
           NotFoundError: ``attach`` names no session.
 
         """
+        hide = audience == PRIVATE and not keep_audience
         if attach is not None:
             attached = await self._resume_session(
                 req,
                 api_key_id=api_key_id,
                 actor=requested_actor,
-                hide=audience == PRIVATE,
+                hide=hide,
                 attach=attach,
                 principal=principal,
             )
@@ -259,7 +260,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 req,
                 api_key_id=api_key_id,
                 actor=requested_actor,
-                hide=audience == PRIVATE,
+                hide=hide,
                 principal=principal,
             )
             if resumed is not None:
@@ -515,8 +516,8 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
           polled: Whether it polled its inbound queue. A poll starts watching the
             session; anything else only refreshes one already watched, so a
             session that never polls is never closed for silence.
-          place: Where a polling run said it ran; ``None`` for a sign of life that
-            names no place.
+          place: Where the session's agent process runs; ``None`` for a sign of life
+            that names no place, as an inbound drain is.
 
         """
         async with self.engine.acquire() as conn:
@@ -535,9 +536,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 at,
                 at - _SEEN_WRITE_EVERY,
                 where.host,
-                where.run,
                 where.cli,
-                where.cwd,
             )
 
     async def past_runs(

@@ -1,4 +1,4 @@
-"""Tests for the ``Adapter`` protocol's value type and the stream-adapter marker."""
+"""Tests for the ``Adapter`` protocol's value type."""
 
 from __future__ import annotations
 
@@ -6,9 +6,7 @@ import dataclasses
 
 import pytest
 
-from trackinizer.runs.adapters.claude import ClaudeAdapter
-from trackinizer.runs.adapters.custom_types import StreamAdapter, Subagent
-from trackinizer.runs.adapters.iostream import IOStreamAdapter
+from trackinizer.runs.adapters.custom_types import Subagent
 
 
 def test_a_subagent_names_its_child_and_parent_and_defaults_no_note() -> None:
@@ -22,16 +20,6 @@ def test_a_subagent_names_its_child_and_parent_and_defaults_no_note() -> None:
 
 def test_a_subagent_keeps_what_the_cli_says_spawned_it() -> None:
     assert Subagent(child="c", parent="p", note="Task: review").note == "Task: review"
-
-
-class _StreamOnly:
-    stream_source = True
-
-
-def test_only_an_adapter_with_the_stream_marker_is_a_stream_adapter() -> None:
-    assert isinstance(IOStreamAdapter(), StreamAdapter)
-    assert not isinstance(ClaudeAdapter(), StreamAdapter)
-    assert not isinstance(_StreamOnly(), StreamAdapter)
 
 
 if __name__ == "__main__":

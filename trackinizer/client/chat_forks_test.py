@@ -18,6 +18,7 @@ from trackinizer.wire.wire_science_chat import (
     fork_point_label,
 )
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
+from trackinizer.wire.wire_sessions import CONTEXT_TRAILER
 
 
 if TYPE_CHECKING:
@@ -139,6 +140,25 @@ def test_a_fork_opens_with_the_lines_up_to_and_including_its_fork_point() -> Non
         ("user", "grace@example.com", "q2", WHEN),
     ]
     assert _read(1, 1)[-1] == ("assistant", "", "a2", WHEN)
+
+
+def test_a_persons_line_is_its_words_without_the_context_its_agent_was_told() -> None:
+    """The agent process tells the agent the line's canvas after its words."""
+    session = _Session(parts={0: [_user(0, f"q1{CONTEXT_TRAILER}{{}}")]})
+
+    lines = read_fork_lines(session, fork=_at(0, 0))
+
+    assert [(line.author, line.text) for line in lines] == [("ada@example.com", "q1")]
+
+
+def test_a_persons_line_with_no_sender_or_words_is_unknowns_and_empty() -> None:
+    """A line of files alone has no words; one the bot stored with no sender, no name."""
+    bare = RecordBody(idx=0, kind="AgentToAgentMessage", timestamp=WHEN, payload={})
+    session = _Session(parts={0: [bare]})
+
+    lines = read_fork_lines(session, fork=_at(0, 0))
+
+    assert [(line.author, line.text) for line in lines] == [("unknown", "")]
 
 
 def test_a_delivered_line_in_a_claude_part_is_a_line_of_the_fork() -> None:

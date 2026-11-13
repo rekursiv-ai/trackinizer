@@ -28,7 +28,7 @@ from pydantic import (
 from pydantic_core import to_json
 from treekle import from_plain
 
-from trackinizer.wire.wire_science_chat import AssistantPrompt, ChatProvider
+from trackinizer.wire.wire_science_chat import AssistantPrompt
 
 
 if TYPE_CHECKING:
@@ -59,7 +59,6 @@ ASSISTANT_KEYS: Final = frozenset(
         "terminal_tab_chords",
         "terminal_placement",
         "home",
-        "chat_provider",
         "assistant_prompt",
         "cli_folder",
         "chat_view",
@@ -555,14 +554,6 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
-    chat_provider: ChatProvider = Field(
-        default="assistant",
-        description=(
-            "The provider a new chat starts on: the assistant, or claude or codex run on "
-            "a host of yours."
-        ),
-        json_schema_extra=SETTING,
-    )
     assistant_prompt: AssistantPrompt = Field(
         default="sagent",
         description=(
@@ -578,9 +569,9 @@ class Preferences(_Strict):
     ] = Field(
         default="",
         description=(
-            "The folder a claude or codex run that Chat starts works in, on whichever "
-            "host it starts: ~/... under your home, or a full path. Empty for your "
-            "home directory."
+            "The folder Chat's agent starts in on a host of yours, whose skills and "
+            "AGENTS.md it loads: ~/... under your home, or a full path. Empty for your "
+            "home directory. Our cloud starts in its own home directory."
         ),
         json_schema_extra=SETTING,
     )
@@ -834,6 +825,7 @@ async def write_preferences(
             *sorted(key for key, value in change.items() if value is None),
             "chat_style",
             "chat_tool_calls",
+            "chat_provider",
         ],
         user_id,
     )

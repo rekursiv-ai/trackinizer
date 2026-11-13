@@ -1,8 +1,9 @@
 """The tool routes' answers to the relay's refusals, over a stand-in relay and no database.
 
-The routes end to end, with the real sign-in and host credentials, are in
-``tool_routes_pglite_test.py``. These tests pin what each relay error becomes, what each
-refusal closes a socket with, and which routes the schema lists.
+The routes end to end, with the real sign-in and host credentials, are the hand-run
+``private/tool_routes_parity.py``. These tests pin what each relay error becomes, what
+each refusal closes a socket with, what each route asks of the host's credential and
+instance, and which routes the schema lists.
 """
 
 from __future__ import annotations
@@ -16,16 +17,20 @@ import logging
 import re
 
 from fastapi import FastAPI, HTTPException
+from fastapi.routing import APIRoute
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+from treekle import from_plain
 
 import pytest
 
 from trackinizer.conftest import make_store
 from trackinizer.server import auth
 from trackinizer.server.api import tool_routes
+from trackinizer.server.api.app import ROUTERS
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
 from trackinizer.server.api.tool_access import ToolAccess
+from trackinizer.server.config import Config
 from trackinizer.server.tool_lines import GatedCall, Outcome, ResultIds, Verdict
 from trackinizer.server.tool_relay import (
     ToolConnection,
@@ -35,7 +40,7 @@ from trackinizer.server.tool_relay import (
 )
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_exec import HOST_EXEC_WAIT_PATH
+from trackinizer.wire.wire_exec import HOST_EXEC_RESULT_PATH, HOST_EXEC_WAIT_PATH
 from trackinizer.wire.wire_tools import (
     HOST_TOOLS_WAIT_PATH,
     HOST_TOOLS_WS_PATH,
@@ -134,7 +139,7 @@ def _app(monkeypatch: pytest.MonkeyPatch, relay: ToolRelay) -> FastAPI:
     monkeypatch.setattr(
         auth,
         "request_user",
-        AsyncMock(return_value=SimpleNamespace(api_key_id=_KEY)),
+        AsyncMock(return_value=SimpleNamespace(api_key_id=_KEY, email="Kim@x.y")),
     )
     _, engine = make_store()
     monkeypatch.setattr(tool_routes, "request_engine", Mock(return_value=engine))
@@ -265,7 +270,6 @@ def test_each_refusal_of_a_socket_is_one_close_code_says_why_and_warns(
 @pytest.mark.parametrize(
     ("check", "reason"),
     [
-        ("assistant", "tools are not available here"),
         ("key", "tools are not available here"),
         ("asker", "tools are not available here"),
         ("host", "no host gx10 of yours"),
@@ -298,9 +302,121 @@ def test_the_agents_socket_is_refused_saying_which_check_of_the_rule_failed(
     assert rule.await_args.kwargs == {
         "assistant": None,
         "api_key_id": _KEY,
-        "asker": "Ada@x.y",
+        "asker": "ada@x.y",
         "host": "gx10",
     }
+
+
+def test_an_agent_naming_nobody_asks_for_its_keys_own_account(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(monkeypatch, _relay())
+    rule = _rule(monkeypatch, ToolAccess(host_id=None, failed="host"))
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect(TOOLS_WS_PATH.format(name="gx10")) as agent,
+    ):
+        assert _closed(agent)[0] == wire_terminals.CLOSE_REFUSED
+
+    assert rule.await_args is not None
+    assert rule.await_args.kwargs["asker"] == "kim@x.y"
+
+
+_OWN_PAGE: Final = {"origin": "http://testserver"}
+"""The ``Origin`` a browser sends from this server's own pages, as the test client's ``Host``."""
+
+
+def _browser(monkeypatch: pytest.MonkeyPatch, email: str = "Ada@x.y") -> None:
+    """Sign every socket in as ``email``'s browser session, which holds no key."""
+    monkeypatch.setattr(
+        auth,
+        "request_user",
+        AsyncMock(return_value=SimpleNamespace(api_key_id=None, email=email)),
+    )
+
+
+@pytest.mark.parametrize("asker", ["", "?asker=ADA@x.y"])
+def test_a_persons_browser_from_this_servers_pages_asks_for_its_own_hosts(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    asker: str,
+) -> None:
+    caplog.set_level(logging.INFO, logger=tool_routes.__name__)
+    app = _app(monkeypatch, _relay())
+    _browser(monkeypatch)
+    rule = _rule(monkeypatch, ToolAccess(host_id=_HOST, failed=None))
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect(
+            TOOLS_WS_PATH.format(name="gx10") + asker,
+            headers=_OWN_PAGE,
+        ) as browser,
+    ):
+        browser.send_bytes(_HELLO)
+
+    assert rule.await_args is not None
+    assert rule.await_args.kwargs == {
+        "assistant": None,
+        "api_key_id": "browser",
+        "asker": "ada@x.y",
+        "host": "gx10",
+    }
+    (opened,) = _logged(caplog, "tool connection opened:")
+    assert (opened["asker"], opened["key"]) == ("ada@x.y", "browser")
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        "another_origin",
+        "no_origin",
+        "naming_another_asker",
+        "a_service_account",
+        "sign_in_off",
+    ],
+)
+def test_a_browser_not_on_this_servers_pages_or_not_for_its_own_hosts_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    caller: str,
+) -> None:
+    app = _app(monkeypatch, _relay())
+    app.state.config = Config(auth_disabled=caller == "sign_in_off")
+    _browser(
+        monkeypatch,
+        "ops@service.invalid" if caller == "a_service_account" else "Ada@x.y",
+    )
+    rule = _rule(monkeypatch, ToolAccess(host_id=_HOST, failed=None))
+    headers: dict[str, str] = {
+        "another_origin": {"origin": "http://elsewhere.test"},
+        "no_origin": dict[str, str](),
+    }.get(caller, _OWN_PAGE)
+    asker = "?asker=Bob@x.y" if caller == "naming_another_asker" else ""
+
+    with (
+        TestClient(app) as client,
+        client.websocket_connect(
+            TOOLS_WS_PATH.format(name="gx10") + asker,
+            headers=headers,
+        ) as browser,
+    ):
+        assert _closed(browser) == (
+            wire_terminals.CLOSE_REFUSED,
+            "tools are not available here",
+        )
+
+    rule.assert_not_awaited()
+    assert _logged(caplog, "tool connection refused:") == [
+        {
+            "socket": "agent",
+            "host": "gx10",
+            "code": str(wire_terminals.CLOSE_REFUSED),
+            "reason": "tools are not available here",
+            "check": "-",
+        },
+    ]
 
 
 def _closed(session: WebSocketTestSession) -> tuple[int, str]:
@@ -388,6 +504,188 @@ def test_binary_frames_cross_and_a_host_that_leaves_ends_the_connection(
             assert agent.receive_bytes() == b"Welcome\n"
 
         assert _close_code(agent) == wire_terminals.CLOSE_DAEMON_LOST
+
+
+@pytest.mark.parametrize("leaving", ["agent_leaves", "agent_sends_text"])
+def test_an_agent_that_leaves_or_sends_text_ends_the_connection_and_frees_its_slot(
+    monkeypatch: pytest.MonkeyPatch,
+    leaving: str,
+) -> None:
+    relay = _relay()
+    app = _app(monkeypatch, relay)
+
+    with TestClient(app) as client, client.websocket_connect(_AGENT) as agent:
+        agent.send_bytes(_HELLO)
+        with client.websocket_connect(_daemon_path(client)) as host:
+            assert host.receive_bytes() == _HELLO
+            if leaving == "agent_leaves":
+                agent.close()
+            else:
+                agent.send_text("not binary")
+                assert _close_code(agent) == wire_terminals.CLOSE_ENDED
+            assert _close_code(host) == wire_terminals.CLOSE_ENDED
+
+    assert relay._connections == {}
+
+
+def test_a_hosts_wait_and_socket_ask_for_its_own_credential_and_current_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    relay = _relay()
+    app = _app(monkeypatch, relay)
+    current, asked, required = AsyncMock(), AsyncMock(), AsyncMock()
+    monkeypatch.setattr(tool_routes, "current_host", current)
+    monkeypatch.setattr(tool_routes, "request_host", asked)
+    monkeypatch.setattr(tool_routes, "require_instance", required)
+
+    with TestClient(app) as client, client.websocket_connect(_AGENT) as agent:
+        agent.send_bytes(_HELLO)
+        path = _daemon_path(client)
+        with client.websocket_connect(path) as host:
+            assert host.receive_bytes() == _HELLO
+            (connection,) = relay._connections.values()
+            assert connection.instance == _INSTANCE
+
+    assert current.await_args is not None
+    assert asked.await_args is not None
+    assert (current.await_args.args[1:], asked.await_args.args[1:]) == (
+        (_HOST,),
+        (_HOST,),
+    )
+    assert [(each.args[1:], each.kwargs) for each in required.await_args_list] == [
+        ((_HOST,), {"instance": _INSTANCE}),
+    ] * 2
+
+
+@pytest.mark.parametrize(
+    ("checked", "status"),
+    [("current_host", 401), ("require_instance", 403)],
+)
+@pytest.mark.parametrize(
+    "path",
+    [
+        HOST_TOOLS_WAIT_PATH.format(host_id=_HOST),
+        HOST_EXEC_WAIT_PATH.format(host_id=_HOST),
+    ],
+)
+def test_a_wait_without_the_hosts_credential_or_instance_is_refused_unheld(
+    monkeypatch: pytest.MonkeyPatch,
+    checked: str,
+    status: int,
+    path: str,
+) -> None:
+    relay = _Holding()
+    app = _app(monkeypatch, relay)
+    monkeypatch.setattr(
+        tool_routes,
+        checked,
+        AsyncMock(side_effect=HTTPException(status, "refused")),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(path, params=_params(1))
+
+    assert response.status_code == status
+    assert relay.held == []
+
+
+def test_a_refused_host_socket_takes_nothing_so_the_current_instance_attaches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(monkeypatch, _relay())
+
+    with TestClient(app) as client, client.websocket_connect(_AGENT) as agent:
+        agent.send_bytes(_HELLO)
+        path = _daemon_path(client)
+        monkeypatch.setattr(
+            tool_routes,
+            "require_instance",
+            AsyncMock(side_effect=[HTTPException(403, "stale host instance"), None]),
+        )
+        with client.websocket_connect(path) as stale:
+            assert _closed(stale) == (
+                wire_terminals.CLOSE_REFUSED,
+                "stale host instance",
+            )
+        with client.websocket_connect(path) as host:
+            assert host.receive_bytes() == _HELLO
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        HOST_TOOLS_WAIT_PATH.format(host_id=_HOST),
+        HOST_EXEC_WAIT_PATH.format(host_id=_HOST),
+    ],
+)
+def test_a_server_without_auth_refuses_every_wait_and_host_socket_unread(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    relay = _Holding()
+    app = _app(monkeypatch, relay)
+    app.state.config = Config(auth_disabled=True)
+    checks = {
+        name: AsyncMock()
+        for name in ("current_host", "request_host", "require_instance")
+    }
+    for name, check in checks.items():
+        monkeypatch.setattr(tool_routes, name, check)
+
+    with TestClient(app) as client:
+        waited = client.get(path, params=_params(1))
+        with client.websocket_connect(
+            HOST_TOOLS_WS_PATH.format(host_id=_HOST, connection_id=_PIPE)
+            + f"?instance={_INSTANCE}",
+        ) as host:
+            assert _closed(host) == (
+                wire_terminals.CLOSE_REFUSED,
+                "tools are not available here",
+            )
+
+    assert (waited.status_code, waited.json()) == (
+        403,
+        {
+            "detail": {
+                "code": "tools_forbidden",
+                "message": "tools are not available here",
+            },
+        },
+    )
+    assert relay.held == []
+    for check in checks.values():
+        check.assert_not_awaited()
+
+
+def _daemon_path(client: TestClient) -> str:
+    """Take the host's offer as its daemon does, and return the socket to dial back on."""
+    offer = client.get(HOST_TOOLS_WAIT_PATH.format(host_id=_HOST), params=_params(1))
+    connection_id = from_plain(offer.json(), dict[str, str])["connection_id"]
+    return (
+        HOST_TOOLS_WS_PATH.format(host_id=_HOST, connection_id=connection_id)
+        + f"?instance={_INSTANCE}"
+    )
+
+
+def test_the_exec_command_and_result_routes_are_gone() -> None:
+    """No router the app includes takes either, so each answers 404."""
+    paths = [
+        "/api/hosts/gx10/exec",
+        HOST_EXEC_RESULT_PATH.format(host_id=_HOST, exec_id=_PIPE),
+    ]
+
+    included = [*ROUTERS]
+    matched = [
+        (path, route)
+        for path in paths
+        for router in included
+        for route in router.routes
+        if isinstance(route, APIRoute)
+        and route.path_regex.match(path)
+        and "POST" in (route.methods or set())
+    ]
+
+    assert matched == []
 
 
 def test_no_tool_route_is_in_the_schema() -> None:
