@@ -57,7 +57,7 @@
         (png) => {
           reply(id, { png: png, width: window.innerWidth, height: window.innerHeight });
         },
-        function (error) {
+        (error) => {
           reply(id, { error: String(error && error.message ? error.message : error) });
         },
       );

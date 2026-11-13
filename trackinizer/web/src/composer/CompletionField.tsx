@@ -149,6 +149,7 @@ export function useCompletion<T extends Target = Target>({
     };
     return (
       <div className="completion-field" ref={holder}>
+        {/* biome-ignore lint/a11y/useAriaPropsSupportedByRole: aria-expanded is set only while its role is combobox */}
         <textarea
           {...field}
           ref={box}
@@ -186,13 +187,17 @@ export function useCompletion<T extends Target = Target>({
             ref={menu as RefObject<HTMLUListElement>}
             className="list-menu menu-list completion-list"
             id={listId}
+            // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: a combobox's listbox and options: the input keeps focus and points at an option with aria-activedescendant
             role="listbox"
             aria-label={label}
           >
             {options.map((option, k) => (
+              // biome-ignore lint/a11y/useFocusableInteractive: a combobox's option: the input keeps focus and points at it with aria-activedescendant
+              // biome-ignore lint/a11y/useKeyWithClickEvents: the combobox's input takes the keys; a click picks with the pointer
               <li
                 key={option.key}
                 id={`${listId}-${k}`}
+                // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: a combobox's listbox and options: the input keeps focus and points at an option with aria-activedescendant
                 role="option"
                 aria-selected={k === index}
                 className={k === index ? "menu-item is-active" : "menu-item"}

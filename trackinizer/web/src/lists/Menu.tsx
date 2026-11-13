@@ -170,6 +170,7 @@ function MenuBody({
       <div className="menu-search">
         <Icon name="search" size={14} />
         <input
+          // biome-ignore lint/a11y/noAutofocus: the menu's search box, which the press that opened the menu hands focus to
           autoFocus
           role="combobox"
           aria-label={label}
@@ -192,6 +193,8 @@ function MenuBody({
           ...(index === firstFixed && index > 0
             ? [<div key={SEPARATOR} className="menu-sep" aria-hidden="true" />]
             : []),
+          // biome-ignore lint/a11y/useFocusableInteractive: a menu's option: the search box keeps focus and points at it with aria-activedescendant
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the search box takes the keys; a click picks with the pointer
           <div
             key={option.value}
             id={optionId(index)}

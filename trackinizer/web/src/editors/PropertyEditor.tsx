@@ -394,7 +394,9 @@ function ListEditor({ detail, field, children }: EditorProps) {
   const offered = new Set([...(closed ?? []), ...shown]);
   // The people picker offers loaded people itself, and people added by hand.
   if (!closed && !people)
-    loadedValues(queryClient, name).forEach((value) => offered.add(value));
+    loadedValues(queryClient, name).forEach((value) => {
+      offered.add(value);
+    });
   // An element stays on offer once removed, so a second tick can put it back.
   const [seen, setSeen] = useState<ReadonlySet<string>>(offered);
   if ([...offered].some((value) => !seen.has(value)))

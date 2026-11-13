@@ -650,11 +650,13 @@ test("1,000 nodes draw at 60 fps while the layout runs, with no long task after 
   await expect(page.locator(".graph-count")).toHaveText("1,000 nodes");
   const answered = await page.evaluate(
     () =>
-      performance
-        .getEntriesByType("resource")
-        .find((entry): entry is PerformanceResourceTiming =>
-          entry.name.includes("/api/web/graph"),
-        )!.responseEnd,
+      pageMust(
+        performance
+          .getEntriesByType("resource")
+          .find((entry): entry is PerformanceResourceTiming =>
+            entry.name.includes("/api/web/graph"),
+          ),
+      ).responseEnd,
   );
   await page.waitForTimeout(SAMPLE_MS);
   const frames = (
@@ -688,8 +690,10 @@ const SAMPLE_MS = 2_500;
  */
 function syntheticGraph(count: number) {
   let seed = 7;
-  const random = () =>
-    (seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648) / 2_147_483_648;
+  const random = () => {
+    seed = (seed * 1_103_515_245 + 12_345) % 2_147_483_648;
+    return seed / 2_147_483_648;
+  };
   const kinds = [
     "Issue",
     "Belief",

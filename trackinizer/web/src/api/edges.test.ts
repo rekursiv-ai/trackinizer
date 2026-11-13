@@ -1,4 +1,4 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import {
   addEdge,
   clearEdgeAnnotation,
@@ -103,27 +103,29 @@ test("a retry sends the same key and body again", async () => {
   expect(sent[1]).toEqual(sent[0]);
 });
 
-// Compile-time checks: `tsc --noEmit` reads them, and nothing calls this.
-export async function rejected(): Promise<void> {
-  // An actor, which the server must stamp itself,
-  // @ts-expect-error
-  await addEdge(EDGE, keyed({ note: "x", actor: "me" }));
-  // @ts-expect-error
-  await setEdgeAnnotation("note", EDGE, keyed({ value: "x", actor: "me" }));
-  // compare-and-set, which no annotation has,
-  await setEdgeAnnotation(
-    "note",
-    EDGE,
+test("calls the server would refuse do not compile", () => {
+  // `tsc --noEmit` reads these; the function never runs.
+  expectTypeOf(async () => {
+    // An actor, which the server must stamp itself,
     // @ts-expect-error
-    keyed({ value: "x", mode: "cas", expected: "y" }),
-  );
-  // a value of the wrong type,
-  // @ts-expect-error
-  await setEdgeAnnotation("valence", EDGE, keyed({ value: "high" }));
-  // a whole list of labels, which changes one element at a time,
-  // @ts-expect-error
-  await setEdgeAnnotation("labels", EDGE, keyed({ value: ["a"] }));
-  // and a body without its key.
-  // @ts-expect-error
-  await removeEdge(EDGE, {});
-}
+    await addEdge(EDGE, keyed({ note: "x", actor: "me" }));
+    // @ts-expect-error
+    await setEdgeAnnotation("note", EDGE, keyed({ value: "x", actor: "me" }));
+    // compare-and-set, which no annotation has,
+    await setEdgeAnnotation(
+      "note",
+      EDGE,
+      // @ts-expect-error
+      keyed({ value: "x", mode: "cas", expected: "y" }),
+    );
+    // a value of the wrong type,
+    // @ts-expect-error
+    await setEdgeAnnotation("valence", EDGE, keyed({ value: "high" }));
+    // a whole list of labels, which changes one element at a time,
+    // @ts-expect-error
+    await setEdgeAnnotation("labels", EDGE, keyed({ value: ["a"] }));
+    // and a body without its key.
+    // @ts-expect-error
+    await removeEdge(EDGE, {});
+  }).toBeFunction();
+});

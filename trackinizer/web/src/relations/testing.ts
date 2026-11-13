@@ -104,10 +104,14 @@ export function serveGraph(
     const out: { [kind: string]: Peer[] } = {};
     const back: { [kind: string]: Peer[] } = {};
     for (const { from, kind, to, ...annotations } of server.edges) {
-      if (from === self.id)
-        (out[kind] ??= []).push(peerOf(must(byId(to)), annotations));
-      if (to === self.id)
-        (back[kind] ??= []).push(peerOf(must(byId(from)), annotations));
+      if (from === self.id) {
+        out[kind] ??= [];
+        out[kind].push(peerOf(must(byId(to)), annotations));
+      }
+      if (to === self.id) {
+        back[kind] ??= [];
+        back[kind].push(peerOf(must(byId(from)), annotations));
+      }
     }
     return detail(self, { edges: out, backlinks: back });
   }

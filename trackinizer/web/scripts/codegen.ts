@@ -66,7 +66,8 @@ function fieldTypeMap(openapi: OpenAPI): string {
     const [, owner, field] = match;
     const body = resolve(openapi, requestBody(verbs.put));
     const properties = body.properties as { value: Schema };
-    (owners[owner] ??= {})[field] = {
+    owners[owner] ??= {};
+    owners[owner][field] = {
       path,
       value: valueType(openapi, properties.value),
       patch: "patch" in verbs,

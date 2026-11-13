@@ -188,6 +188,9 @@ function combine(
     loading: [...loading],
     pending: rows.length === 0 && results.some((result) => result.isPending),
     error: failed?.error ?? null,
-    retry: () => results.forEach((result) => result.error && void result.refetch()),
+    retry: () =>
+      results.forEach((result) => {
+        result.error && void result.refetch();
+      }),
   };
 }

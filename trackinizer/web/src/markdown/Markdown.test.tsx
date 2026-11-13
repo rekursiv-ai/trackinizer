@@ -36,6 +36,7 @@ function unsafe(root: Element): string[] {
       if (
         /^(href|src|xlink:href|action|formaction)$/i.test(attribute.name) &&
         /^\s*(javascript|data|vbscript):/i.test(
+          // biome-ignore lint/suspicious/noControlCharactersInRegex: strips the control characters a browser ignores in a URL, as the sanitizer must
           attribute.value.replace(/[\u0000-\u001f]/g, ""),
         )
       ) {

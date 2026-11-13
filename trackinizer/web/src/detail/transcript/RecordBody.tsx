@@ -252,9 +252,11 @@ function ShapeBody({ view, kinds }: { view: RecordView; kinds: readonly string[]
         <>
           {harnessBlocks(view.text).map((block, k) =>
             block.tag ? (
+              // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
               <Fold key={k} summary={block.tag} text={block.text} />
             ) : (
               <Markdown
+                // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
                 key={k}
                 source={block.text}
                 kinds={kinds}
@@ -501,6 +503,7 @@ function SearchResults({ results }: { results: readonly SearchResult[] }) {
   return (
     <ol className="tr-search">
       {results.map((result, k) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: items of one document, in its order, which carry no id
         <li key={k}>
           {safeUrl(result.url) ? (
             <a {...linkProps(result.url)}>{result.title || result.url}</a>
@@ -534,6 +537,7 @@ export function Terminal({ records }: { records: readonly SessionRecord[] }) {
       {shown.map((line, k) =>
         line === null ? (
           <button
+            // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
             key={k}
             type="button"
             className="tr-show"
@@ -542,6 +546,7 @@ export function Terminal({ records }: { records: readonly SessionRecord[] }) {
             Show {hidden.toLocaleString("en")} more lines{"\n"}
           </button>
         ) : (
+          // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
           <span key={k} className={`t-${line.kind}`}>
             {line.kind === "in" ? "$ " : null}
             <Ansi runs={line.runs} />

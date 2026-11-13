@@ -78,7 +78,10 @@ test("boot reads all four calls in parallel, then shows the kinds and the profil
     // Answer nothing until all four are in flight: one after another would hang.
     await new Promise<void>((resolve) => {
       waiting.push(resolve);
-      if (waiting.length === 4) waiting.forEach((release) => release());
+      if (waiting.length === 4)
+        waiting.forEach((release) => {
+          release();
+        });
     });
     return Response.json(BODIES[new URL(request.url).pathname]);
   });
@@ -158,6 +161,19 @@ test("an empty hash opens the graph, the home view", async () => {
   expect(
     sidebar().getByRole("link", { name: "Graph" }).getAttribute("aria-current"),
   ).toBe("page");
+});
+
+test("Escape closes the navigation drawer, as its scrim does for a pointer", async () => {
+  serve();
+  history.replaceState(null, "", "#/list/codechange");
+  const user = userEvent.setup();
+  const { container } = render(<App assign={vi.fn()} />);
+  await screen.findByRole("heading", { level: 1 });
+  const app = () => container.querySelector(".app")?.classList.contains("drawer-open");
+  await user.click(screen.getByRole("button", { name: "Open navigation" }));
+  expect(app()).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(app()).toBe(false);
 });
 
 test("a deep link opens its view", async () => {

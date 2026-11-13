@@ -79,7 +79,7 @@ for (const theme of ["dark", "light"] as const) {
           (all, names) =>
             new Set(
               all
-                .filter((name) => names.includes(name.textContent!))
+                .filter((name) => names.includes(pageMust(name.textContent)))
                 .map((name) => name.className),
             ).size,
           actors,

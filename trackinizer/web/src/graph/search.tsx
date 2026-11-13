@@ -119,6 +119,8 @@ export function SearchResults({
     const at = number++;
     const far = hopsOf(match);
     return (
+      // biome-ignore lint/a11y/useFocusableInteractive: a result: the search box keeps focus and points at it with aria-activedescendant
+      // biome-ignore lint/a11y/useKeyWithClickEvents: the search box takes the keys; a click picks with the pointer
       <div
         key={match.id}
         id={`${id}-${at}`}

@@ -1,4 +1,4 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import {
   addAllowlistEntry,
   deleteUser,
@@ -145,15 +145,17 @@ test("a refusal is an ApiError with the server's message", async () => {
   });
 });
 
-// Compile-time checks: `tsc --noEmit` reads them, and nothing calls this.
-export async function rejected(): Promise<void> {
-  // @ts-expect-error A role the server does not know.
-  await setUserRole(USER, "owner");
-  // @ts-expect-error An allowlist entry needs its role.
-  await addAllowlistEntry({ email_or_pattern: "a@b.c" });
-  // @ts-expect-error No unknown keys: the server would drop them without a word.
-  await addAllowlistEntry({ email_or_pattern: "a@b.c", role: "viewer", note: "x" });
-}
+test("calls the server would refuse do not compile", () => {
+  // `tsc --noEmit` reads these; the function never runs.
+  expectTypeOf(async () => {
+    // @ts-expect-error A role the server does not know.
+    await setUserRole(USER, "owner");
+    // @ts-expect-error An allowlist entry needs its role.
+    await addAllowlistEntry({ email_or_pattern: "a@b.c" });
+    // @ts-expect-error No unknown keys: the server would drop them without a word.
+    await addAllowlistEntry({ email_or_pattern: "a@b.c", role: "viewer", note: "x" });
+  }).toBeFunction();
+});
 
 test("a lock is a PUT of the admin route with the flag, and no idempotency key", async () => {
   const sent = stubFetch((request) =>

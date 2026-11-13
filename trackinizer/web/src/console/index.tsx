@@ -562,8 +562,9 @@ function useFacets(range: Range, active: Active, scope: FeedFilters | null) {
       );
     },
   });
+  const scoped = scope !== null;
   useEffect(() => {
-    if (!hub || !live || scope === null) return;
+    if (!hub || !live || !scoped) return;
     let readAt = Date.now();
     const update = async ({ gap }: Batch): Promise<Later | null> => {
       const wait = readAt + 10_000 - Date.now();
@@ -575,7 +576,7 @@ function useFacets(range: Range, active: Active, scope: FeedFilters | null) {
     const registration = hub.register({ update });
     return () => registration.dispose();
     // `scope` is in `queryKey`, as text, so the effect follows it there.
-  }, [hub, client, queryKey, live, scope === null]);
+  }, [hub, client, queryKey, live, scoped]);
   return query;
 }
 

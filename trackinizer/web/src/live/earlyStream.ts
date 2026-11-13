@@ -22,9 +22,15 @@ export function openEarlyStream(): void {
   let listener: OpenListener | null = null;
   let openedAt: number | null = null;
   const close = openStream({
-    open: () => (listener ? listener.open() : (openedAt = Date.now())),
+    open: () => {
+      if (listener) listener.open();
+      else openedAt = Date.now();
+    },
     change: (id) => listener?.change(id),
-    drop: () => (listener ? listener.drop() : (openedAt = null)),
+    drop: () => {
+      if (listener) listener.drop();
+      else openedAt = null;
+    },
     refuse: () => listener?.refuse(),
   });
   early = {

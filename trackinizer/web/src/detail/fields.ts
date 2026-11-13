@@ -55,7 +55,7 @@ export function kindFields(row: DetailRow, fieldOwners: FieldOwners): Field[] {
     .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
     .map((name) => {
       const route = routes[name];
-      const value = valueOf(row, name);
+      const value = rowValue(row, name);
       const json = route?.value.type === "object" || isRecord(value);
       const look = LOOKS[name] ?? {
         label: capitalizeWords(name),
@@ -108,7 +108,7 @@ export function sourceUrl(source: string): string | null {
 /** Row keys that are not fields: identity, and the cost axes' nesting. */
 const ROW_KEYS = new Set(["id", "kind", "seq", "created", "modified", "marginal_cost"]);
 
-function valueOf(row: DetailRow, name: string): unknown {
+function rowValue(row: DetailRow, name: string): unknown {
   // The cost axes are the fields `marginal_cost_agent_usd` and `..._resource_usd`,
   // but the row nests them as `marginal_cost.agent_usd` and `.resource_usd`.
   const cost = row.marginal_cost;

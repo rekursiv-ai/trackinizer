@@ -103,7 +103,7 @@ let warming: Promise<void> | undefined;
 
 /** Render each of `WARM_UP` in a task of its own, once, however often asked. */
 function warmMarkdown(): Promise<void> {
-  return (warming ??= (async () => {
+  warming ??= (async () => {
     for (const [source, breaks] of WARM_UP) {
       await new Promise((resolve) => setTimeout(resolve));
       // The pipeline alone, as a render runs it: its result, React elements, goes nowhere.
@@ -113,7 +113,8 @@ function warmMarkdown(): Promise<void> {
       });
     }
     warmed = true;
-  })());
+  })();
+  return warming;
 }
 
 /**

@@ -66,7 +66,7 @@ let made:
 
 /** One formatter of each kind for every call, as MDN advises for formatting many dates. */
 function formats() {
-  return (made ??= {
+  made ??= {
     relative: new Intl.RelativeTimeFormat("en", { style: "narrow", numeric: "auto" }),
     dateTime: new Intl.DateTimeFormat("en", {
       year: "numeric",
@@ -75,7 +75,8 @@ function formats() {
       hour: "numeric",
       minute: "2-digit",
     }),
-  });
+  };
+  return made;
 }
 
 /** Each unit, its length in seconds, and the age below which it is used. */

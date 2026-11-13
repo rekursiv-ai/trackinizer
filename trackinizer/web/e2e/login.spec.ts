@@ -1,6 +1,5 @@
 import type { Page } from "@playwright/test";
 import { expect, failedResource, test } from "./fixtures";
-import { must } from "../src/must";
 
 // The sign-in page (server/assets/login.html). This server has no Google
 // sign-in, so a test that needs the page to offer it answers its check,
@@ -126,7 +125,7 @@ async function moved(page: Page): Promise<boolean> {
 
 /** How many of the canvas's pixels are drawn on, in a sample of every 97th. */
 function colouredPixels(canvas: HTMLCanvasElement): number {
-  const { data } = must(canvas.getContext("2d")).getImageData(
+  const { data } = pageMust(canvas.getContext("2d")).getImageData(
     0,
     0,
     canvas.width,

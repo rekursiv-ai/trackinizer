@@ -19,7 +19,7 @@ let prepared: Promise<void> | undefined;
  * the render that coloured the transcript's first replies one of 52 to 55.
  */
 export function prepare(): Promise<void> {
-  return (prepared ??= (async () => {
+  prepared ??= (async () => {
     const languages = Object.entries(common);
     for (let k = 0; k < languages.length; k += REGISTERED_PER_TASK) {
       lowlight.register(
@@ -31,7 +31,8 @@ export function prepare(): Promise<void> {
       lowlight.highlight(name, "");
       await nextTask();
     }
-  })());
+  })();
+  return prepared;
 }
 
 /** Languages `prepare` registers in one task. */

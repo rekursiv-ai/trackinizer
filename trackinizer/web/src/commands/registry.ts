@@ -2,6 +2,7 @@ import {
   createContext,
   useContext,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useSyncExternalStore,
@@ -83,18 +84,17 @@ export function useCommands(commands: readonly Command[]): void {
     latest.current = commands;
   });
   const signature = JSON.stringify(commands.map(({ run, ...declared }) => declared));
+  const register = useEffectEvent(() =>
+    registry.add(
+      commands.map((command, index) => ({
+        ...command,
+        run: () => latest.current[index].run(),
+      })),
+    ),
+  );
   // Keyed on the signature, not on `commands`: callers pass a new array every
   // render, and re-registering on each would re-render every subscriber in a loop.
-  useEffect(
-    () =>
-      registry.add(
-        commands.map((command, index) => ({
-          ...command,
-          run: () => latest.current[index].run(),
-        })),
-      ),
-    [registry, signature],
-  );
+  useEffect(() => register(), [registry, signature]);
 }
 
 /** Every mounted command, for the palette. */

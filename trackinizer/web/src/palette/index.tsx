@@ -160,6 +160,7 @@ function Combobox({
       <div className="pal-list" id={listId} role="listbox" aria-label="Results">
         {sectionsOf(options).map(({ section, rows }, n) => (
           <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: runs of one ordered list, recomputed in that order
             key={`${n}-${section}`}
             role="group"
             aria-labelledby={`${idPrefix}-section-${n}`}
@@ -170,6 +171,8 @@ function Combobox({
                 : section}
             </div>
             {rows.map(({ option, index }) => (
+              // biome-ignore lint/a11y/useFocusableInteractive: a palette's option: the input keeps focus and points at it with aria-activedescendant
+              // biome-ignore lint/a11y/useKeyWithClickEvents: the palette's input takes the keys; a click picks with the pointer
               <div
                 key={option.key}
                 id={optionId(index)}
@@ -253,6 +256,7 @@ function OptionBody({ option }: { option: Option }) {
           {option.command.keys?.[0] && (
             <span className="keys">
               {keyCaps(option.command.keys[0]).map((cap, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
                 <kbd key={index}>{cap}</kbd>
               ))}
             </span>

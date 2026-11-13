@@ -5,6 +5,7 @@ import {
   type RefObject,
   useContext,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useState,
@@ -95,13 +96,14 @@ export function useLiveList(
   );
   // Before paint, so a new row a page read brought in never shows beside a pill still counting it.
   useLayoutEffect(() => live?.settle(loaded), [live, loaded]);
+  // Its first page may be one main.tsx started reading before the stream opened.
+  const firstReadAt = useEffectEvent(() =>
+    takeReadAt((key) => isPageKey(key, request.filters)),
+  );
   useEffect(() => {
     const root = scroller.current;
     if (!hub || !live || !root) return;
-    // Its first page may be one main.tsx started reading before the stream opened.
-    const registration = hub.register(live, {
-      readAt: takeReadAt((key) => isPageKey(key, request.filters)),
-    });
+    const registration = hub.register(live, { readAt: firstReadAt() });
     const onScreen = watchRows(root, (entered) =>
       registration.push(entered.filter((id) => live.isStale(id))),
     );

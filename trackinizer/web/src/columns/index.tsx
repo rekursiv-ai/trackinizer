@@ -154,6 +154,7 @@ export function ColumnsView({
       {columns.map((column, index) => (
         <ColumnList
           // By depth: the column at a depth shows another Issue's children as the path changes.
+          // biome-ignore lint/suspicious/noArrayIndexKey: by depth: the column at a depth keeps its scroll as the path changes
           key={index}
           column={column}
           rows={index === 0}

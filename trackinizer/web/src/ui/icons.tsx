@@ -119,6 +119,7 @@ export function Icon({
       strokeLinejoin="round"
       aria-hidden="true"
       // Constant markup from PATHS above; no user text ever reaches it.
+      // biome-ignore lint/security/noDangerouslySetInnerHtml: PATHS holds this file's own SVG literals, never input
       dangerouslySetInnerHTML={{ __html: PATHS[name] }}
     />
   );

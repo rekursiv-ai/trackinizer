@@ -8,7 +8,9 @@ test("everyone can go to Your settings; only an admin is offered Admin", () => {
     { id: "go.settings", title: "Go to Your settings", section: "Navigate" },
     { id: "go.admin", title: "Go to Admin", section: "Navigate" },
   ]);
-  admin.forEach((command) => command.run());
+  admin.forEach((command) => {
+    command.run();
+  });
   expect(gone).toEqual(["settings", "admin"]);
   for (const role of ["writer", "viewer"]) {
     expect(settingsCommands(role, () => {}).map((command) => command.id)).toEqual([

@@ -1,4 +1,4 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import {
   createToken,
   getProfile,
@@ -134,20 +134,22 @@ test("a refused token write is an ApiError with the server's message", async () 
   });
 });
 
-// Compile-time checks: `tsc --noEmit` reads them, and nothing calls this.
-export async function rejected(): Promise<void> {
-  // A role the server does not know,
-  // @ts-expect-error
-  await createToken({ name: "x", role: "owner" });
-  // an unknown key, which the server would drop without a word,
-  // @ts-expect-error
-  await createToken({ name: "x", actor: "me" });
-  // and a token without a label.
-  // @ts-expect-error
-  await createToken({ role: "viewer" });
-  // @ts-expect-error
-  await setTokenRole(KEY, "root");
-}
+test("calls the server would refuse do not compile", () => {
+  // `tsc --noEmit` reads these; the function never runs.
+  expectTypeOf(async () => {
+    // A role the server does not know,
+    // @ts-expect-error
+    await createToken({ name: "x", role: "owner" });
+    // an unknown key, which the server would drop without a word,
+    // @ts-expect-error
+    await createToken({ name: "x", actor: "me" });
+    // and a token without a label.
+    // @ts-expect-error
+    await createToken({ role: "viewer" });
+    // @ts-expect-error
+    await setTokenRole(KEY, "root");
+  }).toBeFunction();
+});
 
 test("a save from a page read as Ada names her, and once the browser is Sam's the refusal moves the page", async () => {
   // Fresh modules: `readAs` binds a page for good, so this test's page is its own, whatever runs before or after it.

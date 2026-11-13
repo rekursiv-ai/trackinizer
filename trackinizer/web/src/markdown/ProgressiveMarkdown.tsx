@@ -26,6 +26,7 @@ export function ProgressiveMarkdown({
     <div className="md">
       {parts.slice(0, shown).map((part, index) => (
         // Keyed by place, so after an edit only the parts whose text changed parse again.
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of one streamed text, only ever appended
         <Markdown key={index} source={part} kinds={kinds} className="md-part" />
       ))}
     </div>

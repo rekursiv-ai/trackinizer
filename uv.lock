@@ -188,7 +188,7 @@ wheels = [
 [[package]]
 name = "codedoctor"
 version = "0.1.5"
-source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#78e374008c94cf299667a1fcca813949f9c8e024" }
+source = { git = "https://github.com/rekursiv-ai/codedoctor?branch=main#76e2498a5b9b82d8e0f2d636296cf72d6b577ab7" }
 dependencies = [
     { name = "pyyaml" },
     { name = "rignore" },
@@ -1773,7 +1773,7 @@ wheels = [
 [[package]]
 name = "rekursiv-ai-typings"
 version = "0.1.18"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#3aaf9a6a744a31e59e53886e4aec8abea7dd6fbe" }
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#06da4dd9a34495fb0c67b6da1efac52def0a598a" }
 
 [[package]]
 name = "rich"

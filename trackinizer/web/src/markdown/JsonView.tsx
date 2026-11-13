@@ -149,6 +149,7 @@ function Branch({
         {node.type === "array" ? (
           node.items.map((item, index) => (
             <Value
+              // biome-ignore lint/suspicious/noArrayIndexKey: a JSON array's index is its item's identity
               key={index}
               node={item}
               name={index}
@@ -162,6 +163,7 @@ function Branch({
         ) : (
           node.entries.map(([key, value], index) => (
             <Value
+              // biome-ignore lint/suspicious/noArrayIndexKey: entries of one parsed JSON text, in order, and a key may repeat
               key={index}
               node={value}
               name={key}
@@ -226,6 +228,7 @@ function NumberTable({ groups }: { groups: Map<string, [string, string][]> }) {
             </tr>
           ) : null}
           {rows.map(([key, number], index) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: entries of one parsed JSON text, in order, and a key may repeat
             <tr key={index}>
               <th scope="row">{key}</th>
               <td className="num">{number}</td>
@@ -249,6 +252,7 @@ function linker(kinds: readonly string[]): Linker {
     return paragraph.children.map((node, index) =>
       node.type === "link" ? (
         <Link
+          // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
           key={index}
           href={node.url}
           className="ref"

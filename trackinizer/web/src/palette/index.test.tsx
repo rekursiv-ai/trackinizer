@@ -243,9 +243,9 @@ test("loaded rows and commands match while typing; the server is asked after a p
   expect(server.sent).toEqual([]);
 
   expect(active(input)).toBe("Issue#3Why retry");
-  ["ArrowUp", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"].forEach((key) =>
-    fireEvent.keyDown(input, { key }),
-  );
+  ["ArrowUp", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"].forEach((key) => {
+    fireEvent.keyDown(input, { key });
+  });
   expect(active(input)).toBe("Go to retry queue");
   await pass(1);
   expect(server.kinds()).toEqual(["Issue", "Belief", "Paper"]);

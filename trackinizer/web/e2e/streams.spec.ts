@@ -13,14 +13,14 @@ async function streams(page: Page, label: string): Promise<string[]> {
         const strip = (text: string) => text.replaceAll(` ${label}`, "");
         const rows = [...stream.querySelectorAll("a.row")].map((row) => {
           const context = row.querySelector(".row-ctx")?.textContent ?? "";
-          const title = row
-            .querySelector(".row-title")!
-            .textContent!.slice(0, -context.length || undefined);
+          const title = pageMust(
+            pageMust(row.querySelector(".row-title")).textContent,
+          ).slice(0, -context.length || undefined);
           return context
             ? `${strip(title)} (${strip(context).replace(" · in ", "in ")})`
             : strip(title);
         });
-        return `${strip(stream.querySelector(".s-title")!.textContent!)}: ${rows.join(", ")}`;
+        return `${strip(pageMust(pageMust(stream.querySelector(".s-title")).textContent))}: ${rows.join(", ")}`;
       }),
     label,
   );

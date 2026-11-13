@@ -11,9 +11,9 @@ async function lines(page: Page, label: string): Promise<string[]> {
   return page.locator(".o-line").evaluateAll(
     (found, label) =>
       found.map((line) => {
-        const title = line
-          .querySelector(".row-title")!
-          .textContent!.replace(` ${label}`, "");
+        const title = pageMust(
+          pageMust(line.querySelector(".row-title")).textContent,
+        ).replace(` ${label}`, "");
         const older = line.querySelector(".o-older") ? " (older)" : "";
         return `${"  ".repeat(Number((line as HTMLElement).dataset.depth))}${title}${older}`;
       }),

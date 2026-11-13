@@ -127,6 +127,7 @@ export function PurgeDialog({
                 aria-label="Reason"
                 className="field pg-reason"
                 placeholder="Reason (required, shown in activity)"
+                // biome-ignore lint/a11y/noAutofocus: the reason box of the dialog the press opened
                 autoFocus
                 value={reason}
                 onChange={(event) => {

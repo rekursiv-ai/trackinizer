@@ -13,6 +13,7 @@ import {
   type ReactNode,
   use,
   useEffect,
+  useEffectEvent,
   useId,
   useLayoutEffect,
   useMemo,
@@ -510,9 +511,10 @@ function StepGroup({
   const [holds, setHolds] = useState(() => ids.some((id) => memory?.open.get(id)));
   // Once, as the group is drawn: the line that had the focus says so only as it
   // goes (`Step`), after this drew, and before the page paints.
-  useLayoutEffect(() => {
+  const holdIfFocused = useEffectEvent(() => {
     if (memory && ids.includes(memory.focused)) setHolds(true);
-  }, []);
+  });
+  useLayoutEffect(() => holdIfFocused(), []);
   const steps = rows
     .filter((row) => row.record.kind !== "Thinking")
     .map(({ record, result }) => {

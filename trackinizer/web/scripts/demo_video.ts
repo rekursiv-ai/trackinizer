@@ -557,28 +557,32 @@ async function drawnCount(page: Page): Promise<number> {
 
 /** The title the graph draws node `id` with. */
 async function titleOf(page: Page, id: string): Promise<string> {
-  return page.evaluate((wanted) => {
-    const debug = (
-      window as unknown as {
-        trackinizer: { graph(): { nodes: { id: string; title: string }[] } };
-      }
-    ).trackinizer;
-    return debug.graph().nodes.find((node) => node.id === wanted)!.title;
-  }, id);
+  return page
+    .evaluate((wanted) => {
+      const debug = (
+        window as unknown as {
+          trackinizer: { graph(): { nodes: { id: string; title: string }[] } };
+        }
+      ).trackinizer;
+      return debug.graph().nodes.find((node) => node.id === wanted)?.title;
+    }, id)
+    .then(must);
 }
 
 /** Where node `id` is in the window. */
 async function screenOf(page: Page, id: string): Promise<{ x: number; y: number }> {
-  return page.evaluate((wanted) => {
-    const debug = (
-      window as unknown as {
-        trackinizer: {
-          graph(): { nodes: { id: string; screen: { x: number; y: number } }[] };
-        };
-      }
-    ).trackinizer;
-    return debug.graph().nodes.find((node) => node.id === wanted)!.screen;
-  }, id);
+  return page
+    .evaluate((wanted) => {
+      const debug = (
+        window as unknown as {
+          trackinizer: {
+            graph(): { nodes: { id: string; screen: { x: number; y: number } }[] };
+          };
+        }
+      ).trackinizer;
+      return debug.graph().nodes.find((node) => node.id === wanted)?.screen;
+    }, id)
+    .then(must);
 }
 
 /** Click the sidebar's entry `label`, gliding to it first. */

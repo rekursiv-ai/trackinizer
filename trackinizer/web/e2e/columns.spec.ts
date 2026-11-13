@@ -40,9 +40,9 @@ async function columns(page: Page, label: string): Promise<string[]> {
         const strip = (text: string) => text.replaceAll(` ${label}`, "");
         const items = [...column.querySelectorAll(".c-item")].map(
           (item) =>
-            `${strip(item.querySelector(".c-title")!.textContent!)}${item.getAttribute("aria-current") ? "*" : ""}`,
+            `${strip(pageMust(pageMust(item.querySelector(".c-title")).textContent))}${item.getAttribute("aria-current") ? "*" : ""}`,
         );
-        return `${strip(column.querySelector(".c-heading")!.textContent!)}: ${items.join(", ")}`;
+        return `${strip(pageMust(pageMust(column.querySelector(".c-heading")).textContent))}: ${items.join(", ")}`;
       }),
     label,
   );

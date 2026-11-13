@@ -99,6 +99,7 @@ function Prop({ detail, field }: { detail: Detail; field: Field }) {
         <FieldValue field={field} />
       </PropertyEditor>
       {href ? (
+        // biome-ignore lint/a11y/useAriaPropsSupportedByRole: linkProps gives it its href, so it is a link
         <a
           className="icon-btn prop-open"
           {...linkProps(href)}

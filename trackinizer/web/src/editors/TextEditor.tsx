@@ -102,6 +102,7 @@ export function TextEditor({
     if (!(event.target as Element).closest("a, button, summary")) open();
   };
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: a double-click opens the editor; its Edit button and E open it from the keyboard
     <div
       className={mode === "enabled" ? "ed-text" : "ed-text off"}
       onDoubleClick={onDoubleClick}
@@ -210,6 +211,7 @@ function OpenText({
   // Focusable itself, so a click on its text, or on a button that Safari does not
   // focus, keeps focus in the editor rather than leaving it.
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: catches focus leaving its fields to save; no action of its own
     <div className="md-edit" data-field={field.name} tabIndex={-1} onBlur={onBlur}>
       {field.name === "description" ? null : <span className="k">{label}</span>}
       <Changed
@@ -407,6 +409,7 @@ function OpenTitle({
     if (!event.currentTarget.contains(event.relatedTarget)) void save();
   };
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: catches focus leaving its fields to save; no action of its own
     <div className="d-title-edit" onBlur={onBlur}>
       <textarea
         ref={focusAtEnd}

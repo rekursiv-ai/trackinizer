@@ -1,6 +1,7 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, failedResource, test, streamOpened } from "./fixtures";
 import { must } from "../src/must";
+import { PAGE_MUST } from "./pageMust";
 
 // The console (#/console): every session's captured records as one live feed,
 // narrowed by a view that saves itself, and a line that messages agents. The test
@@ -194,6 +195,7 @@ test("a view saved in one browser is in a fresh browser of the same user, and no
   ).toEqual([]);
 
   const second = await browser.newContext();
+  await second.addInitScript(PAGE_MUST);
   try {
     const other = await second.newPage();
     await openConsole(other);
@@ -227,7 +229,8 @@ test("a line goes to the view's agents, each once with a retry, @ lists them, an
   // The first send to b reaches the server, which queues it, but its answer never reaches the page.
   await page.route("**/api/messages", async (route) => {
     const { actor } = route.request().postDataJSON();
-    (keys[actor] ??= []).push(route.request().headers()["idempotency-key"] ?? "");
+    keys[actor] ??= [];
+    keys[actor].push(route.request().headers()["idempotency-key"] ?? "");
     if (actor !== `${family}-b` || lost) return route.continue();
     lost = true;
     await route.fetch();

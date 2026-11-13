@@ -10,6 +10,7 @@ import {
 import { ApiError } from "../api/client";
 import { bootQueries } from "../app/boot";
 import { log } from "../debug/log";
+import type { Detail } from "../api/detail";
 import { detailQueries } from "../detail/queries";
 import { LiveContext } from "../live/index";
 import { type ShowToast, useToast } from "../ui/toast";
@@ -20,7 +21,6 @@ import {
   sendWithRetries,
   type WriteRequest,
 } from "./requests";
-import { must } from "../must";
 
 /**
  * Where one control's write is.
@@ -104,10 +104,12 @@ export function useWrite(): Writer {
   const context = useRef<Context | null>(null);
   const run = useCallback(
     async <Result>(edit: Edit<Result>): Promise<Result | null> => {
-      if (busy.current) return null;
+      // Null until this hook's layout effect, which runs after its children's.
+      const ready = context.current;
+      if (busy.current || !ready) return null;
       busy.current = true;
       try {
-        const result = await runEdit(edit, must(context.current));
+        const result = await runEdit(edit, ready);
         return mounted.current ? result : null;
       } finally {
         busy.current = false;
@@ -236,7 +238,7 @@ async function resolveConflict<Result>(
   context: Context,
 ): Promise<Result | null> {
   const read = detailQueries.detail(guard.id);
-  let detail;
+  let detail: Detail;
   try {
     // A read of the row already under way may have begun before the change
     // that refused this write; joining it would show the value it replaced.

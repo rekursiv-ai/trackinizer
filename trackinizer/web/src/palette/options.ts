@@ -75,7 +75,9 @@ export function paletteOptions({
   };
   // Four recent and eight loaded rows, as the mock lists.
   if (!q) {
-    recent.slice(0, 4).forEach((found) => addInquiry("Recently opened", found));
+    recent.slice(0, 4).forEach((found) => {
+      addInquiry("Recently opened", found);
+    });
   } else {
     for (const route of jumpsFor(q, kinds)) {
       const found = cached.find((row) => named(route, row)) ?? null;
@@ -93,13 +95,17 @@ export function paletteOptions({
     cached
       .filter((found) => !listed.has(found.id) && matches(found))
       .slice(0, 8)
-      .forEach((found) => addInquiry("Inquiries", found));
+      .forEach((found) => {
+        addInquiry("Inquiries", found);
+      });
   }
   options.push(...commandOptions(commands, q.toLowerCase()));
   for (const search of searches) {
     search.hits
       ?.filter((found) => !listed.has(found.id))
-      .forEach((found) => addInquiry(SERVER_SECTION, found));
+      .forEach((found) => {
+        addInquiry(SERVER_SECTION, found);
+      });
   }
   const failures = new Map<string, KindSearch[]>();
   for (const search of searches) {
@@ -116,7 +122,10 @@ export function paletteOptions({
       type: "retry",
       message,
       kinds: failed.map((search) => search.kind),
-      retry: () => failed.forEach((search) => search.retry()),
+      retry: () =>
+        failed.forEach((search) => {
+          search.retry();
+        }),
     });
   }
   return options;

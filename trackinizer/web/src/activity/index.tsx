@@ -175,6 +175,7 @@ function Line({
             part
           ) : (
             <MentionLink
+              // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
               key={`${index}:${part.id}`}
               mention={part}
               subjects={subjects}

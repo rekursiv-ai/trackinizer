@@ -98,6 +98,19 @@ export function Shell() {
       : []),
     panelCommand(sidebar),
   ]);
+  // A layer of its own, mounted while the drawer is open, so its Escape outranks a view's.
+  useCommands(
+    drawerOpen
+      ? [
+          {
+            id: "drawer.close",
+            title: "Close navigation",
+            keys: ["Escape"],
+            run: closeDrawer,
+          },
+        ]
+      : [],
+  );
 
   return (
     <PaletteContext value={palette}>
@@ -106,6 +119,8 @@ export function Shell() {
           className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}`}
         >
           <Sidebar onNavigate={closeDrawer} panel={sidebar} />
+          {/* biome-ignore lint/a11y/noStaticElementInteractions: the pointer's way out of the drawer; Escape closes it from the keyboard */}
+          {/* biome-ignore lint/a11y/useKeyWithClickEvents: the pointer's way out of the drawer; Escape closes it from the keyboard */}
           <div className="drawer-scrim" onClick={closeDrawer} />
           <main className="main">
             <BarStack>
