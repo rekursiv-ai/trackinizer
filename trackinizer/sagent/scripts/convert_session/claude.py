@@ -2069,6 +2069,10 @@ def _without_turn_envelope(
     return record if len(kept) == len(extra) else replace(record, extra=immutable(kept))
 
 
+_INVERTED: Final = bytes(range(255, -1, -1))
+"""A ``bytes.translate`` table flipping every bit of a byte."""
+
+
 # ``ascii_bits`` marks which lines WERE ascii, accumulated as the stream was read; the
 # majority is only known once it ends, so the stored bitmap is the difference against it
 # rather than the raw observation.
@@ -2079,11 +2083,11 @@ def _ascii_escape_exceptions(
     default: bool,
 ) -> str:
     """Pack lines whose Unicode escaping differs from the majority."""
-    packed = bytearray((total + 7) // 8)
-    for index in range(total):
-        was_ascii = bool(ascii_bits[index // 8] & (1 << (index % 8)))
-        if was_ascii != default:
-            packed[index // 8] |= 1 << (index % 8)
+    # Run once per line, so whole bytes in C: a loop over each bit made reading
+    # quadratic in Python steps.
+    packed = bytearray(ascii_bits.translate(_INVERTED) if default else ascii_bits)
+    if total % 8:
+        packed[-1] &= (1 << (total % 8)) - 1
     return base64.b64encode(packed).decode("ascii")
 
 

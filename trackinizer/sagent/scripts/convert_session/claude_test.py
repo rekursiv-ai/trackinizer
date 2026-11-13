@@ -2515,6 +2515,25 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
     }
 
 
+@pytest.mark.parametrize("default", [True, False])
+@pytest.mark.parametrize("total", [3, 8, 11])
+def test_the_exception_bitmap_marks_each_line_against_the_majority(
+    total: int,
+    default: bool,
+) -> None:
+    was_ascii = [index % 3 != 1 for index in range(total)]
+    ascii_bits = bytearray((total + 7) // 8)
+    for index, flag in enumerate(was_ascii):
+        ascii_bits[index // 8] |= flag << (index % 8)
+    expected = bytearray((total + 7) // 8)
+    for index, flag in enumerate(was_ascii):
+        expected[index // 8] |= (flag != default) << (index % 8)
+
+    packed = claude._ascii_escape_exceptions(ascii_bits, total, default=default)
+
+    assert base64.b64decode(packed) == expected
+
+
 def test_claude_writer_escapes_each_line_by_its_own_bit() -> None:
     """Every written line advances the bitmap index, not only the first."""
     stream = StringIO()
