@@ -124,14 +124,15 @@ def authorize(call: GatedCall) -> Verdict:
 
 
 def refused_line(call_id: str, reason: str) -> bytes:
-    """Return the line answering call ``call_id`` as an error saying ``reason``.
+    """Return the ``Result`` line that fails call ``call_id`` with ``reason``.
 
     Args:
       call_id: The id of the line refused.
       reason: What the agent is told.
 
     Returns:
-      line: A ``Result`` holding a ``ToolErrorResult``, newline included.
+      line: A ``Result`` whose record is a failed ``ToolResult`` with ``reason``
+        on ``stderr``, newline included.
 
     """
     return _dumped(
@@ -139,10 +140,10 @@ def refused_line(call_id: str, reason: str) -> bytes:
             "py/object": "Result",
             "id": call_id,
             "record": {
-                "py/object": "ToolErrorResult",
-                "content": reason,
+                "py/object": "ToolResult",
                 "call_id": "",
-                "is_error": True,
+                "state": "failed",
+                "stderr": [reason],
                 "extra": {},
             },
         },

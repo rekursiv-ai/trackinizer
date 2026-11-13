@@ -25,6 +25,7 @@ import os
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
+from trackinizer.sagent.session.types import ToolResult, former_kind
 
 
 if TYPE_CHECKING:
@@ -169,7 +170,9 @@ def test_a_golden_carries_every_record_type_the_fixture_holds() -> None:
     # The goldens defend only the record kinds they contain, so this reports
     # what that set is rather than leaving it implicit.
     kinds = {
-        type(record).__name__ for fixture in fixtures() for record in _session(fixture)
+        former_kind(record) if isinstance(record, ToolResult) else type(record).__name__
+        for fixture in fixtures()
+        for record in _session(fixture)
     }
 
     assert kinds == {

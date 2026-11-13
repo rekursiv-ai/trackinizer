@@ -20,6 +20,7 @@ into the chat it answers them in (see ``require_session_access``), and anyone el
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
@@ -40,6 +41,7 @@ from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.session_reaper import revive_if_reaped
 from trackinizer.server.store.session_ir import SlashCommandRow
 from trackinizer.server.visuals.session_usage import SessionUsage, session_usage
+from trackinizer.types.session_records import served_payload
 from trackinizer.wire.routes import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
 from trackinizer.wire.wire_session_ir import (
     CLIENT_OUTDATED,
@@ -311,7 +313,16 @@ async def read_session_records_route(
         limit=limit,
         plaintext_only=plaintext_only,
     )
-    return ReadRecordsResponse(part=part, records=[RecordBody.of(row) for row in rows])
+    # A legacy tool-call row holds a retired record class's payload, and clients read
+    # only the current ``ToolResult`` shape, so each payload is converted on the way
+    # out. The stored row is not rewritten.
+    return ReadRecordsResponse(
+        part=part,
+        records=[
+            RecordBody.of(replace(row, payload=served_payload(row.kind, row.payload)))
+            for row in rows
+        ],
+    )
 
 
 @router.get("/api/sessions/{session_id}/turns")

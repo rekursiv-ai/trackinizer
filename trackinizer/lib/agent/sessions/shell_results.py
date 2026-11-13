@@ -8,7 +8,7 @@ READ, WRITTEN, and EDITED however the agent spelled it.
 THE FORMS THIS MODULE MATCHES -- there are no others:
 
 ===========  ==================================  =========================
-operation    form                                becomes
+operation    form                                result class
 ===========  ==================================  =========================
 read         ``cat [--] F``                      :class:`ReadResult`
 read         ``head [-n N|-N|--lines=N] F``      :class:`ReadResult`
@@ -40,7 +40,7 @@ file's new bytes are unknown either way. A :class:`WriteResult` would have
 to state them, and stating ``""`` would claim the command emptied the file.
 
 Only an append states the bytes it added; the other edits state a path and
-state no ``edits``, because their result was never printed.
+no :class:`Splice`, because their result was never printed.
 
 A ``cd`` may precede any of them (``cd repo && cat f``). It changes no file,
 but it does change which file a relative operand names, so a LITERAL
@@ -53,8 +53,8 @@ WHAT IS REJECTED, and the one rule behind it: **every part must be literal
 text in the transcript.** A path or a body the shell would expand -- ``$VAR``,
 ``` `cmd` ```, ``*.py``, ``{a,b}`` -- names a file, or holds bytes, that
 depend on a machine this reader cannot see. Such a command is a dynamic
-program, not a file operation, and is left as a
-:class:`BashResult`. So is anything else: a pipeline, a second
+program, not a file operation, and its result stays a
+:class:`BashResult`. So does that of anything else: a pipeline, a second
 command, a redirect this table does not list. Nothing is guessed.
 
 Two consequences of that rule worth stating outright, because both look like
@@ -88,8 +88,10 @@ from trackinizer.lib.agent.sessions.udiff import parse_udiff
 from trackinizer.sagent.session.types import (
     BashResult,
     EditResult,
+    LineSpan,
     ReadResult,
     Splice,
+    ToolResult,
     WriteResult,
 )
 
@@ -108,6 +110,7 @@ __all__ = ["lift_shell_result", "rewrite_shell_source", "shell_result_for_replay
 
 
 type FileResult = ReadResult | WriteResult | EditResult
+"""The result class of a call that read, wrote, or edited one file."""
 type Act = Literal["read", "write", "append", "rewrite", "patched"]
 """What one matched command did to its file.
 
@@ -119,7 +122,7 @@ that decides what a record may honestly claim:
 * ``rewrite`` states only the command that transformed the file, because the
   result was never printed: ``sed -i``, ``perl -i``, ``tee``.
 
-Collapsing them would make a record's ``edits`` mean three different things.
+Collapsing them would make a record's splices mean three different things.
 """
 type LineRanges = tuple[tuple[int | None, int | None], ...]
 """Which lines a read returned, as ``(start, count)`` pairs, one-based.
@@ -186,11 +189,11 @@ class _BashNode(Protocol):
 
 
 def lift_shell_result(
-    result: BashResult,
+    result: ToolResult[BashResult, object, object],
     *,
     command: str | None = None,
     succeeded: bool | None = None,
-) -> FileResult | None:
+) -> ToolResult[FileResult, object, object] | None:
     """Return the most-specific file result proved by a shell execution.
 
     Args:
@@ -202,12 +205,16 @@ def lift_shell_result(
       file_result: A specific file result, or None when lifting is ambiguous.
 
     """
+    shell = result.result
+    # A pending, failed, or cancelled call has no ``BashResult`` to lift.
+    if shell is None:
+        return None
     completed = (
-        result.exit_code == 0 if result.exit_code is not None else succeeded is True
+        shell.exit_code == 0 if shell.exit_code is not None else succeeded is True
     )
     if not completed:
         return None
-    script = command if command is not None else _script(result.command)
+    script = command if command is not None else _script(shell.command)
     operation = _operation(script) if script is not None else None
     if operation is None:
         return None
@@ -217,50 +224,57 @@ def lift_shell_result(
         operation.content,
         operation.ranges,
     )
+    stdout = "".join(text for text in result.stdout if isinstance(text, str))
+    stderr = "".join(text for text in result.stderr if isinstance(text, str))
     extra = dict(mutable(result.extra))
     replay: dict[str, MutablePlainTree] = {}
-    if result.command is not None:
-        replay["command"] = list(result.command)
-    if kind != "read" and result.stdout:
-        replay["stdout"] = result.stdout
-    if result.stderr:
-        replay["stderr"] = result.stderr
-    if result.exit_code is not None:
-        replay["exit_code"] = result.exit_code
+    if shell.command is not None:
+        replay["command"] = list(shell.command)
+    if kind != "read" and stdout:
+        replay["stdout"] = stdout
+    if stderr:
+        replay["stderr"] = stderr
+    if shell.exit_code is not None:
+        replay["exit_code"] = shell.exit_code
     extra["$shell"] = replay
     extra_frozen = immutable(extra)
     if kind == "read":
-        return ReadResult(
+        return ToolResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
-            path=path,
-            content=result.stdout,
-            ranges=ranges,
+            state="done",
+            stdout=(
+                *((stdout,) if stdout else ()),
+                *(LineSpan(start=start, count=count) for start, count in ranges),
+            ),
+            result=ReadResult(path=path),
             extra=extra_frozen,
         )
     if content is None:
         # A rewrite -- in place, or a tee -- is the one other row that states no
         # content: the file's new bytes were never printed, so the record names
-        # the file and states no ``edits`` rather than claiming content nobody
+        # the file and holds no ``Splice`` rather than claiming content nobody
         # captured. The command that did it rides in ``$shell``, which is what a
         # replay puts back.
-        return EditResult(
+        return ToolResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
-            path=path,
+            state="done",
+            stdout=(f"Edited {path or 'the file'}.",),
+            result=EditResult(path=path),
             extra=extra_frozen,
         )
     if kind == "append":
         # The one edit whose new bytes the transcript holds, so it renders as
         # the one-sided diff it is. The file BEFORE the append was never
         # recorded, and a two-sided diff would invent that half.
-        return EditResult(
+        return ToolResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
-            path=path,
+            state="done",
             # An append replaces nothing, which is a splice with an empty
             # ``before`` -- the shape's own way of saying "pure insertion".
             #
@@ -275,39 +289,49 @@ def lift_shell_result(
             # The bytes AS WRITTEN, terminator and all: ``printf hi >> f``
             # leaves ``x\nhi``, and terminating it claimed a byte the command
             # never wrote, which a consumer applying the splice would insert.
-            edits=(Splice(before="", after=content),) if content else (),
+            stdout=(
+                f"Edited {path or 'the file'}.",
+                *((Splice(before="", after=content),) if content else ()),
+            ),
+            result=EditResult(path=path),
             extra=extra_frozen,
         )
     if kind == "patched":
         # The diff arrived inline, so the record states the change itself.
-        return EditResult(
+        return ToolResult(
             context_id=result.context_id,
             timestamp=result.timestamp,
             call_id=result.call_id,
-            path=path,
-            edits=parse_udiff(content),
+            state="done",
+            stdout=(f"Edited {path or 'the file'}.", *parse_udiff(content)),
+            result=EditResult(path=path),
             extra=extra_frozen,
         )
-    return WriteResult(
+    return ToolResult(
         context_id=result.context_id,
         timestamp=result.timestamp,
         call_id=result.call_id,
-        path=path,
-        content=content,
+        state="done",
+        stdout=(f"Wrote {path or 'the file'}.",),
+        result=WriteResult(path=path, content=content),
         extra=extra_frozen,
     )
 
 
-def shell_result_for_replay(result: FileResult) -> BashResult | None:
+def shell_result_for_replay(result: ToolResult) -> ToolResult[BashResult] | None:
     """Recover a lifted shell execution for provider-native replay.
 
     Args:
-      result: A provider-neutral file result.
+      result: A provider-neutral tool result.
 
     Returns:
-      shell_result: Its source shell execution, or None when it was native.
+      shell_result: The shell result ``result`` was lifted from, or None when
+        ``result`` was not lifted from one.
 
     """
+    tool_result = result.result
+    if not isinstance(tool_result, ReadResult | WriteResult | EditResult):
+        return None
     extra = dict(mutable(result.extra))
     replay_value = extra.pop("$shell", None)
     if not isinstance(replay_value, Mapping):
@@ -319,21 +343,26 @@ def shell_result_for_replay(result: FileResult) -> BashResult | None:
         if command_value is not None
         else None
     )
-    command = _stencil_command(command, result)
+    command = _stencil_command(command, tool_result)
     # A field the replay lacks, or one not text, reads as no output.
     stdout = (
-        result.content or "" if isinstance(result, ReadResult) else replay.get("stdout")
+        "".join(text for text in result.stdout if isinstance(text, str))
+        if isinstance(tool_result, ReadResult)
+        else replay.get("stdout")
     )
     stderr = replay.get("stderr")
     exit_code = replay.get("exit_code")
-    return BashResult(
+    return ToolResult(
         context_id=result.context_id,
         timestamp=result.timestamp,
         call_id=result.call_id,
-        command=command,
-        stdout=stdout if isinstance(stdout, str) else "",
-        stderr=stderr if isinstance(stderr, str) else "",
-        exit_code=exit_code if isinstance(exit_code, int) else None,
+        state="done",
+        stdout=(stdout,) if isinstance(stdout, str) and stdout else (),
+        stderr=(stderr,) if isinstance(stderr, str) and stderr else (),
+        result=BashResult(
+            command=command,
+            exit_code=exit_code if isinstance(exit_code, int) else None,
+        ),
         extra=immutable(extra),
     )
 
@@ -343,7 +372,7 @@ def rewrite_shell_source(command: str, result: FileResult) -> str:
 
     Args:
       command: Original shell source.
-      result: Current provider-neutral file result.
+      result: Current ``result`` field of the lifted record.
 
     Returns:
       rewritten: Shell source reflecting representable semantic edits.
@@ -814,7 +843,7 @@ def _in_place_operation(
 
 # TABLE ROW: ``patch ... F`` in its inline form. Unlike every other rewrite, the change
 # is right there in the command -- the heredoc holds the diff -- so the record carries
-# it rather than leaving :attr:`edits` empty.
+# it rather than holding no ``Splice``.
 def _patch_heredoc(
     parts: Sequence[_BashNode],
     *,

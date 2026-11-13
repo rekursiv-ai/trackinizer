@@ -40,7 +40,7 @@ from treekle import json_loads
 
 from trackinizer.lib.agent.sessions import claude, codex, gemini, normalized, sagent
 from trackinizer.lib.agent.sessions.fuse import chain, fuse, part_names, unfuse
-from trackinizer.sagent.session.types import IncompleteRecord
+from trackinizer.sagent.session.types import IncompleteRecord, ToolResult, former_kind
 
 
 if TYPE_CHECKING:
@@ -1080,7 +1080,10 @@ def _dropped(
 
 def _semantic_record(record: object) -> tuple[str, str]:
     """Return a comparable record identity without provider-native metadata."""
-    return type(record).__name__, repr(_semantic_value(record))
+    kind = (
+        former_kind(record) if isinstance(record, ToolResult) else type(record).__name__
+    )
+    return kind, repr(_semantic_value(record))
 
 
 def _semantic_value(value: object) -> object:

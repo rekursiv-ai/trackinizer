@@ -7,6 +7,7 @@ import { type Sent, stubFetch } from "../api/testing";
 import { MetaContext, ProfileContext } from "../app/boot";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { META, PROFILE } from "../detail/testing";
+import { shellResult } from "../detail/transcript/testing";
 import { DEFAULT_PREFERENCES, type Preferences, preferences, receivePreferences } from "../preferences";
 import { ToastProvider } from "../ui/toast";
 import { clock, ConsoleView } from ".";
@@ -60,7 +61,7 @@ const EVENTS = [
   said(3, TILES_A, "UncategorizedRecord", { kind: "event_msg/task_started", payload: { type: "task_started" } }),
   said(4, TILES_A, "AssistantMessage", { content: "**Done.**" }, "**Done.**"),
   said(5, TILES_B, "AssistantMessage", { content: "On it." }, "On it."),
-  said(6, CLAUDE, "BashResult", { command: "pytest -x", stdout: "1 passed", stderr: "", exit_code: 0 }),
+  said(6, CLAUDE, "BashResult", shellResult({ command: ["pytest -x"], stdout: "1 passed", exit: 0 })),
 ];
 
 /** The audience of each session its owner hid, as the fake server holds it; the rest are open. */

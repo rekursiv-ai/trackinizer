@@ -6,11 +6,13 @@ a LIST-shaped column whose elements happen to live in a side table
 (``session_records``), so it inherits the membership semantics ``labels is
 backend`` already has: any element matching satisfies the clause.
 
-Which kinds qualify is DERIVED, not listed. A class is a field iff its
+Which kinds qualify is DERIVED, not listed. A kind is a field iff its
 ``text`` projection is non-empty (``types/session_records.py::search_text``):
 a filter on ``TurnContext`` could never match, because nothing is indexed for
 it. Deriving it is what keeps a record class added upstream from needing a
-parallel edit here.
+parallel edit here. A tool-call row is stored under its tool's legacy class
+name, such as ``BashResult`` (``types/session_records.py::record_kind``), so
+each of those names is a field of its own.
 """
 
 from __future__ import annotations
@@ -46,9 +48,12 @@ _NO_TEXT: Final[frozenset[type[TraxRecord]]] = frozenset(
     (TurnContext, ContextClear, TokenUsage, UncategorizedRecord),
 )
 
-# Every record class whose ``text`` projection can be non-empty.
-_TEXT_BEARING: Final[tuple[type[TraxRecord], ...]] = tuple(
-    cls for cls in _BY_KIND.values() if cls not in _NO_TEXT
+# Every kind whose record's ``text`` projection can be non-empty. Rows are stored
+# under ``FunctionResult`` though no new row is: sagent has no result class of that
+# name now. Each is a tool call's row, which has text, so it stays filterable.
+_TEXT_BEARING: Final[tuple[str, ...]] = (
+    *(kind for kind, cls in _BY_KIND.items() if cls not in _NO_TEXT),
+    "FunctionResult",
 )
 
 
@@ -72,10 +77,10 @@ def snake_case(name: str) -> str:
 
 
 # Filter field -> the ``session_records.kind`` it selects. The field is the
-# snake_cased class name, which is what makes ``agentsession tool_call re bar``
+# snake_cased kind, which is what makes ``agentsession tool_call re bar``
 # read as the record it names.
 SESSION_RECORD_FIELDS: Final[dict[str, str]] = {
-    snake_case(cls.__name__): cls.__name__ for cls in _TEXT_BEARING
+    snake_case(kind): kind for kind in _TEXT_BEARING
 }
 
 

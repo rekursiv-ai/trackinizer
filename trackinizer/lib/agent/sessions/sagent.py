@@ -19,8 +19,8 @@ A tool result carries no tool name in sagent -- only the ``call_id`` of the
 call it answers -- so the reader remembers each call and types the result by
 what that call was.
 
-The IR has no field for a failed tool result, so the reader states sagent's
-``is_error`` in ``extra["is_error"]``.
+The reader stores the journal's ``is_error`` value of a result in
+``extra["is_error"]``.
 """
 
 from __future__ import annotations
@@ -39,7 +39,6 @@ from trackinizer.sagent.session.jsonl import read_record, record_line
 from trackinizer.sagent.session.types import (
     AgentSpawnResult,
     AgentToAgentMessage,
-    AnyToolResult,
     AssistantMessage,
     BashResult,
     ContextClear,
@@ -53,6 +52,7 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolResult,
     TurnContext,
     UncategorizedRecord,
     UncategorizedToolResult,
@@ -389,7 +389,7 @@ class _Reader:
         *,
         failed: bool,
         stamp: str | None,
-    ) -> AnyToolResult:
+    ) -> ToolResult:
         """Type a result by the call it answers."""
         call = self.calls.pop(call_id, None)
         extra = {"is_error": failed}
@@ -398,67 +398,81 @@ class _Reader:
         path = _str(args.get("file_path") or args.get("path")) or None
         if name == "bash":
             command = _str(args.get("command"))
-            return BashResult(
+            return ToolResult(
                 timestamp=stamp,
                 call_id=call_id,
-                command=(command,) if command else None,
-                stdout=content,
+                state="done",
+                stdout=(content,) if content else (),
+                result=BashResult(command=(command,) if command else None),
                 extra=extra,
             )
         if name == "read":
-            return ReadResult(
+            return ToolResult(
                 timestamp=stamp,
                 call_id=call_id,
-                path=path,
-                content=content,
+                state="done",
+                stdout=(content,) if content else (),
+                result=ReadResult(path=path),
                 extra=extra,
             )
         # A refused file op changed nothing; it keeps its error text instead.
         if name == "write" and not failed:
-            return WriteResult(
+            return ToolResult(
                 timestamp=stamp,
                 call_id=call_id,
-                path=path,
-                content=_str(args.get("content")) or None,
+                state="done",
+                stdout=(f"Wrote {path or 'the file'}.",),
+                result=WriteResult(
+                    path=path,
+                    content=_str(args.get("content")) or None,
+                ),
                 extra=extra,
             )
         if name == "edit" and not failed:
-            return EditResult(
+            return ToolResult(
                 timestamp=stamp,
                 call_id=call_id,
-                path=path,
-                edits=(
+                state="done",
+                stdout=(
+                    f"Edited {path or 'the file'}.",
                     Splice(
                         before=_str(args.get("old_string")),
                         after=_str(args.get("new_string")),
                     ),
                 ),
+                result=EditResult(path=path),
                 extra=extra,
             )
         if name == "webfetch":
-            return WebFetchResult(
+            return ToolResult(
                 timestamp=stamp,
                 call_id=call_id,
-                url=_str(args.get("url")) or None,
-                content=content,
+                state="done",
+                stdout=(content,) if content else (),
+                result=WebFetchResult(url=_str(args.get("url")) or None),
                 extra=extra,
             )
         if name == "agentspawn":
             label = _str(args.get("label"))
-            return AgentSpawnResult(
+            return ToolResult(
                 timestamp=stamp,
                 call_id=call_id,
-                agent_id=self.children.get(label) if label else None,
-                agent_kind=label or None,
-                prompt=_str(args.get("prompt")) or None,
-                model=_str(args.get("model_id")) or None,
-                content=content,
+                state="done",
+                stdout=(content,) if content else (),
+                result=AgentSpawnResult(
+                    agent_id=self.children.get(label) if label else None,
+                    agent_kind=label or None,
+                    prompt=_str(args.get("prompt")) or None,
+                    model=_str(args.get("model_id")) or None,
+                ),
                 extra=extra,
             )
-        return UncategorizedToolResult(
+        return ToolResult(
             timestamp=stamp,
             call_id=call_id,
-            content=content,
+            state="done",
+            stdout=(content,) if content else (),
+            result=UncategorizedToolResult(),
             extra=extra,
         )
 

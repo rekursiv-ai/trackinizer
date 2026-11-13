@@ -20,17 +20,20 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
-    ToolErrorResult,
     ToolResult,
     TurnContext,
     UncategorizedRecord,
-    UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
     WebSearchResult,
     WriteResult,
 )
-from trackinizer.types.session_records import _BY_KIND, search_text
+from trackinizer.types.session_records import (
+    _BY_KIND,
+    _record_class,
+    record_kind,
+    search_text,
+)
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 from trackinizer.wire.column_shapes import COLUMN_SHAPES, ColumnShape, sql_template
 from trackinizer.wire.session_record_fields import (
@@ -56,7 +59,14 @@ class TestTheFieldSetIsDerived:
     def test_every_field_names_a_real_record_class(self) -> None:
         """The kind baked into each template must decode a stored row."""
         for field, kind in SESSION_RECORD_FIELDS.items():
-            assert kind in _BY_KIND, f"{field} names no record class"
+            assert _record_class(kind) in _BY_KIND.values(), (
+                f"{field} names no record class"
+            )
+
+    def test_a_retired_kind_is_still_a_field(self) -> None:
+        """``FunctionResult`` rows exist, so a filter must still reach them."""
+        assert column_record_kind("function_result") == "FunctionResult"
+        assert "FunctionResult" not in _BY_KIND
 
     def test_the_set_agrees_with_the_projection(self) -> None:
         """The rule, checked against ``search_text`` rather than restated.
@@ -73,8 +83,9 @@ class TestTheFieldSetIsDerived:
             "every record class needs a sample here, or the rule goes unchecked"
         )
         for kind, sample in _SAMPLES.items():
+            assert record_kind(sample) == kind
             projects = bool(search_text(sample))
-            listed = snake_case(kind) in SESSION_RECORD_FIELDS
+            listed = SESSION_RECORD_FIELDS.get(snake_case(kind)) == kind
             assert listed == projects, (
                 f"{kind}: listed={listed} but projects text={projects}"
             )
@@ -87,49 +98,166 @@ class TestTheFieldSetIsDerived:
         (``TokenUsage``), and the one whose payload is untyped
         (``UncategorizedRecord``). Everything else carries prose.
         """
-        assert len(_BY_KIND) == 44
+        assert len(_BY_KIND) == 43
         assert len(SESSION_RECORD_FIELDS) == 40
 
 
-# One populated instance per record class, spelled out rather than reflected:
-# the question is what ``search_text`` READS, and a hand-written sample states
-# the text each class carries where a generic filler only asserts that some
-# field was set. A class added upstream fails the membership assert above.
+# One populated instance per stored kind, spelled out rather than reflected: the
+# question is what ``search_text`` READS, and a hand-written sample states the
+# text each kind carries where a generic filler only asserts that some field was
+# set. A kind added upstream fails the membership assert above.
 _SAMPLES: Final[dict[str, TraxRecord]] = {
     "UserMessage": UserMessage(content="probe"),
-    "ToolErrorResult": ToolErrorResult(call_id="c", content="probe"),
-    "ToolResult": ToolResult(call_id="c", stub="pending", shown="probe"),
+    "ToolErrorResult": ToolResult(call_id="c", state="failed", stderr=("probe",)),
+    "ToolResult": ToolResult(call_id="c", state="pending", shown="probe"),
     "AssistantMessage": AssistantMessage(content="probe"),
     "SystemMessage": SystemMessage(content="probe"),
     "AgentToAgentMessage": AgentToAgentMessage(content="probe"),
     "Thinking": Thinking(content="probe"),
     "ToolCall": ToolCall(call_id="c", name="probe"),
-    "BashResult": BashResult(call_id="c", command=("probe",)),
-    "ReadResult": ReadResult(call_id="c", path="probe"),
-    "WriteResult": WriteResult(call_id="c", path="probe"),
-    "EditResult": EditResult(call_id="c", path="probe"),
-    "WebSearchResult": WebSearchResult(call_id="c", query="probe"),
-    "WebFetchResult": WebFetchResult(call_id="c", url="probe"),
-    "WebBrowserResult": types.WebBrowserResult(call_id="c", content="probe"),
-    "AgentSpawnResult": AgentSpawnResult(call_id="c", prompt="probe"),
-    "UncategorizedToolResult": UncategorizedToolResult(call_id="c", content="probe"),
-    "GrepResult": types.GrepResult(call_id="c", content="probe"),
-    "GlobResult": types.GlobResult(call_id="c", content="probe"),
-    "ListResult": types.ListResult(call_id="c", content="probe"),
-    "SkillResult": types.SkillResult(call_id="c", content="probe"),
-    "AgentSendResult": types.AgentSendResult(call_id="c", content="probe"),
-    "BackgroundTaskResult": types.BackgroundTaskResult(call_id="c", content="probe"),
-    "AgentSelfResult": types.AgentSelfResult(call_id="c", content="probe"),
-    "SessionResult": types.SessionResult(call_id="c", content="probe"),
-    "MemoryResult": types.MemoryResult(call_id="c", content="probe"),
-    "PlayAudioResult": types.PlayAudioResult(call_id="c", content="probe"),
-    "PaperSearchResult": types.PaperSearchResult(call_id="c", content="probe"),
-    "PaperDetailsResult": types.PaperDetailsResult(call_id="c", content="probe"),
-    "PaperAuthorResult": types.PaperAuthorResult(call_id="c", content="probe"),
-    "PaperFetchResult": types.PaperFetchResult(call_id="c", content="probe"),
-    "RemoteToolResult": types.RemoteToolResult(call_id="c", content="probe"),
-    "McpResult": types.McpResult(call_id="c", content="probe"),
-    "FunctionResult": types.FunctionResult(call_id="c", content="probe"),
+    "BashResult": ToolResult(
+        call_id="c",
+        state="done",
+        result=BashResult(command=("probe",)),
+    ),
+    "ReadResult": ToolResult(
+        call_id="c",
+        state="done",
+        result=ReadResult(path="probe"),
+    ),
+    "WriteResult": ToolResult(
+        call_id="c",
+        state="done",
+        result=WriteResult(path="probe"),
+    ),
+    "EditResult": ToolResult(
+        call_id="c",
+        state="done",
+        result=EditResult(path="probe"),
+    ),
+    "WebSearchResult": ToolResult(
+        call_id="c",
+        state="done",
+        result=WebSearchResult(query="probe"),
+    ),
+    "WebFetchResult": ToolResult(
+        call_id="c",
+        state="done",
+        result=WebFetchResult(url="probe"),
+    ),
+    "WebBrowserResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.WebBrowserResult(),
+    ),
+    "AgentSpawnResult": ToolResult(
+        call_id="c",
+        state="done",
+        result=AgentSpawnResult(prompt="probe"),
+    ),
+    "UncategorizedToolResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.UncategorizedToolResult(),
+    ),
+    "GrepResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.GrepResult(),
+    ),
+    "GlobResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.GlobResult(),
+    ),
+    "ListResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.ListResult(),
+    ),
+    "SkillResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.SkillResult(),
+    ),
+    "AgentSendResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.AgentSendResult(),
+    ),
+    "BackgroundTaskResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.BackgroundTaskResult(),
+    ),
+    "AgentSelfResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.AgentSelfResult(),
+    ),
+    "SessionResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.SessionResult(),
+    ),
+    "MemoryResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.MemoryResult(),
+    ),
+    "PlayAudioResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.PlayAudioResult(),
+    ),
+    "PaperSearchResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.PaperSearchResult(),
+    ),
+    "PaperDetailsResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.PaperDetailsResult(),
+    ),
+    "PaperAuthorResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.PaperAuthorResult(),
+    ),
+    "PaperFetchResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.PaperFetchResult(),
+    ),
+    "RemoteToolResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.RemoteToolResult(),
+    ),
+    "McpResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.McpResult(),
+    ),
     "ContextState": ContextState(content="probe"),
     "ContextCompaction": ContextCompaction(summary="probe"),
     "IncompleteRecord": IncompleteRecord(text="probe"),

@@ -65,7 +65,9 @@ class RecordBody(BaseModel):
     """Position in the part's normalized stream, from 0."""
 
     kind: str = Field(min_length=1)
-    """The record class's name; selects the type ``payload`` decodes as."""
+    """The kind the record's row is stored under; selects the type ``payload``
+    decodes as. A tool-call record uses its tool's legacy class name, such as
+    ``BashResult`` (``session_records.record_kind``)."""
 
     context_id: int | None = Field(default=None, ge=0)
     """The ``idx`` of the applying ``TurnContext``, within the same part. May

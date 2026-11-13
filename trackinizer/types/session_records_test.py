@@ -12,7 +12,7 @@ from types import MappingProxyType
 from typing import Final, get_args
 from uuid import uuid4
 
-from treekle import from_plain, immutable, json_loads, mutable
+from treekle import PlainTree, from_plain, immutable, json_loads, mutable
 
 import pytest
 
@@ -49,7 +49,9 @@ from trackinizer.types.session_records import (
     _BY_KIND,
     MAX_SEARCH_TEXT_BYTES,
     SessionRecordRow,
+    record_kind,
     search_text,
+    served_payload,
     stored_payload,
 )
 from trackinizer.types.streams import Stdout, TraxRecord
@@ -96,17 +98,16 @@ def test_tool_call_indexes_name_and_string_arguments() -> None:
 def test_shell_result_indexes_command_and_both_streams() -> None:
     """A failed command is findable by what it printed on either stream."""
     text = search_text(
-        BashResult(
+        ToolResult(
             call_id="c1",
-            command=("ls", "/nope"),
-            stdout="",
-            stderr="No such file or directory",
-            exit_code=2,
+            state="done",
+            stderr=("No such file or directory",),
+            result=BashResult(command=("ls", "/nope"), exit_code=2),
         ),
     )
 
-    assert "ls" in text
-    assert "No such file or directory" in text
+    # The exit code is a result field, not output text, so it is not indexed.
+    assert text == "ls /nope\nNo such file or directory"
 
 
 def test_file_edit_indexes_each_splice() -> None:
@@ -116,10 +117,11 @@ def test_file_edit_indexes_each_splice() -> None:
     the projection reads them directly rather than rendering one.
     """
     text = search_text(
-        EditResult(
+        ToolResult(
             call_id="c1",
-            path="a/b.py",
-            edits=(Splice(before="old_name", after="new_name"),),
+            state="done",
+            stdout=("Edited a/b.py.", Splice(before="old_name", after="new_name")),
+            result=EditResult(path="a/b.py"),
         ),
     )
 
@@ -131,19 +133,106 @@ def test_file_edit_indexes_each_splice() -> None:
 def test_web_search_indexes_query_and_every_row() -> None:
     """Each result row's title and snippet is matchable, not just the query."""
     text = search_text(
-        WebSearchResult(
+        ToolResult(
             call_id="c1",
-            query="postgres toast",
-            content=(
+            state="done",
+            stdout=(
                 WebSearchHit(title="TOAST", snippet="oversized attributes"),
                 WebSearchHit(title="Storage", snippet="EXTERNAL vs EXTENDED"),
             ),
+            result=WebSearchResult(query="postgres toast"),
         ),
     )
 
     assert "postgres toast" in text
     assert "oversized attributes" in text
     assert "EXTERNAL vs EXTENDED" in text
+
+
+@pytest.mark.parametrize(
+    ("result", "stdout", "expected"),
+    [
+        pytest.param(
+            ReadResult(path="/a.py"),
+            ("out1 ", "out2"),
+            "/a.py\nout1 out2\nerr1 err2",
+            id="read",
+        ),
+        pytest.param(ReadResult(), ("out",), "out\nerr1 err2", id="read, no path"),
+        pytest.param(
+            WriteResult(path="/a.py", content="body"),
+            ("Wrote /a.py.",),
+            "/a.py\nbody\nerr1 err2",
+            id="write",
+        ),
+        pytest.param(
+            WriteResult(),
+            ("Wrote the file.",),
+            "err1 err2",
+            id="write, no path or content",
+        ),
+        pytest.param(
+            EditResult(),
+            ("Edited the file.", Splice()),
+            "err1 err2",
+            id="edit, no path or text",
+        ),
+        pytest.param(
+            WebSearchResult(query="q"),
+            ("t\nu\ns", WebSearchHit(url="u", title="t", snippet="s")),
+            "q\nt\ns\nerr1 err2",
+            id="search",
+        ),
+        pytest.param(
+            WebSearchResult(),
+            (WebSearchHit(),),
+            "err1 err2",
+            id="search, no query or hit text",
+        ),
+        pytest.param(
+            WebFetchResult(url="https://x"),
+            ("page",),
+            "https://x\npage\nerr1 err2",
+            id="fetch",
+        ),
+        pytest.param(
+            WebFetchResult(),
+            ("page",),
+            "page\nerr1 err2",
+            id="fetch, no url",
+        ),
+        pytest.param(
+            AgentSpawnResult(prompt="do it"),
+            ("done",),
+            "do it\ndone\nerr1 err2",
+            id="spawn",
+        ),
+        pytest.param(
+            AgentSpawnResult(),
+            ("done",),
+            "done\nerr1 err2",
+            id="spawn, no prompt",
+        ),
+    ],
+)
+def test_a_tool_result_indexes_its_result_then_its_output(
+    result: object,
+    stdout: tuple[object, ...],
+    expected: str,
+) -> None:
+    record = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=stdout,
+        stderr=("err1 ", "err2"),
+        result=result,
+    )
+
+    assert search_text(record) == expected
+
+
+def test_a_placeholder_with_no_note_indexes_nothing() -> None:
+    assert search_text(ToolResult(call_id="c", state="pending")) == ""
 
 
 @pytest.mark.parametrize(
@@ -175,27 +264,52 @@ def test_metadata_records_index_nothing(record: object) -> None:
         pytest.param(ContextCompaction(summary="hello"), id="ContextCompaction"),
         pytest.param(IncompleteRecord(text="hello"), id="IncompleteRecord"),
         pytest.param(
-            UncategorizedToolResult(call_id="c", content="hello"),
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("hello",),
+                result=UncategorizedToolResult(),
+            ),
             id="UncategorizedToolResult",
         ),
         pytest.param(
-            ReadResult(call_id="c", path="p", content="hello"),
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("hello",),
+                result=ReadResult(path="p"),
+            ),
             id="FileRead",
         ),
         pytest.param(
-            WriteResult(call_id="c", path="p", content="hello"),
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("Wrote p.",),
+                result=WriteResult(path="p", content="hello"),
+            ),
             id="FileWrite",
         ),
         pytest.param(
-            WebFetchResult(call_id="c", url="u", content="hello"),
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("hello",),
+                result=WebFetchResult(url="u"),
+            ),
             id="WebFetch",
         ),
         pytest.param(
-            AgentSpawnResult(call_id="c", prompt="p", content="hello"),
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("hello",),
+                result=AgentSpawnResult(prompt="p"),
+            ),
             id="AgentStatus",
         ),
         pytest.param(
-            ToolResult(call_id="c", stub="pending", shown="hello"),
+            ToolResult(call_id="c", state="pending", shown="hello"),
             id="ToolResult",
         ),
     ],
@@ -259,7 +373,12 @@ def test_a_rows_payload_is_the_line_a_sagent_journal_writes() -> None:
                 attachments=(Attachment(mime_descriptor="image/png", data=b"\0"),),
             ),
             AssistantMessage(content="a"),
-            EditResult(call_id="c1", path="a.py", edits=(Splice(before="x"),)),
+            ToolResult(
+                call_id="c1",
+                state="done",
+                stdout=("Edited a.py.", Splice(before="x")),
+                result=EditResult(path="a.py"),
+            ),
         ),
     )
     row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
@@ -285,7 +404,62 @@ def test_a_row_stored_under_a_former_kind_reads_as_the_record_now() -> None:
         payload={"py/object": "ShellCommandResult", "call_id": "c", "stdout": "x"},
     )
 
-    assert old.record() == BashResult(call_id="c", stdout="x")
+    assert old.record() == ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("x",),
+        result=BashResult(),
+    )
+
+
+def test_a_frozen_legacy_payload_decodes_its_lists() -> None:
+    """A row's payload is frozen, so a legacy payload's lists arrive as tuples."""
+    searched = SessionRecordRow(
+        session_id=uuid4(),
+        idx=0,
+        kind="WebSearchResult",
+        payload=immutable(
+            {
+                "py/object": "WebSearchResult",
+                "call_id": "c",
+                "query": "q",
+                "content": [{"title": "T", "url": "u", "snippet": "s"}],
+            },
+        ),
+    )
+    edited = SessionRecordRow(
+        session_id=uuid4(),
+        idx=1,
+        kind="EditResult",
+        payload=immutable(
+            {
+                "py/object": "EditResult",
+                "call_id": "c",
+                "path": "a.py",
+                "edits": [{"before": "x", "after": "y"}],
+                "attachments": [
+                    {"mime_descriptor": "image/png", "data": {"py/b64": "aW1hZ2U="}},
+                ],
+            },
+        ),
+    )
+
+    assert searched.record() == ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("T\nu\ns", WebSearchHit(url="u", title="T", snippet="s")),
+        result=WebSearchResult(query="q"),
+    )
+    assert edited.record() == ToolResult(
+        call_id="c",
+        state="done",
+        stdout=(
+            "Edited a.py.",
+            Splice(before="x", after="y"),
+            Attachment(mime_descriptor="image/png", data=b"image"),
+        ),
+        result=EditResult(path="a.py"),
+    )
 
 
 def test_a_row_of_an_unknown_kind_names_it() -> None:
@@ -365,7 +539,8 @@ def test_every_record_kind_decodes() -> None:
     """
     members = {cls.__name__ for cls in _union_members(TraxRecord)}
 
-    assert members == set(_BY_KIND)
+    assert members == {cls.__name__ for cls in _BY_KIND.values()}
+    assert members <= set(_BY_KIND)
 
 
 def test_the_stream_records_widen_the_shared_ir() -> None:
@@ -395,6 +570,175 @@ def _union_members(alias: object) -> list[type]:
             continue
         stack.extend(get_args(value))
     return out
+
+
+@pytest.mark.parametrize(
+    ("record", "kind"),
+    [
+        pytest.param(UserMessage(content="hi"), "UserMessage", id="message"),
+        pytest.param(
+            ToolResult(call_id="c", state="done", result=BashResult(exit_code=0)),
+            "BashResult",
+            id="shell call",
+        ),
+        pytest.param(
+            ToolResult(call_id="c", state="done", result=ReadResult(path="p")),
+            "ReadResult",
+            id="read call",
+        ),
+        pytest.param(
+            ToolResult(call_id="c", state="failed", stderr=("boom",)),
+            "ToolErrorResult",
+            id="failed call",
+        ),
+        pytest.param(
+            ToolResult(call_id="c", state="pending", shown="[running]"),
+            "ToolResult",
+            id="pending call",
+        ),
+        pytest.param(
+            ToolResult(call_id="c", state="cancelled"),
+            "ToolResult",
+            id="cancelled call",
+        ),
+        pytest.param(
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("ok",),
+                result=UncategorizedToolResult(),
+            ),
+            "UncategorizedToolResult",
+            id="tool without a result class",
+        ),
+    ],
+)
+def test_a_row_is_stored_under_its_record_kind(
+    record: TraxRecord,
+    kind: str,
+) -> None:
+    """SQL policy is keyed on ``kind``, so a tool-call row keeps its legacy name."""
+    row = SessionRecordRow.of(session_id=uuid4(), part=0, idx=0, record=record)
+
+    assert record_kind(record) == kind
+    assert row.kind == kind
+    assert row.record() == record
+
+
+def test_a_legacy_tool_call_payload_is_converted_to_the_current_shape() -> None:
+    legacy = {
+        "py/object": "BashResult",
+        "call_id": "c",
+        "command": ["ls"],
+        "stdout": "a.py\n",
+        "exit_code": 0,
+    }
+    current = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("a.py\n",),
+        result=BashResult(command=("ls",), exit_code=0),
+    )
+
+    payload = served_payload("BashResult", immutable(legacy))
+
+    assert payload == stored_payload(current)
+    # A kind that was renamed before it was retired converts the same way.
+    assert served_payload("ShellCommandResult", immutable(legacy)) == payload
+    # A payload already in the current shape is returned as is.
+    assert served_payload("BashResult", payload) is payload
+    assert served_payload("ToolResult", payload) is payload
+
+
+def test_a_legacy_payload_that_looks_current_is_still_converted() -> None:
+    """Neither a ``ToolResult`` tag nor a ``state`` field marks the current shape."""
+    legacy_pending = immutable(
+        {
+            "py/object": "ToolResult",
+            "call_id": "c",
+            "stub": "pending",
+            "shown": "[running]",
+        },
+    )
+    legacy_spawn = immutable(
+        {
+            "py/object": "AgentSpawnResult",
+            "call_id": "c",
+            "content": "Found 3 uses.",
+            "state": "completed",
+        },
+    )
+
+    assert served_payload("ToolResult", legacy_pending) == stored_payload(
+        ToolResult(call_id="c", state="pending", shown="[running]"),
+    )
+    assert served_payload("AgentSpawnResult", legacy_spawn) == stored_payload(
+        ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("Found 3 uses.",),
+            result=AgentSpawnResult(state="completed"),
+        ),
+    )
+
+
+def test_a_bare_exit_code_result_is_converted_to_a_result_class() -> None:
+    """An earlier ``ToolResult`` payload stored a bare exit code as ``result``."""
+    stored = immutable(
+        {
+            "py/object": "ToolResult",
+            "call_id": "c",
+            "state": "done",
+            "stdout": ["posted"],
+            "result": 1,
+        },
+    )
+
+    assert served_payload("UncategorizedToolResult", stored) == stored_payload(
+        ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("posted",),
+            result=UncategorizedToolResult(exit_code=1),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["ReadResult", "ShellCommandResult", "UncategorizedToolResult", "ToolResult"],
+)
+def test_an_offloaded_stub_is_returned_unchanged(kind: str) -> None:
+    """An offloaded body's row holds a stub, which is not a record payload."""
+    stub = immutable({"$body": "offloaded"})
+
+    assert served_payload(kind, stub) is stub
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"call_id": "c", "stdout": "ok"},
+        {"py/object": "UserMessage", "content": "hi"},
+    ],
+    ids=["untagged", "tagged as another record"],
+)
+def test_a_tool_call_payload_that_does_not_decode_is_returned_unchanged(
+    payload: dict[str, PlainTree],
+) -> None:
+    """Ingest does not validate payloads; one bad row must not fail a read."""
+    stored = immutable(payload)
+
+    assert served_payload("BashResult", stored) is stored
+
+
+def test_a_payload_of_another_kind_is_returned_unchanged() -> None:
+    payload = stored_payload(UserMessage(content="hi"))
+    legacy_shell = immutable({"py/object": "BashResult", "call_id": "c"})
+
+    assert served_payload("UserMessage", payload) is payload
+    # An unknown kind is not a tool-call kind, whatever its payload holds.
+    assert served_payload("Nope", legacy_shell) is legacy_shell
 
 
 def test_templates_decode_from_both_frozen_and_mutable_payloads() -> None:

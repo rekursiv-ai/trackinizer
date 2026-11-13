@@ -53,6 +53,7 @@ from trackinizer.sagent.session.types import (
     WebSearchHit,
     WebSearchResult,
     WriteResult,
+    former_kind,
 )
 
 
@@ -108,6 +109,19 @@ def _transcript(records: Iterable[SessionRecord]) -> tuple[TranscriptItem, ...]:
             UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult,
         )
     )
+
+
+def _result(record: object) -> ToolResult:
+    """Return ``record`` after asserting it is a ``ToolResult``."""
+    assert isinstance(record, ToolResult)
+    return record
+
+
+def _typed_result[T](record: object, kind: type[T]) -> T:
+    """Return ``record.result`` after asserting it is an instance of ``kind``."""
+    tool_result = _result(record).result
+    assert isinstance(tool_result, kind)
+    return tool_result
 
 
 # Claude's escaping convention is a majority over the lines read, so the reader restates
@@ -228,10 +242,10 @@ def test_a_tool_result_keeps_the_text_the_model_read() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    result = _transcript(records)[0]
-    assert isinstance(result, UncategorizedToolResult)
+    result = _result(_transcript(records)[0])
+    assert _typed_result(result, UncategorizedToolResult) == UncategorizedToolResult()
     assert result.call_id == "c1"
-    assert result.content == "boom"
+    assert "".join(text for text in result.stdout if isinstance(text, str)) == "boom"
 
 
 def test_an_image_result_decodes_to_its_bytes() -> None:
@@ -247,8 +261,8 @@ def test_an_image_result_decodes_to_its_bytes() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    result = _transcript(records)[0]
-    assert isinstance(result, UncategorizedToolResult)
+    result = _result(_transcript(records)[0])
+    assert _typed_result(result, UncategorizedToolResult) == UncategorizedToolResult()
     assert result.attachments == (Attachment(mime_descriptor="image/png", data=b"hi"),)
 
 
@@ -367,7 +381,7 @@ def test_a_queued_message_is_its_contexts_prose() -> None:
 def test_a_result_is_typed_by_what_its_tool_did(
     tool: str,
     result: str,
-    expected: type[SessionRecord],
+    expected: type[object],
 ) -> None:
     # Dispatch is on the tool NAME, which only the call carries -- so the
     # result two lines later can only be typed by looking back at it.
@@ -390,7 +404,7 @@ def test_a_result_is_typed_by_what_its_tool_did(
 
     records = list(claude.normalize(StringIO(native)))
 
-    assert type(_last_act(records)) is expected
+    assert type(_result(_last_act(records)).result) is expected
 
 
 @pytest.mark.parametrize(
@@ -415,7 +429,7 @@ def test_a_successful_bash_file_operation_lifts_to_its_specific_type(
     command: str,
     content: str,
     result_payload: str,
-    expected: type[SessionRecord],
+    expected: type[object],
 ) -> None:
     native = _line(
         type='"assistant"',
@@ -436,14 +450,17 @@ def test_a_successful_bash_file_operation_lifts_to_its_specific_type(
 
     records = list(claude.normalize(StringIO(native)))
 
-    result = _last_act(records)
-    assert type(result) is expected
-    assert isinstance(result, ReadResult | WriteResult | EditResult)
-    assert result.path == "a.txt"
-    if isinstance(result, ReadResult):
-        assert result.content == "body\n"
-    if isinstance(result, WriteResult):
-        assert result.content == "body"
+    result = _result(_last_act(records))
+    tool_result = result.result
+    assert type(tool_result) is expected
+    assert isinstance(tool_result, ReadResult | WriteResult | EditResult)
+    assert tool_result.path == "a.txt"
+    if isinstance(tool_result, ReadResult):
+        assert (
+            "".join(text for text in result.stdout if isinstance(text, str)) == "body\n"
+        )
+    if isinstance(tool_result, WriteResult):
+        assert tool_result.content == "body"
     output = StringIO()
     claude.denormalize(records, output)
     assert output.getvalue() == native
@@ -472,13 +489,12 @@ def test_a_bash_in_place_edit_names_its_file_without_claiming_a_diff() -> None:
     )
 
     records = list(claude.normalize(StringIO(native)))
-    result = _last_act(records)
+    result = _result(_last_act(records))
 
-    assert isinstance(result, EditResult)
-    assert result.path == "a.txt"
+    assert _typed_result(result, EditResult).path == "a.txt"
     # A regex program names no text it replaced, so it states no splice
     # rather than inventing a before and after.
-    assert result.edits == ()
+    assert tuple(item for item in result.stdout if isinstance(item, Splice)) == ()
     output = StringIO()
     claude.denormalize(records, output)
     assert output.getvalue() == native
@@ -515,14 +531,15 @@ def test_a_native_edit_carries_the_text_it_replaced() -> None:
     )
 
     records = list(claude.normalize(StringIO(native)))
-    result = _last_act(records)
+    result = _result(_last_act(records))
 
-    assert isinstance(result, EditResult)
-    assert result.path == "/w/a.py"
-    assert result.edits == (
+    assert _typed_result(result, EditResult).path == "/w/a.py"
+    assert tuple(item for item in result.stdout if isinstance(item, Splice)) == (
         Splice(before="price - pct", after="price * (1 - pct / 100)"),
     )
-    assert result.edits[0].start is None
+    assert (
+        next(item for item in result.stdout if isinstance(item, Splice)).start is None
+    )
     output = StringIO()
     claude.denormalize(records, output)
     assert output.getvalue() == native
@@ -545,17 +562,19 @@ def test_editing_a_splice_rewrites_the_replayed_edit() -> None:
         toolUseResult=('{"filePath":"/w/a.py","oldString":"old","newString":"new"}'),
     )
     records = list(claude.normalize(StringIO(native)))
-    edit = _last_act(records)
-    assert isinstance(edit, EditResult)
+    edit = _result(_last_act(records))
+    assert isinstance(edit.result, EditResult)
+    changed = replace(
+        edit,
+        stdout=(
+            "".join(text for text in edit.stdout if isinstance(text, str)),
+            Splice(before="old", after="changed"),
+        ),
+    )
 
     output = StringIO()
     claude.denormalize(
-        [
-            replace(record, edits=(Splice(before="old", after="changed"),))
-            if record is edit
-            else record
-            for record in records
-        ],
+        [changed if record is edit else record for record in records],
         output,
     )
 
@@ -601,13 +620,17 @@ def test_a_rename_reaches_a_bash_call_that_did_not_lead_its_line(
         ),
     )
     records = list(claude.normalize(StringIO(native)))
-    lifted = _last_act(records)
-    assert isinstance(lifted, ReadResult)
+    lifted = _result(_last_act(records))
 
     output = StringIO()
     claude.denormalize(
         [
-            replace(record, path="renamed.txt") if record is lifted else record
+            replace(
+                lifted,
+                result=replace(_typed_result(lifted, ReadResult), path="renamed.txt"),
+            )
+            if record is lifted
+            else record
             for record in records
         ],
         output,
@@ -642,14 +665,19 @@ def test_a_rename_reaches_the_second_of_two_bash_calls_on_one_line() -> None:
         ),
     )
     records = list(claude.normalize(StringIO(native)))
-    lifted = _last_act(records)
-    assert isinstance(lifted, ReadResult)
+    lifted = _result(_last_act(records))
+    assert isinstance(lifted.result, ReadResult)
     assert lifted.call_id == "c2"
 
     output = StringIO()
     claude.denormalize(
         [
-            replace(record, path="renamed.txt") if record is lifted else record
+            replace(
+                lifted,
+                result=replace(_typed_result(lifted, ReadResult), path="renamed.txt"),
+            )
+            if record is lifted
+            else record
             for record in records
         ],
         output,
@@ -729,7 +757,7 @@ def test_a_malformed_failure_marker_prevents_lifting() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    assert isinstance(_last_act(records), BashResult)
+    assert isinstance(_result(_last_act(records)).result, BashResult)
     output = StringIO()
     claude.denormalize(records, output)
     assert output.getvalue() == native
@@ -752,7 +780,7 @@ def test_an_idless_tool_call_does_not_correlate_with_an_idless_result() -> None:
 
     result = _last_act(list(claude.normalize(StringIO(native))))
 
-    assert isinstance(result, UncategorizedToolResult)
+    assert _typed_result(result, UncategorizedToolResult) == UncategorizedToolResult()
 
 
 def test_a_structured_bash_result_without_success_flags_stays_shell() -> None:
@@ -773,7 +801,7 @@ def test_a_structured_bash_result_without_success_flags_stays_shell() -> None:
 
     result = _last_act(list(claude.normalize(StringIO(native))))
 
-    assert isinstance(result, BashResult)
+    assert isinstance(_result(result).result, BashResult)
 
 
 def test_a_bash_result_without_its_payload_shows_what_the_model_read() -> None:
@@ -795,8 +823,8 @@ def test_a_bash_result_without_its_payload_shows_what_the_model_read() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    result = _last_act(records)
-    assert isinstance(result, BashResult)
+    result = _result(_last_act(records))
+    assert isinstance(result.result, BashResult)
     assert result.text() == "https://github.com/o/r/pull/7"
     output = StringIO()
     claude.denormalize(records, output)
@@ -833,9 +861,9 @@ def test_a_failed_call_with_its_payload_reads_as_its_fields_say() -> None:
         toolUseResult='"Error: boom"',
     )
 
-    result = _last_act(list(claude.normalize(StringIO(native))))
+    result = _result(_last_act(list(claude.normalize(StringIO(native)))))
 
-    assert isinstance(result, BashResult)
+    assert isinstance(result.result, BashResult)
     assert result.shown is None
 
 
@@ -845,7 +873,7 @@ def test_a_failed_call_with_its_payload_reads_as_its_fields_say() -> None:
 )
 def test_a_call_lifts_to_what_it_did_only_when_it_did_not_fail(
     is_error: str,
-    expected: type[SessionRecord],
+    expected: type[object],
 ) -> None:
     native = _call_and_result(
         "Bash",
@@ -854,7 +882,9 @@ def test_a_call_lifts_to_what_it_did_only_when_it_did_not_fail(
         toolUseResult='{"stdout":"body\\n","stderr":"","interrupted":false}',
     )
 
-    assert type(_last_act(list(claude.normalize(StringIO(native))))) is expected
+    result = _result(_last_act(list(claude.normalize(StringIO(native)))))
+
+    assert type(result.result) is expected
 
 
 def test_a_results_text_parts_are_read_in_order_and_the_rest_kept() -> None:
@@ -868,8 +898,8 @@ def test_a_results_text_parts_are_read_in_order_and_the_rest_kept() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    result = _last_act(records)
-    assert isinstance(result, McpResult)
+    result = _result(_last_act(records))
+    assert isinstance(result.result, McpResult)
     assert result.text() == "a\n\nb"
     output = StringIO()
     claude.denormalize(records, output)
@@ -882,9 +912,9 @@ def test_a_result_naming_no_call_is_read_and_stored_as_untyped() -> None:
         message='{"role":"user","content":[{"type":"tool_result","content":"ok"}]}',
     )
 
-    result = _last_act(list(claude.normalize(StringIO(native))))
+    result = _result(_last_act(list(claude.normalize(StringIO(native)))))
 
-    assert isinstance(result, UncategorizedToolResult)
+    assert _typed_result(result, UncategorizedToolResult) == UncategorizedToolResult()
     assert result.call_id == ""
     # Stored form, frozen as normalized_golden_test.py freezes it: a call never seen
     # names no tool.
@@ -901,10 +931,10 @@ def test_a_result_is_written_from_its_fields_once_they_change() -> None:
         toolUseResult='{"stdout":"secret\\n","stderr":"","interrupted":false}',
     )
     records = list(claude.normalize(StringIO(native)))
-    result = _last_act(records)
-    assert isinstance(result, BashResult)
+    result = _result(_last_act(records))
+    assert isinstance(result.result, BashResult)
     changed = [
-        replace(record, stdout="[redacted]\n") if record is result else record
+        replace(result, stdout=("[redacted]\n",)) if record is result else record
         for record in records
     ]
 
@@ -927,9 +957,9 @@ def test_a_result_stores_only_what_its_fields_do_not_hold() -> None:
         toolUseResult='{"stdout":"body\\n","stderr":""}',
     )
 
-    result = _last_act(list(claude.normalize(StringIO(native))))
+    result = _result(_last_act(list(claude.normalize(StringIO(native)))))
 
-    assert isinstance(result, BashResult)
+    assert isinstance(result.result, BashResult)
     assert from_plain(result.extra["$result"], dict[str, object]) == {
         "block": {"is_error": False},
         "keys": ("type", "tool_use_id", "content", "is_error"),
@@ -960,7 +990,11 @@ def test_a_line_answering_two_calls_round_trips_and_each_keeps_the_line() -> Non
 
     records = list(claude.normalize(StringIO(native)))
 
-    results = [record for record in records if isinstance(record, BashResult)]
+    results = [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, BashResult)
+    ]
     assert [result.text() for result in results] == ["a", "/w"]
     line = json_loads(native.splitlines()[1], dict[str, object])
     blocks = from_plain(line["message"], dict[str, object])["content"]
@@ -996,10 +1030,16 @@ def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
         for record in claude.normalize(
             StringIO(first_call + first_result + second_call + second_result),
         )
-        if isinstance(record, ReadResult)
+        if isinstance(record, ToolResult) and isinstance(record.result, ReadResult)
     ]
 
-    assert [(result.path, result.content) for result in results] == [
+    assert [
+        (
+            _typed_result(result, ReadResult).path,
+            "".join(text for text in result.stdout if isinstance(text, str)),
+        )
+        for result in results
+    ] == [
         ("a.txt", "A\n"),
         ("b.txt", "B\n"),
     ]
@@ -1007,10 +1047,11 @@ def test_reused_call_ids_correlate_with_the_preceding_call() -> None:
 
 def test_a_foreign_lifted_read_uses_its_semantic_content() -> None:
     records = (
-        ReadResult(
+        ToolResult(
             call_id="c1",
-            path="a.txt",
-            content="body\n",
+            state="done",
+            stdout=("body\n",),
+            result=ReadResult(path="a.txt"),
             extra={
                 "$shell": {
                     "command": ["/bin/bash", "-lc", "/bin/cat a.txt"],
@@ -1042,9 +1083,14 @@ def test_an_edited_lifted_path_updates_the_claude_bash_call() -> None:
         toolUseResult=('{"stdout":"body\\n","stderr":"","interrupted":false}'),
     )
     records = list(claude.normalize(StringIO(native)))
-    result = records[-1]
-    assert isinstance(result, ReadResult)
-    changed = [*records[:-1], replace(result, path="new.txt")]
+    result = _result(records[-1])
+    changed = [
+        *records[:-1],
+        replace(
+            result,
+            result=replace(_typed_result(result, ReadResult), path="new.txt"),
+        ),
+    ]
     output = StringIO()
 
     claude.denormalize(changed, output)
@@ -1072,6 +1118,52 @@ def test_a_null_read_file_round_trips() -> None:
 
     claude.denormalize(records, output)
 
+    assert output.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    ("tool", "payload"),
+    [
+        ("Read", '{"type":"text","file":{"filePath":"/a","content":""}}'),
+        ("Read", '{"type":"text","file":{"filePath":"/a","content":null}}'),
+        ("Read", '{"type":"text","file":{"filePath":"/a"}}'),
+        ("WebFetch", '{"url":"https://x","result":""}'),
+        ("WebFetch", '{"url":"https://x","result":null}'),
+        ("WebFetch", '{"url":"https://x"}'),
+    ],
+    ids=[
+        "read-empty",
+        "read-null",
+        "read-absent",
+        "fetch-empty",
+        "fetch-null",
+        "fetch-absent",
+    ],
+)
+def test_an_empty_null_or_absent_result_text_round_trips(
+    tool: str,
+    payload: str,
+) -> None:
+    """Each reads as an empty ``stdout`` and is written back as the line had it."""
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"tool_use","id":"c1",'
+            f'"name":"{tool}","input":{{}}}}]}}'
+        ),
+    ) + _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"c1","content":"ok"}]}'
+        ),
+        toolUseResult=payload,
+    )
+    records = list(claude.normalize(StringIO(native)))
+
+    assert _result(records[-1]).stdout == ()
+    output = StringIO()
+    claude.denormalize(records, output)
     assert output.getvalue() == native
 
 
@@ -1187,9 +1279,12 @@ def test_tool_result_replay_uses_current_values_only_for_stated_fields(
         toolUseResult=payload,
     )
     records = list(claude.normalize(StringIO(native)))
-    result = records[-1]
-    assert isinstance(result, WriteResult)
-    changed = [*records[:-1], replace(result, content="new")]
+    result = _result(records[-1])
+    tool_result = _typed_result(result, WriteResult)
+    changed = [
+        *records[:-1],
+        replace(result, result=replace(tool_result, content="new")),
+    ]
     output = StringIO()
 
     claude.denormalize(changed, output)
@@ -1273,7 +1368,7 @@ def test_a_boolean_is_not_a_numeric_duration(tool: str, result: str) -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    typed_result = _last_act(records)
+    typed_result = _result(_last_act(records)).result
     assert isinstance(typed_result, WebSearchResult | WebFetchResult)
     assert typed_result.duration_sec is None
     output = StringIO()
@@ -1292,7 +1387,13 @@ def test_an_unparsable_line_survives_verbatim() -> None:
 def test_a_neutral_tool_result_emits_a_complete_claude_block() -> None:
     records = (
         TurnContext(context_id=0, extra={"sessionId": "s1"}),
-        UncategorizedToolResult(context_id=0, call_id="c1", content="ok"),
+        ToolResult(
+            context_id=0,
+            call_id="c1",
+            state="done",
+            stdout=("ok",),
+            result=UncategorizedToolResult(),
+        ),
     )
     out = StringIO()
 
@@ -1317,10 +1418,12 @@ def test_a_synthesized_session_denormalizes_to_claude_records() -> None:
             arguments={"path": "/a"},
             extra={"uuid": "a2"},
         ),
-        UncategorizedToolResult(
+        ToolResult(
             context_id=0,
             call_id="c1",
-            content="ok",
+            state="done",
+            stdout=("ok",),
+            result=UncategorizedToolResult(),
             extra={"uuid": "u2", "$result": {"keys": ["type", "tool_use_id"]}},
         ),
     )
@@ -1331,7 +1434,10 @@ def test_a_synthesized_session_denormalizes_to_claude_records() -> None:
     rebuilt = claude.normalize(StringIO(out.getvalue()))
     # The result comes back as what the tool DID, not as a bare result: the
     # ``Read`` call two records earlier is what names it.
-    assert [type(r).__name__ for r in _transcript(rebuilt)] == [
+    assert [
+        former_kind(r) if isinstance(r, ToolResult) else type(r).__name__
+        for r in _transcript(rebuilt)
+    ] == [
         "UserMessage",
         "Thinking",
         "ToolCall",
@@ -1475,14 +1581,14 @@ def test_web_search_rows_preserve_shape_and_append_new_rows() -> None:
         toolUseResult=payload,
     )
     records = list(claude.normalize(StringIO(native)))
-    result = records[-1]
-    assert isinstance(result, WebSearchResult)
+    result = _result(records[-1])
+    assert isinstance(result.result, WebSearchResult)
     changed = [
         *records[:-1],
         replace(
             result,
-            content=(
-                *result.content,
+            stdout=(
+                *result.stdout,
                 WebSearchHit(url="u3", title="t3", snippet="s3"),
             ),
         ),
@@ -1515,9 +1621,9 @@ def test_agent_result_edits_preserve_block_boundaries() -> None:
         ),
     )
     records = list(claude.normalize(StringIO(native)))
-    result = records[-1]
-    assert isinstance(result, AgentSpawnResult)
-    changed = [*records[:-1], replace(result, content="X\nY\nZ")]
+    result = _result(records[-1])
+    assert isinstance(result.result, AgentSpawnResult)
+    changed = [*records[:-1], replace(result, stdout=("X\nY\nZ",))]
     output = StringIO()
 
     claude.denormalize(changed, output)
@@ -1538,10 +1644,10 @@ def test_multiblock_tool_result_edits_update_the_matching_text_blocks() -> None:
         ),
     )
     records = list(claude.normalize(StringIO(native)))
-    result = _last_act(records)
-    assert isinstance(result, UncategorizedToolResult)
+    result = _result(_last_act(records))
+    assert _typed_result(result, UncategorizedToolResult) == UncategorizedToolResult()
     changed = [
-        replace(record, content="X\nY\nZ") if record is result else record
+        replace(result, stdout=("X\nY\nZ",)) if record is result else record
         for record in records
     ]
     output = StringIO()
@@ -1592,11 +1698,17 @@ def test_changed_edit_diff_does_not_reemit_the_stale_structured_patch() -> None:
         ),
     )
     records = list(claude.normalize(StringIO(native)))
-    result = records[-1]
-    assert isinstance(result, EditResult)
+    result = _result(records[-1])
+    assert isinstance(result.result, EditResult)
     changed = [
         *records[:-1],
-        replace(result, edits=(Splice(before="a", after="c"),)),
+        replace(
+            result,
+            stdout=(
+                "".join(text for text in result.stdout if isinstance(text, str)),
+                Splice(before="a", after="c"),
+            ),
+        ),
     ]
     output = StringIO()
 
@@ -1755,9 +1867,14 @@ def test_an_untyped_foreign_result_after_a_typed_one_does_not_abort() -> None:
     # assistant line reached the synthetic-call path and raised ``KeyError``.
     records = [
         _FOREIGN,
-        BashResult(call_id="a", command=("ls",)),
+        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
         AssistantMessage(content="x"),
-        UncategorizedToolResult(call_id="b", content="y"),
+        ToolResult(
+            call_id="b",
+            state="done",
+            stdout=("y",),
+            result=UncategorizedToolResult(),
+        ),
     ]
 
     assert _tool_uses(records) == ["a"]
@@ -1768,7 +1885,7 @@ def test_a_foreign_call_after_its_result_is_written_once() -> None:
     # later would state the same id a second time.
     records = [
         _FOREIGN,
-        BashResult(call_id="a", command=("ls",)),
+        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
         ToolCall(call_id="a", name="shell"),
     ]
 
@@ -1782,7 +1899,7 @@ def test_a_foreign_result_preserves_its_tool_identity_and_late_arguments(
     arguments = {"command": "pwd", "description": "show directory"}
     records: list[SessionRecord] = [
         _FOREIGN,
-        BashResult(call_id="a", stdout="ok"),
+        ToolResult(call_id="a", state="done", stdout=("ok",), result=BashResult()),
     ]
     if late_call:
         records.append(ToolCall(call_id="a", name="shell", arguments=arguments))
@@ -1792,13 +1909,14 @@ def test_a_foreign_result_preserves_its_tool_identity_and_late_arguments(
 
     call, result = _transcript(claude.normalize(StringIO(output.getvalue())))
     assert isinstance(call, ToolCall)
-    assert isinstance(result, BashResult)
+    shell = _result(result)
+    assert isinstance(shell.result, BashResult)
     assert (call.call_id, call.name, dict(call.arguments)) == (
         "a",
         "Bash",
         arguments if late_call else {},
     )
-    assert (result.call_id, result.stdout) == ("a", "ok")
+    assert (shell.call_id, shell.stdout, shell.stderr) == ("a", ("ok",), ())
 
 
 def test_a_foreign_session_preserves_stated_identity_and_parent_links() -> None:
@@ -1874,7 +1992,10 @@ def test_user_line_normalizes_every_act() -> None:
 
     records = _transcript(claude.normalize(StringIO(native)))
 
-    assert [type(record).__name__ for record in records] == [
+    assert [
+        former_kind(r) if isinstance(r, ToolResult) else type(r).__name__
+        for r in records
+    ] == [
         "UserMessage",
         "UncategorizedToolResult",
         "UncategorizedToolResult",
@@ -1983,40 +2104,99 @@ def test_claude_shape_writers_preserve_absent_blocks() -> None:
         "type": "thinking",
     }
     assert claude._write_agent_blocks(
-        AgentSpawnResult(call_id="c", content="hi"),
+        ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("hi",),
+            result=AgentSpawnResult(),
+        ),
         {},
     ) == [
         {"type": "text", "text": "hi"},
     ]
-    assert claude._result_values(UncategorizedToolResult(call_id="c"), {}) == {}
+    assert (
+        claude._result_values(
+            ToolResult(call_id="c", state="done", result=UncategorizedToolResult()),
+            {},
+        )
+        == {}
+    )
     assert claude._write_result_content(
-        UncategorizedToolResult(call_id="c", content="new"),
+        ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("new",),
+            result=UncategorizedToolResult(),
+        ),
         [{"type": "text", "text": "old"}, {"type": "other"}],
     ) == [{"type": "text", "text": "new"}, {"type": "other"}]
 
 
+def test_agent_blocks_replay_edited_prose_inside_their_boundaries() -> None:
+    picture = {"type": "image", "id": 1}
+    shape = {
+        "agent_blocks": [
+            {"type": "text", "text": "a\nb"},
+            picture,
+            None,
+            {"type": "text", "text": "c"},
+        ],
+    }
+    report = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("x\ny\nz",),
+        result=AgentSpawnResult(),
+    )
+
+    assert claude._write_agent_blocks(report, shape) == [
+        {"type": "text", "text": "x\ny"},
+        picture,
+        None,
+        {"type": "text", "text": "z"},
+    ]
+
+
+def test_agent_blocks_keep_their_own_text_when_the_prose_no_longer_fits() -> None:
+    shape = {
+        "agent_blocks": [
+            {"type": "text", "text": "a"},
+            {"type": "text", "text": "b"},
+            {"type": "text", "text": None},
+        ],
+    }
+    report = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("whole",),
+        result=AgentSpawnResult(),
+    )
+
+    assert claude._write_agent_blocks(report, shape) == [
+        {"type": "text", "text": "whole"},
+        {"type": "text", "text": "b"},
+        {"type": "text", "text": ""},
+    ]
+
+
 def test_a_crossed_agent_report_takes_the_finished_reports_order() -> None:
     """With no ``isAsync`` it is a finished report, which states its prompt second."""
-    report = AgentSpawnResult(
+    report = ToolResult(
         call_id="c",
-        content="done",
-        agent_id="a1",
-        state="completed",
-        prompt="p",
-        tokens=3,
+        state="done",
+        stdout=("done",),
+        result=AgentSpawnResult(agent_id="a1", state="completed", prompt="p", tokens=3),
     )
     payload = from_plain(claude._write_tool_payload(report, {}, {}), dict[str, object])
     assert list(payload) == ["status", "prompt", "agentId", "content", "totalTokens"]
 
 
 def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
-    report = AgentSpawnResult(
+    report = ToolResult(
         call_id="c",
-        content="done",
-        agent_id="a1",
-        state="completed",
-        prompt="p",
-        tokens=3,
+        state="done",
+        stdout=("done",),
+        result=AgentSpawnResult(agent_id="a1", state="completed", prompt="p", tokens=3),
     )
     stream = StringIO()
     claude.denormalize(
@@ -2043,16 +2223,21 @@ def test_a_crossed_finished_agent_replays_with_claudes_name_and_order() -> None:
 
 def test_an_mcp_result_is_written_as_the_tool_claude_named_it() -> None:
     assert claude._claude_tool(
-        McpResult(call_id="c", server="docs", tool="search"),
+        ToolResult(
+            call_id="c",
+            state="done",
+            result=McpResult(server="docs", tool="search"),
+        ),
     ) == ("mcp__docs__search")
 
 
 def test_claude_writer_special_result_shapes() -> None:
     assert (
         claude._write_result_block(
-            UncategorizedToolResult(
+            ToolResult(
                 call_id="c",
-                content=None,
+                state="done",
+                result=UncategorizedToolResult(),
                 extra={"$result": {"$text": True}},
             ),
         )["content"]
@@ -2060,7 +2245,7 @@ def test_claude_writer_special_result_shapes() -> None:
     )
     assert (
         claude._write_tool_payload(
-            UncategorizedToolResult(call_id="c"),
+            ToolResult(call_id="c", state="done", result=UncategorizedToolResult()),
             {"toolUseResult": "failed"},
             {},
         )
@@ -2353,7 +2538,13 @@ def test_claude_writer_skips_non_string_shell_commands() -> None:
     call = ToolCall(call_id="c", name="Bash")
     writer.add(line, calls=(call,))
     writer._apply_shell_edit(
-        WriteResult(call_id="c", path="x", content="new", extra={"$shell": True}),
+        ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("Wrote x.",),
+            result=WriteResult(path="x", content="new"),
+            extra={"$shell": True},
+        ),
     )
     assert line == {
         "message": {
@@ -2370,7 +2561,12 @@ def test_claude_writer_skips_non_string_shell_commands() -> None:
 
 
 def test_claude_user_shape_replays_results_and_stencils() -> None:
-    result = UncategorizedToolResult(call_id="c", content="done")
+    result = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("done",),
+        result=UncategorizedToolResult(),
+    )
     shape = [
         {"type": "tool_result", "tool_use_id": "c", "$held": ["content"]},
         {"type": "text", "text": "old", "$held": ["text"]},
@@ -2398,9 +2594,11 @@ def test_claude_user_shape_replays_results_and_stencils() -> None:
     ]
     result_line = from_plain(
         claude._write_result(
-            UncategorizedToolResult(
+            ToolResult(
                 call_id="c",
-                content="done",
+                state="done",
+                stdout=("done",),
+                result=UncategorizedToolResult(),
                 extra={"$content_shape": [{"type": "other"}]},
             ),
             {},
@@ -2420,7 +2618,7 @@ def test_a_foreign_call_restated_after_its_typed_result_is_written_once() -> Non
     """
     records = [
         _FOREIGN,
-        BashResult(call_id="a", command=("ls",)),
+        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
         ToolCall(call_id="a", name="shell"),
         ToolCall(call_id="a", name="shell"),
     ]
@@ -2434,7 +2632,7 @@ def test_a_foreign_call_before_its_result_takes_the_claude_tool_name() -> None:
         _FOREIGN,
         ToolCall(call_id="a", name="shell"),
         AssistantMessage(content="running"),
-        BashResult(call_id="a", command=("ls",)),
+        ToolResult(call_id="a", state="done", result=BashResult(command=("ls",))),
     ]
     output = StringIO()
 
@@ -2501,10 +2699,11 @@ def test_a_shell_edit_for_a_call_that_left_the_window_replays_unedited() -> None
         toolUseResult='{"stdout":"body\\n","stderr":"","interrupted":false}',
     )
     records = list(claude.normalize(StringIO(call + filler + result)))
-    read = _last_act(records)
-    assert isinstance(read, ReadResult)
+    read = _result(_last_act(records))
     changed = [
-        replace(record, path="new.txt") if record is read else record
+        replace(read, result=replace(_typed_result(read, ReadResult), path="new.txt"))
+        if record is read
+        else record
         for record in records
     ]
     output = StringIO()
@@ -2570,9 +2769,10 @@ def test_search_groups_replay_prose_and_scalar_rows_around_groups() -> None:
 
 
 def test_a_search_shape_entry_without_a_template_replays_verbatim() -> None:
-    search = WebSearchResult(
+    search = ToolResult(
         call_id="c1",
-        query="q",
+        state="done",
+        result=WebSearchResult(query="q"),
         extra={"$result": {"tool_name": "WebSearch", "rows": [{"loose": 1}]}},
     )
     output = StringIO()

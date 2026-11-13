@@ -53,7 +53,6 @@ from trackinizer.sagent.model.capability import (
 from trackinizer.sagent.session.types import (
     AgentSpawnResult,
     AgentToAgentMessage,
-    AnyToolResult,
     AssistantMessage,
     Attachment,
     BashResult,
@@ -90,7 +89,7 @@ _CompleteRecord = (
     | AssistantMessage
     | Thinking
     | ToolCall
-    | AnyToolResult
+    | ToolResult
     | SystemMessage
     | TokenUsage
     | ContextState
@@ -346,9 +345,11 @@ def _grouped(records: Sequence[SessionRecord]) -> Iterator[Sequence[SessionRecor
             # both, so they are written from one group.
             open_group.append(record)
             continue
-        if isinstance(record, EditResult | WriteResult) and isinstance(
-            leader,
-            EditResult | WriteResult,
+        if (
+            isinstance(record, ToolResult)
+            and isinstance(record.result, EditResult | WriteResult)
+            and isinstance(leader, ToolResult)
+            and isinstance(leader.result, EditResult | WriteResult)
         ):
             # ``$codex_line`` is this reader's own note about the line, added
             # after the split, so a follower carries it and nothing else.
@@ -778,12 +779,13 @@ def _write_result(
     followers: Sequence[SessionRecord] = (),
 ) -> tuple[str, dict[str, object]] | None:
     """Return the line a tool's answer came from."""
-    if isinstance(item, ReadResult | WriteResult | EditResult):
-        item = shell_result_for_replay(item) or item
+    item = shell_result_for_replay(item) or item
     by_path = {
         path: record
         for record in (item, *followers)
-        if isinstance(record, EditResult | WriteResult) and (path := record.path or "")
+        if isinstance(record, ToolResult)
+        and isinstance(changed := record.result, EditResult | WriteResult)
+        and (path := changed.path or "")
     }
     extra = mutable(item.extra)
     echoes = from_plain(extra.pop("$echoes", ""), str)
@@ -792,47 +794,47 @@ def _write_result(
         return ("event_msg", completed) if completed is not None else None
     if echoes:
         return ("event_msg", _write_legacy_end(item, echoes, extra, by_path))
+    tool_result = item.result
+    # A pending or cancelled call has no output; only ``shown`` text is written.
+    if item.state in ("pending", "cancelled") and item.shown is None:
+        return None
     # An output response item is the only spelling that carries the tool's own
-    # text, and only an uncategorized result read one; a typed result came
-    # from an event and took one of the branches above.
-    if isinstance(item, UncategorizedToolResult):
+    # text, and only an ``UncategorizedToolResult`` is read from one; a typed
+    # result came from an event and took one of the branches above.
+    if isinstance(tool_result, UncategorizedToolResult) and item.state == "done":
         return ("response_item", _write_output(item, extra))
     if isinstance(
-        item,
+        tool_result,
         BashResult | ReadResult | WriteResult | EditResult | WebSearchResult,
     ):
         completed = _write_completed(item, extra, by_path)
         return ("event_msg", completed) if completed is not None else None
+    payload: dict[str, object] = {
+        "type": "function_call_output",
+        "call_id": item.call_id,
+    }
     # A fetch or a subagent report: acts codex has no event for -- across 400
     # captured rollouts it writes neither -- but which it CAN carry, since
     # every tool it does not model answers with a plain output item. Returning
     # None instead dropped the record, so an act the source recorded left no
     # trace at all; a generic output states what the tool returned, which is
     # the most the target's vocabulary can say.
-    if isinstance(item, WebFetchResult | AgentSpawnResult):
-        payload: dict[str, object] = {
-            "type": "function_call_output",
-            "call_id": item.call_id,
-        }
+    if isinstance(tool_result, WebFetchResult | AgentSpawnResult):
         # Axiom 2: an UNSET content is not an empty one. Codex already states
         # an absent ``output`` -- the reader records that state -- so a result
         # that returned nothing omits the key rather than claiming it returned
         # the empty string.
-        if item.content is not None:
-            payload["output"] = item.content
+        if content := "".join(text for text in item.stdout if isinstance(text, str)):
+            payload["output"] = content
         return ("response_item", _ordered("function_call_output", payload | extra))
-    # A bare result says nothing: no tool's fields, and no stand-in's note.
-    if type(item) is ToolResult and item.shown is None:
-        return None
     # Any other sagent tool's act, and an error no tool answered: codex has no event
     # for them, so each states what the model read, as a tool codex does not model.
-    payload = {"type": "function_call_output", "call_id": item.call_id}
     payload["output"] = item.text()
     return ("response_item", _ordered("function_call_output", payload | extra))
 
 
 def _write_output(
-    item: UncategorizedToolResult,
+    item: ToolResult,
     extra: dict[str, MutablePlainTree],
 ) -> dict[str, object]:
     """Return the output response item a result came from."""
@@ -841,10 +843,11 @@ def _write_output(
         return _ordered(kind, {"type": kind, "call_id": item.call_id, **extra})
     output_absent = bool(extra.pop("$output_absent", False))
     call_id_absent = bool(extra.pop("$call_id_absent", False))
-    output: object = item.content or ""
+    content = "".join(text for text in item.stdout if isinstance(text, str))
+    output: object = content
     if "$parts" in extra:
         output = _write_content(
-            item.content,
+            content,
             item.attachments,
             extra,
             text_key="input_text",
@@ -852,7 +855,7 @@ def _write_output(
     payload: dict[str, object] = {"type": kind}
     if not call_id_absent or item.call_id:
         payload["call_id"] = item.call_id
-    if not output_absent or item.content is not None or item.attachments:
+    if not output_absent or content or item.attachments:
         payload["output"] = output
     return _ordered(kind, payload | extra)
 
@@ -861,7 +864,7 @@ def _write_legacy_end(
     item: ToolResult,
     kind: str,
     extra: dict[str, MutablePlainTree],
-    by_path: Mapping[str, EditResult | WriteResult],
+    by_path: Mapping[str, ToolResult],
 ) -> dict[str, object]:
     """Return the pre-0.149 ``*_end`` event an observation came from."""
     present_value = extra.pop("$present", None)
@@ -871,30 +874,33 @@ def _write_legacy_end(
         else None
     )
     payload: dict[str, object] = {"type": kind, "call_id": item.call_id}
-    if isinstance(item, BashResult):
+    tool_result = item.result
+    if isinstance(tool_result, BashResult):
+        stdout = "".join(text for text in item.stdout if isinstance(text, str))
+        stderr = "".join(text for text in item.stderr if isinstance(text, str))
         payload |= {
-            "command": list(item.command or ()) or None,
-            "stdout": item.stdout,
-            "stderr": item.stderr,
-            "exit_code": item.exit_code,
+            "command": list(tool_result.command or ()) or None,
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": tool_result.exit_code,
         }
         if present is not None:
             defaults = {
                 "call_id": item.call_id == "",
-                "command": item.command is None,
-                "stdout": item.stdout == "",
-                "stderr": item.stderr == "",
-                "exit_code": item.exit_code is None,
+                "command": tool_result.command is None,
+                "stdout": stdout == "",
+                "stderr": stderr == "",
+                "exit_code": tool_result.exit_code is None,
             }
             payload = {
                 key: value
                 for key, value in payload.items()
                 if key == "type" or key in present or not defaults.get(key, False)
             }
-    elif isinstance(item, WebSearchResult):
-        payload["query"] = item.query
+    elif isinstance(tool_result, WebSearchResult):
+        payload["query"] = tool_result.query
         payload["results"] = _write_rows(item, extra)
-    elif isinstance(item, EditResult | WriteResult):
+    elif isinstance(tool_result, EditResult | WriteResult):
         # The residual holds the per-path structure, but the VALUE is the
         # record's own field -- an edit's splices, a write's content -- so an
         # edited one has to reach the entry it came from.
@@ -916,7 +922,7 @@ def _write_legacy_end(
 # carries its splices, an ADD the whole content it wrote -- so no boundary has to be
 # recovered: each record renders its own entry.
 def _write_changes(
-    by_path: Mapping[str, EditResult | WriteResult],
+    by_path: Mapping[str, ToolResult],
     stored: Mapping[str, object],
 ) -> dict[str, MutablePlainTree] | None:
     """Return a patch's per-path entries carrying each record's current value."""
@@ -950,10 +956,13 @@ def _write_changes(
             # Each entry from the record that owns THAT path: an add states the
             # file's whole bytes, which a write holds outright; an update
             # states a diff, which its splices render.
+            tool_result = owner.result
             found[filled[path]] = (
-                (owner.content or "")
-                if isinstance(owner, WriteResult)
-                else render_udiff(owner.edits)
+                (tool_result.content or "")
+                if isinstance(tool_result, WriteResult)
+                else render_udiff(
+                    tuple(item for item in owner.stdout if isinstance(item, Splice)),
+                )
             )
         # This reader's own note about the entry's shape, not a key codex
         # wrote. ``_ordered`` strips ``$`` keys at the payload's top level;
@@ -966,7 +975,7 @@ def _write_changes(
 def _write_completed(
     item: ToolResult,
     extra: dict[str, MutablePlainTree],
-    by_path: Mapping[str, EditResult | WriteResult] = MappingProxyType({}),
+    by_path: Mapping[str, ToolResult] = MappingProxyType({}),
 ) -> dict[str, object] | None:
     """Return the ``item_completed`` event an observation came from."""
     nested = from_plain(extra.pop("item", {}), dict[str, object])
@@ -977,16 +986,20 @@ def _write_completed(
         else None
     )
     inner: dict[str, object] = {"type": "", "id": item.call_id}
-    if isinstance(item, BashResult):
+    tool_result = item.result
+    shell = tool_result if isinstance(tool_result, BashResult) else None
+    stdout = "".join(text for text in item.stdout if isinstance(text, str))
+    stderr = "".join(text for text in item.stderr if isinstance(text, str))
+    if shell is not None:
         kind = "CommandExecution"
         inner |= {
             "type": kind,
-            "command": list(item.command or ()) or None,
-            "stdout": item.stdout,
-            "stderr": item.stderr,
-            "exit_code": item.exit_code,
+            "command": list(shell.command or ()) or None,
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": shell.exit_code,
         }
-    elif isinstance(item, ReadResult):
+    elif isinstance(tool_result, ReadResult):
         # Codex has no read TOOL -- across 400 captured rollouts it names only
         # exec_command, apply_patch, and write_stdin -- so it reads by running
         # one, and that is the act this record crosses as (axiom 9: the same
@@ -998,12 +1011,14 @@ def _write_completed(
             # ``--`` first: a file whose name begins with a dash is an OPERAND,
             # and ``cat -n`` runs a flag instead -- the act crossed as a command
             # that reads nothing, and the record lost its type coming back.
-            "command": ["/bin/cat", "--", path] if (path := item.path or "") else None,
-            "stdout": item.content or "",
+            "command": ["/bin/cat", "--", path]
+            if (path := tool_result.path or "")
+            else None,
+            "stdout": stdout,
             "stderr": "",
             "exit_code": 0,
         }
-    elif isinstance(item, EditResult | WriteResult):
+    elif isinstance(tool_result, EditResult | WriteResult):
         # One act per path, and codex states both under ``changes``: an update
         # writes a diff, an add the file's whole bytes.
         kind = "FileChange"
@@ -1022,27 +1037,38 @@ def _write_completed(
             )
             if changes is not None:
                 nested["changes"] = changes
-        elif item.path is not None:
+        elif tool_result.path is not None:
             inner["changes"] = {
-                item.path: {"content": item.content or ""}
-                if isinstance(item, WriteResult)
-                else {"unified_diff": render_udiff(item.edits)},
+                tool_result.path: {"content": tool_result.content or ""}
+                if isinstance(tool_result, WriteResult)
+                else {
+                    "unified_diff": render_udiff(
+                        tuple(
+                            stdout_item
+                            for stdout_item in item.stdout
+                            if isinstance(stdout_item, Splice)
+                        ),
+                    ),
+                },
             }
-        elif isinstance(item, EditResult) and item.edits:
+        elif isinstance(tool_result, EditResult) and any(
+            isinstance(stdout_item, Splice) for stdout_item in item.stdout
+        ):
             return None
-    elif isinstance(item, WebSearchResult):
+    elif isinstance(tool_result, WebSearchResult):
         kind = "WebSearch"
-        inner |= {"type": kind, "query": item.query}
+        inner |= {"type": kind, "query": tool_result.query}
     else:
         return None
     if present is not None:
         defaults = {
             "id": item.call_id == "",
-            "command": isinstance(item, BashResult) and item.command is None,
-            "stdout": isinstance(item, BashResult) and item.stdout == "",
-            "stderr": isinstance(item, BashResult) and item.stderr == "",
-            "exit_code": isinstance(item, BashResult) and item.exit_code is None,
-            "query": isinstance(item, WebSearchResult) and item.query is None,
+            "command": shell is not None and shell.command is None,
+            "stdout": shell is not None and stdout == "",
+            "stderr": shell is not None and stderr == "",
+            "exit_code": shell is not None and shell.exit_code is None,
+            "query": isinstance(tool_result, WebSearchResult)
+            and tool_result.query is None,
         }
         inner = {
             key: value
@@ -1057,7 +1083,7 @@ def _write_completed(
 
 
 def _write_rows(
-    item: WebSearchResult,
+    item: ToolResult,
     extra: dict[str, MutablePlainTree],
 ) -> list[object] | None:
     """Return search results with opaque members in their original positions."""
@@ -1072,7 +1098,8 @@ def _write_rows(
         order = []
     named = [
         {"url": row.url, "title": row.title, "snippet": row.snippet}
-        for row in item.content
+        for row in item.stdout
+        if isinstance(row, WebSearchHit)
     ]
     out: list[object] = []
     row_index = 0
@@ -1857,12 +1884,14 @@ def _read_response_item(
         # cross-provider conversion. Its id is under ``id``, not ``call_id``.
         return _read_search_call(payload, context_id, timestamp)
     if kind == "tool_search_output":
-        # It answers with ``tools``, never an ``output``, so nothing here maps
-        # to :attr:`content` and the writer must not synthesize one.
-        return UncategorizedToolResult(
+        # It answers with ``tools``, never an ``output``, so the record has no
+        # text and the writer must not synthesize any.
+        return ToolResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
+            state="done",
+            result=UncategorizedToolResult(),
             extra=_codex_residual(payload, {"call_id"}) | {"$whole": True},
         )
     if kind == "agent_message":
@@ -2140,7 +2169,7 @@ def _read_tool_result(
     payload: Mapping[str, object],
     context_id: int | None,
     timestamp: str | None,
-) -> UncategorizedToolResult:
+) -> ToolResult:
     """Read what one tool invocation returned."""
     output = payload.get("output")
     consumed = {"call_id"}
@@ -2162,19 +2191,20 @@ def _read_tool_result(
         extra["$templates"] = templates
         extra["$order"] = _block_order(output_list)
     else:
-        content = None
+        content = ""
         if "output" not in payload:
             extra["$output_absent"] = True
     # Measured on a codex app rollout: an automation's heartbeat output names no
     # call, and the writer would otherwise give it ``"call_id": ""``.
     if "call_id" not in payload:
         extra["$call_id_absent"] = True
-    return UncategorizedToolResult(
+    return ToolResult(
         context_id=context_id,
         timestamp=timestamp,
         call_id=from_plain(payload.get("call_id"), str, default=""),
-        content=content,
-        attachments=attachments,
+        state="done",
+        stdout=(*((content,) if content else ()), *attachments),
+        result=UncategorizedToolResult(),
         extra=immutable(extra),
     )
 
@@ -2303,25 +2333,33 @@ def _read_event(
             dict[str, object],
             default=dict[str, object](),
         )
-        return McpResult(
+        return ToolResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
-            server=read_or_default(invocation.get("server"), str, default=""),
-            tool=read_or_default(invocation.get("tool"), str, default=""),
+            state="done",
+            result=McpResult(
+                server=read_or_default(invocation.get("server"), str, default=""),
+                tool=read_or_default(invocation.get("tool"), str, default=""),
+            ),
             extra=_echoing(payload, kind, {"call_id"}),
         )
     # The pre-0.149 spelling of what ``item_completed`` now carries; the act
     # is the same, so it reads into the same record.
     if kind == "exec_command_end":
-        shell = BashResult(
+        stdout = read_or_default(payload.get("stdout"), str, default="")
+        stderr = read_or_default(payload.get("stderr"), str, default="")
+        shell = ToolResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
-            command=_command(payload.get("command")),
-            stdout=read_or_default(payload.get("stdout"), str, default=""),
-            stderr=read_or_default(payload.get("stderr"), str, default=""),
-            exit_code=read_or_default(payload.get("exit_code"), int, default=None),
+            state="done",
+            stdout=(stdout,) if stdout else (),
+            stderr=(stderr,) if stderr else (),
+            result=BashResult(
+                command=_command(payload.get("command")),
+                exit_code=read_or_default(payload.get("exit_code"), int, default=None),
+            ),
             extra=_shell_residual(payload, kind),
         )
         return lift_shell_result(shell) or shell
@@ -2370,16 +2408,26 @@ def _read_event(
         if isinstance(results_value, list):
             extra["$rows"] = templates
             extra["$row_order"] = row_order
-        return WebSearchResult(
+        hits = _search_rows(rows)
+        hits_text = "\n\n".join(
+            "\n".join(
+                part for part in (hit.title, hit.url, hit.snippet) if part is not None
+            )
+            for hit in hits
+        )
+        return ToolResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(payload.get("call_id"), str, default=""),
-            # An empty query is a value: 2 captured searches carry one, and
-            # ``None`` would drop the key.
-            query=read_or_default(payload.get("query"), str, default="")
-            if "query" in payload
-            else None,
-            content=tuple(_search_rows(rows)),
+            state="done",
+            stdout=(*((hits_text,) if hits_text else ()), *hits),
+            result=WebSearchResult(
+                # An empty query is a value: 2 captured searches carry one, and
+                # ``None`` would drop the key.
+                query=read_or_default(payload.get("query"), str, default="")
+                if "query" in payload
+                else None,
+            ),
             extra=immutable(extra),
         )
     # ``event_msg/agent_message`` and its siblings are the CLI re-rendering a
@@ -2446,7 +2494,7 @@ def _stencil_changes(
     extra: dict[str, PlainTree],
     counts: Sequence[int] = (),
 ) -> dict[str, PlainTree]:
-    """Empty each patch entry's diff, which :attr:`edits` now holds."""
+    """Empty each patch entry's diff; the record's ``Splice`` items hold it."""
     changes = extra.get("changes")
     if not isinstance(changes, dict):
         return extra
@@ -2531,14 +2579,19 @@ def _read_completed(
                 consumed.add(key)
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        shell = BashResult(
+        stdout = read_or_default(item.get("stdout"), str, default="")
+        stderr = read_or_default(item.get("stderr"), str, default="")
+        shell = ToolResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(item.get("id"), str, default=""),
-            command=_command(item.get("command")),
-            stdout=read_or_default(item.get("stdout"), str, default=""),
-            stderr=read_or_default(item.get("stderr"), str, default=""),
-            exit_code=read_or_default(item.get("exit_code"), int, default=None),
+            state="done",
+            stdout=(stdout,) if stdout else (),
+            stderr=(stderr,) if stderr else (),
+            result=BashResult(
+                command=_command(item.get("command")),
+                exit_code=read_or_default(item.get("exit_code"), int, default=None),
+            ),
             extra=outer | {"item": nested},
         )
         return lift_shell_result(shell) or shell
@@ -2570,11 +2623,14 @@ def _read_completed(
                 consumed.add(key)
         nested = _codex_residual(item, consumed)
         nested["$present"] = list(item)
-        return WebSearchResult(
+        return ToolResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=from_plain(item.get("id"), str, default=""),
-            query=read_or_default(item.get("query"), str, default=None),
+            state="done",
+            result=WebSearchResult(
+                query=read_or_default(item.get("query"), str, default=None),
+            ),
             extra=outer | {"item": nested},
         )
     # ``AgentMessage``/``UserMessage``/``Reasoning`` complete an item that
@@ -2677,30 +2733,38 @@ def _per_path_edits(
             # An ADD states the file's whole bytes, which is what a write is --
             # and codex's own writer maps a write back to this entry. Typing it
             # as an edit left the IR unable to round-trip one.
-            WriteResult(
+            ToolResult(
                 context_id=context_id,
                 timestamp=timestamp,
                 call_id=call_id,
-                path=path,
-                content=found[0].after if found else None,
+                state="done",
+                stdout=(f"Wrote {path or 'the file'}.",),
+                result=WriteResult(
+                    path=path,
+                    content=found[0].after if found else None,
+                ),
                 extra=own,
             )
             if added
-            else EditResult(
+            else ToolResult(
                 context_id=context_id,
                 timestamp=timestamp,
                 call_id=call_id,
-                path=path,
-                edits=found,
+                state="done",
+                stdout=(f"Edited {path or 'the file'}.", *found),
+                result=EditResult(path=path),
                 extra=own,
             ),
         )
         at += count
     return out or [
-        EditResult(
+        ToolResult(
             context_id=context_id,
             timestamp=timestamp,
             call_id=call_id,
+            state="done",
+            stdout=("Edited the file.",),
+            result=EditResult(),
             extra=immutable(extra),
         ),
     ]

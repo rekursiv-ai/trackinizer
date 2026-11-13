@@ -23,22 +23,35 @@ from trackinizer.lib.agent.sessions.udiff import render_udiff
 from trackinizer.sagent.session.types import (
     BashResult,
     EditResult,
+    LineSpan,
     ReadResult,
     Splice,
+    ToolResult,
     WriteResult,
 )
 
 
-def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> object:
+def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> ToolResult | None:
     """Lift one script as a provider would have recorded it."""
     return lift_shell_result(
-        BashResult(
+        ToolResult(
             call_id="c1",
-            command=("/bin/bash", "-lc", script),
-            stdout=stdout,
-            exit_code=exit_code,
+            state="done",
+            stdout=(stdout,) if stdout else (),
+            result=BashResult(
+                command=("/bin/bash", "-lc", script),
+                exit_code=exit_code,
+            ),
         ),
     )
+
+
+def _typed_result[T](result: ToolResult | None, kind: type[T]) -> T:
+    """Return ``result.result`` after asserting it is an instance of ``kind``."""
+    assert result is not None
+    tool_result = result.result
+    assert isinstance(tool_result, kind)
+    return tool_result
 
 
 @pytest.mark.parametrize(
@@ -91,9 +104,9 @@ def _lift(script: str, *, stdout: str = "", exit_code: int = 0) -> object:
 def test_a_read_row_lifts(script: str, path: str) -> None:
     lifted = _lift(script, stdout="body\n")
 
-    assert isinstance(lifted, ReadResult)
-    assert lifted.path == path
-    assert lifted.content == "body\n"
+    assert lifted is not None
+    assert _typed_result(lifted, ReadResult).path == path
+    assert "".join(text for text in lifted.stdout if isinstance(text, str)) == "body\n"
 
 
 @pytest.mark.parametrize(
@@ -112,9 +125,9 @@ def test_a_read_row_lifts(script: str, path: str) -> None:
 def test_a_write_row_lifts(script: str, path: str, content: str) -> None:
     lifted = _lift(script)
 
-    assert isinstance(lifted, WriteResult)
-    assert lifted.path == path
-    assert lifted.content == content
+    tool_result = _typed_result(lifted, WriteResult)
+    assert tool_result.path == path
+    assert tool_result.content == content
 
 
 @pytest.mark.parametrize(
@@ -161,11 +174,14 @@ def test_a_write_row_lifts(script: str, path: str, content: str) -> None:
 def test_an_edit_row_lifts(script: str, path: str, udiff: str | None) -> None:
     lifted = _lift(script)
 
-    assert isinstance(lifted, EditResult)
-    assert lifted.path == path
+    assert lifted is not None
+    assert _typed_result(lifted, EditResult).path == path
     # The diff IS the splices, so it is rendered rather than stored; a row
     # that states no replacement renders nothing.
-    assert (render_udiff(lifted.edits) or None) == udiff
+    assert (
+        render_udiff(tuple(item for item in lifted.stdout if isinstance(item, Splice)))
+        or None
+    ) == udiff
 
 
 @pytest.mark.parametrize(
@@ -253,8 +269,11 @@ def test_an_append_states_a_splice_that_replaces_nothing(
     """
     lifted = _lift(script)
 
-    assert isinstance(lifted, EditResult)
-    assert lifted.edits == (Splice(before=before, after=after),)
+    assert lifted is not None
+    assert isinstance(lifted.result, EditResult)
+    assert tuple(item for item in lifted.stdout if isinstance(item, Splice)) == (
+        Splice(before=before, after=after),
+    )
 
 
 def test_an_empty_append_adds_no_line() -> None:
@@ -267,9 +286,9 @@ def test_an_empty_append_adds_no_line() -> None:
     """
     lifted = _lift("cat >> a.txt << 'EOF'\nEOF\n")
 
-    assert isinstance(lifted, EditResult)
-    assert lifted.path == "a.txt"
-    assert lifted.edits == ()
+    assert lifted is not None
+    assert _typed_result(lifted, EditResult).path == "a.txt"
+    assert tuple(item for item in lifted.stdout if isinstance(item, Splice)) == ()
 
 
 @pytest.mark.parametrize(
@@ -291,9 +310,13 @@ def test_a_rewrite_states_no_splice_it_cannot_know(script: str) -> None:
     """
     lifted = _lift(script)
 
-    assert isinstance(lifted, EditResult)
-    assert lifted.edits == ()
-    assert render_udiff(lifted.edits) == ""
+    assert lifted is not None
+    assert isinstance(lifted.result, EditResult)
+    assert tuple(item for item in lifted.stdout if isinstance(item, Splice)) == ()
+    assert (
+        render_udiff(tuple(item for item in lifted.stdout if isinstance(item, Splice)))
+        == ""
+    )
 
 
 @pytest.mark.parametrize(
@@ -318,10 +341,7 @@ def test_a_file_named_after_its_utility_rewrites_the_operand(
     rewritten: str,
 ) -> None:
     """A path equal to another word must still be replaced where it SITS."""
-    assert (
-        rewrite_shell_source(script, EditResult(call_id="c1", path="renamed.txt"))
-        == rewritten
-    )
+    assert rewrite_shell_source(script, EditResult(path="renamed.txt")) == rewritten
 
 
 @pytest.mark.parametrize(
@@ -349,8 +369,11 @@ def test_a_reversed_sed_address_reads_one_line() -> None:
     """
     lifted = _lift("sed -n '40,20p' a.txt", stdout="line40\n")
 
-    assert isinstance(lifted, ReadResult)
-    assert lifted.ranges == ((40, 1),)
+    assert lifted is not None
+    assert isinstance(lifted.result, ReadResult)
+    assert tuple(item for item in lifted.stdout if isinstance(item, LineSpan)) == (
+        LineSpan(start=40, count=1),
+    )
 
 
 def test_a_write_lifts_from_a_heredoc_body_only() -> None:
@@ -370,11 +393,13 @@ def test_a_write_lifts_from_a_heredoc_body_only() -> None:
 )
 def test_a_failed_command_lifts_nothing(exit_code: int, succeeded: bool | None) -> None:
     """A command that failed changed nothing, whatever it was going to do."""
-    shell = BashResult(
+    shell = ToolResult(
         call_id="c1",
-        command=("/bin/bash", "-lc", "cat a.txt"),
-        stdout="",
-        exit_code=exit_code,
+        state="done",
+        result=BashResult(
+            command=("/bin/bash", "-lc", "cat a.txt"),
+            exit_code=exit_code,
+        ),
     )
 
     assert lift_shell_result(shell, succeeded=succeeded) is None

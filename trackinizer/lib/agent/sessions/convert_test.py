@@ -45,9 +45,12 @@ from trackinizer.lib.agent.sessions.convert import (
 )
 from trackinizer.lib.testing.resources import ascii_locale
 from trackinizer.sagent.session.types import (
+    ReadResult,
     SessionRecord,
     ToolCall,
+    ToolResult,
     TurnContext,
+    UncategorizedToolResult,
     UserMessage,
 )
 
@@ -1398,6 +1401,32 @@ def test_two_records_of_one_kind_lost_count_as_two() -> None:
     records = [UserMessage(content="one"), UserMessage(content="two")]
 
     assert _dropped(records, "[]", "json") == {"UserMessage": 2}
+
+
+def test_a_lost_result_is_counted_under_its_former_record_class() -> None:
+    records: list[SessionRecord] = [
+        ToolResult(call_id="r", state="done", result=ReadResult(path="a.py")),
+        ToolResult(
+            call_id="u",
+            state="done",
+            stdout=("ok",),
+            result=UncategorizedToolResult(),
+        ),
+        ToolResult(call_id="e", state="failed", stderr=("boom",)),
+        ToolResult(call_id="p", state="pending"),
+        ToolResult(
+            call_id="m",
+            state="pending",
+            result=UncategorizedToolResult(exit_code=1),
+        ),
+    ]
+
+    assert _dropped(records, "[]", "json") == {
+        "ReadResult": 1,
+        "UncategorizedToolResult": 1,
+        "ToolErrorResult": 1,
+        "ToolResult": 2,
+    }
 
 
 def test_a_context_index_and_the_extra_are_not_what_a_record_means() -> None:

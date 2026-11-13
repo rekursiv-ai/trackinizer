@@ -1,11 +1,11 @@
 """Decompose a unified diff into splices, and render them back.
 
 Both providers state file edits as diff text -- codex writes a per-path
-``unified_diff``, claude a ``structuredPatch`` of the same lines -- while
-:class:`~trackinizer.sagent.session.types.EditResult` states them as
-:class:`~trackinizer.sagent.session.types.Splice` records. This is the one
-conversion between those, so a diff read here and written back reproduces the
-provider's own bytes.
+``unified_diff``, claude a ``structuredPatch`` of the same lines -- while an
+edit's record, whose result is an :class:`~trackinizer.sagent.session.types.EditResult`,
+holds them as :class:`~trackinizer.sagent.session.types.Splice` items in its ``stdout``.
+This is the one conversion between those, so a diff read here and written back
+reproduces the provider's own bytes.
 
 One splice per CHANGED RUN, not per hunk: a hunk may hold several runs
 separated by unchanged lines, and folding them together would attach context to

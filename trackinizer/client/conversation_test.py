@@ -33,12 +33,14 @@ from trackinizer.sagent.session.types import (
     SystemMessage,
     Thinking,
     ToolCall,
-    ToolErrorResult,
     ToolResult,
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.types.session_records import (
+    SessionRecordRow,
+    record_kind,
+)
 from trackinizer.types.streams import Stdout
 from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 
@@ -210,14 +212,19 @@ def test_a_switch_is_marked_before_the_new_providers_first_tool_call() -> None:
                 "claude",
                 [
                     ToolCall(timestamp=_at(2), call_id="t1", name="Grep"),
-                    UncategorizedToolResult(timestamp=_at(3), call_id="t1"),
+                    ToolResult(
+                        timestamp=_at(3),
+                        call_id="t1",
+                        state="done",
+                        result=UncategorizedToolResult(),
+                    ),
                     AssistantMessage(timestamp=_at(4), content="a2"),
                 ],
             ),
         ],
     )
 
-    assert [type(record).__name__ for record in spoken] == [
+    assert [record_kind(record) for record in spoken] == [
         "AssistantMessage",
         "SystemMessage",
         "ToolCall",
@@ -240,7 +247,12 @@ def test_a_target_that_last_called_a_tool_is_not_told_another_answered() -> None
                 "claude",
                 [
                     ToolCall(timestamp=_at(2), call_id="t1", name="Grep"),
-                    UncategorizedToolResult(timestamp=_at(3), call_id="t1"),
+                    ToolResult(
+                        timestamp=_at(3),
+                        call_id="t1",
+                        state="done",
+                        result=UncategorizedToolResult(),
+                    ),
                 ],
             ),
         ],
@@ -545,8 +557,19 @@ def test_a_foreign_tool_call_and_its_result_cross_as_text() -> None:
                 name="exec",
                 arguments=immutable({"cmd": "ls"}),
             ),
-            UncategorizedToolResult(timestamp=_at(2), call_id="c1", content="a.txt"),
-            UncategorizedToolResult(timestamp=_at(3), call_id="c2"),
+            ToolResult(
+                timestamp=_at(2),
+                call_id="c1",
+                state="done",
+                stdout=("a.txt",),
+                result=UncategorizedToolResult(),
+            ),
+            ToolResult(
+                timestamp=_at(3),
+                call_id="c2",
+                state="done",
+                result=UncategorizedToolResult(),
+            ),
         ],
     )
 
@@ -579,14 +602,14 @@ def test_a_foreign_typed_tool_keeps_its_call_and_structured_result(
         name="exec",
         arguments=immutable({"cmd": "pwd"}),
     )
-    result = BashResult(
+    result = ToolResult(
         context_id=12,
         timestamp=_at(2),
         call_id="shell-1",
-        command=("pwd",),
-        stdout="/workspace\n",
-        stderr="permission denied\n",
-        exit_code=1,
+        state="done",
+        stdout=("/workspace\n",),
+        stderr=("permission denied\n",),
+        result=BashResult(command=("pwd",), exit_code=1),
         extra=immutable({"is_error": failed}),
     )
     segment = _segment(0, "codex", [call, result])
@@ -596,7 +619,11 @@ def test_a_foreign_typed_tool_keeps_its_call_and_structured_result(
     assert [record for record in written if isinstance(record, ToolCall)] == [
         replace(call, context_id=None),
     ]
-    assert [record for record in written if isinstance(record, BashResult)] == [
+    assert [
+        record
+        for record in written
+        if isinstance(record, ToolResult) and isinstance(record.result, BashResult)
+    ] == [
         replace(
             result,
             context_id=None,
@@ -675,10 +702,12 @@ def test_a_person_line_after_a_tool_result_is_marked_as_a_line_of_its_own() -> N
                 "claude",
                 [
                     ToolCall(timestamp=_at(1), call_id="t1", name="Grep"),
-                    UncategorizedToolResult(
+                    ToolResult(
                         timestamp=_at(2),
                         call_id="t1",
-                        content="x",
+                        state="done",
+                        stdout=("x",),
+                        result=UncategorizedToolResult(),
                     ),
                     UserMessage(timestamp=_at(3), content="stop, wrong file"),
                     AssistantMessage(timestamp=_at(4), content="ok"),
@@ -689,9 +718,7 @@ def test_a_person_line_after_a_tool_result_is_marked_as_a_line_of_its_own() -> N
 
     written = projected(spoken, "claude")
     index = next(
-        i
-        for i, record in enumerate(written)
-        if isinstance(record, UncategorizedToolResult)
+        i for i, record in enumerate(written) if isinstance(record, ToolResult)
     )
     following = written[index + 1]
 
@@ -710,10 +737,12 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
         "claude",
         [
             UserMessage(timestamp=_at(1), content="look"),
-            UncategorizedToolResult(
+            ToolResult(
                 timestamp=_at(2),
                 call_id="orphan",
-                content="found it",
+                state="done",
+                stdout=("found it",),
+                result=UncategorizedToolResult(),
             ),
             AssistantMessage(timestamp=_at(3), content="ok"),
         ],
@@ -721,7 +750,7 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
 
     written = projected(_neutral_conversation([segment]), "claude")
 
-    assert not any(isinstance(record, UncategorizedToolResult) for record in written)
+    assert not any(isinstance(record, ToolResult) for record in written)
     assert [
         record.content for record in written if isinstance(record, AssistantMessage)
     ] == ["[a tool returned: found it]\nok"]
@@ -730,8 +759,18 @@ def test_an_own_result_whose_call_is_absent_crosses_as_text() -> None:
 @pytest.mark.parametrize(
     "result",
     [
-        ToolErrorResult(timestamp=_at(2), call_id="orphan", content="found it"),
-        ToolResult(timestamp=_at(2), call_id="orphan", shown="found it"),
+        ToolResult(
+            timestamp=_at(2),
+            call_id="orphan",
+            state="failed",
+            stderr=("found it",),
+        ),
+        ToolResult(
+            timestamp=_at(2),
+            call_id="orphan",
+            state="pending",
+            shown="found it",
+        ),
     ],
     ids=["error", "stand-in"],
 )
@@ -775,7 +814,13 @@ def test_a_foreign_tool_result_is_quoted_to_a_bounded_length() -> None:
                 name="exec",
                 arguments=immutable({}),
             ),
-            UncategorizedToolResult(timestamp=_at(2), call_id="c1", content="x" * 2000),
+            ToolResult(
+                timestamp=_at(2),
+                call_id="c1",
+                state="done",
+                stdout=("x" * 2000,),
+                result=UncategorizedToolResult(),
+            ),
         ],
     )
 

@@ -46,6 +46,7 @@ from trackinizer.sagent.session.types import (
     AssistantMessage,
     BashResult,
     ToolCall,
+    ToolResult,
     UserMessage,
 )
 from trackinizer.types.session_records import SessionRecordRow
@@ -249,7 +250,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8812")
 
 
-type _Turn = UserMessage | AssistantMessage | ToolCall | BashResult
+type _Turn = UserMessage | AssistantMessage | ToolCall | ToolResult[BashResult]
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -980,7 +981,7 @@ def _shell(
     call_id: str,
     command: str,
     stdout: str,
-) -> tuple[ToolCall, BashResult]:
+) -> tuple[ToolCall, ToolResult[BashResult]]:
     """Make a Bash call at ``called`` and its output at ``answered``."""
     return (
         ToolCall(
@@ -989,11 +990,12 @@ def _shell(
             name="Bash",
             arguments={"command": command},
         ),
-        BashResult(
+        ToolResult(
             timestamp=_when(answered),
             call_id=call_id,
-            stdout=stdout,
-            exit_code=0,
+            state="done",
+            stdout=(stdout,),
+            result=BashResult(exit_code=0),
         ),
     )
 

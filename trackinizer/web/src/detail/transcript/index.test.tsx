@@ -9,6 +9,7 @@ import { detailQueries } from "../queries";
 import { detail, PROFILE, renderDetail, row } from "../testing";
 import { transcriptQueries } from ".";
 import { placeholderHeight } from "./drawing";
+import { editResult, searchResult, shellResult, tagged, toolResult } from "./testing";
 
 const SESSION = row("AgentSession", 3);
 
@@ -22,8 +23,8 @@ function part(number: number, records: number): SessionPart {
  * each rendered message costs jsdom about a millisecond and bookkeeping hides.
  */
 function record(idx: number, text = `Turn ${idx}`): SessionRecord {
-  const kind = idx % 50 ? "IncompleteRecord" : "BashResult";
-  return { idx, kind, context_id: null, timestamp: null, model: null, payload: { content: text }, text, ciphertext: null };
+  const line = { idx, context_id: null, timestamp: null, model: null, text, ciphertext: null };
+  return idx % 50 ? { ...line, kind: "IncompleteRecord", payload: { content: text } } : { ...line, kind: "BashResult", payload: shellResult({}) };
 }
 
 /**
@@ -477,7 +478,7 @@ test("long output keeps its head and its tail, where failures are, and shows the
   const lines = Array.from({ length: 299 }, (_, k) => `loop/foo_test.py::test_${k} PASSED`);
   const stdout = [...lines, "FAILED loop/foo_test.py::test_elapsed - AssertionError"].join("\n");
   const shell = (idx: number, exit: number) =>
-    captured(idx, "BashResult", { call_id: `t${idx}`, command: ["pytest"], stdout, stderr: "", exit_code: exit }, `pytest\n${stdout}`);
+    captured(idx, "BashResult", shellResult({ command: ["pytest"], stdout, exit }, { call_id: `t${idx}` }), `pytest\n${stdout}`);
   await renderRecords([shell(0, 1), captured(1, "AssistantMessage", { content: "And:" }, "And:"), shell(2, 0)]);
   // A failure starts open.
   const failed = at(0);
@@ -506,14 +507,7 @@ test("a shell result shows its command and exit code, and stderr apart from stdo
     captured(
       0,
       "BashResult",
-      {
-        call_id: "t1",
-        extra: {},
-        command: ["bash", "-lc", "cd /work/loop && uv run pytest loop/foo_test.py -x -q"],
-        stdout,
-        stderr,
-        exit_code: 1,
-      },
+      shellResult({ command: ["bash", "-lc", "cd /work/loop && uv run pytest loop/foo_test.py -x -q"], stdout, stderr, exit: 1 }, { call_id: "t1", extra: {} }),
       `bash -lc cd /work/loop && uv run pytest loop/foo_test.py -x -q\n${stdout}\n${stderr}`,
     ),
   ]);
@@ -529,7 +523,6 @@ test("a shell result shows its command and exit code, and stderr apart from stdo
 });
 test("a file edit counts its lines added and removed, and shows each line numbered and coloured in its file's language (B9)", async () => {
   const splice = (before: string, after: string, lead: string | null = null, start: number | null = null) => ({
-    "py/object": "Splice",
     before,
     after,
     lead,
@@ -538,8 +531,8 @@ test("a file edit counts its lines added and removed, and shows each line number
     count: start === null ? null : 1,
     bare: [],
   });
-  const edit = (idx: number, path: string, ...splices: object[]) =>
-    captured(idx, "EditResult", { call_id: `t${idx}`, extra: {}, path, edits: splices }, path);
+  const edit = (idx: number, path: string, ...splices: { [field: string]: unknown }[]) =>
+    captured(idx, "EditResult", editResult(path, splices, { call_id: `t${idx}`, extra: {} }), path);
   await renderRecords([
     edit(
       0,
@@ -595,21 +588,18 @@ test("a canvas message shows what was said, its injected context folded and link
 
 test("a web search says what it asked and how many results came; each result's title links to its page, over its snippet (B10)", async () => {
   const line = await renderRecords([
-    captured(0, "WebSearchResult", {
-      call_id: "t5",
-      extra: {},
-      query: "python monotonic clock flaky test",
-      duration_sec: 1.2,
-      content: [
-          {
-            "py/object": "WebSearchHit",
-            url: "https://docs.python.org/3/library/time.html#time.monotonic",
-            title: "time -- Time access and conversions",
-            snippet: "Return the value of a monotonic clock.",
-          },
-          { "py/object": "WebSearchHit", url: "javascript:alert(1)", title: "Not a page", snippet: "Refused." },
-        ],
-    }, "python monotonic clock flaky test\ntime -- Time access and conversions\nNot a page\nReturn the value of a monotonic clock.\nRefused."),
+    captured(0, "WebSearchResult", searchResult(
+      { query: "python monotonic clock flaky test", duration_sec: 1.2 },
+      [
+        {
+          url: "https://docs.python.org/3/library/time.html#time.monotonic",
+          title: "time -- Time access and conversions",
+          snippet: "Return the value of a monotonic clock.",
+        },
+        { url: "javascript:alert(1)", title: "Not a page", snippet: "Refused." },
+      ],
+      { call_id: "t5", extra: {} },
+    ), "python monotonic clock flaky test\ntime -- Time access and conversions\nNot a page\nReturn the value of a monotonic clock.\nRefused."),
   ]);
   expect(line.querySelector(".tool-row .name")!.textContent).toBe("Searched the web");
   expect(line.querySelector(".tool-arg")!.textContent).toBe("python monotonic clock flaky test");
@@ -633,24 +623,23 @@ test("file, fetch and agent results show their payload once, with a fetch's code
   const between = (idx: number) => captured(idx, "AssistantMessage", { content: `Next ${idx}.` }, `Next ${idx}.`);
   await renderRecords(
     [
-      captured(0, "ReadResult", { call_id: "t2", extra: {}, path: "/work/foo.py", content: "     1\timport os\n     2\timport time\n", ranges: [] }, "/work/foo.py\nimport os\nimport time"),
+      captured(0, "ReadResult", toolResult(tagged("ReadResult", { path: "/work/foo.py" }), { call_id: "t2", extra: {}, stdout: ["     1\timport os\n     2\timport time\n"] }), "/work/foo.py\nimport os\nimport time"),
       between(1),
-      captured(2, "WebFetchResult", { call_id: "t6", extra: {}, url: "https://docs.python.org/3/", content: "# time", code: 200, duration_sec: 0.8, size: 123456 }, "https://docs.python.org/3/\n# time"),
+      captured(2, "WebFetchResult", toolResult(tagged("WebFetchResult", { url: "https://docs.python.org/3/", code: 200, duration_sec: 0.8, size: 123456 }), { call_id: "t6", extra: {}, stdout: ["# time"] }), "https://docs.python.org/3/\n# time"),
       between(3),
-      captured(4, "AgentSpawnResult", {
-        call_id: "t7",
-        extra: {},
-        agent_id: "a-7f3",
-        agent_kind: "Explore",
-        prompt: "Find every time.time() used for durations.",
-        content: "Found 3 uses.",
-        model: "claude-sonnet-5",
-        state: "completed",
-        tokens: 12000,
-        duration_sec: 44.0,
-        tool_calls: 12,
-        output_file: null,
-      }, "Find every time.time() used for durations.\nFound 3 uses."),
+      captured(4, "AgentSpawnResult", toolResult(
+        tagged("AgentSpawnResult", {
+          agent_id: "a-7f3",
+          agent_kind: "Explore",
+          prompt: "Find every time.time() used for durations.",
+          model: "claude-sonnet-5",
+          state: "completed",
+          tokens: 12000,
+          duration_sec: 44.0,
+          tool_calls: 12,
+        }),
+        { call_id: "t7", extra: {}, stdout: ["Found 3 uses."] },
+      ), "Find every time.time() used for durations.\nFound 3 uses."),
     ],
     0,
   );
@@ -702,7 +691,7 @@ test("a tool result's attachments, and a long system message's, show as a chip t
   await renderRecords(
     [
       captured(0, "ToolCall", { call_id: "t4", name: "mcp__browser__screenshot", arguments: {} }),
-      captured(1, "UncategorizedToolResult", { call_id: "t4", extra: {}, content: null, attachments: [png] }),
+      captured(1, "UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { call_id: "t4", extra: {}, stdout: [png] })),
       captured(2, "SystemMessage", { subtype: "developer", content: prompt, attachments: [png], extra: {} }, prompt),
       captured(3, "UserMessage", { content: "hi" }, "hi"),
     ],
@@ -744,7 +733,7 @@ test("context state shows its kind, with its content folded (B16)", async () => 
 
 test("an opaque tool result that reports an error shows as failed, and open (B17)", async () => {
   const line = await renderRecords([
-    captured(0, "UncategorizedToolResult", { call_id: "t8", extra: { is_error: true }, content: "Error: missing_scope (chat:write)", attachments: [] }, "Error: missing_scope (chat:write)"),
+    captured(0, "UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { call_id: "t8", extra: { is_error: true }, stdout: ["Error: missing_scope (chat:write)"] }), "Error: missing_scope (chat:write)"),
   ]);
   expect(line.querySelector(".tool-row .name")!.textContent).toBe("Tool result");
   expect(line.querySelector(".tr-step")!.classList.contains("failed")).toBe(true);
@@ -757,10 +746,10 @@ test("a tool call and its result show as one step, matched by call_id however fa
     [
       captured(0, "ToolCall", { call_id: "t8", name: "mcp__slack__post_message", arguments: { channel: "#eng" } }),
       captured(1, "TokenUsage", { info: { input_tokens: 3 } }),
-      captured(2, "UncategorizedToolResult", { call_id: "t8", extra: {}, content: "posted" }, "posted"),
+      captured(2, "UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { call_id: "t8", extra: {}, stdout: ["posted"] }), "posted"),
       captured(3, "ToolCall", { call_id: "t9", name: "Bash", arguments: { command: "ls" } }),
       ...Array.from({ length: 9 }, (_, k) => captured(4 + k, "AssistantMessage", { content: `Still going ${k}.` }, `Still going ${k}.`)),
-      captured(13, "BashResult", { call_id: "t9", extra: {}, command: ["ls"], stdout: "a.py", stderr: "", exit_code: 0 }),
+      captured(13, "BashResult", shellResult({ command: ["ls"], stdout: "a.py", exit: 0 }, { call_id: "t9", extra: {} })),
     ],
     4,
   );
@@ -778,7 +767,7 @@ test("a tool call and its result show as one step, matched by call_id however fa
 });
 test("ANSI colours show as coloured text, not as escape codes (B19)", async () => {
   const line = await renderRecords([
-    captured(0, "BashResult", { call_id: "t9", extra: {}, command: ["pytest"], stdout: "\u001b[32m412 passed\u001b[0m in \u001b[1m9.01s\u001b[0m\n", stderr: "", exit_code: 0 }),
+    captured(0, "BashResult", shellResult({ command: ["pytest"], stdout: "\u001b[32m412 passed\u001b[0m in \u001b[1m9.01s\u001b[0m\n", exit: 0 }, { call_id: "t9", extra: {} })),
   ]);
   const preview = line.querySelector<HTMLElement>(".tr-preview .tool-out")!;
   expect(rowsOf(preview)).toEqual(["412 passed in 9.01s"]);
@@ -789,7 +778,7 @@ test("ANSI colours show as coloured text, not as escape codes (B19)", async () =
   // A colour opened on one line holds on the next.
   cleanup();
   const carried = await renderRecords([
-    captured(0, "BashResult", { call_id: "t9", extra: {}, command: null, stdout: "\u001b[31mfirst\nsecond\u001b[0m\nthird\nfourth", stderr: "", exit_code: 0 }),
+    captured(0, "BashResult", shellResult({ stdout: "\u001b[31mfirst\nsecond\u001b[0m\nthird\nfourth", exit: 0 }, { call_id: "t9", extra: {} })),
   ]);
   const rows = [...carried.querySelectorAll(".tr-preview .ln")];
   expect(rows.map((row) => [row.querySelector("span")?.className ?? "", row.textContent])).toEqual([
@@ -897,7 +886,7 @@ test("a long system or developer prompt starts folded; a short system message sh
 test("a run of tool steps between messages folds into one line that counts them, its failures said and open within", async () => {
   const call = (idx: number, name: string, args: object) => captured(idx, "ToolCall", { call_id: `c${idx}`, name, arguments: args });
   const ran = (idx: number, exit: number, stdout: string) =>
-    captured(idx, "BashResult", { call_id: `c${idx - 1}`, extra: {}, command: null, stdout, stderr: "", exit_code: exit });
+    captured(idx, "BashResult", shellResult({ stdout, exit }, { call_id: `c${idx - 1}`, extra: {} }));
   await renderRecords(
     [
       captured(0, "UserMessage", { content: "Fix it." }, "Fix it."),
@@ -905,7 +894,7 @@ test("a run of tool steps between messages folds into one line that counts them,
       ran(2, 0, "1 passed\n"),
       captured(3, "Thinking", { content: "**Now the module**" }, "Now the module"),
       call(4, "Read", { file_path: "/w/foo.py" }),
-      captured(5, "ReadResult", { call_id: "c4", extra: {}, path: "/w/foo.py", content: "x = 1\n" }),
+      captured(5, "ReadResult", toolResult(tagged("ReadResult", { path: "/w/foo.py" }), { call_id: "c4", extra: {}, stdout: ["x = 1\n"] })),
       call(6, "Bash", { command: "pytest" }),
       ran(7, 1, "1 failed\n"),
       captured(8, "AssistantMessage", { content: "One fails." }, "One fails."),
@@ -927,7 +916,7 @@ test("a run of tool steps between messages folds into one line that counts them,
 test("a search whose result is opaque shows what it searched for and no preview, as a read does", async () => {
   const line = await renderRecords([
     captured(0, "ToolCall", { call_id: "g1", name: "Grep", arguments: { pattern: "time\\.time", path: "loop" } }),
-    captured(1, "UncategorizedToolResult", { call_id: "g1", extra: {}, content: "loop/a.py\nloop/b.py" }, "loop/a.py\nloop/b.py"),
+    captured(1, "UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { call_id: "g1", extra: {}, stdout: ["loop/a.py\nloop/b.py"] }), "loop/a.py\nloop/b.py"),
   ]);
   expect([...line.querySelectorAll("summary :is(.name, .tool-arg, .tr-outcome)")].map((part) => part.textContent)).toEqual([
     "Searched",
@@ -940,7 +929,7 @@ test("a search whose result is opaque shows what it searched for and no preview,
 test("a command's JSON output shows as a JSON view, its values in the code colours", async () => {
   const stdout = '{\n  "status": "active",\n  "owner": null,\n  "seq": 21760\n}\n';
   const line = await renderRecords([
-    captured(0, "BashResult", { call_id: "t1", extra: {}, command: ["trax", "issue", "21760"], stdout, stderr: "", exit_code: 0 }),
+    captured(0, "BashResult", shellResult({ command: ["trax", "issue", "21760"], stdout, exit: 0 }, { call_id: "t1", extra: {} })),
   ]);
   fireEvent.click(line.querySelector("summary")!);
   const json = await waitFor(() => within(line).getByRole("group", { name: "JSON" }));
@@ -984,14 +973,14 @@ const bash = (idx: number, command = "pytest") => captured(idx, "ToolCall", { ca
 
 /** The result of call `c<call>`, as Claude's shell result at `idx`. */
 const ran = (idx: number, call: number, stdout: string, exit = 0, stderr = "") =>
-  captured(idx, "BashResult", { call_id: `c${call}`, extra: {}, command: null, stdout, stderr, exit_code: exit });
+  captured(idx, "BashResult", shellResult({ stdout, stderr, exit }, { call_id: `c${call}`, extra: {} }));
 
 test("a written file shows and copies its text as written, a column of numbers included (TX-01)", async () => {
   const copied = stubClipboard();
   const content = "1\tAlice\n2\tBob\n";
   const line = await renderRecords([
     captured(0, "ToolCall", { call_id: "w1", name: "Write", arguments: { file_path: "/w/people.tsv", content } }),
-    captured(1, "WriteResult", { call_id: "w1", extra: {}, path: "/w/people.tsv", content }),
+    captured(1, "WriteResult", toolResult(tagged("WriteResult", { path: "/w/people.tsv", content }), { call_id: "w1", extra: {}, stdout: ["Wrote /w/people.tsv."] })),
   ]);
   fireEvent.click(line.querySelector("summary")!);
   const code = await opened(line, ".tr-code");
@@ -1010,7 +999,7 @@ test("an opened step shows each whole primary argument, whatever its result says
       captured(2, "ToolCall", { call_id: "p1", name: "apply_patch", arguments: { input: patch } }),
       captured(3, "AssistantMessage", { content: "And:" }, "And:"),
       bash(4, "cat a.py"),
-      captured(5, "ReadResult", { call_id: "c4", extra: {}, path: "a.py", content: "x = 1\n" }),
+      captured(5, "ReadResult", toolResult(tagged("ReadResult", { path: "a.py" }), { call_id: "c4", extra: {}, stdout: ["x = 1\n"] })),
     ],
     0,
   );
@@ -1028,12 +1017,15 @@ test("an opened step shows each whole primary argument, whatever its result says
 test("a failed write keeps the content it tried to write beside the reason it failed (TX-03)", async () => {
   const line = await renderRecords([
     captured(0, "ToolCall", { call_id: "w1", name: "Write", arguments: { file_path: "/w/notes.md", content: "valuable content" } }),
-    captured(1, "WriteResult", {
-      call_id: "w1",
-      path: null,
-      content: null,
-      extra: { $result: { block: { is_error: true }, tool_name: "Write", text: "Permission denied: /w/notes.md" } },
-    }),
+    captured(
+      1,
+      "WriteResult",
+      toolResult(tagged("WriteResult"), {
+        call_id: "w1",
+        stdout: ["Wrote the file."],
+        extra: { $result: { block: { is_error: true }, tool_name: "Write", text: "Permission denied: /w/notes.md" } },
+      }),
+    ),
   ]);
   expect(line.querySelector("details")!.open).toBe(true);
   expect([...line.querySelectorAll("dt")].map((term) => term.textContent)).toEqual(["content"]);
@@ -1047,17 +1039,16 @@ test("a typed result that failed counts as failed, in its step and its group, an
       captured(0, "UserMessage", { content: "Go." }, "Go."),
       bash(1),
       // Sagent's: no exit code, its failure in `is_error`.
-      captured(2, "BashResult", { call_id: "c1", command: ["pytest"], stdout: "boom\n", stderr: "", exit_code: null, extra: { is_error: true } }),
+      captured(2, "BashResult", shellResult({ command: ["pytest"], stdout: "boom\n" }, { call_id: "c1", extra: { is_error: true } })),
       captured(3, "ToolCall", { call_id: "c3", name: "Read", arguments: { file_path: "/w/secret.txt" } }),
-      captured(4, "ReadResult", { call_id: "c3", path: "/w/secret.txt", content: "Denied", extra: { is_error: true } }),
+      captured(4, "ReadResult", toolResult(tagged("ReadResult", { path: "/w/secret.txt" }), { call_id: "c3", stdout: ["Denied"], extra: { is_error: true } })),
       captured(5, "ToolCall", { call_id: "c5", name: "Edit", arguments: { file_path: "/w/a.py", old_string: "x = 1", new_string: "x = 2" } }),
       // Claude's: no edits, and what the model read says why.
-      captured(6, "EditResult", {
-        call_id: "c5",
-        path: null,
-        edits: [],
-        extra: { $result: { block: { is_error: true }, tool_name: "Edit", text: "String to replace not found in file." } },
-      }),
+      captured(
+        6,
+        "EditResult",
+        editResult(null, [], { call_id: "c5", extra: { $result: { block: { is_error: true }, tool_name: "Edit", text: "String to replace not found in file." } } }),
+      ),
       captured(7, "AssistantMessage", { content: "Stuck." }, "Stuck."),
     ],
     0,
@@ -1136,7 +1127,7 @@ test("a colour turned on before the lines output leaves out holds in its tail, a
 
 test("a diff colours its old side and its new side each as a file of its own (TX-10)", async () => {
   const splice = { before: 'old\n"""\n', after: 'new\n"""\n', lead: ' doc = """\n', trail: " end = True\n", start: null, count: null, bare: [] };
-  const line = await renderRecords([captured(0, "EditResult", { call_id: "e1", extra: {}, path: "/w/a.py", edits: [splice] })]);
+  const line = await renderRecords([captured(0, "EditResult", editResult("/w/a.py", [splice], { call_id: "e1", extra: {} }))]);
   fireEvent.click(line.querySelector("summary")!);
   const diff = await opened(line, ".tr-diff");
   await coloured(diff);
@@ -1250,21 +1241,19 @@ test("a draft survives a live refetch, and the composer goes once the session en
 });
 
 test("stored rows render: a shell command, a web search and attachments", async () => {
-  const result = (url: string, title: string) => ({ "py/object": "WebSearchHit", url, title, snippet: "Snip." });
+  const result = (url: string, title: string) => ({ url, title, snippet: "Snip." });
   const png = { "py/object": "Attachment", mime_descriptor: "image/png", data: { "py/b64": "A".repeat(2868) } };
   const shell = await renderRecords([
-    captured(0, "BashResult", { call_id: "t1", extra: {}, command: ["bash", "-lc", "ls -la"], stdout: "a.py\n", stderr: "", exit_code: 0 }),
+    captured(0, "BashResult", shellResult({ command: ["bash", "-lc", "ls -la"], stdout: "a.py\n", exit: 0 }, { call_id: "t1", extra: {} })),
   ]);
   expect(shell.querySelector(".tool-arg")!.textContent).toBe("ls -la");
   cleanup();
   const search = await renderRecords([
-    captured(0, "WebSearchResult", {
-      call_id: "t5",
-      extra: {},
-      query: "monotonic",
-      duration_sec: 1.2,
-      content: [result("https://docs.python.org/3/", "Docs"), result("javascript:alert(1)", "Not a page")],
-    }),
+    captured(
+      0,
+      "WebSearchResult",
+      searchResult({ query: "monotonic", duration_sec: 1.2 }, [result("https://docs.python.org/3/", "Docs"), result("javascript:alert(1)", "Not a page")], { call_id: "t5", extra: {} }),
+    ),
   ]);
   expect(search.querySelector(".tr-outcome")!.textContent).toBe("2 results");
   cleanup();
@@ -1276,7 +1265,7 @@ test("stored rows render: a shell command, a web search and attachments", async 
 /** A worktree-diff part's listing entry, lifted out of the transcript. */
 const diffPart = (records: number): SessionPart => ({ part: 9, name: "worktree-diff", format: "", records, metadata: {}, ir_id: null });
 
-/** One changed file in the diff: a EditResult with a one-line hunk. */
+/** One changed file in the diff: an edit's result with a one-line hunk. */
 function edit(idx: number): SessionRecord {
   return {
     idx,
@@ -1284,7 +1273,7 @@ function edit(idx: number): SessionRecord {
     context_id: null,
     timestamp: null,
     model: null,
-    payload: { call_id: "", path: `f${idx}.py`, edits: [{ lead: "@@ -1 +1 @@\n", before: "o\n", after: "n\n", trail: null, start: 1, count: 1 }] },
+    payload: editResult(`f${idx}.py`, [{ lead: "@@ -1 +1 @@\n", before: "o\n", after: "n\n", trail: null, start: 1, count: 1 }]),
     text: `f${idx}.py`,
     ciphertext: null,
   };
@@ -1322,7 +1311,7 @@ test("a record with no hunk shows as a note, and the aggregate count names no fi
     context_id: null,
     timestamp: null,
     model: null,
-    payload: { call_id: "", path, edits: [{ lead: `(${message})\n`, before: null, after: null, trail: null, start: null, count: null }] },
+    payload: editResult(path, [{ lead: `(${message})\n`, before: null, after: null, trail: null, start: null, count: null }]),
     text: path,
     ciphertext: null,
   });

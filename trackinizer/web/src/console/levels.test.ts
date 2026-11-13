@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import type { FeedEvent } from "../api/sessions";
+import { editResult, shellResult, tagged, toolResult } from "../detail/transcript/testing";
 import { levelCounts, levelKinds, levelOf } from "./levels";
 
 /** A feed record of `kind` with `message` as its payload. */
@@ -49,7 +50,16 @@ test("what a harness writes on the user's turn is not Messages: codex's context,
 
 test("+ Calls adds tool calls, + Output their results and thinking, and All the bookkeeping", () => {
   expect(levelOf(record("ToolCall", { call_id: "c1", name: "Bash", arguments: { command: "ls" } }))).toBe(2);
-  for (const kind of ["BashResult", "EditResult", "UncategorizedToolResult", "Thinking", "ContextClear", "Stdout"]) {
+  // A tool call's record has the kind its row is stored under: a shell's, an edit's, a tool's with no result class of its own.
+  const results: [string, { [field: string]: unknown }][] = [
+    ["BashResult", shellResult({ stdout: "x" })],
+    ["EditResult", editResult("a.py", [])],
+    ["UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: ["x"] })],
+  ];
+  for (const [kind, payload] of results) {
+    expect([kind, levelOf(record(kind, payload))]).toEqual([kind, 3]);
+  }
+  for (const kind of ["Thinking", "ContextClear", "Stdout"]) {
     expect([kind, levelOf(record(kind, { content: "x" }))]).toEqual([kind, 3]);
   }
   for (const kind of ["TokenUsage", "TurnContext", "SystemMessage", "UncategorizedRecord"]) {

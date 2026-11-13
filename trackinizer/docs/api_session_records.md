@@ -82,7 +82,7 @@ column       type         notes
 session_id   UUID         NOT NULL; FK -> inquiries(id) ON DELETE CASCADE
 part         INTEGER      NOT NULL DEFAULT 0; which SOURCE FILE (§3.5)
 idx          INTEGER      NOT NULL; CHECK >= 0; DERIVED position (§3.6)
-kind         TEXT         NOT NULL; the record class's name
+kind         TEXT         NOT NULL; the record class's name (a tool call: below)
 context_id   INTEGER      nullable; idx of the applying TurnContext, same part
 timestamp    TIMESTAMPTZ  nullable; when the act happened (CLI clock)
 created      TIMESTAMPTZ  NOT NULL DEFAULT clock_timestamp(); DB write time
@@ -101,6 +101,35 @@ session file differs from the one the CLI wrote. That breaks byte-exact
 round-trip, which resume depends on. Nothing queries inside the column (it is
 written whole and read whole), so jsonb's indexing buys nothing to pay for it.
 `session_manifests.metadata` is `JSON` for the same reason.
+
+`kind` is the record's class name, except for the record of a tool call. That
+record is always a `ToolResult`:
+
+- `state`: `pending`, `done`, `failed` or `cancelled`.
+- `stdout`, `stderr`: the items the tool wrote, text and typed items.
+- `result`: the tool's result, such as `BashResult(command, exit_code)` or
+  `ReadResult(path, status, exit_code)`. A tool with no result class of its own
+  returns `UncategorizedToolResult(exit_code)`.
+
+Each tool once had a record class of its own, and SQL policy is keyed on those
+class names: which bodies offload, what search indexes, the filter fields of
+§8. SQL cannot read a payload once its body is offloaded. So a tool-call row is
+stored under its tool's legacy class name
+(`types/session_records.py::record_kind`):
+
+```
+result has a class of its own        that class's name: BashResult, ReadResult, ...
+no result, or an UncategorizedToolResult:
+  state = done                       UncategorizedToolResult
+  state = failed                     ToolErrorResult
+  state = pending | cancelled        ToolResult
+```
+
+A legacy row, stored before `ToolResult` replaced those classes, still holds
+the old class's payload. A read returns each row under its stored kind and
+converts only a legacy payload, to the `ToolResult` payload ingest writes today
+(`served_payload`). The records route (§5.5) and the console feed both convert
+on the way out, so a client reads one payload shape. Neither rewrites a row.
 
 `context_id` uses `<=`, not `<`: a claude `TurnContext` is appended at its own
 index and names ITSELF, where a codex stream has none until its first
@@ -267,7 +296,11 @@ ciphertext  str?       Thinking.encrypted verbatim, base64 ASCII
 
 `RecordBody.of(row)` / `.row(session_id, part)` convert to and from
 `SessionRecordRow`. `kind` is open TEXT, not a closed Literal: the IR has 21
-concrete members and gains more.
+concrete members and gains more. A tool-call record has the kind its row is
+stored under (§3.1), on write and on read. The read route keeps that kind and
+returns the payload `served_payload` converts: a `ToolResult` payload, even for
+a legacy row. An offloaded row's stub (`{"$body": "offloaded"}`) is returned
+unchanged, so its `kind` is the only field that names the tool.
 
 Two fields the client never decides. `part` is absent entirely -- it is
 resolved server-side from the file's basename, so a restarted or resumed
@@ -423,6 +456,9 @@ part grew.
 `plaintext_only` is what a VIEWER wants -- only a replay needs the encrypted
 half, and it is the largest thing on the row.
 
+A tool-call record is returned under its row's stored kind, with a `ToolResult`
+payload even when the row is a legacy one (§3.1, §4.1).
+
 ### 5.6 Divergence from api.md
 
 ```
@@ -484,10 +520,11 @@ trax agentsession bash_result has "pg_advisory_lock"
 
 Each lowers to a correlated `EXISTS` over `session_records` with the kind
 BAKED INTO the template, never passed as an operand. Which kinds qualify is
-DERIVED, not listed: a class is a filter field iff its `search_text`
+DERIVED, not listed: a kind is a filter field iff its `search_text`
 projection can be non-empty (`wire/session_record_fields.py`), so a filter on
 `TurnContext` -- which indexes nothing -- does not exist rather than silently
-never matching.
+never matching. A field names a STORED kind (§3.1), so `bash_result` matches
+shell calls in legacy rows and current ones alike.
 
 ## 9. Capture and resume (the agent runner)
 
