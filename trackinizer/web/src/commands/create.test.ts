@@ -15,6 +15,8 @@ test("each kind gets a New command in the palette's Create section, and C opens 
       keys: ["c"],
     },
   ]);
-  commands.forEach((command) => command.run());
+  commands.forEach((command) => {
+    command.run();
+  });
   expect(opened).toEqual(["Issue", "CodeChange"]);
 });

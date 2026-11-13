@@ -425,8 +425,10 @@ export function inFlight(sent: readonly Sent[]): Map<string, number> {
     // Ends before starts at one instant: a request that ends as the next starts is not two in flight.
     edges.sort((a, b) => a.at - b.at || a.step - b.step);
     let now = 0;
-    for (const { step } of edges)
-      most.set(key, Math.max(most.get(key) ?? 0, (now += step)));
+    for (const { step } of edges) {
+      now += step;
+      most.set(key, Math.max(most.get(key) ?? 0, now));
+    }
   }
   return most;
 }

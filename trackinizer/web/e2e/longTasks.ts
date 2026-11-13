@@ -18,7 +18,12 @@ export async function watchLongTasks(page: Page): Promise<void> {
     observer.observe({ type: "longtask", buffered: true });
     // An entry reaches the callback a task after it is recorded; `takeRecords`
     // hands over what is still queued, so a read never misses the latest.
-    Object.assign(window, { longTasks: () => (keep(observer.takeRecords()), tasks) });
+    Object.assign(window, {
+      longTasks: () => {
+        keep(observer.takeRecords());
+        return tasks;
+      },
+    });
   });
 }
 

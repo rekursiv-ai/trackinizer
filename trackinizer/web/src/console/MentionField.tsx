@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffectEvent, useLayoutEffect, useRef } from "react";
 import type { FeedEvent } from "../api/sessions";
 import { useCompletion } from "../composer/CompletionField";
 import type { FieldProps } from "../composer/Composer";
@@ -30,9 +30,8 @@ export function MentionField({
   const holder = useRef<HTMLDivElement>(null);
   const { target: mention, render } = useCompletion({ field, edit, find: mentionAt });
   const placeCaret = useCaretPlacement();
-  useLayoutEffect(() => {
-    if (!adding) return;
-    const { actor, rooms = [] } = adding.line;
+  const add = useEffectEvent((line: FeedEvent) => {
+    const { actor, rooms = [] } = line;
     const room =
       rooms.length > 1
         ? (rooms.find((one) => context.rooms.includes(one)) ?? rooms[0])
@@ -42,7 +41,10 @@ export function MentionField({
     const box = holder.current?.querySelector("textarea") ?? null;
     placeCaret(box, text.length);
     box?.focus();
-    // A new click adds the agent, not a new draft: on every keystroke it would take the caret to the end.
+  });
+  // A new click adds the agent, not a new draft: on every keystroke it would take the caret to the end.
+  useLayoutEffect(() => {
+    if (adding) add(adding.line);
   }, [adding]);
   const names = mention ? suggest(context, mention) : [];
   const options = names.map((name) => ({

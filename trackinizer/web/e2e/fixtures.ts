@@ -6,6 +6,7 @@ import {
   test as base,
   expect,
 } from "@playwright/test";
+import { PAGE_MUST } from "./pageMust";
 
 export { expect };
 
@@ -55,9 +56,18 @@ export async function openProperties(page: Page): Promise<void> {
  * page it opens counts too; a context the test makes itself does not.
  */
 export const test = base.extend<{
+  pageMust: undefined;
   allowErrors: (pattern: RegExp) => void;
   preferencesReset: undefined;
 }>({
+  // Code `page.evaluate` runs checks a missing value with `pageMust`.
+  pageMust: [
+    async ({ context }, use) => {
+      await context.addInitScript(PAGE_MUST);
+      await use(undefined);
+    },
+    { auto: true },
+  ],
   // The suite's one user's preferences live on the server and outlast a test, so
   // each test starts on the defaults; a spec sets what it needs with `setPreferences`.
   preferencesReset: [

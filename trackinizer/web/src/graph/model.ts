@@ -35,6 +35,14 @@ export type DrawNode = {
   vy?: number;
 };
 
+/** A node the layout has put somewhere: finite coordinates on both axes. */
+export type PlacedNode = DrawNode & { x: number; y: number };
+
+/** Whether `node` has finite coordinates; the layout gives a new node none until it places it. */
+export function isPlaced(node: DrawNode): node is PlacedNode {
+  return Number.isFinite(node.x) && Number.isFinite(node.y);
+}
+
 /** One edge as the canvas draws it, child to parent; the arrow points at the parent. */
 export type DrawLink = {
   readonly from: string;
@@ -256,17 +264,14 @@ function place(
   const fresh = new Set(added);
   const placed = new Map(
     nodes
-      .filter(
-        (drawn) =>
-          !fresh.has(drawn) && Number.isFinite(drawn.x) && Number.isFinite(drawn.y),
-      )
+      .filter((drawn): drawn is PlacedNode => !fresh.has(drawn) && isPlaced(drawn))
       .map((drawn) => [drawn.id, drawn]),
   );
   if (placed.size === 0) return;
   const middle = { x: 0, y: 0 };
   for (const drawn of placed.values()) {
-    middle.x += must(drawn.x) / placed.size;
-    middle.y += must(drawn.y) / placed.size;
+    middle.x += drawn.x / placed.size;
+    middle.y += drawn.y / placed.size;
     drawn.vx = (drawn.vx ?? 0) * SLOW_DOWN;
     drawn.vy = (drawn.vy ?? 0) * SLOW_DOWN;
   }
@@ -278,8 +283,8 @@ function place(
     const distance = 36 + 12 * Math.sqrt(drawn.degree);
     const angle = (placed.size + index) * GOLDEN_ANGLE;
     Object.assign(drawn, {
-      x: must(anchor.x) + distance * Math.cos(angle),
-      y: must(anchor.y) + distance * Math.sin(angle),
+      x: anchor.x + distance * Math.cos(angle),
+      y: anchor.y + distance * Math.sin(angle),
       vx: 0,
       vy: 0,
     });

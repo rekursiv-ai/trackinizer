@@ -23,6 +23,7 @@ import {
 } from "./harness";
 import { abortStream, STREAM_ROUTES, STREAM_URL, streamOpened } from "../fixtures";
 import { must } from "../../src/must";
+import { PAGE_MUST } from "../pageMust";
 
 // The live and responsiveness suite (the plan's testing layer 7): a writer
 // drives the suite's own server through the Python client while the page
@@ -59,6 +60,7 @@ test.afterAll(async () => {
 
 test.beforeEach(async ({ page }) => {
   await page.addInitScript(installProbes);
+  await page.addInitScript(PAGE_MUST);
 });
 
 test("the probes catch a long task, a shift, a slow key, an open request and a pointer on no row the moment they happen, so their silence elsewhere means none", async ({
@@ -88,11 +90,9 @@ test("the probes catch a long task, a shift, a slow key, an open request and a p
         setTimeout(() => {
           const end = performance.now() + 80;
           while (performance.now() < end);
-          document
-            .querySelector(".view .scroll")!
-            .before(
-              Object.assign(document.createElement("div"), { style: "height: 40px" }),
-            );
+          pageMust(document.querySelector(".view .scroll")).before(
+            Object.assign(document.createElement("div"), { style: "height: 40px" }),
+          );
           requestAnimationFrame(() => setTimeout(done, 0));
         }, 0),
       ),
@@ -287,9 +287,9 @@ test("a row that stops matching dims within 2 s and stays where it was", async (
         page,
         ([id]) =>
           (document.querySelector(".view .scroll style")?.textContent ?? "").includes(
-            must(id),
+            pageMust(id),
           ) &&
-          getComputedStyle(must(document.querySelector(`a.row[data-row="${id}"]`)))
+          getComputedStyle(pageMust(document.querySelector(`a.row[data-row="${id}"]`)))
             .opacity === "0.45" &&
           Date.now(),
         [id],
@@ -339,7 +339,7 @@ test("a relation added or removed by the other client shows in an open detail wi
         ),
       )
       .some((peer) =>
-        must(must(peer.querySelector(".rail-title")).textContent).startsWith(
+        pageMust(pageMust(peer.querySelector(".rail-title")).textContent).startsWith(
           `${title} `,
         ),
       ) ===
@@ -415,7 +415,9 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
   await sleep(500);
   const underPointer = () =>
     page.evaluate(([x, y]) => {
-      const line = document.elementFromPoint(x!, y!)?.closest(".feed-row");
+      const line = document
+        .elementFromPoint(pageMust(x), pageMust(y))
+        ?.closest(".feed-row");
       return line
         ? `${Math.round(line.getBoundingClientRect().top)} ${line.querySelector("time")?.getAttribute("datetime")}`
         : null;
@@ -845,6 +847,7 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
     // slowdown holds from its first navigation (not across a later one).
     const visit = async (path: string) => {
       const context = await browser.newContext();
+      await context.addInitScript(PAGE_MUST);
       await context.addInitScript(installProbes);
       const page = await context.newPage();
       await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", {
@@ -894,11 +897,13 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
     await expect(children.locator(".rail-peer")).toHaveCount(10);
     await expect(children.getByRole("button", { name: /^Show all/ })).toBeVisible();
     const hubTasks = await detail.page.evaluate(() => {
-      const response = performance
-        .getEntriesByType("resource")
-        .find((entry): entry is PerformanceResourceTiming =>
-          entry.name.includes("/api/web/get/"),
-        )!;
+      const response = pageMust(
+        performance
+          .getEntriesByType("resource")
+          .find((entry): entry is PerformanceResourceTiming =>
+            entry.name.includes("/api/web/get/"),
+          ),
+      );
       return (window as unknown as { __probe: { read: () => Probed } }).__probe
         .read()
         .longTasks.filter((task) => task.start + task.ms > response.responseEnd);
@@ -1023,14 +1028,16 @@ async function holdThings(
 /** Ids of the rows wholly inside the list's scroller. */
 function rowsOnScreen(page: Page): Promise<string[]> {
   return page.evaluate(() => {
-    const box = document.querySelector(".view .scroll")!.getBoundingClientRect();
+    const box = pageMust(
+      document.querySelector(".view .scroll"),
+    ).getBoundingClientRect();
     return [...document.querySelectorAll<HTMLElement>("a.row")]
       .filter(
         (row) =>
           row.getBoundingClientRect().top >= box.top &&
           row.getBoundingClientRect().bottom <= box.bottom,
       )
-      .map((row) => row.dataset.row!);
+      .map((row) => pageMust(row.dataset.row));
   });
 }
 

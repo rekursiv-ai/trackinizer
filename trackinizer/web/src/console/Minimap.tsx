@@ -30,7 +30,6 @@ import {
   zoomTo,
 } from "./timeline";
 import "./Minimap.css";
-import { must } from "../must";
 
 export type MinimapProps = {
   /** The feed's filters: the band counts the records they pass. */
@@ -104,7 +103,8 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
   useEffect(() => {
     // Not React's onWheel, which listens passively: a horizontal swipe the
     // band does not cancel would take the browser back a page.
-    const element = must(root.current);
+    const element = root.current;
+    if (!element) return;
     const listener = (event: WheelEvent) => scroll(event);
     element.addEventListener("wheel", listener, { passive: false });
     return () => element.removeEventListener("wheel", listener);
@@ -353,10 +353,12 @@ function useClock(): number {
 function useWidth(element: RefObject<HTMLElement | null>): number {
   const [width, setWidth] = useState(0);
   useEffect(() => {
-    const observer = new ResizeObserver(([entry]) =>
-      setWidth(must(entry).contentRect.width),
-    );
-    observer.observe(must(element.current));
+    const observed = element.current;
+    if (!observed) return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setWidth(entry.contentRect.width);
+    });
+    observer.observe(observed);
     return () => observer.disconnect();
   }, [element]);
   return width;

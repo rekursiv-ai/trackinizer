@@ -21,13 +21,17 @@ export function withToggles(
   toggles: readonly Toggle[],
   byline = false,
 ): readonly string[] {
-  return toggles.reduce((shown, { op, value }) => {
-    if (op === "add")
-      return byline || !shown.includes(value) ? [...shown, value] : shown;
-    return byline
-      ? shown.toSpliced(shown.indexOf(value), shown.includes(value) ? 1 : 0)
-      : shown.filter((item) => item !== value);
-  }, list);
+  const shown = [...list];
+  for (const { op, value } of toggles) {
+    const at = shown.indexOf(value);
+    if (op === "add") {
+      if (byline || at < 0) shown.push(value);
+    } else if (at >= 0) {
+      if (byline) shown.splice(at, 1);
+      else shown.splice(0, shown.length, ...shown.filter((item) => item !== value));
+    }
+  }
+  return shown;
 }
 
 /**

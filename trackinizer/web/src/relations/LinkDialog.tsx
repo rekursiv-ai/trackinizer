@@ -270,9 +270,13 @@ function Targets({
   cached
     .filter((found) => !listed.has(found.id) && matches(found))
     .slice(0, q ? 8 : 30)
-    .forEach((found) => list("Inquiries", found));
+    .forEach((found) => {
+      list("Inquiries", found);
+    });
   for (const search of searches)
-    search.hits?.forEach((found) => list(SERVER_SECTION, found));
+    search.hits?.forEach((found) => {
+      list(SERVER_SECTION, found);
+    });
   const unlisted = [...picks.values()]
     .filter((target) => !listed.has(target.id))
     .map((target) => targetRow("Picked", target));
@@ -499,6 +503,7 @@ function ComboList({
       <div className="pal-input">
         <Icon name={icon} size={18} />
         <input
+          // biome-ignore lint/a11y/noAutofocus: the picker's input, which the press that opened it hands focus to
           autoFocus
           role="combobox"
           aria-label={label}
@@ -526,6 +531,7 @@ function ComboList({
       >
         {sections.map(({ section, rows: shown }, n) => (
           <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: runs of one ordered list, recomputed in that order
             key={`${n}-${section}`}
             role="group"
             aria-labelledby={`${id}-section-${n}`}
@@ -534,6 +540,8 @@ function ComboList({
               {section}
             </div>
             {shown.map(({ row, index }) => (
+              // biome-ignore lint/a11y/useFocusableInteractive: a picker's option: the input keeps focus and points at it with aria-activedescendant
+              // biome-ignore lint/a11y/useKeyWithClickEvents: the picker's input takes the keys; a click picks with the pointer
               <div
                 key={row.key}
                 id={`${id}-${index}`}

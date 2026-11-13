@@ -69,6 +69,7 @@ function ViewRow({
           aria-label="View name"
           defaultValue={view.name}
           // The rename starts from the row's own Rename button, so the box takes the focus it left.
+          // biome-ignore lint/a11y/noAutofocus: the rename box the row's Rename button opened
           autoFocus
           onBlur={(event) => rename(event.currentTarget.value)}
           onKeyDown={(event) => {

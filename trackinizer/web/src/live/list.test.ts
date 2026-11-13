@@ -28,7 +28,9 @@ afterEach(() => {
 
 /** A list over `REQUEST` holding `pages` of rows (pages of `pageSize`), with `shown` on screen. */
 function list(pages: InquiryRow[][], { shown = [] as number[], pageSize = 50 } = {}) {
-  pages.forEach((rows, page) => mount(client, pageKey(pageSize, page), rows));
+  pages.forEach((rows, page) => {
+    mount(client, pageKey(pageSize, page), rows);
+  });
   const live = new ListLive(client, REQUEST, pageSize, () => clock);
   const onScreen = new Set(shown.map(uuid));
   live.watch({ onScreen: (ids) => new Set([...ids].filter((id) => onScreen.has(id))) });

@@ -51,6 +51,7 @@ export function SearchView({ q }: { q: string }) {
             placeholder='Terms, "a phrase", title:re or description:re'
             defaultValue={q}
             autoComplete="off"
+            // biome-ignore lint/a11y/noAutofocus: the Search view's one control, focused when it opens with no query
             autoFocus={!q}
           />
         </form>

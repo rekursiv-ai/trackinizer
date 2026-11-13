@@ -61,7 +61,6 @@ import {
   SearchResults,
   searchNodes,
 } from "./search";
-import { must } from "../must";
 
 /** The graph route, as the hash holds it. */
 type Place = Extract<Route, { name: "graph" }>;
@@ -221,7 +220,8 @@ export function GraphView({
     go({ focus: { ref: { kind: row.kind, seq: row.seq }, hops: focus?.hops ?? 1 } });
   const onDoubleClick = useEffectEvent((node: DrawNode) => focusOn(node));
   useEffect(() => {
-    const canvas = must(host.current);
+    const canvas = host.current;
+    if (!canvas) return;
     const made = createRenderer(
       canvas,
       {
@@ -658,7 +658,7 @@ function useShown(view: ViewState) {
 function coveredOf(host: HTMLElement): Covered {
   const canvas = host.getBoundingClientRect();
   const box = (selector: string) =>
-    must(host.parentElement).querySelector(selector)?.getBoundingClientRect();
+    host.parentElement?.querySelector(selector)?.getBoundingClientRect();
   return {
     right: Math.max(
       0,

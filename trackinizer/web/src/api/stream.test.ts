@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeEventSource } from "../live/testing";
 import { PAGE_USER_PARAM } from "./signedIn";
 import { openStream, type StreamListener } from "./stream";
+import { must } from "../must";
 
 beforeEach(() => {
   FakeEventSource.reset();
@@ -185,9 +186,13 @@ test("a stream opened before the profile was read reconnects naming the page's u
   // This stream's own sources: the earlier tests' streams, left open, are not this test's.
   const made: FakeEventSource[] = [];
   stream.openStream(listener, {
-    connect: (url) => made[made.push(new FakeEventSource(url)) - 1]!,
+    connect: (url) => {
+      const source = new FakeEventSource(url);
+      made.push(source);
+      return source;
+    },
   });
-  const early = made[0]!;
+  const early = must(made[0]);
   early.open();
   expect(new URL(early.url).searchParams.has(PAGE_USER_PARAM)).toBe(false);
   // Read as Ada, the open stream is left as it is: the server took it as hers as it connected.
@@ -197,16 +202,17 @@ test("a stream opened before the profile was read reconnects naming the page's u
   early.drop();
   expect(early.readyState).toBe(2);
   expect(made).toHaveLength(2);
-  const url = new URL(made[1]!.url);
+  const again = must(made[1]);
+  const url = new URL(again.url);
   expect(url.pathname).toBe("/api/web/subscribe");
   expect(url.searchParams.get(PAGE_USER_PARAM)).toBe(
     "00000000-0000-4000-8000-000000000001",
   );
   expect(url.search).not.toContain("ada");
-  made[1]!.open();
+  again.open();
   expect(heard).toEqual(["open", "drop", "open"]);
   // A drop of a source that already names her is left to the browser.
-  made[1]!.drop();
+  again.drop();
   expect(made).toHaveLength(2);
-  expect(made[1]!.readyState).toBe(0);
+  expect(again.readyState).toBe(0);
 });

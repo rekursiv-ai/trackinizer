@@ -123,6 +123,7 @@ function PhraseText({ phrase }: { phrase: Phrase }) {
     typeof part === "string" ? (
       part
     ) : (
+      // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
       <MentionLink key={`${index}:${part.id}`} mention={part} />
     ),
   );

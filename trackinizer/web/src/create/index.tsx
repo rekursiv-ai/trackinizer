@@ -333,6 +333,7 @@ function FormField({
     ) => onText(event.target.value),
   };
   return (
+    // biome-ignore lint/a11y/noLabelWithoutControl: each branch of its body is a select, a textarea or an input
     <label className={wide ? "wide" : undefined}>
       {field.look.label}
       {values ? (

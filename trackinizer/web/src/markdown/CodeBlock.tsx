@@ -33,6 +33,7 @@ export function CodeBlock({ node, children }: ComponentProps<"pre"> & ExtraProps
       {json ? (
         <JsonView root={json} kinds={kinds} />
       ) : (
+        // biome-ignore lint/a11y/noNoninteractiveTabindex: scrolling code, which the keyboard scrolls once it has focus
         <pre tabIndex={0} role="group" aria-label="Code">
           {children}
         </pre>

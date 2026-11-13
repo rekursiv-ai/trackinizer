@@ -144,10 +144,12 @@ function Split({
           {shown.map((row, index) =>
             row.kind === "hunk" ? (
               // Rows repeat, so only their place names them.
+              // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
               <tr key={index} className="sd-hunk">
                 <td colSpan={4}>{row.text}</td>
               </tr>
             ) : (
+              // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
               <tr key={index}>
                 <Cell
                   side={row.left}
@@ -204,6 +206,7 @@ function Tokens({ nodes }: { readonly nodes: readonly ElementContent[] }): React
       node.value
     ) : node.type === "element" ? (
       <span
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
         key={k}
         className={
           Array.isArray(node.properties.className)

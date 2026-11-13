@@ -101,11 +101,13 @@ test("a 50-row list is usable within the first-load target, and renders with no 
     await page.goto(`/trax/?load=${attempt}#/list/Issue`);
     await expect(rows(page)).toHaveCount(50);
     const timing = await page.evaluate(() => {
-      const list = performance
-        .getEntriesByType("resource")
-        .find((entry): entry is PerformanceResourceTiming =>
-          entry.name.includes("/api/inquiries?"),
-        )!;
+      const list = pageMust(
+        performance
+          .getEntriesByType("resource")
+          .find((entry): entry is PerformanceResourceTiming =>
+            entry.name.includes("/api/inquiries?"),
+          ),
+      );
       return {
         usableMs: performance.now(),
         listMs: list.duration,
@@ -261,7 +263,7 @@ test("PAGE-02: Load more continues after the last row loaded, so a row closing a
   expect(created.ok(), await created.text()).toBe(true);
   // One batch, created a few microseconds apart, newest last.
   await page.addInitScript(
-    ([state]) => sessionStorage.setItem("trackinizer.v2.list.Issue", state!),
+    ([state]) => sessionStorage.setItem("trackinizer.v2.list.Issue", pageMust(state)),
     [BROWSE_STATE.replace("c2-browse", label)],
   );
   await page.goto("/trax/list/Issue");

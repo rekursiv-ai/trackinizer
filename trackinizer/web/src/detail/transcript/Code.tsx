@@ -148,6 +148,7 @@ export function Diff({
               ? sides?.del?.[old++]
               : sides?.add?.[next++];
         return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
           <span key={k} className={`ln d-${line.kind}`} data-n={line.line ?? undefined}>
             {tokens ? (
               <>
@@ -182,6 +183,7 @@ export function AnsiLines({ text }: { text: string }) {
     });
   }
   return lines.map((runs, k) => (
+    // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
     <span key={k} className="ln">
       <Ansi runs={runs} />
     </span>
@@ -192,6 +194,7 @@ export function AnsiLines({ text }: { text: string }) {
 export function Ansi({ runs }: { runs: readonly AnsiRun[] }) {
   return runs.map((run, k) =>
     run.style ? (
+      // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
       <span key={k} className={run.style}>
         {run.text}
       </span>
@@ -208,6 +211,7 @@ function Tokens({ nodes }: { nodes: readonly ElementContent[] }): ReactNode {
       node.value
     ) : node.type === "element" ? (
       <span
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
         key={k}
         className={
           Array.isArray(node.properties.className)

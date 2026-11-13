@@ -9,6 +9,7 @@ import { must } from "../src/must";
 // other specs created, so pages are opened by id or by a seq read back.
 let ids: string[] = [];
 
+// biome-ignore lint/correctness/noEmptyPattern: Playwright reads fixtures from a destructuring pattern, and this hook takes none
 test.beforeAll(({}, info) => {
   ids = readHubs(info).detail;
 });
@@ -288,7 +289,7 @@ test("an HTML Artifact opens filling its record's pane, and the record follows b
   await expect(frame).toBeVisible();
   await expect(heading(page)).toHaveText("An HTML report (revision 1)");
   const sizes = await frame.evaluate((element) => {
-    const pane = element.closest(".d-scroll")!.getBoundingClientRect();
+    const pane = pageMust(element.closest(".d-scroll")).getBoundingClientRect();
     const box = element.getBoundingClientRect();
     return {
       pane: [pane.left, pane.top, pane.width, pane.height],
@@ -296,9 +297,9 @@ test("an HTML Artifact opens filling its record's pane, and the record follows b
     };
   });
   // The frame is the pane, edge to edge; the record's title waits below it.
-  sizes.frame.forEach((value, at) =>
-    expect(value).toBeCloseTo(must(sizes.pane[at]), 0),
-  );
+  sizes.frame.forEach((value, at) => {
+    expect(value).toBeCloseTo(must(sizes.pane[at]), 0);
+  });
   const title = must(await heading(page).boundingBox());
   expect(title.y).toBeGreaterThanOrEqual(must(sizes.frame[1]) + must(sizes.frame[3]));
   await expect(page.getByRole("link", { name: "Open full page" })).toHaveCount(0);

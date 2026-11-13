@@ -136,7 +136,7 @@ test("on a phone the sections follow the title and text, and nothing scrolls sid
   expect(tops).toEqual([...tops].sort((a, b) => a - b));
   expect(
     await page.evaluate(() =>
-      [document.documentElement, document.querySelector(".d-scroll")!].map(
+      [document.documentElement, pageMust(document.querySelector(".d-scroll"))].map(
         (box) => box.scrollWidth - box.clientWidth,
       ),
     ),

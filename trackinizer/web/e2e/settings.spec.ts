@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import { expect, failedResource, setPreferences, test } from "./fixtures";
 import { must } from "../src/must";
+import { PAGE_MUST } from "./pageMust";
 
 // Your settings against the e2e server, where --no-auth makes every request the
 // synthetic admin no-auth@localhost. Tokens and aliases made here are this
@@ -141,6 +142,7 @@ test("the user's own data follows them to a fresh browser: names, stars, saved v
   expect((await kept).ok()).toBe(true);
 
   const fresh = await browser.newContext();
+  await fresh.addInitScript(PAGE_MUST);
   const other = await fresh.newPage();
   const preferences = (
     (await (await fresh.request.get("/api/me/profile")).json()) as {
@@ -176,6 +178,7 @@ test("a theme chosen in Settings follows the user to a fresh browser, which keep
   await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light" });
 
   const fresh = await browser.newContext();
+  await fresh.addInitScript(PAGE_MUST);
   const other = await fresh.newPage();
   await other.goto("/trax/graph");
   await expect(other.locator("html")).toHaveAttribute("data-theme", "light");
@@ -266,7 +269,9 @@ test("a browser's old stars, names and drafts are sent once, merged into the use
   expect(
     await page.evaluate(() =>
       JSON.parse(
-        localStorage.getItem(`trackinizer.v2.${location.origin}.no-auth@localhost`)!,
+        pageMust(
+          localStorage.getItem(`trackinizer.v2.${location.origin}.no-auth@localhost`),
+        ),
       ),
     ),
   ).toMatchObject({

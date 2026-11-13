@@ -91,7 +91,7 @@ export function groupRows(
   if (grouping === "none") return [{ value: null, rows }];
   const byValue = new Map<string | null, InquiryRow[]>();
   for (const row of rows) {
-    const value = valueOf(row, grouping) || null;
+    const value = groupValue(row, grouping) || null;
     byValue.set(value, [...(byValue.get(value) ?? []), row]);
   }
   const known = knownOrder(grouping, meta);
@@ -103,7 +103,7 @@ export function groupRows(
     .map((value) => ({ value, rows: must(byValue.get(value)) }));
 }
 
-function valueOf(
+function groupValue(
   row: InquiryRow,
   grouping: Exclude<Grouping, "none">,
 ): string | null | undefined {

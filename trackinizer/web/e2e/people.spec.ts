@@ -1,6 +1,7 @@
 import type { APIRequestContext, Locator, Page, Request } from "@playwright/test";
 import { expect, openProperties, test } from "./fixtures";
 import { must } from "../src/must";
+import { PAGE_MUST } from "./pageMust";
 
 // People and agents in owner and subscriber pickers against the e2e server,
 // where --no-auth makes every request the admin no-auth@localhost. Each test
@@ -273,6 +274,7 @@ test("people added by hand follow the user to a fresh browser", async ({
   });
 
   const fresh = await browser.newContext();
+  await fresh.addInitScript(PAGE_MUST);
   const other = await fresh.newPage();
   await openDetail(other, id);
   await propButton(other, "owner").click();

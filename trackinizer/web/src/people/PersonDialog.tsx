@@ -138,6 +138,7 @@ export function PersonDialog({
                     Handle
                     <input
                       className="field"
+                      // biome-ignore lint/a11y/noAutofocus: the first field of the dialog the press opened
                       autoFocus
                       autoComplete="off"
                       placeholder="craftax-arm"
@@ -152,6 +153,7 @@ export function PersonDialog({
                       Name
                       <input
                         className="field"
+                        // biome-ignore lint/a11y/noAutofocus: the first field of the dialog the press opened
                         autoFocus={!opened.name}
                         autoComplete="off"
                         placeholder="Jane Doe"
@@ -165,6 +167,7 @@ export function PersonDialog({
                       <input
                         className="field"
                         inputMode="email"
+                        // biome-ignore lint/a11y/noAutofocus: the first field of the dialog the press opened
                         autoFocus={Boolean(opened.name)}
                         autoComplete="off"
                         placeholder="jane@example.com"

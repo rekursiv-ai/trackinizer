@@ -308,6 +308,7 @@ export function InquiryList({
   return (
     <div className="view">
       <ViewHeader icon={icon} title={title} />
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: keeps focus in the list on a press; keys reach the list itself */}
       <div className="view-tools" onMouseDown={keepFocus}>
         <Tabs tab={state.tab} onChange={(tab) => setQuery(withTab(query, tab))} />
         <div className="spacer" />
@@ -378,6 +379,8 @@ export function InquiryList({
           </button>
         </Bar>
       ) : null}
+      {/* biome-ignore lint/a11y/useKeyWithMouseEvents: keeps focus in the list on a press; keys reach the list itself */}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: keeps focus in the list on a press; keys reach the list itself */}
       <div
         className="scroll"
         ref={scroller}
@@ -613,6 +616,7 @@ function LeftOut({
 function TraxLine({ line }: { line: string }) {
   const copy = useCopy();
   return (
+    // biome-ignore lint/a11y/noStaticElementInteractions: keeps focus in the list on a press; keys reach the list itself
     <div className="qline" onMouseDown={keepFocus}>
       <code title="The same query from the CLI">{line}</code>
       <button

@@ -178,6 +178,7 @@ function NewTokenForm({
         aria-label="Label"
         placeholder="Label, e.g. laptop trax"
         autoComplete="off"
+        // biome-ignore lint/a11y/noAutofocus: the first field of the form the press opened
         autoFocus
         value={label}
         onChange={(event) => setLabel(event.target.value)}

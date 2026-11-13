@@ -1808,7 +1808,7 @@ test("a colour turned on before the lines output leaves out holds in its tail, a
   const red = [...at(0).querySelectorAll(".tool-out .a-red")].map(
     (run) => run.textContent,
   );
-  expect(red.at(-1)).toMatch(/^line 40\n[^]*\nline 79$/);
+  expect(red.at(-1)).toMatch(/^line 40\n[\s\S]*\nline 79$/);
   expect(
     [...at(2).querySelectorAll(".tr-term .a-red")].map((run) => run.textContent),
   ).toEqual(["red\n", "still red"]);

@@ -3,8 +3,7 @@
 // canvas.
 import ForceGraph from "force-graph";
 import { clusterForce } from "./clusters";
-import type { DrawLink, DrawNode } from "./model";
-import { must } from "../must";
+import { type DrawLink, type DrawNode, isPlaced } from "./model";
 
 /** What covers the canvas, in pixels: a strip on its right (Peek, the key or the zoom buttons). */
 export type Covered = { readonly right: number };
@@ -248,39 +247,29 @@ function boundsOf(
 ): { left: number; right: number; top: number; bottom: number } | null {
   let [left, right, top, bottom] = [Infinity, -Infinity, Infinity, -Infinity];
   for (const node of nodes) {
-    if (
-      node.hidden ||
-      !Number.isFinite(node.x) ||
-      !Number.isFinite(node.y) ||
-      !filter(node)
-    )
-      continue;
-    left = Math.min(left, must(node.x));
-    right = Math.max(right, must(node.x));
-    top = Math.min(top, must(node.y));
-    bottom = Math.max(bottom, must(node.y));
+    if (node.hidden || !isPlaced(node) || !filter(node)) continue;
+    left = Math.min(left, node.x);
+    right = Math.max(right, node.x);
+    top = Math.min(top, node.y);
+    bottom = Math.max(bottom, node.y);
   }
   return left <= right ? { left, right, top, bottom } : null;
 }
 
 /** A disc of the node's fill, its wash, its ring and its dot, and its halo (`NodeLook`). */
 function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number): void {
+  // A node the layout has not placed yet draws nothing until it is.
+  if (!isPlaced(node)) return;
   const { look } = node;
   if (look.halo) {
     ctx.beginPath();
-    ctx.arc(
-      must(node.x),
-      must(node.y),
-      look.radius + HALO_GAP_PX / scale,
-      0,
-      2 * Math.PI,
-    );
+    ctx.arc(node.x, node.y, look.radius + HALO_GAP_PX / scale, 0, 2 * Math.PI);
     ctx.lineWidth = 2 / scale;
     ctx.strokeStyle = look.halo;
     ctx.stroke();
   }
   ctx.beginPath();
-  ctx.arc(must(node.x), must(node.y), look.radius, 0, 2 * Math.PI);
+  ctx.arc(node.x, node.y, look.radius, 0, 2 * Math.PI);
   if (look.fillAlpha > 0) {
     ctx.globalAlpha = look.fillAlpha;
     ctx.fillStyle = look.fill;
@@ -297,7 +286,7 @@ function drawNode(node: DrawNode, ctx: CanvasRenderingContext2D, scale: number):
   ctx.stroke();
   if (look.dot) {
     ctx.beginPath();
-    ctx.arc(must(node.x), must(node.y), look.radius * 0.4, 0, 2 * Math.PI);
+    ctx.arc(node.x, node.y, look.radius * 0.4, 0, 2 * Math.PI);
     ctx.fillStyle = look.dot;
     ctx.fill();
   }
@@ -324,13 +313,12 @@ function drawLabels(
   const taken: { left: number; right: number; top: number; bottom: number }[] = [];
   for (const node of nodes) {
     const label = node.look.label;
-    if (!label || node.hidden || !Number.isFinite(node.x) || !Number.isFinite(node.y))
-      continue;
-    const top = must(node.y) + node.look.radius + LABEL_GAP_PX / scale;
+    if (!label || node.hidden || !isPlaced(node)) continue;
+    const top = node.y + node.look.radius + LABEL_GAP_PX / scale;
     const half = ctx.measureText(label.text).width / 2;
     const box = {
-      left: must(node.x) - half,
-      right: must(node.x) + half,
+      left: node.x - half,
+      right: node.x + half,
       top,
       bottom: top + height,
     };
@@ -346,9 +334,9 @@ function drawLabels(
       continue;
     taken.push(box);
     ctx.strokeStyle = label.outline;
-    ctx.strokeText(label.text, must(node.x), top);
+    ctx.strokeText(label.text, node.x, top);
     ctx.fillStyle = label.color;
-    ctx.fillText(label.text, must(node.x), top);
+    ctx.fillText(label.text, node.x, top);
   }
 }
 
@@ -362,9 +350,10 @@ function drawLink(link: DrawLink, ctx: CanvasRenderingContext2D, scale: number):
   const { source, target, look } = link;
   // The layout swaps a link's ends for their nodes before the first frame.
   if (typeof source === "string" || typeof target === "string") return;
+  if (!isPlaced(source) || !isPlaced(target)) return;
   ctx.beginPath();
-  ctx.moveTo(must(source.x), must(source.y));
-  ctx.lineTo(must(target.x), must(target.y));
+  ctx.moveTo(source.x, source.y);
+  ctx.lineTo(target.x, target.y);
   ctx.lineWidth = look.width / scale;
   ctx.strokeStyle = look.color;
   ctx.setLineDash(look.dash ?? NO_DASH);
@@ -377,9 +366,10 @@ function paintHitArea(
   color: string,
   ctx: CanvasRenderingContext2D,
 ): void {
+  if (!isPlaced(node)) return;
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(must(node.x), must(node.y), node.look.radius, 0, 2 * Math.PI);
+  ctx.arc(node.x, node.y, node.look.radius, 0, 2 * Math.PI);
   ctx.fill();
 }
 
@@ -397,7 +387,11 @@ function gravity(strength: number) {
         node.vy = (node.vy ?? 0) - (node.y ?? 0) * strength * alpha;
       }
     },
-    { initialize: (all: DrawNode[]) => void (nodes = all) },
+    {
+      initialize: (all: DrawNode[]) => {
+        nodes = all;
+      },
+    },
   );
 }
 

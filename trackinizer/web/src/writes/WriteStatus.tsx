@@ -73,6 +73,7 @@ function Lines({ text }: { text: string }) {
   return (
     <span className="form-err">
       {text.split("\n").map((line, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: parts of one text, in order, and a part may repeat
         <span key={index}>{line}</span>
       ))}
     </span>

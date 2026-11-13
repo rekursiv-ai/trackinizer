@@ -127,7 +127,10 @@ export function useChangePages(kinds: readonly ChangeKind[], pages: number): Loa
     ready: first !== undefined && (first.data !== undefined || first.isError),
     loading: results.some((result) => result.isFetching),
     error: results.find((result) => result.error)?.error ?? null,
-    retry: () => results.forEach((result) => result.error && void result.refetch()),
+    retry: () =>
+      results.forEach((result) => {
+        result.error && void result.refetch();
+      }),
   };
 }
 
@@ -170,7 +173,10 @@ export function useSubjects(mentions: readonly Mention[]): Subjects {
       ),
       error:
         results.find((result) => result.error && !result.isFetching)?.error ?? null,
-      retry: () => results.forEach((result) => result.error && void result.refetch()),
+      retry: () =>
+        results.forEach((result) => {
+          result.error && void result.refetch();
+        }),
     }),
   });
 }

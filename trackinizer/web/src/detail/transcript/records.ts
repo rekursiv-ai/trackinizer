@@ -469,6 +469,7 @@ export function ansiReader(): (text: string) => AnsiRun[] {
     };
     let at = 0;
     for (const code of text.matchAll(
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: matches ANSI escape sequences in terminal output
       /\u001b(?:\[([0-9;?]*)([A-Za-z])|\][^\u0007\u001b]*(?:\u0007|\u001b\\)?)/g,
     )) {
       push(text.slice(at, code.index));

@@ -253,9 +253,13 @@ function Targets({
   cached
     .filter((found) => matches(found))
     .slice(0, q ? 8 : 30)
-    .forEach((found) => list("Inquiries", found));
+    .forEach((found) => {
+      list("Inquiries", found);
+    });
   for (const search of searches)
-    search.hits?.filter(admitted).forEach((found) => list(SERVER_SECTION, found));
+    search.hits?.filter(admitted).forEach((found) => {
+      list(SERVER_SECTION, found);
+    });
 
   const missing = [
     ...refs
@@ -360,6 +364,7 @@ function Combo({
       <div className="menu-search">
         <Icon name="search" size={14} />
         <input
+          // biome-ignore lint/a11y/noAutofocus: the menu's search box, which the press that opened the menu hands focus to
           autoFocus
           role="combobox"
           aria-label={label}
@@ -392,6 +397,8 @@ function Combo({
                 {row.section}
               </div>
             ) : null}
+            {/* biome-ignore lint/a11y/useFocusableInteractive: a menu's option: the search box keeps focus and points at it with aria-activedescendant */}
+            {/* biome-ignore lint/a11y/useKeyWithClickEvents: the search box takes the keys; a click picks with the pointer */}
             <div
               id={`${id}-${index}`}
               role="option"

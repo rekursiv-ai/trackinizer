@@ -168,6 +168,7 @@ function StructuredArtifact({
   return (
     <div className="artifact-sections">
       {sections.map((section, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: items of one document, in its order, which carry no id
         <section className="artifact-section" key={`${index}:${section.title}`}>
           <h3>{section.title}</h3>
           <p className="artifact-section-summary">{section.summary}</p>
@@ -178,6 +179,7 @@ function StructuredArtifact({
           {section.findings.map((finding, findingIndex) => (
             <article
               className="artifact-finding"
+              // biome-ignore lint/suspicious/noArrayIndexKey: items of one document, in its order, which carry no id
               key={`${findingIndex}:${finding.claim}`}
             >
               <h4>{finding.claim}</h4>

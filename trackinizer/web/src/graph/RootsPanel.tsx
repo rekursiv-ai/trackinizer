@@ -129,6 +129,7 @@ export function RootsPanel({
       <ul
         ref={list}
         className="roots-list"
+        // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: a listbox and options: the list keeps focus and points at an option with aria-activedescendant
         role="listbox"
         id={id}
         aria-label="Roots"
@@ -136,9 +137,12 @@ export function RootsPanel({
         aria-activedescendant={at >= 0 ? `${id}-${at}` : undefined}
       >
         {shown.map((group, index) => (
+          // biome-ignore lint/a11y/useFocusableInteractive: an option: the listbox keeps focus and points at it with aria-activedescendant
+          // biome-ignore lint/a11y/useKeyWithClickEvents: the listbox takes the keys; a click picks with the pointer
           <li
             key={group.key}
             id={`${id}-${index}`}
+            // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: a listbox and options: the list keeps focus and points at an option with aria-activedescendant
             role="option"
             aria-selected={index === at}
             className={index === at ? "roots-row is-focused" : "roots-row"}

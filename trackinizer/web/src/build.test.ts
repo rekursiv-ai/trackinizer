@@ -28,7 +28,7 @@ type ManifestChunk = {
 
 /** The app built in memory, once for the file: each output file's text by name. */
 function built(): Promise<Map<string, string>> {
-  return (building ??= build({
+  building ??= build({
     root: fileURLToPath(new URL("..", import.meta.url)),
     logLevel: "silent",
     build: { write: false },
@@ -42,7 +42,8 @@ function built(): Promise<Map<string, string>> {
         file.type === "chunk" ? file.code : file.source.toString(),
       ]),
     );
-  }));
+  });
+  return building;
 }
 let building: Promise<Map<string, string>> | undefined;
 
@@ -145,6 +146,7 @@ function fakeWheel(root: string, name: string): string {
   const bin = join(root, name, "bin");
   mkdirSync(join(root, name, "lib/node_modules/npm/bin"), { recursive: true });
   mkdirSync(bin, { recursive: true });
+  // biome-ignore lint/suspicious/noTemplateCurlyInString: shell text: ${...} is the shell's expansion
   writeFileSync(join(bin, "node"), '#!/bin/sh\necho "${PATH%%:*}"\n', { mode: 0o755 });
   return bin;
 }

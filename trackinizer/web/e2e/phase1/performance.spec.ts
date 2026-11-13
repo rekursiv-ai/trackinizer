@@ -9,6 +9,7 @@ import { expectControlSeen, longTasks, watchLongTasks } from "../longTasks";
 // Artifact it produced, the rail lists 61 children, the first ten at once.
 let hub = "";
 
+// biome-ignore lint/correctness/noEmptyPattern: Playwright reads fixtures from a destructuring pattern, and this hook takes none
 test.beforeAll(({}, info) => {
   hub = readHubs(info).perf;
 });
@@ -28,11 +29,13 @@ test("a hub's detail renders with no main-thread task over 50 ms after its respo
       children.getByRole("button", { name: `Show all ${CHILDREN + 1}` }),
     ).toBeVisible();
     const timing = await page.evaluate(() => {
-      const detail = performance
-        .getEntriesByType("resource")
-        .find((entry): entry is PerformanceResourceTiming =>
-          entry.name.includes("/api/web/get/"),
-        )!;
+      const detail = pageMust(
+        performance
+          .getEntriesByType("resource")
+          .find((entry): entry is PerformanceResourceTiming =>
+            entry.name.includes("/api/web/get/"),
+          ),
+      );
       return { shownMs: performance.now(), detailEnd: detail.responseEnd };
     });
     const tasks = await longTasks(page);

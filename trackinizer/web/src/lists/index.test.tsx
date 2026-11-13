@@ -42,7 +42,9 @@ vi.mock("../detail", async () => {
           id: "detail.back",
           title: "Back",
           keys: ["Escape"],
-          run: () => void (location.hash = "#/activity"),
+          run: () => {
+            location.hash = "#/activity";
+          },
         },
       ]);
       return (
@@ -213,7 +215,11 @@ test("the focused row scrolls into view in the next frame, not in the task that 
   // The effect that requests the frame may run after the rows show: wait for it.
   const nextFrame = async () => {
     await waitFor(() => expect(frames).not.toHaveLength(0));
-    act(() => frames.splice(0).forEach((frame) => frame(performance.now())));
+    act(() =>
+      frames.splice(0).forEach((frame) => {
+        frame(performance.now());
+      }),
+    );
   };
   const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
   serve([row({ title: "First" }), row({ title: "Second" })]);

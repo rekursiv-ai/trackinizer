@@ -59,7 +59,9 @@ export function applySkin(skin: Skin): void {
 export function chooseTheme(choice: ThemePreference): void {
   applyTheme(choice);
   void choosePreferences({ theme: choice });
-  listeners.forEach((listener) => listener());
+  listeners.forEach((listener) => {
+    listener();
+  });
 }
 
 /** Show a skin at once and keep it in the user's preferences. */
@@ -88,7 +90,9 @@ export function installTheme(): void {
   const show = () => {
     applyTheme(readTheme());
     applySkin(preferences().skin);
-    listeners.forEach((listener) => listener());
+    listeners.forEach((listener) => {
+      listener();
+    });
   };
   applyTheme(readTheme());
   applySkin(preferences().skin);

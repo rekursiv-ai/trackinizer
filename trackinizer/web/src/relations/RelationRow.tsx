@@ -66,6 +66,8 @@ export function RelationRow({
       >
         {children}
         {mode === "hidden" ? null : (
+          // biome-ignore lint/a11y/noStaticElementInteractions: a tap arms the row's actions on touch; focus arms them from the keyboard
+          // biome-ignore lint/a11y/useKeyWithClickEvents: a tap arms the row's actions on touch; focus arms them from the keyboard
           <span className="rel-actions" onClick={arm}>
             {armed ? (
               <>
@@ -196,6 +198,7 @@ function RemoveConfirm({
           value={reason}
           onChange={(event) => setReason(event.target.value)}
         />
+        {/* biome-ignore lint/a11y/noAutofocus: the safe choice of the remove step the press opened */}
         <button type="button" className="btn ghost" onClick={onCancel} autoFocus>
           Cancel
         </button>

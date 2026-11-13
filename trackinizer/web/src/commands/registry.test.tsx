@@ -123,6 +123,7 @@ test("a listbox the keyboard is in keeps the keys it takes, and the rest reach t
         ]}
       />
       <ul
+        // biome-ignore lint/a11y/noNoninteractiveElementToInteractiveRole: a stand-in listbox for the palette's, as a combobox's
         role="listbox"
         aria-label="Roots"
         tabIndex={0}

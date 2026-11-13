@@ -31,7 +31,12 @@ function hubWithQuery() {
 test("every registered query gets every batch, one second after its first id", async () => {
   const { hub, batches } = hubWithQuery();
   const other: string[][] = [];
-  hub.register({ update: async ({ ids }) => (other.push([...ids]), null) });
+  hub.register({
+    update: async ({ ids }) => {
+      other.push([...ids]);
+      return null;
+    },
+  });
   hub.change("a");
   hub.change("b");
   hub.change("a");
@@ -49,7 +54,12 @@ test("the first connect recovers the gap, as the stream replays nothing from bef
   expect(batches).toEqual([{ ids: [], gap: true }]);
   // A query registered once the stream is open reads after it, and misses nothing.
   const later: boolean[] = [];
-  hub.register({ update: async ({ gap }) => (later.push(gap), null) });
+  hub.register({
+    update: async ({ gap }) => {
+      later.push(gap);
+      return null;
+    },
+  });
   hub.change("a");
   await vi.advanceTimersByTimeAsync(1_000);
   expect(later).toEqual([false]);
@@ -61,7 +71,15 @@ function gaps(): {
   gaps: boolean[];
 } {
   const seen: boolean[] = [];
-  return { query: { update: async ({ gap }) => (seen.push(gap), null) }, gaps: seen };
+  return {
+    query: {
+      update: async ({ gap }) => {
+        seen.push(gap);
+        return null;
+      },
+    },
+    gaps: seen,
+  };
 }
 
 test("the first open recovers only queries whose reads started before it, and a late query that holds one", async () => {
@@ -222,11 +240,21 @@ test("queries registered under one name are one query until the last leaves", as
   const first: string[][] = [];
   const second: string[][] = [];
   const a = hub.register(
-    { update: async ({ ids }) => (first.push([...ids]), null) },
+    {
+      update: async ({ ids }) => {
+        first.push([...ids]);
+        return null;
+      },
+    },
     { shareAs: "detail x" },
   );
   const b = hub.register(
-    { update: async ({ ids }) => (second.push([...ids]), null) },
+    {
+      update: async ({ ids }) => {
+        second.push([...ids]);
+        return null;
+      },
+    },
     { shareAs: "detail x" },
   );
   hub.change("x");
