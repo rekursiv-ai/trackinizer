@@ -1477,6 +1477,33 @@ def test_a_key_order_the_table_misses_is_still_stored() -> None:
     assert output.getvalue() == native
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        # codex 0.163 writes two keys the table does not list right after
+        # ``turn_id``; the writer used to move them to the end of the line.
+        (
+            '{"turn_id":"t1","root_turn_id":"t1","disabled_plugin_ids":[],'
+            '"cwd":"/w","approval_policy":"never","model":"gpt-5"}'
+        ),
+        # Only listed keys, in an order the table does not reproduce.
+        '{"cwd":"/w","turn_id":"t1","approval_policy":"never","model":"gpt-5"}',
+    ],
+)
+def test_a_turn_context_key_order_the_table_misses_is_still_stored(
+    payload: str,
+) -> None:
+    # A ``turn_context`` payload carries no ``type``, so the writer has to be
+    # told the kind to know the table cannot reproduce this line's order.
+    native = META + '{"type":"turn_context","payload":' + payload + "}\n"
+    records = list(codex.normalize(StringIO(native)))
+    output = StringIO()
+
+    codex.denormalize(records, output)
+
+    assert output.getvalue() == native
+
+
 def test_a_malformed_line_timestamp_is_still_replayed() -> None:
     # Only a stamp the FIELD can hold is dropped from the outer copy: a
     # non-string one has no field to live on, so the outer stencil is the only

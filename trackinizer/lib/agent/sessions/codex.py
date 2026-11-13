@@ -630,7 +630,10 @@ def _write_context(item: TurnContext) -> dict[str, object]:
     for key, value in values.items():
         if key not in payload and value is not None and key in {"effort", "summary"}:
             payload[key] = value
-    return _ordered("turn_context", _codex_residual(payload))
+    # The payload carries no ``type``, so the kind is named: without it the order
+    # ``restore_unmodeled_fields`` rebuilt was never stored, and ``_ordered`` put
+    # the line back in the table's.
+    return _ordered("turn_context", _codex_residual(payload, kind="turn_context"))
 
 
 def _write_agent_message(item: AgentToAgentMessage) -> dict[str, object]:
