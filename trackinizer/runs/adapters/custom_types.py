@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
     from pathlib import Path
 
-    from trackinizer.lib.agent.sessions.tail import Tail
+    from trackinizer.sagent.scripts.convert_session.tail import Tail
     from trackinizer.types.streams import TraxRecord
 
 

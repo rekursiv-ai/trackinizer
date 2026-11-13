@@ -18,6 +18,8 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- **Breaking:** the session readers and writers moved from
+  `trackinizer.lib.agent.sessions` to `trackinizer.sagent.scripts.convert_session`.
 - **Breaking:** a computer enrolled with the server is a *host*, not a *machine*, and
   the process that connects it to the server is its *daemon*. Released clients stop
   working against this server: upgrade the client on every host with it.

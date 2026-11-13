@@ -4,7 +4,7 @@ Rollouts live at
 ``$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO>-<uuid-v7>.jsonl``
 (``~/.codex`` when ``$CODEX_HOME`` is unset), append-only JSONL.
 
-Reading those lines is ``trackinizer.lib.agent.sessions.codex``'s job, not this
+Reading those lines is ``trackinizer.sagent.scripts.convert_session.codex``'s job, not this
 module's: one IR reader serves capture here AND the conversion/resume paths,
 so a dialect change is fixed once. What remains here is where the rollouts
 live and which of them belong to THIS run.
@@ -22,9 +22,9 @@ import re
 
 from treekle import PlainTree, from_plain, json_loads
 
-from trackinizer.lib.agent.sessions import codex
-from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.runs.adapters.custom_types import Subagent
+from trackinizer.sagent.scripts.convert_session import codex
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 
 
 if TYPE_CHECKING:

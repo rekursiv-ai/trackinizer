@@ -1,0 +1,121 @@
+"""Copies of a JSON record with one field swapped to another JSON type."""
+
+from __future__ import annotations
+
+from typing import cast
+
+import copy
+
+from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
+    field_paths,
+    mistyped,
+    unread,
+    without,
+)
+from trackinizer.sagent.session.types import (
+    IncompleteRecord,
+    UncategorizedRecord,
+    UserMessage,
+)
+
+
+def test_every_field_gets_every_other_json_type() -> None:
+    record = {"a": "s", "b": {"c": 1}}
+
+    found = {(path, type(_at(copy, path)).__name__) for path, copy in mistyped(record)}
+
+    assert found == {
+        *(("a", t) for t in ("int", "float", "bool", "list", "dict")),
+        *(("b", t) for t in ("str", "int", "float", "bool", "list")),
+        *(("b.c", t) for t in ("str", "float", "bool", "list", "dict")),
+    }
+
+
+def test_each_copy_changes_one_field_and_leaves_the_record_alone() -> None:
+    record = {"a": "s", "b": ["x", {"c": True}]}
+
+    for path, changed in mistyped(record):
+        assert _at(changed, path) != _at(record, path)
+        assert _put(changed, path, _at(record, path)) == record
+    assert record == {"a": "s", "b": ["x", {"c": True}]}
+
+
+def test_list_members_are_reached_by_index() -> None:
+    paths = {path for path, _ in mistyped({"b": ["x", {"c": True}]})}
+
+    assert paths == {"b", "b.0", "b.1", "b.1.c"}
+
+
+def test_field_paths_name_every_field_mistyped_swaps() -> None:
+    record = {"a": "s", "b": ["x", {"c": True}]}
+
+    assert field_paths(record) == ["a", "b", "b.0", "b.1", "b.1.c"]
+    assert field_paths(record) == list(dict.fromkeys(p for p, _ in mistyped(record)))
+
+
+def test_a_path_limits_the_copies_to_that_field() -> None:
+    record = {"a": "s", "b": {"c": 1}}
+
+    found = {
+        (path, type(_at(copy, path)).__name__) for path, copy in mistyped(record, "b.c")
+    }
+
+    assert found == {("b.c", t) for t in ("str", "float", "bool", "list", "dict")}
+
+
+def test_a_list_member_takes_each_other_type_in_its_own_place() -> None:
+    found = [changed for _, changed in mistyped(["x", "y"], "1")]
+
+    assert found == [["x", 7], ["x", 1.5], ["x", True], ["x", ["x"]], ["x", {"x": 1}]]
+
+
+def test_a_null_field_is_swapped_like_any_other() -> None:
+    kinds = {type(_at(changed, "a")).__name__ for _, changed in mistyped({"a": None})}
+
+    assert kinds == {"str", "int", "float", "bool", "list", "dict"}
+
+
+def test_without_removes_one_field_and_leaves_the_record_alone() -> None:
+    record = {"a": "s", "b": ["x", {"c": True, "d": 1}]}
+
+    assert without(record, "a") == {"b": ["x", {"c": True, "d": 1}]}
+    assert without(record, "b.0") == {"a": "s", "b": [{"c": True, "d": 1}]}
+    assert without(record, "b.1.c") == {"a": "s", "b": ["x", {"d": 1}]}
+    assert without(["x", "y", "z"], "1") == ["x", "z"]
+    assert record == {"a": "s", "b": ["x", {"c": True, "d": 1}]}
+
+
+def test_unread_counts_the_text_and_the_uncategorized_alone() -> None:
+    records = [
+        IncompleteRecord(text="{"),
+        UncategorizedRecord(kind="k", payload={}),
+        UserMessage(content="hi"),
+    ]
+
+    assert unread(records) == 2
+
+
+def _at(value: object, path: str) -> object:
+    for key in path.split("."):
+        if isinstance(value, list):
+            value = cast(list[object], value)[int(key)]
+        else:
+            value = cast(dict[str, object], value)[key]
+    return value
+
+
+def _put(value: object, path: str, leaf: object) -> object:
+    out = copy.deepcopy(value)
+    *parents, last = path.split(".")
+    holder = _at(out, ".".join(parents)) if parents else out
+    if isinstance(holder, list):
+        cast(list[object], holder)[int(last)] = leaf
+    else:
+        cast(dict[str, object], holder)[last] = leaf
+    return out
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.runner import test_main
+
+    test_main(__file__)

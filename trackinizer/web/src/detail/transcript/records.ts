@@ -576,7 +576,7 @@ function shapeOf(record: SessionRecord): Shape {
   const field = (name: string) => stringField(payload, name);
   const extra = isFields(payload.extra) ? payload.extra : {};
   // Claude keeps a tool result's block beside the record (`_read_tool_result`
-  // in `trackinizer/lib/agent/sessions/claude.py`): its text, what the model read, when
+  // in `trackinizer/sagent/scripts/convert_session/claude.py`): its text, what the model read, when
   // the record's fields spell something else or nothing, as for a failed read.
   const read = isFields(extra.$result) ? stringField(extra.$result, "text") : "";
   // The server's stub for a body moved to its sidecar (`STUB_PAYLOAD` in

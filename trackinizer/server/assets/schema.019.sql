@@ -12,7 +12,7 @@
 
 -- ============================================================================
 -- Session IR storage: four tables holding captured sessions as
--- ``trackinizer.lib.agent.sessions`` records rather than the lossy per-turn
+-- ``trackinizer.sagent.scripts.convert_session`` records rather than the lossy per-turn
 -- ``agent_session_events`` union.
 --
 -- Source of truth: types/session_records.py (SessionRecordRow). Flat

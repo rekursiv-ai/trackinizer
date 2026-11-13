@@ -5,7 +5,7 @@ append-only, one IR record a line. An agent a session spawns journals in a folde
 the spawner's own, ``<id>/<label>/session.jsonl``, at any depth, beside the session's
 ``session.log``.
 
-Reading those lines is ``trackinizer.lib.agent.sessions.sagent``'s job, as for every CLI: one
+Reading those lines is ``trackinizer.sagent.scripts.convert_session.sagent``'s job, as for every CLI: one
 reader serves capture and conversion. What remains here is where the journals live
 and which of them belong to this run.
 """
@@ -15,10 +15,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from trackinizer.lib.agent.sessions import sagent
-from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.runs.adapters.custom_types import Subagent
+from trackinizer.sagent.scripts.convert_session import sagent
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 from trackinizer.sagent.session.projects import find_sessions
 
 

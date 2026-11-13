@@ -22,7 +22,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from trackinizer.lib.agent.sessions.tail import Tail
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 from trackinizer.types.line_capture import normalize
 
 

@@ -1,0 +1,402 @@
+"""Tests for joining session files into one conversation."""
+
+from __future__ import annotations
+
+from io import StringIO
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
+
+import json
+
+from treekle import from_plain
+
+import pytest
+
+from trackinizer.sagent.scripts.convert_session import claude, codex, fuse
+from trackinizer.sagent.session.types import (
+    AssistantMessage,
+    ContextClear,
+    ContextCompaction,
+    SessionRecord,
+    TurnContext,
+    UserMessage,
+)
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from trackinizer.sagent.scripts.convert_session.convert import _Adapter
+
+
+_CWD: Final[Path] = Path(__file__).resolve().parent
+
+
+# ``unfuse`` yields one ITERATOR per part and they are consumed in order, so a test that
+# wants them all materializes each as it arrives.
+def _unfused(records: Iterable[SessionRecord]) -> list[list[SessionRecord]]:
+    """Every part of a fused stream, drained in order."""
+    return [list(part) for part in fuse.unfuse(records)]
+
+
+def _part(name: str, *records: SessionRecord) -> list[SessionRecord]:
+    """Return a record stream whose opening settings declare it as ``name``."""
+    return [TurnContext(extra={"payload": {"id": name}}), *records]
+
+
+def test_fusing_nothing_yields_no_records() -> None:
+    assert list(fuse.fuse(())) == []
+
+
+def test_one_part_fuses_to_itself() -> None:
+    # No seam, because nothing was joined: a boundary here would claim the
+    # conversation resumed something.
+    part = _part("a", UserMessage(content="Hi."))
+
+    assert list(fuse.fuse([part])) == part
+
+
+def test_a_seam_opens_a_window_between_the_parts() -> None:
+    first = _part("a", UserMessage(content="Hi."))
+    second = _part("b", UserMessage(content="Still here?"))
+
+    joined = list(fuse.fuse([first, second]))
+
+    boundary = joined[2]
+    assert isinstance(boundary, ContextClear)
+    assert [type(r).__name__ for r in joined] == [
+        "TurnContext",
+        "UserMessage",
+        "ContextClear",
+        "TurnContext",
+        "UserMessage",
+    ]
+
+
+def test_a_part_carrying_a_summary_states_it_on_the_seam() -> None:
+    # What a boundary carries is whatever crossed it: claude writes the earlier
+    # conversation's summary as the first turn of the file that continues it,
+    # and that summary IS what crossed.
+    first = _part("a", UserMessage(content="Hi."))
+    second = _part(
+        "b",
+        UserMessage(content="Summary: we said hi.", extra={"isCompactSummary": True}),
+    )
+
+    boundary = list(fuse.fuse([first, second]))[2]
+
+    assert isinstance(boundary, ContextClear)
+    assert boundary.summary == "Summary: we said hi."
+
+
+def test_a_seam_does_not_duplicate_the_part_it_introduced() -> None:
+    """The boundary names the seam; the part keeps its OWN opening records.
+
+    Storing the resumed part's context on the boundary as well wrote every
+    carried record twice on the way back -- 11 records returned as 12.
+    """
+    first = _part("a", UserMessage(content="Hi."))
+    second = _part(
+        "b",
+        UserMessage(content="Summary: we said hi.", extra={"isCompactSummary": True}),
+        UserMessage(content="carried on"),
+    )
+
+    back = _unfused(fuse.fuse([first, second]))
+
+    assert back == [first, second]
+
+
+def test_unfusing_gives_back_the_parts() -> None:
+    parts = [
+        _part("a", UserMessage(content="Hi.")),
+        _part("b", AssistantMessage(content="Still here.")),
+    ]
+
+    back = _unfused(fuse.fuse(parts))
+
+    assert back == parts
+
+
+def test_unfusing_restores_each_part_s_own_declaration() -> None:
+    # A part's launch settings are the file's, not the fused stream's, so the
+    # part must come back carrying them or the second file cannot be written.
+    parts = [_part("a", UserMessage(content="Hi.")), _part("b", UserMessage())]
+
+    back = _unfused(fuse.fuse(parts))
+
+    assert [part[0] for part in back] == [part[0] for part in parts]
+
+
+def test_the_root_s_file_name_survives_a_fuse() -> None:
+    # There is no seam before the first part, so its name rides the settings it
+    # opens with -- and unfusing must take it back off, or the part no longer
+    # equals the records it was read from.
+    parts = [_part("a", UserMessage(content="Hi.")), _part("b", UserMessage())]
+
+    joined = list(fuse.fuse(parts, ["a.jsonl", "b.jsonl"]))
+
+    assert fuse.part_names(joined) == ["a.jsonl", "b.jsonl"]
+    assert _unfused(joined) == parts
+
+
+def test_a_compaction_inside_one_part_is_not_a_seam() -> None:
+    # Codex compacts in place, so a part may already hold one. Splitting there
+    # would invent a file that never existed.
+    part = _part(
+        "a",
+        UserMessage(content="Hi."),
+        ContextCompaction(summary="earlier"),
+        ContextClear(summary="earlier"),
+        UserMessage(content="Now."),
+    )
+
+    assert len(_unfused(fuse.fuse([part]))) == 1
+
+
+@pytest.mark.parametrize(
+    ("adapter", "fixtures"),
+    [
+        (claude, ("claude_main.jsonl", "claude_sidechain.jsonl")),
+        (codex, ("codex_main.jsonl",)),
+    ],
+    ids=["claude", "codex"],
+)
+def test_captured_sessions_survive_a_fuse_and_unfuse(
+    adapter: _Adapter,
+    fixtures: tuple[str, ...],
+) -> None:
+    # The invariant the whole module rests on: joining is a view, not a merge,
+    # so every part comes back as the bytes it was read from.
+    native = [
+        (_CWD / "testdata" / name).read_text(encoding="utf-8") for name in fixtures
+    ]
+    parts = [list(adapter.normalize(StringIO(text))) for text in native]
+
+    back = _unfused(fuse.fuse(parts))
+
+    rebuilt: list[str] = []
+    for part in back:
+        out = StringIO()
+        adapter.denormalize(part, out)
+        rebuilt.append(out.getvalue())
+    assert rebuilt == native
+
+
+def test_chain_keeps_every_part_that_forked_from_one_thread() -> None:
+    # A parent may be resumed more than once -- a session forked twice, or two
+    # rollouts naming the same thread. Keeping one successor per parent DROPPED
+    # the rest: 16 of 392 rollouts on one captured day, 84 MB, and a fused
+    # session that silently rebuilt short.
+    root = _part("a", UserMessage(content="Hi."))
+    forks = [
+        [TurnContext(extra={"payload": {"id": name, "forked_from_id": "a"}})]
+        for name in ("b", "c", "d")
+    ]
+
+    ordered = fuse.chain([root, *forks])
+
+    assert len(ordered) == 4, "every part must survive the ordering"
+    named = [_declared_id(part) for part in ordered]
+    assert named[0] == "a"
+    assert sorted(named[1:]) == ["b", "c", "d"]
+
+
+def test_chain_orders_parts_by_the_thread_each_forked_from() -> None:
+    # Codex names it, so the order is the provider's rather than a guess from
+    # timestamps -- which a subagent writing concurrently would break.
+    first = _part("a", UserMessage(content="Hi."))
+    second = [TurnContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
+    third = [TurnContext(extra={"payload": {"id": "c", "forked_from_id": "b"}})]
+
+    ordered = fuse.chain([third, first, second])
+
+    assert [_declared_id(part) for part in ordered] == ["a", "b", "c"]
+
+
+def test_unfuse_drains_an_abandoned_part_before_yielding_the_next() -> None:
+    first = _part("a", UserMessage(content="Hi."))
+    second = _part("b", UserMessage(content="Again."))
+    parts = fuse.unfuse(fuse.fuse([first, second]))
+
+    abandoned = next(parts)
+    assert next(abandoned) == first[0]
+    assert list(next(parts)) == second
+
+
+def test_names_of_a_stream_starting_at_a_seam_names_an_empty_root() -> None:
+    record = ContextClear(extra={"$seam": "second"})
+
+    assert fuse.part_names([record]) == ["", "second"]
+
+
+def test_chain_deduplicates_a_cycle_and_keeps_the_cycle_component() -> None:
+    first = [TurnContext(extra={"payload": {"id": "a", "forked_from_id": "b"}})]
+    second = [TurnContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
+
+    assert fuse.chain([first, second]) == [first, second]
+
+
+def test_chain_deduplicates_a_successor_list_repeating_one_part() -> None:
+    root = _part("root", UserMessage(content="root"))
+    child = [TurnContext(extra={"payload": {"id": "child", "forked_from_id": "root"}})]
+
+    assert fuse.chain([root, child, child]) == [root, child]
+
+
+def _rollout(own: str, parent: str = "", *, lead: str = "") -> list[SessionRecord]:
+    """Return a codex rollout's records, optionally forked and lead-blanked."""
+    payload = {"id": own, **({"forked_from_id": parent} if parent else {})}
+    native = (
+        lead
+        + '{"type":"session_meta","payload":'
+        + json.dumps(payload)
+        + "}\n"
+        + '{"type":"response_item","payload":{"type":"message","role":"user",'
+        + '"content":[{"type":"input_text","text":"from '
+        + own
+        + '"}]}}\n'
+    )
+    return list(codex.normalize(StringIO(native)))
+
+
+def test_a_fork_opening_with_a_blank_line_still_chains() -> None:
+    # The blank line's opening context holds only an encoding, so taking the
+    # FIRST context as the declaration read no id and no parent at all.
+    root = _rollout("a")
+    fork = _rollout("b", "a", lead="\n")
+
+    assert fuse.chain([fork, root]) == [root, fork]
+
+
+def test_a_codex_fork_s_seam_states_what_crossed_it() -> None:
+    # Codex names the parent on its launch settings, never on a user turn.
+    joined = list(fuse.fuse(fuse.chain([_rollout("a"), _rollout("b", "a")])))
+
+    seams = [r for r in joined if isinstance(r, ContextClear) and "$seam" in r.extra]
+    assert [seam.summary for seam in seams] == ["from b"]
+
+
+@pytest.mark.parametrize(
+    ("second", "timestamp"),
+    [
+        (
+            [
+                TurnContext(timestamp="t1", extra={"payload": {"id": "b"}}),
+                TurnContext(timestamp="t2"),
+                UserMessage(content="fresh"),
+            ],
+            "t1",
+        ),
+        ([TurnContext(extra={"payload": {"id": "b"}}), UserMessage()], None),
+    ],
+    ids=["stamped", "unstamped"],
+)
+def test_a_fresh_seam_carries_no_summary_and_opens_when_its_part_did(
+    second: list[SessionRecord],
+    timestamp: str | None,
+) -> None:
+    boundary = list(fuse.fuse([_part("a"), second]))[1]
+
+    assert boundary == ContextClear(timestamp=timestamp, extra={"$seam": ""})
+
+
+def test_a_part_whose_payload_is_no_object_declares_nothing() -> None:
+    part: list[SessionRecord] = [TurnContext(extra={"payload": None})]
+
+    assert fuse.chain([part]) == [part]
+
+
+def test_only_the_roots_opening_settings_carry_its_name() -> None:
+    root = _part(
+        "a",
+        TurnContext(extra={"later": True}),
+        UserMessage(content="Hi."),
+        AssistantMessage(content="Hello."),
+    )
+    second = _part("b", UserMessage(content="Again."))
+
+    joined = list(fuse.fuse([root, second], ["a.jsonl", "b.jsonl"]))
+
+    assert [r for r in joined[:4] if "$seam" in getattr(r, "extra", {})] == [
+        joined[0],
+    ]
+    assert _unfused(joined) == [root, second]
+
+
+def test_a_later_parts_own_seam_key_is_its_data_not_a_name() -> None:
+    """Only the root's name is taken back off; a later part's key is the provider's."""
+    parts = [
+        _part("a", UserMessage(content="Hi.")),
+        [TurnContext(extra={"$seam": "kept"}), UserMessage(content="Again.")],
+    ]
+
+    joined = list(fuse.fuse(parts, ["a.jsonl", "b.jsonl"]))
+
+    assert _unfused(joined) == parts
+    assert fuse.part_names(joined) == ["a.jsonl", "b.jsonl"]
+
+
+def test_a_part_with_no_name_given_is_named_by_nothing() -> None:
+    parts = [_part(name) for name in ("a", "b", "c")]
+
+    assert fuse.part_names(fuse.fuse(parts, ["a.jsonl", "b.jsonl"])) == [
+        "a.jsonl",
+        "b.jsonl",
+        "",
+    ]
+
+
+@pytest.mark.parametrize("name", ["../x.jsonl", "/abs.jsonl", "a/b.jsonl", "..", "."])
+def test_a_seam_naming_a_path_is_refused(name: str) -> None:
+    with pytest.raises(ValueError, match="seam names a path"):
+        fuse.part_names([ContextClear(extra={"$seam": name})])
+
+
+def test_a_repeated_part_skips_only_itself_not_the_forks_after_it() -> None:
+    root = _part("a", UserMessage(content="Hi."))
+    child = [TurnContext(extra={"payload": {"id": "c", "forked_from_id": "a"}})]
+    sibling = [TurnContext(extra={"payload": {"id": "d", "forked_from_id": "a"}})]
+    other = _part("e", UserMessage(content="Elsewhere."))
+
+    assert fuse.chain([root, child, child, sibling, other]) == [
+        root,
+        child,
+        sibling,
+        other,
+    ]
+
+
+def test_an_empty_thread_id_is_an_id_a_fork_may_name() -> None:
+    """Only a missing id is no id: ``""`` is what the part declared."""
+    fork = [TurnContext(extra={"payload": {"id": "f", "forked_from_id": ""}})]
+    root = [TurnContext(extra={"payload": {"id": ""}})]
+
+    assert fuse.chain([fork, root]) == [root, fork]
+
+
+def test_a_fork_from_a_thread_outside_the_tree_is_a_root_in_its_place() -> None:
+    orphan = [TurnContext(extra={"payload": {"id": "o", "forked_from_id": "zzz"}})]
+    root = _part("b", UserMessage(content="Hi."))
+
+    assert fuse.chain([orphan, root]) == [orphan, root]
+
+
+def test_chain_treats_a_part_without_context_as_a_root() -> None:
+    part = [UserMessage(content="orphan")]
+
+    assert fuse.chain([part]) == [part]
+
+
+def _declared_id(part: Sequence[SessionRecord]) -> str:
+    """Return the thread id a part's launch settings name."""
+    opening = part[0]
+    assert isinstance(opening, TurnContext)
+    payload = from_plain(opening.extra["payload"], dict[str, object])
+    return from_plain(payload["id"], str)
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.runner import test_main
+
+    test_main(__file__)

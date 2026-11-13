@@ -29,8 +29,8 @@ from treekle import immutable
 
 import pytest
 
-from trackinizer.lib.agent.sessions import claude, codex
-from trackinizer.lib.agent.sessions.tail import Tail
+from trackinizer.sagent.scripts.convert_session import claude, codex
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 from trackinizer.sagent.session.types import (
     SessionRecord,
     Thinking,
@@ -43,7 +43,7 @@ from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from trackinizer.lib.agent.sessions.convert import _Adapter
+    from trackinizer.sagent.scripts.convert_session.convert import _Adapter
     from trackinizer.server.store.core import Store
 
 
