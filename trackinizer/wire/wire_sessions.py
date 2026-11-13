@@ -338,9 +338,11 @@ class FeedEvent(BaseModel):
     console's cursor protocol is public; it IS the record's ``idx``."""
 
     kind: str = Field(min_length=1)
-    """The record class's name. Widened from the closed 8-member legacy
-    Literal: the IR has 21 concrete kinds and a console that rejected an
-    unknown one would break on every new record type."""
+    """The kind the record's row is stored under: its class name, or for a
+    tool-call record its tool's legacy class name, such as ``BashResult``.
+    Widened from the closed 8-member legacy Literal: the IR has 21 concrete
+    kinds and a console that rejected an unknown one would break on every new
+    record type."""
 
     created: datetime
     """Server write clock -- the feed's cross-session order key."""
@@ -348,8 +350,9 @@ class FeedEvent(BaseModel):
     timestamp: datetime | None = None
     model: str | None = None
     message: JSON = Field(default_factory=dict)
-    """The record's payload, under the legacy field name so the console's
-    renderer needs no rewrite for the shape it already reads."""
+    """The record's payload in the current record shape, under the legacy field
+    name so the console's renderer needs no rewrite for the shape it already
+    reads."""
 
     text: str = ""
     """The record's searchable prose, which the console renders directly."""

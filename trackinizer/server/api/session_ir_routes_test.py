@@ -65,6 +65,16 @@ class _Page(TypedDict):
     records: list[_Indexed]
 
 
+class _Body(TypedDict):
+    kind: str
+    payload: dict[str, object]
+    text: str
+
+
+class _BodyPage(TypedDict):
+    records: list[_Body]
+
+
 class _Part(TypedDict):
     part: int
 
@@ -373,6 +383,74 @@ class TestReadRecords:
         assert [
             from_plain(from_plain(r, dict[str, object])["idx"], int) for r in records
         ] == [0, 1]
+
+    def test_a_legacy_tool_call_row_is_returned_in_the_current_shape(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The row keeps its stored ``kind``; only its payload is converted."""
+        client, store, _engine = route_client
+        monkeypatch.setattr(
+            store,
+            "get_inquiry",
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
+        )
+        legacy = SessionRecordRow(
+            session_id=uuid.uuid4(),
+            idx=0,
+            kind="UncategorizedToolResult",
+            payload=immutable(
+                {
+                    "py/object": "UncategorizedToolResult",
+                    "call_id": "c",
+                    "content": "found it",
+                },
+            ),
+            text="found it",
+        )
+        offloaded = SessionRecordRow(
+            session_id=uuid.uuid4(),
+            idx=1,
+            kind="ReadResult",
+            payload=immutable({"$body": "offloaded"}),
+            text="a.py",
+        )
+        monkeypatch.setattr(
+            store,
+            "read_session_records",
+            AsyncMock(return_value=[legacy, offloaded]),
+        )
+
+        body = from_plain(
+            client.get(f"/api/sessions/{uuid.uuid4()}/records").json(),
+            _BodyPage,
+        )
+
+        assert [
+            (record["kind"], record["payload"], record["text"])
+            for record in body["records"]
+        ] == [
+            (
+                "UncategorizedToolResult",
+                {
+                    "py/object": "ToolResult",
+                    "call_id": "c",
+                    "state": "done",
+                    "stdout": ["found it"],
+                    "result": {"py/object": "UncategorizedToolResult"},
+                    "extra": {},
+                },
+                "found it",
+            ),
+            ("ReadResult", {"$body": "offloaded"}, "a.py"),
+        ]
 
     def test_ciphertext_rides_beside_the_payload(
         self,

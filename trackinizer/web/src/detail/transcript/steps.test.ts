@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import type { SessionRecord } from "../../api/sessions";
 import { recordView, type ToolKind, transcriptRows } from "./records";
 import { groupRows, groupSummary, languageOf, toolSummary } from "./steps";
+import { editResult, searchResult, shellResult, tagged, toolResult } from "./testing";
 
 /** A record as the server sends one: the payload in its dataclass codec's shape. */
 function record(kind: string, payload: { [field: string]: unknown } = {}, text = ""): SessionRecord {
@@ -20,7 +21,7 @@ function record(kind: string, payload: { [field: string]: unknown } = {}, text =
 test("a tool row is one line: what it did, to what, and how it went", () => {
   const view = (kind: string, payload: { [field: string]: unknown }, text = "") => recordView(record(kind, payload, text));
   const bash = view("ToolCall", { name: "Bash", arguments: { command: "pytest -x \\\n  --lf", description: "Run the tests" } });
-  const ran = (stdout: string, stderr: string, exit: number) => view("BashResult", { stdout, stderr, exit_code: exit });
+  const ran = (stdout: string, stderr: string, exit: number) => view("BashResult", shellResult({ stdout, stderr, exit }));
   expect(toolSummary(bash, ran("1 passed\n2 passed\n", "", 0))).toEqual({
     tool: "command",
     verb: "Ran",
@@ -33,10 +34,10 @@ test("a tool row is one line: what it did, to what, and how it went", () => {
   expect(toolSummary(bash, ran("", "", 0))).toMatchObject({ outcome: "no output", failed: false });
   // A call with no result says only what it asked; a result with no call, what it ran.
   expect(toolSummary(bash, null)).toMatchObject({ verb: "Ran", target: "pytest -x \\ …", outcome: "" });
-  const codex = view("BashResult", { command: ["/bin/bash", "-lc", "date -u"], stdout: "now", stderr: "", exit_code: 0 });
+  const codex = view("BashResult", shellResult({ command: ["/bin/bash", "-lc", "date -u"], stdout: "now", exit: 0 }));
   expect(toolSummary(null, codex)).toMatchObject({ verb: "Ran", target: "date -u", outcome: "1 line" });
 
-  const read = view("ReadResult", { path: "/work/loop/a.py", content: "import os\n\nprint(1)\n" });
+  const read = view("ReadResult", toolResult(tagged("ReadResult", { path: "/work/loop/a.py" }), { stdout: ["import os\n\nprint(1)\n"] }));
   expect(toolSummary(view("ToolCall", { name: "Read", arguments: { file_path: "/work/loop/a.py" } }), read)).toEqual({
     tool: "read",
     verb: "Read",
@@ -46,15 +47,15 @@ test("a tool row is one line: what it did, to what, and how it went", () => {
     language: "py",
   });
   const splice = { before: "a\nb\n", after: "c\n", lead: null, trail: null, start: null, count: null };
-  const edit = view("EditResult", { path: "src/b.ts", edits: [splice] });
+  const edit = view("EditResult", editResult("src/b.ts", [splice]));
   expect(toolSummary(null, edit)).toMatchObject({ tool: "edit", verb: "Edited", target: "src/b.ts", outcome: "+1 −2", language: "ts" });
-  const write = view("WriteResult", { path: "/w/notes.md", content: "# Notes\n" });
+  const write = view("WriteResult", toolResult(tagged("WriteResult", { path: "/w/notes.md", content: "# Notes\n" }), { stdout: ["Wrote /w/notes.md."] }));
   expect(toolSummary(null, write)).toMatchObject({ tool: "write", verb: "Wrote", target: "/w/notes.md", outcome: "1 line", language: "md" });
   const grep = view("ToolCall", { name: "Grep", arguments: { pattern: "x|y", path: "loop" } });
-  expect(toolSummary(grep, view("UncategorizedToolResult", { content: "a.py\nb.py" }))).toMatchObject({ tool: "search", verb: "Searched", target: "x|y", outcome: "2 lines" });
+  expect(toolSummary(grep, view("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: ["a.py\nb.py"] })))).toMatchObject({ tool: "search", verb: "Searched", target: "x|y", outcome: "2 lines" });
   const found = [{ url: "https://a.b/", title: "A", snippet: "" }];
-  expect(toolSummary(null, view("WebSearchResult", { query: "pglite", content: found }))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
-  const fetched = view("WebFetchResult", { url: "https://a.b/", content: "x", code: 200, size: 2048 });
+  expect(toolSummary(null, view("WebSearchResult", searchResult({ query: "pglite" }, found)))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
+  const fetched = view("WebFetchResult", toolResult(tagged("WebFetchResult", { url: "https://a.b/", code: 200, size: 2048 }), { stdout: ["x"] }));
   expect(toolSummary(null, fetched)).toMatchObject({ verb: "Fetched", target: "https://a.b/", outcome: "HTTP 200 · 2.0 KB" });
   // An offloaded result says so in place of a count.
   const offloaded = recordView({ ...record("BashResult", {}, "head"), payload: { $body: "offloaded" } });
@@ -62,14 +63,14 @@ test("a tool row is one line: what it did, to what, and how it went", () => {
 
   // Any other tool goes by its name, and its arguments in one line.
   const post = view("ToolCall", { name: "mcp__slack__post", arguments: { channel: "#eng", text: "Done.\nShipped." } });
-  expect(toolSummary(post, view("UncategorizedToolResult", { content: "posted", extra: { is_error: true } }))).toMatchObject({
+  expect(toolSummary(post, view("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: ["posted"], extra: { is_error: true } })))).toMatchObject({
     tool: "call",
     verb: "mcp__slack__post",
     target: "channel: #eng, text: Done. …",
     outcome: "1 line",
     failed: true,
   });
-  expect(toolSummary(null, view("UncategorizedToolResult", { content: "posted" }))).toMatchObject({ verb: "Tool result", target: "" });
+  expect(toolSummary(null, view("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: ["posted"] })))).toMatchObject({ verb: "Tool result", target: "" });
 });
 
 test("a group of tool steps is counted by what they did, each verb once, in the order first done", () => {
@@ -87,9 +88,9 @@ test("a run of two or more tool steps between messages is one group, with the re
     at(0, "UserMessage", { content: "go" }),
     at(1, "Thinking"),
     at(2, "ToolCall", { call_id: "a", name: "Bash" }),
-    at(3, "BashResult", { call_id: "a", stdout: "" }),
+    at(3, "BashResult", shellResult({}, { call_id: "a" })),
     at(4, "Thinking"),
-    at(5, "ReadResult", { path: "x.py", content: "" }),
+    at(5, "ReadResult", toolResult(tagged("ReadResult", { path: "x.py" }))),
     at(6, "Thinking"),
     at(7, "AssistantMessage", { content: "done" }),
     // One step alone is a row of its own; anything but reasoning ends a run.
@@ -109,11 +110,11 @@ test("a file's language is its extension, or its name when it has none", () => {
 
 test("a tool row reads its stored arrays", () => {
   const view = (kind: string, payload: { [field: string]: unknown }) => recordView(record(kind, payload));
-  const codex = view("BashResult", { command: ["/bin/bash", "-lc", "date -u"], stdout: "now", stderr: "", exit_code: 0 });
+  const codex = view("BashResult", shellResult({ command: ["/bin/bash", "-lc", "date -u"], stdout: "now", exit: 0 }));
   expect(toolSummary(null, codex)).toMatchObject({ verb: "Ran", target: "date -u", outcome: "1 line" });
   const splice = { before: "a\nb\n", after: "c\n", lead: null, trail: null, start: null, count: null };
-  const edit = view("EditResult", { path: "src/b.ts", edits: [splice] });
+  const edit = view("EditResult", editResult("src/b.ts", [splice]));
   expect(toolSummary(null, edit)).toMatchObject({ tool: "edit", verb: "Edited", target: "src/b.ts", outcome: "+1 −2", language: "ts" });
   const found = [{ url: "https://a.b/", title: "A", snippet: "" }];
-  expect(toolSummary(null, view("WebSearchResult", { query: "pglite", content: found }))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
+  expect(toolSummary(null, view("WebSearchResult", searchResult({ query: "pglite" }, found)))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
 });

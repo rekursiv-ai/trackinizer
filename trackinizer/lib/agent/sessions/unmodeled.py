@@ -6,7 +6,9 @@ of a modeled field must survive that decode: absent, ``null``, and malformed.
 :func:`extract_unmodeled_fields` stores the rest in the record's ``extra``, as
 an envelope under :data:`_FIELD_STATE_TAG` that also remembers key order and
 which modeled fields were present. :func:`restore_unmodeled_fields` rebuilds
-the provider object from that ``extra`` and the record's current values.
+the provider object from that ``extra`` and the record's current values, and
+:func:`field_state` returns whether the object held one modeled field as a
+value or as ``null``.
 
 The envelope is stored in sessions already on disk and in golden files, so its
 key and structure are a format, not an implementation detail.
@@ -32,6 +34,7 @@ from treekle.absent import ABSENT, Absent
 __all__ = [
     "FieldState",
     "extract_unmodeled_fields",
+    "field_state",
     "read_field_keeping_invalid",
     "restore_unmodeled_fields",
     "same_json_value",
@@ -228,6 +231,30 @@ def restore_unmodeled_fields(
             result[key] = spare[key]
     result.update({key: value for key, value in spare.items() if key not in result})
     return result
+
+
+def field_state(stored: Mapping[str, object], key: str) -> str | None:
+    """Return whether the provider object held a modeled field as a value or null.
+
+    A record's text is empty for both ``null`` and ``""``; a writer calls this
+    to write back the one the provider wrote.
+
+    Args:
+      stored: ``extra`` as returned by :func:`extract_unmodeled_fields`.
+      key: Name of the modeled field.
+
+    Returns:
+      state: ``"value"`` or ``"null"``; ``None`` when the field was absent or
+        malformed, or ``stored`` has no envelope.
+
+    """
+    envelope = _unmodeled_envelope(stored)
+    if envelope is None:
+        return None
+    states = _str_keyed(envelope["states"])
+    if key not in states:
+        return None
+    return "null" if states[key] == "null" else "value"
 
 
 def _provider_json_value(key: str, value: object) -> PlainTree:

@@ -50,6 +50,7 @@ from trackinizer.sagent.session.types import (
     WebSearchHit,
     WebSearchResult,
     WriteResult,
+    former_kind,
 )
 
 
@@ -91,6 +92,19 @@ def _transcript(records: Iterable[SessionRecord]) -> tuple[TranscriptItem, ...]:
             UserMessage | AssistantMessage | Thinking | ToolCall | ToolResult,
         )
     )
+
+
+def _result(record: object) -> ToolResult:
+    """Return ``record`` after asserting it is a ``ToolResult``."""
+    assert isinstance(record, ToolResult)
+    return record
+
+
+def _typed_result[T](record: object, kind: type[T]) -> T:
+    """Return ``record.result`` after asserting it is an instance of ``kind``."""
+    tool_result = _result(record).result
+    assert isinstance(tool_result, kind)
+    return tool_result
 
 
 def test_a_session_declares_its_context_and_identity() -> None:
@@ -330,8 +344,8 @@ def test_an_image_in_a_tool_result_decodes_to_its_bytes() -> None:
 
     records = list(codex.normalize(StringIO(native)))
 
-    result = _transcript(records)[0]
-    assert isinstance(result, UncategorizedToolResult)
+    result = _result(_transcript(records)[0])
+    assert _typed_result(result, UncategorizedToolResult) == UncategorizedToolResult()
     assert result.attachments == (Attachment(mime_descriptor="image/png", data=b"hi"),)
 
 
@@ -430,7 +444,7 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
 )
 def test_an_event_maps_to_its_own_record_type(
     native: str,
-    expected: type[SessionRecord],
+    expected: type[object],
 ) -> None:
     records = list(codex.normalize(StringIO(META + native + "\n")))
 
@@ -438,7 +452,8 @@ def test_an_event_maps_to_its_own_record_type(
     # stream, so the event's own record is the one after them. Not ``[-1]`` --
     # a compaction is FOLLOWED by the window it opened, and that trailing
     # ``ContextClear`` is a derived record, not what the event mapped to.
-    assert isinstance(records[2], expected)
+    record = records[2]
+    assert type(record.result if isinstance(record, ToolResult) else record) is expected
 
 
 def test_a_peer_message_is_a_message_not_a_tool_result() -> None:
@@ -516,11 +531,24 @@ def test_a_completed_command_keeps_its_argument_list() -> None:
 
     records = list(codex.normalize(StringIO(native)))
 
-    result = records[-1]
-    assert isinstance(result, BashResult)
-    assert result.command == ("/bin/sh", "-c", "ls")
-    assert result.exit_code == 0
-    assert result.stdout == "a\n"
+    result = _result(records[-1])
+    shell = _typed_result(result, BashResult)
+    assert shell.command == ("/bin/sh", "-c", "ls")
+    assert shell.exit_code == 0
+    assert (result.stdout, result.stderr) == (("a\n",), ())
+
+
+def test_a_nonzero_exit_is_appended_to_the_text_and_is_not_an_error() -> None:
+    native = META + (
+        '{"type":"event_msg","payload":{"type":"exec_command_end","call_id":"c",'
+        '"command":["false"],"stdout":"out\\n","stderr":"boom","exit_code":2}}\n'
+    )
+
+    result = _result(list(codex.normalize(StringIO(native)))[-1])
+
+    assert result.text() == "out\nboom\n[exit 2]"
+    assert (_typed_result(result, BashResult).exit_code, result.is_error) == (2, False)
+    assert (result.stdout, result.stderr) == (("out\n",), ("boom",))
 
 
 @pytest.mark.parametrize(
@@ -538,7 +566,7 @@ def test_a_completed_command_keeps_its_argument_list() -> None:
 def test_a_successful_command_file_operation_lifts_to_its_specific_type(
     command: str,
     stdout: str,
-    expected: type[SessionRecord],
+    expected: type[object],
 ) -> None:
     native = META + (
         '{"type":"event_msg","payload":{"type":"item_completed","item":'
@@ -551,14 +579,17 @@ def test_a_successful_command_file_operation_lifts_to_its_specific_type(
 
     records = list(codex.normalize(StringIO(native)))
 
-    result = records[-1]
-    assert type(result) is expected
-    assert isinstance(result, ReadResult | WriteResult | EditResult)
-    assert result.path == "a.txt"
-    if isinstance(result, ReadResult):
-        assert result.content == "body\n"
-    if isinstance(result, WriteResult):
-        assert result.content == "body"
+    result = _result(records[-1])
+    tool_result = result.result
+    assert type(tool_result) is expected
+    assert isinstance(tool_result, ReadResult | WriteResult | EditResult)
+    assert tool_result.path == "a.txt"
+    if isinstance(tool_result, ReadResult):
+        assert (
+            "".join(text for text in result.stdout if isinstance(text, str)) == "body\n"
+        )
+    if isinstance(tool_result, WriteResult):
+        assert tool_result.content == "body"
     output = StringIO()
     codex.denormalize(records, output)
     assert output.getvalue() == native
@@ -578,11 +609,10 @@ def test_a_completed_in_place_edit_names_its_file_without_a_diff() -> None:
     )
 
     records = list(codex.normalize(StringIO(native)))
-    result = records[-1]
+    result = _result(records[-1])
 
-    assert isinstance(result, EditResult)
-    assert result.path == "a.txt"
-    assert result.edits == ()
+    assert _typed_result(result, EditResult).path == "a.txt"
+    assert tuple(item for item in result.stdout if isinstance(item, Splice)) == ()
     output = StringIO()
     codex.denormalize(records, output)
     assert output.getvalue() == native
@@ -663,6 +693,16 @@ def _event(payload: str) -> str:
             '{"type":"exec_command_end","call_id":"c","command":["ls"],'
             '"stdout":"a\\n","stderr":"","exit_code":0}',
         ),
+        META
+        + _event(
+            '{"type":"exec_command_end","call_id":"c","command":["false"],'
+            '"stdout":"","stderr":"boom","exit_code":2}',
+        ),
+        META
+        + _event(
+            '{"type":"item_completed","item":{"type":"CommandExecution","id":"e",'
+            '"command":["false"],"stdout":"out","stderr":"boom\\n","exit_code":2}}',
+        ),
         META + _event('{"type":"patch_apply_end","call_id":"c","success":true}'),
         META
         + _event(
@@ -682,6 +722,8 @@ def _event(payload: str) -> str:
         "context-compacted",
         "mcp-tool-call-end",
         "exec-command-end",
+        "failed-exec-command-end",
+        "failed-completed-command",
         "patch-without-changes",
         "completed-web-search",
     ],
@@ -717,17 +759,21 @@ def test_a_record_without_a_session_writes_nothing() -> None:
     ("record", "expected"),
     [
         (
-            WebSearchResult(
+            ToolResult(
                 call_id="c",
-                content=(WebSearchHit(url="u"),),
+                state="done",
+                stdout=("u", WebSearchHit(url="u")),
+                result=WebSearchResult(),
                 extra={"$echoes": "web_search_end", "$rows": [], "$row_order": [7]},
             ),
             '"results":[{"url":"u"}]',
         ),
         (
-            WebSearchResult(
+            ToolResult(
                 call_id="c",
-                content=(WebSearchHit(url="u"),),
+                state="done",
+                stdout=("u", WebSearchHit(url="u")),
+                result=WebSearchResult(),
                 extra={
                     "$echoes": "web_search_end",
                     "$rows": ["kept"],
@@ -792,14 +838,23 @@ def test_a_synthesized_session_denormalizes_to_codex_records() -> None:
         UserMessage(context_id=0, content="Hi."),
         AssistantMessage(context_id=0, content="Here."),
         ToolCall(context_id=0, call_id="c1", name="Read", arguments={"p": "/a"}),
-        UncategorizedToolResult(context_id=0, call_id="c1", content="ok"),
+        ToolResult(
+            context_id=0,
+            call_id="c1",
+            state="done",
+            stdout=("ok",),
+            result=UncategorizedToolResult(),
+        ),
     )
     out = StringIO()
 
     codex.denormalize(records, out)
 
-    rebuilt = codex.normalize(StringIO(out.getvalue()))
-    assert [type(r).__name__ for r in _transcript(rebuilt)] == [
+    rebuilt = _transcript(codex.normalize(StringIO(out.getvalue())))
+    assert [
+        former_kind(r) if isinstance(r, ToolResult) else type(r).__name__
+        for r in rebuilt
+    ] == [
         "UserMessage",
         "AssistantMessage",
         "ToolCall",
@@ -855,11 +910,11 @@ def test_new_search_rows_are_appended() -> None:
         '"call_id":"c","results":[{"url":"https://old"}]}}\n'
     )
     records = list(codex.normalize(StringIO(native)))
-    result = records[-1]
-    assert isinstance(result, WebSearchResult)
+    result = _result(records[-1])
+    assert isinstance(result.result, WebSearchResult)
     edited = replace(
         result,
-        content=(*result.content, WebSearchHit(url="https://new")),
+        stdout=(*result.stdout, WebSearchHit(url="https://new")),
     )
     output = StringIO()
 
@@ -904,7 +959,17 @@ def test_a_read_crosses_as_the_command_codex_reads_with() -> None:
     """
     output = StringIO()
 
-    codex.denormalize([ReadResult(call_id="c", path="/a", content="x")], output)
+    codex.denormalize(
+        [
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("x",),
+                result=ReadResult(path="/a"),
+            ),
+        ],
+        output,
+    )
 
     written = output.getvalue()
     assert '"type":"CommandExecution"' in written
@@ -917,10 +982,11 @@ def test_file_edit_diff_is_emitted_when_path_is_known() -> None:
 
     codex.denormalize(
         [
-            EditResult(
+            ToolResult(
                 call_id="c",
-                path="a.py",
-                edits=parse_udiff("@@ -1 +1 @@\n-old\n+new\n"),
+                state="done",
+                stdout=("Edited a.py.", *parse_udiff("@@ -1 +1 @@\n-old\n+new\n")),
+                result=EditResult(path="a.py"),
             ),
         ],
         output,
@@ -1075,7 +1141,7 @@ def test_a_line_timestamp_is_stored_once() -> None:
 
 
 def test_a_patch_diff_is_stored_once() -> None:
-    # :attr:`EditResult.edits` IS the diff, and the writer rebuilds the
+    # An edit's splices ARE the diff, and the writer rebuilds the
     # per-path entry by rendering them. Keeping the source copy too stored
     # every diff twice -- 129 KB on one captured rollout, 4.7% of its size.
     diff = "@@ -1,2 +1,2 @@\n-old\n+new\n"
@@ -1085,10 +1151,13 @@ def test_a_patch_diff_is_stored_once() -> None:
         '{"type":"update","unified_diff":' + json.dumps(diff) + "}}}}}\n"
     )
     records = list(codex.normalize(StringIO(native)))
-    record = records[-1]
-    assert isinstance(record, EditResult)
+    record = _result(records[-1])
+    assert isinstance(record.result, EditResult)
 
-    assert render_udiff(record.edits) == diff
+    assert (
+        render_udiff(tuple(item for item in record.stdout if isinstance(item, Splice)))
+        == diff
+    )
     assert diff not in json.dumps(mutable(record.extra)), (
         "the diff is on the record already"
     )
@@ -1187,7 +1256,7 @@ def test_a_token_count_stores_no_envelope_the_table_holds() -> None:
 def test_a_legacy_patch_diff_is_stored_once() -> None:
     # The pre-0.149 ``patch_apply_end`` spelling put the whole ``changes`` map
     # in the residual, so each entry's ``unified_diff`` sat beside the
-    # :attr:`edits` built from it: 95% of one captured rollout's 91 KB of diff
+    # splices built from it: 95% of one captured rollout's 91 KB of diff
     # text was stored twice, which is half that file's entire IR growth.
     diff = "@@ -1,2 +1,2 @@\n-old\n+new\n"
     native = META + (
@@ -1198,10 +1267,13 @@ def test_a_legacy_patch_diff_is_stored_once() -> None:
         + ',"move_path":null}}}}\n'
     )
     records = list(codex.normalize(StringIO(native)))
-    record = records[-1]
-    assert isinstance(record, EditResult)
+    record = _result(records[-1])
+    assert isinstance(record.result, EditResult)
 
-    assert render_udiff(record.edits) == diff
+    assert (
+        render_udiff(tuple(item for item in record.stdout if isinstance(item, Splice)))
+        == diff
+    )
     # Compared VALUE to value. A substring search over serialized JSON cannot
     # answer this: the needle holds a real newline and the haystack holds the
     # escaped ``\\n``, so the search misses a diff that is plainly there --
@@ -1232,8 +1304,7 @@ def test_an_added_file_is_a_write_not_an_edit() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
 
-    record = records[-1]
-    assert isinstance(record, WriteResult)
+    record = _typed_result(records[-1], WriteResult)
     assert record.path == "/w/new.py"
     assert record.content == "fresh text"
 
@@ -1259,8 +1330,15 @@ def test_a_multi_path_patch_names_every_file_it_changed() -> None:
     )
     records = list(codex.normalize(StringIO(native)))
 
-    edits = [r for r in records if isinstance(r, EditResult)]
-    assert [(r.path, len(r.edits)) for r in edits] == [("/w/a.py", 1), ("/w/b.py", 1)]
+    edits = [
+        (
+            tool_result.path,
+            len(tuple(item for item in r.stdout if isinstance(item, Splice))),
+        )
+        for r in records
+        if isinstance(r, ToolResult) and isinstance(tool_result := r.result, EditResult)
+    ]
+    assert edits == [("/w/a.py", 1), ("/w/b.py", 1)]
 
     output = StringIO()
     codex.denormalize(records, output)
@@ -1302,11 +1380,16 @@ def test_a_mixed_patch_harvests_the_add_beside_the_update() -> None:
         '"/w/new.py":{"type":"add","content":"fresh\\n"}}}}}\n'
     )
     records = list(codex.normalize(StringIO(native)))
-    acts = [r for r in records if isinstance(r, EditResult | WriteResult)]
+    acts = [
+        tool_result
+        for r in records
+        if isinstance(r, ToolResult)
+        and isinstance(tool_result := r.result, EditResult | WriteResult)
+    ]
 
     # The update is an edit, the add is a write: one act each, named for its
     # own file and typed by what it did.
-    assert [(type(r).__name__, r.path) for r in acts] == [
+    assert [(type(tool_result).__name__, tool_result.path) for tool_result in acts] == [
         ("EditResult", "/w/a.py"),
         ("WriteResult", "/w/new.py"),
     ]
@@ -1328,14 +1411,18 @@ def test_an_edited_patch_diff_still_replays_its_entry() -> None:
         '{"type":"update","unified_diff":"@@ -1 +1 @@"}}}}}\n'
     )
     records = list(codex.normalize(StringIO(native)))
-    record = records[-1]
-    assert isinstance(record, EditResult)
+    record = _result(records[-1])
+    assert isinstance(record.result, EditResult)
+    edited = replace(
+        record,
+        stdout=(
+            "".join(text for text in record.stdout if isinstance(text, str)),
+            *parse_udiff("-EDIT\n"),
+        ),
+    )
     output = StringIO()
 
-    codex.denormalize(
-        [*records[:-1], replace(record, edits=parse_udiff("-EDIT\n"))],
-        output,
-    )
+    codex.denormalize([*records[:-1], edited], output)
 
     assert '"unified_diff":"-EDIT\\n"' in output.getvalue()
     assert '"type":"update"' in output.getvalue()
@@ -1592,9 +1679,26 @@ def test_grouping_still_joins_a_patch_that_touched_several_paths() -> None:
     writer rebuilds ONE event from them -- so the followers still have to
     arrive with the record that led their line.
     """
-    lead = EditResult(call_id="c1", path="/w/a.py", extra={"$echoes": "x"})
-    follower = EditResult(call_id="c1", path="/w/b.py")
-    other = EditResult(call_id="c2", path="/w/c.py", extra={"$echoes": "x"})
+    lead = ToolResult(
+        call_id="c1",
+        state="done",
+        stdout=("Edited /w/a.py.",),
+        result=EditResult(path="/w/a.py"),
+        extra={"$echoes": "x"},
+    )
+    follower = ToolResult(
+        call_id="c1",
+        state="done",
+        stdout=("Edited /w/b.py.",),
+        result=EditResult(path="/w/b.py"),
+    )
+    other = ToolResult(
+        call_id="c2",
+        state="done",
+        stdout=("Edited /w/c.py.",),
+        result=EditResult(path="/w/c.py"),
+        extra={"$echoes": "x"},
+    )
 
     groups = [list(group) for group in _grouped((lead, follower, other))]
 
@@ -1610,7 +1714,13 @@ def test_codex_small_helpers_preserve_edge_shapes() -> None:
         "stdout",
     ]
     assert codex._ordered("x", {"z": 1}) == {"z": 1}
-    assert codex._write_rows(WebSearchResult(call_id="c"), {}) is None
+    assert (
+        codex._write_rows(
+            ToolResult(call_id="c", state="done", result=WebSearchResult()),
+            {},
+        )
+        is None
+    )
     assert codex._write_content(
         "",
         (),
@@ -1642,12 +1752,24 @@ def test_codex_writer_handles_unmapped_and_special_records() -> None:
     assert codex._write_record(SystemMessage(content="ok"))[0][0] == "response_item"
     assert (
         codex._write_result(
-            WebSearchResult(call_id="c", query="q"),
+            ToolResult(call_id="c", state="done", result=WebSearchResult(query="q")),
         )
         is not None
     )
-    assert codex._write_result(WebFetchResult(call_id="c", content="x")) is not None
-    assert codex._write_completed(WebFetchResult(call_id="c"), {}) is None
+    fetched = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("x",),
+        result=WebFetchResult(),
+    )
+    assert codex._write_result(fetched) is not None
+    assert (
+        codex._write_completed(
+            ToolResult(call_id="c", state="done", result=WebFetchResult()),
+            {},
+        )
+        is None
+    )
 
 
 def test_codex_reader_handles_multiblock_and_malformed_shapes() -> None:
@@ -1693,14 +1815,47 @@ def test_codex_patch_and_usage_helpers_report_exact_values() -> None:
 
 
 def test_codex_completed_result_preserves_missing_edit_path() -> None:
-    result = EditResult(call_id="c", edits=(Splice(before="a", after="b"),))
+    result = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("Edited the file.", Splice(before="a", after="b")),
+        result=EditResult(),
+    )
     assert codex._write_completed(result, {}) is None
 
 
 def test_a_result_codex_has_no_event_for_is_written_as_what_the_model_read() -> None:
-    assert codex._write_result(GrepResult(call_id="c", content="a.py:1:x")) == (
+    grepped = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("a.py:1:x",),
+        result=GrepResult(),
+    )
+    assert codex._write_result(grepped) == (
         "response_item",
         {"type": "function_call_output", "call_id": "c", "output": "a.py:1:x"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "output"),
+    [
+        (ToolResult(call_id="c", state="pending", shown="[running]"), "[running]"),
+        (
+            ToolResult(call_id="c", state="failed", stderr=("ValueError: no",)),
+            "ValueError: no",
+        ),
+        (ToolResult(call_id="c", state="done", result=UncategorizedToolResult()), ""),
+    ],
+    ids=["pending-shown", "failed", "done-empty"],
+)
+def test_a_pending_failed_or_uncategorized_result_is_written_as_its_text(
+    record: ToolResult,
+    output: str,
+) -> None:
+    assert codex._write_result(record) == (
+        "response_item",
+        {"type": "function_call_output", "call_id": "c", "output": output},
     )
 
 
@@ -1725,20 +1880,25 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     assert launch.getvalue() == (
         'first\n{"timestamp":null,"type":"session_meta","payload":{}}\n'
     )
-    assert codex._write_result(ToolResult(call_id="c")) is None
+    assert codex._write_result(ToolResult(call_id="c", state="pending")) is None
+    assert codex._write_result(ToolResult(call_id="c", state="cancelled")) is None
     assert (
         codex._write_output(
-            UncategorizedToolResult(call_id="c", extra={"$whole": True, "type": "x"}),
+            ToolResult(
+                call_id="c",
+                state="done",
+                result=UncategorizedToolResult(),
+                extra={"$whole": True, "type": "x"},
+            ),
             {"$whole": True, "type": "x", "other": 1},
         )["type"]
         == "x"
     )
-    shell = BashResult(
+    shell = ToolResult(
         call_id="c",
-        command=("echo", "ok"),
-        stdout="out",
-        stderr="",
-        exit_code=0,
+        state="done",
+        stdout=("out",),
+        result=BashResult(command=("echo", "ok"), exit_code=0),
         extra={"$present": ["type", "call_id", "command", "stdout", "exit_code"]},
     )
     assert (
@@ -1752,16 +1912,24 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     )
     assert (
         codex._write_changes(
-            {"a": WriteResult(call_id="c", path="a", content="x")},
+            {
+                "a": ToolResult(
+                    call_id="c",
+                    state="done",
+                    stdout=("Wrote a.",),
+                    result=WriteResult(path="a", content="x"),
+                ),
+            },
             {"a": {}},
         )
         is None
     )
     assert (
         codex._write_rows(
-            WebSearchResult(
+            ToolResult(
                 call_id="c",
-                content=(),
+                state="done",
+                result=WebSearchResult(),
                 extra={"$rows": [{}], "$row_order": ["row"]},
             ),
             {"$rows": [{}], "$row_order": ["row"]},

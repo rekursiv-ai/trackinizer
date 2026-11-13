@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Final
 from uuid import uuid4
 
@@ -10,8 +11,13 @@ from treekle import immutable
 
 import pytest
 
-from trackinizer.sagent.session.types import Thinking, UserMessage
-from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.sagent.session.types import (
+    BashResult,
+    Thinking,
+    ToolResult,
+    UserMessage,
+)
+from trackinizer.types.session_records import SessionRecordRow, served_payload
 from trackinizer.wire.wire_session_ir import (
     AppendRecordsRequest,
     ManifestBody,
@@ -74,6 +80,59 @@ def test_a_stored_row_crosses_the_wire_and_back_unchanged(
 
     assert (body.idx, body.kind, body.text) == (5, kind, row.text)
     assert body.row(session_id, 2) == row
+
+
+def test_a_converted_legacy_row_crosses_the_wire_under_its_stored_kind() -> None:
+    """The body keeps the row's legacy ``kind`` and decodes as the current record."""
+    session_id = uuid4()
+    record = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("a.py\n",),
+        result=BashResult(command=("ls",), exit_code=0),
+    )
+    legacy_row = SessionRecordRow(
+        session_id=session_id,
+        idx=4,
+        kind="BashResult",
+        payload=immutable(
+            {
+                "py/object": "BashResult",
+                "call_id": "c",
+                "command": ["ls"],
+                "stdout": "a.py\n",
+                "exit_code": 0,
+            },
+        ),
+        text="ls\na.py",
+    )
+    current_row = SessionRecordRow.of(
+        session_id=session_id,
+        part=0,
+        idx=4,
+        record=record,
+    )
+
+    body = RecordBody.of(
+        replace(
+            legacy_row,
+            payload=served_payload(legacy_row.kind, legacy_row.payload),
+        ),
+    )
+
+    assert (body.idx, body.kind, body.text) == (4, "BashResult", "ls\na.py")
+    assert body.payload == current_row.payload
+    assert body.row(session_id, 0).record() == record
+    for row in (
+        current_row,
+        SessionRecordRow.of(
+            session_id=session_id,
+            part=0,
+            idx=0,
+            record=UserMessage(content="hi"),
+        ),
+    ):
+        assert served_payload(row.kind, row.payload) is row.payload
 
 
 @pytest.mark.parametrize(

@@ -32,6 +32,7 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolResult,
     TurnContext,
     UncategorizedRecord,
     UncategorizedToolResult,
@@ -63,6 +64,13 @@ def _meta(**fields: object) -> dict[str, object]:
 
 def _only[T](records: list[SessionRecord], kind: type[T]) -> list[T]:
     return [record for record in records if isinstance(record, kind)]
+
+
+def _typed_result[T](record: ToolResult, kind: type[T]) -> T:
+    """Return ``record.result`` after asserting it is an instance of ``kind``."""
+    tool_result = record.result
+    assert isinstance(tool_result, kind)
+    return tool_result
 
 
 def test_a_user_turn_becomes_a_user_message() -> None:
@@ -146,21 +154,22 @@ def test_a_result_is_typed_by_the_call_it_answers() -> None:
         _history("tool_result", call_id="g", content="a.py:1", is_error=False),
     )
 
-    shell, read, edit, grep = [
-        r for r in records if hasattr(r, "call_id") and not isinstance(r, ToolCall)
-    ]
-    assert isinstance(shell, BashResult)
-    assert shell.command == ("pytest -q",)
-    assert shell.stdout == "1 failed"
+    shell, read, edit, grep = _only(records, ToolResult)
+    assert _typed_result(shell, BashResult).command == ("pytest -q",)
+    assert (shell.stdout, shell.stderr) == (("1 failed",), ())
     assert shell.extra["is_error"] is True
-    assert isinstance(read, ReadResult)
-    assert (read.path, read.content) == ("/a.py", "print(1)")
-    assert isinstance(edit, EditResult)
-    assert edit.path == "/a.py"
-    assert edit.edits[0].before == "x"
-    assert edit.edits[0].after == "y"
-    assert isinstance(grep, UncategorizedToolResult)
-    assert grep.content == "a.py:1"
+    assert (
+        _typed_result(read, ReadResult).path,
+        "".join(text for text in read.stdout if isinstance(text, str)),
+    ) == (
+        "/a.py",
+        "print(1)",
+    )
+    assert _typed_result(edit, EditResult).path == "/a.py"
+    assert next(item for item in edit.stdout if isinstance(item, Splice)).before == "x"
+    assert next(item for item in edit.stdout if isinstance(item, Splice)).after == "y"
+    assert _typed_result(grep, UncategorizedToolResult) == UncategorizedToolResult()
+    assert "".join(text for text in grep.stdout if isinstance(text, str)) == "a.py:1"
     assert grep.extra["is_error"] is False
 
 
@@ -178,10 +187,25 @@ def test_write_and_fetch_results_carry_what_their_calls_named() -> None:
         _history("tool_result", call_id="f", content="page", is_error=False),
     )
 
-    [write] = _only(records, WriteResult)
-    assert (write.path, write.content) == ("/b.py", "z")
-    [fetch] = _only(records, WebFetchResult)
-    assert (fetch.url, fetch.content) == ("https://x.org", "page")
+    [write] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, WriteResult)
+    ]
+    written = _typed_result(write, WriteResult)
+    assert (written.path, written.content) == ("/b.py", "z")
+    [fetch] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, WebFetchResult)
+    ]
+    assert (
+        _typed_result(fetch, WebFetchResult).url,
+        "".join(text for text in fetch.stdout if isinstance(text, str)),
+    ) == (
+        "https://x.org",
+        "page",
+    )
 
 
 def test_a_refused_edit_or_write_keeps_its_error_not_a_change() -> None:
@@ -212,11 +236,30 @@ def test_a_refused_edit_or_write_keeps_its_error_not_a_change() -> None:
         _history("tool_result", call_id="w", content="not yet read", is_error=True),
     )
 
-    assert not _only(records, EditResult)
-    assert not _only(records, WriteResult)
-    edit, write = _only(records, UncategorizedToolResult)
-    assert (edit.content, edit.extra["is_error"]) == ("modified since read", True)
-    assert (write.content, write.extra["is_error"]) == ("not yet read", True)
+    assert not [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, EditResult)
+    ]
+    assert not [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, WriteResult)
+    ]
+    edit, write = [
+        record
+        for record in records
+        if isinstance(record, ToolResult)
+        and isinstance(record.result, UncategorizedToolResult)
+    ]
+    assert (
+        "".join(text for text in edit.stdout if isinstance(text, str)),
+        edit.extra["is_error"],
+    ) == ("modified since read", True)
+    assert (
+        "".join(text for text in write.stdout if isinstance(text, str)),
+        write.extra["is_error"],
+    ) == ("not yet read", True)
 
 
 def test_a_context_override_is_a_compaction() -> None:
@@ -316,7 +359,12 @@ def test_a_result_for_an_unseen_call_is_uncategorized() -> None:
         _history("tool_result", call_id="nope", content="?", is_error=False),
     )
 
-    [result] = _only(records, UncategorizedToolResult)
+    [result] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult)
+        and isinstance(record.result, UncategorizedToolResult)
+    ]
     assert result.call_id == "nope"
 
 
@@ -353,7 +401,13 @@ def test_a_spawn_result_names_the_child_it_started() -> None:
         ),
     )
 
-    [status] = _only(records, AgentSpawnResult)
+    [spawned] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult)
+        and isinstance(record.result, AgentSpawnResult)
+    ]
+    status = _typed_result(spawned, AgentSpawnResult)
     assert status.agent_id == "3640f519-c4c6"
     assert status.agent_kind == "rev"
     assert status.prompt == "review x"
@@ -372,10 +426,19 @@ def test_a_one_shot_spawn_result_carries_its_prompt_and_reply() -> None:
         _history("tool_result", call_id="sp", content="There are 3.", is_error=False),
     )
 
-    [status] = _only(records, AgentSpawnResult)
+    [spawned] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult)
+        and isinstance(record.result, AgentSpawnResult)
+    ]
+    status = _typed_result(spawned, AgentSpawnResult)
     assert status.agent_id is None
     assert status.prompt == "count files"
-    assert status.content == "There are 3."
+    assert (
+        "".join(text for text in spawned.stdout if isinstance(text, str))
+        == "There are 3."
+    )
 
 
 def test_a_peer_message_is_an_agent_to_agent_message() -> None:
@@ -474,8 +537,15 @@ def test_the_descriptor_family_reads_like_history() -> None:
     assert [a.content for a in _only(records, AssistantMessage)] == ["Looking."]
     [tool_call] = _only(records, ToolCall)
     assert (tool_call.call_id, tool_call.name) == ("t1", "Read")
-    [read] = _only(records, ReadResult)
-    assert (read.path, read.content) == ("/v", "set x")
+    [read] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, ReadResult)
+    ]
+    assert (
+        _typed_result(read, ReadResult).path,
+        "".join(text for text in read.stdout if isinstance(text, str)),
+    ) == ("/v", "set x")
 
 
 def test_a_descriptor_error_part_marks_the_result_failed() -> None:
@@ -490,9 +560,14 @@ def test_a_descriptor_error_part_marks_the_result_failed() -> None:
         },
     )
 
-    [result] = _only(records, UncategorizedToolResult)
+    [result] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult)
+        and isinstance(record.result, UncategorizedToolResult)
+    ]
     assert result.extra["is_error"] is True
-    assert result.content == "boom"
+    assert "".join(text for text in result.stdout if isinstance(text, str)) == "boom"
 
 
 def test_legacy_text_parts_join_plain_markdown_and_error_text() -> None:
@@ -532,8 +607,9 @@ def test_a_descriptor_result_of_plain_text_keeps_that_text() -> None:
         {"kind": "message", "descriptor": "multipart/x-tool-result", "content": "raw"},
     )
 
-    assert isinstance(result, UncategorizedToolResult)
-    assert result.content == "raw"
+    assert isinstance(result, ToolResult)
+    assert _typed_result(result, UncategorizedToolResult) == UncategorizedToolResult()
+    assert "".join(text for text in result.stdout if isinstance(text, str)) == "raw"
 
 
 def test_a_stamp_past_1e11_is_nanoseconds() -> None:
@@ -565,7 +641,12 @@ def test_a_role_tool_result_keeps_its_failure() -> None:
         {"kind": "message", "role": "tool", "tool_call_id": "t", "is_error": True},
     )
 
-    [result] = _only(records, UncategorizedToolResult)
+    [result] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult)
+        and isinstance(record.result, UncategorizedToolResult)
+    ]
     assert result.extra["is_error"] is True
 
 
@@ -602,8 +683,12 @@ def test_the_role_family_reads_like_history() -> None:
     assert [u.content for u in _only(records, UserMessage)] == ["hi"]
     [call] = _only(records, ToolCall)
     assert dict(call.arguments) == {"command": "ls"}
-    [shell] = _only(records, BashResult)
-    assert shell.stdout == "[exit code: 2]"
+    [shell] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, BashResult)
+    ]
+    assert (shell.stdout, shell.stderr) == (("[exit code: 2]",), ())
 
 
 def test_convert_names_the_format_but_does_not_offer_it() -> None:
@@ -623,7 +708,12 @@ _JOURNAL: Final = (
     ContextClear(timestamp="2026-10-31T00:00:00Z", system_prompt="", history=()),
     UserMessage(content="hello", extra={"$inbound": {"source": "bob"}}),
     ToolCall(call_id="c1", name="Bash", arguments={"command": "ls"}),
-    UncategorizedToolResult(call_id="c1", content="a b"),
+    ToolResult(
+        call_id="c1",
+        state="done",
+        stdout=("a b",),
+        result=UncategorizedToolResult(),
+    ),
     AssistantMessage(content="hi"),
 )
 """Records as today's sagent journals them: one IR record a line."""
@@ -918,51 +1008,81 @@ def test_every_family_reads_to_exactly_its_records() -> None:
         Thinking(timestamp=at, content="t"),
         AssistantMessage(timestamp=at, content="ok"),
         *calls,
-        BashResult(
+        ToolResult(
             timestamp=at,
             call_id="b",
-            command=("ls",),
-            stdout="out",
+            state="done",
+            stdout=("out",),
+            result=BashResult(command=("ls",)),
             extra=ok,
         ),
-        ReadResult(timestamp=at, call_id="r", path="a.py", content="out", extra=ok),
-        WriteResult(timestamp=at, call_id="w", path="b.py", content="z", extra=ok),
-        EditResult(
+        ToolResult(
+            timestamp=at,
+            call_id="r",
+            state="done",
+            stdout=("out",),
+            result=ReadResult(path="a.py"),
+            extra=ok,
+        ),
+        ToolResult(
+            timestamp=at,
+            call_id="w",
+            state="done",
+            stdout=("Wrote b.py.",),
+            result=WriteResult(path="b.py", content="z"),
+            extra=ok,
+        ),
+        ToolResult(
             timestamp=at,
             call_id="e",
-            path="a.py",
-            edits=(Splice(before="x", after="y"),),
+            state="done",
+            stdout=("Edited a.py.", Splice(before="x", after="y")),
+            result=EditResult(path="a.py"),
             extra=ok,
         ),
-        WebFetchResult(
+        ToolResult(
             timestamp=at,
             call_id="f",
-            url="https://x.org",
-            content="out",
+            state="done",
+            stdout=("out",),
+            result=WebFetchResult(url="https://x.org"),
             extra=ok,
         ),
-        AgentSpawnResult(
+        ToolResult(
             timestamp=at,
             call_id="s1",
-            agent_id="kid",
-            agent_kind="kid",
-            prompt="go",
-            model="m",
-            content="out",
+            state="done",
+            stdout=("out",),
+            result=AgentSpawnResult(
+                agent_id="kid",
+                agent_kind="kid",
+                prompt="go",
+                model="m",
+            ),
             extra=ok,
         ),
-        AgentSpawnResult(
+        ToolResult(
             timestamp=at,
             call_id="s2",
-            prompt="count",
-            content="out",
+            state="done",
+            stdout=("out",),
+            result=AgentSpawnResult(prompt="count"),
             extra=ok,
         ),
-        UncategorizedToolResult(timestamp=at, call_id="g", content="out", extra=ok),
-        UncategorizedToolResult(
+        ToolResult(
+            timestamp=at,
+            call_id="g",
+            state="done",
+            stdout=("out",),
+            result=UncategorizedToolResult(),
+            extra=ok,
+        ),
+        ToolResult(
             timestamp=at,
             call_id="nope",
-            content="?",
+            state="done",
+            stdout=("?",),
+            result=UncategorizedToolResult(),
             extra={"is_error": True},
         ),
         AgentToAgentMessage(timestamp=at, content="hi", sender="kid"),
@@ -988,8 +1108,22 @@ def test_every_family_reads_to_exactly_its_records() -> None:
         Thinking(timestamp=ns),
         AssistantMessage(timestamp=ns, content="ab"),
         ToolCall(timestamp=ns, call_id="q", name="Grep", arguments={}),
-        UncategorizedToolResult(timestamp=ns, call_id="q", content="found", extra=ok),
-        UncategorizedToolResult(timestamp=ns, call_id="", content="orphan", extra=ok),
+        ToolResult(
+            timestamp=ns,
+            call_id="q",
+            state="done",
+            stdout=("found",),
+            result=UncategorizedToolResult(),
+            extra=ok,
+        ),
+        ToolResult(
+            timestamp=ns,
+            call_id="",
+            state="done",
+            stdout=("orphan",),
+            result=UncategorizedToolResult(),
+            extra=ok,
+        ),
         UncategorizedRecord(
             kind="message/text/x-banner",
             payload={"kind": "message", "descriptor": "text/x-banner", "content": "hi"},
@@ -1046,8 +1180,12 @@ def test_a_shell_result_whose_call_named_no_command_states_none() -> None:
         _history("tool_result", call_id="b", content="out"),
     )
 
-    [shell] = _only(records, BashResult)
-    assert shell.command is None
+    [shell] = [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, BashResult)
+    ]
+    assert _typed_result(shell, BashResult).command is None
 
 
 def test_a_malformed_record_is_kept_as_an_unknown_kind() -> None:

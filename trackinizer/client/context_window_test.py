@@ -7,6 +7,7 @@ measured: claude's ``compact_boundary`` and flagged summary, codex's sealed
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from io import StringIO
 from typing import TYPE_CHECKING
@@ -36,12 +37,16 @@ from trackinizer.sagent.session.types import (
     ContextClear,
     ContextCompaction,
     EditResult,
+    GrepResult,
     Splice,
     Thinking,
     ToolCall,
+    ToolResult,
+    UncategorizedToolResult,
     UserMessage,
     WebSearchHit,
     WebSearchResult,
+    WriteResult,
 )
 
 
@@ -631,7 +636,11 @@ class TestTheBudget:
         assert "done" in said
         # A shell result crosses as structure, so its call does too.
         assert [r.call_id for r in loaded.records if isinstance(r, ToolCall)] == ["new"]
-        assert [r.call_id for r in loaded.records if isinstance(r, BashResult)] == [
+        assert [
+            r.call_id
+            for r in loaded.records
+            if isinstance(r, ToolResult) and isinstance(r.result, BashResult)
+        ] == [
             "new",
         ]
 
@@ -745,9 +754,13 @@ class TestTheBudget:
 
         loaded = cli_records(seen, "claude", seq=_seven)
 
-        [result] = [r for r in loaded.records if isinstance(r, BashResult)]
+        [result] = [
+            r
+            for r in loaded.records
+            if isinstance(r, ToolResult) and isinstance(r.result, BashResult)
+        ]
         assert result.stdout == (
-            "h" * 10_000 + "[... 36000 bytes cut ...]" + "t" * 4_000
+            "h" * 10_000 + "[... 36000 bytes cut ...]" + "t" * 4_000,
         )
         assert any(
             isinstance(r, ToolCall) and r.call_id == "t1" for r in loaded.records
@@ -770,7 +783,13 @@ def test_loading_shortens_each_oversized_text_without_changing_the_original(
 ) -> None:
     text = "h" * 10_000 + "m" * (CUT_ABOVE - 14_000 + 1) + "t" * 4_000
     record = (
-        BashResult(call_id="t", stdout="ok", stderr=text)
+        ToolResult(
+            call_id="t",
+            state="done",
+            stdout=("ok",),
+            stderr=(text,),
+            result=BashResult(),
+        )
         if shell
         else AssistantMessage(content=text)
     )
@@ -781,10 +800,11 @@ def test_loading_shortens_each_oversized_text_without_changing_the_original(
     [shortened] = loaded.records
     expected = "h" * 10_000 + "[... 2001 bytes cut ...]" + "t" * 4_000
     if shell:
-        assert isinstance(shortened, BashResult)
-        assert (shortened.stdout, shortened.stderr) == ("ok", expected)
-        assert isinstance(record, BashResult)
-        assert record.stderr == text
+        assert isinstance(shortened, ToolResult)
+        assert isinstance(shortened.result, BashResult)
+        assert (shortened.stdout, shortened.stderr) == (("ok",), (expected,))
+        assert isinstance(record, ToolResult)
+        assert record.stderr == (text,)
     else:
         assert isinstance(shortened, AssistantMessage)
         assert shortened.content == expected
@@ -792,23 +812,122 @@ def test_loading_shortens_each_oversized_text_without_changing_the_original(
         assert record.content == text
 
 
+def test_loading_cuts_a_write_results_content_and_leaves_an_edits_splices() -> None:
+    """A write's text is its result's ``content``; an edit's splices are never cut."""
+    text = "h" * 10_000 + "m" * (CUT_ABOVE - 14_000 + 1) + "t" * 4_000
+    write_record = ToolResult(
+        timestamp=_at(1),
+        call_id="w",
+        state="done",
+        stdout=("Wrote a.py.",),
+        result=WriteResult(path="a.py", content=text),
+    )
+    edit_record = ToolResult(
+        timestamp=_at(2),
+        call_id="e",
+        state="done",
+        stdout=("Edited a.py.", Splice(before=text, after="")),
+        result=EditResult(path="a.py"),
+    )
+    seen = window([_segment(0, "codex", [write_record, edit_record])])
+
+    loaded = cli_records(seen, "codex", seq=_seven)
+
+    cut = "h" * 10_000 + "[... 2001 bytes cut ...]" + "t" * 4_000
+    assert loaded.records == [
+        replace(write_record, result=WriteResult(path="a.py", content=cut)),
+        edit_record,
+    ]
+
+
 @pytest.mark.parametrize(
     ("record", "expected"),
     [
         (
-            EditResult(
+            ToolResult(
+                call_id="w2",
+                state="done",
+                stdout=("Wrote a.py.",),
+                result=WriteResult(path="a.py", content="é字"),
+            ),
+            5,
+        ),
+        (ToolResult(call_id="w3", state="done", result=WriteResult(path="a.py")), 0),
+        (
+            ToolResult(
+                call_id="b",
+                state="done",
+                stdout=("a", "b"),
+                stderr=("c",),
+                # The exit code is a result field, not output, so it adds no weight.
+                result=BashResult(exit_code=2),
+            ),
+            3,
+        ),
+        (
+            ToolResult(
+                call_id="g",
+                state="done",
+                stdout=("abcd",),
+                result=GrepResult(pattern="x"),
+            ),
+            0,
+        ),
+        (
+            ToolResult(
+                call_id="u",
+                state="done",
+                stdout=("abcd",),
+                result=UncategorizedToolResult(),
+            ),
+            4,
+        ),
+        (ToolResult(call_id="f", state="failed", stderr=("boom",)), 0),
+        (ToolResult(call_id="p", state="pending", shown="[running]"), 0),
+    ],
+    ids=[
+        "write",
+        "write-without-content",
+        "shell",
+        "another-tool",
+        "unknown-tool",
+        "failed",
+        "pending",
+    ],
+)
+def test_weight_counts_a_tool_call_records_text_by_its_result_class(
+    record: SessionRecord,
+    expected: int,
+) -> None:
+    assert weight(record) == expected
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            ToolResult(
                 call_id="e1",
-                edits=(Splice(before="ab", after="cde"), Splice(after="f")),
+                state="done",
+                stdout=(
+                    "Edited the file.",
+                    Splice(before="ab", after="cde"),
+                    Splice(after="f"),
+                ),
+                result=EditResult(),
             ),
             6,
         ),
         (
-            WebSearchResult(
+            ToolResult(
                 call_id="w1",
-                content=(
+                state="done",
+                stdout=(
+                    "AB\nhttps://a.b\nxyz\n\nC",
                     WebSearchHit(url="https://a.b", title="AB", snippet="xyz"),
                     WebSearchHit(title="C"),
                 ),
+                result=WebSearchResult(),
             ),
             17,
         ),

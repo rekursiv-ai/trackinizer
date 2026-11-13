@@ -21,7 +21,13 @@ import json
 
 from treekle import MutablePlainTree, json_loads
 
-from trackinizer.sagent.session.types import record_classes, stored_plain, stored_record
+from trackinizer.sagent.session.types import (
+    FORMER_RESULT_KINDS,
+    ToolResult,
+    record_classes,
+    stored_plain,
+    stored_record,
+)
 
 
 if TYPE_CHECKING:
@@ -46,6 +52,9 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     named = {
         f"{kind.__module__}.{name}": name for name, kind in record_classes().items()
     }
+    # A former result class is not in ``record_classes()``, and an old document
+    # still tags its rows with that class's import path.
+    named |= {f"{ToolResult.__module__}.{name}": name for name in FORMER_RESULT_KINDS}
     for plain in json_loads(stream.read(), list[MutablePlainTree]):
         yield stored_record(_named(plain, named=named))
 

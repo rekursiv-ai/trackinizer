@@ -18,6 +18,7 @@ from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
     ToolCall,
+    ToolResult,
     UncategorizedToolResult,
     UserMessage,
 )
@@ -3695,7 +3696,12 @@ class _StoredClient(FakeClient):
             [
                 UserMessage(content="typed"),
                 ToolCall(call_id="t1", name="Grep"),
-                UncategorizedToolResult(call_id="t1", content="r" * 300),
+                ToolResult(
+                    call_id="t1",
+                    state="done",
+                    stdout=("r" * 300,),
+                    result=UncategorizedToolResult(),
+                ),
                 AssistantMessage(content="a\nb"),
                 AssistantMessage(content="after the cut"),
             ],

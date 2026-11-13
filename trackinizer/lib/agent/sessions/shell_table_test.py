@@ -33,7 +33,9 @@ from trackinizer.sagent.session.types import (
     EditResult,
     ReadResult,
     SessionRecord,
+    Splice,
     ToolCall,
+    ToolResult,
     WriteResult,
 )
 
@@ -180,14 +182,25 @@ def _codex_native(command: str, stdout: str) -> str:
     )
 
 
-def _lifted(records: Sequence[SessionRecord]) -> object:
+def _lifted(records: Sequence[SessionRecord]) -> ToolResult | None:
     """Return the one file result a session carries."""
     found = [
         record
         for record in records
-        if isinstance(record, ReadResult | WriteResult | EditResult)
+        if isinstance(record, ToolResult)
+        and isinstance(record.result, ReadResult | WriteResult | EditResult)
     ]
     return found[0] if len(found) == 1 else None
+
+
+def _with_file_result(
+    result: ToolResult | None,
+) -> tuple[ToolResult, ReadResult | WriteResult | EditResult]:
+    """Return ``result`` and its ``result`` field, asserted to be a file result."""
+    assert result is not None
+    tool_result = result.result
+    assert isinstance(tool_result, ReadResult | WriteResult | EditResult)
+    return result, tool_result
 
 
 @pytest.mark.parametrize(
@@ -213,15 +226,25 @@ def test_every_table_row_is_harvested(
     )
     adapter = claude if provider == "claude" else codex
 
-    lifted = _lifted(list(adapter.normalize(StringIO(native))))
+    lifted, tool_result = _with_file_result(
+        _lifted(list(adapter.normalize(StringIO(native)))),
+    )
 
-    assert type(lifted) is expected
-    assert isinstance(lifted, ReadResult | WriteResult | EditResult)
-    assert lifted.path == path
-    if isinstance(lifted, EditResult):
-        assert (render_udiff(lifted.edits) or None) == content
+    assert type(tool_result) is expected
+    assert tool_result.path == path
+    if isinstance(tool_result, EditResult):
+        assert (
+            render_udiff(
+                tuple(item for item in lifted.stdout if isinstance(item, Splice)),
+            )
+            or None
+        ) == content
+    elif isinstance(tool_result, WriteResult):
+        assert tool_result.content == content
     else:
-        assert lifted.content == content
+        assert (
+            "".join(text for text in lifted.stdout if isinstance(text, str)) == content
+        )
 
 
 @pytest.mark.parametrize("command", [pytest.param(row[1], id=row[0]) for row in rows()])
@@ -263,10 +286,9 @@ def test_editing_a_lifted_path_rewrites_the_replayed_command(
     """
     native = _claude_native(command, "body\n")
     records = list(claude.normalize(StringIO(native)))
-    lifted = _lifted(records)
-    assert isinstance(lifted, ReadResult | WriteResult | EditResult)
+    lifted, tool_result = _with_file_result(_lifted(records))
 
-    edited = replace(lifted, path="renamed.txt")
+    edited = replace(lifted, result=replace(tool_result, path="renamed.txt"))
     output = StringIO()
     claude.denormalize(
         [edited if record is lifted else record for record in records],
@@ -311,15 +333,13 @@ def test_editing_lifted_write_content_rewrites_the_replayed_command() -> None:
     """Changing the bytes a write put in a file changes the command."""
     native = _claude_native("/usr/bin/printf body > a.txt", "")
     records = list(claude.normalize(StringIO(native)))
-    lifted = _lifted(records)
-    assert isinstance(lifted, WriteResult)
+    lifted, tool_result = _with_file_result(_lifted(records))
+    assert isinstance(tool_result, WriteResult)
+    changed = replace(lifted, result=replace(tool_result, content="changed"))
 
     output = StringIO()
     claude.denormalize(
-        [
-            replace(lifted, content="changed") if record is lifted else record
-            for record in records
-        ],
+        [changed if record is lifted else record for record in records],
         output,
     )
 
@@ -335,9 +355,11 @@ def test_a_lifted_result_keeps_the_shell_execution_it_came_from() -> None:
     """
     native = _claude_native("/bin/cat a.txt", "body\n")
 
-    lifted = _lifted(list(claude.normalize(StringIO(native))))
+    lifted, tool_result = _with_file_result(
+        _lifted(list(claude.normalize(StringIO(native)))),
+    )
 
-    assert isinstance(lifted, ReadResult)
+    assert isinstance(tool_result, ReadResult)
     assert "$shell" in lifted.extra
 
 

@@ -17,6 +17,7 @@ import pytest
 from trackinizer.lib.agent.sessions import unmodeled
 from trackinizer.lib.agent.sessions.unmodeled import (
     extract_unmodeled_fields,
+    field_state,
     read_field_keeping_invalid,
     restore_unmodeled_fields,
     same_json_value,
@@ -125,6 +126,22 @@ class TestLosslessFields:
         }
 
         assert restore_unmodeled_fields(extract_unmodeled_fields(source), {}) == source
+
+    def test_field_state_returns_value_null_or_none_for_each_field(self) -> None:
+        source = {"null": None, "value": "", "invalid": 7, "other": 1}
+        stored = extract_unmodeled_fields(
+            source,
+            fields={
+                key: read_field_keeping_invalid(source, key, str)
+                for key in ("missing", "null", "value", "invalid")
+            },
+        )
+
+        assert [
+            field_state(stored, key)
+            for key in ("missing", "null", "value", "invalid", "other")
+        ] == [None, "null", "value", None, None]
+        assert field_state({"value": ""}, "value") is None
 
     def test_restore_requires_a_value_for_every_modeled_field(self) -> None:
         source = {"value": 1}

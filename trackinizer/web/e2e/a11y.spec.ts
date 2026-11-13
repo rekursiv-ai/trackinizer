@@ -288,22 +288,54 @@ const RECORDS = [
   { kind: "UserMessage", payload: { content: "Check Issue#1 and report." }, text: "Check Issue#1 and report." },
   { kind: "Thinking", payload: { content: "Read the issue, then run its test." } },
   { kind: "ToolCall", payload: { call_id: "c1", name: "Bash", arguments: { command: "pytest -x" } } },
-  { kind: "BashResult", payload: { call_id: "c1", stdout: "\u001b[32m1 passed\u001b[0m in 0.12s\n", stderr: "", exit_code: 0 } },
+  // A tool call's record: a `ToolResult` payload under the kind its row is stored as, the result's class.
+  {
+    kind: "BashResult",
+    payload: {
+      "py/object": "ToolResult",
+      call_id: "c1",
+      state: "done",
+      stdout: ["\u001b[32m1 passed\u001b[0m in 0.12s\n"],
+      result: { "py/object": "BashResult", exit_code: 0 },
+    },
+  },
   { kind: "ToolCall", payload: { call_id: "c2", name: "Bash", arguments: { command: "pytest" } } },
   {
     kind: "BashResult",
-    payload: { call_id: "c2", stdout: Array.from({ length: 80 }, (_, n) => `line ${n}`).join("\n"), stderr: "1 failed\n", exit_code: 1 },
+    payload: {
+      "py/object": "ToolResult",
+      call_id: "c2",
+      state: "done",
+      stdout: [Array.from({ length: 80 }, (_, n) => `line ${n}`).join("\n")],
+      stderr: ["1 failed\n"],
+      result: { "py/object": "BashResult", exit_code: 1 },
+    },
   },
   {
     kind: "EditResult",
     payload: {
-      path: "a.py",
-      edits: [{ before: "x = 'old'  # was\n", after: "x = 2.5  # now\n", lead: "@@ -3,3 +3,3 @@\n def f():\n", trail: " return x\n", start: 4, count: 1, bare: [] }],
+      "py/object": "ToolResult",
+      call_id: "",
+      state: "done",
+      stdout: [
+        "Edited a.py.",
+        { "py/object": "Splice", before: "x = 'old'  # was\n", after: "x = 2.5  # now\n", lead: "@@ -3,3 +3,3 @@\n def f():\n", trail: " return x\n", start: 4, count: 1 },
+      ],
+      result: { "py/object": "EditResult", path: "a.py" },
     },
   },
   {
     kind: "WebSearchResult",
-    payload: { query: "wcag contrast", content: [{ url: "https://example.com/wcag", title: "Contrast", snippet: "4.5:1 for text." }] },
+    payload: {
+      "py/object": "ToolResult",
+      call_id: "",
+      state: "done",
+      stdout: [
+        "Contrast\nhttps://example.com/wcag\n4.5:1 for text.",
+        { "py/object": "WebSearchHit", url: "https://example.com/wcag", title: "Contrast", snippet: "4.5:1 for text." },
+      ],
+      result: { "py/object": "WebSearchResult", query: "wcag contrast" },
+    },
   },
   { kind: "TokenUsage", payload: { info: { input_tokens: 3 } } },
   {

@@ -26,6 +26,7 @@ from trackinizer.sagent.session.types import (
     Thinking,
     TokenUsage,
     ToolCall,
+    ToolResult,
     TurnContext,
     UncategorizedRecord,
     UncategorizedToolResult,
@@ -72,12 +73,22 @@ def test_session_json_round_trips_every_record_type() -> None:
             arguments={"path": "/a"},
             extra={"$spaced": True},
         ),
-        ReadResult(call_id="c1", path="/a", content="body"),
-        BashResult(call_id="c2", command=("ls",), exit_code=0),
-        UncategorizedToolResult(
+        ToolResult(
+            call_id="c1",
+            state="done",
+            stdout=("body",),
+            result=ReadResult(path="/a"),
+        ),
+        ToolResult(
+            call_id="c2",
+            state="done",
+            result=BashResult(command=("ls",), exit_code=0),
+        ),
+        ToolResult(
             call_id="c3",
-            content="ok",
-            attachments=(Attachment(mime_descriptor="image/png", data=b"png"),),
+            state="done",
+            stdout=("ok", Attachment(mime_descriptor="image/png", data=b"png")),
+            result=UncategorizedToolResult(),
         ),
         AgentToAgentMessage(content="Look.", sender="/root", recipient="/kid"),
         TokenUsage(info={"total": 7}, rate_limits={"used": 1}),
@@ -183,6 +194,27 @@ def test_a_document_naming_classes_by_import_path_still_reads() -> None:
     )
 
     assert list(normalized.normalize(StringIO(old))) == [record]
+
+
+def test_a_row_tagged_with_a_former_result_class_import_path_still_reads() -> None:
+    old = json.dumps(
+        [
+            {
+                "py/object": f"{ToolResult.__module__}.UncategorizedToolResult",
+                "call_id": "c",
+                "content": "ok",
+            },
+        ],
+    )
+
+    assert list(normalized.normalize(StringIO(old))) == [
+        ToolResult(
+            call_id="c",
+            state="done",
+            stdout=("ok",),
+            result=UncategorizedToolResult(),
+        ),
+    ]
 
 
 @pytest.mark.parametrize(

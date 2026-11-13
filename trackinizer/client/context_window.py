@@ -46,11 +46,13 @@ from trackinizer.sagent.session.types import (
     EditResult,
     ReadResult,
     SessionRecord,
+    Splice,
     ToolCall,
     ToolResult,
     UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
+    WebSearchHit,
     WebSearchResult,
     WriteResult,
 )
@@ -91,16 +93,10 @@ _COMPACT_SUMMARY: Final = immutable(
 _CLEAR_COMMAND: Final = "<command-name>/clear</command-name>"
 
 # The records whose words are one ``content`` field.
-_WORDED: Final = (
-    UserMessage,
-    AssistantMessage,
-    AgentToAgentMessage,
-    UncategorizedToolResult,
-    ReadResult,
-    WriteResult,
-    WebFetchResult,
-    AgentSpawnResult,
-)
+_WORDED: Final = (UserMessage, AssistantMessage, AgentToAgentMessage)
+
+# The result classes of tools whose text is their output on ``stdout`` and ``stderr``.
+_OUTPUT_TEXT_RESULTS: Final = (BashResult, ReadResult, WebFetchResult, AgentSpawnResult)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -593,18 +589,8 @@ def _texts(record: SessionRecord) -> list[str]:
     """Return the text of ``record`` that a target reads."""
     if isinstance(record, ToolCall):
         return [record.name, json.dumps(mutable(record.arguments), sort_keys=True)]
-    if isinstance(record, BashResult):
-        return [record.stdout, record.stderr]
-    if isinstance(record, EditResult):
-        return [
-            text or "" for edit in record.edits for text in (edit.before, edit.after)
-        ]
-    if isinstance(record, WebSearchResult):
-        return [
-            text or ""
-            for row in record.content
-            for text in (row.url, row.title, row.snippet)
-        ]
+    if isinstance(record, ToolResult):
+        return _result_texts(record)
     if isinstance(record, ContextClear):
         return [record.summary or ""]
     if isinstance(record, _WORDED):
@@ -612,14 +598,64 @@ def _texts(record: SessionRecord) -> list[str]:
     return []
 
 
+def _result_texts(record: ToolResult) -> list[str]:
+    """Return the text of a tool-call record that a target reads."""
+    tool_result = record.result
+    if isinstance(tool_result, EditResult):
+        return [
+            text or ""
+            for edit in record.stdout
+            if isinstance(edit, Splice)
+            for text in (edit.before, edit.after)
+        ]
+    if isinstance(tool_result, WebSearchResult):
+        return [
+            text or ""
+            for hit in record.stdout
+            if isinstance(hit, WebSearchHit)
+            for text in (hit.url, hit.title, hit.snippet)
+        ]
+    if isinstance(tool_result, WriteResult):
+        return [tool_result.content or ""]
+    if isinstance(tool_result, _OUTPUT_TEXT_RESULTS) or (
+        record.state == "done" and isinstance(tool_result, UncategorizedToolResult)
+    ):
+        return [
+            "".join(item for item in stream if isinstance(item, str))
+            for stream in (record.stdout, record.stderr)
+        ]
+    # Every other tool-call record weighs nothing, as its row did when each tool
+    # had a record class of its own: a ``GrepResult``, a failed call, a pending one.
+    return []
+
+
 def _shortened(record: SessionRecord) -> SessionRecord:
     """Return ``record`` with each text over :data:`CUT_ABOVE` bytes cut."""
-    if isinstance(record, BashResult):
-        return replace(
-            record,
-            stdout=cut_text(record.stdout),
-            stderr=cut_text(record.stderr),
-        )
+    if isinstance(record, ToolResult):
+        tool_result = record.result
+        if isinstance(tool_result, WriteResult) and tool_result.content is not None:
+            return replace(
+                record,
+                result=replace(tool_result, content=cut_text(tool_result.content)),
+            )
+        # The same records whose output ``_result_texts`` weighs.
+        if isinstance(tool_result, _OUTPUT_TEXT_RESULTS) or (
+            record.state == "done" and isinstance(tool_result, UncategorizedToolResult)
+        ):
+            return replace(
+                record,
+                stdout=_cut_stream(record.stdout),
+                stderr=_cut_stream(record.stderr),
+            )
+        return record
     if isinstance(record, _WORDED) and record.content is not None:
         return replace(record, content=cut_text(record.content))
     return record
+
+
+def _cut_stream(stream: tuple[object, ...]) -> tuple[object, ...]:
+    """Return one output stream with its text cut when over :data:`CUT_ABOVE` bytes."""
+    text = "".join(item for item in stream if isinstance(item, str))
+    if len(text.encode()) <= CUT_ABOVE:
+        return stream
+    return (cut_text(text), *(item for item in stream if not isinstance(item, str)))

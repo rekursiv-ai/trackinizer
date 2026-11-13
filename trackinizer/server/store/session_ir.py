@@ -386,6 +386,10 @@ class _SessionIRMixin(_CascadeAuditMixin):
     ) -> list[SessionRecordRow]:
         """Read one part's records in ``idx`` order, ciphertext spliced back.
 
+        Rows are returned as stored. A legacy tool-call row still holds a retired
+        record class's payload; the route that answers a client converts it with
+        ``served_payload``.
+
         ``plaintext_only`` skips the ciphertext join, which is what a search
         or feed reader wants: those never replay a file, and the bytes are the
         largest thing on the row.

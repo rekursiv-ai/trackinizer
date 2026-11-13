@@ -28,8 +28,8 @@ from trackinizer.sagent.session.types import (
     EditResult,
     ReadResult,
     SessionRecord,
+    Splice,
     ToolResult,
-    UncategorizedToolResult,
     UserMessage,
     WebFetchResult,
     WebSearchResult,
@@ -125,13 +125,21 @@ def test_a_claude_file_result_reaches_the_codex_wire(
     calls the codex writer at all.
     """
     records = list(claude.normalize(StringIO(native)))
-    assert any(isinstance(record, source) for record in records)
+    assert [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, source)
+    ]
 
     out = StringIO()
     codex.denormalize(records, out)
 
     crossed = list(codex.normalize(StringIO(out.getvalue())))
-    assert any(isinstance(record, expected) for record in crossed)
+    assert [
+        record
+        for record in crossed
+        if isinstance(record, ToolResult) and isinstance(record.result, expected)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -155,12 +163,16 @@ def test_a_crossed_file_result_keeps_the_path_it_named(native: str, path: str) -
 
     crossed = list(codex.normalize(StringIO(out.getvalue())))
     found = [
-        record
+        tool_result
         for record in crossed
-        if isinstance(record, ReadResult | WriteResult | EditResult)
+        if isinstance(record, ToolResult)
+        and isinstance(
+            tool_result := record.result,
+            ReadResult | WriteResult | EditResult,
+        )
     ]
 
-    assert [record.path for record in found] == [path]
+    assert [tool_result.path for tool_result in found] == [path]
 
 
 def test_a_single_path_codex_edit_names_the_file_it_changed() -> None:
@@ -179,15 +191,27 @@ def test_a_single_path_codex_edit_names_the_file_it_changed() -> None:
     records = list(codex.normalize(StringIO(native)))
 
     record = records[-1]
-    assert isinstance(record, EditResult)
-    assert record.path == "/w/a.py"
+    assert isinstance(record, ToolResult)
+    tool_result = record.result
+    assert isinstance(tool_result, EditResult)
+    assert tool_result.path == "/w/a.py"
 
 
 @pytest.mark.parametrize(
     "record",
     [
-        WebFetchResult(call_id="c1", url="https://x/", content="page"),
-        AgentSpawnResult(call_id="c1", agent_id="a1", content="report"),
+        ToolResult(
+            call_id="c1",
+            state="done",
+            stdout=("page",),
+            result=WebFetchResult(url="https://x/"),
+        ),
+        ToolResult(
+            call_id="c1",
+            state="done",
+            stdout=("report",),
+            result=AgentSpawnResult(agent_id="a1"),
+        ),
     ],
     ids=["fetch", "agent"],
 )
@@ -249,19 +273,27 @@ def test_a_codex_act_keeps_its_type_crossing_to_claude(
     named ``apply_patch`` or ``shell``, and its payload was built from a
     ``$result`` shape only a claude-read record has.
 
-    So every typed act decayed to :class:`UncategorizedToolResult` on the way,
+    So every typed act decayed to an uncategorized result on the way,
     measured over 150 captured rollouts as 42 files losing an act -- and the
     byte check never fired, because codex->codex never runs the claude writer.
     """
     native = _codex_meta() + payload
     records = list(codex.normalize(StringIO(native)))
-    assert any(isinstance(record, expected) for record in records)
+    assert [
+        record
+        for record in records
+        if isinstance(record, ToolResult) and isinstance(record.result, expected)
+    ]
 
     out = StringIO()
     claude.denormalize(records, out)
 
     crossed = list(claude.normalize(StringIO(out.getvalue())))
-    assert any(isinstance(record, expected) for record in crossed)
+    assert [
+        record
+        for record in crossed
+        if isinstance(record, ToolResult) and isinstance(record.result, expected)
+    ]
 
 
 def test_a_crossed_codex_edit_keeps_the_file_and_the_change() -> None:
@@ -272,8 +304,15 @@ def test_a_crossed_codex_edit_keeps_the_file_and_the_change() -> None:
     claude.denormalize(records, out)
 
     crossed = list(claude.normalize(StringIO(out.getvalue())))
-    edits = [r for r in crossed if isinstance(r, EditResult)]
-    assert [(r.path, len(r.edits)) for r in edits] == [("/w/a.py", 1)]
+    edits = [
+        (
+            tool_result.path,
+            len(tuple(item for item in r.stdout if isinstance(item, Splice))),
+        )
+        for r in crossed
+        if isinstance(r, ToolResult) and isinstance(tool_result := r.result, EditResult)
+    ]
+    assert edits == [("/w/a.py", 1)]
 
 
 def test_an_image_carrying_detail_is_still_an_attachment() -> None:
@@ -295,7 +334,7 @@ def test_an_image_carrying_detail_is_still_an_attachment() -> None:
     attachment_records = (
         UserMessage,
         AssistantMessage,
-        UncategorizedToolResult,
+        ToolResult,
     )
     attachments = [
         found
@@ -318,13 +357,19 @@ def test_an_unset_content_does_not_cross_as_an_empty_one() -> None:
     """
     out = StringIO()
 
-    codex.denormalize([WebFetchResult(call_id="c1", url="u", content=None)], out)
+    codex.denormalize(
+        [ToolResult(call_id="c1", state="done", result=WebFetchResult(url="u"))],
+        out,
+    )
 
+    assert '"output"' not in out.getvalue()
     crossed = list(codex.normalize(StringIO(out.getvalue())))
     # Filtered to the results: every stream now opens with a ``TurnContext``,
     # which carries no content at all and would read as one more entry.
     results = [record for record in crossed if isinstance(record, ToolResult)]
-    assert [getattr(record, "content", "") for record in results] == [None]
+    assert [(record.stdout, record.extra["$output_absent"]) for record in results] == [
+        ((), True),
+    ]
 
 
 def test_a_path_beginning_with_a_dash_is_named_not_flagged() -> None:
@@ -335,11 +380,25 @@ def test_a_path_beginning_with_a_dash_is_named_not_flagged() -> None:
     """
     out = StringIO()
 
-    codex.denormalize([ReadResult(call_id="c1", path="-n", content="x")], out)
+    codex.denormalize(
+        [
+            ToolResult(
+                call_id="c1",
+                state="done",
+                stdout=("x",),
+                result=ReadResult(path="-n"),
+            ),
+        ],
+        out,
+    )
 
     crossed = list(codex.normalize(StringIO(out.getvalue())))
-    reads = [r for r in crossed if isinstance(r, ReadResult)]
-    assert [r.path for r in reads] == ["-n"]
+    reads = [
+        tool_result
+        for r in crossed
+        if isinstance(r, ToolResult) and isinstance(tool_result := r.result, ReadResult)
+    ]
+    assert [tool_result.path for tool_result in reads] == ["-n"]
 
 
 def test_a_claude_only_record_does_not_fabricate_a_codex_line() -> None:

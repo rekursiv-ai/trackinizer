@@ -10,8 +10,10 @@ export type SessionPart = components["schemas"]["PartBody"];
 
 /**
  * One stored record of a transcript. `kind` is the record's class
- * (`UserMessage`, `ToolCall`); `payload` is the record as the server's
- * dataclass codec wrote it; `text` is its search projection.
+ * (`UserMessage`, `ToolCall`), or for a tool call's record its tool's legacy
+ * class name (`BashResult`, `ReadResult`); `payload` is the record as the
+ * server's dataclass codec writes it, a tool call's always a `ToolResult`;
+ * `text` is its search projection.
  */
 export type SessionRecord = components["schemas"]["RecordBody-Output"];
 

@@ -1,6 +1,7 @@
 import { expect, test } from "vitest";
 import type { SessionRecord } from "../../api/sessions";
 import { ansiRuns, clipLines, clipText, harnessBlocks, lineNumbers, markBookkeeping, partLabel, recordView, transcriptRows, unreadable } from "./records";
+import { editResult, searchResult, shellResult, tagged, toolResult } from "./testing";
 
 /** A record as the server sends one: the payload in its dataclass codec's shape. */
 function record(kind: string, payload: { [field: string]: unknown } = {}, text = ""): SessionRecord {
@@ -70,7 +71,7 @@ test("a tool call shows its main argument as written, and its other arguments ap
 
 test("a shell result names its command as a shell would read it, apart from its output and exit (B8)", () => {
   const argv = ["echo", "it's", "a b", "--x=1"];
-  expect(recordView(record("BashResult", { command: argv, stdout: "it's\n", stderr: "", exit_code: 0 }))).toEqual({
+  expect(recordView(record("BashResult", shellResult({ command: argv, stdout: "it's\n", exit: 0 })))).toEqual({
     shape: "shell",
     label: "Shell command",
     command: `echo 'it'"'"'s' 'a b' --x=1`,
@@ -82,10 +83,10 @@ test("a shell result names its command as a shell would read it, apart from its 
     failed: false,
   });
   const script = ["/bin/bash", "-lc", "cd /w && date -u"];
-  expect(recordView(record("BashResult", { command: script, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "cd /w && date -u" });
+  expect(recordView(record("BashResult", shellResult({ command: script, exit: 0 })))).toMatchObject({ command: "cd /w && date -u" });
   // Sagent's argv is the whole command line as one word.
   const line = ["date -u +%s; ls 'a b'"];
-  expect(recordView(record("BashResult", { command: line, stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({ command: "date -u +%s; ls 'a b'" });
+  expect(recordView(record("BashResult", shellResult({ command: line, exit: 0 })))).toMatchObject({ command: "date -u +%s; ls 'a b'" });
 });
 
 test("an edit is a unified diff: the provider's own context and header, else the line it named (B9)", () => {
@@ -93,7 +94,7 @@ test("an edit is a unified diff: the provider's own context and header, else the
       { before: "old\n", after: "new\n", lead: "@@ -3,3 +3,3 @@\n ctx a\n", trail: " ctx b\n", start: 4, count: 1, bare: [] },
       { before: "x\n", after: "", lead: null, trail: null, start: 10, count: 1, bare: [] },
     ];
-  const view = recordView(record("EditResult", { path: "a.py", edits }));
+  const view = recordView(record("EditResult", editResult("a.py", edits)));
   expect(view).toMatchObject({ shape: "edit", label: "File edit", source: "a.py" });
   expect(view.shape === "edit" && view.lines.map((line) => `${line.kind}:${line.text}`)).toEqual([
     "hunk:@@ -3,3 +3,3 @@",
@@ -107,7 +108,7 @@ test("an edit is a unified diff: the provider's own context and header, else the
   // Each line's number in the file it is in: the new file's for context and
   // added lines, the old one's for removed lines; none where the provider gave none.
   expect(view.shape === "edit" && view.lines.map((line) => line.line)).toEqual([null, 3, 4, 4, 5, null, 10]);
-  const bare = recordView(record("EditResult", { path: "a.py", edits: [{ before: "a\n", after: "b\n", lead: null, trail: null }] }));
+  const bare = recordView(record("EditResult", editResult("a.py", [{ before: "a\n", after: "b\n", lead: null, trail: null }])));
   expect(bare.shape === "edit" && bare.lines.map((line) => line.line)).toEqual([null, null]);
 });
 
@@ -140,18 +141,20 @@ test("bookkeeping is the harness's records; a legacy turn and a model change are
 
 test("a result written with its defaults left out shows as one written in full", () => {
   // The server stores a record with each field at its default left out (`to_plain`).
-  const cases: [string, { [field: string]: unknown }, { [field: string]: unknown }][] = [
-    ["BashResult", { command: ["true"], exit_code: 0 }, { stdout: "", stderr: "" }],
-    ["EditResult", { path: "a.py" }, { edits: [] }],
-    ["WebSearchResult", { query: "pglite" }, { content: [] }],
+  const cases: [string, { [field: string]: unknown }][] = [
+    ["BashResult", { command: ["true"], exit_code: 0 }],
+    ["EditResult", { path: "a.py" }],
+    ["WebSearchResult", { query: "pglite" }],
   ];
-  for (const [kind, written, defaults] of cases) {
-    expect(recordView(record(kind, written))).toEqual(recordView(record(kind, { ...written, ...defaults })));
+  for (const [kind, fields] of cases) {
+    const payload = toolResult(tagged(kind, fields));
+    expect("stdout" in payload || "stderr" in payload || "extra" in payload).toBe(false);
+    expect(recordView(record(kind, payload))).toEqual(recordView(record(kind, { ...payload, stdout: [], stderr: [], shown: null, extra: {} })));
   }
 });
 
 test("a tool result shows its text, where it acted, and whether it failed", () => {
-  expect(recordView(record("BashResult", { stderr: "no such file", exit_code: 2 }, "no such file"))).toMatchObject({
+  expect(recordView(record("BashResult", shellResult({ stderr: "no such file", exit: 2 }), "no such file"))).toMatchObject({
     shape: "shell",
     label: "Shell command",
     stdout: "",
@@ -160,12 +163,47 @@ test("a tool result shows its text, where it acted, and whether it failed", () =
     failed: true,
     tool: "command",
   });
-  expect(recordView(record("ReadResult", { path: "/work/a.py" }, "print(1)"))).toMatchObject({
+  expect(recordView(record("ReadResult", toolResult(tagged("ReadResult", { path: "/work/a.py" })), "print(1)"))).toMatchObject({
     label: "Read",
     source: "/work/a.py",
     failed: false,
   });
-  expect(recordView(record("WebSearchResult", { query: "pglite" }, "…"))).toMatchObject({ label: "Web search", source: "pglite" });
+  expect(recordView(record("WebSearchResult", searchResult({ query: "pglite" }, []), "…"))).toMatchObject({ label: "Web search", source: "pglite" });
+});
+
+test("a tool call is flagged failed by a shell's nonzero exit code or its provider's flag, not by its state or another tool's exit code", () => {
+  const failed = (kind: string, payload: { [field: string]: unknown }) => recordView(record(kind, payload)).failed;
+  expect(failed("BashResult", shellResult({ exit: 1 }))).toBe(true);
+  expect(failed("BashResult", shellResult({ exit: 0 }))).toBe(false);
+  expect(failed("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: ["no"], extra: { is_error: true } }))).toBe(true);
+  expect(failed("ToolErrorResult", toolResult(null, { state: "failed", stderr: ["RuntimeError: boom"] }))).toBe(false);
+  expect(failed("ToolResult", toolResult(null, { state: "cancelled" }))).toBe(false);
+  expect(failed("ToolResult", toolResult(null, { state: "pending", shown: "[running]" }))).toBe(false);
+  expect(failed("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult", { exit_code: 1 }), { stderr: ["refused"] }))).toBe(false);
+  // A read with no output shows its error text; one with no output and no error text shows empty output.
+  const denied = toolResult(tagged("ReadResult", { path: "/w/a.py", exit_code: 1 }), { stderr: ["Denied"] });
+  expect(recordView(record("ReadResult", denied, "/w/a.py\nDenied"))).toMatchObject({ shape: "output", label: "Read", source: "/w/a.py", text: "Denied", failed: false });
+  const empty = toolResult(tagged("ReadResult", { path: "/w/empty.py" }));
+  expect(recordView(record("ReadResult", empty, "/w/empty.py"))).toMatchObject({ shape: "output", label: "Read", source: "/w/empty.py", text: "" });
+  // A write's `stdout` is only the line "Wrote <path>.", so a write with no `content` shows its error text.
+  const refusedWrite = toolResult(tagged("WriteResult", { path: "/w/a.py", exit_code: 1 }), { stdout: ["Wrote /w/a.py."], stderr: ["/w/a.py exists."] });
+  expect(recordView(record("WriteResult", refusedWrite))).toMatchObject({ shape: "output", label: "Write", source: "/w/a.py", text: "/w/a.py exists." });
+  // An edit with no splices, a fetch with no output and a search with no hits show their error text too.
+  const refused = (kind: string, fields: { [field: string]: unknown }) => recordView(record(kind, toolResult(tagged(kind, fields), { stderr: ["refused"] })));
+  expect(refused("EditResult", { path: "a.py" })).toMatchObject({ shape: "output", source: "a.py", text: "refused" });
+  expect(refused("WebFetchResult", { url: "https://a.b/" })).toMatchObject({ shape: "output", source: "https://a.b/", text: "refused" });
+  expect(refused("WebSearchResult", { query: "q" })).toMatchObject({ shape: "output", source: "q", text: "refused" });
+  expect(refused("AgentSpawnResult", { prompt: "p" })).toMatchObject({ shape: "output", text: "refused" });
+});
+
+test("a tool call's attachments are typed items in stdout, and an offloaded row is labelled by its kind", () => {
+  const png = { "py/object": "Attachment", mime_descriptor: "image/png", data: { "py/b64": `${"A".repeat(683)}=` } };
+  const shot = toolResult(tagged("UncategorizedToolResult"), { stdout: ["saved", png] });
+  expect(recordView(record("UncategorizedToolResult", shot))).toMatchObject({ label: "Tool result", text: "saved", attachments: "1 attachment (image/png, 512 B)" });
+  // The server's stub for an offloaded body: the head of its text, labelled by the row's stored kind.
+  const stub = (kind: string) => recordView({ ...record(kind, {}, "head"), payload: { $body: "offloaded" } });
+  expect(stub("ReadResult")).toMatchObject({ label: "Read", tool: "read", text: "head", failed: false });
+  expect(stub("UncategorizedToolResult")).toMatchObject({ label: "Uncategorized tool", tool: "call", text: "head" });
 });
 
 test("bookkeeping is one line, and a kind this view does not know still shows its text", () => {
@@ -207,9 +245,9 @@ test("a provider's own record shows its fields, a message in one as written, not
     text: "type: item_completed\nitem:\n  type: UserMessage\n  content:\n    - type: text\n      text: Line one.\nLine two.\n    - x\n  meta: {}",
   });
   // A tool that answers with one JSON object, as Claude's SendMessage does.
-  const sent = record("UncategorizedToolResult", {
-    content: `{"success":false,"message":"No agent named 'arm-b' is reachable.\\nUse ListAgents to see everyone you can message."}`,
-  });
+  const sent = record("UncategorizedToolResult",
+    toolResult(tagged("UncategorizedToolResult"), { stdout: [`{"success":false,"message":"No agent named 'arm-b' is reachable.\\nUse ListAgents to see everyone you can message."}`] }),
+  );
   expect(recordView(sent)).toMatchObject({
     text: "success: false\nmessage: No agent named 'arm-b' is reachable.\nUse ListAgents to see everyone you can message.",
   });
@@ -229,7 +267,7 @@ test("a codex script's output shows each command's output as written, under its 
     `{"current_time":"2026-10-01T18:38:15Z"}`,
     "plain line",
   ].join("\n");
-  expect(recordView(record("UncategorizedToolResult", { content }))).toMatchObject({
+  expect(recordView(record("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: [content] })))).toMatchObject({
     shape: "output",
     label: "Tool result",
     meta: "Script completed · Wall time 1.4 seconds",
@@ -246,7 +284,7 @@ test("a codex script's output shows each command's output as written, under its 
   });
   // An older script writes no blank line after `Output:`; one still running says so.
   const running = "Script running with cell ID 15\nWall time 1.0 seconds\nOutput:\nfirst line";
-  expect(recordView(record("UncategorizedToolResult", { content: running }))).toMatchObject({
+  expect(recordView(record("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: [running] })))).toMatchObject({
     meta: "Script running with cell ID 15 · Wall time 1.0 seconds",
     text: "first line",
   });
@@ -371,24 +409,13 @@ test("a record with nothing to read, which no view draws or counts: sealed reaso
 test("a tool result whose fields are empty shows what the model read instead (claude)", () => {
   // Claude's failed Read and backgrounded Bash, trimmed: the typed fields are
   // empty and the block's text, what the model read, is kept beside them.
-  const failed = record("ReadResult", {
-    path: null,
-    content: null,
-    extra: { $result: { block: { is_error: true }, tool_name: "Read", text: "File does not exist." } },
-  });
+  const failed = record("ReadResult", toolResult(tagged("ReadResult"), { extra: { $result: { block: { is_error: true }, tool_name: "Read", text: "File does not exist." } } }));
   expect(recordView(failed)).toMatchObject({ shape: "output", label: "Read", text: "File does not exist.", failed: true });
-  const background = record("BashResult", {
-    command: null,
-    stdout: "",
-    stderr: "",
-    exit_code: null,
-    extra: { $result: { block: { is_error: false }, tool_name: "Bash", text: "Command running in background with ID: b44ic5nb0." } },
-  });
+  const background = record("BashResult",
+    shellResult({}, { extra: { $result: { block: { is_error: false }, tool_name: "Bash", text: "Command running in background with ID: b44ic5nb0." } } }),
+  );
   expect(recordView(background)).toMatchObject({ shape: "shell", stdout: "Command running in background with ID: b44ic5nb0." });
-  const refused = record("UncategorizedToolResult", {
-    content: "No agent named 'arm-b'.",
-    extra: { $result: { block: { is_error: true }, tool_name: "SendMessage" } },
-  });
+  const refused = record("UncategorizedToolResult", toolResult(tagged("UncategorizedToolResult"), { stdout: ["No agent named 'arm-b'."], extra: { $result: { block: { is_error: true }, tool_name: "SendMessage" } } }));
   expect(recordView(refused)).toMatchObject({ failed: true });
 });
 
@@ -456,7 +483,10 @@ test("a harness's tags in code stay code, fenced or inline, and fold again after
 test("an agent's state, kind and time show whatever its content, and its text when it has none (DR-10)", () => {
   const status = (content: string | null) =>
     recordView(
-      record("AgentSpawnResult", { agent_kind: "Explore", prompt: "Find the uses.", content, state: "async_launched", duration_sec: 2.4 }, "Find the uses."),
+      record("AgentSpawnResult",
+        toolResult(tagged("AgentSpawnResult", { agent_kind: "Explore", prompt: "Find the uses.", state: "async_launched", duration_sec: 2.4 }), { stdout: content ? [content] : [] }),
+        "Find the uses.",
+      ),
     );
   for (const content of [null, ""]) {
     expect(status(content)).toMatchObject({ shape: "output", label: "Agent spawn", meta: "async_launched · Explore · 2 s", text: "Find the uses." });
@@ -466,7 +496,7 @@ test("an agent's state, kind and time show whatever its content, and its text wh
 test("a call takes the first result after it with its call_id, however far on, and a run of terminal records is one line (B18, B22, TX-07)", () => {
   const at = (idx: number, kind: string, payload: { [field: string]: unknown } = {}) => ({ ...record(kind, payload), idx });
   const call = (idx: number, id: string) => at(idx, "ToolCall", { call_id: id, name: "Bash" });
-  const answer = (idx: number, id: string) => at(idx, "BashResult", { call_id: id, stdout: "" });
+  const answer = (idx: number, id: string) => at(idx, "BashResult", shellResult({}, { call_id: id }));
   const rows = transcriptRows([call(0, "a"), answer(9, "a"), call(10, "b"), answer(20, "b"), answer(21, "c"), at(22, "Stdout"), at(23, "Stderr"), at(24, "Stdin")]);
   expect(rows.map((row) => [row.record.idx, row.result?.idx ?? null, row.stream?.length ?? 0])).toEqual([
     [0, 9, 0],
@@ -491,11 +521,14 @@ test("a tool step is named by what it did: its result's kind, else its call's na
   const result = (kind: string) => recordView(record(kind)).tool;
   const results = ["BashResult", "ReadResult", "EditResult", "WriteResult", "WebSearchResult", "WebFetchResult", "AgentSpawnResult", "UncategorizedToolResult", "ToolErrorResult", "ToolResult"];
   expect(results.map(result)).toEqual(["command", "read", "edit", "write", "web", "fetch", "agent", "call", "call", "call"]);
+  expect(["GrepResult", "GlobResult", "ListResult", "SkillResult"].map(result)).toEqual(["search", "search", "list", "call"]);
   // A call no tool answered says why; a stand-in for one still running says only what it shows.
-  expect(recordView(record("ToolErrorResult", { content: "RuntimeError: boom" }))).toMatchObject({ label: "Tool error", text: "RuntimeError: boom" });
-  expect(recordView(record("ToolResult", { stub: "pending", shown: "[running]" }))).toMatchObject({ label: "Tool", text: "[running]" });
+  const raised = toolResult(null, { state: "failed", stderr: ["RuntimeError: boom"] });
+  expect(recordView(record("ToolErrorResult", raised))).toMatchObject({ label: "Tool error", text: "RuntimeError: boom" });
+  expect(recordView(record("ToolResult", toolResult(null, { state: "pending", shown: "[running]" })))).toMatchObject({ label: "Tool", text: "[running]" });
   // A failed write keeps its path; what the model read is why it failed.
-  expect(recordView(record("WriteResult", { path: "/w/a.py", shown: "/w/a.py exists and has not been read." }))).toMatchObject({ text: "/w/a.py exists and has not been read." });
+  const unread = toolResult(tagged("WriteResult", { path: "/w/a.py", exit_code: 1 }), { stdout: ["Wrote /w/a.py."], shown: "/w/a.py exists and has not been read." });
+  expect(recordView(record("WriteResult", unread))).toMatchObject({ text: "/w/a.py exists and has not been read." });
   expect(["UserMessage", "Thinking", "TokenUsage", "UncategorizedRecord", "Stdout"].map(result)).toEqual([null, null, null, null, null]);
 });
 
@@ -549,12 +582,12 @@ test("a preview's lines leave the newline that ends the text out of the count", 
 test("tuples and sets read as the arrays they are stored as", () => {
   const argv = { command: ["bash", "-lc", "ls -la"], workdir: "/w" };
   expect(recordView(record("ToolCall", { name: "shell", arguments: argv }))).toMatchObject({ primary: "ls -la", args: [["workdir", "/w"]] });
-  expect(recordView(record("BashResult", { command: ["/bin/bash", "-lc", "cd /w && date -u"], stdout: "", stderr: "", exit_code: 0 }))).toMatchObject({
+  expect(recordView(record("BashResult", shellResult({ command: ["/bin/bash", "-lc", "cd /w && date -u"], exit: 0 })))).toMatchObject({
     command: "cd /w && date -u",
   });
   const splice = (extra: object) => ({ before: "old\n", after: "new\n", lead: "@@ -3,3 +3,3 @@\n ctx a\n", trail: " ctx b\n", start: 4, count: 1, ...extra });
   const edits = [splice({ bare: [] }), { ...splice({ bare: [] }), before: "x\n", after: "", lead: null, trail: null, start: 10 }];
-  const view = recordView(record("EditResult", { path: "a.py", edits }));
+  const view = recordView(record("EditResult", editResult("a.py", edits)));
   expect(view).toMatchObject({ shape: "edit", label: "File edit", source: "a.py" });
   expect(view.shape === "edit" && view.lines.length).toBeGreaterThan(0);
 });

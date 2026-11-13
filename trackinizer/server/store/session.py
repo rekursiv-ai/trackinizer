@@ -50,6 +50,7 @@ from trackinizer.server.visuals.session_runs import opener_email
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
+from trackinizer.types.session_records import served_payload
 from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_sessions import FeedEvent
 
@@ -1296,6 +1297,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
 
 def _feed_event(row: asyncpg.Record) -> FeedEvent:
     """Build one feed item from a ``session_records`` join row."""
+    kind = from_plain(row["kind"], str)
     return FeedEvent(
         session_id=_uuid(row["session_id"]),
         actor=from_plain(row.get("owner"), str, default=""),
@@ -1303,11 +1305,16 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
         cli=_optional_str(row["agentsession_cli"]),
         part=from_plain(row["part"], int),
         seq=from_plain(row["idx"], int),
-        kind=from_plain(row["kind"], str),
+        kind=kind,
         created=_datetime(row["created"]),
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
-        message=_decoded_payload(from_plain(row["payload"], str)),
+        # The console reads only the current ``ToolResult`` shape, so a legacy
+        # tool-call payload is converted here, as the records route converts it.
+        message=served_payload(
+            kind,
+            _decoded_payload(from_plain(row["payload"], str)),
+        ),
         text=from_plain(row["text"], str),
     )
 

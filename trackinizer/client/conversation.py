@@ -105,7 +105,8 @@ _HARNESS: Final = (
     "<turn_aborted>",
 )
 
-# Results whose tool is named by what they DID, so they cross to another CLI as structure.
+# The result classes of tools named by what they DID; a call with one of these results
+# crosses to another CLI as structure.
 _TYPED: Final = (
     BashResult,
     ReadResult,
@@ -371,7 +372,9 @@ def projected(
 
     """
     typed_calls = {
-        record.call_id for record in conversation if isinstance(record, _TYPED)
+        record.call_id
+        for record in conversation
+        if isinstance(record, ToolResult) and isinstance(record.result, _TYPED)
     }
     names: dict[str, str] = {}
     out: list[SessionRecord] = list(opening)

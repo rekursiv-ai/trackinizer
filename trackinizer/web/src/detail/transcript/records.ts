@@ -12,6 +12,13 @@ import type { SessionPart, SessionRecord } from "../../api/sessions";
  * payload without the fields its case reads, shows its text, the server's own
  * search projection, or what Claude's model read, so nothing new is dropped; so
  * does an offloaded body, whose payload is only a stub.
+ *
+ * A tool call's record has the kind its row is stored under, its tool's legacy
+ * class name (`BashResult`, `ReadResult`; `record_kind` in
+ * `types/session_records.py`). Its payload is always a `ToolResult`
+ * (`served_payload` there): `stdout` and `stderr` are arrays of text and of typed
+ * items (an edit's `Splice`s, a search's `WebSearchHit`s, an `Attachment`), and
+ * `result` is the tool's result, tagged with its class (`toolResultFields`).
  */
 export type RecordView = Shape & {
   /** Its attachments, as `2 attachments (image/png, 2.1 KB; …)`, whatever its shape; `""` when none. */
@@ -96,20 +103,12 @@ export type DiffLine = { readonly kind: "hunk" | "ctx" | "del" | "add"; readonly
 
 type Fields = { readonly [field: string]: unknown };
 
-/**
- * The defaults, from `trackinizer/sagent/session/types.py`, of the fields this view tells apart by
- * whether they are there: the server stores a record with each field at its default left out.
- */
-const FIELD_DEFAULTS: { readonly [kind: string]: Fields } = {
-  BashResult: { stdout: "", stderr: "" },
-  EditResult: { edits: [] },
-  WebSearchResult: { content: [] },
-};
-
 /** What `record` shows, read from its kind and payload. */
 export function recordView(record: SessionRecord): RecordView {
   const payload = record.payload ?? {};
-  return { ...shapeOf(record), attachments: attachmentsChip(payload.attachments), tool: toolKind(record), failed: failedOf(payload) };
+  // A message has an `attachments` field; a tool call's attachments are typed items in `stdout`.
+  const attached = payload.attachments ?? toolResultFields(payload).typedItems.filter((item) => item["py/object"] === "Attachment");
+  return { ...shapeOf(record), attachments: attachmentsChip(attached), tool: toolKind(record), failed: failedOf(payload) };
 }
 
 /** What `record` did as a tool step (`ToolKind`); null when it is no tool call or result. */
@@ -438,7 +437,7 @@ export function clipLines(
 
 /** How `record` shows but its attachments, read from its kind and payload. */
 function shapeOf(record: SessionRecord): Shape {
-  const payload = { ...FIELD_DEFAULTS[record.kind], ...record.payload };
+  const payload = record.payload ?? {};
   const field = (name: string) => stringField(payload, name);
   const extra = isFields(payload.extra) ? payload.extra : {};
   // Claude keeps a tool result's block beside the record (`_read_tool_result`
@@ -455,8 +454,18 @@ function shapeOf(record: SessionRecord): Shape {
       meta: `the first ${text.length.toLocaleString("en")} characters; the rest is offloaded`,
     };
   }
-  // What the model read in place of a result's fields: a failure, a stand-in, or a prune.
+  // `shown` is the text the model read instead of the output: a pending call's note, or what a prune left.
   if (typeof payload.shown === "string") return output(record.kind, payload.shown);
+  // All empty for a record that is not a tool call.
+  const { result, stdoutText, stderrText, typedItems, exitCode } = toolResultFields(payload);
+  // A tool call keeps its path, URL or query in `result`; any other record, in its payload.
+  const sourceField = (name: string) => stringField(result, name) || field(name);
+  // What a record shows when its kind's case has nothing to show: the error text,
+  // else the server's search projection, else what Claude's model read.
+  const fallback = (errorText = ""): Shape => ({
+    ...output(record.kind, errorText || record.text || read),
+    source: sourceField("path") || sourceField("url") || sourceField("query"),
+  });
   switch (record.kind) {
     case "UserMessage": {
       const text = field("content");
@@ -480,70 +489,68 @@ function shapeOf(record: SessionRecord): Shape {
     case "ToolCall":
       return toolCall(field("name") || "?", plain(payload.arguments));
     case "BashResult":
-      if (typeof payload.stdout !== "string" && typeof payload.stderr !== "string") break;
       return {
         shape: "shell",
         label: "Shell command",
-        command: display(plain(payload.command)),
-        stdout: (field("stdout") || field("stderr")) ? field("stdout") : read,
-        stderr: field("stderr"),
-        exit: typeof payload.exit_code === "number" ? payload.exit_code : null,
+        command: display(plain(result.command)),
+        stdout: stdoutText || stderrText ? stdoutText : read,
+        stderr: stderrText,
+        exit: exitCode,
       };
     case "EditResult": {
-      const edits = plain(payload.edits);
+      const edits = typedItems.filter((item) => item["py/object"] === "Splice");
       // A failed edit that changed nothing shows why, as what the model read.
-      if (!Array.isArray(edits) || (!edits.length && failedOf(payload))) break;
-      return { shape: "edit", label: "File edit", source: field("path"), lines: edits.flatMap(spliceLines) };
+      if (!edits.length && (stderrText || failedOf(payload))) return fallback(stderrText);
+      return { shape: "edit", label: "File edit", source: sourceField("path"), lines: edits.flatMap(spliceLines) };
     }
     case "ReadResult":
+      // A read with no output falls back only when it has error text or is flagged
+      // failed; an empty file still shows as empty output.
+      if (!stdoutText && (stderrText || failedOf(payload))) return fallback(stderrText);
+      return { ...output(record.kind, stdoutText), source: sourceField("path") };
     case "WriteResult":
-      if (typeof payload.content !== "string") break;
-      return { ...output(record.kind, payload.content), source: field("path") };
+      // `stdout` holds only the line "Wrote <path>."; the file's text is the result's `content`.
+      if (typeof result.content !== "string") return fallback(stderrText);
+      return { ...output(record.kind, result.content), source: sourceField("path") };
     case "WebFetchResult":
-      if (typeof payload.content !== "string") break;
+      if (!stdoutText && (stderrText || failedOf(payload))) return fallback(stderrText);
       return {
-        ...output(record.kind, payload.content),
-        source: field("url"),
-        meta: [
-          typeof payload.code === "number" ? `HTTP ${payload.code}` : "",
-          typeof payload.size === "number" ? bytes(payload.size) : "",
-        ]
+        ...output(record.kind, stdoutText),
+        source: sourceField("url"),
+        meta: [typeof result.code === "number" ? `HTTP ${result.code}` : "", typeof result.size === "number" ? bytes(result.size) : ""]
           .filter(Boolean)
           .join(" · "),
       };
     case "WebSearchResult": {
-      const results = plain(payload.content);
-      if (!Array.isArray(results)) break;
+      const hits = typedItems.filter((item) => item["py/object"] === "WebSearchHit");
+      if (!hits.length && stderrText) return fallback(stderrText);
       return {
         shape: "search",
         label: "Web search",
-        source: field("query"),
-        results: results.filter(isFields).map((result) => ({
-          url: stringField(result, "url"),
-          title: stringField(result, "title"),
-          snippet: stringField(result, "snippet"),
-        })),
+        source: sourceField("query"),
+        results: hits.map((hit) => ({ url: stringField(hit, "url"), title: stringField(hit, "title"), snippet: stringField(hit, "snippet") })),
       };
     }
     case "AgentSpawnResult":
-      // A launch still under way has no content; its text, the server's own
+      // A launch still under way has no output; its text, the server's own
       // projection, is then its prompt.
       return {
-        ...output(record.kind, field("content") || (record.text ?? "")),
+        ...output(record.kind, stdoutText + stderrText || (record.text ?? "")),
+        // The spawned agent's state is the result's `state`; the payload's `state` is the call's.
         meta: [
-          field("state"),
-          field("agent_kind"),
-          typeof payload.duration_sec === "number" ? `${Math.round(payload.duration_sec)} s` : "",
+          stringField(result, "state"),
+          stringField(result, "agent_kind"),
+          typeof result.duration_sec === "number" ? `${Math.round(result.duration_sec)} s` : "",
         ]
           .filter(Boolean)
           .join(" · "),
       };
     case "UncategorizedToolResult": {
-      const { text, meta } = toolOutput(typeof payload.content === "string" ? payload.content : record.text || read);
+      const { text, meta } = toolOutput(stdoutText + stderrText || record.text || read);
       return { ...output(record.kind, text), label: "Tool result", meta };
     }
     case "ToolErrorResult":
-      return { ...output(record.kind, field("content") || (record.text ?? "")), label: "Tool error" };
+      return { ...output(record.kind, stdoutText + stderrText || (record.text ?? "")), label: "Tool error" };
     case "ContextClear":
       return {
         shape: "clear",
@@ -586,19 +593,55 @@ function shapeOf(record: SessionRecord): Shape {
       // A legacy turn backfilled to part -1 names its old kind, `legacy/<Kind>`.
       return { ...output(record.kind, record.text || fieldsText(payload.payload)), label: field("kind") || "Uncategorized" };
   }
-  return { ...output(record.kind, record.text || read), source: field("path") || field("url") || field("query") };
+  return fallback();
 }
 
 /**
- * Whether a tool's result says it failed, whatever shape it shows as: an exit
- * other than 0, or its provider's error flag, sagent's `is_error` or that of
+ * The fields this view reads from a `ToolResult` payload
+ * (`trackinizer/sagent/session/types.py`); a field the server left out at its default
+ * reads as empty.
+ */
+type ToolResultFields = {
+  /** The class name of `result`, such as `BashResult`; `""` when the payload has no `result`. */
+  readonly resultClass: string;
+  /** The tool's result: a shell's `command`, a file's `path`; `{}` when the payload has none. */
+  readonly result: Fields;
+  /** The text items of `stdout`, joined. */
+  readonly stdoutText: string;
+  /** The text items of `stderr`, joined. */
+  readonly stderrText: string;
+  /** The items of `stdout` that are not text: splices, hits, attachments, each tagged with its class. */
+  readonly typedItems: readonly Fields[];
+  /** The result's `exit_code`; null when it has none. */
+  readonly exitCode: number | null;
+};
+
+function toolResultFields(payload: Fields): ToolResultFields {
+  const result = isFields(payload.result) ? payload.result : {};
+  const stdout = Array.isArray(payload.stdout) ? payload.stdout : [];
+  const stderr = Array.isArray(payload.stderr) ? payload.stderr : [];
+  const exitCode = result.exit_code;
+  const text = (stream: readonly unknown[]) => stream.filter((item) => typeof item === "string").join("");
+  return {
+    resultClass: stringField(result, "py/object"),
+    result,
+    stdoutText: text(stdout),
+    stderrText: text(stderr),
+    typedItems: stdout.filter(isFields),
+    exitCode: typeof exitCode === "number" ? exitCode : null,
+  };
+}
+
+/**
+ * Whether a tool call is flagged failed, whatever shape it shows as: a shell's
+ * nonzero exit code, or its provider's error flag, in `extra.is_error` or in
  * Claude's block (`_read_tool_result`), which a typed result carries too.
  */
 function failedOf(payload: Fields): boolean {
   const extra = isFields(payload.extra) ? payload.extra : {};
   const block = isFields(extra.$result) && isFields(extra.$result.block) ? extra.$result.block : {};
-  const exit = payload.exit_code;
-  return (typeof exit === "number" && exit !== 0) || extra.is_error === true || block.is_error === true;
+  const { resultClass, exitCode } = toolResultFields(payload);
+  return (resultClass === "BashResult" && exitCode !== null && exitCode !== 0) || extra.is_error === true || block.is_error === true;
 }
 
 /**

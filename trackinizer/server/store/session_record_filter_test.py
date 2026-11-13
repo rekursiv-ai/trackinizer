@@ -25,6 +25,7 @@ from trackinizer.sagent.session.types import (
     SessionRecord,
     Thinking,
     ToolCall,
+    ToolResult,
     UserMessage,
 )
 from trackinizer.server.audience import SessionReader
@@ -105,7 +106,14 @@ async def test_a_phrase_in_a_tool_result_matches(store: Store) -> None:
     """The prose a tool printed is searchable, and scoped to its record kind."""
     hit = await _session_with(
         store,
-        [BashResult(call_id="c", command=("ls",), stdout="pg_advisory_lock")],
+        [
+            ToolResult(
+                call_id="c",
+                state="done",
+                stdout=("pg_advisory_lock",),
+                result=BashResult(command=("ls",)),
+            ),
+        ],
     )
     miss = await _session_with(store, [UserMessage(content="unrelated")])
 
