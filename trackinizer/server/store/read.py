@@ -819,7 +819,7 @@ class _ReadMixin(_StoreShared):
         # comparison with a min-UUID sentinel on page one mirrors the
         # next-page semantics exactly minus the tie.
         cursor_id = after_id if after_id is not None else UUID(int=0)
-        # pragma: no mutate start -- SQL is judged by a database: locks_pglite_test.
+        # pragma: no mutate[case-insensitive] start
         async with self.engine.acquire() as conn:
             rows = await conn.fetch(
                 vetted_sql(

@@ -234,7 +234,7 @@ class _Pulled[R](StringIO):
         super().__init__()
         self._lines = lines
         self._produced = produced
-        self._asked = False  # pragma: no mutate -- read by truth; None is false.
+        self._asked = False  # pragma: no mutate[truthiness]
 
     @override
     def __next__(self) -> str:

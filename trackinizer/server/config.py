@@ -308,7 +308,7 @@ class Config:
             if (
                 env_datadir := os.environ.get(
                     "TRACKINIZER_DATADIR",
-                    "",  # pragma: no mutate -- unset and "" are both falsy.
+                    "",  # pragma: no mutate[truthiness]
                 )
             )
             else None,
@@ -460,7 +460,7 @@ def session_secret_from_env() -> str:
     """
     secret = os.environ.get(
         "TRACKINIZER_SESSION_SECRET",
-        "",  # pragma: no mutate -- unset and "" are both falsy.
+        "",  # pragma: no mutate[truthiness]
     )
     path = os.environ.get("TRACKINIZER_SESSION_SECRET_FILE", "")
     if secret and path.strip():
@@ -500,7 +500,7 @@ def session_secret_from_file(path: str) -> str:
         finally:
             Path(staged).unlink()
     return target.read_text(
-        encoding="utf-8",  # pragma: no mutate -- the secret is ASCII, read alike by any.
+        encoding="utf-8",  # pragma: no mutate[case-insensitive]
     ).strip()
 
 
