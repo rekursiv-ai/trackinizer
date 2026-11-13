@@ -13,7 +13,9 @@ test.beforeAll(({}, info) => {
   hub = readHubs(info).perf;
 });
 
-test("a hub's detail renders with no main-thread task over 50 ms after its response", async ({ page }) => {
+test("a hub's detail renders with no main-thread task over 50 ms after its response", async ({
+  page,
+}) => {
   await watchLongTasks(page);
   // As in lists.spec.ts: other spec files load the same server, so load up to
   // three times, log every sample, and hold each to the budget.
@@ -22,11 +24,15 @@ test("a hub's detail renders with no main-thread task over 50 ms after its respo
     await page.goto(`/trax/?load=${attempt}#/lookup/${hub}`);
     const children = page.getByRole("region", { name: "Children", exact: true });
     await expect(children.locator(".rail-peer")).toHaveCount(10);
-    await expect(children.getByRole("button", { name: `Show all ${CHILDREN + 1}` })).toBeVisible();
+    await expect(
+      children.getByRole("button", { name: `Show all ${CHILDREN + 1}` }),
+    ).toBeVisible();
     const timing = await page.evaluate(() => {
       const detail = performance
         .getEntriesByType("resource")
-        .find((entry): entry is PerformanceResourceTiming => entry.name.includes("/api/web/get/"))!;
+        .find((entry): entry is PerformanceResourceTiming =>
+          entry.name.includes("/api/web/get/"),
+        )!;
       return { shownMs: performance.now(), detailEnd: detail.responseEnd };
     });
     const tasks = await longTasks(page);

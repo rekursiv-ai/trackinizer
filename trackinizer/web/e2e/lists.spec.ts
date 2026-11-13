@@ -1,6 +1,7 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, test } from "./fixtures";
 import { expectControlSeen, longTasks, watchLongTasks } from "./longTasks";
+import { must } from "../src/must";
 
 // The server is ephemeral and shared with the other spec files, so this file seeds
 // its own rows and filters to them by label: 55 active Issues labelled `c2-browse`
@@ -15,21 +16,34 @@ const ISSUES = [
     owner: OWNERS[n % 3],
     labels: ["c2-browse"],
   })),
-  ...["one", "two", "three"].map((n) => ({ title: `Closed item ${n}`, status: "complete", labels: ["c2-browse"] })),
+  ...["one", "two", "three"].map((n) => ({
+    title: `Closed item ${n}`,
+    status: "complete",
+    labels: ["c2-browse"],
+  })),
   { title: "Dotted label", labels: ["c2.dot"] },
   { title: "Look-alike label", labels: ["c2Xdot"] },
 ];
 const PAPERS = [
   { title: "C2 paper without authors" },
-  { title: "C2 paper with authors", authors: ["Ada Lovelace", "Alan Turing"], venue: "NeurIPS" },
+  {
+    title: "C2 paper with authors",
+    authors: ["Ada Lovelace", "Alan Turing"],
+    venue: "NeurIPS",
+  },
 ];
 
 async function seed(request: APIRequestContext) {
   const items = [
     ...ISSUES.map((body) => ({ kind: "Issue", ...body })),
     ...PAPERS.map((body) => ({ kind: "Paper", ...body })),
-  ].map((item, n) => ({ ...item, idempotency_key: `c2e2e000-0000-4000-8000-${String(n).padStart(12, "0")}` }));
-  const response = await request.post("/api/inquiries/batch", { data: { items, edges: [] } });
+  ].map((item, n) => ({
+    ...item,
+    idempotency_key: `c2e2e000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+  }));
+  const response = await request.post("/api/inquiries/batch", {
+    data: { items, edges: [] },
+  });
   expect(response.ok(), await response.text()).toBe(true);
 }
 
@@ -49,7 +63,8 @@ const trax = (page: Page) => page.getByTitle("The same query from the CLI");
 
 async function pick(page: Page, button: RegExp, ...options: string[]) {
   await page.getByRole("button", { name: button }).click();
-  for (const option of options) await page.getByRole("option", { name: option, exact: true }).click();
+  for (const option of options)
+    await page.getByRole("option", { name: option, exact: true }).click();
   await page.keyboard.press("Escape");
 }
 
@@ -68,11 +83,16 @@ test.beforeAll(async ({ request }) => {
   await seed(request);
 });
 
-test("a 50-row list is usable within the first-load target, and renders with no long task", async ({ page }) => {
+test("a 50-row list is usable within the first-load target, and renders with no long task", async ({
+  page,
+}) => {
   await watchLongTasks(page);
   // The list is filtered to this file's own rows, so rows other spec files
   // create meanwhile never join it (the list shows new rows live) (R2-X4).
-  await page.addInitScript((state) => sessionStorage.setItem("trackinizer.v2.list.Issue", state), BROWSE_STATE);
+  await page.addInitScript(
+    (state) => sessionStorage.setItem("trackinizer.v2.list.Issue", state),
+    BROWSE_STATE,
+  );
   // Other spec files seed the same server while this runs, and a boot read queued
   // behind their writes measured over 4 s. So load up to three times and judge the
   // fastest, which is the page's own cost; every sample is logged.
@@ -83,8 +103,14 @@ test("a 50-row list is usable within the first-load target, and renders with no 
     const timing = await page.evaluate(() => {
       const list = performance
         .getEntriesByType("resource")
-        .find((entry): entry is PerformanceResourceTiming => entry.name.includes("/api/inquiries?"))!;
-      return { usableMs: performance.now(), listMs: list.duration, listEnd: list.responseEnd };
+        .find((entry): entry is PerformanceResourceTiming =>
+          entry.name.includes("/api/inquiries?"),
+        )!;
+      return {
+        usableMs: performance.now(),
+        listMs: list.duration,
+        listEnd: list.responseEnd,
+      };
     });
     const tasks = await longTasks(page);
     console.log(
@@ -105,13 +131,17 @@ test("a 50-row list is usable within the first-load target, and renders with no 
   await expectControlSeen(page);
 });
 
-test("browse: tabs, Load more, Filter, Group, Sort, keys, and Back", async ({ page }) => {
+test("browse: tabs, Load more, Filter, Group, Sort, keys, and Back", async ({
+  page,
+}) => {
   await page.goto("/trax/list/Issue");
   // Other spec files add rows to this unfiltered list live, so its count is theirs too.
   await expect(rows(page).first()).toBeVisible();
   await expect(trax(page)).toHaveText("trax issue status is active");
   await filterLabels(page, "c2-browse");
-  await expect(trax(page)).toHaveText("trax issue status is active labels is c2-browse");
+  await expect(trax(page)).toHaveText(
+    "trax issue status is active labels is c2-browse",
+  );
 
   // 55 active: a full page, then Load more for the rest.
   await expect(rows(page)).toHaveCount(50);
@@ -121,15 +151,21 @@ test("browse: tabs, Load more, Filter, Group, Sort, keys, and Back", async ({ pa
 
   await page.getByRole("button", { name: "Closed", exact: true }).click();
   await expect(rows(page)).toHaveCount(3);
-  await expect(trax(page)).toHaveText("trax issue status ne active labels is c2-browse");
+  await expect(trax(page)).toHaveText(
+    "trax issue status ne active labels is c2-browse",
+  );
 
   await page.getByRole("button", { name: "Active", exact: true }).click();
   await pick(page, /^Filter$/, "Owner", "josh");
-  await expect(trax(page)).toHaveText("trax issue status is active labels is c2-browse owner is josh");
+  await expect(trax(page)).toHaveText(
+    "trax issue status is active labels is c2-browse owner is josh",
+  );
   await expect(rows(page)).toHaveCount(19);
   const owners = await page
     .locator("a.row .row-owner")
-    .evaluateAll((avatars) => [...new Set(avatars.map((avatar) => avatar.getAttribute("aria-label")))]);
+    .evaluateAll((avatars) => [
+      ...new Set(avatars.map((avatar) => avatar.getAttribute("aria-label"))),
+    ]);
   expect(owners).toEqual(["josh"]);
 
   await pick(page, /^Group/, "Owner");
@@ -151,31 +187,45 @@ test("browse: tabs, Load more, Filter, Group, Sort, keys, and Back", async ({ pa
   const href = await second.getAttribute("href");
   expect(href).toBe(await rows(page).nth(1).getAttribute("href"));
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(new RegExp(`${href!.replace(/[/#]/g, "\\$&")}$`));
+  await expect(page).toHaveURL(new RegExp(`${must(href).replace(/[/#]/g, "\\$&")}$`));
 
   // Back finds the list as it was: its filter, grouping and focused row.
   await page.goBack();
-  await expect(trax(page)).toHaveText("trax issue status is active labels is c2-browse owner is josh");
-  await expect(page.locator('a.row[aria-current="true"]')).toHaveAttribute("href", href!);
+  await expect(trax(page)).toHaveText(
+    "trax issue status is active labels is c2-browse owner is josh",
+  );
+  await expect(page.locator('a.row[aria-current="true"]')).toHaveAttribute(
+    "href",
+    must(href),
+  );
   await expect(page.getByRole("button", { name: "Group: Owner" })).toBeVisible();
 });
 
-test("after a click on a tab, Enter opens the focused row, not the tab again (BF1, README TODO 1)", async ({ page }) => {
-  await page.addInitScript((state) => sessionStorage.setItem("trackinizer.v2.list.Issue", state), BROWSE_STATE);
+test("after a click on a tab, Enter opens the focused row, not the tab again (BF1, README TODO 1)", async ({
+  page,
+}) => {
+  await page.addInitScript(
+    (state) => sessionStorage.setItem("trackinizer.v2.list.Issue", state),
+    BROWSE_STATE,
+  );
   await page.goto("/trax/list/Issue");
   await expect(rows(page)).toHaveCount(50);
   await page.getByRole("button", { name: "Active", exact: true }).click();
   await page.keyboard.press("j");
   const href = await page.locator('a.row[aria-current="true"]').getAttribute("href");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(new RegExp(`${href!.replace(/[/#]/g, "\\$&")}$`));
+  await expect(page).toHaveURL(new RegExp(`${must(href).replace(/[/#]/g, "\\$&")}$`));
 });
 
-test("COLD-08: several labels filter as literals on the real server", async ({ page }) => {
+test("COLD-08: several labels filter as literals on the real server", async ({
+  page,
+}) => {
   await page.goto("/trax/list/Issue");
   await expect(rows(page).first()).toBeVisible();
   await filterLabels(page, "c2.dot", "c2-none");
-  await expect(trax(page)).toHaveText("trax issue status is active labels re '^(c2\\.dot|c2-none)$'");
+  await expect(trax(page)).toHaveText(
+    "trax issue status is active labels re '^(c2\\.dot|c2-none)$'",
+  );
   await expect(rows(page)).toHaveCount(1);
   await expect(rows(page).locator(".row-title")).toHaveText("Dotted label");
 });
@@ -183,7 +233,10 @@ test("COLD-08: several labels filter as literals on the real server", async ({ p
 test("COLD-01: a Paper without authors shows in the Paper list", async ({ page }) => {
   await page.goto("/trax/list/Paper");
   const papers = rows(page).filter({ hasText: "C2 paper" });
-  await expect(papers.locator(".row-title")).toHaveText(["C2 paper with authors", "C2 paper without authors"]);
+  await expect(papers.locator(".row-title")).toHaveText([
+    "C2 paper with authors",
+    "C2 paper without authors",
+  ]);
   await expect(papers.getByText("Lovelace et al. · NeurIPS")).toBeVisible();
   for (const grouping of ["Owner", "No grouping"]) {
     await pick(page, /^Group/, grouping);
@@ -202,7 +255,9 @@ test("PAGE-02: Load more continues after the last row loaded, so a row closing a
     labels: [label],
     idempotency_key: crypto.randomUUID(),
   }));
-  const created = await request.post("/api/inquiries/batch", { data: { items, edges: [] } });
+  const created = await request.post("/api/inquiries/batch", {
+    data: { items, edges: [] },
+  });
   expect(created.ok(), await created.text()).toBe(true);
   // One batch, created a few microseconds apart, newest last.
   await page.addInitScript(
@@ -213,12 +268,18 @@ test("PAGE-02: Load more continues after the last row loaded, so a row closing a
   await expect(rows(page)).toHaveCount(50);
   // A row the first page holds closes: the server's list moves up by one.
   const shown = await rows(page).first().getAttribute("data-row");
-  const closed = await request.put(`/api/inquiries/${shown}/status`, { data: { value: "complete" } });
+  const closed = await request.put(`/api/inquiries/${shown}/status`, {
+    data: { value: "complete" },
+  });
   expect(closed.ok(), await closed.text()).toBe(true);
   await page.getByRole("button", { name: "Load more" }).click();
   // The closed row stays, dimmed: 50 and the 5 after them. An offset would
   // skip the first of those, and leave 54.
   await expect(rows(page)).toHaveCount(55);
-  expect(new Set(await rows(page).locator(".row-title").allTextContents()).size).toBe(55);
-  await expect(page.getByRole("button", { name: /^(Load more|Loading…)$/ })).toHaveCount(0);
+  expect(new Set(await rows(page).locator(".row-title").allTextContents()).size).toBe(
+    55,
+  );
+  await expect(
+    page.getByRole("button", { name: /^(Load more|Loading…)$/ }),
+  ).toHaveCount(0);
 });

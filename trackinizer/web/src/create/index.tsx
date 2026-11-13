@@ -1,5 +1,12 @@
 import { Dialog } from "radix-ui";
-import { type ChangeEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type KeyboardEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { InquiryKind } from "../api/inquiries";
 import { useMeta, useProfile, useWriteMode } from "../app/boot";
 import { useDraftSaver } from "../app/session";
@@ -35,6 +42,7 @@ import { Relations } from "./Relations";
 import "../editors/editors.css";
 import "../writes/writes.css";
 import "./create.css";
+import { must } from "../must";
 
 /**
  * The create form, `#/new/<Kind>`, over the view it was opened from: the mock's
@@ -56,7 +64,8 @@ export function CreateView({ kind, onClose }: { kind: string; onClose: () => voi
   const mode = useWriteMode();
   const creatable = creatableKinds(kinds);
   const shown = creatable.find((candidate) => candidate === kind);
-  if (mode !== "hidden" && shown) return <CreateForm kind={shown} creatable={creatable} onClose={onClose} />;
+  if (mode !== "hidden" && shown)
+    return <CreateForm kind={shown} creatable={creatable} onClose={onClose} />;
   return (
     <Refusal
       title={`New ${kindLook(kind).one}`}
@@ -70,19 +79,32 @@ export function CreateView({ kind, onClose }: { kind: string; onClose: () => voi
   );
 }
 
-function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable: readonly InquiryKind[]; onClose: () => void }) {
+function CreateForm({
+  kind,
+  creatable,
+  onClose,
+}: {
+  kind: InquiryKind;
+  creatable: readonly InquiryKind[];
+  onClose: () => void;
+}) {
   const { edges, fieldOwners } = useMeta();
   const { email } = useProfile();
   const { navigate } = useRouter();
   const writer = useWrite();
   const writable = useWriteMode() === "enabled";
-  const [draft, setDraft] = useState(() => reopenedDraft(preferences().create_draft, kind, edges) ?? emptyDraft(kind));
+  const [draft, setDraft] = useState(
+    () => reopenedDraft(preferences().create_draft, kind, edges) ?? emptyDraft(kind),
+  );
   // The draft kept in the user's preferences follows the form, from its first change on:
   // a form opened and left alone neither keeps an empty draft nor forgets another kind's.
   useDraftSaver(() => keepCreateDraftHere(email, draft));
   const [opened] = useState(draft);
   useEffect(() => {
-    if (draft !== opened) choosePreferencesSoon(keepCreateDraft(preferences(), started(draft) ? keptDraft(draft) : null));
+    if (draft !== opened)
+      choosePreferencesSoon(
+        keepCreateDraft(preferences(), started(draft) ? keptDraft(draft) : null),
+      );
   }, [draft, opened]);
   // The kind menu changes the route; the draft follows it.
   if (draft.kind !== kind) setDraft(switchKind(draft, kind, edges));
@@ -112,7 +134,12 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
   };
   const onKeyDown = (event: KeyboardEvent<HTMLFormElement>) => {
     // Keys typed in a chip's menu reach here too, through React's tree, from its portal.
-    if (event.key !== "Enter" || event.nativeEvent.isComposing || !event.currentTarget.contains(event.target as Node)) return;
+    if (
+      event.key !== "Enter" ||
+      event.nativeEvent.isComposing ||
+      !event.currentTarget.contains(event.target as Node)
+    )
+      return;
     if (event.metaKey || event.ctrlKey) {
       event.preventDefault();
       void create();
@@ -139,7 +166,9 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
             // to (the page body had it), or the row that had it was drawn anew
             // meanwhile: the view's current row takes focus, not the page body.
             const back =
-              opener.current instanceof HTMLElement && opener.current !== document.body && opener.current.isConnected
+              opener.current instanceof HTMLElement &&
+              opener.current !== document.body &&
+              opener.current.isConnected
                 ? opener.current
                 : document.querySelector<HTMLElement>('.main [aria-current="true"]');
             if (!back) return;
@@ -160,7 +189,12 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
               <Menu
                 label="Kind…"
                 trigger={
-                  <button type="button" className="chip-btn" aria-label={`Kind: ${kindLook(kind).plural}`} disabled={pending}>
+                  <button
+                    type="button"
+                    className="chip-btn"
+                    aria-label={`Kind: ${kindLook(kind).plural}`}
+                    disabled={pending}
+                  >
                     <KindIcon kind={kind} size={14} />
                     {kindLook(kind).plural}
                     <Icon name="chevD" size={12} />
@@ -172,7 +206,9 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
                   icon: <KindIcon kind={other} size={14} />,
                   checked: other === kind,
                 }))}
-                onPick={(other) => navigate({ name: "new", kind: other }, { replace: true })}
+                onPick={(other) =>
+                  navigate({ name: "new", kind: other }, { replace: true })
+                }
               />
               <Icon name="chevR" size={12} />
               <Dialog.Title asChild>
@@ -210,7 +246,9 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
                       field={field}
                       pending={pending}
                       text={draft.fields[field.name] ?? ""}
-                      onText={(text) => update({ fields: { ...draft.fields, [field.name]: text } })}
+                      onText={(text) =>
+                        update({ fields: { ...draft.fields, [field.name]: text } })
+                      }
                     />
                   ))}
                 </div>
@@ -224,7 +262,9 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
               <Chips
                 chips={draft.chips}
                 disabled={pending}
-                onChange={(field, value) => update({ chips: { ...draft.chips, [field]: value } })}
+                onChange={(field, value) =>
+                  update({ chips: { ...draft.chips, [field]: value } })
+                }
               />
               {error ? (
                 <div className="form-err" role="alert">
@@ -236,14 +276,17 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
               <WriteStatus state={writer.state} />
             </div>
             <div className="modal-f">
-              <button type="button" className="toggle" aria-pressed={more} onClick={() => setMore(!more)}>
+              <button
+                type="button"
+                className="toggle"
+                aria-pressed={more}
+                onClick={() => setMore(!more)}
+              >
                 <i />
                 Create more
               </button>
               <div className="spacer" />
-              <Dialog.Close className="btn ghost">
-                Cancel
-              </Dialog.Close>
+              <Dialog.Close className="btn ghost">Cancel</Dialog.Close>
               <WriteButton
                 type="submit"
                 className="btn primary"
@@ -266,16 +309,28 @@ function CreateForm({ kind, creatable, onClose }: { kind: InquiryKind; creatable
  * a text box for long text or JSON, and otherwise the input its value type calls
  * for. A list takes its items comma-separated. Nothing changes while `pending`.
  */
-function FormField({ field, pending, text, onText }: { field: Field; pending: boolean; text: string; onText: (text: string) => void }) {
+function FormField({
+  field,
+  pending,
+  text,
+  onText,
+}: {
+  field: Field;
+  pending: boolean;
+  text: string;
+  onText: (text: string) => void;
+}) {
   const { enums } = useMeta();
-  const route = field.route!;
+  const route = must(field.route);
   const kind = inputKind(route, field.look);
   const values = enums[field.name];
   const list = route.value.type === "array";
   const wide = field.look.place === "text" || (kind === "json" && !list);
   const input = {
     value: text,
-    onChange: (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => onText(event.target.value),
+    onChange: (
+      event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>,
+    ) => onText(event.target.value),
   };
   return (
     <label className={wide ? "wide" : undefined}>
@@ -313,7 +368,15 @@ function FormField({ field, pending, text, onText }: { field: Field; pending: bo
 }
 
 /** A route the form cannot serve: a viewer's, or a kind nobody creates here. */
-function Refusal({ title, why, onClose }: { title: string; why: string; onClose: () => void }) {
+function Refusal({
+  title,
+  why,
+  onClose,
+}: {
+  title: string;
+  why: string;
+  onClose: () => void;
+}) {
   return (
     <Dialog.Root open onOpenChange={(open) => open || onClose()}>
       <Dialog.Portal>
@@ -347,4 +410,11 @@ function started(draft: Draft): boolean {
   );
 }
 
-const INPUT_TYPES = { text: "text", integer: "number", number: "number", day: "date", datetime: "datetime-local", json: "text" } as const;
+const INPUT_TYPES = {
+  text: "text",
+  integer: "number",
+  number: "number",
+  day: "date",
+  datetime: "datetime-local",
+  json: "text",
+} as const;

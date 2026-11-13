@@ -12,10 +12,15 @@ export type RowWatch = RowsOnScreen & { dispose(): void };
  * Without `IntersectionObserver` (jsdom), every rendered row counts as on screen.
  */
 export function watchRows(root: HTMLElement, enter: (ids: string[]) => void): RowWatch {
-  return typeof IntersectionObserver === "undefined" ? watchRendered(root, enter) : watchIntersecting(root, enter);
+  return typeof IntersectionObserver === "undefined"
+    ? watchRendered(root, enter)
+    : watchIntersecting(root, enter);
 }
 
-function watchIntersecting(root: HTMLElement, enter: (ids: string[]) => void): RowWatch {
+function watchIntersecting(
+  root: HTMLElement,
+  enter: (ids: string[]) => void,
+): RowWatch {
   const visible = new Set<string>();
   const observed = new Map<HTMLElement, string>();
   // No `root` option: against the viewport, a row is still clipped by the
@@ -77,5 +82,9 @@ function watchRendered(root: HTMLElement, enter: (ids: string[]) => void): RowWa
 }
 
 function renderedRows(root: HTMLElement): Set<string> {
-  return new Set([...root.querySelectorAll<HTMLElement>("[data-row]")].flatMap((row) => row.dataset.row ?? []));
+  return new Set(
+    [...root.querySelectorAll<HTMLElement>("[data-row]")].flatMap(
+      (row) => row.dataset.row ?? [],
+    ),
+  );
 }

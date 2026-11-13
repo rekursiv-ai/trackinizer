@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import { ToastProvider } from "../ui/toast";
 import { Markdown } from "./Markdown";
 import { safeUrl } from "./safeUrl";
+import { must } from "../must";
 
 const KINDS = ["Issue", "Belief", "Experiment"];
 const U = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
@@ -34,7 +35,9 @@ function unsafe(root: Element): string[] {
       if (/^on/i.test(attribute.name)) found.push(`${attribute.name}=`);
       if (
         /^(href|src|xlink:href|action|formaction)$/i.test(attribute.name) &&
-        /^\s*(javascript|data|vbscript):/i.test(attribute.value.replace(/[\u0000-\u001f]/g, ""))
+        /^\s*(javascript|data|vbscript):/i.test(
+          attribute.value.replace(/[\u0000-\u001f]/g, ""),
+        )
       ) {
         found.push(`${attribute.name}=${attribute.value.slice(0, 24)}`);
       }
@@ -62,20 +65,47 @@ const SAFETY_CASES: { name: string; md: string; wantRefs?: string }[] = [
   { name: "JaVaScRiPt: link", md: "[x](JaVaScRiPt:alert(1))" },
   { name: "entity-obfuscated js link", md: "[x](jav&#x09;ascript:alert(1))" },
   { name: "autolink <javascript:>", md: "<javascript:alert(1)>" },
-  { name: "data: link", md: "[x](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)" },
+  {
+    name: "data: link",
+    md: "[x](data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==)",
+  },
   { name: "javascript: image", md: "![x](javascript:alert(1))" },
   { name: "raw <a href=javascript>", md: '<a href="javascript:alert(1)">x</a>' },
-  { name: "refs in text", md: "See Issue#4 and Belief#97.", wantRefs: "/trax/ref/Issue/4 /trax/ref/Belief/97" },
-  { name: "ref inside link text (bold)", md: "[see **Issue#4**](https://example.com/a)", wantRefs: "" },
-  { name: "ref inside link text (code)", md: "[see `Issue#4`](https://example.com/a)", wantRefs: "" },
-  { name: "ref inside URL (autolink)", md: "https://example.com/x/Issue#4", wantRefs: "" },
+  {
+    name: "refs in text",
+    md: "See Issue#4 and Belief#97.",
+    wantRefs: "/trax/ref/Issue/4 /trax/ref/Belief/97",
+  },
+  {
+    name: "ref inside link text (bold)",
+    md: "[see **Issue#4**](https://example.com/a)",
+    wantRefs: "",
+  },
+  {
+    name: "ref inside link text (code)",
+    md: "[see `Issue#4`](https://example.com/a)",
+    wantRefs: "",
+  },
+  {
+    name: "ref inside URL (autolink)",
+    md: "https://example.com/x/Issue#4",
+    wantRefs: "",
+  },
   { name: "ref inside inline code", md: "run `trax show Issue#4`", wantRefs: "" },
   { name: "ref inside code block", md: "```\nIssue#4\n```", wantRefs: "" },
-  { name: "ref inside raw HTML attr", md: '<span title="Issue#4">x</span>', wantRefs: "" },
+  {
+    name: "ref inside raw HTML attr",
+    md: '<span title="Issue#4">x</span>',
+    wantRefs: "",
+  },
   { name: "ref in link title attr", md: '[x](https://e.com "Issue#4")', wantRefs: "" },
   { name: "uuid in text", md: `id ${U} here`, wantRefs: `/trax/lookup/${U}` },
   { name: "guarded ##Issue#4 / x#Issue#4", md: "a x#Issue#4 b", wantRefs: "" },
-  { name: "ref in GFM table cell", md: "| a | b |\n|---|---|\n| Issue#4 | x |", wantRefs: "/trax/ref/Issue/4" },
+  {
+    name: "ref in GFM table cell",
+    md: "| a | b |\n|---|---|\n| Issue#4 | x |",
+    wantRefs: "/trax/ref/Issue/4",
+  },
   { name: "unknown kind Foo#4", md: "Foo#4", wantRefs: "" },
 ];
 
@@ -88,21 +118,29 @@ describe("the 21 safety cases", () => {
 });
 
 test("raw HTML shows as its text and is never parsed into elements", () => {
-  const root = renderMd("hi <script>alert(1)</script> and <img src=x onerror=alert(1)>");
-  expect(root.textContent).toBe("hi <script>alert(1)</script> and <img src=x onerror=alert(1)>");
+  const root = renderMd(
+    "hi <script>alert(1)</script> and <img src=x onerror=alert(1)>",
+  );
+  expect(root.textContent).toBe(
+    "hi <script>alert(1)</script> and <img src=x onerror=alert(1)>",
+  );
   expect(root.querySelector("script, img")).toBeNull();
 });
 
 test("a refused link keeps its text but links nowhere (COLD-12)", () => {
-  const root = renderMd("[click](javascript:alert(1)) and <mailto:a@b.c> and [up](/admin)");
+  const root = renderMd(
+    "[click](javascript:alert(1)) and <mailto:a@b.c> and [up](/admin)",
+  );
   expect(root.querySelectorAll("a")).toHaveLength(0);
   expect(root.textContent).toBe("click and mailto:a@b.c and up");
 });
 
 test("text that looks like markup never reaches an attribute (COLD-12)", () => {
   const source = 'x" onmouseover="window.__injected=1';
-  const root = renderMd(`[a](<https://e.com/${source}> "${source.replaceAll('"', "&quot;")}")`);
-  const anchor = root.querySelector("a")!;
+  const root = renderMd(
+    `[a](<https://e.com/${source}> "${source.replaceAll('"', "&quot;")}")`,
+  );
+  const anchor = must(root.querySelector("a"));
   expect(unsafe(root)).toEqual([]);
   expect([...anchor.attributes].map((attribute) => attribute.name).sort()).toEqual([
     "href",
@@ -152,8 +190,13 @@ test("an external link opens in a new tab; a written in-app link stays a plain l
 
 test("a full URL to a route of this page's app is a link without a target", () => {
   const app = `${location.origin}${location.pathname}`;
-  const root = renderMd(`[plan](${app}#/ref/Belief/2) [json](${app}api/web/get/1) [other](https://example.com/#/ref/Belief/2)`);
-  const [plan, json, other] = [...root.querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.getAttribute("target")]);
+  const root = renderMd(
+    `[plan](${app}#/ref/Belief/2) [json](${app}api/web/get/1) [other](https://example.com/#/ref/Belief/2)`,
+  );
+  const [plan, json, other] = [...root.querySelectorAll("a")].map((a) => [
+    a.getAttribute("href"),
+    a.getAttribute("target"),
+  ]);
   expect(plan).toEqual(["/trax/ref/Belief/2", null]);
   expect(json).toEqual([`${app}api/web/get/1`, "_blank"]);
   expect(other).toEqual(["https://example.com/#/ref/Belief/2", "_blank"]);
@@ -175,7 +218,12 @@ test("a link whose text is a ref and whose target is that ref in the app, on any
       "[Foo#12](https://trackinizer.example.com/trax/#/ref/Foo/12)",
     ].join(" "),
   );
-  const links = [...root.querySelectorAll("a")].map((a) => [a.textContent, a.getAttribute("href"), a.className, a.getAttribute("target")]);
+  const links = [...root.querySelectorAll("a")].map((a) => [
+    a.textContent,
+    a.getAttribute("href"),
+    a.className,
+    a.getAttribute("target"),
+  ]);
   expect(links).toEqual([
     ["Issue#41", "/trax/ref/Issue/41", "ref", null],
     ["Issue#42", "/trax/ref/Issue/42", "ref", null],
@@ -198,15 +246,16 @@ test("kinds match as the server spells them, and with no kinds no # is linked", 
   cleanup();
   // A seq past 2^53 would round to another inquiry's, so it stays text (WEB-05).
   const [past, last] = [BigInt(Number.MAX_SAFE_INTEGER) + 2n, Number.MAX_SAFE_INTEGER];
-  expect(refs(renderMd(`Issue#${past} and Issue#${last}`))).toBe(`/trax/ref/Issue/${last}`);
+  expect(refs(renderMd(`Issue#${past} and Issue#${last}`))).toBe(
+    `/trax/ref/Issue/${last}`,
+  );
 });
 
 test("headings sit below the page's title and sections", () => {
   const root = renderMd("# One\n\n## Two");
-  expect([...root.querySelectorAll("h1, h2, h3, h4")].map((node) => node.tagName)).toEqual([
-    "H3",
-    "H4",
-  ]);
+  expect(
+    [...root.querySelectorAll("h1, h2, h3, h4")].map((node) => node.tagName),
+  ).toEqual(["H3", "H4"]);
 });
 
 test("safeUrl passes exactly http://, https:// and #/", () => {
@@ -239,15 +288,21 @@ test("images={false} shows an image as its alt and URL, never an img", () => {
 });
 
 test("breaks keeps each line of a paragraph, as a chat keeps a message's lines; a description reflows them", () => {
-  const source = "Ada: New in the thread:\n@helperbot: Launched.\n@helperbot: Done.\n\n```\nkept\nas is\n```";
-  const lines = (root: Element) => [...root.querySelectorAll("p")].map((p) => p.innerHTML);
-  expect(lines(renderMd(source))).toEqual(["Ada: New in the thread:\n@helperbot: Launched.\n@helperbot: Done."]);
+  const source =
+    "Ada: New in the thread:\n@helperbot: Launched.\n@helperbot: Done.\n\n```\nkept\nas is\n```";
+  const lines = (root: Element) =>
+    [...root.querySelectorAll("p")].map((p) => p.innerHTML);
+  expect(lines(renderMd(source))).toEqual([
+    "Ada: New in the thread:\n@helperbot: Launched.\n@helperbot: Done.",
+  ]);
   cleanup();
   const root = render(
     <ToastProvider>
       <Markdown source={source} kinds={KINDS} breaks />
     </ToastProvider>,
   ).container;
-  expect(lines(root)).toEqual(["Ada: New in the thread:<br>\n@helperbot: Launched.<br>\n@helperbot: Done."]);
-  expect(root.querySelector("pre code")!.textContent).toBe("kept\nas is\n");
+  expect(lines(root)).toEqual([
+    "Ada: New in the thread:<br>\n@helperbot: Launched.<br>\n@helperbot: Done.",
+  ]);
+  expect(must(root.querySelector("pre code")).textContent).toBe("kept\nas is\n");
 });

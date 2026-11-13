@@ -30,10 +30,14 @@ export async function chunk<M>(load: Promise<M>): Promise<M> {
  * however fast the chunk arrives. That is react-lazy-with-preload's design
  * (https://github.com/ianschmitz/react-lazy-with-preload).
  */
-export function lazyView<M, P extends object>(load: () => Promise<M>, pick: (module: M) => ComponentType<P>): LazyView<P> {
+export function lazyView<M, P extends object>(
+  load: () => Promise<M>,
+  pick: (module: M) => ComponentType<P>,
+): LazyView<P> {
   let loaded: ComponentType<P> | undefined;
   let loading: Promise<ComponentType<P>> | undefined;
-  const component = () => (loading ??= chunk(load()).then((module) => (loaded = pick(module))));
+  const component = () =>
+    (loading ??= chunk(load()).then((module) => (loaded = pick(module))));
   const Lazy = lazy(async () => ({ default: await component() }));
   function View(props: P) {
     // Chosen once: switching from the lazy component to the loaded one on a later
@@ -55,7 +59,10 @@ export function lazyView<M, P extends object>(load: () => Promise<M>, pick: (mod
  * A view rendered only once this is true never suspends, so it skips the 300 ms
  * React holds a suspended view's fallback on screen, however soon its chunk comes.
  */
-export function useLoaded(view: { readonly preload: () => Promise<void> }, needed: boolean): boolean {
+export function useLoaded(
+  view: { readonly preload: () => Promise<void> },
+  needed: boolean,
+): boolean {
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     if (!needed) return;

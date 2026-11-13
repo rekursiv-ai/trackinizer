@@ -5,6 +5,7 @@ import { type Sent, stubFetch } from "../api/testing";
 import { testClient } from "../live/testing";
 import { GraphLive, graphQuery } from "./live";
 import { node } from "./testing";
+import { must } from "../must";
 
 let client: QueryClient;
 let server: Graph;
@@ -27,9 +28,14 @@ afterEach(() => {
 /** The graph of `limit` nodes as the view holds it: read now, with its observer mounted. */
 async function shown(limit: number): Promise<GraphLive> {
   new QueryObserver(client, graphQuery(limit)).subscribe(() => {});
-  await vi.waitFor(() => expect(client.getQueryData(graphQuery(limit).queryKey)).toEqual(server), { interval: 1 });
+  await vi.waitFor(
+    () => expect(client.getQueryData(graphQuery(limit).queryKey)).toEqual(server),
+    { interval: 1 },
+  );
   // The wait moves the clock it holds on; now is when the answer came.
-  vi.setSystemTime(client.getQueryState(graphQuery(limit).queryKey)!.dataUpdatedAt);
+  vi.setSystemTime(
+    must(client.getQueryState(graphQuery(limit).queryKey)).dataUpdatedAt,
+  );
   sent.length = 0;
   return new GraphLive(client, limit);
 }
@@ -66,7 +72,11 @@ test("a bigger graph reads less often: 2 ms a node it holds, at least 2 s, so 10
   const { queryKey } = graphQuery(50_000);
   /** Hold an answer of `count` nodes, read when the last one was; the interval reads only how many. */
   const holding = (count: number) =>
-    client.setQueryData(queryKey, { nodes: Array(count).fill(node(1)), edges: [] }, { updatedAt: client.getQueryState(queryKey)!.dataUpdatedAt });
+    client.setQueryData(
+      queryKey,
+      { nodes: Array(count).fill(node(1)), edges: [] },
+      { updatedAt: must(client.getQueryState(queryKey)).dataUpdatedAt },
+    );
   holding(5_000);
   later(2_000);
   expect(await live.update(batch)).toEqual({ afterMs: 8_000 });

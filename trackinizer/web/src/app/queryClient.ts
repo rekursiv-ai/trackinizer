@@ -15,7 +15,8 @@ import { log } from "../debug/log";
 export function createQueryClient(onUnauthorized: () => void): QueryClient {
   const onError = (error: unknown) => {
     if (error instanceof ApiError && error.status === 401) onUnauthorized();
-    if (error instanceof ApiError && error.status === 403) log("warn", "role.refused", failureFields(error));
+    if (error instanceof ApiError && error.status === 403)
+      log("warn", "role.refused", failureFields(error));
   };
   return new QueryClient({
     queryCache: new QueryCache({ onError }),

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { must } from "../must";
 
 /**
  * `sections` laid out as they were, while the same rows are loaded under the
@@ -11,21 +12,32 @@ import { useState } from "react";
  * happens only on something the user did (a tab, a filter, Load more) or on the
  * "N new" pill, whose rows arrive through `ListLive.merge`.
  */
-export function useSteadyLayout<Row extends { readonly id: string }, Section extends { readonly rows: readonly Row[] }>(
-  sections: readonly Section[],
-  layout: string,
-): readonly Section[] {
+export function useSteadyLayout<
+  Row extends { readonly id: string },
+  Section extends { readonly rows: readonly Row[] },
+>(sections: readonly Section[], layout: string): readonly Section[] {
   const [kept, setKept] = useState(() => ({ sections, layout, ids: idsOf(sections) }));
-  const fresh = new Map(sections.flatMap((section) => section.rows.map((row) => [row.id, row] as const)));
-  if (layout !== kept.layout || fresh.size !== kept.ids.size || [...fresh.keys()].some((id) => !kept.ids.has(id))) {
+  const fresh = new Map(
+    sections.flatMap((section) => section.rows.map((row) => [row.id, row] as const)),
+  );
+  if (
+    layout !== kept.layout ||
+    fresh.size !== kept.ids.size ||
+    [...fresh.keys()].some((id) => !kept.ids.has(id))
+  ) {
     // Stored during render, as React's "storing information from previous
     // renders" does, so the fresh layout shows in this very render.
     setKept({ sections, layout, ids: new Set(fresh.keys()) });
     return sections;
   }
-  return kept.sections.map((section) => ({ ...section, rows: section.rows.map((row) => fresh.get(row.id)!) }));
+  return kept.sections.map((section) => ({
+    ...section,
+    rows: section.rows.map((row) => must(fresh.get(row.id))),
+  }));
 }
 
-function idsOf(sections: readonly { readonly rows: readonly { readonly id: string }[] }[]): Set<string> {
+function idsOf(
+  sections: readonly { readonly rows: readonly { readonly id: string }[] }[],
+): Set<string> {
   return new Set(sections.flatMap((section) => section.rows.map((row) => row.id)));
 }

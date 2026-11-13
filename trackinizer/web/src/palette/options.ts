@@ -2,14 +2,26 @@ import type { Command } from "../commands/registry";
 import { formatRoute } from "../router/route";
 import { type InquiryRoute, jumpsFor, parseSearch } from "./grammar";
 import type { Found, KindSearch } from "./sources";
+import { must } from "../must";
 
 /** One row of the palette's listbox, under its section's heading. */
-export type Option = { readonly key: string; readonly section: string } & (
-  /** An inquiry to open; `found` is `null` for a jump to one the palette has not loaded. */
-  | { readonly type: "inquiry"; readonly route: InquiryRoute; readonly found: Found | null }
+export type Option = {
+  readonly key: string;
+  readonly section: string;
+} /** An inquiry to open; `found` is `null` for a jump to one the palette has not loaded. */ & (
+  | {
+      readonly type: "inquiry";
+      readonly route: InquiryRoute;
+      readonly found: Found | null;
+    }
   | { readonly type: "command"; readonly command: Command }
   /** Search `kinds` again, after each failed with `message`. */
-  | { readonly type: "retry"; readonly message: string; readonly kinds: readonly string[]; readonly retry: () => void }
+  | {
+      readonly type: "retry";
+      readonly message: string;
+      readonly kinds: readonly string[];
+      readonly retry: () => void;
+    }
 );
 
 /** The heading of the server's results. */
@@ -40,13 +52,26 @@ export type Sources = {
  * per distinct failure. Server results come last, so their late arrival never
  * moves a row above them. An inquiry is listed once, at its first place.
  */
-export function paletteOptions({ text, kinds, cached, recent, commands, searches }: Sources): Option[] {
+export function paletteOptions({
+  text,
+  kinds,
+  cached,
+  recent,
+  commands,
+  searches,
+}: Sources): Option[] {
   const q = text.trim();
   const options: Option[] = [];
   const listed = new Set<string>();
   const addInquiry = (section: string, found: Found) => {
     listed.add(found.id);
-    options.push({ key: `inquiry:${found.id}`, section, type: "inquiry", route: refOf(found), found });
+    options.push({
+      key: `inquiry:${found.id}`,
+      section,
+      type: "inquiry",
+      route: refOf(found),
+      found,
+    });
   };
   // Four recent and eight loaded rows, as the mock lists.
   if (!q) {
@@ -55,7 +80,14 @@ export function paletteOptions({ text, kinds, cached, recent, commands, searches
     for (const route of jumpsFor(q, kinds)) {
       const found = cached.find((row) => named(route, row)) ?? null;
       if (found) addInquiry("Jump to", found);
-      else options.push({ key: `jump:${formatRoute(route)}`, section: "Jump to", type: "inquiry", route, found });
+      else
+        options.push({
+          key: `jump:${formatRoute(route)}`,
+          section: "Jump to",
+          type: "inquiry",
+          route,
+          found,
+        });
     }
     const matches = parseSearch(q);
     cached
@@ -65,11 +97,17 @@ export function paletteOptions({ text, kinds, cached, recent, commands, searches
   }
   options.push(...commandOptions(commands, q.toLowerCase()));
   for (const search of searches) {
-    search.hits?.filter((found) => !listed.has(found.id)).forEach((found) => addInquiry(SERVER_SECTION, found));
+    search.hits
+      ?.filter((found) => !listed.has(found.id))
+      .forEach((found) => addInquiry(SERVER_SECTION, found));
   }
   const failures = new Map<string, KindSearch[]>();
   for (const search of searches) {
-    if (search.error) failures.set(search.error.message, [...(failures.get(search.error.message) ?? []), search]);
+    if (search.error)
+      failures.set(search.error.message, [
+        ...(failures.get(search.error.message) ?? []),
+        search,
+      ]);
   }
   for (const [message, failed] of failures) {
     options.push({
@@ -86,12 +124,22 @@ export function paletteOptions({ text, kinds, cached, recent, commands, searches
 
 /** Commands with a section whose title has `needle`, grouped by section in first-mounted order. */
 function commandOptions(commands: readonly Command[], needle: string): Option[] {
-  const matching = commands.filter((command) => command.section && command.title.toLowerCase().includes(needle));
-  const sections = [...new Set(matching.map((command) => command.section!))];
+  const matching = commands.filter(
+    (command) => command.section && command.title.toLowerCase().includes(needle),
+  );
+  const sections = [...new Set(matching.map((command) => must(command.section)))];
   return sections.flatMap((section) =>
     matching
       .filter((command) => command.section === section)
-      .map((command) => ({ key: `command:${command.id}`, section, type: "command", command }) as const),
+      .map(
+        (command) =>
+          ({
+            key: `command:${command.id}`,
+            section,
+            type: "command",
+            command,
+          }) as const,
+      ),
   );
 }
 
@@ -100,5 +148,7 @@ function refOf(found: Found): InquiryRoute {
 }
 
 function named(route: InquiryRoute, found: Found): boolean {
-  return route.name === "lookup" ? found.id === route.id : found.kind === route.kind && found.seq === route.seq;
+  return route.name === "lookup"
+    ? found.id === route.id
+    : found.kind === route.kind && found.seq === route.seq;
 }

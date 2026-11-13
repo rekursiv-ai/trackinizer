@@ -4,16 +4,19 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { serveViews, showList, up, viewButton } from "../lists/viewTesting";
 import { issue } from "../live/testing";
 import { currentRoute } from "../router/addressBar";
+import { must } from "../must";
 
 /** The outline's lines as `<indent>#ref title`, `older` after an ancestor outside the page; then the No parent group. */
 async function outlined(): Promise<string[]> {
   await waitFor(() => expect(document.querySelector(".o-line")).not.toBeNull());
-  return [...document.querySelectorAll<HTMLElement>(".o-line, .o-group")].map((line) => {
-    if (line.classList.contains("o-group")) return line.textContent!;
-    const ref = line.querySelector(".row-ref")!.textContent;
-    const older = line.querySelector(".o-older") ? " older" : "";
-    return `${"  ".repeat(Number(line.dataset.depth))}${ref}${older}`;
-  });
+  return [...document.querySelectorAll<HTMLElement>(".o-line, .o-group")].map(
+    (line) => {
+      if (line.classList.contains("o-group")) return must(line.textContent);
+      const ref = must(line.querySelector(".row-ref")).textContent;
+      const older = line.querySelector(".o-older") ? " older" : "";
+      return `${"  ".repeat(Number(line.dataset.depth))}${ref}${older}`;
+    },
+  );
 }
 
 /** Open the Issue list and switch it to Outline. */
@@ -39,7 +42,7 @@ test("an Issue list switches between List and Outline, and Outline reads the pag
   fireEvent.click(outline);
   expect(await outlined()).toEqual(["#10", "  #11"]);
   expect(outline.getAttribute("aria-pressed")).toBe("true");
-  const read = new URLSearchParams(sent.at(-1)!.query);
+  const read = new URLSearchParams(must(sent.at(-1)).query);
   expect([read.get("ancestors"), read.getAll("fields")]).toEqual(["narrows", ["id"]]);
   // The outline is its own grouping.
   expect(screen.queryByTitle("Group loaded rows")).toBeNull();
@@ -64,8 +67,8 @@ test("rows nest under their parents; parents outside the page show older, and a 
   });
   await showOutline();
   expect(await outlined()).toEqual(["#1 › #2 older", "  #21", "    #22", "  #20"]);
-  const older = document.querySelector(".o-older")!;
-  expect(older.querySelector(".row-title")!.textContent).toBe("Issue 1 › Issue 2");
+  const older = must(document.querySelector(".o-older"));
+  expect(must(older.querySelector(".row-title")).textContent).toBe("Issue 1 › Issue 2");
   expect(older.getAttribute("href")).toBe("/trax/ref/Issue/2");
 });
 
@@ -73,7 +76,7 @@ test("rows with no parent go in a No parent group at the end, which collapses", 
   serveViews([issue(30), issue(31), issue(32)], { 30: [], 31: [], 32: [up(5, 32)] });
   await showOutline();
   expect(await outlined()).toEqual(["#5 older", "  #32", "No parent2", "#31", "#30"]);
-  fireEvent.click(document.querySelector(".o-group")!);
+  fireEvent.click(must(document.querySelector(".o-group")));
   expect(await outlined()).toEqual(["#5 older", "  #32", "No parent2"]);
 });
 
@@ -81,12 +84,19 @@ test("← and → collapse and expand the focused line, j and k move over older 
   serveViews([issue(40), issue(41)], { 40: [up(4, 40)], 41: [up(4, 41)] });
   await showOutline();
   expect(await outlined()).toEqual(["#4 older", "  #41", "  #40"]);
-  const focused = () => document.querySelector('[aria-current="true"]')!.closest<HTMLElement>(".o-line")!.querySelector(".row-ref")!.textContent;
+  const focused = () =>
+    must(
+      must(
+        must(document.querySelector('[aria-current="true"]')).closest<HTMLElement>(
+          ".o-line",
+        ),
+      ).querySelector(".row-ref"),
+    ).textContent;
   expect(focused()).toBe("#4");
   const user = userEvent.setup();
   await user.keyboard("{ArrowLeft}");
   expect(await outlined()).toEqual(["#4 older"]);
-  expect(document.querySelector(".o-line")!.textContent).toContain("2 issues");
+  expect(must(document.querySelector(".o-line")).textContent).toContain("2 issues");
   await user.keyboard("{ArrowRight}");
   expect(await outlined()).toEqual(["#4 older", "  #41", "  #40"]);
   await user.keyboard("j");
@@ -106,11 +116,19 @@ test("the view is kept with the list's state, so the list opens again as an outl
 });
 
 test("a list state stored before the switch existed opens as the List, its filters kept", async () => {
-  const saved = { tab: "all", choices: [], grouping: "none", ordering: "created", pages: {}, collapsed: [], focus: null };
+  const saved = {
+    tab: "all",
+    choices: [],
+    grouping: "none",
+    ordering: "created",
+    pages: {},
+    collapsed: [],
+    focus: null,
+  };
   sessionStorage.setItem("trackinizer.v2.list.Issue", JSON.stringify(saved));
   const sent = serveViews([issue(60)], {});
   showList();
   await waitFor(() => expect(document.querySelectorAll("a.row")).toHaveLength(1));
-  expect(new URLSearchParams(sent[0]!.query).getAll("filter")).toEqual([]);
+  expect(new URLSearchParams(must(sent[0]).query).getAll("filter")).toEqual([]);
   expect((await viewButton("List")).getAttribute("aria-pressed")).toBe("true");
 });

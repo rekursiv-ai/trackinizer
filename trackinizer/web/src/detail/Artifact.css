@@ -1,4 +1,8 @@
-.artifact-loading, .artifact-unsupported { padding: 20px; color: var(--muted); }
+.artifact-loading,
+.artifact-unsupported {
+  padding: 20px;
+  color: var(--muted);
+}
 .artifact-content {
   min-height: 0;
   overflow: auto;
@@ -22,11 +26,13 @@
 }
 
 .artifact-eyebrow {
-  letter-spacing: .08em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.artifact-scope { margin-top: 5px; }
+.artifact-scope {
+  margin-top: 5px;
+}
 
 .artifact-header h2 {
   margin: 5px 0 0;
@@ -103,10 +109,19 @@
   padding-left: 18px;
 }
 
-.artifact-evidence-positive { color: var(--success, var(--accent)); }
-.artifact-evidence-negative { color: var(--danger, #ed7474); }
-.artifact-evidence-neutral { color: var(--muted); }
-.artifact-truncated { margin: 8px 0 0; font-size: 11px; }
+.artifact-evidence-positive {
+  color: var(--success, var(--accent));
+}
+.artifact-evidence-negative {
+  color: var(--danger, #ed7474);
+}
+.artifact-evidence-neutral {
+  color: var(--muted);
+}
+.artifact-truncated {
+  margin: 8px 0 0;
+  font-size: 11px;
+}
 
 .artifact-html-frame {
   display: block;
@@ -119,6 +134,10 @@
 }
 
 @media (max-width: 620px) {
-  .artifact-content { padding: 12px; }
-  .artifact-html-frame { min-height: 70vh; }
+  .artifact-content {
+    padding: 12px;
+  }
+  .artifact-html-frame {
+    min-height: 70vh;
+  }
 }

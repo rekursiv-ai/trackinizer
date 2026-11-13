@@ -1,5 +1,12 @@
 import { type QueryClient, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { ApiError } from "../api/client";
 import { bootQueries } from "../app/boot";
 import { log } from "../debug/log";
@@ -7,7 +14,13 @@ import { detailQueries } from "../detail/queries";
 import { LiveContext } from "../live/index";
 import { type ShowToast, useToast } from "../ui/toast";
 import { type Edit, fieldValue, type Guard, lastChangeOf, sameValue } from "./edits";
-import { foundLanded, isTransient, sendWithRetries, type WriteRequest } from "./requests";
+import {
+  foundLanded,
+  isTransient,
+  sendWithRetries,
+  type WriteRequest,
+} from "./requests";
+import { must } from "../must";
 
 /**
  * Where one control's write is.
@@ -27,7 +40,13 @@ import { foundLanded, isTransient, sendWithRetries, type WriteRequest } from "./
 export type WriteState =
   | { readonly status: "idle" }
   | { readonly status: "pending" }
-  | { readonly status: "failed"; readonly message: string; readonly error: ApiError; readonly retry: () => void; readonly discard: () => void }
+  | {
+      readonly status: "failed";
+      readonly message: string;
+      readonly error: ApiError;
+      readonly retry: () => void;
+      readonly discard: () => void;
+    }
   | { readonly status: "rejected"; readonly message: string; readonly error: ApiError }
   | {
       readonly status: "conflict";
@@ -83,22 +102,26 @@ export function useWrite(): Writer {
   }, []);
 
   const context = useRef<Context | null>(null);
-  const run = useCallback(async <Result,>(edit: Edit<Result>): Promise<Result | null> => {
-    if (busy.current) return null;
-    busy.current = true;
-    try {
-      const result = await runEdit(edit, context.current!);
-      return mounted.current ? result : null;
-    } finally {
-      busy.current = false;
-    }
-  }, []);
+  const run = useCallback(
+    async <Result>(edit: Edit<Result>): Promise<Result | null> => {
+      if (busy.current) return null;
+      busy.current = true;
+      try {
+        const result = await runEdit(edit, must(context.current));
+        return mounted.current ? result : null;
+      } finally {
+        busy.current = false;
+      }
+    },
+    [],
+  );
   useLayoutEffect(() => {
     context.current = {
       queryClient,
       toast,
       // `mutateAsync` resolves with what `sendWithRetries(request)` returned.
-      send: <Result,>(request: WriteRequest<Result>) => mutateAsync(request) as Promise<Result>,
+      send: <Result>(request: WriteRequest<Result>) =>
+        mutateAsync(request) as Promise<Result>,
       show: setState,
       changed: (ids) => {
         for (const id of ids) hub?.change(id);
@@ -118,13 +141,17 @@ export function useWrite(): Writer {
  * whose data holds a row or neighbour with that id. Resolves once the reads on
  * screen are back, failed or not.
  */
-export async function refetchShowing(queryClient: QueryClient, ids: readonly string[]): Promise<void> {
+export async function refetchShowing(
+  queryClient: QueryClient,
+  ids: readonly string[],
+): Promise<void> {
   const touched = new Set(ids);
   // Unlike the stream layer's refetches, this one cancels a read already in
   // flight: that read may have started before the write and would show it undone.
   await queryClient.invalidateQueries({
     predicate: (query) =>
-      query.queryKey.some((part) => typeof part === "string" && touched.has(part)) || showsRow(query.state.data, touched),
+      query.queryKey.some((part) => typeof part === "string" && touched.has(part)) ||
+      showsRow(query.state.data, touched),
   });
 }
 
@@ -146,7 +173,10 @@ type Context = {
   readonly run: <Result>(edit: Edit<Result>) => Promise<Result | null>;
 };
 
-async function runEdit<Result>(edit: Edit<Result>, context: Context): Promise<Result | null> {
+async function runEdit<Result>(
+  edit: Edit<Result>,
+  context: Context,
+): Promise<Result | null> {
   context.show(PENDING);
   const guard = edit.guard;
   if (guard?.type !== "check") return sendEdit(edit, context);
@@ -168,13 +198,18 @@ async function runEdit<Result>(edit: Edit<Result>, context: Context): Promise<Re
  * Send the edit's one request; a retry sends that same request again, once a
  * read finds it has not landed (`sendWithRetries`).
  */
-async function sendEdit<Result>(edit: Edit<Result>, context: Context): Promise<Result | null> {
+async function sendEdit<Result>(
+  edit: Edit<Result>,
+  context: Context,
+): Promise<Result | null> {
   let result: Result;
   try {
     result = await context.send(edit.request);
   } catch (error) {
-    if (edit.guard && error instanceof ApiError && error.status === 409) return resolveConflict(edit, edit.guard, error, context);
-    if (edit.maybeLanded !== undefined && isTransient(error)) return refused(edit.maybeLanded, error, context);
+    if (edit.guard && error instanceof ApiError && error.status === 409)
+      return resolveConflict(edit, edit.guard, error, context);
+    if (edit.maybeLanded !== undefined && isTransient(error))
+      return refused(edit.maybeLanded, error, context);
     return failed(error, edit.touches, context, () => sendEdit(edit, context));
   }
   await refetchShowing(context.queryClient, edit.touches);
@@ -208,25 +243,38 @@ async function resolveConflict<Result>(
     await context.queryClient.cancelQueries({ queryKey: read.queryKey });
     detail = await context.queryClient.fetchQuery({ ...read, staleTime: 0 });
   } catch (error) {
-    return failed(error, edit.touches, context, () => resolveConflict(edit, guard, conflict, context));
+    return failed(error, edit.touches, context, () =>
+      resolveConflict(edit, guard, conflict, context),
+    );
   }
   const theirs = fieldValue(detail.self, guard.field);
-  if (sameValue(theirs, guard.base)) return failed(conflict, edit.touches, context, () => sendEdit(edit, context));
+  if (sameValue(theirs, guard.base))
+    return failed(conflict, edit.touches, context, () => sendEdit(edit, context));
   if (sameValue(theirs, guard.mine)) {
     await keepTheirs(edit.touches, context);
     return null;
   }
   const who = lastChangeOf(detail.changes, guard.field)?.actor ?? null;
-  if (await ask(guard, theirs, who, context)) return runEdit(guard.again(theirs), context);
+  if (await ask(guard, theirs, who, context))
+    return runEdit(guard.again(theirs), context);
   await keepTheirs(edit.touches, context);
   return null;
 }
 
 /** Ask whether to save mine over `theirs`; resolves true to save. */
-function ask<Result>(guard: Guard<Result>, theirs: unknown, who: string | null, context: Context): Promise<boolean> {
+function ask<Result>(
+  guard: Guard<Result>,
+  theirs: unknown,
+  who: string | null,
+  context: Context,
+): Promise<boolean> {
   const [label, shown] = [guard.label, guard.show(theirs)];
   // Neither value is logged: either can be text a user wrote.
-  log("info", "write.conflict", { guard: guard.type, label, ...(guard.type === "cas" && { id: guard.id, field: guard.field }) });
+  log("info", "write.conflict", {
+    guard: guard.type,
+    label,
+    ...(guard.type === "cas" && { id: guard.id, field: guard.field }),
+  });
   return choice(
     context,
     (choose) =>
@@ -240,7 +288,9 @@ function ask<Result>(guard: Guard<Result>, theirs: unknown, who: string | null, 
         keepTheirs: () => choose(false),
       }),
     () => {
-      context.toast(`Not saved: ${who ?? "someone"} changed ${label} to ${shown}`, { failed: true });
+      context.toast(`Not saved: ${who ?? "someone"} changed ${label} to ${shown}`, {
+        failed: true,
+      });
       return false;
     },
   );
@@ -272,7 +322,10 @@ async function failed<Result>(
   retry: () => Promise<Result | null>,
 ): Promise<Result | null> {
   if (!(error instanceof ApiError)) throw error;
-  if (error.status === 403) void context.queryClient.invalidateQueries({ queryKey: bootQueries.profile.queryKey });
+  if (error.status === 403)
+    void context.queryClient.invalidateQueries({
+      queryKey: bootQueries.profile.queryKey,
+    });
   if (error.status === 404) void refetchShowing(context.queryClient, touches);
   const message = failureMessage(error);
   if (!isTransient(error)) return refused(message, error, context);
@@ -282,7 +335,13 @@ async function failed<Result>(
       const answer = (retrying: boolean) => {
         if (choose(retrying)) context.show(retrying ? PENDING : IDLE);
       };
-      context.show({ status: "failed", message, error, retry: () => answer(true), discard: () => answer(false) });
+      context.show({
+        status: "failed",
+        message,
+        error,
+        retry: () => answer(true),
+        discard: () => answer(false),
+      });
     },
     () => {
       context.toast(message, { retry: () => void retry(), error });
@@ -308,7 +367,9 @@ function failureMessage(error: ApiError): string {
     case 403:
       return `Your role cannot make this change. ${error.detail}`;
   }
-  return error.status >= 500 ? `Not saved: the server failed (${error.detail}).` : error.detail;
+  return error.status >= 500
+    ? `Not saved: the server failed (${error.detail}).`
+    : error.detail;
 }
 
 /** Whether `value` holds an object whose `id` is one of `ids`. */
@@ -316,7 +377,10 @@ function showsRow(value: unknown, ids: ReadonlySet<string>): boolean {
   if (typeof value !== "object" || value === null) return false;
   if (Array.isArray(value)) return value.some((item) => showsRow(item, ids));
   const record = value as { readonly [key: string]: unknown };
-  return (typeof record.id === "string" && ids.has(record.id)) || Object.values(record).some((item) => showsRow(item, ids));
+  return (
+    (typeof record.id === "string" && ids.has(record.id)) ||
+    Object.values(record).some((item) => showsRow(item, ids))
+  );
 }
 
 /**

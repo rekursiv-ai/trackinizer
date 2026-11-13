@@ -1,5 +1,13 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Histogram } from "../api/histogram";
@@ -10,6 +18,7 @@ import { LiveContext } from "../live";
 import { LiveHub } from "../live/hub";
 import { testClient } from "../live/testing";
 import { Minimap, type MinimapProps } from "./Minimap";
+import { must } from "../must";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -36,8 +45,12 @@ beforeEach(() => {
   vi.stubGlobal(
     "ResizeObserver",
     class {
-      readonly #report: (entries: readonly { contentRect: { width: number } }[]) => void;
-      constructor(report: (entries: readonly { contentRect: { width: number } }[]) => void) {
+      readonly #report: (
+        entries: readonly { contentRect: { width: number } }[],
+      ) => void;
+      constructor(
+        report: (entries: readonly { contentRect: { width: number } }[]) => void,
+      ) {
         this.#report = report;
       }
       observe() {
@@ -47,11 +60,13 @@ beforeEach(() => {
     },
   );
   Element.prototype.setPointerCapture = () => {};
-  counts = new Map([
-    [NOW - 60 * MINUTE, 2],
-    [NOW - 30 * MINUTE, 4],
-    [NOW, 1],
-  ].map(([time, count]) => [minute(time!), count!]));
+  counts = new Map(
+    [
+      [NOW - 60 * MINUTE, 2],
+      [NOW - 30 * MINUTE, 4],
+      [NOW, 1],
+    ].map(([time, count]) => [minute(must(time)), must(count)]),
+  );
   width = WIDTH;
   hold = null;
   // The server lists every bucket of its grid, counting the records in each. A
@@ -60,15 +75,23 @@ beforeEach(() => {
   // end before the 7-day mark.
   sent = stubFetch(async (request) => {
     const query = new URL(request.url).searchParams;
-    const [since, until, buckets] = [Date.parse(query.get("since")!), Date.parse(query.get("until")!), Number(query.get("buckets"))];
-    if (buckets < 2 || buckets > 1000 || until < MARK) return Response.json({ detail: "Out of bounds." }, { status: 400 });
+    const [since, until, buckets] = [
+      Date.parse(must(query.get("since"))),
+      Date.parse(must(query.get("until"))),
+      Number(query.get("buckets")),
+    ];
+    if (buckets < 2 || buckets > 1000 || until < MARK)
+      return Response.json({ detail: "Out of bounds." }, { status: 400 });
     const step = (until - since) / (buckets - 1);
     const starts = Array.from({ length: buckets }, (_, k) => since + k * step);
-    const count = (start: number) => [...counts].filter(([time]) => time >= start && time < start + step).reduce((sum, [, n]) => sum + n, 0);
+    const count = (start: number) =>
+      [...counts]
+        .filter(([time]) => time >= start && time < start + step)
+        .reduce((sum, [, n]) => sum + n, 0);
     if (hold) await hold;
     return Response.json({
       start: iso(since),
-      end: iso(starts.at(-1)! + step),
+      end: iso(must(starts.at(-1)) + step),
       bucket_seconds: step / 1000,
       counts: starts.map((start) => ({ start: iso(start), count: count(start) })),
     } satisfies Histogram);
@@ -82,9 +105,15 @@ afterEach(() => {
   Reflect.deleteProperty(Element.prototype, "setPointerCapture");
 });
 
-function show({ hub = null, ...props }: Partial<MinimapProps> & { hub?: LiveHub | null } = {}) {
+function show({
+  hub = null,
+  ...props
+}: Partial<MinimapProps> & { hub?: LiveHub | null } = {}) {
   const client = testClient();
-  const handlers = { onSeek: vi.fn<(time: string) => void>(), onWindow: vi.fn<(since: string, until: string) => void>() };
+  const handlers = {
+    onSeek: vi.fn<(time: string) => void>(),
+    onWindow: vi.fn<(since: string, until: string) => void>(),
+  };
   render(
     <QueryClientProvider client={client}>
       <LiveContext value={hub}>
@@ -107,12 +136,16 @@ const spanRead = (since: number, until: number, step: number) => [
 ];
 const LAST_HOUR = spanRead(minute(NOW - HOUR), minute(NOW) + MINUTE, MINUTE);
 const bars = () => [...document.querySelectorAll<SVGRectElement>(".minimap-bar")];
-const band = () => document.querySelector<HTMLElement>(".minimap-band")!;
+const band = () => must(document.querySelector<HTMLElement>(".minimap-band"));
 const track = () => screen.getByRole("slider", { name: "Place in history" });
 
 /** Run what the band's settling waits on: it reads a span once the view has stayed put. */
 async function settled(act_: () => void) {
-  vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], now: Date.now(), shouldClearNativeTimers: true });
+  vi.useFakeTimers({
+    toFake: ["Date", "setTimeout", "clearTimeout"],
+    now: Date.now(),
+    shouldClearNativeTimers: true,
+  });
   act_();
   await act(() => vi.advanceTimersByTimeAsync(500));
   await act(() => vi.advanceTimersByTimeAsync(0));
@@ -126,7 +159,9 @@ test("the band reads the last hour under the feed's filters, in bars that fit it
   expect(bandReads()).toEqual([LAST_HOUR]);
   expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([22, 44, 11]);
   // Each bar sits where its minute falls along the hour.
-  expect(Number(bars()[1]!.getAttribute("x"))).toBeCloseTo(((minute(NOW - 30 * MINUTE) - (NOW - HOUR)) / HOUR) * WIDTH);
+  expect(Number(must(bars()[1]).getAttribute("x"))).toBeCloseTo(
+    ((minute(NOW - 30 * MINUTE) - (NOW - HOUR)) / HOUR) * WIDTH,
+  );
 });
 
 test("a click moves the feed to the time under it; a drag shows the window dragged across, whichever way", async () => {
@@ -138,9 +173,16 @@ test("a click moves the feed to the time under it; a drag shows the window dragg
   expect(onSeek.mock.calls).toEqual([[iso(NOW - HOUR + (302 / WIDTH) * HOUR)]]);
   fireEvent.pointerDown(band(), { clientX: 450, button: 0, pointerId: 1 });
   fireEvent.pointerMove(band(), { clientX: 150, pointerId: 1 });
-  expect(document.querySelector<HTMLElement>(".minimap-pick")!.style).toMatchObject({ left: "25%", width: "50%" });
+  expect(
+    must(document.querySelector<HTMLElement>(".minimap-pick")).style,
+  ).toMatchObject({
+    left: "25%",
+    width: "50%",
+  });
   fireEvent.pointerUp(band(), { clientX: 150, pointerId: 1 });
-  expect(onWindow.mock.calls).toEqual([[iso(NOW - 45 * MINUTE), iso(NOW - 15 * MINUTE)]]);
+  expect(onWindow.mock.calls).toEqual([
+    [iso(NOW - 45 * MINUTE), iso(NOW - 15 * MINUTE)],
+  ]);
   expect(document.querySelector(".minimap-pick")).toBeNull();
   expect(onSeek).toHaveBeenCalledTimes(1);
 });
@@ -148,24 +190,51 @@ test("a click moves the feed to the time under it; a drag shows the window dragg
 test("the feed's window is marked, the bars in it lit; the zoom buttons, Hour, Day and Week, change the span read", async () => {
   show({ shown: { since: iso(NOW - 30 * MINUTE), until: iso(NOW - 15 * MINUTE) } });
   await waitFor(() => expect(bars()).toHaveLength(3));
-  expect(document.querySelector<HTMLElement>(".minimap-mark")!.style).toMatchObject({ left: "50%", width: "25%" });
-  expect(bars().map((bar) => bar.classList.contains("on"))).toEqual([false, true, false]);
-  expect(within(screen.getByRole("group", { name: "Zoom" })).getAllByRole("button").map((button) => button.textContent)).toEqual(["Hour", "Day", "Week"]);
+  expect(
+    must(document.querySelector<HTMLElement>(".minimap-mark")).style,
+  ).toMatchObject({
+    left: "50%",
+    width: "25%",
+  });
+  expect(bars().map((bar) => bar.classList.contains("on"))).toEqual([
+    false,
+    true,
+    false,
+  ]);
+  expect(
+    within(screen.getByRole("group", { name: "Zoom" }))
+      .getAllByRole("button")
+      .map((button) => button.textContent),
+  ).toEqual(["Hour", "Day", "Week"]);
   const day = screen.getByRole("button", { name: "Day" });
   await settled(() => fireEvent.click(day));
   expect(day.getAttribute("aria-pressed")).toBe("true");
   // 100 bars of a day want 15 min each.
   const quarter = 15 * MINUTE;
-  expect(bandReads().at(-1)).toEqual(spanRead(Math.floor((NOW - DAY) / quarter) * quarter, Math.ceil(NOW / quarter) * quarter, quarter));
+  expect(bandReads().at(-1)).toEqual(
+    spanRead(
+      Math.floor((NOW - DAY) / quarter) * quarter,
+      Math.ceil(NOW / quarter) * quarter,
+      quarter,
+    ),
+  );
   // Week, the 7 days, in 2 h bars from the first that starts after the mark.
   const twoHours = 2 * HOUR;
   let release = () => {};
   hold = new Promise((resolve) => (release = resolve));
   await settled(() => fireEvent.click(screen.getByRole("button", { name: "Week" })));
-  expect(bandReads().at(-1)).toEqual(spanRead(Math.ceil(MARK / twoHours) * twoHours, Math.ceil(NOW / twoHours) * twoHours, twoHours));
+  expect(bandReads().at(-1)).toEqual(
+    spanRead(
+      Math.ceil(MARK / twoHours) * twoHours,
+      Math.ceil(NOW / twoHours) * twoHours,
+      twoHours,
+    ),
+  );
   release();
   // The hour's records fall in one 2 h bar, 20:00 to 22:00.
-  await waitFor(() => expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([44]));
+  await waitFor(() =>
+    expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([44]),
+  );
 });
 
 test("while the next counts load, a scroll keeps the bars shown, but a zoom in stretches no coarser ones across the band", async () => {
@@ -191,7 +260,12 @@ test("while the next counts load, a scroll keeps the bars shown, but a zoom in s
 test("a feed that follows now is marked to now, and zooming leaves a live band live", async () => {
   show({ shown: { since: iso(NOW - 3 * HOUR), until: null } });
   await waitFor(() => expect(bars()).toHaveLength(3));
-  expect(document.querySelector<HTMLElement>(".minimap-mark")!.style).toMatchObject({ left: "0%", width: "100%" });
+  expect(
+    must(document.querySelector<HTMLElement>(".minimap-mark")).style,
+  ).toMatchObject({
+    left: "0%",
+    width: "100%",
+  });
   expect(bars().map((bar) => bar.classList.contains("on"))).toEqual([true, true, true]);
   await settled(() => fireEvent.click(screen.getByRole("button", { name: "Week" })));
   await settled(() => fireEvent.click(screen.getByRole("button", { name: "Hour" })));
@@ -206,17 +280,23 @@ test("the wheel scrolls back through the history, read once it settles; Now retu
   // cancelled, or a horizontal swipe would also take the browser back a page.
   const notches: boolean[] = [];
   await settled(() => {
-    for (let k = 0; k < 3; k++) notches.push(fireEvent.wheel(band(), { deltaY: -WIDTH / 3 }));
+    for (let k = 0; k < 3; k++)
+      notches.push(fireEvent.wheel(band(), { deltaY: -WIDTH / 3 }));
   });
   expect(notches).toEqual([false, false, false]);
-  expect(bandReads()).toEqual([LAST_HOUR, spanRead(minute(NOW - 2 * HOUR), minute(NOW - HOUR) + MINUTE, MINUTE)]);
+  expect(bandReads()).toEqual([
+    LAST_HOUR,
+    spanRead(minute(NOW - 2 * HOUR), minute(NOW - HOUR) + MINUTE, MINUTE),
+  ]);
   await settled(() => fireEvent.click(screen.getByRole("button", { name: "Now" })));
   expect(screen.queryByRole("button", { name: "Now" })).toBeNull();
   // The last hour was read already.
   expect(bandReads()).toHaveLength(2);
   // Its read starts at the first bar after the mark, since the server counts nothing before it.
   await settled(() => fireEvent.wheel(band(), { deltaX: -1000 * WIDTH }));
-  expect(bandReads().at(-1)).toEqual(spanRead(minute(MARK) + MINUTE, minute(MARK + HOUR) + MINUTE, MINUTE));
+  expect(bandReads().at(-1)).toEqual(
+    spanRead(minute(MARK) + MINUTE, minute(MARK + HOUR) + MINUTE, MINUTE),
+  );
 });
 
 test("the track scrolls across the 7 days: a press off the thumb centres the band there, the thumb drags it, keys step", async () => {
@@ -231,18 +311,29 @@ test("the track scrolls across the 7 days: a press off the thumb centres the ban
   // Held 16.8 min left of its middle, the thumb moves as the pointer does, without first jumping to centre there.
   await settled(() => {
     fireEvent.pointerDown(track(), { clientX: 299, button: 0, pointerId: 2 });
-    expect(track().getAttribute("aria-valuetext")).toBe(dateTime(iso(middle + HOUR / 2)));
+    expect(track().getAttribute("aria-valuetext")).toBe(
+      dateTime(iso(middle + HOUR / 2)),
+    );
     fireEvent.pointerMove(track(), { clientX: 349, pointerId: 2 });
     fireEvent.pointerUp(track(), { clientX: 349, pointerId: 2 });
   });
   const rest = middle + 14 * HOUR;
   expect(track().getAttribute("aria-valuetext")).toBe(dateTime(iso(rest + HOUR / 2)));
   // Read once, where the band came to rest.
-  expect(bandReads()).toEqual([LAST_HOUR, spanRead(minute(rest - HOUR / 2), minute(rest + HOUR / 2) + MINUTE, MINUTE)]);
+  expect(bandReads()).toEqual([
+    LAST_HOUR,
+    spanRead(minute(rest - HOUR / 2), minute(rest + HOUR / 2) + MINUTE, MINUTE),
+  ]);
   await settled(() => fireEvent.keyDown(track(), { key: "End" }));
   expect(track().getAttribute("aria-valuetext")).toBe("Now");
   await settled(() => fireEvent.keyDown(track(), { key: "ArrowLeft" }));
-  expect(bandReads().at(-1)).toEqual(spanRead(minute(NOW - HOUR - 15 * MINUTE), minute(NOW - 15 * MINUTE) + MINUTE, MINUTE));
+  expect(bandReads().at(-1)).toEqual(
+    spanRead(
+      minute(NOW - HOUR - 15 * MINUTE),
+      minute(NOW - 15 * MINUTE) + MINUTE,
+      MINUTE,
+    ),
+  );
 });
 
 test("live, the stream's first open reads the band again; scrolled back, it reads nothing", async () => {
@@ -251,7 +342,11 @@ test("live, the stream's first open reads the band again; scrolled back, it read
   await waitFor(() => expect(bars()).toHaveLength(3));
   counts.set(minute(NOW), 5);
   act(() => hub.open());
-  await waitFor(() => expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([17.6, 35.2, 44]));
+  await waitFor(() =>
+    expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([
+      17.6, 35.2, 44,
+    ]),
+  );
   expect(bandReads()).toEqual([LAST_HOUR, LAST_HOUR]);
   await settled(() => fireEvent.wheel(band(), { deltaY: -WIDTH }));
   hub.drop();
@@ -262,23 +357,32 @@ test("live, the stream's first open reads the band again; scrolled back, it read
 });
 
 test("a band read that fails says why, with Retry", async () => {
-  vi.stubGlobal("fetch", async () => Response.json({ detail: "The database is down." }, { status: 503 }));
+  vi.stubGlobal("fetch", async () =>
+    Response.json({ detail: "The database is down." }, { status: 503 }),
+  );
   show();
-  expect((await screen.findByRole("alert")).textContent).toContain("The database is down.");
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "The database is down.",
+  );
   expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
 });
 
-test.each(["Retry", "Copy details"])("the failure's %s button acts without seeking or selecting a window", async (label) => {
-  const fetch = vi.fn(async () => Response.json({ detail: "The database is down." }, { status: 503 }));
-  vi.stubGlobal("fetch", fetch);
-  const user = userEvent.setup();
-  const { onSeek, onWindow } = show();
-  await user.click(await screen.findByRole("button", { name: label }));
-  if (label === "Retry") await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
-  else await screen.findByRole("button", { name: "Details copied" });
-  expect(onSeek).not.toHaveBeenCalled();
-  expect(onWindow).not.toHaveBeenCalled();
-});
+test.each(["Retry", "Copy details"])(
+  "the failure's %s button acts without seeking or selecting a window",
+  async (label) => {
+    const fetch = vi.fn(async () =>
+      Response.json({ detail: "The database is down." }, { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    const user = userEvent.setup();
+    const { onSeek, onWindow } = show();
+    await user.click(await screen.findByRole("button", { name: label }));
+    if (label === "Retry") await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    else await screen.findByRole("button", { name: "Details copied" });
+    expect(onSeek).not.toHaveBeenCalled();
+    expect(onWindow).not.toHaveBeenCalled();
+  },
+);
 
 test("returning to Now catches up on changes received while scrolled back, without another event", async () => {
   const hub = new LiveHub(testClient());
@@ -289,8 +393,18 @@ test("returning to Now catches up on changes received while scrolled back, witho
   act(() => hub.open());
   await act(() => Promise.resolve());
   await settled(() => fireEvent.click(screen.getByRole("button", { name: "Now" })));
-  expect(bandReads()).toEqual([LAST_HOUR, spanRead(minute(NOW - 2 * HOUR), minute(NOW - HOUR) + MINUTE, MINUTE), LAST_HOUR]);
-  await waitFor(() => expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([88 / 7, 44, 44 / 7]));
+  expect(bandReads()).toEqual([
+    LAST_HOUR,
+    spanRead(minute(NOW - 2 * HOUR), minute(NOW - HOUR) + MINUTE, MINUTE),
+    LAST_HOUR,
+  ]);
+  await waitFor(() =>
+    expect(bars().map((bar) => Number(bar.getAttribute("height")))).toEqual([
+      88 / 7,
+      44,
+      44 / 7,
+    ]),
+  );
   hub.stop();
 });
 

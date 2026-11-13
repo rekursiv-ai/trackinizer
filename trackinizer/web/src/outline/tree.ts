@@ -1,4 +1,5 @@
 import type { Ancestor, InquiryRow } from "../api/inquiries";
+import { must } from "../must";
 
 /** One Issue in an outline: a row the list loaded, or an ancestor of one outside the page. */
 export type OutlineNode = {
@@ -63,7 +64,7 @@ export function buildOutline(
       if (id !== row.id) below.set(id, (below.get(id) ?? 0) + 1);
     }
   });
-  const byRank = (a: string, b: string) => rank.get(a)! - rank.get(b)!;
+  const byRank = (a: string, b: string) => must(rank.get(a)) - must(rank.get(b));
   const children = new Map<string, string[]>();
   const roots: string[] = [];
   for (const id of rank.keys()) {
@@ -72,11 +73,18 @@ export function buildOutline(
     else children.set(parent, [...(children.get(parent) ?? []), id]);
   }
   for (const listed of children.values()) listed.sort(byRank);
-  const tree = { nodes, parents, under, below, collapsed, children: (id: string) => children.get(id) ?? [] };
+  const tree = {
+    nodes,
+    parents,
+    under,
+    below,
+    collapsed,
+    children: (id: string) => children.get(id) ?? [],
+  };
   const lines: OutlineLine[] = [];
   const orphans: InquiryRow[] = [];
   for (const id of roots.toSorted(byRank)) {
-    const { row } = nodes.get(id)!;
+    const { row } = must(nodes.get(id));
     if (row && !children.has(id)) orphans.push(row);
     else addLines(tree, id, 0, lines);
   }
@@ -104,11 +112,21 @@ function gather(
   ancestry: ReadonlyMap<string, readonly Ancestor[]>,
 ): { nodes: Map<string, OutlineNode>; parents: Map<string, string[]> } {
   const nodes = new Map<string, OutlineNode>(
-    rows.map((row) => [row.id, { id: row.id, kind: row.kind, seq: row.seq, title: row.title, status: row.status, row }]),
+    rows.map((row) => [
+      row.id,
+      {
+        id: row.id,
+        kind: row.kind,
+        seq: row.seq,
+        title: row.title,
+        status: row.status,
+        row,
+      },
+    ]),
   );
   const parents = new Map<string, string[]>();
   for (const row of read) {
-    for (const { child_ids, ...up } of ancestry.get(row.id)!) {
+    for (const { child_ids, ...up } of must(ancestry.get(row.id))) {
       if (!nodes.has(up.id)) nodes.set(up.id, { ...up, row: null });
       for (const child of child_ids) {
         const known = parents.get(child) ?? [];
@@ -123,10 +141,14 @@ function gather(
  * The parent each node shows under: its first, or the next when that one is
  * below it already. `narrows` can hold a cycle, which would nest forever.
  */
-function placeUnder(nodes: ReadonlyMap<string, OutlineNode>, parents: ReadonlyMap<string, readonly string[]>): Map<string, string> {
+function placeUnder(
+  nodes: ReadonlyMap<string, OutlineNode>,
+  parents: ReadonlyMap<string, readonly string[]>,
+): Map<string, string> {
   const under = new Map<string, string>();
   const reaches = (from: string, target: string) => {
-    for (let id: string | undefined = from; id !== undefined; id = under.get(id)) if (id === target) return true;
+    for (let id: string | undefined = from; id !== undefined; id = under.get(id))
+      if (id === target) return true;
     return false;
   };
   for (const id of nodes.keys()) {
@@ -138,27 +160,29 @@ function placeUnder(nodes: ReadonlyMap<string, OutlineNode>, parents: ReadonlyMa
 
 /** Add the line for `id` at `depth`, and the lines under it unless it is collapsed. */
 function addLines(tree: Tree, id: string, depth: number, lines: OutlineLine[]): void {
-  const chain = [tree.nodes.get(id)!];
+  const chain = [must(tree.nodes.get(id))];
   for (;;) {
-    const last = chain.at(-1)!;
+    const last = must(chain.at(-1));
     const [only, ...more] = tree.children(last.id);
     // Only older ancestors compress, and only one that shows nowhere else.
     if (last.row || only === undefined || more.length > 0) break;
-    const next = tree.nodes.get(only)!;
-    if (next.row || tree.parents.get(only)!.length > 1) break;
+    const next = must(tree.nodes.get(only));
+    if (next.row || must(tree.parents.get(only)).length > 1) break;
     chain.push(next);
   }
-  const last = chain.at(-1)!;
+  const last = must(chain.at(-1));
   const children = tree.children(last.id);
   const expanded = !tree.collapsed.has(last.id);
-  const shownUnder = tree.under.get(chain[0]!.id);
+  const shownUnder = tree.under.get(must(chain[0]).id);
   lines.push({
     nodes: chain,
     depth,
     parent: children.length > 0,
     expanded,
-    below: tree.below.get(chain[0]!.id) ?? 0,
-    alsoUnder: (tree.parents.get(chain[0]!.id) ?? []).filter((parent) => parent !== shownUnder).map((parent) => tree.nodes.get(parent)!),
+    below: tree.below.get(must(chain[0]).id) ?? 0,
+    alsoUnder: (tree.parents.get(must(chain[0]).id) ?? [])
+      .filter((parent) => parent !== shownUnder)
+      .map((parent) => must(tree.nodes.get(parent))),
   });
   if (expanded) for (const child of children) addLines(tree, child, depth + 1, lines);
 }

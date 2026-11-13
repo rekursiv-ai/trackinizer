@@ -1,6 +1,7 @@
 import type { Link, Nodes, Root } from "mdast";
 import { findAndReplace, type FindAndReplaceTuple } from "mdast-util-find-and-replace";
 import { formatRoute, parseSeq } from "../router/route";
+import { must } from "../must";
 
 /**
  * A remark plugin that links `Kind#seq` refs and inquiry UUIDs.
@@ -17,8 +18,11 @@ import { formatRoute, parseSeq } from "../router/route";
 export function remarkRefs({ kinds }: { kinds: readonly string[] }) {
   const patterns: FindAndReplaceTuple[] = [[UUID, uuidLink]];
   // With no kinds the pattern would be `()#(\d+)` and link every bare `#4`.
-  const names = kinds.map((kind) => kind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|");
-  if (kinds.length) patterns.unshift([new RegExp(`(?<![\\w#])(${names})#(\\d+)\\b`, "g"), refLink]);
+  const names = kinds
+    .map((kind) => kind.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  if (kinds.length)
+    patterns.unshift([new RegExp(`(?<![\\w#])(${names})#(\\d+)\\b`, "g"), refLink]);
   return (tree: Root) => {
     if (kinds.length) refLinks(tree, new RegExp(`^(${names})#(\\d+)$`));
     findAndReplace(tree, patterns, { ignore: ["link", "linkReference"] });
@@ -59,16 +63,18 @@ function refLinks(node: Nodes, ref: RegExp): void {
   const [only, ...rest] = node.children;
   if (only?.type !== "text" || rest.length) return;
   const named = ref.exec(only.value);
-  const seq = named && parseSeq(named[2]!);
+  const seq = named && parseSeq(must(named[2]));
   if (!named || seq === null) return;
-  const route = formatRoute({ name: "ref", kind: named[1]!, seq });
+  const route = formatRoute({ name: "ref", kind: must(named[1]), seq });
   if (appRef(node.url) === route) Object.assign(node, link(route, only.value, null));
 }
 
 /** A ref's link; `false` leaves a seq no inquiry can have as text. */
 function refLink(text: string, kind: string, digits: string): Link | false {
   const seq = parseSeq(digits);
-  return seq === null ? false : link(formatRoute({ name: "ref", kind, seq }), text, null);
+  return seq === null
+    ? false
+    : link(formatRoute({ name: "ref", kind, seq }), text, null);
 }
 
 /** A UUID shows its first eight characters, as the old UI's links did. */

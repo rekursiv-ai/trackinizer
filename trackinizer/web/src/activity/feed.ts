@@ -16,15 +16,25 @@ export const KIND_TABS = [
   { tab: "judgements", label: "Judgements", kinds: ["belief_judgement"] },
   { tab: "created", label: "Created", kinds: ["created", "purged"] },
   { tab: "relations", label: "Relations", kinds: ["edge_added", "edge_removed"] },
-  { tab: "edits", label: "Edits", kinds: ["description", "title", "issue_priority", "labels", "owner"] },
-] as const satisfies readonly { tab: string; label: string; kinds: readonly ChangeKind[] }[];
+  {
+    tab: "edits",
+    label: "Edits",
+    kinds: ["description", "title", "issue_priority", "labels", "owner"],
+  },
+] as const satisfies readonly {
+  tab: string;
+  label: string;
+  kinds: readonly ChangeKind[];
+}[];
 
 /** A tab: `all`, or one of `KIND_TABS`. */
 export type Tab = "all" | (typeof KIND_TABS)[number]["tab"];
 
 /** The change kinds a tab reads. */
 export function tabKinds(tab: Tab): readonly ChangeKind[] {
-  return KIND_TABS.filter((t) => tab === "all" || t.tab === tab).flatMap((t) => t.kinds);
+  return KIND_TABS.filter((t) => tab === "all" || t.tab === tab).flatMap(
+    (t) => t.kinds,
+  );
 }
 
 /** Whether `value` names a tab, as a stored one read back may not. */
@@ -51,7 +61,10 @@ export type FeedItem = {
  * the child states it: `added relation Requires Issue#398`. `labels` are the
  * server's `forward` edge labels, by edge kind.
  */
-export function feedItems(rows: readonly LoggedChange[], labels: { readonly [edgeKind: string]: string }): FeedItem[] {
+export function feedItems(
+  rows: readonly LoggedChange[],
+  labels: { readonly [edgeKind: string]: string },
+): FeedItem[] {
   const byId = new Map(rows.map((row) => [row.id, row]));
   const echoes = rows.filter((row) => {
     const cause = row.caused_by === null ? undefined : byId.get(row.caused_by);
@@ -66,7 +79,11 @@ export function feedItems(rows: readonly LoggedChange[], labels: { readonly [edg
       subject: { id: change.subject_id, kind: change.subject_kind },
       // Nothing causes the child's half of a user's edge, while the parent's
       // half is always caused by the child's.
-      phrase: describe(change, labels, change.caused_by === null || paired.has(change.id)),
+      phrase: describe(
+        change,
+        labels,
+        change.caused_by === null || paired.has(change.id),
+      ),
     }));
 }
 
@@ -99,7 +116,6 @@ export function dayLabel(iso: string, now: number): string {
   });
 }
 
-
 /** A labels edit: the labels it added and removed. */
 function labelsText(before: unknown, after: unknown): string {
   const [was, now] = [asList(before), asList(after)];
@@ -109,7 +125,10 @@ function labelsText(before: unknown, after: unknown): string {
   ] as const;
   const said = parts
     .filter(([, labels]) => labels.length)
-    .map(([verb, labels]) => `${verb} ${labels.length === 1 ? "label" : "labels"} ${labels.join(", ")}`);
+    .map(
+      ([verb, labels]) =>
+        `${verb} ${labels.length === 1 ? "label" : "labels"} ${labels.join(", ")}`,
+    );
   return said.length ? said.join(" and ") : "edited the labels";
 }
 
@@ -172,16 +191,27 @@ function describe(
     case "status":
       return [`changed status from ${String(before)} to ${String(after)}`];
     case "belief_judgement":
-      return [isUnset(after) ? "cleared the judgement" : `marked as ${capitalize(String(after))}`];
+      return [
+        isUnset(after)
+          ? "cleared the judgement"
+          : `marked as ${capitalize(String(after))}`,
+      ];
     case "description":
-      return [isUnset(after) ? "cleared the description" : isUnset(before) ? "added a description" : "edited the description"];
+      return [
+        isUnset(after)
+          ? "cleared the description"
+          : isUnset(before)
+            ? "added a description"
+            : "edited the description",
+      ];
     case "edge_added":
     case "edge_removed": {
       const side = edgeSide(change);
       const verb = change.kind === "edge_added" ? "added" : "removed";
       const edgeKind = String(side.peer_edge_kind);
       const peer = { id: String(side.peer_id), kind: String(side.peer_kind) };
-      if (child) return [`${verb} relation ${sentence(labels[edgeKind] ?? edgeKind)} `, peer];
+      if (child)
+        return [`${verb} relation ${sentence(labels[edgeKind] ?? edgeKind)} `, peer];
       // The parent's half alone: its row does not say which way the edge points.
       return [`${verb} a ${edgeKind.replaceAll("_", " ")} relation with `, peer];
     }

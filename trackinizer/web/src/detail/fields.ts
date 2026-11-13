@@ -49,14 +49,18 @@ export function kindFields(row: DetailRow, fieldOwners: FieldOwners): Field[] {
     ...Object.keys(row).filter((name) => !ROW_KEYS.has(name)),
   ]);
   const order = Object.keys(LOOKS);
-  const rank = (name: string) => (order.includes(name) ? order.indexOf(name) : order.length);
+  const rank = (name: string) =>
+    order.includes(name) ? order.indexOf(name) : order.length;
   return [...names]
     .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
     .map((name) => {
       const route = routes[name];
       const value = valueOf(row, name);
       const json = route?.value.type === "object" || isRecord(value);
-      const look = LOOKS[name] ?? { label: capitalizeWords(name), place: json ? "json" : "details" };
+      const look = LOOKS[name] ?? {
+        label: capitalizeWords(name),
+        place: json ? "json" : "details",
+      };
       return { name, look, route, value };
     });
 }
@@ -68,7 +72,12 @@ export function kindFields(row: DetailRow, fieldOwners: FieldOwners): Field[] {
  * but an empty string or list means the same to a reader, so all four read alike.
  */
 export function isUnset(value: unknown): boolean {
-  return value === undefined || value === null || value === "" || (Array.isArray(value) && !value.length);
+  return (
+    value === undefined ||
+    value === null ||
+    value === "" ||
+    (Array.isArray(value) && !value.length)
+  );
 }
 
 /**
@@ -91,7 +100,9 @@ export function sourceUrl(source: string): string | null {
   const [, scheme, rest] = match;
   if (/^https?$/i.test(scheme)) return source.trim();
   const resolve = SOURCE_RESOLVERS[scheme.toLowerCase()];
-  return resolve ? resolve(rest.trim()) : `https://www.google.com/search?q=${encodeURIComponent(source.trim())}`;
+  return resolve
+    ? resolve(rest.trim())
+    : `https://www.google.com/search?q=${encodeURIComponent(source.trim())}`;
 }
 
 /** Row keys that are not fields: identity, and the cost axes' nesting. */
@@ -120,7 +131,9 @@ function capitalizeWords(name: string): string {
 }
 
 const scholar = (param: string) => (id: string) =>
-  id.trim() ? `https://scholar.google.com/scholar?${param}=${encodeURIComponent(id.trim())}` : null;
+  id.trim()
+    ? `https://scholar.google.com/scholar?${param}=${encodeURIComponent(id.trim())}`
+    : null;
 
 /**
  * The fields the detail knows how to name and place, in the order it shows them.
@@ -148,10 +161,24 @@ const LOOKS: { readonly [field: string]: FieldLook } = {
   subvenue: { label: "Subvenue", place: "details" },
   publish_date: { label: "Published", place: "details", format: "day" },
   source: { label: "Source", place: "details", href: sourceUrl },
-  google_scholar_cluster_id: { label: "Scholar cluster", place: "details", mono: true, href: scholar("cluster") },
-  google_scholar_cites_id: { label: "Scholar cites", place: "details", mono: true, href: scholar("cites") },
+  google_scholar_cluster_id: {
+    label: "Scholar cluster",
+    place: "details",
+    mono: true,
+    href: scholar("cluster"),
+  },
+  google_scholar_cites_id: {
+    label: "Scholar cites",
+    place: "details",
+    mono: true,
+    href: scholar("cites"),
+  },
   sha: { label: "SHA", place: "details", mono: true },
-  url: { label: "URL", place: "details", href: (url) => (/^https?:\/\//i.test(url.trim()) ? url.trim() : null) },
+  url: {
+    label: "URL",
+    place: "details",
+    href: (url) => (/^https?:\/\//i.test(url.trim()) ? url.trim() : null),
+  },
   query: { label: "Query", place: "details" },
   provider: { label: "Provider", place: "details" },
   cli: { label: "CLI", place: "details" },
@@ -164,7 +191,11 @@ const LOOKS: { readonly [field: string]: FieldLook } = {
   opened_by_api_key_id: { label: "Opened by key", place: "details", mono: true },
   account: { label: "Account", place: "details" },
   marginal_cost_agent_usd: { label: "Agent cost", place: "details", format: "usd" },
-  marginal_cost_resource_usd: { label: "Resource cost", place: "details", format: "usd" },
+  marginal_cost_resource_usd: {
+    label: "Resource cost",
+    place: "details",
+    format: "usd",
+  },
 };
 
 /**

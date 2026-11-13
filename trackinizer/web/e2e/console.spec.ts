@@ -1,5 +1,6 @@
 import type { APIRequestContext, Page } from "@playwright/test";
 import { expect, failedResource, test, streamOpened } from "./fixtures";
+import { must } from "../src/must";
 
 // The console (#/console): every session's captured records as one live feed,
 // narrowed by a view that saves itself, and a line that messages agents. The test
@@ -11,12 +12,21 @@ import { expect, failedResource, test, streamOpened } from "./fixtures";
 const TAG = crypto.randomUUID().slice(0, 8);
 
 /** Start a session for agent `actor` in `rooms`; its id and file, with one captured turn. */
-async function startSession(request: APIRequestContext, actor: string, rooms: string[], first: string) {
-  const started = await request.post("/api/sessions/start", { data: { cli: "claude", title: `${actor} console`, actor, rooms } });
+async function startSession(
+  request: APIRequestContext,
+  actor: string,
+  rooms: string[],
+  first: string,
+) {
+  const started = await request.post("/api/sessions/start", {
+    data: { cli: "claude", title: `${actor} console`, actor, rooms },
+  });
   expect(started.ok(), await started.text()).toBe(true);
   const { id } = await started.json();
   const file = { name: "console.jsonl", irId: crypto.randomUUID() };
-  await capture(request, id, file, 0, [{ kind: "UserMessage", payload: { content: first }, text: first }]);
+  await capture(request, id, file, 0, [
+    { kind: "UserMessage", payload: { content: first }, text: first },
+  ]);
   return { id: id as string, file };
 }
 
@@ -28,8 +38,18 @@ async function capture(
   from: number,
   records: readonly { kind: string; payload: object; text?: string }[],
 ) {
-  const manifest = { name: file.name, metadata: {}, ir_id: file.irId, format: "claude", records: from + records.length };
-  const data = { name: file.name, manifest, records: records.map((record, k) => ({ idx: from + k, ...record })) };
+  const manifest = {
+    name: file.name,
+    metadata: {},
+    ir_id: file.irId,
+    format: "claude",
+    records: from + records.length,
+  };
+  const data = {
+    name: file.name,
+    manifest,
+    records: records.map((record, k) => ({ idx: from + k, ...record })),
+  };
   const appended = await request.post(`/api/sessions/${id}/records`, { data });
   expect(appended.ok(), await appended.text()).toBe(true);
 }
@@ -38,7 +58,9 @@ async function capture(
 async function drain(request: APIRequestContext, id: string): Promise<string[]> {
   const drained = await request.get(`/api/sessions/${id}/inbound?wait_sec=0`);
   expect(drained.ok(), await drained.text()).toBe(true);
-  return (await drained.json()).messages.map((message: { text: string }) => message.text);
+  return (await drained.json()).messages.map(
+    (message: { text: string }) => message.text,
+  );
 }
 
 /** Open the console once the live stream is connected. */
@@ -51,27 +73,41 @@ async function openConsole(page: Page) {
 /** Pick name family `family` (its agents, named `<family>-<x>`) in the agent facet, grouped by family. */
 async function pickFamily(page: Page, family: string) {
   const agents = page.getByRole("region", { name: "Agents" });
-  await agents.getByRole("combobox", { name: "Group agents by" }).selectOption("family");
+  await agents
+    .getByRole("combobox", { name: "Group agents by" })
+    .selectOption("family");
   await agents.getByRole("checkbox", { name: `${family}-*`, exact: true }).check();
 }
 
 const lines = (page: Page) => page.locator(".console-line");
 
-test("a view picks a family of agents and a level, follows them live, moves by the minimap, and a reload opens it again", async ({ page }) => {
+test("a view picks a family of agents and a level, follows them live, moves by the minimap, and a reload opens it again", async ({
+  page,
+}) => {
   const family = `fam-${TAG}`;
   const room = `ops-${TAG}`;
-  const a = await startSession(page.request, `${family}-a`, [room], "Fix the flaky test.");
+  const a = await startSession(
+    page.request,
+    `${family}-a`,
+    [room],
+    "Fix the flaky test.",
+  );
   const b = await startSession(page.request, `${family}-b`, [room], "Review the fix.");
   await startSession(page.request, `solo-${TAG}`, [], "Not in the family.");
   await capture(page.request, a.id, a.file, 1, [
-    { kind: "ToolCall", payload: { call_id: "c1", name: "Bash", arguments: { command: "pytest -x" } } },
+    {
+      kind: "ToolCall",
+      payload: { call_id: "c1", name: "Bash", arguments: { command: "pytest -x" } },
+    },
     { kind: "TokenUsage", payload: { info: { input_tokens: 3 } } },
   ]);
   await openConsole(page);
   await pickFamily(page, family);
   // Messages: the two people's messages, not the call, the token count or the other agent.
   await expect(lines(page)).toHaveCount(2);
-  await expect(lines(page).filter({ hasText: "Fix the flaky test." })).toContainText(`${family}-a[${room}]User`);
+  await expect(lines(page).filter({ hasText: "Fix the flaky test." })).toContainText(
+    `${family}-a[${room}]User`,
+  );
   await expect(page.getByText("Not in the family.")).toHaveCount(0);
 
   const levels = page.getByRole("group", { name: "Level" });
@@ -84,14 +120,24 @@ test("a view picks a family of agents and a level, follows them live, moves by t
   await expect(lines(page)).toHaveCount(3);
 
   // A record captured now shows without a reload.
-  await capture(page.request, b.id, b.file, 1, [{ kind: "AssistantMessage", payload: { content: "**Fixed.**" }, text: "**Fixed.**" }]);
+  await capture(page.request, b.id, b.file, 1, [
+    {
+      kind: "AssistantMessage",
+      payload: { content: "**Fixed.**" },
+      text: "**Fixed.**",
+    },
+  ]);
   await expect(lines(page)).toHaveCount(4);
   await expect(lines(page).last().locator("strong")).toHaveText("Fixed.");
 
   // A click on the minimap, an hour back at its left edge, moves the feed there: a window from that time on.
-  const read = page.waitForRequest((request) => request.url().includes("/api/web/feed?") && new URL(request.url()).searchParams.has("since"));
+  const read = page.waitForRequest(
+    (request) =>
+      request.url().includes("/api/web/feed?") &&
+      new URL(request.url()).searchParams.has("since"),
+  );
   await page.locator(".minimap-band").click({ position: { x: 4, y: 10 } });
-  const since = Date.parse(new URL((await read).url()).searchParams.get("since")!);
+  const since = Date.parse(must(new URL((await read).url()).searchParams.get("since")));
   expect(Math.abs(Date.now() - 3_600_000 - since)).toBeLessThan(120_000);
   await expect(page.locator(".console-mark")).toHaveText("History");
   await expect(lines(page)).toHaveCount(4);
@@ -101,44 +147,81 @@ test("a view picks a family of agents and a level, follows them live, moves by t
   await views.getByRole("textbox", { name: "View name" }).fill(`Family ${TAG}`);
   await views.getByRole("textbox", { name: "View name" }).press("Enter");
   await page.reload();
-  await expect(views.getByRole("button", { name: `Family ${TAG}`, exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(
+    views.getByRole("button", { name: `Family ${TAG}`, exact: true }),
+  ).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("button", { name: `Clear ${family}-*` })).toBeVisible();
-  await expect(levels.getByRole("button", { name: /^\+ Calls/ })).toHaveAttribute("aria-pressed", "true");
+  await expect(levels.getByRole("button", { name: /^\+ Calls/ })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
   await expect(page.locator(".console-mark")).toHaveText("History");
   await expect(lines(page)).toHaveCount(4);
 });
 
-test("a view saved in one browser is in a fresh browser of the same user, and nothing of it is kept in either browser's storage", async ({ page, browser }) => {
+test("a view saved in one browser is in a fresh browser of the same user, and nothing of it is kept in either browser's storage", async ({
+  page,
+  browser,
+}) => {
   const name = `Saved ${TAG}`;
   await openConsole(page);
   const views = page.getByRole("region", { name: "Views" });
-  const kept = page.waitForResponse((response) => response.url().endsWith("/api/me/preferences") && response.request().method() === "PATCH" && response.ok());
-  await page.getByRole("group", { name: "Level" }).getByRole("button", { name: /^All/ }).click();
+  const kept = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/me/preferences") &&
+      response.request().method() === "PATCH" &&
+      response.ok(),
+  );
+  await page
+    .getByRole("group", { name: "Level" })
+    .getByRole("button", { name: /^All/ })
+    .click();
   await kept;
   await views.getByRole("button", { name: "Rename Untitled view" }).click();
-  const renamed = page.waitForResponse((response) => response.url().endsWith("/api/me/preferences") && response.request().method() === "PATCH" && response.ok());
+  const renamed = page.waitForResponse(
+    (response) =>
+      response.url().endsWith("/api/me/preferences") &&
+      response.request().method() === "PATCH" &&
+      response.ok(),
+  );
   await views.getByRole("textbox", { name: "View name" }).fill(name);
   await views.getByRole("textbox", { name: "View name" }).press("Enter");
   await renamed;
-  expect(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.includes("console")))).toEqual([]);
+  expect(
+    await page.evaluate(() =>
+      Object.keys(localStorage).filter((key) => key.includes("console")),
+    ),
+  ).toEqual([]);
 
   const second = await browser.newContext();
   try {
     const other = await second.newPage();
     await openConsole(other);
-    await expect(other.getByRole("region", { name: "Views" }).getByRole("button", { name, exact: true })).toBeVisible();
-    await expect(other.getByRole("group", { name: "Level" }).getByRole("button", { name: /^All/ })).toHaveAttribute("aria-pressed", "true");
+    await expect(
+      other
+        .getByRole("region", { name: "Views" })
+        .getByRole("button", { name, exact: true }),
+    ).toBeVisible();
+    await expect(
+      other.getByRole("group", { name: "Level" }).getByRole("button", { name: /^All/ }),
+    ).toHaveAttribute("aria-pressed", "true");
   } finally {
     await second.close();
   }
 });
 
-test("a line goes to the view's agents, each once with a retry, @ lists them, and @agent and @* still work", async ({ page, allowErrors }) => {
+test("a line goes to the view's agents, each once with a retry, @ lists them, and @agent and @* still work", async ({
+  page,
+  allowErrors,
+}) => {
   const family = `send-${TAG}`;
   const room = `ops-${TAG}`;
   const a = await startSession(page.request, `${family}-a`, [room], "Ready.");
   const b = await startSession(page.request, `${family}-b`, [], "Ready too.");
-  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([[], []]);
+  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([
+    [],
+    [],
+  ]);
   const keys: { [actor: string]: string[] } = {};
   let lost = false;
   // The first send to b reaches the server, which queues it, but its answer never reaches the page.
@@ -157,13 +240,19 @@ test("a line goes to the view's agents, each once with a retry, @ lists them, an
   await expect(lines(page)).toHaveCount(2);
   const to = page.getByRole("group", { name: "To" });
   await expect(to.getByRole("listitem")).toHaveCount(2);
-  for (const chip of [`@${family}-a:${room}`, `@${family}-b`]) await expect(to.getByText(chip, { exact: true })).toBeVisible();
+  for (const chip of [`@${family}-a:${room}`, `@${family}-b`])
+    await expect(to.getByText(chip, { exact: true })).toBeVisible();
   // By its label: while it lists agents, the box is a combobox.
   const box = page.getByLabel("Message", { exact: true });
   await box.fill(`@${family}`);
   // Both agents' lines show, b's the latest; a, in one room, goes bare.
-  await expect(page.getByRole("listbox", { name: "Agents" }).getByRole("option")).toHaveText([`@${family}-b`, `@${family}-a`]);
-  await expect(page.getByRole("combobox", { name: "Message" })).toHaveAttribute("aria-expanded", "true");
+  await expect(
+    page.getByRole("listbox", { name: "Agents" }).getByRole("option"),
+  ).toHaveText([`@${family}-b`, `@${family}-a`]);
+  await expect(page.getByRole("combobox", { name: "Message" })).toHaveAttribute(
+    "aria-expanded",
+    "true",
+  );
   await box.press("ArrowDown");
   await box.press("Tab");
   await expect(box).toHaveValue(`@${family}-a `);
@@ -173,9 +262,14 @@ test("a line goes to the view's agents, each once with a retry, @ lists them, an
   await expect(page.getByRole("alert")).toContainText(`Not sent to @${family}-b`);
   await page.getByRole("button", { name: "Retry message" }).click();
   await expect(page.locator(".composer-receipt")).toHaveText("Sent to 2 sessions");
-  const [ka, kb] = [keys[`${family}-a`]!, keys[`${family}-b`]!];
-  expect([ka.length, new Set(ka).size, kb.length, new Set(kb).size]).toEqual([2, 1, 2, 1]);
-  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([["rerun the suite"], ["rerun the suite"]]);
+  const [ka, kb] = [must(keys[`${family}-a`]), must(keys[`${family}-b`])];
+  expect([ka.length, new Set(ka).size, kb.length, new Set(kb).size]).toEqual([
+    2, 1, 2, 1,
+  ]);
+  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([
+    ["rerun the suite"],
+    ["rerun the suite"],
+  ]);
 
   await box.fill(`@${family}-a:${room} only you`);
   await box.press("Enter");
@@ -183,11 +277,16 @@ test("a line goes to the view's agents, each once with a retry, @ lists them, an
   await box.fill("@* stop and summarize");
   await box.press("Enter");
   await expect(page.locator(".composer-receipt")).toHaveText("Sent to 2 sessions");
-  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([["only you", "stop and summarize"], ["stop and summarize"]]);
+  expect([await drain(page.request, a.id), await drain(page.request, b.id)]).toEqual([
+    ["only you", "stop and summarize"],
+    ["stop and summarize"],
+  ]);
 
   await box.fill(`@nobody-${TAG} hello`);
   await box.press("Enter");
-  await expect(page.locator(".composer-receipt")).toHaveText(`Sent to 0 sessions; no live session for @nobody-${TAG}`);
+  await expect(page.locator(".composer-receipt")).toHaveText(
+    `Sent to 0 sessions; no live session for @nobody-${TAG}`,
+  );
 });
 
 test("a window of history reads that window and follows nothing", async ({ page }) => {
@@ -197,7 +296,9 @@ test("a window of history reads that window and follows nothing", async ({ page 
   await pickFamily(page, family);
   await expect(lines(page)).toHaveCount(1);
   const range = page.getByRole("group", { name: "Range" });
-  const local = new Date(Date.now() - 60_000 - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  const local = new Date(Date.now() - 60_000 - new Date().getTimezoneOffset() * 60_000)
+    .toISOString()
+    .slice(0, 16);
   await range.getByLabel("From").fill(local);
   await range.getByRole("button", { name: "Apply" }).click();
   await expect(page.locator(".console-mark")).toHaveText("History");

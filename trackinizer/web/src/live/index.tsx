@@ -27,7 +27,6 @@ import { isPageKey } from "./rows";
 import type { Failure } from "./serial";
 import { watchRows } from "./visibility";
 
-
 /** The live stream's hub, for the views that keep current; null outside a `LiveProvider`. */
 export const LiveContext = createContext<LiveHub | null>(null);
 
@@ -49,12 +48,14 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     onVisibility();
     document.addEventListener("visibilitychange", onVisibility);
     addEventListener("online", onOnline);
-    for (const type of INPUT_EVENTS) addEventListener(type, onInput, { capture: true, passive: true });
+    for (const type of INPUT_EVENTS)
+      addEventListener(type, onInput, { capture: true, passive: true });
     return () => {
       close();
       document.removeEventListener("visibilitychange", onVisibility);
       removeEventListener("online", onOnline);
-      for (const type of INPUT_EVENTS) removeEventListener(type, onInput, { capture: true });
+      for (const type of INPUT_EVENTS)
+        removeEventListener(type, onInput, { capture: true });
       hub.stop();
     };
   }, [hub]);
@@ -84,16 +85,26 @@ export function useLiveList(
     () => (hub ? new ListLive(queryClient, request, pageSize) : null),
     [hub, queryClient, request, pageSize],
   );
-  const snapshot = useSyncExternalStore(live?.subscribe ?? noSubscription, live?.getSnapshot ?? idle);
-  const rows = useMemo(() => (live ? live.rows(loaded, snapshot) : loaded), [live, loaded, snapshot]);
+  const snapshot = useSyncExternalStore(
+    live?.subscribe ?? noSubscription,
+    live?.getSnapshot ?? idle,
+  );
+  const rows = useMemo(
+    () => (live ? live.rows(loaded, snapshot) : loaded),
+    [live, loaded, snapshot],
+  );
   // Before paint, so a new row a page read brought in never shows beside a pill still counting it.
   useLayoutEffect(() => live?.settle(loaded), [live, loaded]);
   useEffect(() => {
     const root = scroller.current;
     if (!hub || !live || !root) return;
     // Its first page may be one main.tsx started reading before the stream opened.
-    const registration = hub.register(live, { readAt: takeReadAt((key) => isPageKey(key, request.filters)) });
-    const onScreen = watchRows(root, (entered) => registration.push(entered.filter((id) => live.isStale(id))));
+    const registration = hub.register(live, {
+      readAt: takeReadAt((key) => isPageKey(key, request.filters)),
+    });
+    const onScreen = watchRows(root, (entered) =>
+      registration.push(entered.filter((id) => live.isStale(id))),
+    );
     live.watch(onScreen);
     return () => {
       onScreen.dispose();
@@ -111,8 +122,13 @@ export function useLiveDetail(id: string): void {
   useEffect(() => {
     if (!hub) return;
     // Its read may be one main.tsx started before the stream opened.
-    const readAt = takeReadAt(([scope, detailId]) => scope === "detail" && detailId === id);
-    return hub.register(new DetailLive(queryClient, id), { shareAs: `detail ${id}`, readAt }).dispose;
+    const readAt = takeReadAt(
+      ([scope, detailId]) => scope === "detail" && detailId === id,
+    );
+    return hub.register(new DetailLive(queryClient, id), {
+      shareAs: `detail ${id}`,
+      readAt,
+    }).dispose;
   }, [hub, queryClient, id]);
 }
 
@@ -124,7 +140,10 @@ export function useLiveActivity(tab: Tab): Failure | null {
   useEffect(() => {
     if (!hub) return;
     const live = new ActivityLive(queryClient, tabKinds(tab));
-    const registration = hub.register({ update: (batch) => live.update(batch), failing: setFailure });
+    const registration = hub.register({
+      update: (batch) => live.update(batch),
+      failing: setFailure,
+    });
     return () => {
       registration.dispose();
       setFailure(null);
@@ -167,7 +186,10 @@ export function LiveRows({
   reveal?: (rows: readonly InquiryRow[]) => void;
 }) {
   const hub = useContext(LiveContext);
-  const { arrivals, left, failure } = useSyncExternalStore(live?.subscribe ?? noSubscription, live?.getSnapshot ?? idle);
+  const { arrivals, left, failure } = useSyncExternalStore(
+    live?.subscribe ?? noSubscription,
+    live?.getSnapshot ?? idle,
+  );
   useEffect(() => {
     if (!live || !hub || arrivals === 0) return;
     const mergeWhenIdle = () => {
@@ -175,8 +197,11 @@ export function LiveRows({
       // A pointer resting on the rows (a group of them) holds them as input
       // does, though it sends no events. One resting on the list's empty space,
       // as after picking a filter from a menu, holds nothing.
-      const held = [...(root?.querySelectorAll("section") ?? [])].some((group) => group.matches(":hover"));
-      if (root && root.scrollTop <= 0 && !held && hub.idleMs() >= IDLE_MS) live.merge(false);
+      const held = [...(root?.querySelectorAll("section") ?? [])].some((group) =>
+        group.matches(":hover"),
+      );
+      if (root && root.scrollTop <= 0 && !held && hub.idleMs() >= IDLE_MS)
+        live.merge(false);
     };
     mergeWhenIdle();
     const timer = setInterval(mergeWhenIdle, IDLE_POLL_MS);
@@ -218,9 +243,22 @@ export function LiveRows({
 const IDLE_MS = 2_000;
 const IDLE_POLL_MS = 500;
 
-const INPUT_EVENTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart", "scroll"] as const;
+const INPUT_EVENTS = [
+  "pointerdown",
+  "pointermove",
+  "keydown",
+  "wheel",
+  "touchstart",
+  "scroll",
+] as const;
 
-const IDLE_SNAPSHOT: ListSnapshot = { arrivals: 0, left: new Set(), joined: new Map(), gone: new Set(), failure: null };
+const IDLE_SNAPSHOT: ListSnapshot = {
+  arrivals: 0,
+  left: new Set(),
+  joined: new Map(),
+  gone: new Set(),
+  failure: null,
+};
 
 function idle(): ListSnapshot {
   return IDLE_SNAPSHOT;
@@ -235,7 +273,9 @@ function noSubscription(): () => void {
  * UUIDs make it into the rule, so no id can break out of the selector.
  */
 function dimmed(ids: ReadonlySet<string>): string {
-  const selectors = [...ids].filter((id) => UUID.test(id)).map((id) => `.row[data-row="${id}"]`);
+  const selectors = [...ids]
+    .filter((id) => UUID.test(id))
+    .map((id) => `.row[data-row="${id}"]`);
   return selectors.length > 0 ? `${selectors.join(",")}{opacity:.45}` : "";
 }
 

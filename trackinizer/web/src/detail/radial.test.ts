@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import type { FocusGraph, FocusNode } from "../api/graph";
 import { edge, node, uuid } from "../graph/testing";
 import { PAD_PX, radialLayout } from "./radial";
+import { must } from "../must";
 
 const SIZE = { width: 280, height: 190 };
 const [CX, CY] = [SIZE.width / 2, SIZE.height / 2];
@@ -14,18 +15,25 @@ function at(n: number, hops: number, fields: Partial<FocusNode> = {}): FocusNode
 // Focus 1; on the inner ring 2 (with children 4, 5, 6) and 3 (with child 7).
 const GRAPH: FocusGraph = {
   nodes: [at(1, 0), at(2, 1), at(3, 1), at(4, 2), at(5, 2), at(6, 2), at(7, 2)],
-  edges: [edge(2, 1), edge(1, 3), edge(4, 2), edge(5, 2), edge(2, 6, "produced_by"), edge(7, 3)],
+  edges: [
+    edge(2, 1),
+    edge(1, 3),
+    edge(4, 2),
+    edge(5, 2),
+    edge(2, 6, "produced_by"),
+    edge(7, 3),
+  ],
 };
 
 /** Where `n` sits as a fraction of the outer ring, an ellipse `PAD_PX` inside the box: 0 in the middle, 1 on it. */
 function ring(placed: ReadonlyMap<string, { x: number; y: number }>, n: number) {
-  const { x, y } = placed.get(uuid(n))!;
+  const { x, y } = must(placed.get(uuid(n)));
   return Math.hypot((x - CX) / (CX - PAD_PX), (y - CY) / (CY - PAD_PX));
 }
 
 /** The angle of `n` about the middle, clockwise from the top, in degrees 0 to 360. */
 function angle(placed: ReadonlyMap<string, { x: number; y: number }>, n: number) {
-  const { x, y } = placed.get(uuid(n))!;
+  const { x, y } = must(placed.get(uuid(n)));
   return ((Math.atan2(x - CX, -(y - CY)) * 180) / Math.PI + 360) % 360;
 }
 
@@ -34,7 +42,7 @@ test("the focus sits in the middle, its neighbours on an inner ring and theirs o
   expect(placed.get(uuid(1))).toEqual({ x: CX, y: CY });
   const inner = [2, 3].map((n) => ring(placed, n));
   const outer = [4, 5, 6, 7].map((n) => ring(placed, n));
-  for (const r of inner) expect(r).toBeCloseTo(inner[0]!, 6);
+  for (const r of inner) expect(r).toBeCloseTo(must(inner[0]), 6);
   for (const r of outer) expect(r).toBeCloseTo(1, 6);
   expect(inner[0]).toBeGreaterThan(0.3);
   expect(inner[0]).toBeLessThan(0.7);
@@ -48,7 +56,10 @@ test("the focus sits in the middle, its neighbours on an inner ring and theirs o
 
 test("the layout is deterministic: the same neighbourhood in any order lands in the same places", () => {
   const placed = radialLayout(GRAPH, SIZE);
-  const shuffled = radialLayout({ nodes: [...GRAPH.nodes].reverse(), edges: [...GRAPH.edges].reverse() }, SIZE);
+  const shuffled = radialLayout(
+    { nodes: [...GRAPH.nodes].reverse(), edges: [...GRAPH.edges].reverse() },
+    SIZE,
+  );
   expect(shuffled).toEqual(placed);
 });
 
@@ -64,7 +75,9 @@ test("each inner node stands in the middle of an arc as wide as its share of the
   expect(apart(7, 3)).toBeLessThan(45);
   for (const child of [4, 5, 6]) expect(apart(child, 2)).toBeLessThan(135);
   // Within its arc, newest first, as on the inner ring.
-  expect([6, 5, 4].map((n) => angle(placed, n))).toEqual([90, 180, 270].map((degrees) => expect.closeTo(degrees, 6)));
+  expect([6, 5, 4].map((n) => angle(placed, n))).toEqual(
+    [90, 180, 270].map((degrees) => expect.closeTo(degrees, 6)),
+  );
 });
 
 test("the inner ring goes clockwise from the top by kind, then newest first", () => {
@@ -74,18 +87,25 @@ test("the inner ring goes clockwise from the top by kind, then newest first", ()
   };
   const placed = radialLayout(graph, SIZE);
   expect(angle(placed, 4)).toBeCloseTo(0, 6);
-  expect([4, 3, 2].map((n) => angle(placed, n))).toEqual([...[4, 3, 2].map((n) => angle(placed, n))].sort((a, b) => a - b));
+  expect([4, 3, 2].map((n) => angle(placed, n))).toEqual(
+    [...[4, 3, 2].map((n) => angle(placed, n))].sort((a, b) => a - b),
+  );
 });
 
 test("the more of the neighbourhood the neighbours are, the wider their ring: widest with nothing two hops out", () => {
-  const alone: FocusGraph = { nodes: [at(1, 0), at(2, 1), at(3, 1)], edges: [edge(2, 1), edge(3, 1)] };
+  const alone: FocusGraph = {
+    nodes: [at(1, 0), at(2, 1), at(3, 1)],
+    edges: [edge(2, 1), edge(3, 1)],
+  };
   // A hub: five neighbours, one node two hops out.
   const hub: FocusGraph = {
     nodes: [at(1, 0), ...[2, 3, 4, 5, 6].map((n) => at(n, 1)), at(7, 2)],
     edges: [...[2, 3, 4, 5, 6].map((n) => edge(n, 1)), edge(7, 2)],
   };
-  const [some, most, all] = [GRAPH, hub, alone].map((graph) => ring(radialLayout(graph, SIZE), 2));
-  expect(some).toBeLessThan(most!);
-  expect(most).toBeLessThan(all!);
+  const [some, most, all] = [GRAPH, hub, alone].map((graph) =>
+    ring(radialLayout(graph, SIZE), 2),
+  );
+  expect(some).toBeLessThan(must(most));
+  expect(most).toBeLessThan(must(all));
   expect(all).toBeLessThan(1);
 });

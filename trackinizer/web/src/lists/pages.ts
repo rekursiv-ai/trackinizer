@@ -1,7 +1,18 @@
-import { keepPreviousData, useQueries, useQueryClient, type UseQueryResult } from "@tanstack/react-query";
-import { INQUIRY_ROW_FIELDS, type InquiryRow, inquiryKinds, listInquiries } from "../api/inquiries";
+import {
+  keepPreviousData,
+  useQueries,
+  useQueryClient,
+  type UseQueryResult,
+} from "@tanstack/react-query";
+import {
+  INQUIRY_ROW_FIELDS,
+  type InquiryRow,
+  inquiryKinds,
+  listInquiries,
+} from "../api/inquiries";
 import { prefetched } from "../app/prefetch";
 import type { Filter, ListRequest } from "../query/query";
+import { must } from "../must";
 
 /** What a list has loaded so far. */
 export type LoadedRows = {
@@ -54,7 +65,9 @@ export function useListPages(
       const after = page === 0 ? null : afterRows(loaded);
       const slot = { kind, offset: page * pageSize, after };
       out.push(slot);
-      const rows = queryClient.getQueryData<InquiryRow[]>(pageKey(request.filters, pageSize, slot));
+      const rows = queryClient.getQueryData<InquiryRow[]>(
+        pageKey(request.filters, pageSize, slot),
+      );
       if (!rows || rows.length < pageSize) break;
       loaded.push(...rows);
     }
@@ -63,7 +76,13 @@ export function useListPages(
   const results = useQueries({
     queries: slots.map((slot) => ({
       queryKey: pageKey(request.filters, pageSize, slot),
-      queryFn: ({ queryKey, signal }: { queryKey: readonly unknown[]; signal: AbortSignal }) =>
+      queryFn: ({
+        queryKey,
+        signal,
+      }: {
+        queryKey: readonly unknown[];
+        signal: AbortSignal;
+      }) =>
         prefetched(queryKey, () => readPage(request.filters, pageSize, slot, signal)),
       placeholderData: keepPreviousData,
     })),
@@ -72,13 +91,21 @@ export function useListPages(
 }
 
 /** One page to load: its kind, its place (`offset` rows in), and where it starts. */
-type Slot = { readonly kind: string; readonly offset: number; readonly after: After | null };
+type Slot = {
+  readonly kind: string;
+  readonly offset: number;
+  readonly after: After | null;
+};
 
 /**
  * A page's key. The live layer reads the kind, page size and place from it
  * (`pageOf` in `src/live/rows.ts`), and matches a list by its filters.
  */
-function pageKey(filters: readonly Filter[], pageSize: number, { kind, offset, after }: Slot) {
+function pageKey(
+  filters: readonly Filter[],
+  pageSize: number,
+  { kind, offset, after }: Slot,
+) {
   return ["inquiries", "list", filters, kind, pageSize, offset, after] as const;
 }
 
@@ -89,7 +116,11 @@ async function readPage(
   signal: AbortSignal,
 ): Promise<InquiryRow[]> {
   const kinds = inquiryKinds([kind]);
-  if (after === null) return listInquiries({ kinds, filters, limit: pageSize, offset: 0, fields: INQUIRY_ROW_FIELDS }, { signal });
+  if (after === null)
+    return listInquiries(
+      { kinds, filters, limit: pageSize, offset: 0, fields: INQUIRY_ROW_FIELDS },
+      { signal },
+    );
   const rows = await listInquiries(
     {
       kinds,
@@ -121,7 +152,10 @@ function afterRows(loaded: readonly InquiryRow[]): After | null {
  */
 export function serverText(iso: string): string {
   const fraction = (/\.(\d+)/.exec(iso)?.[1] ?? "").slice(0, 6).padEnd(6, "0");
-  const whole = new Date(Date.parse(iso.replace(/\.\d+/, ""))).toISOString().slice(0, 19).replace("T", " ");
+  const whole = new Date(Date.parse(iso.replace(/\.\d+/, "")))
+    .toISOString()
+    .slice(0, 19)
+    .replace("T", " ");
   return `${whole}${/^0+$/.test(fraction) ? "" : `.${fraction}`}+00:00`;
 }
 
@@ -135,7 +169,7 @@ function combine(
   const last = new Map<string, InquiryRow[] | undefined>();
   const loading = new Set<string>();
   results.forEach((result, index) => {
-    const { kind } = slots[index]!;
+    const { kind } = must(slots[index]);
     // A page refetched on its own can overlap the next one, which starts after
     // the rows it had then; each row shows once.
     for (const row of result.data ?? []) {
@@ -148,7 +182,9 @@ function combine(
   const failed = results.find((result) => result.error);
   return {
     rows,
-    more: [...last].filter(([, page]) => page?.length === pageSize).map(([kind]) => kind),
+    more: [...last]
+      .filter(([, page]) => page?.length === pageSize)
+      .map(([kind]) => kind),
     loading: [...loading],
     pending: rows.length === 0 && results.some((result) => result.isPending),
     error: failed?.error ?? null,

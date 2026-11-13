@@ -1,4 +1,5 @@
 import type { Graph, GraphEdge } from "../api/graph";
+import { must } from "../must";
 
 /**
  * Grow `graph` again as it was made, as v1's Replay did: from nothing, one node
@@ -9,20 +10,32 @@ import type { Graph, GraphEdge } from "../api/graph";
  */
 export function replay(
   graph: Graph,
-  { speed, step, done }: { speed: () => number; step: (grown: Graph) => void; done: () => void },
+  {
+    speed,
+    step,
+    done,
+  }: { speed: () => number; step: (grown: Graph) => void; done: () => void },
 ): () => void {
   // As instants: the server writes no fraction when it is zero, so the text's
   // precision varies. Ties within a millisecond keep the server's order, oldest first.
-  const nodes = graph.nodes.toSorted((a, b) => Date.parse(a.created) - Date.parse(b.created));
+  const nodes = graph.nodes.toSorted(
+    (a, b) => Date.parse(a.created) - Date.parse(b.created),
+  );
   const order = new Map(nodes.map((row, index) => [row.id, index]));
-  // An edge shows once its later end does: after `shownAt` nodes.
-  const shownAt = (row: GraphEdge) => Math.max(order.get(row.from_id)!, order.get(row.to_id)!) + 1;
+  // An edge shows once its later end does: after `shownAt` nodes; one whose end
+  // the graph lacks never shows.
+  const shownAt = (row: GraphEdge) =>
+    Math.max(
+      order.get(row.from_id) ?? Number.POSITIVE_INFINITY,
+      order.get(row.to_id) ?? Number.POSITIVE_INFINITY,
+    ) + 1;
   const edges = graph.edges.toSorted((a, b) => shownAt(a) - shownAt(b));
   let count = 0;
   let edgeCount = 0;
   let timer: ReturnType<typeof setTimeout>;
   const next = () => {
-    while (edgeCount < edges.length && shownAt(edges[edgeCount]!) <= count) edgeCount += 1;
+    while (edgeCount < edges.length && shownAt(must(edges[edgeCount])) <= count)
+      edgeCount += 1;
     step({ nodes: nodes.slice(0, count), edges: edges.slice(0, edgeCount) });
     if (count === nodes.length) return done();
     count += 1;

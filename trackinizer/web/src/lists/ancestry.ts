@@ -1,6 +1,16 @@
-import { keepPreviousData, type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  type QueryClient,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { useContext, useEffect, useMemo } from "react";
-import { type Ancestor, inquiryKinds, type ListedRow, listInquiries } from "../api/inquiries";
+import {
+  type Ancestor,
+  inquiryKinds,
+  type ListedRow,
+  listInquiries,
+} from "../api/inquiries";
 import { LiveContext } from "../live";
 import { refetchFresh } from "../live/cache";
 import { CHECK_IDS, idFilter } from "../live/rows";
@@ -42,9 +52,20 @@ export function useAncestry(ids: readonly string[] | null): {
     enabled: asked,
     placeholderData: keepPreviousData,
   });
-  useEffect(() => (hub && asked ? hub.register(new AncestryLive(client)).dispose : undefined), [hub, client, asked]);
-  const ancestry = useMemo(() => new Map((query.data ?? []).map((row) => [row.id, row.ancestors ?? []])), [query.data]);
-  return { ancestry, pending: asked && query.isPending, error: query.error, retry: () => void query.refetch() };
+  useEffect(
+    () => (hub && asked ? hub.register(new AncestryLive(client)).dispose : undefined),
+    [hub, client, asked],
+  );
+  const ancestry = useMemo(
+    () => new Map((query.data ?? []).map((row) => [row.id, row.ancestors ?? []])),
+    [query.data],
+  );
+  return {
+    ancestry,
+    pending: asked && query.isPending,
+    error: query.error,
+    retry: () => void query.refetch(),
+  };
 }
 
 /**
@@ -67,7 +88,9 @@ export class AncestryLive {
       predicate: ({ state }) =>
         gap ||
         // A first read under way may predate the batch.
-        (state.data === undefined ? state.fetchStatus === "fetching" && ids.size > 0 : shows(state.data as AncestryRows, ids)),
+        (state.data === undefined
+          ? state.fetchStatus === "fetching" && ids.size > 0
+          : shows(state.data as AncestryRows, ids)),
     });
     return null;
   }
@@ -78,8 +101,13 @@ export class AncestryLive {
  * would pass the server's 512 characters. Each names its ids by their ends,
  * so a row whose id ends alike can come back too, and only the asked are kept.
  */
-async function readAncestry(ids: readonly string[], signal: AbortSignal): Promise<AncestryRows> {
-  const parts = Array.from({ length: Math.ceil(ids.length / CHECK_IDS) }, (_, n) => ids.slice(n * CHECK_IDS, (n + 1) * CHECK_IDS));
+async function readAncestry(
+  ids: readonly string[],
+  signal: AbortSignal,
+): Promise<AncestryRows> {
+  const parts = Array.from({ length: Math.ceil(ids.length / CHECK_IDS) }, (_, n) =>
+    ids.slice(n * CHECK_IDS, (n + 1) * CHECK_IDS),
+  );
   const asked = new Set(ids);
   const answers = await Promise.all(
     parts.map((part) =>
@@ -101,5 +129,7 @@ async function readAncestry(ids: readonly string[], signal: AbortSignal): Promis
 
 /** Whether `rows` hold one of `ids`, as a row or an ancestor. */
 function shows(rows: AncestryRows, ids: ReadonlySet<string>): boolean {
-  return rows.some((row) => ids.has(row.id) || (row.ancestors ?? []).some((up) => ids.has(up.id)));
+  return rows.some(
+    (row) => ids.has(row.id) || (row.ancestors ?? []).some((up) => ids.has(up.id)),
+  );
 }

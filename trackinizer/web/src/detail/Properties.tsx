@@ -7,7 +7,15 @@ import { safeUrl } from "../markdown/safeUrl";
 import { routeHref } from "../router/addressBar";
 import { linkProps } from "../router/appLink";
 import { ReadFailure } from "../ui/failure";
-import { Avatar, capitalize, JudgementGlyph, LabelChip, PriorityGlyph, priorityName, StatusGlyph } from "../ui/glyphs";
+import {
+  Avatar,
+  capitalize,
+  JudgementGlyph,
+  LabelChip,
+  PriorityGlyph,
+  priorityName,
+  StatusGlyph,
+} from "../ui/glyphs";
 import { Icon } from "../ui/icons";
 import { type Field, usd } from "./fields";
 import { detailQueries } from "./queries";
@@ -23,7 +31,13 @@ import { calendarDate, dateTime } from "./time";
  * identity. An Issue's open folded, as its description is what a reader came
  * for; every other kind's open unfolded.
  */
-export function Properties({ detail, fields }: { detail: Detail; fields: readonly Field[] }) {
+export function Properties({
+  detail,
+  fields,
+}: {
+  detail: Detail;
+  fields: readonly Field[];
+}) {
   const { edges } = useMeta();
   const row = detail.self;
   // The server derives evidence confidence from `proves` edges, so it exists
@@ -85,7 +99,11 @@ function Prop({ detail, field }: { detail: Detail; field: Field }) {
         <FieldValue field={field} />
       </PropertyEditor>
       {href ? (
-        <a className="icon-btn prop-open" {...linkProps(href)} aria-label={`Open ${field.look.label}`}>
+        <a
+          className="icon-btn prop-open"
+          {...linkProps(href)}
+          aria-label={`Open ${field.look.label}`}
+        >
           <Icon name="external" size={12} />
         </a>
       ) : null}
@@ -93,7 +111,15 @@ function Prop({ detail, field }: { detail: Detail; field: Field }) {
   );
 }
 
-function PropRow({ label, field, children }: { label: string; field?: string; children: ReactNode }) {
+function PropRow({
+  label,
+  field,
+  children,
+}: {
+  label: string;
+  field?: string;
+  children: ReactNode;
+}) {
   return (
     <div className="prop" data-field={field}>
       <dt className="prop-k">{label}</dt>
@@ -106,9 +132,20 @@ function PropRow({ label, field, children }: { label: string; field?: string; ch
 function FieldValue({ field }: { field: Field }) {
   const { name, look, route, value } = field;
   if (value === undefined) return <span className="unset">{look.unset ?? "—"}</span>;
-  if (name === "status") return <Named glyph={<StatusGlyph status={String(value)} />} text={capitalize(String(value))} />;
+  if (name === "status")
+    return (
+      <Named
+        glyph={<StatusGlyph status={String(value)} />}
+        text={capitalize(String(value))}
+      />
+    );
   if (name === "judgement") {
-    return <Named glyph={<JudgementGlyph judgement={String(value)} />} text={capitalize(String(value))} />;
+    return (
+      <Named
+        glyph={<JudgementGlyph judgement={String(value)} />}
+        text={capitalize(String(value))}
+      />
+    );
   }
   if (name === "priority" && typeof value === "number") {
     return (
@@ -118,15 +155,30 @@ function FieldValue({ field }: { field: Field }) {
       </>
     );
   }
-  if (name === "owner") return <Named glyph={<Avatar actor={String(value)} />} text={String(value)} />;
+  if (name === "owner")
+    return <Named glyph={<Avatar actor={String(value)} />} text={String(value)} />;
   // The server stores an unrecorded cost as 0, so 0 is none recorded, not "$0.00".
   if (look.format === "usd" && typeof value === "number") {
-    return value ? <span className="num">{usd(value)}</span> : <span className="unset">None recorded</span>;
+    return value ? (
+      <span className="num">{usd(value)}</span>
+    ) : (
+      <span className="unset">None recorded</span>
+    );
   }
-  if (look.format === "fraction" && typeof value === "number") return <Fraction value={value} />;
-  if (Array.isArray(value)) return <List name={name} items={value.map(String)} uuids={route?.value.items?.format === "uuid"} />;
-  if (look.format === "day") return <span className="t">{calendarDate(String(value))}</span>;
-  if (route?.value.format === "date-time" || look.format === "date") return <span className="t">{dateTime(String(value))}</span>;
+  if (look.format === "fraction" && typeof value === "number")
+    return <Fraction value={value} />;
+  if (Array.isArray(value))
+    return (
+      <List
+        name={name}
+        items={value.map(String)}
+        uuids={route?.value.items?.format === "uuid"}
+      />
+    );
+  if (look.format === "day")
+    return <span className="t">{calendarDate(String(value))}</span>;
+  if (route?.value.format === "date-time" || look.format === "date")
+    return <span className="t">{dateTime(String(value))}</span>;
   const text = typeof value === "string" ? value : JSON.stringify(value);
   return (
     <span className={look.mono ? "t mono" : "t"} title={text}>
@@ -140,17 +192,37 @@ function FieldValue({ field }: { field: Field }) {
  * list may repeat a value (a byline names an author twice, and the server keeps
  * its order and repeats), and two items under one key show stale.
  */
-function List({ name, items, uuids }: { name: string; items: readonly string[]; uuids: boolean }) {
+function List({
+  name,
+  items,
+  uuids,
+}: {
+  name: string;
+  items: readonly string[];
+  uuids: boolean;
+}) {
   const key = (index: number, item: string) => `${index}:${item}`;
-  if (name === "labels") return items.map((label, index) => <LabelChip key={key(index, label)} label={label} />);
+  if (name === "labels")
+    return items.map((label, index) => (
+      <LabelChip key={key(index, label)} label={label} />
+    ));
   if (name === "subscribers") {
     return items.map((actor, index) => (
-      <Named key={key(index, actor)} glyph={<Avatar actor={actor} size={16} />} text={actor} />
+      <Named
+        key={key(index, actor)}
+        glyph={<Avatar actor={actor} size={16} />}
+        text={actor}
+      />
     ));
   }
   if (uuids) {
     return items.map((id, index) => (
-      <a key={key(index, id)} className="ref" href={routeHref({ name: "lookup", id })} title={id}>
+      <a
+        key={key(index, id)}
+        className="ref"
+        href={routeHref({ name: "lookup", id })}
+        title={id}
+      >
         <Icon name="link" size={12} />
         {id.slice(0, 8)}
       </a>
@@ -204,7 +276,12 @@ function EvidenceConfidence({ id, proves }: { id: string; proves: number }) {
             // The value stays; the message would widen the row, so it is the button's title.
             <span role="alert">
               <span className="sr-only">Could not refresh: {query.error.message}</span>
-              <button type="button" className="btn ghost prop-retry" title={`Could not refresh: ${query.error.message}`} onClick={retry}>
+              <button
+                type="button"
+                className="btn ghost prop-retry"
+                title={`Could not refresh: ${query.error.message}`}
+                onClick={retry}
+              >
                 Retry
               </button>
             </span>

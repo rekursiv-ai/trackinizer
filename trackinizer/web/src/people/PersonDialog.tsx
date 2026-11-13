@@ -55,8 +55,12 @@ export function PersonDialog({
   const asking = admin && draft.who === "person";
   const users = useQuery({ ...adminQueries.users, enabled: asking });
   const entries = useQuery({ ...adminQueries.allowlist, enabled: asking });
-  const user = email ? users.data?.find((listed) => listed.email.toLowerCase() === email) : undefined;
-  const entry = email ? entries.data?.find((listed) => listed.email_or_pattern === email) : undefined;
+  const user = email
+    ? users.data?.find((listed) => listed.email.toLowerCase() === email)
+    : undefined;
+  const entry = email
+    ? entries.data?.find((listed) => listed.email_or_pattern === email)
+    : undefined;
   const invites = asking && !user && !entry;
   const edit = (change: Partial<PersonDraft>) => {
     setDraft({ ...draft, ...change });
@@ -69,10 +73,16 @@ export function PersonDialog({
     if ("error" in made) return setError(made.error);
     if (invites && invite) {
       if (!email) return setError("Add the email to invite them.");
-      const invitation = accountEdit(() => addAllowlistEntry({ email_or_pattern: email, role: "writer" }), `Invited ${email} to sign in as a writer`);
+      const invitation = accountEdit(
+        () => addAllowlistEntry({ email_or_pattern: email, role: "writer" }),
+        `Invited ${email} to sign in as a writer`,
+      );
       if (!(await writer.run(invitation))) return;
     }
-    update((state) => ({ ...state, people: { ...state.people, [made.actor]: made.person } }));
+    update((state) => ({
+      ...state,
+      people: { ...state.people, [made.actor]: made.person },
+    }));
     onAdd(made.actor);
   };
   const onKeyDown = (event: KeyboardEvent) => {
@@ -179,7 +189,12 @@ export function PersonDialog({
               </div>
               {invites ? (
                 <label className="np-check">
-                  <input type="checkbox" checked={invite} disabled={pending} onChange={(event) => setInvite(event.target.checked)} />
+                  <input
+                    type="checkbox"
+                    checked={invite}
+                    disabled={pending}
+                    onChange={(event) => setInvite(event.target.checked)}
+                  />
                   Invite to sign in: add the email to the allowlist as a writer
                 </label>
               ) : null}
@@ -193,7 +208,12 @@ export function PersonDialog({
             <div className="modal-f">
               <div className="spacer" />
               <Dialog.Close className="btn ghost">Cancel</Dialog.Close>
-              <WriteButton type="submit" className="btn primary" pending={pending} disabled={offline}>
+              <WriteButton
+                type="submit"
+                className="btn primary"
+                pending={pending}
+                disabled={offline}
+              >
                 Add as {role} <kbd>{keyCaps("$mod+Enter")[0]}</kbd>
               </WriteButton>
             </div>
@@ -216,7 +236,11 @@ function AgentHint({ handle, people }: { handle: string; people: People }) {
   );
 }
 
-const WHO: readonly { readonly who: Who; readonly label: string; readonly icon: "user" | "bot" }[] = [
+const WHO: readonly {
+  readonly who: Who;
+  readonly label: string;
+  readonly icon: "user" | "bot";
+}[] = [
   { who: "person", label: "Person", icon: "user" },
   { who: "agent", label: "Agent", icon: "bot" },
 ];

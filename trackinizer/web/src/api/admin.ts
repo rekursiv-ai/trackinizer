@@ -44,9 +44,16 @@ export type AllowlistAddBody = components["schemas"]["AllowlistAddBody"];
  * Lock or unlock an inquiry. While it is locked only an admin edits its fields,
  * changes its edges or deletes it; anyone else's write answers 403.
  */
-export async function setInquiryLock(id: string, locked: boolean): Promise<{ id: string; locked: boolean }> {
+export async function setInquiryLock(
+  id: string,
+  locked: boolean,
+): Promise<{ id: string; locked: boolean }> {
   const set = await send(TIMEOUT_MS.write, undefined, (signal) =>
-    client.PUT("/api/admin/inquiries/{target_id}/lock", { params: { path: { target_id: id } }, body: { locked }, signal }),
+    client.PUT("/api/admin/inquiries/{target_id}/lock", {
+      params: { path: { target_id: id } },
+      body: { locked },
+      signal,
+    }),
   );
   // Typed as free JSON by the schema; `set_lock_route` in `server/api/locks.py` answers it.
   return set as { id: string; locked: boolean };
@@ -54,41 +61,73 @@ export async function setInquiryLock(id: string, locked: boolean): Promise<{ id:
 
 /** Fetch every user, newest first. */
 export async function listUsers({ signal }: CallOptions = {}): Promise<User[]> {
-  const listed = await send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/admin/users", { signal }));
+  const listed = await send(TIMEOUT_MS.read, signal, (signal) =>
+    client.GET("/api/admin/users", { signal }),
+  );
   return (listed as { users: User[] }).users;
 }
 
 /** Change a user's role. */
-export async function setUserRole(id: string, role: Role, { signal }: CallOptions = {}): Promise<void> {
+export async function setUserRole(
+  id: string,
+  role: Role,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.PUT("/api/admin/users/{user_id}/role", { params: { path: { user_id: id } }, body: { role }, signal }),
+    client.PUT("/api/admin/users/{user_id}/role", {
+      params: { path: { user_id: id } },
+      body: { role },
+      signal,
+    }),
   );
 }
 
 /** Disable a user; the server revokes every token they hold, and enabling does not restore them. */
-export async function disableUser(id: string, { signal }: CallOptions = {}): Promise<void> {
+export async function disableUser(
+  id: string,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.POST("/api/admin/users/{user_id}/disable", { params: { path: { user_id: id } }, signal }),
+    client.POST("/api/admin/users/{user_id}/disable", {
+      params: { path: { user_id: id } },
+      signal,
+    }),
   );
 }
 
 /** Enable a disabled user. */
-export async function enableUser(id: string, { signal }: CallOptions = {}): Promise<void> {
+export async function enableUser(
+  id: string,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.POST("/api/admin/users/{user_id}/enable", { params: { path: { user_id: id } }, signal }),
+    client.POST("/api/admin/users/{user_id}/enable", {
+      params: { path: { user_id: id } },
+      signal,
+    }),
   );
 }
 
 /** Delete a user and their tokens; changes they made keep their actor. The route takes no body. */
-export async function deleteUser(id: string, { signal }: CallOptions = {}): Promise<void> {
+export async function deleteUser(
+  id: string,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.DELETE("/api/admin/users/{user_id}", { params: { path: { user_id: id } }, signal }),
+    client.DELETE("/api/admin/users/{user_id}", {
+      params: { path: { user_id: id } },
+      signal,
+    }),
   );
 }
 
 /** Fetch the allowlist, newest first. */
-export async function listAllowlist({ signal }: CallOptions = {}): Promise<AllowlistEntry[]> {
-  const listed = await send(TIMEOUT_MS.read, signal, (signal) => client.GET("/api/admin/allowlist", { signal }));
+export async function listAllowlist({
+  signal,
+}: CallOptions = {}): Promise<AllowlistEntry[]> {
+  const listed = await send(TIMEOUT_MS.read, signal, (signal) =>
+    client.GET("/api/admin/allowlist", { signal }),
+  );
   return (listed as { entries: AllowlistEntry[] }).entries;
 }
 
@@ -97,14 +136,20 @@ export async function addAllowlistEntry(
   body: AllowlistAddBody,
   { signal }: CallOptions = {},
 ): Promise<Pick<AllowlistEntry, "email_or_pattern" | "role">> {
-  const added = await send(TIMEOUT_MS.write, signal, (signal) => client.POST("/api/admin/allowlist", { body, signal }));
+  const added = await send(TIMEOUT_MS.write, signal, (signal) =>
+    client.POST("/api/admin/allowlist", { body, signal }),
+  );
   // Written by hand from `admin_add_allowlist_route`: the schema types it as free JSON.
   const { email_or_pattern, role } = added as AllowlistEntry;
   return { email_or_pattern, role };
 }
 
 /** Change the role an entry grants. The entry goes in the path, percent-encoded. */
-export async function setAllowlistRole(entry: string, role: Role, { signal }: CallOptions = {}): Promise<void> {
+export async function setAllowlistRole(
+  entry: string,
+  role: Role,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
     client.PUT("/api/admin/allowlist/{email_or_pattern}/role", {
       params: { path: { email_or_pattern: entry } },
@@ -118,8 +163,14 @@ export async function setAllowlistRole(entry: string, role: Role, { signal }: Ca
  * Remove an entry. Users it let in keep their accounts, sessions and tokens, but
  * the next sign-in of one it alone matched is refused.
  */
-export async function removeAllowlistEntry(entry: string, { signal }: CallOptions = {}): Promise<void> {
+export async function removeAllowlistEntry(
+  entry: string,
+  { signal }: CallOptions = {},
+): Promise<void> {
   await send(TIMEOUT_MS.write, signal, (signal) =>
-    client.DELETE("/api/admin/allowlist/{email_or_pattern}", { params: { path: { email_or_pattern: entry } }, signal }),
+    client.DELETE("/api/admin/allowlist/{email_or_pattern}", {
+      params: { path: { email_or_pattern: entry } },
+      signal,
+    }),
   );
 }

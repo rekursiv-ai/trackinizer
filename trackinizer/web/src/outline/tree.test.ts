@@ -2,15 +2,29 @@ import { expect, test } from "vitest";
 import type { Ancestor, InquiryRow } from "../api/inquiries";
 import { issue, uuid } from "../live/testing";
 import { buildOutline, type Outline } from "./tree";
+import { must } from "../must";
 
 /** An older ancestor `seq` (outside the page), with the ids of what narrows it. */
 function up(seq: number, ...children: number[]): Ancestor {
-  return { id: uuid(seq), kind: "Issue", seq, title: `Issue ${seq}`, status: "active", child_ids: children.map(uuid) };
+  return {
+    id: uuid(seq),
+    kind: "Issue",
+    seq,
+    title: `Issue ${seq}`,
+    status: "active",
+    child_ids: children.map(uuid),
+  };
 }
 
 /** `rows` in list order, each with the ancestry `of` gives it; a row `of` leaves out has none read yet. */
-function outline(rows: readonly InquiryRow[], of: { [seq: number]: Ancestor[] }, collapsed: number[] = []): Outline {
-  const ancestry = new Map(rows.filter((row) => of[row.seq]).map((row) => [row.id, of[row.seq]!]));
+function outline(
+  rows: readonly InquiryRow[],
+  of: { [seq: number]: Ancestor[] },
+  collapsed: number[] = [],
+): Outline {
+  const ancestry = new Map(
+    rows.filter((row) => of[row.seq]).map((row) => [row.id, must(of[row.seq])]),
+  );
   return buildOutline(rows, ancestry, new Set(collapsed.map(uuid)));
 }
 
@@ -18,7 +32,7 @@ function outline(rows: readonly InquiryRow[], of: { [seq: number]: Ancestor[] },
 function lines({ lines }: Outline): string[] {
   return lines.map((line) => {
     const refs = line.nodes.map((node) => `#${node.seq}`).join(" › ");
-    const older = line.nodes[0]!.row ? "" : " older";
+    const older = must(line.nodes[0]).row ? "" : " older";
     const folded = line.parent && !line.expanded ? ` (${line.below} below)` : "";
     const also = line.alsoUnder.map((node) => ` also under #${node.seq}`).join("");
     return `${"  ".repeat(line.depth)}${refs}${older}${folded}${also}`;
@@ -52,7 +66,13 @@ test("a chain of older parents, each the only child of the one above, compresses
     // An older parent over one row is not compressed: the row is a line of its own.
     23: [up(3, 23)],
   });
-  expect(lines(result)).toEqual(["#1 › #2 older", "  #21", "  #22", "#3 older", "  #23"]);
+  expect(lines(result)).toEqual([
+    "#1 › #2 older",
+    "  #21",
+    "  #22",
+    "#3 older",
+    "  #23",
+  ]);
 });
 
 test("rows with no parent and nothing under them go in the No parent group, in list order", () => {

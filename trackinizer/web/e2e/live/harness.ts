@@ -9,12 +9,16 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { expect, type Page } from "@playwright/test";
 import { STREAM_URL, streamOpened } from "../fixtures";
+import { must } from "../../src/must";
 
 const ROOT = fileURLToPath(new URL("../../../../..", import.meta.url));
 const WEB = fileURLToPath(new URL("../..", import.meta.url));
 
 /** How a live server starts: its command and arguments, given its port and data directory. */
-export type Serve = (port: number, data: string) => readonly [string, readonly string[]];
+export type Serve = (
+  port: number,
+  data: string,
+) => readonly [string, readonly string[]];
 
 /** The trackinizer server, serving the build the e2e script made (as `playwright.config.ts` finds it). */
 const TRACKINIZER: Serve = (port, data) => {
@@ -101,15 +105,22 @@ export type Written = { readonly at: number };
  */
 export class Writer {
   readonly #process: ChildProcess;
-  readonly #waiting: { answer: (line: string) => void; fail: (error: Error) => void }[] = [];
+  readonly #waiting: {
+    answer: (line: string) => void;
+    fail: (error: Error) => void;
+  }[] = [];
   #exited: Error | null = null;
 
   /** `program` runs as the writer; the harness's own tests pass another. */
   constructor(url: string, program = join(WEB, "scripts", "writer.py")) {
-    this.#process = spawn(program, ["--url", url], { stdio: ["pipe", "pipe", "inherit"] });
-    createInterface({ input: this.#process.stdout! }).on("line", (line) => this.#waiting.shift()?.answer(line));
+    this.#process = spawn(program, ["--url", url], {
+      stdio: ["pipe", "pipe", "inherit"],
+    });
+    createInterface({ input: must(this.#process.stdout) }).on("line", (line) =>
+      this.#waiting.shift()?.answer(line),
+    );
     // A write racing the writer's exit fails with EPIPE; its close below fails the command instead.
-    this.#process.stdin!.on("error", () => {});
+    must(this.#process.stdin).on("error", () => {});
     // On close, not exit: the answers it wrote before exiting have been read by then.
     this.#process.once("close", (code, signal) => {
       this.#exited = new Error(`The writer exited (${signal ?? code}).`);
@@ -118,14 +129,18 @@ export class Writer {
   }
 
   /** Run `command`; resolves with its answer, and fails with the writer's error or its exit. */
-  async send<Answer>(command: { readonly op: string; readonly [field: string]: unknown }): Promise<Answer> {
+  async send<Answer>(command: {
+    readonly op: string;
+    readonly [field: string]: unknown;
+  }): Promise<Answer> {
     const line = await new Promise<string>((answer, fail) => {
       if (this.#exited) return fail(this.#exited);
       this.#waiting.push({ answer, fail });
-      this.#process.stdin!.write(`${JSON.stringify(command)}\n`);
+      must(this.#process.stdin).write(`${JSON.stringify(command)}\n`);
     });
     const answer = JSON.parse(line) as Answer & { error?: string };
-    if (answer.error !== undefined) throw new Error(`The writer failed ${command.op}: ${answer.error}`);
+    if (answer.error !== undefined)
+      throw new Error(`The writer failed ${command.op}: ${answer.error}`);
     return answer;
   }
 
@@ -138,7 +153,7 @@ export class Writer {
   }
 
   close(): void {
-    this.#process.stdin!.end();
+    must(this.#process.stdin).end();
   }
 }
 
@@ -209,24 +224,48 @@ export function installProbes(): void {
   };
   const name = (node: Node | null | undefined) => {
     const element = node instanceof Element ? node : node?.parentElement;
-    return element ? `${element.tagName.toLowerCase()}.${[...element.classList].join(".")}` : "?";
+    return element
+      ? `${element.tagName.toLowerCase()}.${[...element.classList].join(".")}`
+      : "?";
   };
-  type Shift = PerformanceEntry & { value: number; hadRecentInput: boolean; sources: { node: Node | null }[] };
-  const recorders: [PerformanceObserverInit, (entries: PerformanceEntryList) => void][] = [
+  type Shift = PerformanceEntry & {
+    value: number;
+    hadRecentInput: boolean;
+    sources: { node: Node | null }[];
+  };
+  const recorders: [
+    PerformanceObserverInit,
+    (entries: PerformanceEntryList) => void,
+  ][] = [
     [
       { type: "longtask", buffered: true },
-      (entries) => longTasks.push(...entries.map((task) => ({ start: Math.round(task.startTime), ms: Math.round(task.duration) }))),
+      (entries) =>
+        longTasks.push(
+          ...entries.map((task) => ({
+            start: Math.round(task.startTime),
+            ms: Math.round(task.duration),
+          })),
+        ),
     ],
     [
       { type: "layout-shift", buffered: true },
       (entries) => {
         for (const shift of entries as Shift[]) {
-          if (!shift.hadRecentInput) shifts.push({ start: Math.round(shift.startTime), value: shift.value, moved: shift.sources.map((s) => name(s.node)) });
+          if (!shift.hadRecentInput)
+            shifts.push({
+              start: Math.round(shift.startTime),
+              value: shift.value,
+              moved: shift.sources.map((s) => name(s.node)),
+            });
         }
       },
     ],
     [
-      { type: "event", durationThreshold: 16, buffered: true } as PerformanceObserverInit,
+      {
+        type: "event",
+        durationThreshold: 16,
+        buffered: true,
+      } as PerformanceObserverInit,
       (entries) => {
         for (const key of entries.filter((entry) => entry.name === "keydown")) {
           keys.push({ start: Math.round(key.startTime), ms: Math.round(key.duration) });
@@ -249,15 +288,28 @@ export function installProbes(): void {
     const list = document.querySelector<HTMLElement>(".view .scroll");
     const detail = document.querySelector<HTMLElement>(".d-scroll");
     const focused = document.querySelector<HTMLElement>("a.row.is-focused");
-    const under = pointer && document.elementFromPoint(pointer.x, pointer.y)?.closest<HTMLElement>("[data-row]");
+    const under =
+      pointer &&
+      document
+        .elementFromPoint(pointer.x, pointer.y)
+        ?.closest<HTMLElement>("[data-row]");
     const active = document.activeElement;
     const draft = active instanceof HTMLTextAreaElement ? active : null;
     return JSON.stringify({
       scrolled: [list?.scrollTop, detail?.scrollTop],
-      focused: focused && [focused.dataset.row, Math.round(focused.getBoundingClientRect().top)],
+      focused: focused && [
+        focused.dataset.row,
+        Math.round(focused.getBoundingClientRect().top),
+      ],
       // Aimed at no row, the pointer would hold nothing to move.
-      pointer: pointer && (under ? [under.dataset.row, Math.round(under.getBoundingClientRect().top)] : "no row"),
-      selected: [...document.querySelectorAll<HTMLElement>(".row-line.is-selected a.row")].map((row) => row.dataset.row),
+      pointer:
+        pointer &&
+        (under
+          ? [under.dataset.row, Math.round(under.getBoundingClientRect().top)]
+          : "no row"),
+      selected: [
+        ...document.querySelectorAll<HTMLElement>(".row-line.is-selected a.row"),
+      ].map((row) => row.dataset.row),
       active: active && `${active.tagName}${active.getAttribute("aria-label") ?? ""}`,
       draft: draft && [draft.value, draft.selectionStart, draft.selectionEnd],
       menus: document.querySelectorAll("[role=menu], [role=dialog], .peek").length,
@@ -304,25 +356,40 @@ export function accelerate(scale: number): void {
   const [realTimeout, realInterval] = [setTimeout, setInterval];
   Date.now = () => start + (realNow() - start) * scale;
   Object.assign(window, {
-    setTimeout: (run: TimerHandler, ms = 0, ...args: unknown[]) => realTimeout(run, ms / scale, ...args),
-    setInterval: (run: TimerHandler, ms = 0, ...args: unknown[]) => realInterval(run, ms / scale, ...args),
+    setTimeout: (run: TimerHandler, ms = 0, ...args: unknown[]) =>
+      realTimeout(run, ms / scale, ...args),
+    setInterval: (run: TimerHandler, ms = 0, ...args: unknown[]) =>
+      realInterval(run, ms / scale, ...args),
   });
 }
 
 /** Empty the probes' records, so what they held is not counted in a heap measurement. */
 export function forget(page: Page): Promise<void> {
-  return page.evaluate(() => (window as unknown as { __probe: { forget: () => void } }).__probe.forget());
+  return page.evaluate(() =>
+    (window as unknown as { __probe: { forget: () => void } }).__probe.forget(),
+  );
 }
 
 /** What the probes have found so far. */
 export function probed(page: Page): Promise<Probed> {
-  return page.evaluate(() => (window as unknown as { __probe: { read: () => Probed } }).__probe.read());
+  return page.evaluate(() =>
+    (window as unknown as { __probe: { read: () => Probed } }).__probe.read(),
+  );
 }
 
 /** Start sampling what the user holds, with the pointer resting at `at`. */
-export async function startHolding(page: Page, at?: { x: number; y: number }): Promise<void> {
+export async function startHolding(
+  page: Page,
+  at?: { x: number; y: number },
+): Promise<void> {
   if (at) await page.mouse.move(at.x, at.y);
-  await page.evaluate((at) => (window as unknown as { __probe: { hold: (at?: object) => void } }).__probe.hold(at), at);
+  await page.evaluate(
+    (at) =>
+      (window as unknown as { __probe: { hold: (at?: object) => void } }).__probe.hold(
+        at,
+      ),
+    at,
+  );
 }
 
 /** One request the app made: what it asked, and when (the page's epoch ms). */
@@ -341,7 +408,8 @@ export type Sent = {
 export function requests(probe: Probed): Sent[] {
   return probe.fetches.flatMap(({ url, start, end }) => {
     const parsed = new URL(url, "http://page");
-    if (!parsed.pathname.startsWith("/api/") || STREAM_URL.test(parsed.pathname)) return [];
+    if (!parsed.pathname.startsWith("/api/") || STREAM_URL.test(parsed.pathname))
+      return [];
     return [{ ...classify(parsed), start, end: end ?? probe.now }];
   });
 }
@@ -357,7 +425,8 @@ export function inFlight(sent: readonly Sent[]): Map<string, number> {
     // Ends before starts at one instant: a request that ends as the next starts is not two in flight.
     edges.sort((a, b) => a.at - b.at || a.step - b.step);
     let now = 0;
-    for (const { step } of edges) most.set(key, Math.max(most.get(key) ?? 0, (now += step)));
+    for (const { step } of edges)
+      most.set(key, Math.max(most.get(key) ?? 0, (now += step)));
   }
   return most;
 }
@@ -368,8 +437,10 @@ export function overlaps(sent: readonly Sent[]): [Sent, Sent][] {
   for (const requests of groupBy(sent, (s) => s.queryKey).values()) {
     const sorted = requests.toSorted((a, b) => a.start - b.start);
     for (let n = 1; n < sorted.length; n++) {
-      const open = sorted.slice(0, n).find((earlier) => earlier.end > sorted[n]!.start);
-      if (open) pairs.push([open, sorted[n]!]);
+      const open = sorted
+        .slice(0, n)
+        .find((earlier) => earlier.end > must(sorted[n]).start);
+      if (open) pairs.push([open, must(sorted[n])]);
     }
   }
   return pairs;
@@ -383,7 +454,11 @@ export function checkSpacing(sent: readonly Sent[]): Map<string, number> {
     (s) => s.queryKey,
   )) {
     const starts = list.map((s) => s.start).sort((a, b) => a - b);
-    for (let n = 1; n < starts.length; n++) least.set(key, Math.min(least.get(key) ?? Infinity, starts[n]! - starts[n - 1]!));
+    for (let n = 1; n < starts.length; n++)
+      least.set(
+        key,
+        Math.min(least.get(key) ?? Infinity, must(starts[n]) - must(starts[n - 1])),
+      );
   }
   return least;
 }
@@ -391,7 +466,7 @@ export function checkSpacing(sent: readonly Sent[]): Map<string, number> {
 /** The 95th percentile of `values`: the smallest value at least 95% of them do not exceed. */
 export function p95(values: readonly number[]): number {
   const sorted = values.toSorted((a, b) => a - b);
-  return sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)]!;
+  return must(sorted[Math.max(0, Math.ceil(sorted.length * 0.95) - 1)]);
 }
 
 /**
@@ -426,7 +501,9 @@ export async function filterTo(page: Page, label: string): Promise<void> {
   await page.getByRole("combobox", { name: /^Label/ }).fill(label);
   await page.keyboard.press("Enter");
   await page.keyboard.press("Escape");
-  await expect(page.getByTitle("The same query from the CLI")).toContainText(`labels is ${label}`);
+  await expect(page.getByTitle("The same query from the CLI")).toContainText(
+    `labels is ${label}`,
+  );
 }
 
 /** Open the detail of inquiry `id`, once the stream is connected and the detail has loaded. */
@@ -445,20 +522,40 @@ export function sleep(ms: number): Promise<void> {
 function classify(url: URL): Pick<Sent, "path" | "query" | "queryKey" | "type"> {
   const query = url.searchParams;
   const path = url.pathname;
-  if (path !== "/api/inquiries") return { path, query, queryKey: `${path}?${query.get("kind") ?? ""}`, type: "other" };
-  const filters = query.getAll("filter").map((raw) => JSON.parse(raw) as { field: string; op: string; value: string });
+  if (path !== "/api/inquiries")
+    return {
+      path,
+      query,
+      queryKey: `${path}?${query.get("kind") ?? ""}`,
+      type: "other",
+    };
+  const filters = query
+    .getAll("filter")
+    .map((raw) => JSON.parse(raw) as { field: string; op: string; value: string });
   const id = filters.find((filter) => filter.field === "id");
   const rest = filters.filter((filter) => filter !== id);
   const queryKey = `list ${query.getAll("kind").join(",")} ${JSON.stringify(rest)}`;
   // A live membership check names ids by their ends, `(…)$`; the Activity
   // feed's lookups name whole ids, `^(…)$`.
-  const type = id ? (id.value.startsWith("^") ? "lookup" : "check") : query.has("seq_range") ? "seq" : "page";
-  return { path, query, queryKey: type === "lookup" ? `lookup ${id!.value}` : queryKey, type };
+  const type = id
+    ? id.value.startsWith("^")
+      ? "lookup"
+      : "check"
+    : query.has("seq_range")
+      ? "seq"
+      : "page";
+  return {
+    path,
+    query,
+    queryKey: type === "lookup" ? `lookup ${must(id).value}` : queryKey,
+    type,
+  };
 }
 
 function groupBy<T>(items: readonly T[], key: (item: T) => string): Map<string, T[]> {
   const groups = new Map<string, T[]>();
-  for (const item of items) groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
+  for (const item of items)
+    groups.set(key(item), [...(groups.get(key(item)) ?? []), item]);
   return groups;
 }
 
@@ -481,7 +578,7 @@ function exited(child: ChildProcess): boolean {
 
 function kill(child: ChildProcess, signal: NodeJS.Signals): void {
   try {
-    process.kill(-child.pid!, signal);
+    process.kill(-must(child.pid), signal);
   } catch {
     // Already gone.
   }
@@ -493,7 +590,11 @@ function freePort(): Promise<number> {
     probe.once("error", reject);
     probe.listen(0, "127.0.0.1", () => {
       const address = probe.address();
-      probe.close(() => (typeof address === "object" && address ? resolve(address.port) : reject(new Error("No port."))));
+      probe.close(() =>
+        typeof address === "object" && address
+          ? resolve(address.port)
+          : reject(new Error("No port.")),
+      );
     });
   });
 }

@@ -4,6 +4,7 @@ import type { Meta } from "../app/boot";
 import type { Palette } from "./encode";
 import type { DrawLink, DrawNode } from "./model";
 import type { Covered, Renderer, RendererEvents } from "./renderer";
+import { must } from "../must";
 
 /** A stable, distinct UUID for test number `n`. */
 export function uuid(n: number): string {
@@ -24,15 +25,31 @@ export function node(n: number, fields: Partial<GraphNode> = {}): GraphNode {
 }
 
 /** An edge from inquiry `from` (the child) to `to`, a `narrows` unless `kind` says otherwise. */
-export function edge(from: number, to: number, kind = "narrows", fields: Partial<GraphEdge> = {}): GraphEdge {
+export function edge(
+  from: number,
+  to: number,
+  kind = "narrows",
+  fields: Partial<GraphEdge> = {},
+): GraphEdge {
   return { from_id: uuid(from), to_id: uuid(to), edge_kind: kind, ...fields };
 }
 
 /** A palette whose every colour names what it is for, so a test reads which one a look took. */
 export const PALETTE: Palette = {
   kinds: { Issue: "issue-hue", Belief: "belief-hue", Paper: "paper-hue" },
-  edges: { narrows: "narrows-hue", requires: "requires-hue", favors: "favors-hue", cites_paper: "cites-hue" },
-  status: { active: "active-ring", complete: "complete-ring", stopped: "stopped-ring", abandoned: "abandoned-ring", invalid: "invalid-ring" },
+  edges: {
+    narrows: "narrows-hue",
+    requires: "requires-hue",
+    favors: "favors-hue",
+    cites_paper: "cites-hue",
+  },
+  status: {
+    active: "active-ring",
+    complete: "complete-ring",
+    stopped: "stopped-ring",
+    abandoned: "abandoned-ring",
+    invalid: "invalid-ring",
+  },
   fallback: "fallback",
   background: "background",
   support: "support",
@@ -48,11 +65,36 @@ export const META: Meta = {
   enums: { status: ["active", "complete", "stopped", "abandoned", "invalid"] },
   fieldOwners: {},
   edges: {
-    narrows: { from_kinds: ["Issue"], to_kinds: ["Issue"], forward: "narrows", inverse: "narrowed_by" },
-    proves: { from_kinds: ["Paper"], to_kinds: ["Belief"], forward: "proves", inverse: "proved_by" },
-    favors: { from_kinds: ["Paper"], to_kinds: ["Belief"], forward: "favors", inverse: "favored_by" },
-    cites_paper: { from_kinds: ["Paper"], to_kinds: ["Paper"], forward: "cites", inverse: "cited_by" },
-    produced_by: { from_kinds: ["Issue", "Paper", "Belief"], to_kinds: ["Issue", "Paper", "Belief"], forward: "produced_by", inverse: "produces" },
+    narrows: {
+      from_kinds: ["Issue"],
+      to_kinds: ["Issue"],
+      forward: "narrows",
+      inverse: "narrowed_by",
+    },
+    proves: {
+      from_kinds: ["Paper"],
+      to_kinds: ["Belief"],
+      forward: "proves",
+      inverse: "proved_by",
+    },
+    favors: {
+      from_kinds: ["Paper"],
+      to_kinds: ["Belief"],
+      forward: "favors",
+      inverse: "favored_by",
+    },
+    cites_paper: {
+      from_kinds: ["Paper"],
+      to_kinds: ["Paper"],
+      forward: "cites",
+      inverse: "cited_by",
+    },
+    produced_by: {
+      from_kinds: ["Issue", "Paper", "Belief"],
+      to_kinds: ["Issue", "Paper", "Belief"],
+      forward: "produced_by",
+      inverse: "produces",
+    },
   },
 };
 
@@ -88,18 +130,31 @@ export class FakeRenderer implements Renderer {
   covered: (() => Covered) | null = null;
 
   /** Make this the renderer, as `createRenderer` would. */
-  readonly create = (_host: HTMLElement, events: RendererEvents, covered: () => Covered): Renderer => {
+  readonly create = (
+    _host: HTMLElement,
+    events: RendererEvents,
+    covered: () => Covered,
+  ): Renderer => {
     this.events = events;
     this.covered = covered;
     return this;
   };
 
-  setData(nodes: readonly DrawNode[], links: readonly DrawLink[], frame: ((node: DrawNode) => boolean) | null): void {
+  setData(
+    nodes: readonly DrawNode[],
+    links: readonly DrawLink[],
+    frame: ((node: DrawNode) => boolean) | null,
+  ): void {
     this.nodes = nodes;
     this.links = links;
     this.sets.push(frame !== null);
     this.counts.push(nodes.length);
-    if (frame) this.settleFrames.push(nodes.filter((drawn) => !drawn.hidden && frame(drawn)).map((drawn) => drawn.title));
+    if (frame)
+      this.settleFrames.push(
+        nodes
+          .filter((drawn) => !drawn.hidden && frame(drawn))
+          .map((drawn) => drawn.title),
+      );
   }
 
   centre(node: DrawNode): void {
@@ -126,15 +181,22 @@ export class FakeRenderer implements Renderer {
       this.fits += 1;
       return;
     }
-    this.framed.push({ titles: this.nodes.filter((drawn) => !drawn.hidden && filter(drawn)).map((drawn) => drawn.title), covered: this.covered!() });
+    this.framed.push({
+      titles: this.nodes
+        .filter((drawn) => !drawn.hidden && filter(drawn))
+        .map((drawn) => drawn.title),
+      covered: must(this.covered).call(this),
+    });
   }
 
   refit(): void {
-    this.refits.push(this.covered!());
+    this.refits.push(must(this.covered).call(this));
   }
 
   group(groupOf: ((node: DrawNode) => string | undefined) | null): void {
-    this.groups = groupOf ? new Map(this.nodes.map((drawn) => [drawn.title, groupOf(drawn)])) : null;
+    this.groups = groupOf
+      ? new Map(this.nodes.map((drawn) => [drawn.title, groupOf(drawn)]))
+      : null;
   }
 
   zoomBy(factor: number): void {

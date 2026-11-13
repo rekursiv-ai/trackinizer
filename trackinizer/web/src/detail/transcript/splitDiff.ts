@@ -39,7 +39,8 @@ export function splitRows(body: readonly string[]): SplitRow[] {
   let dels: Side[] = [];
   let adds: Side[] = [];
   const flush = () => {
-    for (let k = 0; k < Math.max(dels.length, adds.length); k++) rows.push({ kind: "pair", left: dels[k] ?? null, right: adds[k] ?? null });
+    for (let k = 0; k < Math.max(dels.length, adds.length); k++)
+      rows.push({ kind: "pair", left: dels[k] ?? null, right: adds[k] ?? null });
     [dels, adds] = [[], []];
   };
   for (const line of body) {
@@ -56,7 +57,11 @@ export function splitRows(body: readonly string[]): SplitRow[] {
       flush();
       // A context line is a space and its text; a tool that trims lines leaves an empty one.
       const text = line.slice(1);
-      rows.push({ kind: "pair", left: { kind: "ctx", n: old++, text, at: oldAt++ }, right: { kind: "ctx", n: next++, text, at: newAt++ } });
+      rows.push({
+        kind: "pair",
+        left: { kind: "ctx", n: old++, text, at: oldAt++ },
+        right: { kind: "ctx", n: next++, text, at: newAt++ },
+      });
     }
   }
   flush();
@@ -64,10 +69,16 @@ export function splitRows(body: readonly string[]): SplitRow[] {
 }
 
 /** Each side's whole text, context included, in order: what that side's highlighting reads. */
-export function sideTexts(body: readonly string[]): { readonly old: string; readonly new: string } {
+export function sideTexts(body: readonly string[]): {
+  readonly old: string;
+  readonly new: string;
+} {
   const side = (skip: string) =>
     body
-      .filter((line) => !line.startsWith("@@") && !line.startsWith("\\") && !line.startsWith(skip))
+      .filter(
+        (line) =>
+          !line.startsWith("@@") && !line.startsWith("\\") && !line.startsWith(skip),
+      )
       .map((line) => line.slice(1))
       .join("\n");
   return { old: side("+"), new: side("-") };
@@ -79,14 +90,18 @@ export function sideTexts(body: readonly string[]): { readonly old: string; read
  * the old file, an added or context line in the new one. `\ No newline at end of file` is a row
  * of its own, as a hunk header is, with no number.
  */
-export function diffParts(diff: string): { readonly head: readonly string[]; readonly lines: readonly DiffLine[] } {
+export function diffParts(diff: string): {
+  readonly head: readonly string[];
+  readonly lines: readonly DiffLine[];
+} {
   const all = diff ? diff.replace(/\n$/, "").split("\n") : [];
   const start = all.findIndex((text) => text.startsWith("@@"));
   let [old, next] = [0, 0];
   const lines = (start < 0 ? [] : all.slice(start)).map((text): DiffLine => {
     const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
     if (hunk) [old, next] = [Number(hunk[1]), Number(hunk[2])];
-    if (text.startsWith("@@") || text.startsWith("\\")) return { kind: "hunk", text, line: null };
+    if (text.startsWith("@@") || text.startsWith("\\"))
+      return { kind: "hunk", text, line: null };
     if (text.startsWith("-")) return { kind: "del", text, line: old++ };
     if (text.startsWith("+")) return { kind: "add", text, line: next++ };
     old++;

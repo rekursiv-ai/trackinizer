@@ -1,13 +1,26 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { Popover } from "radix-ui";
-import { type ChangeEvent, type ReactElement, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  type ChangeEvent,
+  type ReactElement,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { Detail } from "../api/detail";
 import { useMeta, useProfile, useWriteMode } from "../app/boot";
 import type { Field } from "../detail/fields";
 import { detailQueries } from "../detail/queries";
 import { Menu, type MenuOption } from "../lists/Menu";
 import { PeoplePicker } from "../people/Picker";
-import { Avatar, capitalize, JudgementGlyph, LabelDot, StatusGlyph } from "../ui/glyphs";
+import {
+  Avatar,
+  capitalize,
+  JudgementGlyph,
+  LabelDot,
+  StatusGlyph,
+} from "../ui/glyphs";
 import { type Edit, fieldEdit, listEdit, sameValue } from "../writes/edits";
 import { useWrite } from "../writes/useWrite";
 import { WriteButton } from "../writes/WriteButton";
@@ -27,6 +40,7 @@ import {
   withToggles,
 } from "./values";
 import "./editors.css";
+import { must } from "../must";
 
 /**
  * One property's value, drawn by `children`, as the button that edits it: a
@@ -40,10 +54,19 @@ import "./editors.css";
  * `PUT` of the whole list. Every write is guarded against the value the user
  * saw when they began it, not one a later render shows.
  */
-export function PropertyEditor({ detail, field, children }: { detail: Detail; field: Field; children: ReactNode }) {
+export function PropertyEditor({
+  detail,
+  field,
+  children,
+}: {
+  detail: Detail;
+  field: Field;
+  children: ReactNode;
+}) {
   const { enums } = useMeta();
-  if (useWriteMode() === "hidden" || !field.route) return children;
-  const props = { detail, field, children };
+  const { route } = field;
+  if (useWriteMode() === "hidden" || !route) return children;
+  const props = { detail, field: { ...field, route }, children };
   switch (field.name) {
     case "status":
       return <StatusEditor {...props} />;
@@ -56,12 +79,16 @@ export function PropertyEditor({ detail, field, children }: { detail: Detail; fi
     case "account":
       return <AccountEditor {...props} />;
   }
-  if (field.route.value.type === "array") return <ListEditor {...props} />;
-  if (enums[field.name]) return <EnumEditor {...props} options={enums[field.name]!} />;
+  if (route.value.type === "array") return <ListEditor {...props} />;
+  if (enums[field.name])
+    return <EnumEditor {...props} options={must(enums[field.name])} />;
   return <FormEditor {...props} />;
 }
 
-type EditorProps = { detail: Detail; field: Field; children: ReactNode };
+/** A field with an edit route: the only kind an editor gets. */
+type EditableField = Field & { readonly route: NonNullable<Field["route"]> };
+
+type EditorProps = { detail: Detail; field: EditableField; children: ReactNode };
 
 /** The inquiry as a link names it, for dialog titles: `Issue#12`. */
 function refOf(detail: Detail): string {
@@ -105,7 +132,9 @@ function JudgementEditor({ detail, field, children }: EditorProps) {
         checked: value === field.value,
       }))}
       ask={(to) => ({
-        title: to ? `Mark ${refOf(detail)} ${capitalize(to)}` : `Clear the judgement of ${refOf(detail)}`,
+        title: to
+          ? `Mark ${refOf(detail)} ${capitalize(to)}`
+          : `Clear the judgement of ${refOf(detail)}`,
         body: "Judgement is author-owned. Say what settled it; the reason shows in activity.",
         confirm: to ? `Mark ${capitalize(to)}` : "Clear",
       })}
@@ -166,13 +195,22 @@ function AccountEditor({ detail, field, children }: EditorProps) {
   );
 }
 
-function EnumEditor({ detail, field, options, children }: EditorProps & { options: readonly string[] }) {
+function EnumEditor({
+  detail,
+  field,
+  options,
+  children,
+}: EditorProps & { options: readonly string[] }) {
   return (
     <ChoiceEditor
       detail={detail}
       field={field}
       label={`${field.look.label}…`}
-      options={options.map((value) => ({ value, label: value, checked: value === field.value }))}
+      options={options.map((value) => ({
+        value,
+        label: value,
+        checked: value === field.value,
+      }))}
     >
       {children}
     </ChoiceEditor>
@@ -201,9 +239,20 @@ function ChoiceEditor({
   show?: (value: unknown) => string;
 }) {
   const { save, button, status, returnFocus } = useFieldSave(detail, field, show);
-  const [asking, setAsking] = useState<{ readonly to: string | null; readonly from: unknown; readonly ask: ReasonAsk } | null>(null);
+  const [asking, setAsking] = useState<{
+    readonly to: string | null;
+    readonly from: unknown;
+    readonly ask: ReasonAsk;
+  } | null>(null);
   const clear: MenuOption[] =
-    field.route?.delete && field.value !== undefined ? [{ value: CLEAR, label: field.look.unset ?? `No ${field.look.label.toLowerCase()}` }] : [];
+    field.route?.delete && field.value !== undefined
+      ? [
+          {
+            value: CLEAR,
+            label: field.look.unset ?? `No ${field.look.label.toLowerCase()}`,
+          },
+        ]
+      : [];
   const pick = (picked: string) => {
     const to = picked === CLEAR ? null : picked;
     if (sameValue(to, field.value)) return;
@@ -213,7 +262,13 @@ function ChoiceEditor({
   };
   return (
     <>
-      <Menu label={label} trigger={button(children)} options={[...options, ...clear]} onPick={pick} create={create} />
+      <Menu
+        label={label}
+        trigger={button(children)}
+        options={[...options, ...clear]}
+        onPick={pick}
+        create={create}
+      />
       {status}
       <ReasonDialog
         ask={asking?.ask ?? null}
@@ -221,7 +276,7 @@ function ChoiceEditor({
         onCancel={() => setAsking(null)}
         onConfirm={(reason) => {
           setAsking(null);
-          save(asking!.to, reason, asking!.from);
+          save(must(asking).to, reason, must(asking).from);
         }}
       />
     </>
@@ -251,7 +306,11 @@ function PriorityEditor({ detail, field, children }: EditorProps) {
  * nothing while a write is `pending` (sent, or failed and showing Retry); and
  * `status` the write's state beside it.
  */
-function useFieldSave(detail: Detail, field: Field, show?: (value: unknown) => string) {
+function useFieldSave(
+  detail: Detail,
+  field: EditableField,
+  show?: (value: unknown) => string,
+) {
   const writer = useWrite();
   const offline = useWriteMode() === "disabled";
   const pending = unsettled(writer.state);
@@ -261,7 +320,7 @@ function useFieldSave(detail: Detail, field: Field, show?: (value: unknown) => s
       fieldEdit({
         id: detail.self.id,
         field: field.name,
-        route: field.route!,
+        route: field.route,
         label: field.look.label,
         from,
         to,
@@ -280,7 +339,13 @@ function useFieldSave(detail: Detail, field: Field, show?: (value: unknown) => s
       {children}
     </WriteButton>
   );
-  return { save, button, pending, status: <WriteStatus state={writer.state} />, returnFocus };
+  return {
+    save,
+    button,
+    pending,
+    status: <WriteStatus state={writer.state} />,
+    returnFocus,
+  };
 }
 
 /**
@@ -305,7 +370,9 @@ function ListEditor({ detail, field, children }: EditorProps) {
   // refetch that shows it, a moment before that refetch reaches `detail`. Read
   // from the cache, the list never shows a landed tick twice (an author twice),
   // nor flickers back to the list before it.
-  const stored = (queryClient.getQueryData(detailQueries.detail(detail.self.id).queryKey) ?? detail).self[name];
+  const stored = (
+    queryClient.getQueryData(detailQueries.detail(detail.self.id).queryKey) ?? detail
+  ).self[name];
   const shown = withToggles(asList(stored), queued, BYLINES.has(name));
   const run = writer.run;
   useEffect(() => {
@@ -326,22 +393,42 @@ function ListEditor({ detail, field, children }: EditorProps) {
   const closed = enums[name];
   const offered = new Set([...(closed ?? []), ...shown]);
   // The people picker offers loaded people itself, and people added by hand.
-  if (!closed && !people) loadedValues(queryClient, name).forEach((value) => offered.add(value));
+  if (!closed && !people)
+    loadedValues(queryClient, name).forEach((value) => offered.add(value));
   // An element stays on offer once removed, so a second tick can put it back.
   const [seen, setSeen] = useState<ReadonlySet<string>>(offered);
-  if ([...offered].some((value) => !seen.has(value))) setSeen(new Set([...seen, ...offered]));
-  const choices = closed ? [...new Set([...closed, ...seen, ...offered])] : [...new Set([...seen, ...offered])].sort((a, b) => a.localeCompare(b));
+  if ([...offered].some((value) => !seen.has(value)))
+    setSeen(new Set([...seen, ...offered]));
+  const choices = closed
+    ? [...new Set([...closed, ...seen, ...offered])]
+    : [...new Set([...seen, ...offered])].sort((a, b) => a.localeCompare(b));
 
   const toggle = (value: string) => {
     const op = shown.includes(value) ? "sub" : "add";
     // No toast, and so no Undo: the menu stays open and a second tick undoes a
     // tick. A toast is also a Radix layer, and one that opened over the menu
     // would take the menu's Escape.
-    const edit = { ...listEdit({ id: detail.self.id, field: name, route: route!, label: look.label, op, value, from: shown }), done: undefined };
+    const edit = {
+      ...listEdit({
+        id: detail.self.id,
+        field: name,
+        route,
+        label: look.label,
+        op,
+        value,
+        from: shown,
+      }),
+      done: undefined,
+    };
     setQueued((waiting) => [...waiting, { op, value, edit }]);
   };
   const trigger = (
-    <button type="button" className="prop-btn" disabled={offline} title={`Change ${look.label.toLowerCase()}`}>
+    <button
+      type="button"
+      className="prop-btn"
+      disabled={offline}
+      title={`Change ${look.label.toLowerCase()}`}
+    >
       {children}
     </button>
   );
@@ -353,7 +440,7 @@ function ListEditor({ detail, field, children }: EditorProps) {
           trigger={trigger}
           current={choices}
           checked={(actor) => actor !== null && shown.includes(actor)}
-          onPick={(actor) => toggle(actor!)}
+          onPick={(actor) => toggle(must(actor))}
         />
       ) : (
         <Menu
@@ -366,7 +453,12 @@ function ListEditor({ detail, field, children }: EditorProps) {
             icon: name === "labels" ? <LabelDot label={value} /> : undefined,
             checked: shown.includes(value),
           }))}
-          create={closed ? undefined : (typed) => (name === "labels" ? `Create label “${typed}”` : `Add “${typed}”`)}
+          create={
+            closed
+              ? undefined
+              : (typed) =>
+                  name === "labels" ? `Create label “${typed}”` : `Add “${typed}”`
+          }
           onPick={toggle}
         />
       )}
@@ -385,19 +477,27 @@ function ListEditor({ detail, field, children }: EditorProps) {
  * a save is under way the form takes no input and does not close.
  */
 function FormEditor({ detail, field, children }: EditorProps) {
-  const kind = inputKind(field.route!, field.look);
+  const kind = inputKind(field.route, field.look);
   const [draft, setDraft] = useDraft(detail.self.id, field.name);
   const { save, button, pending, status } = useFieldSave(detail, field);
   return (
     <Popover.Root
       open={draft !== null}
       onOpenChange={(open) => {
-        if (!pending) setDraft(open ? { text: inputText(field.value, kind), base: field.value } : null);
+        if (!pending)
+          setDraft(
+            open ? { text: inputText(field.value, kind), base: field.value } : null,
+          );
       }}
     >
       <Popover.Trigger asChild>{button(children)}</Popover.Trigger>
       <Popover.Portal>
-        <Popover.Content className="list-menu popover" align="start" sideOffset={4} aria-label={`Edit ${field.look.label}`}>
+        <Popover.Content
+          className="list-menu popover"
+          align="start"
+          sideOffset={4}
+          aria-label={`Edit ${field.look.label}`}
+        >
           {draft ? (
             <ValueForm
               id={detail.self.id}
@@ -432,7 +532,7 @@ function ValueForm({
   children,
 }: {
   id: string;
-  field: Field;
+  field: EditableField;
   kind: InputKind;
   draft: Draft;
   setDraft: (draft: Draft | null) => void;
@@ -465,7 +565,11 @@ function ValueForm({
         if (draft.text === inputText(draft.base, kind)) return setDraft(null);
         const parsed = parseInput(draft.text, kind);
         if ("error" in parsed) setError(parsed.error);
-        else if (sameValue(parsed.value, draft.base) && sameValue(field.value, draft.base)) setDraft(null);
+        else if (
+          sameValue(parsed.value, draft.base) &&
+          sameValue(field.value, draft.base)
+        )
+          setDraft(null);
         else onSave(parsed.value, reason.trim());
       }}
     >
@@ -497,8 +601,13 @@ function ValueForm({
       />
       {children}
       <div className="pop-row">
-        <span className="muted">{field.route!.delete ? "Empty clears it." : ""}</span>
-        <WriteButton type="submit" className="btn primary" pending={pending} disabled={offline}>
+        <span className="muted">{field.route.delete ? "Empty clears it." : ""}</span>
+        <WriteButton
+          type="submit"
+          className="btn primary"
+          pending={pending}
+          disabled={offline}
+        >
           Save
         </WriteButton>
       </div>
@@ -512,4 +621,11 @@ type Queued = Toggle & { readonly edit: Edit };
 /** The menu value that clears a field; no stored value is a NUL. */
 const CLEAR = "\u0000clear";
 
-const INPUT_TYPES = { text: "text", integer: "number", number: "number", day: "date", datetime: "datetime-local", json: "text" } as const;
+const INPUT_TYPES = {
+  text: "text",
+  integer: "number",
+  number: "number",
+  day: "date",
+  datetime: "datetime-local",
+  json: "text",
+} as const;

@@ -4,6 +4,7 @@ import type { Detail } from "../api/detail";
 import { detailQueries } from "../detail/queries";
 import { DetailLive } from "./detail";
 import { testClient, uuid } from "./testing";
+import { must } from "../must";
 
 const FOCUS = uuid(1);
 const PARENT = uuid(2);
@@ -14,14 +15,28 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const peer = (id: string) => ({ id, kind: "Issue", seq: 0, title: "", status: "active" });
+const peer = (id: string) => ({
+  id,
+  kind: "Issue",
+  seq: 0,
+  title: "",
+  status: "active",
+});
 
 /** A detail of `FOCUS` with a parent and a child, and the reads around it, each counting its fetches. */
 function openDetail() {
   const client = testClient();
   const fetched: string[] = [];
   const detail: Detail = {
-    self: { id: FOCUS, kind: "Issue", seq: 1, title: "Focus", status: "active", created: "", modified: "" },
+    self: {
+      id: FOCUS,
+      kind: "Issue",
+      seq: 1,
+      title: "Focus",
+      status: "active",
+      created: "",
+      modified: "",
+    },
     edges: { narrows: [peer(PARENT)] },
     backlinks: { narrowed_by: [peer(CHILD)] },
     changes: [],
@@ -86,7 +101,16 @@ test("a session's id rereads its parts listing, never the records its transcript
   }).subscribe(() => {});
   await live.update({ ids: new Set([FOCUS]), gap: false });
   await live.update({ ids: new Set(), gap: true });
-  expect(fetched.toSorted()).toEqual(["confidence", "confidence", "detail", "detail", "metrics", "metrics", "session", "session"]);
+  expect(fetched.toSorted()).toEqual([
+    "confidence",
+    "confidence",
+    "detail",
+    "detail",
+    "metrics",
+    "metrics",
+    "session",
+    "session",
+  ]);
 });
 
 test("a fetch already under way is joined, not cancelled, then run once more", async () => {
@@ -98,7 +122,10 @@ test("a fetch already under way is joined, not cancelled, then run once more", a
     queryFn: async () => {
       started.push(answer);
       await new Promise((resolve) => setTimeout(resolve, 10));
-      return { ...(client.getQueryData<Detail>(["detail", FOCUS]) as Detail), self: { title: answer } };
+      return {
+        ...(client.getQueryData<Detail>(["detail", FOCUS]) as Detail),
+        self: { title: answer },
+      };
     },
     staleTime: Infinity,
   }).subscribe(() => {});
@@ -113,7 +140,10 @@ test("a fetch already under way is joined, not cancelled, then run once more", a
   // Joined: the fetch under way ran to its end, then one more. Cancelling would
   // have started a third.
   expect(started).toEqual(["before", "after"]);
-  expect(client.getQueryData<{ self: { title: string } }>(["detail", FOCUS])!.self.title).toBe("after");
+  expect(
+    must(client.getQueryData<{ self: { title: string } }>(["detail", FOCUS])).self
+      .title,
+  ).toBe("after");
   unmount();
 });
 
@@ -128,7 +158,15 @@ test("a batch that comes while the detail's first read is under way reads it onc
         started.push(Date.now());
         answers.push((title) =>
           answer({
-            self: { id: FOCUS, kind: "Issue", seq: 1, title: "Focus", status: "active", created: "", modified: "" },
+            self: {
+              id: FOCUS,
+              kind: "Issue",
+              seq: 1,
+              title: "Focus",
+              status: "active",
+              created: "",
+              modified: "",
+            },
             edges: { narrows: [{ ...peer(PARENT), title }] },
             backlinks: {},
             changes: [],
@@ -140,11 +178,21 @@ test("a batch that comes while the detail's first read is under way reads it onc
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(started).toHaveLength(1);
   // The parent is renamed while the first read is under way; that read answers with its old title.
-  const update = new DetailLive(client, FOCUS).update({ ids: new Set([PARENT]), gap: false });
-  answers[0]!("Old title");
+  const update = new DetailLive(client, FOCUS).update({
+    ids: new Set([PARENT]),
+    gap: false,
+  });
+  must(answers[0])("Old title");
   await new Promise((resolve) => setTimeout(resolve, 0));
   answers[1]?.("New title");
   await update;
-  expect(client.getQueryData<Detail>(detailQueries.detail(FOCUS).queryKey)!.edges.narrows![0]!.title).toBe("New title");
+  expect(
+    must(
+      must(
+        must(client.getQueryData<Detail>(detailQueries.detail(FOCUS).queryKey)).edges
+          .narrows,
+      )[0],
+    ).title,
+  ).toBe("New title");
   unmount();
 });

@@ -7,7 +7,14 @@ import { useOnline } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { ViewHeader } from "../ui/view";
 import { usePreferences } from "../preferences";
-import { chooseSkin, chooseTheme, type Skin, SKINS, type ThemePreference, useTheme } from "../theme";
+import {
+  chooseSkin,
+  chooseTheme,
+  type Skin,
+  SKINS,
+  type ThemePreference,
+  useTheme,
+} from "../theme";
 import { KeyValue, ReadError, Section } from "./account";
 import { AliasesSection } from "./Aliases";
 import { PreferencesDocument } from "./PreferencesDocument";
@@ -24,7 +31,11 @@ import "./settings.css";
  *
  * `assign` loads another page, as `location.assign` does; tests pass a fake.
  */
-export function SettingsView({ assign = (url: string) => location.assign(url) }: { assign?: (url: string) => void }) {
+export function SettingsView({
+  assign = (url: string) => location.assign(url),
+}: {
+  assign?: (url: string) => void;
+}) {
   // Refetched on open: the role may have changed since boot.
   const refetched = useQuery(bootQueries.profile);
   const profile = useProfile();
@@ -40,7 +51,13 @@ export function SettingsView({ assign = (url: string) => location.assign(url) }:
             <KeyValue label="Email">{profile.email}</KeyValue>
             <KeyValue label="Role">{profile.role}</KeyValue>
             <KeyValue label="Last sign-in">
-              {profile.last_login ? <span title={dateTime(profile.last_login)}>{relativeTime(profile.last_login, now)}</span> : "never"}
+              {profile.last_login ? (
+                <span title={dateTime(profile.last_login)}>
+                  {relativeTime(profile.last_login, now)}
+                </span>
+              ) : (
+                "never"
+              )}
             </KeyValue>
           </Section>
           <AliasesSection />
@@ -63,23 +80,42 @@ function ThemeSection() {
     <Section title="Appearance">
       <div className="st-row">
         <label htmlFor="appearance-skin">Skin</label>
-        <select id="appearance-skin" className="st-theme" value={skin} onChange={(event) => {
-          chooseSkin(event.target.value as Skin);
-        }}>
-          {SKINS.map((each) => <option key={each.skin} value={each.skin}>{each.label}</option>)}
+        <select
+          id="appearance-skin"
+          className="st-theme"
+          value={skin}
+          onChange={(event) => {
+            chooseSkin(event.target.value as Skin);
+          }}
+        >
+          {SKINS.map((each) => (
+            <option key={each.skin} value={each.skin}>
+              {each.label}
+            </option>
+          ))}
         </select>
       </div>
       <div className="st-row">
         <label htmlFor="appearance-theme">Theme</label>
-        <select id="appearance-theme" className="st-theme" value={theme} disabled={fixed}
-          aria-describedby={fixed ? "appearance-theme-note" : undefined} onChange={(event) => {
+        <select
+          id="appearance-theme"
+          className="st-theme"
+          value={theme}
+          disabled={fixed}
+          aria-describedby={fixed ? "appearance-theme-note" : undefined}
+          onChange={(event) => {
             chooseTheme(event.target.value as ThemePreference);
-          }}>
+          }}
+        >
           <option value="dark">Dark</option>
           <option value="light">Light</option>
           <option value="system">System</option>
         </select>
-        {fixed && <span id="appearance-theme-note" className="muted">The theme colours the Default skin only.</span>}
+        {fixed && (
+          <span id="appearance-theme-note" className="muted">
+            The theme colours the Default skin only.
+          </span>
+        )}
       </div>
     </Section>
   );
@@ -92,7 +128,13 @@ function SessionSection({ assign }: { assign: (url: string) => void }) {
   return (
     <Section title="Session">
       <div className="st-row">
-        <button type="button" className="btn ghost" disabled={!online} aria-disabled={pending || undefined} onClick={() => void leave()}>
+        <button
+          type="button"
+          className="btn ghost"
+          disabled={!online}
+          aria-disabled={pending || undefined}
+          onClick={() => void leave()}
+        >
           Sign out
         </button>
         {pending ? (
@@ -103,7 +145,10 @@ function SessionSection({ assign }: { assign: (url: string) => void }) {
         {failure ? (
           <span className="form-err" role="alert">
             Could not sign out. {failure.message}
-            <CopyDetails message={`Could not sign out. ${failure.message}`} error={failure.error} />
+            <CopyDetails
+              message={`Could not sign out. ${failure.message}`}
+              error={failure.error}
+            />
           </span>
         ) : null}
       </div>

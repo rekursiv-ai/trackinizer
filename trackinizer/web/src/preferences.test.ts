@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { stubFetch } from "./api/testing";
-import { adoptLegacyPreferences, choosePreferences, choosePreferencesSoon, DEFAULT_PREFERENCES, PAUSE_MS, type Preferences, preferences, receivePreferences, sendWaiting, subscribePreferences } from "./preferences";
+import {
+  adoptLegacyPreferences,
+  choosePreferences,
+  choosePreferencesSoon,
+  DEFAULT_PREFERENCES,
+  PAUSE_MS,
+  type Preferences,
+  preferences,
+  receivePreferences,
+  sendWaiting,
+  subscribePreferences,
+} from "./preferences";
+import { must } from "./must";
 
 const DEFAULTS = DEFAULT_PREFERENCES;
 
@@ -13,12 +25,13 @@ afterEach(() => {
 function server(stored: Preferences = DEFAULTS) {
   let kept = stored;
   return stubFetch(async (request) => {
-    kept = { ...kept, ...(await request.json() as Partial<Preferences>) };
+    kept = { ...kept, ...((await request.json()) as Partial<Preferences>) };
     return Response.json(kept);
   });
 }
 
-const patches = (sent: ReturnType<typeof stubFetch>) => sent.map(({ method, path, body }) => [method, path, body]);
+const patches = (sent: ReturnType<typeof stubFetch>) =>
+  sent.map(({ method, path, body }) => [method, path, body]);
 
 test("the defaults show until the profile brings the user's; a profile without them, from an older server, leaves them", () => {
   expect(DEFAULTS.chat_provider).toBe("assistant");
@@ -35,19 +48,21 @@ test("a change shows at once, is sent as only its keys, and the server's answer 
   const kept = choosePreferences({ theme: "system" });
   expect(preferences().theme).toBe("system");
   expect(await kept).toBe(true);
-  expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", { theme: "system" }]]);
+  expect(patches(sent)).toEqual([
+    ["PATCH", "/api/me/preferences", { theme: "system" }],
+  ]);
   // The server held a side this page had not read yet: its answer brings it.
   expect(preferences()).toEqual({ ...DEFAULTS, theme: "system", chat_side: "right" });
 });
 
 test("a profile read while a change is on its way does not undo it", async () => {
-  let answer: ((response: Response) => void) | null = null;
-  stubFetch(() => new Promise<Response>((resolve) => (answer = resolve)));
+  const answers: ((response: Response) => void)[] = [];
+  stubFetch(() => new Promise<Response>((resolve) => answers.push(resolve)));
   const kept = choosePreferences({ chat_side: "right" });
   receivePreferences(DEFAULTS);
   expect(preferences().chat_side).toBe("right");
-  await vi.waitFor(() => expect(answer).not.toBeNull(), { interval: 1 });
-  answer!(Response.json({ ...DEFAULTS, chat_side: "right" }));
+  await vi.waitFor(() => expect(answers).toHaveLength(1), { interval: 1 });
+  must(answers[0])(Response.json({ ...DEFAULTS, chat_side: "right" }));
   expect(await kept).toBe(true);
   expect(preferences().chat_side).toBe("right");
 });
@@ -68,12 +83,27 @@ test("what this browser kept before is sent once, then forgotten", async () => {
   localStorage.setItem("trackinizer.v2.highlight-mentions.grace@example.com", "off");
   const sent = server();
   await adoptLegacyPreferences("ada@example.com");
-  expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", {
-    theme: "light", chat_side: "right", highlight_mentions: false,
-  }]]);
-  expect(preferences()).toEqual({ ...DEFAULTS, theme: "light", chat_side: "right", highlight_mentions: false });
+  expect(patches(sent)).toEqual([
+    [
+      "PATCH",
+      "/api/me/preferences",
+      {
+        theme: "light",
+        chat_side: "right",
+        highlight_mentions: false,
+      },
+    ],
+  ]);
+  expect(preferences()).toEqual({
+    ...DEFAULTS,
+    theme: "light",
+    chat_side: "right",
+    highlight_mentions: false,
+  });
   // Another user's switch on this browser is theirs to send.
-  expect(Object.keys(localStorage)).toEqual(["trackinizer.v2.highlight-mentions.grace@example.com"]);
+  expect(Object.keys(localStorage)).toEqual([
+    "trackinizer.v2.highlight-mentions.grace@example.com",
+  ]);
   await adoptLegacyPreferences("ada@example.com");
   expect(sent).toHaveLength(1);
 });
@@ -98,7 +128,11 @@ test("a profile from a server older than a key leaves that key's default", () =>
 });
 
 test("a key an older server still sends, as the retired chat_style, is dropped and breaks nothing", async () => {
-  receivePreferences({ ...DEFAULTS, theme: "light", chat_style: "terminal" } as Partial<Preferences>);
+  receivePreferences({
+    ...DEFAULTS,
+    theme: "light",
+    chat_style: "terminal",
+  } as Partial<Preferences>);
   expect(preferences().theme).toBe("light");
   expect("chat_style" in preferences()).toBe(false);
   server({ ...DEFAULTS, chat_style: "terminal", chat_side: "right" } as Preferences);
@@ -120,17 +154,22 @@ test("a value equal to the one shown keeps its object, so what reads only that k
 
 test("changes sent one after another reach the server in the order they were chosen", async () => {
   const answers: ((response: Response) => void)[] = [];
-  const sent = stubFetch(() => new Promise<Response>((resolve) => answers.push(resolve)));
+  const sent = stubFetch(
+    () => new Promise<Response>((resolve) => answers.push(resolve)),
+  );
   const first = choosePreferences({ stars: ["a"] });
   const second = choosePreferences({ stars: ["a", "b"] });
   await vi.waitFor(() => expect(answers).toHaveLength(1), { interval: 1 });
   // The second waits for the first's answer.
   expect(sent).toHaveLength(1);
-  answers[0]!(Response.json({ ...DEFAULTS, stars: ["a"] }));
+  must(answers[0])(Response.json({ ...DEFAULTS, stars: ["a"] }));
   await vi.waitFor(() => expect(answers).toHaveLength(2), { interval: 1 });
-  answers[1]!(Response.json({ ...DEFAULTS, stars: ["a", "b"] }));
+  must(answers[1])(Response.json({ ...DEFAULTS, stars: ["a", "b"] }));
   expect([await first, await second]).toEqual([true, true]);
-  expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", { stars: ["a"] }], ["PATCH", "/api/me/preferences", { stars: ["a", "b"] }]]);
+  expect(patches(sent)).toEqual([
+    ["PATCH", "/api/me/preferences", { stars: ["a"] }],
+    ["PATCH", "/api/me/preferences", { stars: ["a", "b"] }],
+  ]);
   expect(preferences().stars).toEqual(["a", "b"]);
 });
 
@@ -156,7 +195,13 @@ describe("a change made as the user types", () => {
     await vi.advanceTimersByTimeAsync(PAUSE_MS - 1);
     expect(sent).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
-    expect(patches(sent)).toEqual([["PATCH", "/api/me/preferences", { drafts: { a: { text: "hi!", base: null } }, lens: "graph" }]]);
+    expect(patches(sent)).toEqual([
+      [
+        "PATCH",
+        "/api/me/preferences",
+        { drafts: { a: { text: "hi!", base: null } }, lens: "graph" },
+      ],
+    ]);
     expect(sent).toHaveLength(1);
   });
 
@@ -186,7 +231,7 @@ describe("a change made as the user types", () => {
     choosePreferencesSoon({ lens: "graph" });
     dispatchEvent(new Event("pagehide"));
     await vi.waitFor(() => expect(requests).toHaveLength(1), { interval: 1 });
-    expect(requests[0]!.keepalive).toBe(true);
+    expect(must(requests[0]).keepalive).toBe(true);
     await vi.advanceTimersByTimeAsync(PAUSE_MS);
     expect(requests).toHaveLength(1);
   });

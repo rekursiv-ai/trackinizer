@@ -1,5 +1,6 @@
 import { type CallOptions, client, send, TIMEOUT_MS } from "./client";
 import { inquiryKinds } from "./inquiries";
+import { must } from "../must";
 
 /**
  * One inquiry as `/api/web/get` gives it: the `GET /api/inquiries/{id}` object
@@ -85,9 +86,15 @@ export type Detail = {
 };
 
 /** Fetch `GET /api/web/get/{id}`: the row, its edges both ways, and its last 50 changes. */
-export async function getDetail(id: string, { signal }: CallOptions = {}): Promise<Detail> {
+export async function getDetail(
+  id: string,
+  { signal }: CallOptions = {},
+): Promise<Detail> {
   const detail = await send(TIMEOUT_MS.read, signal, (signal) =>
-    client.GET("/api/web/get/{target_id}", { params: { path: { target_id: id } }, signal }),
+    client.GET("/api/web/get/{target_id}", {
+      params: { path: { target_id: id } },
+      signal,
+    }),
   );
   return detail as Detail;
 }
@@ -99,10 +106,17 @@ export async function getDetail(id: string, { signal }: CallOptions = {}): Promi
  * first. A missing row is an `ApiError` with status 404; a kind this build does
  * not know throws before asking (`inquiryKinds`).
  */
-export async function findRef(kind: string, seq: number, { signal }: CallOptions = {}): Promise<string> {
+export async function findRef(
+  kind: string,
+  seq: number,
+  { signal }: CallOptions = {},
+): Promise<string> {
   const [one] = inquiryKinds([kind]);
   const row = await send(TIMEOUT_MS.read, signal, (signal) =>
-    client.GET("/api/inquiries/{kind}/{seq}", { params: { path: { kind: one!, seq } }, signal }),
+    client.GET("/api/inquiries/{kind}/{seq}", {
+      params: { path: { kind: must(one), seq } },
+      signal,
+    }),
   );
   // The route answers with the whole row (`get_inquiry`), typed as free JSON.
   const { id } = row as { id?: unknown };
@@ -116,7 +130,10 @@ export async function findRef(kind: string, seq: number, { signal }: CallOptions
  * It folds the currently-true `proves` edges; `favors` never count. It is not
  * the author's stored `confidence`. Any other kind is an `ApiError` with status 404.
  */
-export async function getEvidenceConfidence(id: string, { signal }: CallOptions = {}): Promise<number> {
+export async function getEvidenceConfidence(
+  id: string,
+  { signal }: CallOptions = {},
+): Promise<number> {
   const body = await send(TIMEOUT_MS.read, signal, (signal) =>
     client.GET("/api/inquiries/{target_id}/confidence", {
       params: { path: { target_id: id } },

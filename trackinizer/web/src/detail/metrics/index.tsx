@@ -37,7 +37,10 @@ function ExperimentMetrics({ id }: { id: string }) {
           Metrics {query.data ? <span className="count">{series.length}</span> : null}
         </h2>
         <span className="spacer" />
-        <Refresh queryKey={metricsQuery(id).queryKey} title="Metric writes do not refresh on their own" />
+        <Refresh
+          queryKey={metricsQuery(id).queryKey}
+          title="Metric writes do not refresh on their own"
+        />
       </div>
       {!query.data ? (
         query.isError ? (
@@ -51,10 +54,12 @@ function ExperimentMetrics({ id }: { id: string }) {
         <>
           {next && (
             <p className="metrics-note" role="note">
-              Truncated: the server returns at most {METRICS_PAGE_LIMIT.toLocaleString("en")} points, in key order.{" "}
+              Truncated: the server returns at most{" "}
+              {METRICS_PAGE_LIMIT.toLocaleString("en")} points, in key order.{" "}
               {partial ? (
                 <>
-                  Later points of <code>{next.key}</code> and any metric after it are not shown.
+                  Later points of <code>{next.key}</code> and any metric after it are
+                  not shown.
                 </>
               ) : (
                 <>
@@ -65,7 +70,11 @@ function ExperimentMetrics({ id }: { id: string }) {
           )}
           <div className="metrics">
             {series.map((one, index) => (
-              <Card key={one.key} series={one} partial={partial && index === series.length - 1} />
+              <Card
+                key={one.key}
+                series={one}
+                partial={partial && index === series.length - 1}
+              />
             ))}
           </div>
         </>
@@ -85,13 +94,31 @@ function Card({ series, partial }: { series: Series; partial: boolean }) {
       <span className="v" title={String(last)}>
         {formatValue(last)}
       </span>
-      <svg className="spark" width="220" height="44" viewBox="0 0 220 44" aria-hidden="true">
+      <svg
+        className="spark"
+        width="220"
+        height="44"
+        viewBox="0 0 220 44"
+        aria-hidden="true"
+      >
         <path d={spark.area} fill="var(--accent-hover)" opacity=".12" />
-        <path d={spark.line} fill="none" stroke="var(--accent-hover)" strokeWidth="1.5" strokeLinejoin="round" />
-        <circle cx={spark.end[0].toFixed(1)} cy={spark.end[1].toFixed(1)} r="2.6" fill="var(--accent-hover)" />
+        <path
+          d={spark.line}
+          fill="none"
+          stroke="var(--accent-hover)"
+          strokeWidth="1.5"
+          strokeLinejoin="round"
+        />
+        <circle
+          cx={spark.end[0].toFixed(1)}
+          cy={spark.end[1].toFixed(1)}
+          r="2.6"
+          fill="var(--accent-hover)"
+        />
       </svg>
       <span className="r">
-        {count} {count === 1 ? "point" : "points"} · {steps.length > 1 ? `steps ${steps[0]}–${steps.at(-1)}` : `step ${steps[0]}`}
+        {count} {count === 1 ? "point" : "points"} ·{" "}
+        {steps.length > 1 ? `steps ${steps[0]}–${steps.at(-1)}` : `step ${steps[0]}`}
         {min === max ? "" : ` · range ${formatValue(min)}–${formatValue(max)}`}
         {partial ? " · partial" : ""}
       </span>

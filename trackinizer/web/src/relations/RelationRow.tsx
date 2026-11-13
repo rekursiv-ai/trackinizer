@@ -46,8 +46,12 @@ export function RelationRow({
   const edge = relationEdge(detail.self.id, group, peer.id);
   const ref = refOf(peer);
   const what = `${group.label.toLowerCase()} ${ref}`;
-  const toggle = (panel: "annotate" | "remove") => setOpen(open === panel ? null : panel);
-  const buttons = { annotate: useRef<HTMLButtonElement>(null), remove: useRef<HTMLButtonElement>(null) };
+  const toggle = (panel: "annotate" | "remove") =>
+    setOpen(open === panel ? null : panel);
+  const buttons = {
+    annotate: useRef<HTMLButtonElement>(null),
+    remove: useRef<HTMLButtonElement>(null),
+  };
   // A panel closed from inside gives focus back to the button that opened it.
   const close = (panel: "annotate" | "remove") => () => {
     setOpen(null);
@@ -55,7 +59,11 @@ export function RelationRow({
   };
   return (
     <>
-      <li className="rel-row" onPointerOver={arm && ((event) => event.pointerType === "touch" || arm())} onFocus={arm}>
+      <li
+        className="rel-row"
+        onPointerOver={arm && ((event) => event.pointerType === "touch" || arm())}
+        onFocus={arm}
+      >
         {children}
         {mode === "hidden" ? null : (
           <span className="rel-actions" onClick={arm}>
@@ -151,7 +159,13 @@ function RemoveConfirm({
       aria-label={`Remove ${what}`}
       onSubmit={(event) => {
         event.preventDefault();
-        if (!pending) void writer.run(removeRelationEdit(edge, { done: `Removed: ${what}`, reason: reason.trim() }));
+        if (!pending)
+          void writer.run(
+            removeRelationEdit(edge, {
+              done: `Removed: ${what}`,
+              reason: reason.trim(),
+            }),
+          );
       }}
       onKeyDown={(event) => {
         if (event.key !== "Escape" || event.nativeEvent.isComposing) return;
@@ -165,9 +179,12 @@ function RemoveConfirm({
       </p>
       {kept ? (
         <p className="rc-kept" role="note">
-          {kept.from === detail.self.id ? `${self} stays produced by ${ref}` : `${ref} stays produced by ${self}`}. That
-          provenance relation is separate, and trackinizer may have added it when the first relation between the two was
-          drawn. Remove it on its own if it is wrong.
+          {kept.from === detail.self.id
+            ? `${self} stays produced by ${ref}`
+            : `${ref} stays produced by ${self}`}
+          . That provenance relation is separate, and trackinizer may have added it when
+          the first relation between the two was drawn. Remove it on its own if it is
+          wrong.
         </p>
       ) : null}
       <div className="rc-row">
@@ -182,7 +199,12 @@ function RemoveConfirm({
         <button type="button" className="btn ghost" onClick={onCancel} autoFocus>
           Cancel
         </button>
-        <WriteButton type="submit" className="btn danger" pending={pending} disabled={disabled}>
+        <WriteButton
+          type="submit"
+          className="btn danger"
+          pending={pending}
+          disabled={disabled}
+        >
           Remove
         </WriteButton>
       </div>
@@ -210,11 +232,17 @@ function AnnotatePanel({
   const { edges, fieldOwners } = useMeta();
   const offered = [
     ...new Set(
-      [...Object.values(detail.edges), ...Object.values(detail.backlinks)].flatMap((peers) => peers.flatMap((p) => p.labels ?? [])),
+      [...Object.values(detail.edges), ...Object.values(detail.backlinks)].flatMap(
+        (peers) => peers.flatMap((p) => p.labels ?? []),
+      ),
     ),
   ].sort((a, b) => a.localeCompare(b));
   return (
-    <div className="edge-edit" role="group" aria-label={`Annotations of ${label.toLowerCase()} ${refOf(peer)}`}>
+    <div
+      className="edge-edit"
+      role="group"
+      aria-label={`Annotations of ${label.toLowerCase()} ${refOf(peer)}`}
+    >
       <EdgeAnnotations
         edge={edge}
         annotations={peer}

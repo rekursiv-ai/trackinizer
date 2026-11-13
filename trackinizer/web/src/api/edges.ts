@@ -41,12 +41,17 @@ export type EdgeAnnotation = "note" | "valence" | "priority";
  * answers 400 to one that asks for it rather than overwrite blindly.
  */
 export type SetEdgeAnnotationBody<A extends EdgeAnnotation> = WithoutKeys<
-  NonNullable<paths[AnnotationPath<A>]["put"]>["requestBody"]["content"]["application/json"],
+  NonNullable<
+    paths[AnnotationPath<A>]["put"]
+  >["requestBody"]["content"]["application/json"],
   "actor" | "mode" | "expected"
 >;
 
 /** The body of a `PATCH` to an edge's labels: add or remove one label. */
-export type PatchEdgeLabelsBody = WithoutKeys<components["schemas"]["FieldOp_str_"], "actor">;
+export type PatchEdgeLabelsBody = WithoutKeys<
+  components["schemas"]["FieldOp_str_"],
+  "actor"
+>;
 
 /**
  * Add the edge with `POST`; the idempotency key goes in the header.
@@ -152,7 +157,8 @@ export async function removeEdge(
   return result as EdgeWrite;
 }
 
-type AnnotationPath<A extends EdgeAnnotation> = `/api/edges/{from_id}/{edge_kind}/{to_id}/${A}`;
+type AnnotationPath<A extends EdgeAnnotation> =
+  `/api/edges/{from_id}/{edge_kind}/{to_id}/${A}`;
 
 /** `Body` without `Keys`, which a caller then cannot send either; distributes over a union. */
 type WithoutKeys<Body, Keys extends string> = Body extends unknown
@@ -161,5 +167,9 @@ type WithoutKeys<Body, Keys extends string> = Body extends unknown
 
 function pathOf({ from, kind, to }: EdgeRef) {
   // Edge kinds come from `/api/meta/edges` at boot, so they are the server's own.
-  return { from_id: from, edge_kind: kind as components["schemas"]["trackinizer__types__edges__Kind"], to_id: to };
+  return {
+    from_id: from,
+    edge_kind: kind as components["schemas"]["trackinizer__types__edges__Kind"],
+    to_id: to,
+  };
 }

@@ -1,4 +1,5 @@
 import type { MetricPoint } from "../../api/metrics";
+import { must } from "../../must";
 
 /** One metric of an Experiment: its points in step order, and their summary. */
 export type Series = {
@@ -29,7 +30,7 @@ export function seriesOf(points: readonly MetricPoint[]): Series[] {
       key,
       steps: run.map((point) => point.step),
       values,
-      last: values.at(-1)!,
+      last: must(values.at(-1)),
       min: Math.min(...values),
       max: Math.max(...values),
     };
@@ -37,7 +38,11 @@ export function seriesOf(points: readonly MetricPoint[]): Series[] {
 }
 
 /** A sparkline's line, the area under it, and its last point, in SVG units. */
-export type Spark = { readonly line: string; readonly area: string; readonly end: readonly [number, number] };
+export type Spark = {
+  readonly line: string;
+  readonly area: string;
+  readonly end: readonly [number, number];
+};
 
 /**
  * Draw `series` in a `width` by `height` box, as the mock's `spark()` does:
@@ -47,22 +52,33 @@ export type Spark = { readonly line: string; readonly area: string; readonly end
  * Points sit at their steps, so a run logged at uneven steps keeps its shape. A
  * flat series draws across the middle; a single point sits in the centre.
  */
-export function sparkOf(series: Pick<Series, "steps" | "values">, width: number, height: number): Spark {
+export function sparkOf(
+  series: Pick<Series, "steps" | "values">,
+  width: number,
+  height: number,
+): Spark {
   const { steps, values } = series;
-  const [first, last] = [steps[0]!, steps.at(-1)!];
+  const [first, last] = [must(steps[0]), must(steps.at(-1))];
   const [low, high] = [Math.min(...values), Math.max(...values)];
   // Values scale by half when the range overflows (1e308 - -1e308 is Infinity,
   // and Infinity / Infinity is NaN). Halving a double that large is exact.
   const half = Number.isFinite(high - low) ? 1 : 0.5;
-  const x = (step: number) => (last === first ? width / 2 : 2 + ((step - first) / (last - first)) * (width - 6));
+  const x = (step: number) =>
+    last === first ? width / 2 : 2 + ((step - first) / (last - first)) * (width - 6);
   const y = (value: number) =>
-    high === low ? height / 2 : height - 3 - ((value * half - low * half) / (high * half - low * half)) * (height - 7);
-  const points = steps.map((step, index) => [x(step), y(values[index]!)] as const);
-  const line = points.map(([px, py], index) => `${index ? "L" : "M"}${px.toFixed(1)} ${py.toFixed(1)}`).join("");
-  const end = points.at(-1)!;
+    high === low
+      ? height / 2
+      : height -
+        3 -
+        ((value * half - low * half) / (high * half - low * half)) * (height - 7);
+  const points = steps.map((step, index) => [x(step), y(must(values[index]))] as const);
+  const line = points
+    .map(([px, py], index) => `${index ? "L" : "M"}${px.toFixed(1)} ${py.toFixed(1)}`)
+    .join("");
+  const end = must(points.at(-1));
   return {
     line,
-    area: `${line}L${end[0].toFixed(1)} ${height}L${points[0]![0].toFixed(1)} ${height}Z`,
+    area: `${line}L${end[0].toFixed(1)} ${height}L${must(points[0])[0].toFixed(1)} ${height}Z`,
     end,
   };
 }

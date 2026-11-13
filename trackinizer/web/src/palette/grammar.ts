@@ -1,4 +1,5 @@
 import { parseSeq, type Route } from "../router/route";
+import { must } from "../must";
 
 /** The text a search reads on an inquiry; `undefined` when the palette never loaded it. */
 export type Searchable = {
@@ -26,11 +27,14 @@ export type Searchable = {
  */
 export function parseSearch(q: string): (row: Searchable) => boolean {
   const tokens = tokenize(q);
-  if (tokens === null || tokens.length === 0 || tokens.some(isFieldTerm)) return () => false;
+  if (tokens === null || tokens.length === 0 || tokens.some(isFieldTerm))
+    return () => false;
   const needles = tokens.map((token) => token.toLowerCase());
   return (row) =>
     needles.every(
-      (needle) => row.title.toLowerCase().includes(needle) || (row.description ?? "").toLowerCase().includes(needle),
+      (needle) =>
+        row.title.toLowerCase().includes(needle) ||
+        (row.description ?? "").toLowerCase().includes(needle),
     );
 }
 
@@ -48,11 +52,13 @@ export function jumpsFor(q: string, kinds: readonly string[]): InquiryRoute[] {
   const ref = /^([a-z]+)\s*#\s*(\d+)$/i.exec(text);
   if (!ref) return [];
   const [, name, digits] = ref;
-  const seq = parseSeq(digits!);
+  const seq = parseSeq(must(digits));
   if (seq === null) return [];
-  const typed = name!.toLowerCase();
+  const typed = must(name).toLowerCase();
   const exact = kinds.filter((kind) => kind.toLowerCase() === typed);
-  const named = exact.length ? exact : kinds.filter((kind) => kind.toLowerCase().startsWith(typed));
+  const named = exact.length
+    ? exact
+    : kinds.filter((kind) => kind.toLowerCase().startsWith(typed));
   return named.map((kind) => ({ name: "ref", kind, seq }));
 }
 

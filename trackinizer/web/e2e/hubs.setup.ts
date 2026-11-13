@@ -14,7 +14,10 @@ setup("the hubs the detail specs read", async ({ request }) => {
   setup.setTimeout(120_000);
   const post = async (items: object[], edges: object[]) => {
     const response = await request.post("/api/inquiries/batch", {
-      data: { items: items.map((item) => ({ ...item, idempotency_key: crypto.randomUUID() })), edges },
+      data: {
+        items: items.map((item) => ({ ...item, idempotency_key: crypto.randomUUID() })),
+        edges,
+      },
     });
     expect(response.ok(), await response.text()).toBe(true);
     return ((await response.json()) as { ids: string[] }).ids;
@@ -22,12 +25,21 @@ setup("the hubs the detail specs read", async ({ request }) => {
 
   // detail.spec.ts: one hub, one of whose children also narrows a second parent,
   // and a Belief with a proving Paper.
-  const issue = (title: string, extra: object = {}) => ({ kind: "Issue", title, ...extra });
-  const [second, belief, paper] = [DETAIL_CHILDREN + 1, DETAIL_CHILDREN + 2, DETAIL_CHILDREN + 3];
+  const issue = (title: string, extra: object = {}) => ({
+    kind: "Issue",
+    title,
+    ...extra,
+  });
+  const [second, belief, paper] = [
+    DETAIL_CHILDREN + 1,
+    DETAIL_CHILDREN + 2,
+    DETAIL_CHILDREN + 3,
+  ];
   const detail = await post(
     [
       issue("Detail hub", {
-        description: "See Belief#1, [the plan](https://example.com/plan) and `Issue#1` in code.",
+        description:
+          "See Belief#1, [the plan](https://example.com/plan) and `Issue#1` in code.",
         priority: 10,
       }),
       ...Array.from({ length: DETAIL_CHILDREN }, (_, k) => issue(`Hub child ${k}`)),
@@ -55,12 +67,23 @@ setup("the hubs the detail specs read", async ({ request }) => {
   const tag = String(crypto.getRandomValues(new Uint32Array(1))[0]);
   const [perf] = await post(
     [
-      { kind: "Issue", title: `Perf hub ${tag}`, description: "A hub with **many** children." },
-      ...Array.from({ length: PERF_CHILDREN }, (_, n) => ({ kind: "Issue", title: `Perf child ${n} ${tag}` })),
+      {
+        kind: "Issue",
+        title: `Perf hub ${tag}`,
+        description: "A hub with **many** children.",
+      },
+      ...Array.from({ length: PERF_CHILDREN }, (_, n) => ({
+        kind: "Issue",
+        title: `Perf child ${n} ${tag}`,
+      })),
       { kind: "Artifact", title: `Perf artifact ${tag}` },
     ],
     [
-      ...Array.from({ length: PERF_CHILDREN }, (_, n) => ({ from_index: n + 1, to_index: 0, edge_kind: "narrows" })),
+      ...Array.from({ length: PERF_CHILDREN }, (_, n) => ({
+        from_index: n + 1,
+        to_index: 0,
+        edge_kind: "narrows",
+      })),
       { from_index: PERF_CHILDREN + 1, to_index: 0, edge_kind: "produced_by" },
     ],
   );

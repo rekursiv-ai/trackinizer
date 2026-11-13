@@ -1,9 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
-import { deleteUser, disableUser, enableUser, setUserRole, type User } from "../api/admin";
+import {
+  deleteUser,
+  disableUser,
+  enableUser,
+  setUserRole,
+  type User,
+} from "../api/admin";
 import { useProfile } from "../app/boot";
 import { dateTime, relativeTime, useMinuteClock } from "../detail/time";
-import { accountEdit, ConfirmDialog, ReadError, RoleCell, Section, useAccountWriter } from "../settings/account";
+import {
+  accountEdit,
+  ConfirmDialog,
+  ReadError,
+  RoleCell,
+  Section,
+  useAccountWriter,
+} from "../settings/account";
 import { useOnline } from "../ui/bars";
 import { Avatar } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
@@ -27,7 +40,9 @@ export function UsersSection() {
     <Section title="Users">
       <ReadError read={users} />
       {users.data === undefined ? (
-        users.isError ? null : <p className="st-note">Loading…</p>
+        users.isError ? null : (
+          <p className="st-note">Loading…</p>
+        )
       ) : (
         <table className="st-t">
           <thead>
@@ -83,7 +98,12 @@ function UserRow({ user, now }: { user: User; now: number }) {
             ceiling={me.role}
             disabled={!online}
             writer={roleWriter}
-            edit={(role) => accountEdit(() => setUserRole(user.id, role), `${who}: role set to ${role}`)}
+            edit={(role) =>
+              accountEdit(
+                () => setUserRole(user.id, role),
+                `${who}: role set to ${role}`,
+              )
+            }
           />
         )}
         {user.staff ? (
@@ -106,7 +126,13 @@ function UserRow({ user, now }: { user: User; now: number }) {
         ) : (
           <>
             {active ? (
-              <button type="button" className="btn ghost" disabled={!online} aria-label={`Disable ${user.email}`} onClick={() => setAsking("disable")}>
+              <button
+                type="button"
+                className="btn ghost"
+                disabled={!online}
+                aria-label={`Disable ${user.email}`}
+                onClick={() => setAsking("disable")}
+              >
                 Disable
               </button>
             ) : (
@@ -116,7 +142,11 @@ function UserRow({ user, now }: { user: User; now: number }) {
                 disabled={!online}
                 aria-label={`Enable ${user.email}`}
                 aria-disabled={unsettled(statusWriter.state) || undefined}
-                onClick={() => void statusWriter.run(accountEdit(() => enableUser(user.id), `Enabled ${who}`))}
+                onClick={() =>
+                  void statusWriter.run(
+                    accountEdit(() => enableUser(user.id), `Enabled ${who}`),
+                  )
+                }
               >
                 Enable
               </button>
@@ -140,11 +170,15 @@ function UserRow({ user, now }: { user: User; now: number }) {
             confirm="Disable"
             writer={statusWriter}
             disabled={!online}
-            onConfirm={() => statusWriter.run(accountEdit(() => disableUser(user.id), `Disabled ${who}`))}
+            onConfirm={() =>
+              statusWriter.run(
+                accountEdit(() => disableUser(user.id), `Disabled ${who}`),
+              )
+            }
             onClose={() => setAsking(null)}
           >
-            {user.email} can no longer sign in, and every token they hold is revoked. Enabling them again lets them sign in, but
-            does not bring the tokens back.
+            {user.email} can no longer sign in, and every token they hold is revoked.
+            Enabling them again lets them sign in, but does not bring the tokens back.
           </ConfirmDialog>
         ) : null}
         {asking === "delete" ? (
@@ -153,11 +187,14 @@ function UserRow({ user, now }: { user: User; now: number }) {
             confirm="Delete user"
             writer={deleteWriter}
             disabled={!online}
-            onConfirm={() => deleteWriter.run(accountEdit(() => deleteUser(user.id), `Deleted ${who}`))}
+            onConfirm={() =>
+              deleteWriter.run(accountEdit(() => deleteUser(user.id), `Deleted ${who}`))
+            }
             onClose={() => setAsking(null)}
           >
-            {user.email} and their tokens are deleted, which cannot be undone. Changes they made keep their name. If the
-            allowlist still lets them in, their next sign-in makes a new user.
+            {user.email} and their tokens are deleted, which cannot be undone. Changes
+            they made keep their name. If the allowlist still lets them in, their next
+            sign-in makes a new user.
           </ConfirmDialog>
         ) : null}
       </td>
@@ -166,4 +203,5 @@ function UserRow({ user, now }: { user: User; now: number }) {
 }
 
 /** What the "staff" chip means, as its tooltip. */
-const STAFF_TITLE = "Staff: reads staff-only sessions. Set by the deployment's STAFF setting, not here.";
+const STAFF_TITLE =
+  "Staff: reads staff-only sessions. Set by the deployment's STAFF setting, not here.";

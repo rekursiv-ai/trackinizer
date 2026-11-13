@@ -7,14 +7,28 @@ import type { Profile } from "../api/me";
 import { type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
-import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
+import {
+  CommandRegistry,
+  CommandRegistryContext,
+  Shortcuts,
+} from "../commands/registry";
 import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import { RouterProvider } from "../router/router";
 import { ToastProvider } from "../ui/toast";
 import { DetailView, type DetailTarget } from ".";
 
-const ALL_KINDS = ["Issue", "Artifact", "Experiment", "Paper", "Belief", "CodeChange", "WebResult", "WebSearch", "AgentSession"];
+const ALL_KINDS = [
+  "Issue",
+  "Artifact",
+  "Experiment",
+  "Paper",
+  "Belief",
+  "CodeChange",
+  "WebResult",
+  "WebSearch",
+  "AgentSession",
+];
 const ARTIFACTS = ALL_KINDS.filter((kind) => kind !== "Issue");
 
 /** The server's vocabulary, as the local preview's `/api/meta/*` returned it on 2026-09-26. */
@@ -24,8 +38,23 @@ export const META: Meta = {
     status: ["active", "complete", "stopped", "abandoned", "invalid"],
     judgement: ["proven", "disproven", "unproven", "undecidable"],
     issue_kind: ["feature", "bug", "task", "question"],
-    publication_type: ["article", "inproceedings", "book", "thesis", "techreport", "misc"],
-    edge_kind: ["narrows", "requires", "produced_by", "proves", "favors", "supersedes", "cites_paper"],
+    publication_type: [
+      "article",
+      "inproceedings",
+      "book",
+      "thesis",
+      "techreport",
+      "misc",
+    ],
+    edge_kind: [
+      "narrows",
+      "requires",
+      "produced_by",
+      "proves",
+      "favors",
+      "supersedes",
+      "cites_paper",
+    ],
     inquiry_kind_all: ALL_KINDS,
   },
   fieldOwners: {
@@ -57,18 +86,59 @@ export const META: Meta = {
     opened_by_api_key_id: "agentsession",
   },
   edges: {
-    narrows: { from_kinds: ["Issue"], to_kinds: ["Issue"], forward: "narrows", inverse: "narrowed_by" },
-    requires: { from_kinds: ["Issue"], to_kinds: ["Issue"], forward: "requires", inverse: "required_by" },
-    produced_by: { from_kinds: ALL_KINDS, to_kinds: ALL_KINDS, forward: "produced_by", inverse: "produces" },
-    proves: { from_kinds: ARTIFACTS, to_kinds: ["Belief", "Experiment"], forward: "proves", inverse: "proved_by" },
-    favors: { from_kinds: ARTIFACTS, to_kinds: ["Belief", "Experiment"], forward: "favors", inverse: "favored_by" },
-    supersedes: { from_kinds: ALL_KINDS, to_kinds: ALL_KINDS, forward: "supersedes", inverse: "superseded_by" },
-    cites_paper: { from_kinds: ["Paper"], to_kinds: ["Paper"], forward: "cites", inverse: "cited_by" },
+    narrows: {
+      from_kinds: ["Issue"],
+      to_kinds: ["Issue"],
+      forward: "narrows",
+      inverse: "narrowed_by",
+    },
+    requires: {
+      from_kinds: ["Issue"],
+      to_kinds: ["Issue"],
+      forward: "requires",
+      inverse: "required_by",
+    },
+    produced_by: {
+      from_kinds: ALL_KINDS,
+      to_kinds: ALL_KINDS,
+      forward: "produced_by",
+      inverse: "produces",
+    },
+    proves: {
+      from_kinds: ARTIFACTS,
+      to_kinds: ["Belief", "Experiment"],
+      forward: "proves",
+      inverse: "proved_by",
+    },
+    favors: {
+      from_kinds: ARTIFACTS,
+      to_kinds: ["Belief", "Experiment"],
+      forward: "favors",
+      inverse: "favored_by",
+    },
+    supersedes: {
+      from_kinds: ALL_KINDS,
+      to_kinds: ALL_KINDS,
+      forward: "supersedes",
+      inverse: "superseded_by",
+    },
+    cites_paper: {
+      from_kinds: ["Paper"],
+      to_kinds: ["Paper"],
+      forward: "cites",
+      inverse: "cited_by",
+    },
   },
 };
 
 /** The signed-in user the detail renders for: a writer, so its editors show. */
-export const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null };
+export const PROFILE: Profile = {
+  user_id: "u1",
+  email: "ada@example.com",
+  name: "Ada",
+  role: "writer",
+  last_login: null,
+};
 
 /** A stable, distinct UUID for test number `n`. */
 export function uuid(n: number): string {
@@ -79,7 +149,11 @@ export function uuid(n: number): string {
  * A row as `/api/web/get` sends one since fix R17 (8ef72ccfeb): every field of
  * the kind present, `null` when unset, then `fields` set.
  */
-export function row(kind: string, seq: number, fields: { [field: string]: unknown } = {}): DetailRow {
+export function row(
+  kind: string,
+  seq: number,
+  fields: { [field: string]: unknown } = {},
+): DetailRow {
   return {
     id: uuid(seq),
     kind,
@@ -122,12 +196,26 @@ const KIND_KEYS: { readonly [kind: string]: readonly string[] } = {
   CodeChange: ["sha"],
   WebResult: ["url"],
   WebSearch: ["provider", "query"],
-  AgentSession: ["cli", "cli_session_id", "ended", "opened_by_api_key_id", "rooms", "started"],
+  AgentSession: [
+    "cli",
+    "cli_session_id",
+    "ended",
+    "opened_by_api_key_id",
+    "rooms",
+    "started",
+  ],
 };
 
 /** A neighbour across one edge. */
 export function peer(kind: string, seq: number, annotations: Partial<Peer> = {}): Peer {
-  return { id: uuid(seq), kind, seq, title: `${kind} number ${seq}`, status: "active", ...annotations };
+  return {
+    id: uuid(seq),
+    kind,
+    seq,
+    title: `${kind} number ${seq}`,
+    status: "active",
+    ...annotations,
+  };
 }
 
 /**
@@ -151,7 +239,10 @@ export function change(subject: DetailRow, n: number, fields: Partial<Change>): 
 }
 
 /** A whole `/api/web/get` answer around `self`. */
-export function detail(self: DetailRow, parts: Partial<Omit<Detail, "self">> = {}): Detail {
+export function detail(
+  self: DetailRow,
+  parts: Partial<Omit<Detail, "self">> = {},
+): Detail {
   return { self, edges: {}, backlinks: {}, changes: [], ...parts };
 }
 
@@ -164,8 +255,10 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
     const path = new URL(request.url).pathname;
     for (const { self, ...rest } of details) {
       if (path === `/api/web/get/${self.id}`) return Response.json({ self, ...rest });
-      if (path === `/api/inquiries/${self.kind}/${self.seq}`) return Response.json({ id: self.id, kind: self.kind });
-      if (path === `/api/inquiries/${self.id}/confidence`) return Response.json({ confidence });
+      if (path === `/api/inquiries/${self.kind}/${self.seq}`)
+        return Response.json({ id: self.id, kind: self.kind });
+      if (path === `/api/inquiries/${self.id}/confidence`)
+        return Response.json({ confidence });
     }
     return Response.json({ detail: "not found" }, { status: 404 });
   });

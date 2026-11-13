@@ -39,7 +39,8 @@ export function RouterProvider({
   const route = useMemo(() => parseHash(hash, kinds), [hash, kinds]);
   const canonical = formatRoute(route);
   useLayoutEffect(() => {
-    if (canonical !== hash || location.hash.startsWith("#/")) navigate(route, { replace: true });
+    if (canonical !== hash || location.hash.startsWith("#/"))
+      navigate(route, { replace: true });
     else log("info", "navigate", routeFields(route));
   }, [canonical, hash, route]);
   const router = useMemo(() => ({ route, navigate }), [route]);

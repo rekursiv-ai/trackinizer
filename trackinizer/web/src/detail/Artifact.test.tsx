@@ -2,9 +2,18 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
-import { ArtifactContent, ArtifactFrame, ArtifactPage, type ArtifactContentRevision } from "./Artifact";
+import {
+  ArtifactContent,
+  ArtifactFrame,
+  ArtifactPage,
+  type ArtifactContentRevision,
+} from "./Artifact";
+import { must } from "../must";
 
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 const structuredArtifact: ArtifactContentRevision = {
   revision: 3,
@@ -17,51 +26,64 @@ const structuredArtifact: ArtifactContentRevision = {
   scope: "team",
   citations: [],
   format: "structured",
-  sections: [{
-    title: "Representation",
-    summary: "The wider representation performed best.",
-    details: "Matched runs across the frozen test split.",
-    findings: [{
-      claim: "Wider features improve score",
-      outcome: { result: "12 wins", denominator: 16, split: "held-out" },
-      uncertainty: "The sample is small.",
-      citations: [{
-        record_id: "belief-1",
-        kind: "Belief",
-        seq: 467,
-        title: "Feature adds lift",
-        edge_kind: "proves",
-        valence: 0.8,
-        note: "Matched seed comparison",
-      }, {
-        record_id: "belief-2",
-        kind: "Belief",
-        seq: 450,
-        title: "Possible confound",
-        edge_kind: "favors",
-        valence: -0.5,
-      }],
-    }],
-  }],
+  sections: [
+    {
+      title: "Representation",
+      summary: "The wider representation performed best.",
+      details: "Matched runs across the frozen test split.",
+      findings: [
+        {
+          claim: "Wider features improve score",
+          outcome: { result: "12 wins", denominator: 16, split: "held-out" },
+          uncertainty: "The sample is small.",
+          citations: [
+            {
+              record_id: "belief-1",
+              kind: "Belief",
+              seq: 467,
+              title: "Feature adds lift",
+              edge_kind: "proves",
+              valence: 0.8,
+              note: "Matched seed comparison",
+            },
+            {
+              record_id: "belief-2",
+              kind: "Belief",
+              seq: 450,
+              title: "Possible confound",
+              edge_kind: "favors",
+              valence: -0.5,
+            },
+          ],
+        },
+      ],
+    },
+  ],
 };
 
 test("keeps section details closed while summaries and citation links stay visible", () => {
   render(<ArtifactContent artifact={structuredArtifact} />);
 
   expect(screen.getByRole("heading", { name: "Scaling directions" })).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Link to this Artifact" }).getAttribute("href"))
-    .toBe("/trax/lookup/artifact-1");
+  expect(
+    screen.getByRole("link", { name: "Link to this Artifact" }).getAttribute("href"),
+  ).toBe("/trax/lookup/artifact-1");
   expect(screen.getByText("The wider representation performed best.")).toBeTruthy();
   expect(screen.getByText("12 wins · n=16 · held-out")).toBeTruthy();
   expect(screen.getByText("Section details").closest("details")?.open).toBe(false);
-  expect(screen.getByText("Uncertainty and method").closest("details")?.open).toBe(false);
+  expect(screen.getByText("Uncertainty and method").closest("details")?.open).toBe(
+    false,
+  );
 
   const supports = screen.getByRole("link", { name: "Belief#467 Feature adds lift" });
   expect(supports.getAttribute("href")).toBe("/trax/lookup/belief-1");
   expect(supports.closest("details")).toBeNull();
   expect(screen.getByText("proves · supports (0.8)")).toBeTruthy();
-  expect(screen.getByRole("link", { name: "Belief#450 Possible confound" }).getAttribute("href"))
-    .toBe("/trax/lookup/belief-2");
+  expect(
+    screen
+      .getByRole("link", { name: "Belief#450 Possible confound" })
+      .getAttribute("href"),
+  ).toBe("/trax/lookup/belief-2");
   expect(screen.getByText("favors · argues against (-0.5)")).toBeTruthy();
 });
 
@@ -87,24 +109,47 @@ test("embeds custom HTML from the sandboxed page route, with no full-page link",
 
 test("on a record's page an HTML Artifact's frame stands apart: the content leaves it out, and ArtifactFrame draws it alone", async () => {
   const id = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
-  const html = { ...structuredArtifact, artifact_id: id, format: "html" as const, html: "<p>page</p>" };
+  const html = {
+    ...structuredArtifact,
+    artifact_id: id,
+    format: "html" as const,
+    html: "<p>page</p>",
+  };
   const content = render(<ArtifactContent artifact={html} framed={false} />);
   expect(screen.getByRole("heading", { name: "Scaling directions" })).toBeTruthy();
   expect(screen.queryByTitle("Scaling directions Artifact content")).toBeNull();
   content.unmount();
 
   stubFetch(() => Response.json(html));
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={queryClient}><ArtifactFrame id={id} /></QueryClientProvider>);
-  expect((await screen.findByTitle("Scaling directions Artifact content")).getAttribute("src")).toBe(`/api/artifacts/${id}/html`);
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArtifactFrame id={id} />
+    </QueryClientProvider>,
+  );
+  expect(
+    (await screen.findByTitle("Scaling directions Artifact content")).getAttribute(
+      "src",
+    ),
+  ).toBe(`/api/artifacts/${id}/html`);
   expect(screen.queryByRole("heading", { name: "Scaling directions" })).toBeNull();
 });
 
 test("ArtifactFrame draws nothing for a structured Artifact", async () => {
   const id = "0b6f7c1e-2f7a-4c55-9d7e-1f0e6b1d2a33";
-  stubFetch(() => Response.json({ ...structuredArtifact, artifact_id: id, html: null }));
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const { container } = render(<QueryClientProvider client={queryClient}><ArtifactFrame id={id} /></QueryClientProvider>);
+  stubFetch(() =>
+    Response.json({ ...structuredArtifact, artifact_id: id, html: null }),
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const { container } = render(
+    <QueryClientProvider client={queryClient}>
+      <ArtifactFrame id={id} />
+    </QueryClientProvider>,
+  );
   await waitFor(() => expect(queryClient.isFetching()).toBe(0));
   expect(container.innerHTML).toBe("");
 });
@@ -114,11 +159,25 @@ test("a shared link reads its exact revision and renders the artifact", async ()
   let requested = "";
   stubFetch((request) => {
     requested = new URL(request.url).pathname;
-    return Response.json({ ...structuredArtifact, artifact_id: id, html: null, citations: [], scope: "team" });
+    return Response.json({
+      ...structuredArtifact,
+      artifact_id: id,
+      html: null,
+      citations: [],
+      scope: "team",
+    });
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(<QueryClientProvider client={queryClient}><ArtifactPage id={id} /></QueryClientProvider>);
-  expect(await screen.findByRole("heading", { name: "Scaling directions" })).toBeTruthy();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  render(
+    <QueryClientProvider client={queryClient}>
+      <ArtifactPage id={id} />
+    </QueryClientProvider>,
+  );
+  expect(
+    await screen.findByRole("heading", { name: "Scaling directions" }),
+  ).toBeTruthy();
   expect(screen.getByText("Shared with team")).toBeTruthy();
   expect(requested).toBe(`/api/artifacts/${id}/content`);
 });
@@ -130,10 +189,18 @@ test("remounting an immutable revision reuses its cached result", async () => {
     reads += 1;
     return Response.json({ ...structuredArtifact, artifact_id: id, html: null });
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const page = <QueryClientProvider client={queryClient}><ArtifactPage id={id} /></QueryClientProvider>;
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  const page = (
+    <QueryClientProvider client={queryClient}>
+      <ArtifactPage id={id} />
+    </QueryClientProvider>
+  );
   const first = render(page);
-  expect(await screen.findByRole("heading", { name: "Scaling directions" })).toBeTruthy();
+  expect(
+    await screen.findByRole("heading", { name: "Scaling directions" }),
+  ).toBeTruthy();
   first.unmount();
   render(page);
   await waitFor(() => expect(queryClient.isFetching()).toBe(0));
@@ -142,24 +209,44 @@ test("remounting an immutable revision reuses its cached result", async () => {
 
 test("keeps citation keys unique across signed edges for the same claim", () => {
   const sameCitation = {
-    record_id: "source-1", kind: "Paper", seq: 99, title: "Atlas source",
-    claim_id: "claim-1", claim_kind: "Belief", claim_seq: 42,
-    claim_title: "Scaling helps", edge_kind: "proves", valence: 0.8,
+    record_id: "source-1",
+    kind: "Paper",
+    seq: 99,
+    title: "Atlas source",
+    claim_id: "claim-1",
+    claim_kind: "Belief",
+    claim_seq: 42,
+    claim_title: "Scaling helps",
+    edge_kind: "proves",
+    valence: 0.8,
   };
   const artifact = {
     ...structuredArtifact,
-    citations: [sameCitation, sameCitation, {
-      record_id: "source-1", kind: "Paper", seq: 99, title: "Atlas source",
-      claim_id: "claim-1", claim_kind: "Belief", claim_seq: 42,
-      claim_title: "Scaling helps", edge_kind: "favors", valence: -0.5,
-    }],
+    citations: [
+      sameCitation,
+      sameCitation,
+      {
+        record_id: "source-1",
+        kind: "Paper",
+        seq: 99,
+        title: "Atlas source",
+        claim_id: "claim-1",
+        claim_kind: "Belief",
+        claim_seq: 42,
+        claim_title: "Scaling helps",
+        edge_kind: "favors",
+        valence: -0.5,
+      },
+    ],
   };
   const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
   try {
     render(<ArtifactContent artifact={artifact} />);
 
-    expect(screen.getAllByRole("link", { name: "Paper#99 Atlas source" })).toHaveLength(3);
+    expect(screen.getAllByRole("link", { name: "Paper#99 Atlas source" })).toHaveLength(
+      3,
+    );
     expect(error.mock.calls.flat().join(" ")).not.toContain("same key");
   } finally {
     error.mockRestore();
@@ -169,7 +256,9 @@ test("keeps citation keys unique across signed edges for the same claim", () => 
 test("shows top-level artifact citations and the claim weighed by signed evidence", () => {
   const artifact = {
     ...structuredArtifact,
-    citations: [{ record_id: "source-1", kind: "Paper", seq: 99, title: "Atlas source" }],
+    citations: [
+      { record_id: "source-1", kind: "Paper", seq: 99, title: "Atlas source" },
+    ],
   };
   if (artifact.format !== "structured") throw new Error("Expected structured fixture");
   const sections = artifact.sections.map((section) => ({
@@ -177,19 +266,27 @@ test("shows top-level artifact citations and the claim weighed by signed evidenc
     findings: section.findings.map((finding) => ({
       ...finding,
       citations: finding.citations.map((citation) => ({
-        ...citation, claim_id: "claim-1", claim_kind: "Belief", claim_seq: 42, claim_title: "Scaling helps",
+        ...citation,
+        claim_id: "claim-1",
+        claim_kind: "Belief",
+        claim_seq: 42,
+        claim_title: "Scaling helps",
       })),
     })),
   }));
   render(<ArtifactContent artifact={{ ...artifact, sections }} />);
   expect(screen.getByRole("link", { name: "Paper#99 Atlas source" })).toBeTruthy();
-  expect(screen.getAllByRole("link", { name: "Belief#42 Scaling helps" })).toHaveLength(2);
+  expect(screen.getAllByRole("link", { name: "Belief#42 Scaling helps" })).toHaveLength(
+    2,
+  );
 });
 
 test("every accepted section remains available", () => {
-  if (structuredArtifact.format !== "structured") throw new Error("Expected structured fixture");
+  if (structuredArtifact.format !== "structured")
+    throw new Error("Expected structured fixture");
   const sections = Array.from({ length: 24 }, (_, index) => ({
-    ...structuredArtifact.sections[0]!, title: `Direction ${index + 1}`,
+    ...must(structuredArtifact.sections[0]),
+    title: `Direction ${index + 1}`,
   }));
   render(<ArtifactContent artifact={{ ...structuredArtifact, sections }} />);
   expect(screen.getByRole("heading", { name: "Direction 24" })).toBeTruthy();

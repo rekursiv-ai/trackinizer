@@ -2,6 +2,7 @@ import createClient from "openapi-fetch";
 import { type Fields, log } from "../debug/log";
 import type { paths } from "./generated/schema";
 import { newUuid } from "./idempotency";
+import { must } from "../must";
 import { PAGE_ACCOUNT_HEADER, pageAccount, refused } from "./signedIn";
 
 /** How long a request may take before it fails as a timeout, by kind of request. */
@@ -52,8 +53,12 @@ client.use({
     const type = response.headers.get("content-type") ?? "";
     if (!response.ok || options.parseAs !== "json" || !hasBody(response)) return;
     if (/\bjson\b/i.test(type)) return readAsAnswer(response, request);
-    const what = type.split(";")[0]!.trim() || "no content type";
-    const error = new ApiError(response.status, `The server answered ${response.status} with ${what}, not JSON.`, "unreadable");
+    const what = must(type.split(";")[0]).trim() || "no content type";
+    const error = new ApiError(
+      response.status,
+      `The server answered ${response.status} with ${what}, not JSON.`,
+      "unreadable",
+    );
     requests.set(error, request);
     throw error;
   },
@@ -95,7 +100,12 @@ export class ApiError extends Error {
   readonly code: string | null;
   readonly sent: SentRequest | null;
 
-  constructor(status: number, detail: string, code: string | null = null, sent: SentRequest | null = null) {
+  constructor(
+    status: number,
+    detail: string,
+    code: string | null = null,
+    sent: SentRequest | null = null,
+  ) {
     super(detail);
     this.name = "ApiError";
     this.status = status;
@@ -145,7 +155,13 @@ export async function send<T>(
     );
   } catch (error) {
     if (signal?.aborted) throw error;
-    throw failed(error instanceof ApiError ? error : noAnswer(error, timeout.signal.aborted, timeoutMs), requestOf(error), started);
+    throw failed(
+      error instanceof ApiError
+        ? error
+        : noAnswer(error, timeout.signal.aborted, timeoutMs),
+      requestOf(error),
+      started,
+    );
   } finally {
     clearTimeout(timer);
   }
@@ -158,7 +174,13 @@ export async function send<T>(
   }
   if (sent) {
     failing.delete(attemptKey(sent));
-    log("debug", "request", { method: sent.method, path: pathOf(sent), status: result.response.status, ms: sinceMs(started), request_id: idOf(sent) });
+    log("debug", "request", {
+      method: sent.method,
+      path: pathOf(sent),
+      status: result.response.status,
+      ms: sinceMs(started),
+      request_id: idOf(sent),
+    });
   }
   // openapi-fetch leaves `data` undefined only for a body-less success (204).
   return result.data as T;
@@ -170,12 +192,16 @@ export async function send<T>(
  * as the 3xx itself.
  */
 function redirectNotFollowed(response: Response): boolean {
-  return response.type === "opaqueredirect" || (response.status >= 300 && response.status < 400);
+  return (
+    response.type === "opaqueredirect" ||
+    (response.status >= 300 && response.status < 400)
+  );
 }
 
 /** A request that got no answer: it timed out, or the network failed. */
 function noAnswer(error: unknown, timedOut: boolean, timeoutMs: number): ApiError {
-  if (timedOut) return new ApiError(0, `No response within ${timeoutMs / 1000} s.`, "timeout");
+  if (timedOut)
+    return new ApiError(0, `No response within ${timeoutMs / 1000} s.`, "timeout");
   const reason = error instanceof Error ? error.message : String(error);
   return new ApiError(0, `The server could not be reached: ${reason}`, "network");
 }
@@ -184,7 +210,11 @@ function noAnswer(error: unknown, timedOut: boolean, timeoutMs: number): ApiErro
  * `error` with the request that failed, logged as one warning. Without the
  * request (the client failed before sending one) it is logged as it is.
  */
-function failed(error: ApiError, request: Request | undefined, started: number): ApiError {
+function failed(
+  error: ApiError,
+  request: Request | undefined,
+  started: number,
+): ApiError {
   const failure = request
     ? new ApiError(error.status, error.detail, error.code, {
         method: request.method,
@@ -195,7 +225,10 @@ function failed(error: ApiError, request: Request | undefined, started: number):
         attempt: countFailure(attemptKey(request)),
       })
     : error;
-  log("warn", "request.failed", { ...failureFields(failure), ...(failure.status === 0 && { detail: failure.detail }) });
+  log("warn", "request.failed", {
+    ...failureFields(failure),
+    ...(failure.status === 0 && { detail: failure.detail }),
+  });
   return failure;
 }
 
@@ -205,7 +238,7 @@ function countFailure(key: string): number {
   // Re-inserted, so the oldest entry is first when the map is trimmed.
   failing.delete(key);
   failing.set(key, count);
-  if (failing.size > MAX_FAILING) failing.delete(failing.keys().next().value!);
+  if (failing.size > MAX_FAILING) failing.delete(must(failing.keys().next().value));
   return count;
 }
 
@@ -245,13 +278,19 @@ function apiError(response: Response, body: unknown): ApiError {
         : typeof message === "string" && message
           ? message
           : `${response.status} ${response.statusText}`.trim();
-  return new ApiError(response.status, text, typeof code === "string" ? code : typeof nested === "string" ? nested : null);
+  return new ApiError(
+    response.status,
+    text,
+    typeof code === "string" ? code : typeof nested === "string" ? nested : null,
+  );
 }
 
 /** One FastAPI validation error as `field: message`; the `body` prefix is dropped. */
 function fieldError(error: unknown): string {
   const { loc, msg } = fieldsOf(error);
-  const where = Array.isArray(loc) ? loc.filter((part) => part !== "body").join(".") : "";
+  const where = Array.isArray(loc)
+    ? loc.filter((part) => part !== "body").join(".")
+    : "";
   return where ? `${where}: ${String(msg)}` : String(msg);
 }
 
@@ -270,7 +309,11 @@ function hasBody(response: Response): boolean {
  */
 function readAsAnswer(response: Response, request: Request): void {
   const unreadable = () => {
-    const error = new ApiError(response.status, `The server answered ${response.status} with JSON it could not read.`, "unreadable");
+    const error = new ApiError(
+      response.status,
+      `The server answered ${response.status} with JSON it could not read.`,
+      "unreadable",
+    );
     requests.set(error, request);
     return error;
   };

@@ -1,19 +1,40 @@
 import type { FieldOwners } from "../api/meta";
+import { must } from "../must";
 
 /** An operator `GET /api/inquiries` filters with, and `trax` spells the same way. */
-export type FilterOp = "is" | "ne" | "re" | "nre" | "lt" | "le" | "gt" | "ge" | "isnull" | "notnull";
+export type FilterOp =
+  | "is"
+  | "ne"
+  | "re"
+  | "nre"
+  | "lt"
+  | "le"
+  | "gt"
+  | "ge"
+  | "isnull"
+  | "notnull";
 
 /**
  * One filter as the list route takes it, a JSON `{field, op, value}`. Every filter
  * in a request ANDs with the others. `value` is `""` for `isnull` and `notnull`.
  */
-export type Filter = { readonly field: string; readonly op: FilterOp; readonly value: string };
+export type Filter = {
+  readonly field: string;
+  readonly op: FilterOp;
+  readonly value: string;
+};
 
 /** Which statuses a list shows: `active`, anything else, or every status. */
 export type Tab = "active" | "closed" | "all";
 
 /** A field the Filter menu offers. `kind` narrows the kinds instead of filtering rows. */
-export type ChoiceField = "kind" | "status" | "priority" | "judgement" | "owner" | "labels";
+export type ChoiceField =
+  | "kind"
+  | "status"
+  | "priority"
+  | "judgement"
+  | "owner"
+  | "labels";
 
 /**
  * What is ticked for one field in the Filter menu. Values of one field OR together.
@@ -22,7 +43,10 @@ export type ChoiceField = "kind" | "status" | "priority" | "judgement" | "owner"
  * contiguous range, or `NO_PRIORITY` alone: filters AND together, so an OR of
  * separate ranges has no exact query (COLD-07).
  */
-export type Choice = { readonly field: ChoiceField; readonly values: readonly string[] };
+export type Choice = {
+  readonly field: ChoiceField;
+  readonly values: readonly string[];
+};
 
 /**
  * What a list shows: the one query object.
@@ -58,8 +82,15 @@ export const NO_PRIORITY = "none";
  * email, so the email ticked as an owner (the Filter menu's Me) stands for every
  * one of `me` (the plan's "Who me is").
  */
-export function compileQuery(query: ListQuery, fieldOwners: FieldOwners, me: readonly string[] = []): ListRequest {
-  const filters = [...tabFilters(query.tab), ...query.choices.flatMap((choice) => choiceFilters(choice, me))];
+export function compileQuery(
+  query: ListQuery,
+  fieldOwners: FieldOwners,
+  me: readonly string[] = [],
+): ListRequest {
+  const filters = [
+    ...tabFilters(query.tab),
+    ...query.choices.flatMap((choice) => choiceFilters(choice, me)),
+  ];
   const only = query.choices.find((choice) => choice.field === "kind")?.values;
   const kinds = query.kinds.filter(
     (kind) =>
@@ -74,7 +105,11 @@ export function compileQuery(query: ListQuery, fieldOwners: FieldOwners, me: rea
  * one `/api/meta/fields` gives to that kind. The server answers 400 for the
  * whole request when any requested kind lacks a filtered field (S8).
  */
-export function appliesTo(field: string, kind: string, fieldOwners: FieldOwners): boolean {
+export function appliesTo(
+  field: string,
+  kind: string,
+  fieldOwners: FieldOwners,
+): boolean {
   const owner = fieldOwners[field];
   return owner === undefined || owner === kind.toLowerCase();
 }
@@ -84,8 +119,12 @@ export function appliesTo(field: string, kind: string, fieldOwners: FieldOwners)
  * least one of the list's kinds has it, Kind when there are several, and Status
  * unless the Active tab already decides it.
  */
-export function filterFields(query: ListQuery, fieldOwners: FieldOwners): ChoiceField[] {
-  const some = (field: string) => query.kinds.some((kind) => appliesTo(field, kind, fieldOwners));
+export function filterFields(
+  query: ListQuery,
+  fieldOwners: FieldOwners,
+): ChoiceField[] {
+  const some = (field: string) =>
+    query.kinds.some((kind) => appliesTo(field, kind, fieldOwners));
   const offered: [ChoiceField, boolean][] = [
     ["kind", query.kinds.length > 1],
     ["status", query.tab !== "active"],
@@ -117,7 +156,7 @@ export function traxLine(request: ListRequest): string {
  * `labels`, both match rows where any element matches.
  */
 export function oneOf(field: string, values: readonly string[]): Filter {
-  if (values.length === 1) return { field, op: "is", value: values[0]! };
+  if (values.length === 1) return { field, op: "is", value: must(values[0]) };
   return { field, op: "re", value: `^(${values.map(escapeRegex).join("|")})$` };
 }
 
@@ -157,7 +196,11 @@ export function isChoices(value: unknown): value is readonly Choice[] {
 }
 
 /** Tick or untick `value` for `field`; a choice left empty goes. */
-export function toggleChoice(query: ListQuery, field: ChoiceField, value: string): ListQuery {
+export function toggleChoice(
+  query: ListQuery,
+  field: ChoiceField,
+  value: string,
+): ListQuery {
   const current = query.choices.find((choice) => choice.field === field)?.values ?? [];
   const values =
     field === "priority"
@@ -166,14 +209,19 @@ export function toggleChoice(query: ListQuery, field: ChoiceField, value: string
         ? current.filter((v) => v !== value)
         : [...current, value];
   const choices = current.length
-    ? query.choices.map((choice) => (choice.field === field ? { field, values } : choice))
+    ? query.choices.map((choice) =>
+        choice.field === field ? { field, values } : choice,
+      )
     : [...query.choices, { field, values }];
   return { ...query, choices: choices.filter((choice) => choice.values.length > 0) };
 }
 
 /** Drop the choice for `field`. */
 export function removeChoice(query: ListQuery, field: ChoiceField): ListQuery {
-  return { ...query, choices: query.choices.filter((choice) => choice.field !== field) };
+  return {
+    ...query,
+    choices: query.choices.filter((choice) => choice.field !== field),
+  };
 }
 
 /** Switch to `tab`. A status choice goes with the old tab, since the tab decides status. */
@@ -189,8 +237,12 @@ function tabFilters(tab: Tab): Filter[] {
 
 function choiceFilters({ field, values }: Choice, me: readonly string[]): Filter[] {
   if (field === "kind") return [];
-  if (field === "owner" && me.length && values.includes(me[0]!)) {
-    return [oneOf(field, [...new Set(values.flatMap((value) => (value === me[0] ? me : [value])))])];
+  if (field === "owner" && me.length && values.includes(must(me[0]))) {
+    return [
+      oneOf(field, [
+        ...new Set(values.flatMap((value) => (value === me[0] ? me : [value]))),
+      ]),
+    ];
   }
   if (field !== "priority") return [oneOf(field, values)];
   if (values.includes(NO_PRIORITY)) return [{ field, op: "isnull", value: "" }];
@@ -199,7 +251,8 @@ function choiceFilters({ field, values }: Choice, me: readonly string[]): Filter
   const high = Math.max(...bands);
   assertRange(bands, low, high);
   // P3 has no upper bound, so backlog (40) and anything lower still match Low.
-  const below: Filter[] = high < 3 ? [{ field, op: "lt", value: String((high + 1) * 10) }] : [];
+  const below: Filter[] =
+    high < 3 ? [{ field, op: "lt", value: String((high + 1) * 10) }] : [];
   return [{ field, op: "ge", value: String(low * 10) }, ...below];
 }
 
@@ -224,15 +277,26 @@ function togglePriority(current: readonly string[], value: string): string[] {
   return Array.from({ length: high - low + 1 }, (_, k) => String(low + k));
 }
 
-const CHOICE_FIELDS: readonly ChoiceField[] = ["kind", "status", "priority", "judgement", "owner", "labels"];
+const CHOICE_FIELDS: readonly ChoiceField[] = [
+  "kind",
+  "status",
+  "priority",
+  "judgement",
+  "owner",
+  "labels",
+];
 
 /** Whether `values` are what a priority choice holds: No priority alone, or one range of bands. */
 function isPriorityRange(values: readonly string[]): boolean {
   if (values.includes(NO_PRIORITY)) return values.length === 1;
   const bands = values.map(Number);
-  if (!bands.every((band) => Number.isInteger(band) && band >= 0 && band <= 3)) return false;
+  if (!bands.every((band) => Number.isInteger(band) && band >= 0 && band <= 3))
+    return false;
   const distinct = new Set(bands).size;
-  return distinct === bands.length && distinct === Math.max(...bands) - Math.min(...bands) + 1;
+  return (
+    distinct === bands.length &&
+    distinct === Math.max(...bands) - Math.min(...bands) + 1
+  );
 }
 
 function assertRange(bands: readonly number[], low: number, high: number): void {
@@ -248,5 +312,7 @@ function assertRange(bands: readonly number[], low: number, high: number): void 
  * path.
  */
 function shellWord(value: string): string {
-  return /^(?!=)[\w.@:/+=,-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  return /^(?!=)[\w.@:/+=,-]+$/.test(value)
+    ? value
+    : `'${value.replace(/'/g, `'\\''`)}'`;
 }

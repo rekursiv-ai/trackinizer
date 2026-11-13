@@ -5,9 +5,14 @@ export function relativeTime(iso: string, now: number): string {
   // A clock a little behind the server's must not read "in 3s".
   const seconds = Math.max(0, (now - Date.parse(iso)) / 1000);
   for (const [unit, size, below] of UNITS) {
-    if (seconds < below) return formats().relative.format(-Math.floor(seconds / size), unit);
+    if (seconds < below)
+      return formats().relative.format(-Math.floor(seconds / size), unit);
   }
-  return new Date(iso).toLocaleDateString("en", { month: "short", day: "numeric", year: "numeric" });
+  return new Date(iso).toLocaleDateString("en", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 /** `Sep 24, 2026, 3:20 PM`; a value that is not a time reads `Invalid Date`. */
@@ -23,7 +28,12 @@ export function dateTime(iso: string): string {
  * clock west of UTC would show as the day before.
  */
 export function calendarDate(iso: string): string {
-  return new Date(iso).toLocaleDateString("en", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+  return new Date(iso).toLocaleDateString("en", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
 }
 
 /** The client clock, updated every minute, so relative times age while a page stays open. */
@@ -47,13 +57,24 @@ export function prepareTimes(): void {
   formats();
 }
 
-let made: { readonly relative: Intl.RelativeTimeFormat; readonly dateTime: Intl.DateTimeFormat } | undefined;
+let made:
+  | {
+      readonly relative: Intl.RelativeTimeFormat;
+      readonly dateTime: Intl.DateTimeFormat;
+    }
+  | undefined;
 
 /** One formatter of each kind for every call, as MDN advises for formatting many dates. */
 function formats() {
   return (made ??= {
     relative: new Intl.RelativeTimeFormat("en", { style: "narrow", numeric: "auto" }),
-    dateTime: new Intl.DateTimeFormat("en", { year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }),
+    dateTime: new Intl.DateTimeFormat("en", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }),
   });
 }
 

@@ -4,7 +4,7 @@ import { usePalette } from "../commands/palette";
 import { keyCaps } from "../commands/registry";
 import { ComposeButton } from "../create/ComposeButton";
 import { routeHref } from "../router/addressBar";
-import { type Route } from "../router/route";
+import type { Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { chooseTheme, useTheme } from "../theme";
 import { Icon, Logo } from "../ui/icons";
@@ -16,7 +16,12 @@ import { useMeta, useProfile } from "./boot";
  * The sidebar as a panel, collapsed by ⌘B (Ctrl+B), as VS Code's primary side
  * bar is: `[` and `]` are each view's own panels'.
  */
-export const SIDEBAR: PanelSpec = { id: "app.sidebar", name: "sidebar", side: "left", keys: ["$mod+b"] };
+export const SIDEBAR: PanelSpec = {
+  id: "app.sidebar",
+  name: "sidebar",
+  side: "left",
+  keys: ["$mod+b"],
+};
 
 /** The sidebar's element id, which its collapse and expand button controls. */
 const SIDEBAR_ID = "app-sidebar";
@@ -31,7 +36,13 @@ const SIDEBAR_ID = "app-sidebar";
  * icon, each named and titled by its label, and the user's avatar. On a phone
  * it is the drawer, whole, collapsed or not (styles.css).
  */
-export function Sidebar({ onNavigate, panel }: { onNavigate: () => void; panel: Panel }) {
+export function Sidebar({
+  onNavigate,
+  panel,
+}: {
+  onNavigate: () => void;
+  panel: Panel;
+}) {
   const { kinds } = useMeta();
   const profile = useProfile();
   const { route } = useRouter();
@@ -44,7 +55,11 @@ export function Sidebar({ onNavigate, panel }: { onNavigate: () => void; panel: 
       <div className="ws-row">
         {/* On top in the rail, last beside New: placed here, not by CSS `order`, so Tab meets it where the eye does. */}
         {compact ? toggle : null}
-        <a className="ws-switch" href={routeHref({ name: "graph" })} onClick={onNavigate}>
+        <a
+          className="ws-switch"
+          href={routeHref({ name: "graph" })}
+          onClick={onNavigate}
+        >
           <Logo />
           {APP.name}
         </a>
@@ -119,7 +134,12 @@ export function Sidebar({ onNavigate, panel }: { onNavigate: () => void; panel: 
       </NavSection>
       <div className="sidebar-foot">
         <div className="foot-row">
-          <div className="me-row" role="group" aria-label="Signed in" title={compact ? `${profile.email} (${profile.role})` : undefined}>
+          <div
+            className="me-row"
+            role="group"
+            aria-label="Signed in"
+            title={compact ? `${profile.email} (${profile.role})` : undefined}
+          >
             <span className="avatar" aria-hidden="true">
               {profile.email.charAt(0).toUpperCase()}
             </span>
@@ -142,7 +162,13 @@ function ThemeButton() {
   const next = shown === "dark" ? "light" : "dark";
   const label = `Switch to ${next} theme`;
   return (
-    <button type="button" className="icon-btn theme-btn" aria-label={label} title={label} onClick={() => chooseTheme(next)}>
+    <button
+      type="button"
+      className="icon-btn theme-btn"
+      aria-label={label}
+      title={label}
+      onClick={() => chooseTheme(next)}
+    >
       <Icon name={next === "light" ? "sun" : "moon"} />
     </button>
   );
@@ -153,7 +179,12 @@ function NavSection({ title, children }: { title: string; children: ReactNode })
   const [open, setOpen] = useState(true);
   return (
     <div className={open ? "nav-section" : "nav-section is-collapsed"}>
-      <button type="button" className="nav-section-h" aria-expanded={open} onClick={() => setOpen(!open)}>
+      <button
+        type="button"
+        className="nav-section-h"
+        aria-expanded={open}
+        onClick={() => setOpen(!open)}
+      >
         {title}
         <Icon name="chevD" size={12} />
       </button>

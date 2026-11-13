@@ -27,7 +27,17 @@ export function tagged(tag: string, fields: Fields = {}): Fields {
  * `UncategorizedToolResult` for a done one, and `ToolResult` for a pending or
  * cancelled one.
  */
-export function toolResult(result: Fields | null, { call_id = "", state = "done", stdout = [], stderr = [], shown, extra }: CallFields = {}): Fields {
+export function toolResult(
+  result: Fields | null,
+  {
+    call_id = "",
+    state = "done",
+    stdout = [],
+    stderr = [],
+    shown,
+    extra,
+  }: CallFields = {},
+): Fields {
   return {
     "py/object": "ToolResult",
     call_id,
@@ -44,30 +54,64 @@ export function toolResult(result: Fields | null, { call_id = "", state = "done"
  * An Edit call's payload: `stdout` is the line "Edited <path>." and then each of
  * `splices` as a `Splice`; `path` is null when the provider named no file.
  */
-export function editResult(path: string | null, splices: readonly Fields[], call: Omit<CallFields, "stdout"> = {}): Fields {
+export function editResult(
+  path: string | null,
+  splices: readonly Fields[],
+  call: Omit<CallFields, "stdout"> = {},
+): Fields {
   return toolResult(tagged("EditResult", path === null ? {} : { path }), {
     ...call,
-    stdout: [`Edited ${path ?? "the file"}.`, ...splices.map((splice) => ({ "py/object": "Splice", ...splice }))],
+    stdout: [
+      `Edited ${path ?? "the file"}.`,
+      ...splices.map((splice) => ({ "py/object": "Splice", ...splice })),
+    ],
   });
 }
 
 /** A WebSearch call's payload: `stdout` is the hits as the text the model read, and then each hit as a `WebSearchHit`. */
-export function searchResult(fields: Fields, hits: readonly { readonly [field: string]: string }[], call: Omit<CallFields, "stdout"> = {}): Fields {
-  const text = hits.map((hit) => [hit.title, hit.url, hit.snippet].filter((part) => part !== undefined).join("\n")).join("\n\n");
+export function searchResult(
+  fields: Fields,
+  hits: readonly { readonly [field: string]: string }[],
+  call: Omit<CallFields, "stdout"> = {},
+): Fields {
+  const text = hits
+    .map((hit) =>
+      [hit.title, hit.url, hit.snippet].filter((part) => part !== undefined).join("\n"),
+    )
+    .join("\n\n");
   return toolResult(tagged("WebSearchResult", fields), {
     ...call,
-    stdout: [...(text ? [text] : []), ...hits.map((hit) => ({ "py/object": "WebSearchHit", ...hit }))],
+    stdout: [
+      ...(text ? [text] : []),
+      ...hits.map((hit) => ({ "py/object": "WebSearchHit", ...hit })),
+    ],
   });
 }
 
 /** A Bash call's payload: the text on each stream, and the command and exit code in its `BashResult`. */
 export function shellResult(
-  { command, stdout = "", stderr = "", exit }: { readonly command?: readonly string[] | null; readonly stdout?: string; readonly stderr?: string; readonly exit?: number | null },
+  {
+    command,
+    stdout = "",
+    stderr = "",
+    exit,
+  }: {
+    readonly command?: readonly string[] | null;
+    readonly stdout?: string;
+    readonly stderr?: string;
+    readonly exit?: number | null;
+  },
   call: Omit<CallFields, "stdout" | "stderr"> = {},
 ): Fields {
-  return toolResult(tagged("BashResult", { ...(command ? { command } : {}), ...(typeof exit === "number" ? { exit_code: exit } : {}) }), {
-    ...call,
-    stdout: stdout ? [stdout] : [],
-    stderr: stderr ? [stderr] : [],
-  });
+  return toolResult(
+    tagged("BashResult", {
+      ...(command ? { command } : {}),
+      ...(typeof exit === "number" ? { exit_code: exit } : {}),
+    }),
+    {
+      ...call,
+      stdout: stdout ? [stdout] : [],
+      stderr: stderr ? [stderr] : [],
+    },
+  );
 }

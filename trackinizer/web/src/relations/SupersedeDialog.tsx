@@ -11,6 +11,7 @@ import { WriteButton } from "../writes/WriteButton";
 import { unsettled, WriteStatus } from "../writes/WriteStatus";
 import { supersedeWithNewEdit } from "./edits";
 import "./relations.css";
+import { must } from "../must";
 
 /**
  * Create a new inquiry of the same kind, `kind`, that supersedes `detail`'s, in
@@ -44,10 +45,15 @@ export function SupersedeDialog({
   const create = async () => {
     if (pending || !writable || !title.trim()) return;
     const self = { id: detail.self.id, kind, seq: detail.self.seq };
-    const result = await writer.run(supersedeWithNewEdit(self, { title: title.trim(), description: description.trim() }));
+    const result = await writer.run(
+      supersedeWithNewEdit(self, {
+        title: title.trim(),
+        description: description.trim(),
+      }),
+    );
     if (!result) return;
     onClose();
-    navigate({ name: "lookup", id: result.ids[0]! });
+    navigate({ name: "lookup", id: must(result.ids[0]) });
   };
   return (
     <Dialog.Root open onOpenChange={(open) => open || onClose()}>
@@ -81,8 +87,8 @@ export function SupersedeDialog({
               </Dialog.Title>
               <Dialog.Description asChild>
                 <p>
-                  The new {one} supersedes {old}, which keeps its status and shows as superseded. Both land together, or
-                  neither does.
+                  The new {one} supersedes {old}, which keeps its status and shows as
+                  superseded. Both land together, or neither does.
                 </p>
               </Dialog.Description>
               <label className="sd-field">
@@ -109,7 +115,12 @@ export function SupersedeDialog({
             <div className="modal-f">
               <div className="spacer" />
               <Dialog.Close className="btn ghost">Cancel</Dialog.Close>
-              <WriteButton type="submit" className="btn primary" pending={pending} disabled={!writable || !title.trim()}>
+              <WriteButton
+                type="submit"
+                className="btn primary"
+                pending={pending}
+                disabled={!writable || !title.trim()}
+              >
                 Create and supersede <kbd>{keyCaps("$mod+Enter")[0]}</kbd>
               </WriteButton>
             </div>

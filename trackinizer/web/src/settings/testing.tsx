@@ -12,18 +12,34 @@ import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { Session, SessionContext } from "../app/session";
 import { ToastProvider } from "../ui/toast";
 import { rolesUpTo } from "./roles";
+import { must } from "../must";
 
 export const KINDS = ["Issue", "Belief", "CodeChange"];
 
-const META: Meta = { kinds: KINDS, enums: { inquiry_kind_all: KINDS }, fieldOwners: {}, edges: {} };
+const META: Meta = {
+  kinds: KINDS,
+  enums: { inquiry_kind_all: KINDS },
+  fieldOwners: {},
+  edges: {},
+};
 
 /** A signed-in user of `role`: Ada, whose id is `u-ada`. */
 export function profile(role: Role): Profile {
-  return { user_id: "u-ada", email: "ada@example.com", name: "Ada", role, last_login: "2026-09-26T10:00:00+00:00" };
+  return {
+    user_id: "u-ada",
+    email: "ada@example.com",
+    name: "Ada",
+    role,
+    last_login: "2026-09-26T10:00:00+00:00",
+  };
 }
 
 /** Render `ui` with the app's providers for `who`; `queryClient` is its cache. */
-export function renderScreen(ui: ReactNode, who: Profile, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+export function renderScreen(
+  ui: ReactNode,
+  who: Profile,
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <SessionContext value={new Session(() => {})}>
@@ -66,15 +82,41 @@ export async function closedOver(fn: (...args: never[]) => unknown): Promise<str
   session.connect();
   Reflect.set(globalThis, PROBE, fn);
   try {
-    const { result } = await session.post("Runtime.evaluate", { expression: `globalThis[${JSON.stringify(PROBE)}]` });
-    const { internalProperties = [] } = await session.post("Runtime.getProperties", { objectId: result.objectId! });
-    const scopes = internalProperties.find((property) => property.name === "[[Scopes]]")!.value!.objectId!;
+    const { result } = await session.post("Runtime.evaluate", {
+      expression: `globalThis[${JSON.stringify(PROBE)}]`,
+    });
+    const { internalProperties = [] } = await session.post("Runtime.getProperties", {
+      objectId: must(result.objectId),
+    });
+    const scopes = must(
+      must(
+        must(internalProperties.find((property) => property.name === "[[Scopes]]"))
+          .value,
+      ).objectId,
+    );
     const texts: string[] = [];
-    for (const scope of (await session.post("Runtime.getProperties", { objectId: scopes })).result) {
+    for (const scope of (
+      await session.post("Runtime.getProperties", { objectId: scopes })
+    ).result) {
       if (!/^(Closure|Block)/.test(scope.value?.description ?? "")) continue;
-      for (const { value } of (await session.post("Runtime.getProperties", { objectId: scope.value!.objectId! })).result) {
+      for (const { value } of (
+        await session.post("Runtime.getProperties", {
+          objectId: must(must(scope.value).objectId),
+        })
+      ).result) {
         if (value?.objectId === undefined) texts.push(String(value?.value));
-        else texts.push(String((await session.post("Runtime.callFunctionOn", { objectId: value.objectId, functionDeclaration: AS_TEXT, returnByValue: true })).result.value));
+        else
+          texts.push(
+            String(
+              (
+                await session.post("Runtime.callFunctionOn", {
+                  objectId: value.objectId,
+                  functionDeclaration: AS_TEXT,
+                  returnByValue: true,
+                })
+              ).result.value,
+            ),
+          );
       }
     }
     return texts.join("\n");
@@ -85,7 +127,8 @@ export async function closedOver(fn: (...args: never[]) => unknown): Promise<str
 }
 
 const PROBE = "__closedOverProbe";
-const AS_TEXT = "function () { try { return JSON.stringify(this); } catch { return String(this); } }";
+const AS_TEXT =
+  "function () { try { return JSON.stringify(this); } catch { return String(this); } }";
 
 /** A token as the server lists it. */
 export function token(n: number, fields: Partial<Token> = {}): Token {
@@ -106,7 +149,7 @@ export function user(id: string, email: string, fields: Partial<User> = {}): Use
   return {
     id,
     email,
-    name: email.split("@")[0]!,
+    name: must(email.split("@")[0]),
     role: "writer",
     status: "active",
     created_at: "2026-09-01T10:00:00+00:00",
@@ -141,8 +184,12 @@ export function serveAccount(
     sent: [] as Sent[],
     /** The writes sent, as `METHOD path` with the body. */
     writes: () =>
-      server.sent.filter((request) => request.method !== "GET").map(({ method, path, body }) => ({ call: `${method} ${path}`, body })),
-    reads: (path: string) => server.sent.filter((request) => request.method === "GET" && request.path === path).length,
+      server.sent
+        .filter((request) => request.method !== "GET")
+        .map(({ method, path, body }) => ({ call: `${method} ${path}`, body })),
+    reads: (path: string) =>
+      server.sent.filter((request) => request.method === "GET" && request.path === path)
+        .length,
     /** Hold the next write, then answer it as usual once the returned function is called. */
     hold: () => {
       let release = () => {};
@@ -152,7 +199,8 @@ export function serveAccount(
   };
   server.sent = stubFetch(async (request) => {
     const path = decodeURIComponent(new URL(request.url).pathname);
-    if (request.method === "GET" && server.failing.has(path)) return refuse(503, "database unavailable");
+    if (request.method === "GET" && server.failing.has(path))
+      return refuse(503, "database unavailable");
     if (request.method !== "GET") {
       await server.held.shift();
       const scripted = server.answers.shift();
@@ -162,8 +210,11 @@ export function serveAccount(
     if (`${request.method} ${path}` === "PATCH /api/me/preferences") {
       // The server's merge: the keys sent change, a null one goes back to its default, the rest keep theirs.
       const change = JSON.parse(text) as { [key: string]: unknown };
-      const merged: { [key: string]: unknown } = { ...(caller.preferences ?? DEFAULT_PREFERENCES) };
-      for (const [key, value] of Object.entries(change)) merged[key] = value ?? DEFAULT_PREFERENCES[key as keyof Preferences];
+      const merged: { [key: string]: unknown } = {
+        ...(caller.preferences ?? DEFAULT_PREFERENCES),
+      };
+      for (const [key, value] of Object.entries(change))
+        merged[key] = value ?? DEFAULT_PREFERENCES[key as keyof Preferences];
       caller.preferences = merged as Preferences;
       return Response.json(caller.preferences);
     }
@@ -177,72 +228,148 @@ type Server = ReturnType<typeof serveAccount>;
 
 type AccountBody = { name?: string; role?: Role; email_or_pattern?: string };
 
-function answer(server: Server, caller: Profile, call: string, body: AccountBody): Response {
+function answer(
+  server: Server,
+  caller: Profile,
+  call: string,
+  body: AccountBody,
+): Response {
   const [method, path] = call.split(" ") as [string, string];
   const parts = path.split("/").slice(1);
   if (call === "GET /api/me/profile") return Response.json(caller);
-  if (call === "POST /api/me/settings-artifact") return Response.json({ artifact_id: "fixture-settings-artifact" });
+  if (call === "POST /api/me/settings-artifact")
+    return Response.json({ artifact_id: "fixture-settings-artifact" });
   if (call === "GET /api/me/tokens") return Response.json({ tokens: server.tokens });
   if (call === "GET /api/admin/users") return Response.json({ users: server.users });
-  if (call === "GET /api/admin/allowlist") return Response.json({ entries: server.allowlist });
+  if (call === "GET /api/admin/allowlist")
+    return Response.json({ entries: server.allowlist });
   if (call === "GET /api/inquiries") return Response.json(server.rows);
   // The page `fetch` lands on after following the logout's redirect.
-  if (call === "POST /auth/logout") return new Response("<!doctype html><title>Sign in</title>", { headers: { "content-type": "text/html" } });
+  if (call === "POST /auth/logout")
+    return new Response("<!doctype html><title>Sign in</title>", {
+      headers: { "content-type": "text/html" },
+    });
   if (call === "POST /api/me/tokens") {
-    if (!body.name) return refuse(422, [{ loc: ["body", "name"], msg: "String should have at least 1 character" }]);
+    if (!body.name)
+      return refuse(422, [
+        { loc: ["body", "name"], msg: "String should have at least 1 character" },
+      ]);
     const role = body.role ?? (caller.role as Role);
-    if (!rolesUpTo(caller.role).includes(role)) return refuse(403, `requested role '${role}' exceeds ceiling '${caller.role}'`);
-    const made = token(server.tokens.length + 1, { name: body.name, role, prefix: `trk_new${server.tokens.length + 1}` });
+    if (!rolesUpTo(caller.role).includes(role))
+      return refuse(403, `requested role '${role}' exceeds ceiling '${caller.role}'`);
+    const made = token(server.tokens.length + 1, {
+      name: body.name,
+      role,
+      prefix: `trk_new${server.tokens.length + 1}`,
+    });
     server.tokens = [made, ...server.tokens];
-    return Response.json({ id: made.id, name: made.name, prefix: made.prefix, role, secret: `${made.prefix}SECRET-${made.id}` });
+    return Response.json({
+      id: made.id,
+      name: made.name,
+      prefix: made.prefix,
+      role,
+      secret: `${made.prefix}SECRET-${made.id}`,
+    });
   }
   if (parts[1] === "me" && parts[2] === "tokens") {
-    const held = server.tokens.find((candidate) => candidate.id === parts[3] && candidate.revoked_at === null);
+    const held = server.tokens.find(
+      (candidate) => candidate.id === parts[3] && candidate.revoked_at === null,
+    );
     if (!held) return refuse(404, "token not found");
     if (parts[4] === "revoke") {
-      server.tokens = server.tokens.map((kept) => (kept === held ? { ...kept, revoked_at: "2026-09-27T09:00:00+00:00" } : kept));
+      server.tokens = server.tokens.map((kept) =>
+        kept === held ? { ...kept, revoked_at: "2026-09-27T09:00:00+00:00" } : kept,
+      );
       return Response.json({ ok: true });
     }
-    if (!rolesUpTo(caller.role).includes(body.role!)) return refuse(403, `requested role '${body.role}' exceeds ceiling '${caller.role}'`);
-    server.tokens = server.tokens.map((kept) => (kept === held ? { ...kept, role: body.role! } : kept));
+    if (!rolesUpTo(caller.role).includes(must(body.role)))
+      return refuse(
+        403,
+        `requested role '${body.role}' exceeds ceiling '${caller.role}'`,
+      );
+    server.tokens = server.tokens.map((kept) =>
+      kept === held ? { ...kept, role: must(body.role) } : kept,
+    );
     return Response.json({ ok: true, role: body.role });
   }
   if (caller.role !== "admin") return refuse(403, "admin role required");
-  if (parts[1] === "admin" && parts[2] === "users") return userWrite(server, caller, method, parts[3]!, parts[4], body.role);
+  if (parts[1] === "admin" && parts[2] === "users")
+    return userWrite(server, caller, method, must(parts[3]), parts[4], body.role);
   if (call === "POST /api/admin/allowlist") {
-    const entry = body.email_or_pattern!.trim().toLowerCase();
+    const entry = must(body.email_or_pattern).trim().toLowerCase();
     if (!entry) return refuse(422, "allowlist entry cannot be blank");
     if (server.allowlist.some((kept) => kept.email_or_pattern === entry)) {
       return refuse(409, "unique constraint violated");
     }
-    server.allowlist = [{ email_or_pattern: entry, role: body.role!, added_by: caller.user_id, added_at: "2026-09-27T09:00:00+00:00" }, ...server.allowlist];
+    server.allowlist = [
+      {
+        email_or_pattern: entry,
+        role: must(body.role),
+        added_by: caller.user_id,
+        added_at: "2026-09-27T09:00:00+00:00",
+      },
+      ...server.allowlist,
+    ];
     return Response.json({ ok: true, email_or_pattern: entry, role: body.role });
   }
   if (parts[1] === "admin" && parts[2] === "allowlist") {
     const held = server.allowlist.find((kept) => kept.email_or_pattern === parts[3]);
     if (!held) return refuse(404, "allowlist entry not found");
-    server.allowlist = method === "DELETE" ? server.allowlist.filter((kept) => kept !== held) : server.allowlist.map((kept) => (kept === held ? { ...kept, role: body.role! } : kept));
-    return Response.json(method === "DELETE" ? { ok: true } : { ok: true, role: body.role });
+    server.allowlist =
+      method === "DELETE"
+        ? server.allowlist.filter((kept) => kept !== held)
+        : server.allowlist.map((kept) =>
+            kept === held ? { ...kept, role: must(body.role) } : kept,
+          );
+    return Response.json(
+      method === "DELETE" ? { ok: true } : { ok: true, role: body.role },
+    );
   }
   return refuse(404, `no route ${call}`);
 }
 
-function userWrite(server: Server, caller: Profile, method: string, id: string, action: string | undefined, role: Role | undefined): Response {
+function userWrite(
+  server: Server,
+  caller: Profile,
+  method: string,
+  id: string,
+  action: string | undefined,
+  role: Role | undefined,
+): Response {
   const target = server.users.find((kept) => kept.id === id);
   const self = id === caller.user_id;
-  if (self && action === "role" && role !== "admin") return refuse(409, "Demoting one's own admin role is not permitted.");
-  if (self && action === "disable") return refuse(409, "Disabling one's own account is not permitted.");
-  if (self && method === "DELETE") return refuse(409, "Deleting one's own account is not permitted.");
+  if (self && action === "role" && role !== "admin")
+    return refuse(409, "Demoting one's own admin role is not permitted.");
+  if (self && action === "disable")
+    return refuse(409, "Disabling one's own account is not permitted.");
+  if (self && method === "DELETE")
+    return refuse(409, "Deleting one's own account is not permitted.");
   if (!target) return refuse(404, "user not found");
-  const losesAdmin = target.role === "admin" && target.status === "active" && (action === "disable" || method === "DELETE" || (action === "role" && role !== "admin"));
-  const otherAdmins = server.users.filter((kept) => kept !== target && kept.role === "admin" && kept.status === "active").length;
-  if (losesAdmin && otherAdmins === 0) return refuse(409, "last_admin: refusing to leave the org without an active admin.");
+  const losesAdmin =
+    target.role === "admin" &&
+    target.status === "active" &&
+    (action === "disable" ||
+      method === "DELETE" ||
+      (action === "role" && role !== "admin"));
+  const otherAdmins = server.users.filter(
+    (kept) => kept !== target && kept.role === "admin" && kept.status === "active",
+  ).length;
+  if (losesAdmin && otherAdmins === 0)
+    return refuse(
+      409,
+      "last_admin: refusing to leave the org without an active admin.",
+    );
   if (method === "DELETE") {
     server.users = server.users.filter((kept) => kept !== target);
     return new Response(null, { status: 204 });
   }
-  const changed = action === "role" ? { role: role! } : { status: action === "disable" ? "disabled" : "active" };
-  server.users = server.users.map((kept) => (kept === target ? { ...kept, ...changed } : kept));
+  const changed =
+    action === "role"
+      ? { role: must(role) }
+      : { status: action === "disable" ? "disabled" : "active" };
+  server.users = server.users.map((kept) =>
+    kept === target ? { ...kept, ...changed } : kept,
+  );
   return Response.json({ ok: true, ...changed });
 }
 

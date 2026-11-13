@@ -16,15 +16,26 @@ function renderMd(source: string): HTMLElement {
 
 /** The paths `source` shows as Copy path buttons, in order. */
 function paths(source: string): string[] {
-  const shown = [...renderMd(source).querySelectorAll("button.md-path")].map((button) => button.textContent ?? "");
+  const shown = [...renderMd(source).querySelectorAll("button.md-path")].map(
+    (button) => button.textContent ?? "",
+  );
   cleanup();
   return shown;
 }
 
 test.each([
-  ["Results: `/opt/scratch/runs/sweeps/nightly-regression-sweep-20260101-0900/attempt-001/`", ["/opt/scratch/runs/sweeps/nightly-regression-sweep-20260101-0900/attempt-001/"]],
-  ["Results: /opt/scratch/runs/sweeps/attempt-001", ["/opt/scratch/runs/sweeps/attempt-001"]],
-  ["see ~/src/README.md, then (/opt/a/b) and \"/opt/c/d\".", ["~/src/README.md", "/opt/a/b", "/opt/c/d"]],
+  [
+    "Results: `/opt/scratch/runs/sweeps/nightly-regression-sweep-20260101-0900/attempt-001/`",
+    ["/opt/scratch/runs/sweeps/nightly-regression-sweep-20260101-0900/attempt-001/"],
+  ],
+  [
+    "Results: /opt/scratch/runs/sweeps/attempt-001",
+    ["/opt/scratch/runs/sweeps/attempt-001"],
+  ],
+  [
+    'see ~/src/README.md, then (/opt/a/b) and "/opt/c/d".',
+    ["~/src/README.md", "/opt/a/b", "/opt/c/d"],
+  ],
   ["wrote /opt/a/b.", ["/opt/a/b"]],
   ["wrote /opt/a/b/.", ["/opt/a/b/"]],
   // Not paths: one segment, ratios, money, and/or, a URL's path, a host's path, a path in a longer code span or a block.
@@ -44,11 +55,11 @@ test("a path is a button named for it that copies it, and says so", async () => 
   renderMd("Results: /opt/scratch/runs/attempt-001/ and `~/src/x`");
   // By label, not by role: a role query walks the accessibility tree, which cost this test about 50 ms of its 100.
   const button = screen.getByLabelText("Copy path /opt/scratch/runs/attempt-001/");
-  expect([button.tagName, button.getAttribute("type"), button.querySelector("code")?.textContent]).toEqual([
-    "BUTTON",
-    "button",
-    "/opt/scratch/runs/attempt-001/",
-  ]);
+  expect([
+    button.tagName,
+    button.getAttribute("type"),
+    button.querySelector("code")?.textContent,
+  ]).toEqual(["BUTTON", "button", "/opt/scratch/runs/attempt-001/"]);
   expect(screen.getByLabelText("Copy path ~/src/x").tagName).toBe("BUTTON");
   // A click alone: user-event would put its own clipboard in place of the stub.
   fireEvent.click(button);

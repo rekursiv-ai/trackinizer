@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import { type Body, clusterForce } from "./clusters";
+import { must } from "../must";
 
 type Placed = Body & { group?: string };
 
@@ -12,17 +13,17 @@ function tick(nodes: Placed[], alpha = 1): [number, number][] {
   const force = clusterForce<Placed>((node) => node.group);
   force.initialize(nodes);
   force(alpha);
-  return nodes.map(({ vx, vy }) => [vx!, vy!]);
+  return nodes.map(({ vx, vy }) => [must(vx), must(vy)]);
 }
 
 test("each node is pulled toward the middle of its group, harder the farther it is and the hotter the layout", () => {
   const [near, nearMate] = tick([at(0, 0, "a"), at(10, 0, "a"), at(5000, 0, "b")]);
-  expect(near![0]).toBeGreaterThan(0);
-  expect(nearMate).toEqual([-near![0], 0]);
+  expect(must(near)[0]).toBeGreaterThan(0);
+  expect(nearMate).toEqual([-must(near)[0], 0]);
   const [far] = tick([at(0, 0, "a"), at(20, 0, "a"), at(5000, 0, "b")]);
-  expect(far![0]).toBeCloseTo(2 * near![0]);
+  expect(must(far)[0]).toBeCloseTo(2 * must(near)[0]);
   const [cool] = tick([at(0, 0, "a"), at(10, 0, "a"), at(5000, 0, "b")], 0.5);
-  expect(cool![0]).toBeCloseTo(near![0] / 2);
+  expect(must(cool)[0]).toBeCloseTo(must(near)[0] / 2);
 });
 
 test("a node in no group, and a group far from the others with its nodes at its middle, are left alone", () => {
@@ -36,8 +37,14 @@ test("a node in no group, and a group far from the others with its nodes at its 
 });
 
 test("groups that overlap are pushed apart along the line between their middles, the bigger one less", () => {
-  const moved = tick([at(0, 0, "a"), at(0, 0, "a"), at(0, 0, "a"), at(0, 0, "a"), at(1, 0, "b")]);
-  const [big, small] = [moved[0]!, moved[4]!];
+  const moved = tick([
+    at(0, 0, "a"),
+    at(0, 0, "a"),
+    at(0, 0, "a"),
+    at(0, 0, "a"),
+    at(1, 0, "b"),
+  ]);
+  const [big, small] = [must(moved[0]), must(moved[4])];
   expect(big[0]).toBeLessThan(0);
   expect(small[0]).toBeGreaterThan(0);
   expect([big[1], small[1]]).toEqual([0, 0]);
@@ -71,7 +78,7 @@ test("a big group pushes a small one at its rim, far from its middle", () => {
   // 400 nodes count as a disc of radius 600, which reaches 50 past the small group at 580.
   const big = Array.from({ length: 400 }, () => at(-3_000, -3_000, "big"));
   const moved = tick([...big, at(-2_420, -3_000, "small")]);
-  const [bigShift, smallShift] = [moved[0]!, moved.at(-1)!];
+  const [bigShift, smallShift] = [must(moved[0]), must(moved.at(-1))];
   expect(smallShift[0]).toBeCloseTo((0.5 * 50 * 400) / 401);
   expect(bigShift[0]).toBeCloseTo((-0.5 * 50) / 401);
   expect([bigShift[1], smallShift[1]]).toEqual([0, 0]);

@@ -1,9 +1,25 @@
 import { QueryClient } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { WriteRequest } from "../writes/requests";
-import { closedOver, FAST, profile, renderScreen, serveAccount, stubClipboard, token } from "./testing";
+import {
+  closedOver,
+  FAST,
+  profile,
+  renderScreen,
+  serveAccount,
+  stubClipboard,
+  token,
+} from "./testing";
 import { TokensSection } from "./Tokens";
+import { must } from "../must";
 
 beforeEach(() => {
   localStorage.clear();
@@ -25,7 +41,10 @@ async function openForm() {
 function optionsOf(select: HTMLElement) {
   return within(select)
     .getAllByRole("option")
-    .map((option) => `${option.textContent}${(option as HTMLOptionElement).disabled ? " (disabled)" : ""}`);
+    .map(
+      (option) =>
+        `${option.textContent}${(option as HTMLOptionElement).disabled ? " (disabled)" : ""}`,
+    );
 }
 
 const SECRET = "trk_new2SECRET-t2";
@@ -33,10 +52,17 @@ const SECRET = "trk_new2SECRET-t2";
 /** Make the token `laptop trax`, a viewer, through the form; resolves with the secret's box. */
 async function makeToken() {
   const form = await openForm();
-  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), { target: { value: "  laptop trax " } });
-  fireEvent.change(within(form).getByRole("combobox", { name: "Role" }), { target: { value: "viewer" } });
+  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), {
+    target: { value: "  laptop trax " },
+  });
+  fireEvent.change(within(form).getByRole("combobox", { name: "Role" }), {
+    target: { value: "viewer" },
+  });
   fireEvent.click(within(form).getByRole("button", { name: "Create token" }));
-  return (await screen.findByText("Copy this secret now; it won't be shown again:")).parentElement!;
+  return must(
+    (await screen.findByText("Copy this secret now; it won't be shown again:"))
+      .parentElement,
+  );
 }
 
 test("a new token's secret shows once, with Copy, and the list shows the token by its prefix", async () => {
@@ -46,7 +72,9 @@ test("a new token's secret shows once, with Copy, and the list shows the token b
   renderScreen(<TokensSection />, writer);
   const box = await makeToken();
   expect(within(box).getByText(SECRET)).toBeTruthy();
-  expect(server.writes()).toEqual([{ call: "POST /api/me/tokens", body: { name: "laptop trax", role: "viewer" } }]);
+  expect(server.writes()).toEqual([
+    { call: "POST /api/me/tokens", body: { name: "laptop trax", role: "viewer" } },
+  ]);
   // The list refetched and shows the new token by its prefix, not its secret.
   await screen.findByText("trk_new2…");
   fireEvent.click(within(box).getByRole("button", { name: "Copy" }));
@@ -56,16 +84,26 @@ test("a new token's secret shows once, with Copy, and the list shows the token b
 test("the secret never reaches storage, the caches or the console, and Done removes it for good", async () => {
   const writer = profile("writer");
   serveAccount(writer, { tokens: [token(1)] });
-  const logged = (["log", "info", "warn", "error", "debug"] as const).map((level) => vi.spyOn(console, level));
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const logged = (["log", "info", "warn", "error", "debug"] as const).map((level) =>
+    vi.spyOn(console, level),
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   renderScreen(<TokensSection />, writer, queryClient);
   const box = await makeToken();
   await screen.findByText("trk_new2…");
   const everywhere = JSON.stringify([
     { ...localStorage },
     { ...sessionStorage },
-    queryClient.getQueryCache().getAll().map((query) => query.state.data),
-    queryClient.getMutationCache().getAll().map((mutation) => mutation.state.data),
+    queryClient
+      .getQueryCache()
+      .getAll()
+      .map((query) => query.state.data),
+    queryClient
+      .getMutationCache()
+      .getAll()
+      .map((mutation) => mutation.state.data),
     logged.map((spy) => spy.mock.calls),
   ]);
   expect(everywhere).not.toContain("SECRET");
@@ -76,9 +114,12 @@ test("the secret never reaches storage, the caches or the console, and Done remo
   await openForm();
   expect(document.body.textContent).not.toContain("SECRET");
   // The mutation cache keeps each request, whose `send` closes over what it sent and got.
-  const requests = queryClient.getMutationCache().getAll().map((mutation) => mutation.state.variables as WriteRequest<unknown>);
+  const requests = queryClient
+    .getMutationCache()
+    .getAll()
+    .map((mutation) => mutation.state.variables as WriteRequest<unknown>);
   expect(requests).toHaveLength(1);
-  expect(await closedOver(requests[0]!.send)).not.toContain("SECRET");
+  expect(await closedOver(must(requests[0]).send)).not.toContain("SECRET");
 });
 
 test("Cancel is off while a create is pending, so the secret it makes still shows", async () => {
@@ -87,10 +128,14 @@ test("Cancel is off while a create is pending, so the secret it makes still show
   const release = server.hold();
   renderScreen(<TokensSection />, writer);
   const form = await openForm();
-  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), { target: { value: "ci" } });
+  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), {
+    target: { value: "ci" },
+  });
   fireEvent.click(within(form).getByRole("button", { name: "Create token" }));
   await within(form).findByText("Saving…");
-  const cancel = within(form).getByRole("button", { name: "Cancel" }) as HTMLButtonElement;
+  const cancel = within(form).getByRole("button", {
+    name: "Cancel",
+  }) as HTMLButtonElement;
   expect(cancel.disabled).toBe(true);
   fireEvent.click(cancel);
   release();
@@ -99,30 +144,51 @@ test("Cancel is off while a create is pending, so the secret it makes still show
 
 test("a role picker offers only roles up to the caller's, and shows a stronger current role it cannot pick", async () => {
   const writer = profile("writer");
-  serveAccount(writer, { tokens: [token(1, { name: "old admin key", role: "admin" }), token(2, { role: "viewer" })] });
+  serveAccount(writer, {
+    tokens: [
+      token(1, { name: "old admin key", role: "admin" }),
+      token(2, { role: "viewer" }),
+    ],
+  });
   renderScreen(<TokensSection />, writer);
   const form = await openForm();
-  expect(optionsOf(within(form).getByRole("combobox", { name: "Role" }))).toEqual(["viewer", "writer"]);
-  expect((within(form).getByRole("combobox", { name: "Role" }) as HTMLSelectElement).value).toBe("writer");
-  expect(optionsOf(screen.getByRole("combobox", { name: "Role of old admin key" }))).toEqual(["admin (disabled)", "viewer", "writer"]);
-  expect(optionsOf(screen.getByRole("combobox", { name: "Role of token 2" }))).toEqual(["viewer", "writer"]);
+  expect(optionsOf(within(form).getByRole("combobox", { name: "Role" }))).toEqual([
+    "viewer",
+    "writer",
+  ]);
+  expect(
+    (within(form).getByRole("combobox", { name: "Role" }) as HTMLSelectElement).value,
+  ).toBe("writer");
+  expect(
+    optionsOf(screen.getByRole("combobox", { name: "Role of old admin key" })),
+  ).toEqual(["admin (disabled)", "viewer", "writer"]);
+  expect(optionsOf(screen.getByRole("combobox", { name: "Role of token 2" }))).toEqual([
+    "viewer",
+    "writer",
+  ]);
   cleanup();
 
   const viewer = profile("viewer");
   serveAccount(viewer, { tokens: [] });
   renderScreen(<TokensSection />, viewer);
-  expect(optionsOf(within(await openForm()).getByRole("combobox", { name: "Role" }))).toEqual(["viewer"]);
+  expect(
+    optionsOf(within(await openForm()).getByRole("combobox", { name: "Role" })),
+  ).toEqual(["viewer"]);
 });
 
 test("changing a token's role is one PUT, and the list then shows the stored role", async () => {
   const admin = profile("admin");
   const server = serveAccount(admin, { tokens: [token(1)] });
   renderScreen(<TokensSection />, admin);
-  const picker = (await screen.findByRole("combobox", { name: "Role of token 1" })) as HTMLSelectElement;
+  const picker = (await screen.findByRole("combobox", {
+    name: "Role of token 1",
+  })) as HTMLSelectElement;
   fireEvent.change(picker, { target: { value: "admin" } });
   expect(picker.value).toBe("admin");
   await screen.findByText("token 1: role set to admin");
-  expect(server.writes()).toEqual([{ call: "PUT /api/me/tokens/t1/role", body: { role: "admin" } }]);
+  expect(server.writes()).toEqual([
+    { call: "PUT /api/me/tokens/t1/role", body: { role: "admin" } },
+  ]);
   expect(picker.disabled).toBe(false);
   expect(server.reads("/api/me/tokens")).toBe(2);
 });
@@ -145,7 +211,9 @@ test("revoking asks first; Cancel sends nothing, and Revoke sends one POST and d
   renderScreen(<TokensSection />, writer);
   fireEvent.click(await screen.findByRole("button", { name: "Revoke ci" }));
   let dialog = screen.getByRole("alertdialog", { name: "Revoke “ci”?" });
-  expect(dialog.textContent).toContain("Anything using the token trk_0001… stops working at once.");
+  expect(dialog.textContent).toContain(
+    "Anything using the token trk_0001… stops working at once.",
+  );
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   expect(screen.queryByRole("alertdialog")).toBeNull();
   expect(server.writes()).toEqual([]);
@@ -155,7 +223,9 @@ test("revoking asks first; Cancel sends nothing, and Revoke sends one POST and d
   fireEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
   await screen.findByText(/^revoked /);
   expect(screen.queryByRole("alertdialog")).toBeNull();
-  expect(server.writes()).toEqual([{ call: "POST /api/me/tokens/t1/revoke", body: undefined }]);
+  expect(server.writes()).toEqual([
+    { call: "POST /api/me/tokens/t1/revoke", body: undefined },
+  ]);
   expect(screen.queryByRole("button", { name: "Revoke ci" })).toBeNull();
   expect(screen.getByText("Revoked “ci”")).toBeTruthy();
 });
@@ -183,7 +253,9 @@ test("Revoke is off while offline, as its confirmation is", async () => {
   const writer = profile("writer");
   serveAccount(writer, { tokens: [token(1, { name: "ci" })] });
   renderScreen(<TokensSection />, writer);
-  const revoke = (await screen.findByRole("button", { name: "Revoke ci" })) as HTMLButtonElement;
+  const revoke = (await screen.findByRole("button", {
+    name: "Revoke ci",
+  })) as HTMLButtonElement;
   expect(revoke.disabled).toBe(true);
   fireEvent.click(revoke);
   expect(screen.queryByRole("alertdialog")).toBeNull();
@@ -192,7 +264,9 @@ test("Revoke is off while offline, as its confirmation is", async () => {
 test("a failed refetch keeps the tokens on screen, beside the error and Retry", async () => {
   const writer = profile("writer");
   const server = serveAccount(writer, { tokens: [token(1, { name: "ci" })] });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   renderScreen(<TokensSection />, writer, queryClient);
   await screen.findByRole("cell", { name: "ci" });
   server.failing.add("/api/me/tokens");
@@ -221,10 +295,19 @@ test("the server's refusals show next to the control: 422 for a blank label, 403
   renderScreen(<TokensSection />, writer);
   const form = await openForm();
   fireEvent.click(within(form).getByRole("button", { name: "Create token" }));
-  expect((await within(form).findByRole("alert")).textContent).toBe("name: String should have at least 1 character");
+  expect((await within(form).findByRole("alert")).textContent).toBe(
+    "name: String should have at least 1 character",
+  );
 
-  server.answers.push(() => Response.json({ detail: "requested role 'writer' exceeds ceiling 'viewer'" }, { status: 403 }));
-  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), { target: { value: "x" } });
+  server.answers.push(() =>
+    Response.json(
+      { detail: "requested role 'writer' exceeds ceiling 'viewer'" },
+      { status: 403 },
+    ),
+  );
+  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), {
+    target: { value: "x" },
+  });
   fireEvent.click(within(form).getByRole("button", { name: "Create token" }));
   await waitFor(() =>
     expect(within(form).getByRole("alert").textContent).toBe(
@@ -232,11 +315,15 @@ test("the server's refusals show next to the control: 422 for a blank label, 403
     ),
   );
 
-  server.answers.push(() => Response.json({ detail: "token not found" }, { status: 404 }));
+  server.answers.push(() =>
+    Response.json({ detail: "token not found" }, { status: 404 }),
+  );
   fireEvent.click(screen.getByRole("button", { name: "Revoke ci" }));
   const dialog = screen.getByRole("alertdialog");
   fireEvent.click(within(dialog).getByRole("button", { name: "Revoke" }));
-  expect((await within(dialog).findByRole("alert")).textContent).toBe("token not found");
+  expect((await within(dialog).findByRole("alert")).textContent).toBe(
+    "token not found",
+  );
   expect(screen.getByRole("alertdialog")).toBe(dialog);
 });
 
@@ -247,11 +334,15 @@ test("a create with no answer is never sent again: the list shows whether the to
   // The server makes the token, but its answer never comes; the request aborts at the write timeout.
   server.answers.push((request) => {
     server.tokens = [token(1, { name: "ci" })];
-    return new Promise((_, reject) => request.signal.addEventListener("abort", () => reject(request.signal.reason)));
+    return new Promise((_, reject) =>
+      request.signal.addEventListener("abort", () => reject(request.signal.reason)),
+    );
   });
   renderScreen(<TokensSection />, writer);
   const form = await openForm();
-  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), { target: { value: "ci" } });
+  fireEvent.change(within(form).getByRole("textbox", { name: "Label" }), {
+    target: { value: "ci" },
+  });
   fireEvent.click(within(form).getByRole("button", { name: "Create token" }));
   await act(() => vi.advanceTimersByTimeAsync(30_000));
   const alert = await within(form).findByRole("alert");
@@ -268,10 +359,14 @@ test("a create with no answer is never sent again: the list shows whether the to
 test("a create the server failed offers no Retry, keeps the form as it was, and the next Create is a new one", async () => {
   const writer = profile("writer");
   const server = serveAccount(writer, { tokens: [] });
-  server.answers.push(() => Response.json({ detail: "database unavailable" }, { status: 503 }));
+  server.answers.push(() =>
+    Response.json({ detail: "database unavailable" }, { status: 503 }),
+  );
   renderScreen(<TokensSection />, writer);
   const form = await openForm();
-  const label = within(form).getByRole("textbox", { name: "Label" }) as HTMLInputElement;
+  const label = within(form).getByRole("textbox", {
+    name: "Label",
+  }) as HTMLInputElement;
   fireEvent.change(label, { target: { value: "ci" } });
   fireEvent.click(within(form).getByRole("button", { name: "Create token" }));
   const alert = await within(form).findByRole("alert");

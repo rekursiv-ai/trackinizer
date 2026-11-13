@@ -6,6 +6,7 @@ import type { Filter } from "../query/query";
 import { ListLive } from "./list";
 import { idFilter } from "./rows";
 import { issue, listParams, mount, serveRows, testClient, uuid } from "./testing";
+import { must } from "../must";
 
 const ACTIVE: readonly Filter[] = [{ field: "status", op: "is", value: "active" }];
 const REQUEST = { kinds: ["Issue"], filters: ACTIVE };
@@ -40,7 +41,9 @@ function pageKey(pageSize: number, page: number) {
 
 /** A cached page's rows, by seq and title, as the server sent them and live updates changed them in place. */
 function cached(pageSize = 50, page = 0): string[] {
-  return (client.getQueryData<InquiryRow[]>(pageKey(pageSize, page)) ?? []).map((row) => `${row.seq} ${row.title}`);
+  return (client.getQueryData<InquiryRow[]>(pageKey(pageSize, page)) ?? []).map(
+    (row) => `${row.seq} ${row.title}`,
+  );
 }
 
 /** What the list shows: its loaded pages, as `ListLive.rows` makes them, by seq and title. */
@@ -67,7 +70,13 @@ test("held rows on screen refetch with the list's kinds and filters plus a seq_r
     { kinds: ["Issue"], filters: ACTIVE, seqRanges: ["3..4"], limit: 2, offset: null },
   ]);
   // Updated in place: same rows, same order.
-  expect(cached()).toEqual(["5 Issue 5", "4 Renamed", "3 Also renamed", "2 Issue 2", "1 Issue 1"]);
+  expect(cached()).toEqual([
+    "5 Issue 5",
+    "4 Renamed",
+    "3 Also renamed",
+    "2 Issue 2",
+    "1 Issue 1",
+  ]);
 });
 
 test("a held row that does not come back no longer matches: it stays, marked left, until merged away", async () => {
@@ -130,7 +139,9 @@ test("ids it does not hold are checked together, 63 at a time, at most one check
   // The next check takes every id still waiting, oldest first, whichever batch brought it.
   clock += 1_000;
   expect(await live.update(batch([]))).toBeNull();
-  expect(listParams(sent[1]!).filters.at(-1)).toEqual(idFilter([...outsiders.slice(63), 200].map(uuid)));
+  expect(listParams(must(sent[1])).filters.at(-1)).toEqual(
+    idFilter([...outsiders.slice(63), 200].map(uuid)),
+  );
 });
 
 test("a new matching row among 62 unrelated ids enters with the first check", async () => {
@@ -172,7 +183,7 @@ test("a row a check finds entered the list: it waits as an arrival, then joins i
   expect(live.getSnapshot().arrivals).toBe(2);
   expect(shown(live)).toEqual(["5 Issue 5", "3 Issue 3", "1 Issue 1"]);
   live.merge(false);
-  expect(shown(live).map((row) => Number.parseInt(row))).toEqual([6, 5, 4, 3, 1]);
+  expect(shown(live).map((row) => Number.parseInt(row, 10))).toEqual([6, 5, 4, 3, 1]);
   expect(live.getSnapshot().arrivals).toBe(0);
 });
 
@@ -196,7 +207,7 @@ test("a joined row is held: later changes update it, and it can leave", async ()
   live.merge(false);
   server[0] = issue(2, { title: "Joined, then renamed" });
   await live.update(batch([2]));
-  expect(listParams(sent.at(-1)!).seqRanges).toEqual(["2..2"]);
+  expect(listParams(must(sent.at(-1))).seqRanges).toEqual(["2..2"]);
   expect(shown(live)).toEqual(["2 Joined, then renamed", "1 Issue 1"]);
   server[0] = issue(2, { status: "complete" });
   await live.update(batch([2]));
@@ -253,7 +264,9 @@ test("over 100 ids it does not hold, the list reads every row its pages span ins
   const sent = serveRows(() => server);
   expect(await live.update(batch(outsiders))).toBeNull();
   // Its one page is short, so it holds every row there is: the read takes them all.
-  expect(sent.map(listParams)).toEqual([{ kinds: ["Issue"], filters: ACTIVE, seqRanges: [], limit: 1_000, offset: 0 }]);
+  expect(sent.map(listParams)).toEqual([
+    { kinds: ["Issue"], filters: ACTIVE, seqRanges: [], limit: 1_000, offset: 0 },
+  ]);
   expect(live.getSnapshot().arrivals).toBe(1);
 });
 
@@ -269,7 +282,10 @@ test("gap recovery reads every row the pages span: held rows update in place, on
   expect(sent.map(listParams)).toEqual([
     {
       kinds: ["Issue"],
-      filters: [...ACTIVE, { field: "created", op: "ge", value: "2026-09-20 00:01:00+00:00" }],
+      filters: [
+        ...ACTIVE,
+        { field: "created", op: "ge", value: "2026-09-20 00:01:00+00:00" },
+      ],
       seqRanges: [],
       limit: 1_000,
       offset: 0,
@@ -304,7 +320,7 @@ test("a gap recovery answer that comes back full may not span the pages: held ro
   expect(cached()).toEqual(["2 Changed in the gap", "1 Issue 1"]);
   clock += 2_000;
   await live.update(batch([]));
-  expect(listParams(sent.at(-1)!).filters.at(-1)).toEqual(idFilter([uuid(3)]));
+  expect(listParams(must(sent.at(-1))).filters.at(-1)).toEqual(idFilter([uuid(3)]));
 });
 
 test("a batch that comes while the first page is being read waits for it", async () => {
@@ -367,7 +383,10 @@ test("over 100 ids it does not hold, a row entering a later loaded page still ar
   expect(live.getSnapshot().arrivals).toBe(1);
   expect(sent.map(listParams)[0]).toEqual({
     kinds: ["Issue"],
-    filters: [...ACTIVE, { field: "created", op: "ge", value: "2026-09-20 00:06:00+00:00" }],
+    filters: [
+      ...ACTIVE,
+      { field: "created", op: "ge", value: "2026-09-20 00:06:00+00:00" },
+    ],
     seqRanges: [],
     limit: 1_000,
     offset: 0,
@@ -381,7 +400,9 @@ test("gap recovery finds a row that entered a later loaded page while the stream
   await live.update({ ids: new Set(), gap: true });
   expect(live.getSnapshot().arrivals).toBe(1);
   live.merge(false);
-  expect(shown(live, 3).map((row) => Number.parseInt(row))).toEqual([12, 11, 10, 9, 8, 7, 6]);
+  expect(shown(live, 3).map((row) => Number.parseInt(row, 10))).toEqual([
+    12, 11, 10, 9, 8, 7, 6,
+  ]);
 });
 
 test("a change for a page still loading waits for that page, as its read may predate it (CR-LIVE-R2-01)", async () => {
@@ -419,7 +440,10 @@ test("a row merged away that matches again comes back, even as the last row of a
 test("a row whose id ends like others' still enters when they fill a check's answer (CR-LIVE-R5-B1)", async () => {
   const { live } = list([rows(1)], { shown: [1] });
   const twins = (count: number) =>
-    Array.from({ length: count }, (_, n) => ({ ...issue(1_000 + n), id: `${String(n + 1).padStart(8, "1")}-0000-4000-8000-${uuid(500).slice(-12)}` }));
+    Array.from({ length: count }, (_, n) => ({
+      ...issue(1_000 + n),
+      id: `${String(n + 1).padStart(8, "1")}-0000-4000-8000-${uuid(500).slice(-12)}`,
+    }));
   // One asked id is named whole: two newer rows sharing its last 12 digits cannot crowd it out of an answer with room for two.
   server = [issue(1), issue(500), ...twins(2)];
   serveRows(() => server);
@@ -433,7 +457,9 @@ test("a row whose id ends like others' still enters when they fill a check's ans
   clock += 2_000;
   await busy.update(batch([]));
   // Every id the full answer left out is checked again, whole, 13 at a time.
-  expect(listParams(sent[1]!).filters.at(-1)).toEqual(idFilter([500, ...Array.from({ length: 12 }, (_, n) => 100 + n)].map(uuid)));
+  expect(listParams(must(sent[1])).filters.at(-1)).toEqual(
+    idFilter([500, ...Array.from({ length: 12 }, (_, n) => 100 + n)].map(uuid)),
+  );
   expect(busy.getSnapshot().arrivals).toBe(1);
 });
 
@@ -459,7 +485,7 @@ test("more new rows than a page: the pill counts them all, and merging reads the
   expect(live.merge(true)).toEqual([]);
   await tick();
   expect(live.getSnapshot()).toMatchObject({ arrivals: 0, joined: new Map() });
-  expect(client.getQueryState(pageKey(3, 0))!.isInvalidated).toBe(true);
+  expect(must(client.getQueryState(pageKey(3, 0))).isInvalidated).toBe(true);
 });
 
 test("an arrival a page read has since brought in is no longer counted (CR-LIVE-R9-A1)", async () => {
@@ -486,7 +512,10 @@ test("a page read under way when a row is refreshed does not put the older row b
   vi.useFakeTimers();
   // A read of the page starts, then the row changes and its live refresh runs.
   void client.refetchQueries({ queryKey: pageKey(50, 0) });
-  server = [issue(2), issue(1, { title: "Renamed", modified: "2026-09-21T00:00:00+00:00" })];
+  server = [
+    issue(2),
+    issue(1, { title: "Renamed", modified: "2026-09-21T00:00:00+00:00" }),
+  ];
   serveRows(() => server);
   const update = live.update(batch([1]));
   // The refresh has taken its answer; the page's older read answers only now.

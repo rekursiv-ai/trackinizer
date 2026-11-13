@@ -1,12 +1,18 @@
 import type { APIRequestContext, Locator, Page, Request } from "@playwright/test";
 import { expect, test, route } from "./fixtures";
+import { must } from "../src/must";
 
 // The create form against the e2e server: a create with relations is one
 // request, and Create more keeps the form open. Each test makes its own rows,
 // with titles no other spec uses, since specs share one server.
 
-async function createIssue(request: APIRequestContext, title: string): Promise<{ id: string; seq: number }> {
-  const response = await request.post("/api/inquiries/issue", { data: { title, idempotency_key: crypto.randomUUID() } });
+async function createIssue(
+  request: APIRequestContext,
+  title: string,
+): Promise<{ id: string; seq: number }> {
+  const response = await request.post("/api/inquiries/issue", {
+    data: { title, idempotency_key: crypto.randomUUID() },
+  });
   expect(response.ok(), await response.text()).toBe(true);
   const { id } = await response.json();
   return { id, seq: (await (await request.get(`/api/inquiries/${id}`)).json()).seq };
@@ -16,23 +22,35 @@ async function createIssue(request: APIRequestContext, title: string): Promise<{
 function writesOf(page: Page): Request[] {
   const writes: Request[] = [];
   page.on("request", (request) => {
-    if (request.method() !== "GET" && request.url().includes("/api/")) writes.push(request);
+    if (request.method() !== "GET" && request.url().includes("/api/"))
+      writes.push(request);
   });
   return writes;
 }
 
 /** Add `relation` to `target`, found by what `search` types, through the form's picker. */
-async function addRelation(page: Page, form: Locator, relation: string, search: string, target: RegExp) {
+async function addRelation(
+  page: Page,
+  form: Locator,
+  relation: string,
+  search: string,
+  target: RegExp,
+) {
   await form.getByRole("button", { name: "Add relation" }).click();
   await page.getByRole("option", { name: new RegExp(`^${relation}…`) }).click();
-  await page.getByRole("combobox", { name: `${relation}: search inquiries` }).fill(search);
+  await page
+    .getByRole("combobox", { name: `${relation}: search inquiries` })
+    .fill(search);
   await page.getByRole("option", { name: target }).click();
   await page.keyboard.press("Escape");
   // Focus goes back to the button that opened the picker, still inside the form.
   await expect(form.getByRole("button", { name: "Add relation" })).toBeFocused();
 }
 
-test("a create with relations is one request, opened from C on the list, and opens the new inquiry", async ({ page, request }) => {
+test("a create with relations is one request, opened from C on the list, and opens the new inquiry", async ({
+  page,
+  request,
+}) => {
   const run = crypto.randomUUID().slice(0, 8);
   const parent = await createIssue(request, `D4 parent ${run}`);
   const blocker = await createIssue(request, `D4 blocker ${run}`);
@@ -49,9 +67,23 @@ test("a create with relations is one request, opened from C on the list, and ope
   // Enter in a one-line field does not create; only ⌘↵ and the button do.
   await title.press("Enter");
   await form.getByRole("textbox", { name: "Done when" }).fill("Both land together");
-  await addRelation(page, form, "Narrows", `D4 parent ${run}`, new RegExp(`D4 parent ${run}`));
-  await addRelation(page, form, "Requires", `Issue#${blocker.seq}`, new RegExp(`^Issue#${blocker.seq}`));
-  await expect(form.getByRole("list", { name: "Relations" }).getByRole("listitem")).toHaveText([
+  await addRelation(
+    page,
+    form,
+    "Narrows",
+    `D4 parent ${run}`,
+    new RegExp(`D4 parent ${run}`),
+  );
+  await addRelation(
+    page,
+    form,
+    "Requires",
+    `Issue#${blocker.seq}`,
+    new RegExp(`^Issue#${blocker.seq}`),
+  );
+  await expect(
+    form.getByRole("list", { name: "Relations" }).getByRole("listitem"),
+  ).toHaveText([
     `NarrowsIssue#${parent.seq}D4 parent ${run}`,
     `RequiresIssue#${blocker.seq}D4 blocker ${run}`,
   ]);
@@ -60,11 +92,17 @@ test("a create with relations is one request, opened from C on the list, and ope
 
   await expect(page.getByRole("heading", { level: 1 })).toHaveText(`D4 child ${run}`);
   const created = route(page).replace("#/lookup/", "");
-  const narrows = page.getByRole("region", { name: "Parents", exact: true }).locator(".rail-peer", { hasText: `D4 parent ${run}` });
-  await expect(narrows.locator(".rail-link")).toHaveText(`D4 parent ${run} Issue#${parent.seq}`);
+  const narrows = page
+    .getByRole("region", { name: "Parents", exact: true })
+    .locator(".rail-peer", { hasText: `D4 parent ${run}` });
+  await expect(narrows.locator(".rail-link")).toHaveText(
+    `D4 parent ${run} Issue#${parent.seq}`,
+  );
   await expect(narrows.locator(".edge-name").first()).toHaveText("narrows");
-  expect(writes.map((write) => `${write.method()} ${new URL(write.url()).pathname}`)).toEqual(["POST /api/inquiries/issue"]);
-  const body = writes[0]!.postDataJSON();
+  expect(
+    writes.map((write) => `${write.method()} ${new URL(write.url()).pathname}`),
+  ).toEqual(["POST /api/inquiries/issue"]);
+  const body = must(writes[0]).postDataJSON();
   expect(body).toEqual({
     title: `D4 child ${run}`,
     validation: "Both land together",
@@ -75,23 +113,39 @@ test("a create with relations is one request, opened from C on the list, and ope
     requires: [blocker.id],
     idempotency_key: body.idempotency_key,
   });
-  expect((await request.get(`/api/edges/${created}/narrows/${parent.id}`)).ok()).toBe(true);
-  expect((await request.get(`/api/edges/${created}/requires/${blocker.id}`)).ok()).toBe(true);
+  expect((await request.get(`/api/edges/${created}/narrows/${parent.id}`)).ok()).toBe(
+    true,
+  );
+  expect((await request.get(`/api/edges/${created}/requires/${blocker.id}`)).ok()).toBe(
+    true,
+  );
 });
 
-test("Create more keeps the form open; a relation the body cannot hold makes each create one batch", async ({ page, request }) => {
+test("Create more keeps the form open; a relation the body cannot hold makes each create one batch", async ({
+  page,
+  request,
+}) => {
   const run = crypto.randomUUID().slice(0, 8);
   const question = await createIssue(request, `D4 question ${run}`);
   await page.goto("/trax/new/Artifact");
   const form = page.getByRole("dialog", { name: "New artifact" });
   const writes = writesOf(page);
   await form.getByRole("button", { name: "Create more" }).click();
-  await expect(form.getByRole("button", { name: "Create more" })).toHaveAttribute("aria-pressed", "true");
+  await expect(form.getByRole("button", { name: "Create more" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 
   const titles = [`D4 answer one ${run}`, `D4 answer two ${run}`];
   for (const title of titles) {
     await form.getByRole("textbox", { name: "Title" }).fill(title);
-    await addRelation(page, form, "Produced by", `Issue#${question.seq}`, new RegExp(`^Issue#${question.seq}`));
+    await addRelation(
+      page,
+      form,
+      "Produced by",
+      `Issue#${question.seq}`,
+      new RegExp(`^Issue#${question.seq}`),
+    );
     await page.keyboard.press("ControlOrMeta+Enter");
     await expect(form.getByRole("textbox", { name: "Title" })).toHaveValue("");
     await expect(form.getByRole("textbox", { name: "Title" })).toBeFocused();
@@ -99,23 +153,37 @@ test("Create more keeps the form open; a relation the body cannot hold makes eac
   }
   await expect(page).toHaveURL(/\/trax\/new\/Artifact$/);
 
-  expect(writes.map((write) => `${write.method()} ${new URL(write.url()).pathname}`)).toEqual([
-    "POST /api/inquiries/batch",
-    "POST /api/inquiries/batch",
-  ]);
+  expect(
+    writes.map((write) => `${write.method()} ${new URL(write.url()).pathname}`),
+  ).toEqual(["POST /api/inquiries/batch", "POST /api/inquiries/batch"]);
   const bodies = writes.map((write) => write.postDataJSON());
-  expect(bodies.map(({ items, edges }) => [items.map(({ idempotency_key, ...item }: { idempotency_key: string }) => item), edges])).toEqual(
-    titles.map((title) => [[{ kind: "Artifact", title, status: "active" }], [{ edge_kind: "produced_by", from_index: 0, to_id: question.id }]]),
+  expect(
+    bodies.map(({ items, edges }) => [
+      items.map(({ idempotency_key, ...item }: { idempotency_key: string }) => item),
+      edges,
+    ]),
+  ).toEqual(
+    titles.map((title) => [
+      [{ kind: "Artifact", title, status: "active" }],
+      [{ edge_kind: "produced_by", from_index: 0, to_id: question.id }],
+    ]),
   );
-  expect(bodies[0].items[0].idempotency_key).not.toBe(bodies[1].items[0].idempotency_key);
+  expect(bodies[0].items[0].idempotency_key).not.toBe(
+    bodies[1].items[0].idempotency_key,
+  );
   const produces = await (await request.get(`/api/web/get/${question.id}`)).json();
-  expect(produces.backlinks.produced_by.map((peer: { title: string }) => peer.title).sort()).toEqual([...titles].sort());
+  expect(
+    produces.backlinks.produced_by.map((peer: { title: string }) => peer.title).sort(),
+  ).toEqual([...titles].sort());
 
   await form.getByRole("button", { name: "Cancel" }).click();
   await expect(form).toBeHidden();
 });
 
-test("a form opened with C and closed puts focus back on the list's current row, not the page body", async ({ page, request }) => {
+test("a form opened with C and closed puts focus back on the list's current row, not the page body", async ({
+  page,
+  request,
+}) => {
   await createIssue(request, `D4 focus ${crypto.randomUUID().slice(0, 8)}`);
   await page.goto("/trax/list/Issue");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Issues");

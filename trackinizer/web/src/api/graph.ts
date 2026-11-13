@@ -22,7 +22,10 @@ export type GraphEdge = {
   readonly valence?: number;
 };
 
-export type Graph = { readonly nodes: readonly GraphNode[]; readonly edges: readonly GraphEdge[] };
+export type Graph = {
+  readonly nodes: readonly GraphNode[];
+  readonly edges: readonly GraphEdge[];
+};
 
 /**
  * The limit that asks for every inquiry: the largest an SQL integer holds, which
@@ -37,7 +40,10 @@ export const ALL_NODES = 2_147_483_647;
  * Written by hand from `web_graph` in `server/web.py`, which the schema types as
  * free JSON.
  */
-export async function getGraph(limit: number, { signal }: CallOptions = {}): Promise<Graph> {
+export async function getGraph(
+  limit: number,
+  { signal }: CallOptions = {},
+): Promise<Graph> {
   const graph = await send(TIMEOUT_MS.read, signal, (signal) =>
     client.GET("/api/web/graph", { params: { query: { limit } }, signal }),
   );
@@ -48,7 +54,10 @@ export async function getGraph(limit: number, { signal }: CallOptions = {}): Pro
 export type FocusNode = GraphNode & { readonly hops: number };
 
 /** A focus's neighbourhood: the inquiries nearest it, and the edges between them. */
-export type FocusGraph = { readonly nodes: readonly FocusNode[]; readonly edges: readonly GraphEdge[] };
+export type FocusGraph = {
+  readonly nodes: readonly FocusNode[];
+  readonly edges: readonly GraphEdge[];
+};
 
 /**
  * Fetch `GET /api/web/graph?focus=`: the focus and the inquiries nearest it, over

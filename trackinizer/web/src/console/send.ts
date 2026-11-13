@@ -1,8 +1,11 @@
 import { isChatHandle } from "../api/chats";
 import type { FeedEvent, MessageTarget } from "../api/sessions";
+import { must } from "../must";
 
 /** The text a line sends, and each target it names; or why it cannot be sent. */
-export type Parsed = { readonly targets: readonly MessageTarget[]; readonly text: string } | { readonly problem: string };
+export type Parsed =
+  | { readonly targets: readonly MessageTarget[]; readonly text: string }
+  | { readonly problem: string };
 
 /**
  * `line` read as the old console read it: `@agent text`, `@agent:room text`,
@@ -11,10 +14,18 @@ export type Parsed = { readonly targets: readonly MessageTarget[]; readonly text
  * first `:`, since an agent's name holds none. A line that names no target goes
  * to `to`, the view's agents.
  */
-export function parseLine(line: string, shown: readonly FeedEvent[], to: readonly MessageTarget[] = []): Parsed {
+export function parseLine(
+  line: string,
+  shown: readonly FeedEvent[],
+  to: readonly MessageTarget[] = [],
+): Parsed {
   const trimmed = line.trim();
   if (!trimmed.startsWith("@")) {
-    return to.length ? { targets: to, text: trimmed } : { problem: "Pick agents for this view, or start with a target: @agent message" };
+    return to.length
+      ? { targets: to, text: trimmed }
+      : {
+          problem: "Pick agents for this view, or start with a target: @agent message",
+        };
   }
   const space = trimmed.search(/\s/);
   const text = space < 0 ? "" : trimmed.slice(space).trim();
@@ -22,7 +33,9 @@ export function parseLine(line: string, shown: readonly FeedEvent[], to: readonl
   const spec = trimmed.slice(1, space);
   if (spec === "*") {
     const targets = broadcastTargets(shown);
-    return targets.length ? { targets, text } : { problem: "No agents are shown to send to" };
+    return targets.length
+      ? { targets, text }
+      : { problem: "No agents are shown to send to" };
   }
   const targets: MessageTarget[] = [];
   for (const part of spec.split(",").map((name) => name.replace(/^@/, ""))) {
@@ -32,7 +45,8 @@ export function parseLine(line: string, shown: readonly FeedEvent[], to: readonl
     if (!actor) return { problem: `An agent's name is missing in '${part}'` };
     if (room === "") return { problem: `A room is missing in '${part}'` };
     // A science chat takes lines from its own Chat alone: the server refuses a browser's message to one.
-    if (isChatHandle(actor)) return { problem: `${actor} is a chat: only its own Chat posts to it` };
+    if (isChatHandle(actor))
+      return { problem: `${actor} is a chat: only its own Chat posts to it` };
     targets.push({ actor, room });
   }
   return { targets, text };
@@ -72,15 +86,25 @@ export function receipt(
   results: readonly PromiseSettledResult<{ readonly delivered: readonly string[] }>[],
 ): string {
   const failed = results.flatMap((result, k) =>
-    result.status === "rejected" ? [`${targetName(targets[k]!)} (${messageOf(result.reason)})`] : [],
+    result.status === "rejected"
+      ? [`${targetName(must(targets[k]))} (${messageOf(result.reason)})`]
+      : [],
   );
   if (failed.length) {
     const them = failed.length === 1 ? "it" : "them";
-    throw new Error(`Not sent to ${failed.join(", ")}. Retry sends ${them} again; no session gets a message twice.`);
+    throw new Error(
+      `Not sent to ${failed.join(", ")}. Retry sends ${them} again; no session gets a message twice.`,
+    );
   }
-  const reached = results.reduce((sum, result) => sum + (result.status === "fulfilled" ? result.value.delivered.length : 0), 0);
+  const reached = results.reduce(
+    (sum, result) =>
+      sum + (result.status === "fulfilled" ? result.value.delivered.length : 0),
+    0,
+  );
   const missed = results.flatMap((result, k) =>
-    result.status === "fulfilled" && result.value.delivered.length === 0 ? [targetName(targets[k]!)] : [],
+    result.status === "fulfilled" && result.value.delivered.length === 0
+      ? [targetName(must(targets[k]))]
+      : [],
   );
   const sent = `Sent to ${reached} ${reached === 1 ? "session" : "sessions"}`;
   return missed.length ? `${sent}; no live session for ${missed.join(", ")}` : sent;

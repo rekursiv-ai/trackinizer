@@ -15,6 +15,7 @@ import { WriteButton } from "../writes/WriteButton";
 import { type BulkChange, setEach, toggleLabel } from "./edits";
 import { type BulkReport, landed, type Outcome, retryCount, useBulkEdit } from "./run";
 import "./bulk.css";
+import { must } from "../must";
 
 /**
  * The mock's bulk bar under a list with rows selected: change status, priority
@@ -24,15 +25,31 @@ import "./bulk.css";
  * with Retry for the ones that failed. The actions stay off until the report is
  * retried or closed, so a new change never replaces it.
  */
-export function BulkBar({ rows, onClear }: { rows: readonly InquiryRow[]; onClear: () => void }) {
+export function BulkBar({
+  rows,
+  onClear,
+}: {
+  rows: readonly InquiryRow[];
+  onClear: () => void;
+}) {
   const bulk = useBulkEdit();
   const offline = useWriteMode() === "disabled";
   const { report } = bulk;
   const running = report?.running ?? false;
   if (rows.length === 0 && !report) return null;
-  const apply = (change: BulkChange, at: readonly InquiryRow[] = rows) => bulk.start(change, at);
-  const button = (icon: ReactNode, label: string, ref?: Ref<HTMLButtonElement>): ReactElement => (
-    <WriteButton ref={ref} className="btn ghost" pending={report !== null} disabled={offline}>
+  const apply = (change: BulkChange, at: readonly InquiryRow[] = rows) =>
+    bulk.start(change, at);
+  const button = (
+    icon: ReactNode,
+    label: string,
+    ref?: Ref<HTMLButtonElement>,
+  ): ReactElement => (
+    <WriteButton
+      ref={ref}
+      className="btn ghost"
+      pending={report !== null}
+      disabled={offline}
+    >
       {/* The glyphs name a value (Active, P1 High); here they only mark the action. */}
       <span className="bulk-ic" aria-hidden="true">
         {icon}
@@ -42,14 +59,21 @@ export function BulkBar({ rows, onClear }: { rows: readonly InquiryRow[]; onClea
   );
   return (
     <div className="bulk-dock">
-      {report && !running ? <Report report={report} onRetry={bulk.retry} onClose={bulk.dismiss} /> : null}
+      {report && !running ? (
+        <Report report={report} onRetry={bulk.retry} onClose={bulk.dismiss} />
+      ) : null}
       {rows.length > 0 || running ? (
         <div className="bulk" role="group" aria-label="Bulk actions">
           {rows.length > 0 ? (
             <>
               <span className="sel-count">
                 {rows.length} selected
-                <button type="button" className="icon-btn" aria-label="Clear selection" onClick={onClear}>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label="Clear selection"
+                  onClick={onClear}
+                >
                   <Icon name="x" size={13} />
                 </button>
               </span>
@@ -59,14 +83,21 @@ export function BulkBar({ rows, onClear }: { rows: readonly InquiryRow[]; onClea
                   value={shared(rows.map((row) => row.priority ?? undefined))}
                   mixed={new Set(rows.map((row) => row.priority ?? null)).size > 1}
                   trigger={button(<PriorityGlyph priority={10} />, "Priority")}
-                  onPick={(to) => apply(setEach("priority", to, { label: "Priority", show: priorityText }))}
+                  onPick={(to) =>
+                    apply(
+                      setEach("priority", to, {
+                        label: "Priority",
+                        show: priorityText,
+                      }),
+                    )
+                  }
                 />
               ) : null}
               <LabelsAction rows={rows} button={button} apply={apply} />
               <OwnerAction rows={rows} button={button} apply={apply} />
             </>
           ) : null}
-          {running ? <Progress report={report!} /> : null}
+          {running ? <Progress report={must(report)} /> : null}
         </div>
       ) : null}
     </div>
@@ -75,7 +106,11 @@ export function BulkBar({ rows, onClear }: { rows: readonly InquiryRow[]; onClea
 
 type ActionProps = {
   rows: readonly InquiryRow[];
-  button: (icon: ReactNode, label: string, ref?: Ref<HTMLButtonElement>) => ReactElement;
+  button: (
+    icon: ReactNode,
+    label: string,
+    ref?: Ref<HTMLButtonElement>,
+  ) => ReactElement;
   /** Apply `change` to `at`, the rows as they were when it was chosen; by default, as shown now. */
   apply: (change: BulkChange, at?: readonly InquiryRow[]) => void;
 };
@@ -88,10 +123,24 @@ type ActionProps = {
 function StatusAction({ rows, button, apply }: ActionProps) {
   const { enums } = useMeta();
   const returnFocus = useRef<HTMLButtonElement>(null);
-  const [asking, setAsking] = useState<{ readonly to: string; readonly rows: readonly InquiryRow[]; readonly ask: ReasonAsk } | null>(null);
-  const what = rows.length === 1 ? `${rows[0]!.kind}#${rows[0]!.seq}` : `${rows.length} inquiries`;
+  const [asking, setAsking] = useState<{
+    readonly to: string;
+    readonly rows: readonly InquiryRow[];
+    readonly ask: ReasonAsk;
+  } | null>(null);
+  const what =
+    rows.length === 1
+      ? `${must(rows[0]).kind}#${must(rows[0]).seq}`
+      : `${rows.length} inquiries`;
   const set = (to: string, reason?: string, at = rows) =>
-    apply(setEach("status", to, { label: "Status", show: (value) => capitalize(String(value)), reason }), at);
+    apply(
+      setEach("status", to, {
+        label: "Status",
+        show: (value) => capitalize(String(value)),
+        reason,
+      }),
+      at,
+    );
   return (
     <>
       <Menu
@@ -115,7 +164,7 @@ function StatusAction({ rows, button, apply }: ActionProps) {
         onCancel={() => setAsking(null)}
         onConfirm={(reason) => {
           setAsking(null);
-          set(asking!.to, reason, asking!.rows);
+          set(must(asking).to, reason, must(asking).rows);
         }}
       />
     </>
@@ -128,17 +177,22 @@ function StatusAction({ rows, button, apply }: ActionProps) {
  */
 function LabelsAction({ rows, button, apply }: ActionProps) {
   const queryClient = useQueryClient();
-  const labels = new Set([...rows.flatMap((row) => row.labels ?? []), ...loadedValues(queryClient, "labels")]);
+  const labels = new Set([
+    ...rows.flatMap((row) => row.labels ?? []),
+    ...loadedValues(queryClient, "labels"),
+  ]);
   return (
     <Menu
       label="Add or remove a label…"
       trigger={button(<Icon name="tag" size={14} />, "Labels")}
-      options={[...labels].sort((a, b) => a.localeCompare(b)).map((label) => ({
-        value: label,
-        label,
-        icon: <LabelDot label={label} />,
-        checked: rows.every((row) => (row.labels ?? []).includes(label)),
-      }))}
+      options={[...labels]
+        .sort((a, b) => a.localeCompare(b))
+        .map((label) => ({
+          value: label,
+          label,
+          icon: <LabelDot label={label} />,
+          checked: rows.every((row) => (row.labels ?? []).includes(label)),
+        }))}
       create={(typed) => `Create label “${typed}”`}
       onPick={(label) => apply(toggleLabel(label, rows))}
     />
@@ -166,7 +220,9 @@ function OwnerAction({ rows, button, apply }: ActionProps) {
 
 /** How far a bulk edit has got. */
 function Progress({ report }: { report: BulkReport }) {
-  const settled = report.entries.filter((entry) => entry.outcome.status !== "pending").length;
+  const settled = report.entries.filter(
+    (entry) => entry.outcome.status !== "pending",
+  ).length;
   return (
     <span className="w-status bulk-progress" role="status">
       Saving… {settled} of {report.entries.length}
@@ -179,7 +235,15 @@ function Progress({ report }: { report: BulkReport }) {
  * retry can change: the ones that failed, and the ones someone changed first.
  * Retry is a write, so it is off while offline.
  */
-function Report({ report, onRetry, onClose }: { report: BulkReport; onRetry: () => void; onClose: () => void }) {
+function Report({
+  report,
+  onRetry,
+  onClose,
+}: {
+  report: BulkReport;
+  onRetry: () => void;
+  onClose: () => void;
+}) {
   const online = useOnline();
   const { title, entries } = report;
   const failed = entries.filter((entry) => !landed(entry));
@@ -192,7 +256,14 @@ function Report({ report, onRetry, onClose }: { report: BulkReport; onRetry: () 
       <ul className="br-rows">
         {[...failed, ...entries.filter(landed)].map(({ row, outcome }) => (
           <li key={row.id} className={`br-row is-${outcome.status}`}>
-            <Icon name={outcome.status === "done" || outcome.status === "unchanged" ? "check" : "x"} size={13} />
+            <Icon
+              name={
+                outcome.status === "done" || outcome.status === "unchanged"
+                  ? "check"
+                  : "x"
+              }
+              size={13}
+            />
             <span className="mono">
               {row.kind}#{row.seq}
             </span>
@@ -208,7 +279,12 @@ function Report({ report, onRetry, onClose }: { report: BulkReport; onRetry: () 
           Close
         </button>
         {retries > 0 ? (
-          <button type="button" className="btn primary" onClick={onRetry} disabled={!online}>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onRetry}
+            disabled={!online}
+          >
             Retry {retries} failed
           </button>
         ) : null}
@@ -221,8 +297,14 @@ function Report({ report, onRetry, onClose }: { report: BulkReport; onRetry: () 
  * The report for Copy details: each row not saved, by ref and id, never title,
  * with why. The failed requests, with their ids, are in the recent events.
  */
-function failedText(title: string, total: number, failed: readonly { row: InquiryRow; outcome: Outcome }[]): string {
-  const rows = failed.map(({ row, outcome }) => `${row.kind}#${row.seq} ${row.id}: ${resultText(outcome)}`);
+function failedText(
+  title: string,
+  total: number,
+  failed: readonly { row: InquiryRow; outcome: Outcome }[],
+): string {
+  const rows = failed.map(
+    ({ row, outcome }) => `${row.kind}#${row.seq} ${row.id}: ${resultText(outcome)}`,
+  );
   return [`${title}: ${failed.length} of ${total} not saved.`, ...rows].join("\n");
 }
 

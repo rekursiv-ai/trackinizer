@@ -1,28 +1,52 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import type { Detail, DetailRow } from "../api/detail";
 import type { InquiryRow } from "../api/inquiries";
 import { stubFetch } from "../api/testing";
 import { type Meta, MetaContext } from "../app/boot";
 import { PaletteContext, usePaletteState } from "../commands/palette";
-import { type Command, CommandRegistry, CommandRegistryContext, useCommands } from "../commands/registry";
+import {
+  type Command,
+  CommandRegistry,
+  CommandRegistryContext,
+  useCommands,
+} from "../commands/registry";
 import { currentRoute } from "../router/addressBar";
 import { RouterProvider } from "../router/router";
 import { markOpened } from "../detail/queries";
 import { PaletteView } from ".";
 import { SEARCH_DEBOUNCE_MS } from "./sources";
+import { must } from "../must";
 
 // The server's order puts Issue last here, so a test can see the palette ask for it first.
 const KINDS = ["Belief", "Paper", "Issue"];
-const META: Meta = { kinds: KINDS, enums: { inquiry_kind_all: KINDS }, fieldOwners: {}, edges: {} };
-const BUDGET = "query exceeded the time budget; narrow the filters or add more specific terms";
+const META: Meta = {
+  kinds: KINDS,
+  enums: { inquiry_kind_all: KINDS },
+  fieldOwners: {},
+  edges: {},
+};
+const BUDGET =
+  "query exceeded the time budget; narrow the filters or add more specific terms";
 
 function uuid(n: number): string {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
 }
 
-function row(kind: string, seq: number, title: string, fields: Partial<InquiryRow> = {}): InquiryRow & DetailRow {
+function row(
+  kind: string,
+  seq: number,
+  title: string,
+  fields: Partial<InquiryRow> = {},
+): InquiryRow & DetailRow {
   return {
     id: uuid(seq),
     kind,
@@ -40,8 +64,13 @@ function row(kind: string, seq: number, title: string, fields: Partial<InquiryRo
 }
 
 /** A cache holding one list page of `rows`, and a detail for each of `details`, opened in that order. */
-function cacheOf(rows: readonly InquiryRow[], details: readonly Detail[] = []): QueryClient {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function cacheOf(
+  rows: readonly InquiryRow[],
+  details: readonly Detail[] = [],
+): QueryClient {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
   queryClient.setQueryData(["inquiries", "list", [], "Issue", 50, 0], rows);
   for (const detail of details) {
     queryClient.setQueryData(["detail", detail.self.id], detail);
@@ -56,7 +85,11 @@ function renderPalette({
   queryClient = cacheOf([]),
   commands = [],
   searchLink = null,
-}: { queryClient?: QueryClient; commands?: readonly Command[]; searchLink?: string | null } = {}) {
+}: {
+  queryClient?: QueryClient;
+  commands?: readonly Command[];
+  searchLink?: string | null;
+} = {}) {
   function Host() {
     const palette = usePaletteState(searchLink, () => {});
     useCommands(commands);
@@ -102,7 +135,10 @@ function listed(): { [section: string]: string[] } {
   const groups = within(screen.getByRole("listbox")).queryAllByRole("group");
   return Object.fromEntries(
     groups.map((group) => [
-      group.querySelector(".pal-sec")!.textContent!.replace(/ · as of .*/, ""),
+      must(must(group.querySelector(".pal-sec")).textContent).replace(
+        / · as of .*/,
+        "",
+      ),
       within(group)
         .getAllByRole("option")
         .map((option) => option.textContent),
@@ -111,7 +147,10 @@ function listed(): { [section: string]: string[] } {
 }
 
 function active(input: HTMLElement): string | null {
-  return document.getElementById(input.getAttribute("aria-activedescendant")!)?.textContent ?? null;
+  return (
+    document.getElementById(must(input.getAttribute("aria-activedescendant")))
+      ?.textContent ?? null
+  );
 }
 
 /** Answer each search with `answer(kind, q)`, or hold it until it is aborted. */
@@ -120,13 +159,19 @@ function serveSearch(answer: (kind: string, q: string) => Response | null) {
   const sent = stubFetch((request) => {
     signals.push(request.signal);
     const query = new URL(request.url).searchParams;
-    const response = answer(query.get("kind")!, query.get("q")!);
+    const response = answer(must(query.get("kind")), must(query.get("q")));
     return (
       response ??
-      new Promise((_, reject) => request.signal.addEventListener("abort", () => reject(request.signal.reason)))
+      new Promise((_, reject) =>
+        request.signal.addEventListener("abort", () => reject(request.signal.reason)),
+      )
     );
   });
-  return { sent, signals, kinds: () => sent.map((request) => new URLSearchParams(request.query).get("kind")) };
+  return {
+    sent,
+    signals,
+    kinds: () => sent.map((request) => new URLSearchParams(request.query).get("kind")),
+  };
 }
 
 beforeEach(() => {
@@ -144,22 +189,43 @@ afterEach(() => {
 test("loaded rows and commands match while typing; the server is asked after a pause, Issues first", async () => {
   const server = serveSearch((kind) =>
     Response.json(
-      kind === "Issue" ? [row("Issue", 1, "Retry the upload"), row("Issue", 9, "Retry forever")] : [],
+      kind === "Issue"
+        ? [row("Issue", 1, "Retry the upload"), row("Issue", 9, "Retry forever")]
+        : [],
     ),
   );
-  const loaded = [row("Issue", 1, "Retry the upload"), row("Issue", 2, "Unrelated"), row("Issue", 3, "Why retry")];
+  const loaded = [
+    row("Issue", 1, "Retry the upload"),
+    row("Issue", 2, "Unrelated"),
+    row("Issue", 3, "Why retry"),
+  ];
   const hub = row("Issue", 4, "Hub");
   const input = renderPalette({
     queryClient: cacheOf(loaded, [
       {
         self: hub,
-        edges: { narrows: [{ id: uuid(5), kind: "Belief", seq: 5, title: "Retry is idempotent", status: "active" }] },
+        edges: {
+          narrows: [
+            {
+              id: uuid(5),
+              kind: "Belief",
+              seq: 5,
+              title: "Retry is idempotent",
+              status: "active",
+            },
+          ],
+        },
         backlinks: {},
         changes: [],
       },
     ]),
     commands: [
-      { id: "go.retry", title: "Go to retry queue", section: "Navigate", run: () => {} },
+      {
+        id: "go.retry",
+        title: "Go to retry queue",
+        section: "Navigate",
+        run: () => {},
+      },
       { id: "retry.key", title: "Retry shortcut", keys: ["r"], run: () => {} },
     ],
   });
@@ -167,18 +233,26 @@ test("loaded rows and commands match while typing; the server is asked after a p
   type(input, "retry");
   await pass(SEARCH_DEBOUNCE_MS - 1);
   expect(listed()).toEqual({
-    Inquiries: ["Issue#3Why retry", "Issue#1Retry the upload", "Belief#5Retry is idempotent"],
+    Inquiries: [
+      "Issue#3Why retry",
+      "Issue#1Retry the upload",
+      "Belief#5Retry is idempotent",
+    ],
     Navigate: ["Go to retry queue"],
   });
   expect(server.sent).toEqual([]);
 
   expect(active(input)).toBe("Issue#3Why retry");
-  ["ArrowUp", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"].forEach((key) => fireEvent.keyDown(input, { key }));
+  ["ArrowUp", "ArrowDown", "ArrowDown", "ArrowDown", "ArrowDown"].forEach((key) =>
+    fireEvent.keyDown(input, { key }),
+  );
   expect(active(input)).toBe("Go to retry queue");
   await pass(1);
   expect(server.kinds()).toEqual(["Issue", "Belief", "Paper"]);
   expect(listed()["From the server"]).toEqual(["Issue#9Retry forever"]);
-  expect(screen.getByText(`From the server · as of ${new Date().toLocaleTimeString()}`)).toBeTruthy();
+  expect(
+    screen.getByText(`From the server · as of ${new Date().toLocaleTimeString()}`),
+  ).toBeTruthy();
   // The row under the keyboard stays put when the server's rows arrive.
   expect(active(input)).toBe("Go to retry queue");
 });
@@ -197,17 +271,17 @@ test("a keystroke cancels the search in flight at once, and the next waits for i
   await pass(SEARCH_DEBOUNCE_MS - 1);
   expect(server.sent).toHaveLength(3);
   await pass(1);
-  expect(server.sent.slice(3).map((request) => new URLSearchParams(request.query).get("q"))).toEqual([
-    "slower",
-    "slower",
-    "slower",
-  ]);
+  expect(
+    server.sent.slice(3).map((request) => new URLSearchParams(request.query).get("q")),
+  ).toEqual(["slower", "slower", "slower"]);
 });
 
 test("a search over the time budget shows the server's message once, with Retry", async () => {
   let budget = true;
   const server = serveSearch((kind) =>
-    kind !== "Belief" && budget ? Response.json({ detail: BUDGET }, { status: 400 }) : Response.json([]),
+    kind !== "Belief" && budget
+      ? Response.json({ detail: BUDGET }, { status: 400 })
+      : Response.json([]),
   );
   const input = renderPalette();
   type(input, "title:(a+)+$");
@@ -224,8 +298,19 @@ test("a search over the time budget shows the server's message once, with Retry"
 test("picking an inquiry opens it and closes the palette; picking a command runs it", async () => {
   serveSearch(() => Response.json([]));
   const run = vi.fn();
-  const commands = [{ id: "go.activity", title: "Go to Activity", keys: ["g a"], section: "Navigate", run }];
-  const input = renderPalette({ queryClient: cacheOf([row("Issue", 7, "Ship it")]), commands });
+  const commands = [
+    {
+      id: "go.activity",
+      title: "Go to Activity",
+      keys: ["g a"],
+      section: "Navigate",
+      run,
+    },
+  ];
+  const input = renderPalette({
+    queryClient: cacheOf([row("Issue", 7, "Ship it")]),
+    commands,
+  });
   type(input, "ship");
   fireEvent.keyDown(input, { key: "Enter" });
   await pass();
@@ -267,7 +352,14 @@ test("an empty palette lists recently opened inquiries, newest first, then the c
   }));
   renderPalette({
     queryClient: cacheOf([], details),
-    commands: [{ id: "go.activity", title: "Go to Activity", section: "Navigate", run: () => {} }],
+    commands: [
+      {
+        id: "go.activity",
+        title: "Go to Activity",
+        section: "Navigate",
+        run: () => {},
+      },
+    ],
   });
   expect(listed()).toEqual({
     "Recently opened": [5, 4, 3, 2].map((seq) => `Issue#${seq}Opened ${seq}`),
@@ -276,13 +368,23 @@ test("an empty palette lists recently opened inquiries, newest first, then the c
 });
 
 test("recently opened keeps the order they were opened in when one is refetched (WEB-09)", () => {
-  const details = [1, 2, 3, 4, 5].map((seq) => ({ self: row("Issue", seq, `Opened ${seq}`), edges: {}, backlinks: {}, changes: [] }));
+  const details = [1, 2, 3, 4, 5].map((seq) => ({
+    self: row("Issue", seq, `Opened ${seq}`),
+    edges: {},
+    backlinks: {},
+    changes: [],
+  }));
   const queryClient = cacheOf([], details);
   // A live update refetches the detail opened first: it was not opened again.
   vi.advanceTimersByTime(1000);
-  queryClient.setQueryData(["detail", details[0]!.self.id], { ...details[0]!, self: { ...details[0]!.self, title: "Opened 1, edited" } });
+  queryClient.setQueryData(["detail", must(details[0]).self.id], {
+    ...must(details[0]),
+    self: { ...must(details[0]).self, title: "Opened 1, edited" },
+  });
   renderPalette({ queryClient });
-  expect(listed()["Recently opened"]).toEqual([5, 4, 3, 2].map((seq) => `Issue#${seq}Opened ${seq}`));
+  expect(listed()["Recently opened"]).toEqual(
+    [5, 4, 3, 2].map((seq) => `Issue#${seq}Opened ${seq}`),
+  );
 });
 
 test("rows that load while the palette is open are listed without a keystroke (WEB-08)", async () => {
@@ -292,7 +394,10 @@ test("rows that load while the palette is open are listed without a keystroke (W
   type(input, "retry");
   expect(listed().Inquiries).toEqual(["Issue#1Retry the upload"]);
   act(() => {
-    queryClient.setQueryData(["inquiries", "list", [], "Issue", 50, 50], [row("Issue", 2, "Retry later")]);
+    queryClient.setQueryData(
+      ["inquiries", "list", [], "Issue", 50, 50],
+      [row("Issue", 2, "Retry later")],
+    );
   });
   await pass();
   expect(listed().Inquiries).toEqual(["Issue#2Retry later", "Issue#1Retry the upload"]);
@@ -315,6 +420,8 @@ test("a search link searches at once, without waiting for a pause", async () => 
   const input = renderPalette({ searchLink: "what?" });
   expect((input as HTMLInputElement).value).toBe("what?");
   await pass();
-  expect(server.sent.map((request) => new URLSearchParams(request.query).get("q"))).toEqual(["what?", "what?", "what?"]);
+  expect(
+    server.sent.map((request) => new URLSearchParams(request.query).get("q")),
+  ).toEqual(["what?", "what?", "what?"]);
   expect(listed()["From the server"]).toEqual(["Issue#3What now?"]);
 });

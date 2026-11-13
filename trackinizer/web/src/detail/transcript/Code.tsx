@@ -3,14 +3,29 @@ import { type ReactNode, useMemo, useState } from "react";
 import { CodeFrame, useHighlighter } from "../../markdown/CodeBlock";
 import { parseJson } from "../../markdown/json";
 import { JsonView } from "../../markdown/JsonView";
-import { type AnsiRun, ansiReader, ansiRuns, clipLines, type DiffLine } from "./records";
+import {
+  type AnsiRun,
+  ansiReader,
+  ansiRuns,
+  clipLines,
+  type DiffLine,
+} from "./records";
+import { must } from "../../must";
 
 /**
  * A tool's output: a JSON object or array as a JSON view; anything else with its
  * ANSI colours, its first 20 and last 40 lines, where a failure shows, and the
  * rest in place on request.
  */
-export function Output({ text, failed, kinds }: { text: string; failed: boolean; kinds: readonly string[] }) {
+export function Output({
+  text,
+  failed,
+  kinds,
+}: {
+  text: string;
+  failed: boolean;
+  kinds: readonly string[];
+}) {
   const [whole, setWhole] = useState(false);
   const json = useMemo(() => parseJson(text), [text]);
   if (json) {
@@ -50,13 +65,27 @@ export function Output({ text, failed, kinds }: { text: string; failed: boolean;
  * once the highlighter has loaded, and only while drawn, so a closed step costs
  * nothing; `language` `""` lets highlight.js find it.
  */
-export function Code({ text, language, numbers = null }: { text: string; language: string; numbers?: readonly number[] | null }) {
+export function Code({
+  text,
+  language,
+  numbers = null,
+}: {
+  text: string;
+  language: string;
+  numbers?: readonly number[] | null;
+}) {
   const [whole, setWhole] = useState(false);
   const highlighter = useHighlighter(true);
-  const coloured = useMemo(() => highlighter?.highlightLines(text, language), [highlighter, text, language]);
+  const coloured = useMemo(
+    () => highlighter?.highlightLines(text, language),
+    [highlighter, text, language],
+  );
   const rows = text.replace(/\n$/, "").split("\n");
   const hidden = rows.length - 60;
-  const shown = whole || hidden <= 0 ? rows.keys() : [...range(0, 20), -1, ...range(rows.length - 40, rows.length)];
+  const shown =
+    whole || hidden <= 0
+      ? rows.keys()
+      : [...range(0, 20), -1, ...range(rows.length - 40, rows.length)];
   return (
     <CodeFrame text={text} what="code">
       <pre className="tr-code">
@@ -85,7 +114,13 @@ export function Code({ text, language, numbers = null }: { text: string; languag
  * one's (context and added) are each coloured as one text, so a string over
  * several lines keeps its colour, and one side's never runs into the other's.
  */
-export function Diff({ lines, language }: { lines: readonly DiffLine[]; language: string }) {
+export function Diff({
+  lines,
+  language,
+}: {
+  lines: readonly DiffLine[];
+  language: string;
+}) {
   const highlighter = useHighlighter(Boolean(language));
   const sides = useMemo(() => {
     const side = (kind: "del" | "add") =>
@@ -93,7 +128,12 @@ export function Diff({ lines, language }: { lines: readonly DiffLine[]; language
         .filter((line) => line.kind === "ctx" || line.kind === kind)
         .map((line) => line.text.slice(1))
         .join("\n");
-    return highlighter && { del: highlighter.highlightLines(side("del"), language), add: highlighter.highlightLines(side("add"), language) };
+    return (
+      highlighter && {
+        del: highlighter.highlightLines(side("del"), language),
+        add: highlighter.highlightLines(side("add"), language),
+      }
+    );
   }, [highlighter, lines, language]);
   let [old, next] = [0, 0];
   return (
@@ -101,7 +141,12 @@ export function Diff({ lines, language }: { lines: readonly DiffLine[]; language
       {lines.map((line, k) => {
         // A context line is on both sides; it takes the new side's colours.
         if (line.kind === "ctx") old++;
-        const tokens = line.kind === "hunk" ? undefined : line.kind === "del" ? sides?.del?.[old++] : sides?.add?.[next++];
+        const tokens =
+          line.kind === "hunk"
+            ? undefined
+            : line.kind === "del"
+              ? sides?.del?.[old++]
+              : sides?.add?.[next++];
         return (
           <span key={k} className={`ln d-${line.kind}`} data-n={line.line ?? undefined}>
             {tokens ? (
@@ -133,7 +178,7 @@ export function AnsiLines({ text }: { text: string }) {
   for (const run of ansiRuns(text)) {
     run.text.split("\n").forEach((part, k) => {
       if (k) lines.push([]);
-      if (part) lines.at(-1)!.push({ text: part, style: run.style });
+      if (part) must(lines.at(-1)).push({ text: part, style: run.style });
     });
   }
   return lines.map((runs, k) => (
@@ -162,7 +207,14 @@ function Tokens({ nodes }: { nodes: readonly ElementContent[] }): ReactNode {
     node.type === "text" ? (
       node.value
     ) : node.type === "element" ? (
-      <span key={k} className={Array.isArray(node.properties.className) ? node.properties.className.join(" ") : undefined}>
+      <span
+        key={k}
+        className={
+          Array.isArray(node.properties.className)
+            ? node.properties.className.join(" ")
+            : undefined
+        }
+      >
         <Tokens nodes={node.children} />
       </span>
     ) : null,

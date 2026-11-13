@@ -18,9 +18,13 @@ test("the palette is read again when the theme or the skin changes, so a node ta
   expect(result.current.kinds.Issue).toBe("#111111");
   root.setProperty("--g-kind-Issue", "#222222");
   // A MutationObserver reports in a microtask: the act waits for it.
-  await act(async () => { document.documentElement.dataset.skin = "matrix"; });
+  await act(async () => {
+    document.documentElement.dataset.skin = "matrix";
+  });
   expect(result.current.kinds.Issue).toBe("#222222");
   root.setProperty("--g-kind-Issue", "#333333");
-  await act(async () => { document.documentElement.dataset.theme = "light"; });
+  await act(async () => {
+    document.documentElement.dataset.theme = "light";
+  });
   expect(result.current.kinds.Issue).toBe("#333333");
 });

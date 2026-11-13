@@ -18,11 +18,14 @@ import { type Fields, log, recentEvents, setDebug } from "./log";
  */
 export function installDebug(): () => void {
   setDebug(debugAsked());
-  const uncaught = (event: ErrorEvent) => log("error", "uncaught", errorFields(event.error ?? event.message));
-  const unhandled = (event: PromiseRejectionEvent) => log("error", "unhandled_rejection", errorFields(event.reason));
+  const uncaught = (event: ErrorEvent) =>
+    log("error", "uncaught", errorFields(event.error ?? event.message));
+  const unhandled = (event: PromiseRejectionEvent) =>
+    log("error", "unhandled_rejection", errorFields(event.reason));
   addEventListener("error", uncaught);
   addEventListener("unhandledrejection", unhandled);
-  const details = () => refusedDetails() ?? errorDetails("Asked for in the console", null);
+  const details = () =>
+    refusedDetails() ?? errorDetails("Asked for in the console", null);
   Object.assign(window, { trackinizer: { events: recentEvents, details } });
   return () => {
     removeEventListener("error", uncaught);
@@ -37,7 +40,10 @@ export function installDebug(): () => void {
  * (`onCaughtError`, `onUncaughtError`), in place of its own console output.
  */
 export function logRenderError(error: unknown, info: ErrorInfo): void {
-  log("error", "render.crash", { ...errorFields(error), component_stack: info.componentStack });
+  log("error", "render.crash", {
+    ...errorFields(error),
+    component_stack: info.componentStack,
+  });
 }
 
 /** Whether the page asks for debug: `?debug=1`, or the `localStorage` switch. */
@@ -54,7 +60,8 @@ function debugAsked(): boolean {
 /** What an error says about itself; a request's failure without the server's text. */
 function errorFields(error: unknown): Fields {
   if (error instanceof ApiError) return { error: error.name, ...failureFields(error) };
-  if (error instanceof Error) return { error: error.name, message: error.message, stack: error.stack };
+  if (error instanceof Error)
+    return { error: error.name, message: error.message, stack: error.stack };
   return { error: String(error) };
 }
 

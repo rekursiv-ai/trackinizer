@@ -1,11 +1,23 @@
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ALL_NODES, type Graph } from "../api/graph";
 import { type Sent, stubFetch } from "../api/testing";
 import { MetaContext } from "../app/boot";
-import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
+import {
+  CommandRegistry,
+  CommandRegistryContext,
+  Shortcuts,
+} from "../commands/registry";
 import { LiveContext } from "../live";
 import { LiveHub } from "../live/hub";
 import { testClient } from "../live/testing";
@@ -15,6 +27,7 @@ import type { Panel } from "../ui/panel";
 import { GraphView } from ".";
 import { graphQuery } from "./live";
 import { edge, FakeRenderer, META, node, uuid } from "./testing";
+import { must } from "../must";
 
 // The list's Peek renders a whole detail; this one renders the links a detail
 // has: to the row itself (Open), to rows the graph holds, and to one it lacks,
@@ -23,7 +36,15 @@ vi.mock("../ui/Peek", async (importOriginal) => {
   const { PanelToggle } = await import("../ui/panel");
   return {
     ...(await importOriginal<typeof import("../ui/Peek")>()),
-    Peek: ({ row, panel, onClose }: { row: { kind: string; seq: number }; panel: Panel; onClose: () => void }) => (
+    Peek: ({
+      row,
+      panel,
+      onClose,
+    }: {
+      row: { kind: string; seq: number };
+      panel: Panel;
+      onClose: () => void;
+    }) => (
       <aside id="peek" aria-label="Peek" data-collapsed={panel.collapsed}>
         <h2>
           {row.kind}#{row.seq}
@@ -63,7 +84,9 @@ beforeEach(() => {
   // jsdom has none; the roots list scrolls its marked row into view.
   Element.prototype.scrollIntoView = () => {};
   sent = stubFetch(async (request) => {
-    const answer = answers.get(Number(new URL(request.url).searchParams.get("limit")))!;
+    const answer = must(
+      answers.get(Number(new URL(request.url).searchParams.get("limit"))),
+    );
     return answer instanceof Promise ? answer : Response.json(answer);
   });
 });
@@ -109,7 +132,8 @@ async function shown(count = "3 nodes") {
 }
 
 type User = ReturnType<typeof userEvent.setup>;
-const limits = () => sent.map((request) => new URLSearchParams(request.query).get("limit"));
+const limits = () =>
+  sent.map((request) => new URLSearchParams(request.query).get("limit"));
 const count = () => document.querySelector(".graph-count")?.textContent;
 const label = (option: Element) => option.querySelector(".lbl")?.textContent;
 /** Open the menu behind the button named `name`; returns its options' labels. */
@@ -118,7 +142,10 @@ async function openMenu(user: User, name: string | RegExp) {
   await user.click(screen.getByText(name, { selector: "button" }));
   return screen.getAllByRole("option").map(label);
 }
-const pick = (user: User, name: string) => user.click(screen.getAllByRole("option").find((option) => label(option) === name)!);
+const pick = (user: User, name: string) =>
+  user.click(
+    must(screen.getAllByRole("option").find((option) => label(option) === name)),
+  );
 
 test("the graph draws the newest 1,000 inquiries, framed once settled, with its count in the tools and no native select (S1, S2, S13)", async () => {
   const { container } = await shown();
@@ -128,25 +155,42 @@ test("the graph draws the newest 1,000 inquiries, framed once settled, with its 
   expect(renderer.sets).toEqual([true]);
   expect(screen.getByRole("heading", { level: 1 }).textContent).toBe("Graph");
   expect(container.querySelector(".view-h .graph-count")).toBeNull();
-  expect(container.querySelector(".view-tools .graph-count")?.textContent).toBe("3 nodes");
+  expect(container.querySelector(".view-tools .graph-count")?.textContent).toBe(
+    "3 nodes",
+  );
   expect(container.querySelector("select")).toBeNull();
 });
 
 const key = () => screen.queryByRole("complementary", { name: "Key" });
 /** The key's items in its list headed `heading`, as text. */
-const keyItems = (heading: string) => within(within(key()!).getByRole("list", { name: heading })).getAllByRole("listitem").map((item) => item.textContent);
+const keyItems = (heading: string) =>
+  within(within(must(key())).getByRole("list", { name: heading }))
+    .getAllByRole("listitem")
+    .map((item) => item.textContent);
 
 test("the key lists the kinds loaded, and the links and statuses drawn, under Kinds, Links and Status, edges as the detail names them (S8)", async () => {
   answers.set(1000, {
-    nodes: [node(1), node(2), node(3, { kind: "Paper", title: "A paper", status: "complete" })],
-    edges: [edge(2, 1), edge(3, 2, "produced_by"), edge(3, 1, "favors", { valence: -0.5 })],
+    nodes: [
+      node(1),
+      node(2),
+      node(3, { kind: "Paper", title: "A paper", status: "complete" }),
+    ],
+    edges: [
+      edge(2, 1),
+      edge(3, 2, "produced_by"),
+      edge(3, 1, "favors", { valence: -0.5 }),
+    ],
   });
   const { user } = await shown();
-  expect(within(key()!).getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["Kinds", "Links", "Status"]);
+  expect(
+    within(must(key()))
+      .getAllByRole("heading")
+      .map((heading) => heading.textContent),
+  ).toEqual(["Kinds", "Links", "Status"]);
   expect(keyItems("Kinds")).toEqual(["Issues2", "Papers1"]);
   expect(keyItems("Links")).toEqual(["Narrows", "Produced by", "Against"]);
   expect(keyItems("Status")).toEqual(["Active", "Complete"]);
-  await user.click(within(key()!).getByRole("button", { name: /^Issues/ }));
+  await user.click(within(must(key())).getByRole("button", { name: /^Issues/ }));
   // A kind hidden stays listed, without a count, to show it again; Links and Status are only what is drawn.
   expect(keyItems("Kinds")).toEqual(["Issues2", "Papers"]);
   expect(keyItems("Links")).toEqual(["Narrows"]);
@@ -155,16 +199,29 @@ test("the key lists the kinds loaded, and the links and statuses drawn, under Ki
 
 /** The key's button for the kind named `plural`, by selector: a role query here costs a test some 5 ms a call. */
 const keyKind = (plural: string) =>
-  [...document.querySelectorAll<HTMLButtonElement>(".graph-key button")].find((button) => button.textContent?.startsWith(plural))!;
-const chips = () => [...document.querySelectorAll(".fchip")].map((chip) => chip.textContent);
+  must(
+    [...document.querySelectorAll<HTMLButtonElement>(".graph-key button")].find(
+      (button) => button.textContent?.startsWith(plural),
+    ),
+  );
+const chips = () =>
+  [...document.querySelectorAll(".fchip")].map((chip) => chip.textContent);
 
 test("a kind clicked in the key shows only that kind, a hidden one clicked adds it, and the only one shown clicked shows every kind", async () => {
   answers.set(1000, {
-    nodes: [node(1), node(2), node(3, { kind: "Paper", title: "A paper" }), node(4, { kind: "Belief", title: "A belief" })],
+    nodes: [
+      node(1),
+      node(2),
+      node(3, { kind: "Paper", title: "A paper" }),
+      node(4, { kind: "Belief", title: "A belief" }),
+    ],
     edges: [],
   });
   const { user } = await shown("4 nodes");
-  const pressed = () => ["Issues", "Papers", "Beliefs"].filter((plural) => keyKind(plural).getAttribute("aria-pressed") === "true");
+  const pressed = () =>
+    ["Issues", "Papers", "Beliefs"].filter(
+      (plural) => keyKind(plural).getAttribute("aria-pressed") === "true",
+    );
   expect(pressed()).toEqual(["Issues", "Papers", "Beliefs"]);
   expect(keyKind("Papers").title).toBe("Show only Papers");
   await user.click(keyKind("Papers"));
@@ -192,12 +249,22 @@ test("a kind shown only by the key stays so as the graph changes: a kind a live 
   await user.click(keyKind("Papers"));
   expect(renderer.shown()).toEqual(["A paper"]);
   const belief = node(4, { kind: "Belief", title: "A belief" });
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { ...GRAPH, nodes: [...GRAPH.nodes, belief] }));
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, {
+      ...GRAPH,
+      nodes: [...GRAPH.nodes, belief],
+    }),
+  );
   await screen.findByText(/ of 4 nodes$/);
   expect(renderer.shown()).toEqual(["A paper"]);
   expect(keyItems("Kinds")).toEqual(["Issues", "Papers1", "Beliefs"]);
   // With no Paper left, nothing is drawn, and the key stays to show the kinds loaded again.
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1), belief], edges: [] }));
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, {
+      nodes: [node(1), belief],
+      edges: [],
+    }),
+  );
   await screen.findByText("0 of 2 nodes");
   expect(keyItems("Kinds")).toEqual(["Issues", "Beliefs"]);
 });
@@ -205,7 +272,15 @@ test("a kind shown only by the key stays so as the graph changes: a kind a live 
 test("a kind Filter hid first leaves the key's first click as it is: it shows only the kind clicked", async () => {
   sessionStorage.setItem(
     "trackinizer.v2.graph",
-    JSON.stringify({ limit: 1000, hiddenKinds: ["Belief"], hiddenStatuses: [], skipEdges: [], only: false, key: true, roots: true }),
+    JSON.stringify({
+      limit: 1000,
+      hiddenKinds: ["Belief"],
+      hiddenStatuses: [],
+      skipEdges: [],
+      only: false,
+      key: true,
+      roots: true,
+    }),
   );
   const { user } = await shown();
   await user.click(keyKind("Papers"));
@@ -219,8 +294,8 @@ test("the tools' Key button hides and shows the key, pressed while it shows; whi
   const { user } = await shown();
   const toggle = () => screen.getByRole("button", { name: "Key" });
   expect(toggle().getAttribute("aria-pressed")).toBe("true");
-  expect(toggle().getAttribute("aria-controls")).toBe(key()!.id);
-  expect(within(key()!).queryByRole("button", { name: /key/i })).toBeNull();
+  expect(toggle().getAttribute("aria-controls")).toBe(must(key()).id);
+  expect(within(must(key())).queryByRole("button", { name: /key/i })).toBeNull();
   await user.click(toggle());
   expect(key()).toBeNull();
   expect(toggle().getAttribute("aria-pressed")).toBe("false");
@@ -238,22 +313,33 @@ test("Filter hides kinds through the lists' menu, each with its count, and shows
   expect(await openMenu(user, "Filter")).toEqual(["Kind", "Status"]);
   await pick(user, "Kind");
   const kinds = screen.getAllByRole("option");
-  expect(kinds.map((option) => [label(option), option.querySelector(".hint")?.textContent])).toEqual([
+  expect(
+    kinds.map((option) => [label(option), option.querySelector(".hint")?.textContent]),
+  ).toEqual([
     ["Issues", "2"],
     ["Papers", "1"],
     ["Beliefs", "0"],
   ]);
-  expect(kinds.map((option) => option.getAttribute("aria-selected"))).toEqual(["true", "true", "true"]);
+  expect(kinds.map((option) => option.getAttribute("aria-selected"))).toEqual([
+    "true",
+    "true",
+    "true",
+  ]);
   await pick(user, "Papers");
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2"]);
   expect(renderer.links.map((link) => link.hidden)).toEqual([false, true]);
   expect(count()).toBe("2 of 3 nodes");
-  expect([...document.querySelectorAll(".fchip")].map((chip) => chip.textContent)).toEqual(["Kind is not Papers"]);
+  expect(
+    [...document.querySelectorAll(".fchip")].map((chip) => chip.textContent),
+  ).toEqual(["Kind is not Papers"]);
   expect(screen.getByRole("button", { name: /^Filter/ }).textContent).toBe("Filter1");
 });
 
 test("Filter hides statuses too; what it hides is kept for the tab, and a chip's close or Clear shows it again", async () => {
-  answers.set(1000, { ...GRAPH, nodes: [...GRAPH.nodes, node(4, { status: "invalid", title: "Gone wrong" })] });
+  answers.set(1000, {
+    ...GRAPH,
+    nodes: [...GRAPH.nodes, node(4, { status: "invalid", title: "Gone wrong" })],
+  });
   const { user } = await shown("4 nodes");
   await openMenu(user, "Filter");
   await pick(user, "Status");
@@ -261,10 +347,20 @@ test("Filter hides statuses too; what it hides is kept for the tab, and a chip's
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2", "A paper"]);
   cleanup();
   renderer = new FakeRenderer();
-  sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify({ ...JSON.parse(sessionStorage.getItem("trackinizer.v2.graph")!), hiddenKinds: ["Paper"] }));
+  sessionStorage.setItem(
+    "trackinizer.v2.graph",
+    JSON.stringify({
+      ...JSON.parse(must(sessionStorage.getItem("trackinizer.v2.graph"))),
+      hiddenKinds: ["Paper"],
+    }),
+  );
   const again = await shown("2 of 4 nodes");
-  expect([...document.querySelectorAll(".fchip")].map((chip) => chip.textContent)).toEqual(["Kind is not Papers", "Status is not Invalid"]);
-  await again.user.click(screen.getByRole("button", { name: "Remove the Kind filter" }));
+  expect(
+    [...document.querySelectorAll(".fchip")].map((chip) => chip.textContent),
+  ).toEqual(["Kind is not Papers", "Status is not Invalid"]);
+  await again.user.click(
+    screen.getByRole("button", { name: "Remove the Kind filter" }),
+  );
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2", "A paper"]);
   await again.user.click(screen.getByRole("button", { name: "Clear" }));
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2", "A paper", "Gone wrong"]);
@@ -275,8 +371,15 @@ test("the node limit offers 100, 1k, 5k and All, 1k by default; a pick reads tha
   answers.set(100, { nodes: [node(1)], edges: [] });
   answers.set(ALL_NODES, GRAPH);
   const { user } = await shown();
-  expect(await openMenu(user, "Nodes: 1k")).toEqual(["100 nodes", "1k nodes", "5k nodes", "All nodes"]);
-  expect(screen.getAllByRole("option").map((option) => option.getAttribute("aria-selected"))).toEqual(["false", "true", "false", "false"]);
+  expect(await openMenu(user, "Nodes: 1k")).toEqual([
+    "100 nodes",
+    "1k nodes",
+    "5k nodes",
+    "All nodes",
+  ]);
+  expect(
+    screen.getAllByRole("option").map((option) => option.getAttribute("aria-selected")),
+  ).toEqual(["false", "true", "false", "false"]);
   await pick(user, "100 nodes");
   expect(await screen.findByText("1 node")).toBeTruthy();
   expect(limits()).toEqual(["1000", "100"]);
@@ -299,26 +402,52 @@ test("any count can be typed as the node limit, as 2500 or 2.5k; text that is no
   expect(screen.queryAllByRole("option")).toEqual([]);
   await user.clear(screen.getByRole("combobox", { name: "Nodes to show…" }));
   await user.keyboard("2.5k");
-  expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["2,500 nodes"]);
+  expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual([
+    "2,500 nodes",
+  ]);
   await user.keyboard("{Enter}");
   expect(await screen.findByText("1 node")).toBeTruthy();
   expect(limits()).toEqual(["1000", "2500"]);
   // The typed count is offered again beside the presets, ticked.
-  expect(await openMenu(user, "Nodes: 2,500")).toEqual(["100 nodes", "1k nodes", "5k nodes", "All nodes", "2,500 nodes"]);
-  expect(screen.getAllByRole("option").at(-1)!.getAttribute("aria-selected")).toBe("true");
+  expect(await openMenu(user, "Nodes: 2,500")).toEqual([
+    "100 nodes",
+    "1k nodes",
+    "5k nodes",
+    "All nodes",
+    "2,500 nodes",
+  ]);
+  expect(must(screen.getAllByRole("option").at(-1)).getAttribute("aria-selected")).toBe(
+    "true",
+  );
 });
 
 /** A graph of `size` Issues and no edges, cheap to make. */
 function many(size: number): Graph {
   const first = node(1);
-  return { nodes: Array.from({ length: size }, (_, n) => ({ ...first, id: uuid(n + 1), seq: n + 1, title: `Issue ${n + 1}` })), edges: [] };
+  return {
+    nodes: Array.from({ length: size }, (_, n) => ({
+      ...first,
+      id: uuid(n + 1),
+      seq: n + 1,
+      title: `Issue ${n + 1}`,
+    })),
+    edges: [],
+  };
 }
 
 /** Keep a tab state that reads every inquiry, as a pick of All would. */
 const keepAll = () =>
   sessionStorage.setItem(
     "trackinizer.v2.graph",
-    JSON.stringify({ limit: ALL_NODES, hiddenKinds: [], hiddenStatuses: [], skipEdges: [], only: false, key: true, roots: true }),
+    JSON.stringify({
+      limit: ALL_NODES,
+      hiddenKinds: [],
+      hiddenStatuses: [],
+      skipEdges: [],
+      only: false,
+      key: true,
+      roots: true,
+    }),
   );
 
 /** Show every node of a 5,001-node graph; returns the question it asks first, while it shows. */
@@ -342,7 +471,9 @@ test("over 5,000 nodes the view asks before it draws, and Draw them draws", asyn
 });
 
 // Over 100 ms on x86: it reads and lays out 5,001 nodes twice.
-test("over 5,000 nodes drawn once, a limit picked again asks again", { tags: ["manual"] }, async () => {
+test("over 5,000 nodes drawn once, a limit picked again asks again", {
+  tags: ["manual"],
+}, async () => {
   const { user, asks } = await overFiveThousand();
   await user.click(screen.getByText("Draw them", { selector: "button" }));
   expect(renderer.counts).toEqual([5_001]);
@@ -360,7 +491,9 @@ test("a focus opened over 5,000 nodes is framed once Draw them draws it, not eve
   const user = userEvent.setup({ delay: null });
   show();
   await user.click(await screen.findByRole("button", { name: "Draw them" }));
-  expect(renderer.settleFrames.map((titles) => titles.slice(0, 3))).toEqual([["Issue 1", "Issue 2"]]);
+  expect(renderer.settleFrames.map((titles) => titles.slice(0, 3))).toEqual([
+    ["Issue 1", "Issue 2"],
+  ]);
 });
 
 test("Replay waits for Draw them too: a speed picked under the question draws nothing", async () => {
@@ -371,7 +504,7 @@ test("Replay waits for Draw them too: a speed picked under the question draws no
   await screen.findByRole("heading", { name: "Draw 5,001 nodes?" });
   await openMenu(user, "Replay");
   vi.useFakeTimers();
-  fireEvent.click(screen.getAllByRole("option")[2]!);
+  fireEvent.click(must(screen.getAllByRole("option")[2]));
   act(() => vi.advanceTimersByTime(1_000));
   expect(renderer.counts).toEqual([]);
   expect(screen.getByRole("heading", { name: "Draw 5,001 nodes?" })).toBeTruthy();
@@ -416,36 +549,61 @@ test("the zoom buttons zoom in, out and fit (F5)", async () => {
 test("every fit leaves out the strip on the canvas's right that Peek, the key while it shows, or the zoom buttons cover, whichever reaches furthest in; showing or hiding the key frames again", async () => {
   // jsdom lays nothing out: an 800 by 600 canvas, the zoom buttons 44 px in from
   // its right, the key above them 180 px in, and Peek 360 px wide.
-  const boxes: [string, { left: number; top: number; right: number; bottom: number }][] = [
+  const boxes: [
+    string,
+    { left: number; top: number; right: number; bottom: number },
+  ][] = [
     [".graph-canvas", { left: 0, top: 0, right: 800, bottom: 600 }],
     [".graph-zoom", { left: 756, top: 480, right: 788, bottom: 588 }],
     [".graph-key", { left: 620, top: 12, right: 788, bottom: 400 }],
     [".graph-peek > *", { left: 440, top: 0, right: 800, bottom: 600 }],
   ];
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    const box = boxes.find(([selector]) => this.matches(selector))?.[1] ?? { left: 0, top: 0, right: 0, bottom: 0 };
-    return { ...box, x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top } as DOMRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element,
+  ) {
+    const box = boxes.find(([selector]) => this.matches(selector))?.[1] ?? {
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+    };
+    return {
+      ...box,
+      x: box.left,
+      y: box.top,
+      width: box.right - box.left,
+      height: box.bottom - box.top,
+    } as DOMRect;
   });
   const { user } = await shown();
-  expect(renderer.covered!()).toEqual({ right: 180 });
+  expect(must(renderer.covered).call(renderer)).toEqual({ right: 180 });
   await user.click(screen.getByRole("button", { name: "Key" }));
   await user.click(screen.getByRole("button", { name: "Key" }));
-  expect(renderer.refits).toEqual([
-    { right: 44 },
-    { right: 180 },
-  ]);
-  act(() => renderer.events!.click(renderer.node("Issue 1")));
-  expect(renderer.covered!()).toEqual({ right: 360 });
+  expect(renderer.refits).toEqual([{ right: 44 }, { right: 180 }]);
+  act(() => must(renderer.events).click(renderer.node("Issue 1")));
+  expect(must(renderer.covered).call(renderer)).toEqual({ right: 360 });
 });
 
 test("an answer that changes only fields repaints; one that changes which inquiries show draws them anew", async () => {
   await shown();
   const before = renderer.repaints;
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { ...GRAPH, nodes: [node(1, { title: "Renamed" }), ...GRAPH.nodes.slice(1)] }));
-  await waitFor(() => expect(renderer.shown()).toEqual(["Renamed", "Issue 2", "A paper"]));
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, {
+      ...GRAPH,
+      nodes: [node(1, { title: "Renamed" }), ...GRAPH.nodes.slice(1)],
+    }),
+  );
+  await waitFor(() =>
+    expect(renderer.shown()).toEqual(["Renamed", "Issue 2", "A paper"]),
+  );
   expect(renderer.sets).toEqual([true]);
   expect(renderer.repaints).toBeGreaterThan(before);
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1), node(2)], edges: [edge(2, 1)] }));
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, {
+      nodes: [node(1), node(2)],
+      edges: [edge(2, 1)],
+    }),
+  );
   expect(await screen.findByText("2 nodes")).toBeTruthy();
   expect(renderer.sets).toEqual([true, false]);
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2"]);
@@ -461,19 +619,26 @@ test("the colours follow the theme: switching it reads the tokens again and repa
   const root = document.documentElement;
   root.style.setProperty("--g-kind-Issue", "#101010");
   await shown();
-  expect(renderer.nodes[0]!.look.fill).toBe("#101010");
+  expect(must(renderer.nodes[0]).look.fill).toBe("#101010");
   root.style.setProperty("--g-kind-Issue", "#202020");
   const before = renderer.repaints;
   await act(async () => root.setAttribute("data-theme", "light"));
-  expect(renderer.nodes[0]!.look.fill).toBe("#202020");
+  expect(must(renderer.nodes[0]).look.fill).toBe("#202020");
   expect(renderer.repaints).toBe(before + 1);
 });
 
 test("a graph that cannot be read says why, with Retry", async () => {
   const user = userEvent.setup({ delay: null });
-  answers.set(1000, Promise.resolve(Response.json({ detail: "The database is down." }, { status: 503 })));
+  answers.set(
+    1000,
+    Promise.resolve(
+      Response.json({ detail: "The database is down." }, { status: 503 }),
+    ),
+  );
   show();
-  expect((await screen.findByRole("alert")).textContent).toContain("The database is down.");
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    "The database is down.",
+  );
   answers.set(1000, GRAPH);
   await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("3 nodes")).toBeTruthy();
@@ -495,7 +660,11 @@ test("the console's trackinizer.graph() reads what is drawn, the selection and t
   history.replaceState(null, "", "#/graph?focus=Issue/2&hops=1");
   await shown();
   expect(debug.graph?.()).toMatchObject({
-    nodes: [{ title: "Issue 1", kind: "Issue", hidden: false }, { title: "Issue 2" }, { title: "A paper", kind: "Paper" }],
+    nodes: [
+      { title: "Issue 1", kind: "Issue", hidden: false },
+      { title: "Issue 2" },
+      { title: "A paper", kind: "Paper" },
+    ],
     links: [{ kind: "narrows" }, { kind: "favors", valence: 0.5 }],
     // Opened on a focus, the view selects it.
     selected: uuid(2),
@@ -508,30 +677,43 @@ test("the console's trackinizer.graph() reads what is drawn, the selection and t
 
 const peek = () => screen.queryByRole("complementary", { name: "Peek" });
 /** The nodes drawn dim, outside a light. */
-const dimmed = () => renderer.nodes.filter((drawn) => drawn.look.ringAlpha < 0.25).map((drawn) => drawn.title);
-const halos = () => renderer.nodes.filter((drawn) => drawn.look.halo !== null).map((drawn) => `${drawn.title}: ${drawn.look.halo}`);
+const dimmed = () =>
+  renderer.nodes
+    .filter((drawn) => drawn.look.ringAlpha < 0.25)
+    .map((drawn) => drawn.title);
+const halos = () =>
+  renderer.nodes
+    .filter((drawn) => drawn.look.halo !== null)
+    .map((drawn) => `${drawn.title}: ${drawn.look.halo}`);
 
 test("hovering a node shows its kind, status, ref and title by it, as text (S9), and lights it and its neighbours", async () => {
-  answers.set(1000, { ...GRAPH, nodes: [node(1, { title: "<b>Not bold</b>" }), ...GRAPH.nodes.slice(1)] });
+  answers.set(1000, {
+    ...GRAPH,
+    nodes: [node(1, { title: "<b>Not bold</b>" }), ...GRAPH.nodes.slice(1)],
+  });
   await shown();
-  act(() => renderer.events!.hover(renderer.node("<b>Not bold</b>")));
+  act(() => must(renderer.events).hover(renderer.node("<b>Not bold</b>")));
   const tip = screen.getByRole("tooltip");
-  expect([...tip.children].map((part) => part.textContent)).toEqual(["Issue#1", "<b>Not bold</b>", "Click opens Peek · double-click focuses here"]);
+  expect([...tip.children].map((part) => part.textContent)).toEqual([
+    "Issue#1",
+    "<b>Not bold</b>",
+    "Click opens Peek · double-click focuses here",
+  ]);
   expect(within(tip).getByRole("img", { name: "Active" })).toBeTruthy();
   expect(tip.style.left).toBe(`${10 + 12}px`);
   expect(dimmed()).toEqual(["A paper"]);
-  act(() => renderer.events!.hover(null));
+  act(() => must(renderer.events).hover(null));
   expect(screen.queryByRole("tooltip")).toBeNull();
   expect(dimmed()).toEqual([]);
 });
 
 test("a click selects a node: Peek opens on it, it takes the strong halo, and its light holds while the pointer roams; Close clears it", async () => {
   const { user } = await shown();
-  act(() => renderer.events!.click(renderer.node("Issue 1")));
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  act(() => must(renderer.events).click(renderer.node("Issue 1")));
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#1");
   expect(halos()).toEqual(["Issue 1: halo"]);
   expect(dimmed()).toEqual(["A paper"]);
-  act(() => renderer.events!.hover(renderer.node("A paper")));
+  act(() => must(renderer.events).hover(renderer.node("A paper")));
   expect(dimmed()).toEqual(["A paper"]);
   await user.click(screen.getByRole("button", { name: "Close peek" }));
   expect(peek()).toBeNull();
@@ -540,10 +722,10 @@ test("a click selects a node: Peek opens on it, it takes the strong halo, and it
 
 test("a click on the background, or Esc, clears the selection", async () => {
   const { user } = await shown();
-  act(() => renderer.events!.click(renderer.node("Issue 2")));
-  act(() => renderer.events!.click(null));
+  act(() => must(renderer.events).click(renderer.node("Issue 2")));
+  act(() => must(renderer.events).click(null));
   expect(peek()).toBeNull();
-  act(() => renderer.events!.click(renderer.node("Issue 2")));
+  act(() => must(renderer.events).click(renderer.node("Issue 2")));
   await user.keyboard("{Escape}");
   expect(peek()).toBeNull();
 });
@@ -571,11 +753,11 @@ function clickLink(name: string, init?: MouseEventInit): "peek" | "router" | "br
 
 test("a link in Peek to a node the graph draws selects it in place and centres on it; Open and others navigate", async () => {
   await shown();
-  act(() => renderer.events!.click(renderer.node("Issue 2")));
+  act(() => must(renderer.events).click(renderer.node("Issue 2")));
   expect(clickLink("Parent by ref")).toBe("peek");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#1");
   expect(clickLink("Paper by id")).toBe("peek");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Paper#3");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Paper#3");
   expect(renderer.centred).toEqual(["Issue 1", "A paper"]);
   expect(clickLink("Open")).toBe("router");
   expect(clickLink("Not drawn")).toBe("router");
@@ -583,24 +765,40 @@ test("a link in Peek to a node the graph draws selects it in place and centres o
 });
 
 test("a Peek link to a node the graph loaded but does not draw navigates: one a filter hides, or Only these leaves out", async () => {
-  const kept = { limit: 1000, hiddenKinds: ["Paper"], hiddenStatuses: [], skipEdges: [], only: false, key: true, roots: true };
+  const kept = {
+    limit: 1000,
+    hiddenKinds: ["Paper"],
+    hiddenStatuses: [],
+    skipEdges: [],
+    only: false,
+    key: true,
+    roots: true,
+  };
   sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify(kept));
   await shown("2 of 3 nodes");
-  act(() => renderer.events!.click(renderer.node("Issue 2")));
+  act(() => must(renderer.events).click(renderer.node("Issue 2")));
   expect(clickLink("Paper by id")).toBe("router");
   cleanup();
   // Within 1 hop of Issue 1 lie Issues 1 and 2; Only these hides the paper.
-  sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify({ ...kept, hiddenKinds: [], only: true }));
+  sessionStorage.setItem(
+    "trackinizer.v2.graph",
+    JSON.stringify({ ...kept, hiddenKinds: [], only: true }),
+  );
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=1");
   await shown("2 of 3 nodes");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#1");
   expect(clickLink("Paper by id")).toBe("router");
 });
 
 test("a selected node the graph no longer has is no longer selected (R3-03)", async () => {
   await shown();
-  act(() => renderer.events!.click(renderer.node("A paper")));
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1), node(2)], edges: [edge(2, 1)] }));
+  act(() => must(renderer.events).click(renderer.node("A paper")));
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, {
+      nodes: [node(1), node(2)],
+      edges: [edge(2, 1)],
+    }),
+  );
   await waitFor(() => expect(peek()).toBeNull());
   act(() => client.setQueryData(graphQuery(1000).queryKey, GRAPH));
   await screen.findByText("3 nodes");
@@ -608,7 +806,8 @@ test("a selected node the graph no longer has is no longer selected (R3-03)", as
 });
 
 const search = () => screen.getByRole("combobox", { name: "Search the graph" });
-const titles = (options: readonly Element[]) => options.map((option) => option.querySelector(".row-title")?.textContent);
+const titles = (options: readonly Element[]) =>
+  options.map((option) => option.querySelector(".row-title")?.textContent);
 
 test("search lights its matches on the canvas and lists them newest first; Enter centres on one, selects it, and keeps the query (G1-G3)", async () => {
   const { user } = await shown();
@@ -620,22 +819,33 @@ test("search lights its matches on the canvas and lists them newest first; Enter
   await user.keyboard("{ArrowDown}{ArrowDown}");
   expect(titles([screen.getByRole("option", { selected: true })])).toEqual(["Issue 1"]);
   await user.keyboard("{ArrowUp}{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#2");
   expect(renderer.centred).toEqual(["Issue 2"]);
   expect((search() as HTMLInputElement).value).toBe("issue");
   expect(titles(screen.getAllByRole("option"))).toEqual(["Issue 2", "Issue 1"]);
   // A click picks too.
-  await user.click(screen.getAllByRole("option")[1]!);
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  await user.click(must(screen.getAllByRole("option")[1]));
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#1");
 });
 
 test("search finds no node a filter hides, so a pick never centres on empty space (G4)", async () => {
-  const kept = { limit: 1000, hiddenKinds: ["Paper"], hiddenStatuses: [], skipEdges: [], only: false, key: true, roots: true };
+  const kept = {
+    limit: 1000,
+    hiddenKinds: ["Paper"],
+    hiddenStatuses: [],
+    skipEdges: [],
+    only: false,
+    key: true,
+    roots: true,
+  };
   sessionStorage.setItem("trackinizer.v2.graph", JSON.stringify(kept));
   await shown("2 of 3 nodes");
   for (const query of ["paper", "#3"]) {
     fireEvent.change(search(), { target: { value: query } });
-    expect(screen.getByRole("listbox", { name: "Matches" }).textContent, query).toContain("No matches");
+    expect(
+      screen.getByRole("listbox", { name: "Matches" }).textContent,
+      query,
+    ).toContain("No matches");
   }
 });
 
@@ -644,9 +854,14 @@ test("with a focus, search groups its matches within the focus's hops and elsewh
   answers.set(1000, { ...GRAPH, nodes: [...GRAPH.nodes, node(4)] });
   await shown("4 nodes");
   fireEvent.change(search(), { target: { value: "issue" } });
-  const group = (name: string) => within(screen.getByRole("group", { name })).getAllByRole("option");
+  const group = (name: string) =>
+    within(screen.getByRole("group", { name })).getAllByRole("option");
   expect(titles(group("Within 1 hop of Issue#1"))).toEqual(["Issue 2", "Issue 1"]);
-  expect(group("Within 1 hop of Issue#1").map((option) => option.querySelector(".row-meta")?.textContent)).toEqual(["1 hop", "focus"]);
+  expect(
+    group("Within 1 hop of Issue#1").map(
+      (option) => option.querySelector(".row-meta")?.textContent,
+    ),
+  ).toEqual(["1 hop", "focus"]);
   expect(titles(group("Elsewhere in the graph"))).toEqual(["Issue 4"]);
 });
 
@@ -654,7 +869,11 @@ test("Shift+Enter, or the panel's foot, searches every inquiry on the app's sear
   const { user } = await shown();
   await user.click(search());
   fireEvent.change(search(), { target: { value: "what?" } });
-  expect(screen.getByRole("link", { name: /Search every inquiry for “what\?”/ }).getAttribute("href")).toBe("/trax/search/what%3F");
+  expect(
+    screen
+      .getByRole("link", { name: /Search every inquiry for “what\?”/ })
+      .getAttribute("href"),
+  ).toBe("/trax/search/what%3F");
   await user.keyboard("{Shift>}{Enter}{/Shift}");
   await waitFor(() => expect(currentRoute()).toBe("#/search/what%3F"));
 });
@@ -664,9 +883,11 @@ test("search by #seq picks the first match on Enter; no match says so; Escape em
   await user.click(search());
   fireEvent.change(search(), { target: { value: "#3" } });
   await user.keyboard("{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Paper#3");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Paper#3");
   fireEvent.change(search(), { target: { value: "nothing like it" } });
-  expect(screen.getByRole("listbox", { name: "Matches" }).textContent).toContain("No matches");
+  expect(screen.getByRole("listbox", { name: "Matches" }).textContent).toContain(
+    "No matches",
+  );
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("listbox", { name: "Matches" })).toBeNull();
   expect((search() as HTMLInputElement).value).toBe("");
@@ -680,10 +901,12 @@ test("Enter after a re-read leaves fewer matches than the marked one picks a mat
   await user.click(search());
   fireEvent.change(search(), { target: { value: "issue" } });
   await user.keyboard("{ArrowDown}{ArrowDown}{ArrowDown}");
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1)], edges: [] }));
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1)], edges: [] }),
+  );
   await screen.findByText("1 of 1 node match");
   await user.keyboard("{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#1");
 });
 
 test("the keys: f fits, / goes to search", async () => {
@@ -697,18 +920,30 @@ test("the keys: f fits, / goes to search", async () => {
 
 test("Replay keeps its speeds in its own menu (F10): a pick grows the graph from nothing at that speed, and answers wait for it", async () => {
   const { user } = await shown();
-  expect(await openMenu(user, "Replay")).toEqual(["0.25x", "0.5x", "1x", "2x", "4x", "10x"]);
+  expect(await openMenu(user, "Replay")).toEqual([
+    "0.25x",
+    "0.5x",
+    "1x",
+    "2x",
+    "4x",
+    "10x",
+  ]);
   vi.useFakeTimers();
-  fireEvent.click(screen.getAllByRole("option")[0]!);
+  fireEvent.click(must(screen.getAllByRole("option")[0]));
   expect(renderer.counts).toEqual([3, 0]);
   act(() => vi.advanceTimersByTime(280));
   expect(renderer.counts).toEqual([3, 0, 1]);
   // While it runs, a pick changes its speed, and Stop is offered.
   fireEvent.click(screen.getByRole("button", { name: "Replaying at 0.25x" }));
   expect(screen.getAllByRole("option").map(label)).toContain("Stop");
-  fireEvent.click(screen.getAllByRole("option")[5]!);
+  fireEvent.click(must(screen.getAllByRole("option")[5]));
   // An answer that comes during the replay waits for it.
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1), node(2)], edges: [edge(2, 1)] }));
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, {
+      nodes: [node(1), node(2)],
+      edges: [edge(2, 1)],
+    }),
+  );
   // The wait after the first node was set at 0.25x; the next is a frame at 10x. Then the waiting answer draws.
   act(() => vi.advanceTimersByTime(280 + 16));
   expect(renderer.counts).toEqual([3, 0, 1, 2, 3, 2]);
@@ -735,16 +970,23 @@ const CHAIN: Graph = {
   nodes: [1, 2, 3, 4, 5, 6].map((n) => node(n)),
   edges: [edge(2, 1), edge(3, 2), edge(4, 3), edge(5, 3, "produced_by")],
 };
-const hopsButton = (name: RegExp) => within(screen.getByRole("group", { name: "Hops" })).getByRole("button", { name });
+const hopsButton = (name: RegExp) =>
+  within(screen.getByRole("group", { name: "Hops" })).getByRole("button", { name });
 
 test("a double-click focuses a node: the hash keeps it, the focus row counts its hops, and what lies within 1 hop is lit", async () => {
   answers.set(1000, CHAIN);
   await shown("6 nodes");
-  act(() => renderer.events!.doubleClick(renderer.node("Issue 2")));
-  await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/2&hops=1&group=none"));
+  act(() => must(renderer.events).doubleClick(renderer.node("Issue 2")));
+  await waitFor(() =>
+    expect(currentRoute()).toBe("#/graph?focus=Issue/2&hops=1&group=none"),
+  );
   const row = within(screen.getByRole("group", { name: "Focus" }));
   expect(row.getByText("Issue#2 · Issue 2")).toBeTruthy();
-  expect(within(screen.getByRole("group", { name: "Hops" })).getAllByRole("button").map((button) => button.getAttribute("aria-label"))).toEqual([
+  expect(
+    within(screen.getByRole("group", { name: "Hops" }))
+      .getAllByRole("button")
+      .map((button) => button.getAttribute("aria-label")),
+  ).toEqual([
     "1 hop, 3 nodes",
     "2 hops, 5 nodes",
     "3 hops, 5 nodes",
@@ -760,7 +1002,7 @@ test(". focuses the graph on the selected node, at the hops held", async () => {
   answers.set(1000, CHAIN);
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=2");
   const { user } = await shown("6 nodes");
-  act(() => renderer.events!.click(renderer.node("Issue 4")));
+  act(() => must(renderer.events).click(renderer.node("Issue 4")));
   await user.keyboard(".");
   await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/4&hops=2"));
 });
@@ -786,10 +1028,21 @@ test("a focus frames what it lights, and frames again for new hops, but not for 
   answers.set(1000, CHAIN);
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=1");
   const { user } = await shown("6 nodes");
-  expect(renderer.framed.map((frame) => frame.titles)).toEqual([["Issue 1", "Issue 2"]]);
+  expect(renderer.framed.map((frame) => frame.titles)).toEqual([
+    ["Issue 1", "Issue 2"],
+  ]);
   await user.click(hopsButton(/^2 hops/));
-  expect(renderer.framed.map((frame) => frame.titles).at(-1)).toEqual(["Issue 1", "Issue 2", "Issue 3"]);
-  act(() => client.setQueryData(graphQuery(1000).queryKey, { ...CHAIN, nodes: CHAIN.nodes.map((row) => ({ ...row, title: `${row.title} renamed` })) }));
+  expect(renderer.framed.map((frame) => frame.titles).at(-1)).toEqual([
+    "Issue 1",
+    "Issue 2",
+    "Issue 3",
+  ]);
+  act(() =>
+    client.setQueryData(graphQuery(1000).queryKey, {
+      ...CHAIN,
+      nodes: CHAIN.nodes.map((row) => ({ ...row, title: `${row.title} renamed` })),
+    }),
+  );
   await screen.findByText("Issue#1 · Issue 1 renamed");
   expect(renderer.framed).toHaveLength(2);
 });
@@ -797,26 +1050,44 @@ test("a focus frames what it lights, and frames again for new hops, but not for 
 test("opened on a focus, as Show in graph opens it, the view selects the focus: Peek opens on it, and what it lights is framed beside Peek", async () => {
   // jsdom lays nothing out: an 800 by 600 canvas, the zoom buttons 44 px in from
   // its right, the key above them 180 px in, and Peek 360 px wide.
-  const boxes: [string, { left: number; top: number; right: number; bottom: number }][] = [
+  const boxes: [
+    string,
+    { left: number; top: number; right: number; bottom: number },
+  ][] = [
     [".graph-canvas", { left: 0, top: 0, right: 800, bottom: 600 }],
     [".graph-zoom", { left: 756, top: 480, right: 788, bottom: 588 }],
     [".graph-key", { left: 620, top: 12, right: 788, bottom: 400 }],
     [".graph-peek > *", { left: 440, top: 0, right: 800, bottom: 600 }],
   ];
-  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-    const box = boxes.find(([selector]) => this.matches(selector))?.[1] ?? { left: 0, top: 0, right: 0, bottom: 0 };
-    return { ...box, x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top } as DOMRect;
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element,
+  ) {
+    const box = boxes.find(([selector]) => this.matches(selector))?.[1] ?? {
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+    };
+    return {
+      ...box,
+      x: box.left,
+      y: box.top,
+      width: box.right - box.left,
+      height: box.bottom - box.top,
+    } as DOMRect;
   });
   answers.set(1000, CHAIN);
   history.replaceState(null, "", "#/graph?focus=Issue/2&hops=1");
   await shown("6 nodes");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
-  expect(renderer.framed).toEqual([{ titles: ["Issue 1", "Issue 2", "Issue 3"], covered: { right: 360 } }]);
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#2");
+  expect(renderer.framed).toEqual([
+    { titles: ["Issue 1", "Issue 2", "Issue 3"], covered: { right: 360 } },
+  ]);
   expect(renderer.centred).toEqual([]);
   // A focus moved within the view selects nothing new.
-  act(() => renderer.events!.doubleClick(renderer.node("Issue 4")));
+  act(() => must(renderer.events).doubleClick(renderer.node("Issue 4")));
   await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/4&hops=1"));
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#2");
 });
 
 test("a focus by an id in capitals finds its node, and the hash spells the id in lower case", async () => {
@@ -824,7 +1095,10 @@ test("a focus by an id in capitals finds its node, and the hash spells the id in
   answers.set(1000, { nodes: [node(1), node(2, { id })], edges: [] });
   history.replaceState(null, "", `#/graph?focus=${id.toUpperCase()}&hops=1`);
   await shown("2 nodes");
-  expect(screen.getByRole("group", { name: "Focus" }).querySelector(".graph-focus-name")?.textContent).toBe(`${id} · Issue 2`);
+  expect(
+    screen.getByRole("group", { name: "Focus" }).querySelector(".graph-focus-name")
+      ?.textContent,
+  ).toBe(`${id} · Issue 2`);
   expect(currentRoute()).toBe(`#/graph?focus=${id}&hops=1`);
 });
 
@@ -833,10 +1107,19 @@ test("Only these hides what the focus leaves out, and Dim the rest shows it agai
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=2");
   const { user } = await shown("6 nodes");
   await user.click(screen.getByRole("button", { name: "Only these" }));
-  expect(screen.getByRole("button", { name: "Only these" }).getAttribute("aria-pressed")).toBe("true");
+  expect(
+    screen.getByRole("button", { name: "Only these" }).getAttribute("aria-pressed"),
+  ).toBe("true");
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2", "Issue 3"]);
   await user.click(screen.getByRole("button", { name: "Dim the rest" }));
-  expect(renderer.shown()).toEqual(["Issue 1", "Issue 2", "Issue 3", "Issue 4", "Issue 5", "Issue 6"]);
+  expect(renderer.shown()).toEqual([
+    "Issue 1",
+    "Issue 2",
+    "Issue 3",
+    "Issue 4",
+    "Issue 5",
+    "Issue 6",
+  ]);
 });
 
 test("Through walks the focus over the edge kinds ticked, and the hop counts follow", async () => {
@@ -844,19 +1127,27 @@ test("Through walks the focus over the edge kinds ticked, and the hop counts fol
   history.replaceState(null, "", "#/graph?focus=Issue/3&hops=1&group=none");
   const { user } = await shown("6 nodes");
   expect(dimmed()).toEqual(["Issue 1", "Issue 6"]);
-  expect(await openMenu(user, "Through: all edges")).toEqual(["Narrows", "Proves", "Favors", "Cites", "Produced by"]);
+  expect(await openMenu(user, "Through: all edges")).toEqual([
+    "Narrows",
+    "Proves",
+    "Favors",
+    "Cites",
+    "Produced by",
+  ]);
   await pick(user, "Produced by");
   await user.keyboard("{Escape}");
   expect(dimmed()).toEqual(["Issue 1", "Issue 5", "Issue 6"]);
   expect(hopsButton(/^All hops/).getAttribute("aria-label")).toBe("All hops, 4 nodes");
-  expect(screen.getByRole("button", { name: "Through: all but Produced by" })).toBeTruthy();
+  expect(
+    screen.getByRole("button", { name: "Through: all but Produced by" }),
+  ).toBeTruthy();
 });
 
 test("Esc clears the selection first, then the focus; the focus chip's close clears it too", async () => {
   answers.set(1000, CHAIN);
   history.replaceState(null, "", "#/graph?focus=Issue/1&hops=1");
   const { user } = await shown("6 nodes");
-  act(() => renderer.events!.click(renderer.node("Issue 2")));
+  act(() => must(renderer.events).click(renderer.node("Issue 2")));
   await user.keyboard("{Escape}");
   expect(peek()).toBeNull();
   expect(currentRoute()).toBe("#/graph?focus=Issue/1&hops=1");
@@ -864,7 +1155,7 @@ test("Esc clears the selection first, then the focus; the focus chip's close cle
   await waitFor(() => expect(currentRoute()).toBe("#/graph"));
   expect(screen.queryByRole("group", { name: "Focus" })).toBeNull();
   expect(dimmed()).toEqual([]);
-  act(() => renderer.events!.doubleClick(renderer.node("Issue 4")));
+  act(() => must(renderer.events).doubleClick(renderer.node("Issue 4")));
   await user.click(await screen.findByRole("button", { name: "Clear the focus" }));
   await waitFor(() => expect(currentRoute()).toBe("#/graph"));
 });
@@ -872,12 +1163,19 @@ test("Esc clears the selection first, then the focus; the focus chip's close cle
 test("a focus on an inquiry the graph has not loaded says so and lights nothing", async () => {
   history.replaceState(null, "", "#/graph?focus=Issue/99&hops=2");
   await shown();
-  expect(within(screen.getByRole("group", { name: "Focus" })).getByText("Issue#99 is not among the nodes loaded")).toBeTruthy();
+  expect(
+    within(screen.getByRole("group", { name: "Focus" })).getByText(
+      "Issue#99 is not among the nodes loaded",
+    ),
+  ).toBeTruthy();
   expect(dimmed()).toEqual([]);
 });
 
 // Two trees, 1 <- 2 and 3 <- 4, 3 <- 5, and 6 under no root; the newer tree, 3's, lists first.
-const TREES: Graph = { nodes: [1, 2, 3, 4, 5, 6].map((n) => node(n)), edges: [edge(2, 1), edge(4, 3), edge(5, 3)] };
+const TREES: Graph = {
+  nodes: [1, 2, 3, 4, 5, 6].map((n) => node(n)),
+  edges: [edge(2, 1), edge(4, 3), edge(5, 3)],
+};
 const rootsList = () => screen.queryByRole("listbox", { name: "Roots" });
 
 test("the graph opens grouped by root: each root's subgraph is an island, the roots labelled and listed; Group by root turns it off and on, kept in the hash, back on with the keyboard in the roots", async () => {
@@ -886,7 +1184,7 @@ test("the graph opens grouped by root: each root's subgraph is an island, the ro
   const { user } = await shown("6 nodes");
   const button = () => screen.getByRole("button", { name: "Group by root" });
   expect(button().getAttribute("aria-pressed")).toBe("true");
-  expect(Object.fromEntries(renderer.groups!)).toEqual({
+  expect(Object.fromEntries(must(renderer.groups))).toEqual({
     "Issue 1": uuid(1),
     "Issue 2": uuid(1),
     "Issue 3": uuid(3),
@@ -894,7 +1192,14 @@ test("the graph opens grouped by root: each root's subgraph is an island, the ro
     "Issue 5": uuid(3),
     "Issue 6": "unrooted",
   });
-  expect(renderer.nodes.map((drawn) => drawn.look.label?.text ?? null)).toEqual(["Issue 1", null, "Issue 3", null, null, null]);
+  expect(renderer.nodes.map((drawn) => drawn.look.label?.text ?? null)).toEqual([
+    "Issue 1",
+    null,
+    "Issue 3",
+    null,
+    null,
+    null,
+  ]);
   expect(rootsList()).not.toBeNull();
   await user.click(button());
   await waitFor(() => expect(currentRoute()).toBe("#/graph?group=none"));
@@ -912,29 +1217,38 @@ test("a root picked in the list opens in Peek and its island is framed beside Pe
   answers.set(1000, TREES);
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("6 nodes");
-  rootsList()!.focus();
+  must(rootsList()).focus();
   await user.keyboard("jj{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#1");
-  expect(renderer.framed.map((frame) => frame.titles)).toEqual([["Issue 1", "Issue 2"]]);
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#1");
+  expect(renderer.framed.map((frame) => frame.titles)).toEqual([
+    ["Issue 1", "Issue 2"],
+  ]);
   expect(renderer.centred).toEqual([]);
   // Beside Peek the list is a strip of glyphs, each named by its root.
   await user.click(screen.getByRole("option", { name: "Unrooted" }));
   expect(peek()).toBeNull();
-  expect(renderer.framed.at(-1)).toEqual({ titles: ["Issue 6"], covered: { right: 0 } });
+  expect(renderer.framed.at(-1)).toEqual({
+    titles: ["Issue 6"],
+    covered: { right: 0 },
+  });
 });
 
 test("while grouped, Peek narrows the roots list to a strip that keeps its marked root and its keys; closing Peek widens it again", async () => {
   answers.set(1000, TREES);
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("6 nodes");
-  rootsList()!.focus();
+  must(rootsList()).focus();
   await user.keyboard("jj{Enter}");
   const panel = () => screen.getByRole("complementary", { name: "Roots" });
   expect(panel().classList.contains("is-compact")).toBe(true);
   expect(screen.queryByRole("searchbox", { name: "Filter roots" })).toBeNull();
-  expect(within(rootsList()!).getByRole("option", { selected: true }).getAttribute("aria-label")).toBe("Issue#1 Issue 1");
+  expect(
+    within(must(rootsList()))
+      .getByRole("option", { selected: true })
+      .getAttribute("aria-label"),
+  ).toBe("Issue#1 Issue 1");
   await user.keyboard("k{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#3");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#3");
   await user.click(screen.getByRole("button", { name: "Close peek" }));
   expect(panel().classList.contains("is-compact")).toBe(false);
   expect(screen.getByRole("searchbox", { name: "Filter roots" })).toBeTruthy();
@@ -944,13 +1258,13 @@ test("the graph's keys work from the roots list: . focuses on the root picked, /
   answers.set(1000, TREES);
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("6 nodes");
-  rootsList()!.focus();
+  must(rootsList()).focus();
   await user.keyboard("jj{Enter}.");
   await waitFor(() => expect(currentRoute()).toBe("#/graph?focus=Issue/1&hops=1"));
   expect(document.activeElement).toBe(rootsList());
   await user.keyboard("/");
   expect(document.activeElement).toBe(search());
-  rootsList()!.focus();
+  must(rootsList()).focus();
   await user.keyboard("{Escape}");
   expect(peek()).toBeNull();
   await user.keyboard("{Escape}");
@@ -959,11 +1273,14 @@ test("the graph's keys work from the roots list: . focuses on the root picked, /
 
 test("a root's frame takes its island, the nodes laid out nearest it, not every node under it", async () => {
   // 5 is under root 1, two hops down through 2, and under root 3, one hop down: its island is 3's.
-  answers.set(1000, { nodes: [1, 2, 3, 4, 5].map((n) => node(n)), edges: [edge(2, 1), edge(4, 3), edge(5, 2), edge(5, 3, "produced_by")] });
+  answers.set(1000, {
+    nodes: [1, 2, 3, 4, 5].map((n) => node(n)),
+    edges: [edge(2, 1), edge(4, 3), edge(5, 2), edge(5, 3, "produced_by")],
+  });
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("5 nodes");
   await user.click(screen.getByText("Issue 1"));
-  expect(renderer.framed.at(-1)!.titles).toEqual(["Issue 1", "Issue 2"]);
+  expect(must(renderer.framed.at(-1)).titles).toEqual(["Issue 1", "Issue 2"]);
 });
 
 test("while grouped, a search's matches take the left column, and the roots come back once it is emptied", async () => {
@@ -985,7 +1302,7 @@ test("while grouped, the Roots list button, or [, hides the roots list and frame
   const toggle = () => screen.getByRole("button", { name: "Roots list" });
   const panel = () => screen.queryByRole("complementary", { name: "Roots" });
   expect(toggle().getAttribute("aria-pressed")).toBe("true");
-  expect(toggle().getAttribute("aria-controls")).toBe(panel()!.id);
+  expect(toggle().getAttribute("aria-controls")).toBe(must(panel()).id);
   await user.click(toggle());
   expect(panel()).toBeNull();
   expect(toggle().getAttribute("aria-pressed")).toBe("false");
@@ -1014,14 +1331,14 @@ const collapsed = () => peek()?.getAttribute("data-collapsed");
 
 test("Peek's button, or ], collapses it and frames the canvas again; the selection holds, and a click on another node selects it with Peek still collapsed, for the tab", async () => {
   const { user } = await shown();
-  act(() => renderer.events!.click(renderer.node("Issue 1")));
+  act(() => must(renderer.events).click(renderer.node("Issue 1")));
   expect(renderer.refits).toHaveLength(0);
   await user.click(screen.getByRole("button", { name: "Collapse Peek" }));
   expect(collapsed()).toBe("true");
   expect(renderer.refits).toHaveLength(1);
   expect(halos()).toEqual(["Issue 1: halo"]);
-  act(() => renderer.events!.click(renderer.node("Issue 2")));
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  act(() => must(renderer.events).click(renderer.node("Issue 2")));
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#2");
   expect(collapsed()).toBe("true");
   await user.keyboard("]");
   expect(collapsed()).toBe("false");
@@ -1030,7 +1347,7 @@ test("Peek's button, or ], collapses it and frames the canvas again; the selecti
   cleanup();
   renderer = new FakeRenderer();
   const again = await shown();
-  act(() => renderer.events!.click(renderer.node("Issue 1")));
+  act(() => must(renderer.events).click(renderer.node("Issue 1")));
   expect(collapsed()).toBe("true");
   // With no selection, Peek is gone and ] does nothing.
   await again.user.keyboard("{Escape}]");
@@ -1044,10 +1361,12 @@ test("the search results' button, or [, collapses them to a strip with their cou
   const { user } = await shown();
   await user.click(search());
   fireEvent.change(search(), { target: { value: "issue" } });
-  expect(search().getAttribute("aria-controls")).toBe(screen.getByRole("listbox", { name: "Matches" }).id);
+  expect(search().getAttribute("aria-controls")).toBe(
+    screen.getByRole("listbox", { name: "Matches" }).id,
+  );
   await user.click(screen.getByRole("button", { name: "Collapse search results" }));
-  expect(results()!.classList).toContain("panel-strip");
-  expect(results()!.textContent).toBe("2 matches");
+  expect(must(results()).classList).toContain("panel-strip");
+  expect(must(results()).textContent).toBe("2 matches");
   expect(screen.queryByRole("listbox", { name: "Matches" })).toBeNull();
   expect(search().getAttribute("aria-expanded")).toBe("false");
   expect(search().hasAttribute("aria-controls")).toBe(false);
@@ -1055,7 +1374,7 @@ test("the search results' button, or [, collapses them to a strip with their cou
   expect(halos()).toEqual(["Issue 1: match", "Issue 2: match"]);
   await user.click(search());
   await user.keyboard("{Enter}");
-  expect(within(peek()!).getByRole("heading").textContent).toBe("Issue#2");
+  expect(within(must(peek())).getByRole("heading").textContent).toBe("Issue#2");
   search().blur();
   // user-event spells the [ key "[[".
   await user.keyboard("[[");
@@ -1069,7 +1388,7 @@ test("while grouped and searching, [ collapses the search results and leaves the
   const { user } = await shown("6 nodes");
   fireEvent.change(search(), { target: { value: "issue 5" } });
   await user.keyboard("[[");
-  expect(results()!.classList).toContain("panel-strip");
+  expect(must(results()).classList).toContain("panel-strip");
   fireEvent.change(search(), { target: { value: "" } });
   expect(rootsList()).not.toBeNull();
 });
@@ -1078,7 +1397,7 @@ test("beside a collapsed Peek, the roots list keeps its width", async () => {
   answers.set(1000, TREES);
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("6 nodes");
-  rootsList()!.focus();
+  must(rootsList()).focus();
   await user.keyboard("jj{Enter}");
   const panel = () => screen.getByRole("complementary", { name: "Roots" });
   expect(panel().classList.contains("is-compact")).toBe(true);

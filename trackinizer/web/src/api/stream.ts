@@ -1,4 +1,3 @@
-
 import type { paths } from "./generated/schema";
 import { pageUrl } from "./signedIn";
 
@@ -47,19 +46,27 @@ export type EventsListener = Pick<StreamListener, "open" | "drop" | "refuse"> & 
  * `data: {"id": "<subject uuid>"}` with no event name or resume, plus a
  * `ping` event every 25 s idle. Returns a function that closes the stream for good.
  */
-export function openStream(listener: StreamListener, options: StreamOptions = {}): () => void {
-  return openEvents(SUBSCRIBE_PATH, {
-    open: listener.open,
-    drop: listener.drop,
-    refuse: listener.refuse,
-    data: (data) => {
-      const id = subjectId(data);
-      // Logged, not thrown: one bad frame must not stop the stream, but a silent
-      // skip would hide the server's frame shape drifting from this parser.
-      if (id === null) console.warn("Ignored a live-stream frame without an id.", data);
-      else listener.change(id);
+export function openStream(
+  listener: StreamListener,
+  options: StreamOptions = {},
+): () => void {
+  return openEvents(
+    SUBSCRIBE_PATH,
+    {
+      open: listener.open,
+      drop: listener.drop,
+      refuse: listener.refuse,
+      data: (data) => {
+        const id = subjectId(data);
+        // Logged, not thrown: one bad frame must not stop the stream, but a silent
+        // skip would hide the server's frame shape drifting from this parser.
+        if (id === null)
+          console.warn("Ignored a live-stream frame without an id.", data);
+        else listener.change(id);
+      },
     },
-  }, options);
+    options,
+  );
 }
 
 /**
@@ -81,7 +88,11 @@ export function openStream(listener: StreamListener, options: StreamOptions = {}
  * nothing more: the server fixes whom a stream is for as it connects, so only a
  * connection made after the switch could be another's.
  */
-export function openEvents(path: string, listener: EventsListener, options: StreamOptions = {}): () => void {
+export function openEvents(
+  path: string,
+  listener: EventsListener,
+  options: StreamOptions = {},
+): () => void {
   const base = () => new URL(path, globalThis.location.origin).href;
   const connect = options.connect ?? ((url: string) => new EventSource(url));
   const delays = options.retryDelaysMs ?? RETRY_DELAYS_MS;
@@ -180,6 +191,9 @@ function subjectId(data: unknown): string | null {
   } catch {
     return null;
   }
-  const id = typeof frame === "object" && frame !== null ? (frame as { id?: unknown }).id : undefined;
+  const id =
+    typeof frame === "object" && frame !== null
+      ? (frame as { id?: unknown }).id
+      : undefined;
   return typeof id === "string" ? id : null;
 }

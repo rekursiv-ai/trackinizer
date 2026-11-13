@@ -5,6 +5,7 @@ import type { Change, DetailRow } from "../api/detail";
 import { type Sent, stubFetch } from "../api/testing";
 import { change, detail } from "../detail/testing";
 import { DEFAULT_PREFERENCES } from "../preferences";
+import { must } from "../must";
 
 /** The preferences route: the user's drafts and data are written there, and are not writes to the row. */
 const PREFERENCES = "/api/me/preferences";
@@ -34,33 +35,60 @@ export function serveRow(self: DetailRow) {
     change(field: string, value: unknown, actor: string) {
       const old = server.self[field];
       server.self = { ...server.self, [field]: value };
-      changes.unshift(change(server.self, changes.length + 1, { kind: field, actor, old: { [field]: old }, new: { [field]: value } }));
+      changes.unshift(
+        change(server.self, changes.length + 1, {
+          kind: field,
+          actor,
+          old: { [field]: old },
+          new: { [field]: value },
+        }),
+      );
     },
     /** The writes sent, as `METHOD field` and body. */
     writes: () =>
       server.sent
         .filter((request) => request.method !== "GET" && request.path !== PREFERENCES)
-        .map((request) => ({ call: `${request.method} ${request.path.split("/").at(-1)}`, body: request.body })),
+        .map((request) => ({
+          call: `${request.method} ${request.path.split("/").at(-1)}`,
+          body: request.body,
+        })),
   };
   server.sent = stubFetch(async (request) => {
     const { pathname } = new URL(request.url);
-    const at = held.findIndex((hold) => hold.method === request.method && hold.path === pathname);
-    if (at >= 0) await held.splice(at, 1)[0]!.until;
+    const at = held.findIndex(
+      (hold) => hold.method === request.method && hold.path === pathname,
+    );
+    if (at >= 0) await must(held.splice(at, 1)[0]).until;
     const row = server.self;
-    if (pathname === PREFERENCES) return Response.json({ ...DEFAULT_PREFERENCES, ...(await request.clone().json()) });
+    if (pathname === PREFERENCES)
+      return Response.json({
+        ...DEFAULT_PREFERENCES,
+        ...(await request.clone().json()),
+      });
     if (request.method === "GET") {
-      if (pathname === `/api/web/get/${row.id}`) return Response.json(detail(row, { changes }));
+      if (pathname === `/api/web/get/${row.id}`)
+        return Response.json(detail(row, { changes }));
       if (pathname === `/api/inquiries/${row.id}`) return Response.json(row);
-      if (pathname === `/api/inquiries/${row.kind}/${row.seq}`) return Response.json({ id: row.id });
-      if (pathname === `/api/inquiries/${row.id}/confidence`) return Response.json({ confidence: 0.5 });
+      if (pathname === `/api/inquiries/${row.kind}/${row.seq}`)
+        return Response.json({ id: row.id });
+      if (pathname === `/api/inquiries/${row.id}/confidence`)
+        return Response.json({ confidence: 0.5 });
       return Response.json({ detail: "not found" }, { status: 404 });
     }
     const scripted = server.answers.shift();
     if (scripted) return scripted();
-    const field = pathname.split("/").at(-1)!;
-    const body = (await request.clone().json()) as { value?: unknown; op?: string; mode?: string; expected?: unknown };
+    const field = must(pathname.split("/").at(-1));
+    const body = (await request.clone().json()) as {
+      value?: unknown;
+      op?: string;
+      mode?: string;
+      expected?: unknown;
+    };
     if (body.mode === "cas" && body.expected !== (row[field] ?? null)) {
-      return Response.json({ detail: `${field} transition rejected`, code: "conflict" }, { status: 409 });
+      return Response.json(
+        { detail: `${field} transition rejected`, code: "conflict" },
+        { status: 409 },
+      );
     }
     const list = Array.isArray(row[field]) ? (row[field] as unknown[]) : [];
     const byline = field === "authors";
@@ -73,11 +101,16 @@ export function serveRow(self: DetailRow) {
               ? [...list, body.value]
               : list
             : byline
-              ? list.toSpliced(list.indexOf(body.value), list.includes(body.value) ? 1 : 0)
+              ? list.toSpliced(
+                  list.indexOf(body.value),
+                  list.includes(body.value) ? 1 : 0,
+                )
               : list.filter((item) => item !== body.value)
           : (body.value ?? null);
-    const stored = (list: unknown) => (Array.isArray(list) && list.length === 0 ? null : list);
-    if (JSON.stringify(stored(value)) === JSON.stringify(row[field] ?? null)) return Response.json({ id: row.id, change_id: null });
+    const stored = (list: unknown) =>
+      Array.isArray(list) && list.length === 0 ? null : list;
+    if (JSON.stringify(stored(value)) === JSON.stringify(row[field] ?? null))
+      return Response.json({ id: row.id, change_id: null });
     server.change(field, stored(value), "ada@example.com");
     return Response.json({ id: row.id, change_id: `c${changes.length}` });
   });
@@ -105,10 +138,11 @@ export function prop(label: string): HTMLElement {
   // By its label: a query by role works out the style of the whole detail first,
   // some 10 ms a call, and the editors' tests call this one at every step.
   const panel = screen.getByLabelText("Properties", { selector: "aside" });
-  return within(panel).getByText(label, { selector: "dt" }).nextElementSibling as HTMLElement;
+  return within(panel).getByText(label, { selector: "dt" })
+    .nextElementSibling as HTMLElement;
 }
 
 /** The button that edits the property labelled `label`. */
 export function propButton(label: string): HTMLElement {
-  return prop(label).querySelector("button.prop-btn")!;
+  return must(prop(label).querySelector("button.prop-btn"));
 }

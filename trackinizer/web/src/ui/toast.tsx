@@ -1,5 +1,12 @@
 import { Toast } from "radix-ui";
-import { createContext, type ReactNode, useCallback, useContext, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useRef,
+  useState,
+} from "react";
 import { CopyDetails } from "../debug/CopyDetails";
 import { Icon } from "./icons";
 
@@ -29,7 +36,9 @@ const ToastContext = createContext<ShowToast | null>(null);
  * the mock, or when its action is pressed.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toasts, setToasts] = useState<({ id: number; message: string } & ToastOptions)[]>([]);
+  const [toasts, setToasts] = useState<
+    ({ id: number; message: string } & ToastOptions)[]
+  >([]);
   const nextId = useRef(0);
   const show = useCallback<ShowToast>((message, options = {}) => {
     const id = nextId.current++;
@@ -38,30 +47,36 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <Toast.Provider duration={5000} label="Notifications">
       <ToastContext value={show}>{children}</ToastContext>
-      {toasts.map(({ id, message, retry, undo, failed = retry !== undefined, error = null }) => (
-        <Toast.Root
-          key={id}
-          className="toast"
-          onOpenChange={(open) => {
-            if (!open) setToasts((shown) => shown.filter((toast) => toast.id !== id));
-          }}
-        >
-          <Icon name={failed ? "x" : "check"} size={15} className={failed ? "failed" : ""} />
-          <Toast.Description className="toast-text">{message}</Toast.Description>
-          {retry && (
-            <Toast.Action altText="Retry" onClick={retry}>
-              Retry
-            </Toast.Action>
-          )}
-          {/* Not a Toast.Action, which would close the toast and the button's answer with it. */}
-          {failed && <CopyDetails message={message} error={error} />}
-          {undo && (
-            <Toast.Action altText="Undo" onClick={undo}>
-              Undo
-            </Toast.Action>
-          )}
-        </Toast.Root>
-      ))}
+      {toasts.map(
+        ({ id, message, retry, undo, failed = retry !== undefined, error = null }) => (
+          <Toast.Root
+            key={id}
+            className="toast"
+            onOpenChange={(open) => {
+              if (!open) setToasts((shown) => shown.filter((toast) => toast.id !== id));
+            }}
+          >
+            <Icon
+              name={failed ? "x" : "check"}
+              size={15}
+              className={failed ? "failed" : ""}
+            />
+            <Toast.Description className="toast-text">{message}</Toast.Description>
+            {retry && (
+              <Toast.Action altText="Retry" onClick={retry}>
+                Retry
+              </Toast.Action>
+            )}
+            {/* Not a Toast.Action, which would close the toast and the button's answer with it. */}
+            {failed && <CopyDetails message={message} error={error} />}
+            {undo && (
+              <Toast.Action altText="Undo" onClick={undo}>
+                Undo
+              </Toast.Action>
+            )}
+          </Toast.Root>
+        ),
+      )}
       <Toast.Viewport className="toast-viewport" />
     </Toast.Provider>
   );
@@ -87,7 +102,10 @@ export function useCopy(): (text: string, done: string) => Promise<void> {
         .then(() => navigator.clipboard.writeText(text))
         .then(
           () => toast(done),
-          () => toast("Could not copy: the browser refused the clipboard.", { failed: true }),
+          () =>
+            toast("Could not copy: the browser refused the clipboard.", {
+              failed: true,
+            }),
         ),
     [toast],
   );

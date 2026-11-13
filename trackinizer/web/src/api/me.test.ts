@@ -1,5 +1,13 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { createToken, getProfile, listTokens, revokeToken, setTokenRole, signOut, type Token } from "./me";
+import {
+  createToken,
+  getProfile,
+  listTokens,
+  revokeToken,
+  setTokenRole,
+  signOut,
+  type Token,
+} from "./me";
 import { stubFetch } from "./testing";
 
 const KEY = "5d3c2b1a-0f9e-4d8c-8b7a-6e5d4c3b2a19";
@@ -36,40 +44,90 @@ test("the token list is a GET of /api/me/tokens, read from its tokens field", as
   };
   const sent = stubFetch(() => Response.json({ tokens: [token] }));
   expect(await listTokens()).toEqual([token]);
-  expect(sent).toEqual([{ method: "GET", path: "/api/me/tokens", query: "", headers: {}, body: undefined }]);
+  expect(sent).toEqual([
+    { method: "GET", path: "/api/me/tokens", query: "", headers: {}, body: undefined },
+  ]);
 });
 
 test("each token write sends its body and no idempotency key, since the server keeps none", async () => {
-  const made = { id: KEY, name: "ci", prefix: "trk_ab12", role: "viewer", secret: "trk_ab12secret" };
-  const sent = stubFetch((request) => Response.json(request.url.endsWith("/api/me/tokens") ? made : { ok: true }));
+  const made = {
+    id: KEY,
+    name: "ci",
+    prefix: "trk_ab12",
+    role: "viewer",
+    secret: "trk_ab12secret",
+  };
+  const sent = stubFetch((request) =>
+    Response.json(request.url.endsWith("/api/me/tokens") ? made : { ok: true }),
+  );
   expect(await createToken({ name: "ci", role: "viewer" })).toEqual(made);
   await createToken({ name: "default role" });
   await setTokenRole(KEY, "writer");
   await revokeToken(KEY);
   expect(sent).toEqual([
-    { method: "POST", path: "/api/me/tokens", query: "", headers: JSON_BODY, body: { name: "ci", role: "viewer" } },
-    { method: "POST", path: "/api/me/tokens", query: "", headers: JSON_BODY, body: { name: "default role" } },
-    { method: "PUT", path: `/api/me/tokens/${KEY}/role`, query: "", headers: JSON_BODY, body: { role: "writer" } },
-    { method: "POST", path: `/api/me/tokens/${KEY}/revoke`, query: "", headers: {}, body: undefined },
+    {
+      method: "POST",
+      path: "/api/me/tokens",
+      query: "",
+      headers: JSON_BODY,
+      body: { name: "ci", role: "viewer" },
+    },
+    {
+      method: "POST",
+      path: "/api/me/tokens",
+      query: "",
+      headers: JSON_BODY,
+      body: { name: "default role" },
+    },
+    {
+      method: "PUT",
+      path: `/api/me/tokens/${KEY}/role`,
+      query: "",
+      headers: JSON_BODY,
+      body: { role: "writer" },
+    },
+    {
+      method: "POST",
+      path: `/api/me/tokens/${KEY}/revoke`,
+      query: "",
+      headers: {},
+      body: undefined,
+    },
   ]);
 });
 
 test("sign out is a POST of /auth/logout that does not read the page it is sent to", async () => {
-  const sent = stubFetch(() => new Response("<!doctype html><title>Sign in</title>", { headers: { "content-type": "text/html" } }));
+  const sent = stubFetch(
+    () =>
+      new Response("<!doctype html><title>Sign in</title>", {
+        headers: { "content-type": "text/html" },
+      }),
+  );
   await signOut();
-  expect(sent).toEqual([{ method: "POST", path: "/auth/logout", query: "", headers: {}, body: undefined }]);
+  expect(sent).toEqual([
+    { method: "POST", path: "/auth/logout", query: "", headers: {}, body: undefined },
+  ]);
 });
 
 test("sign out does not follow the server's redirect to /, which a server without the old UI answers 404 (B2)", async () => {
   const sent = stubFetch((request) =>
-    request.redirect === "manual" ? new Response(null, { status: 302, headers: { location: "/" } }) : new Response("Not Found", { status: 404 }),
+    request.redirect === "manual"
+      ? new Response(null, { status: 302, headers: { location: "/" } })
+      : new Response("Not Found", { status: 404 }),
   );
   await signOut();
-  expect(sent.map((request) => `${request.method} ${request.path}`)).toEqual(["POST /auth/logout"]);
+  expect(sent.map((request) => `${request.method} ${request.path}`)).toEqual([
+    "POST /auth/logout",
+  ]);
 });
 
 test("a refused token write is an ApiError with the server's message", async () => {
-  stubFetch(() => Response.json({ detail: "requested role 'admin' exceeds ceiling 'writer'" }, { status: 403 }));
+  stubFetch(() =>
+    Response.json(
+      { detail: "requested role 'admin' exceeds ceiling 'writer'" },
+      { status: 403 },
+    ),
+  );
   await expect(createToken({ name: "x", role: "admin" })).rejects.toMatchObject({
     status: 403,
     detail: "requested role 'admin' exceeds ceiling 'writer'",
@@ -97,12 +155,23 @@ test("a save from a page read as Ada names her, and once the browser is Sam's th
   const signedIn = await import("./signedIn");
   const me = await import("./me");
   signedIn.readAs("ada@example.com", "00000000-0000-4000-8000-000000000001");
-  const sent = stubFetch(() => Response.json(
-    { detail: { code: "other_account", message: "Nothing was sent: this page was read as ada@example.com." } },
-    { status: 409 },
-  ));
-  await expect(me.setPreferences({ skin: "dos" })).rejects.toMatchObject({ status: 409, code: "other_account" });
-  expect(sent.map(({ method, path, headers }) => [method, path, headers["x-page-account"]]))
-    .toEqual([["PATCH", "/api/me/preferences", "ada@example.com"]]);
+  const sent = stubFetch(() =>
+    Response.json(
+      {
+        detail: {
+          code: "other_account",
+          message: "Nothing was sent: this page was read as ada@example.com.",
+        },
+      },
+      { status: 409 },
+    ),
+  );
+  await expect(me.setPreferences({ skin: "dos" })).rejects.toMatchObject({
+    status: 409,
+    code: "other_account",
+  });
+  expect(
+    sent.map(({ method, path, headers }) => [method, path, headers["x-page-account"]]),
+  ).toEqual([["PATCH", "/api/me/preferences", "ada@example.com"]]);
   expect(signedIn.switched()).toEqual({ page: "ada@example.com", now: null });
 });

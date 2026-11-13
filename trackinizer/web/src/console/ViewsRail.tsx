@@ -25,7 +25,14 @@ export function ViewsSection({
       <h2 className="console-h">Views</h2>
       <ul className="console-views">
         {views.map((view) => (
-          <ViewRow key={view.id} view={view} current={view.id === open.id} onOpen={onOpen} onEdit={onEdit} onRemove={onRemove} />
+          <ViewRow
+            key={view.id}
+            view={view}
+            current={view.id === open.id}
+            onOpen={onOpen}
+            onEdit={onEdit}
+            onRemove={onRemove}
+          />
         ))}
       </ul>
       <button type="button" className="console-new" onClick={() => onOpen(null)}>
@@ -70,11 +77,21 @@ function ViewRow({
           }}
         />
       ) : (
-        <button type="button" className="console-view-open" aria-current={current ? "page" : undefined} onClick={() => onOpen(view.id)}>
+        <button
+          type="button"
+          className="console-view-open"
+          aria-current={current ? "page" : undefined}
+          onClick={() => onOpen(view.id)}
+        >
           {view.name}
         </button>
       )}
-      <button type="button" className="icon-btn" aria-label={`Rename ${view.name}`} onClick={() => setRenaming(true)}>
+      <button
+        type="button"
+        className="icon-btn"
+        aria-label={`Rename ${view.name}`}
+        onClick={() => setRenaming(true)}
+      >
         <Icon name="edit" size={13} />
       </button>
       <button
@@ -86,7 +103,12 @@ function ViewRow({
       >
         <Icon name={view.pinned ? "starFill" : "star"} size={13} />
       </button>
-      <button type="button" className="icon-btn" aria-label={`Delete ${view.name}`} onClick={() => onRemove(view.id)}>
+      <button
+        type="button"
+        className="icon-btn"
+        aria-label={`Delete ${view.name}`}
+        onClick={() => onRemove(view.id)}
+      >
         <Icon name="trash" size={13} />
       </button>
     </li>

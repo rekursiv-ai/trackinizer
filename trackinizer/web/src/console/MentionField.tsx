@@ -33,7 +33,10 @@ export function MentionField({
   useLayoutEffect(() => {
     if (!adding) return;
     const { actor, rooms = [] } = adding.line;
-    const room = rooms.length > 1 ? (rooms.find((one) => context.rooms.includes(one)) ?? rooms[0]) : undefined;
+    const room =
+      rooms.length > 1
+        ? (rooms.find((one) => context.rooms.includes(one)) ?? rooms[0])
+        : undefined;
     const text = addressed(field.value, room ? `${actor}:${room}` : actor);
     edit(text);
     const box = holder.current?.querySelector("textarea") ?? null;

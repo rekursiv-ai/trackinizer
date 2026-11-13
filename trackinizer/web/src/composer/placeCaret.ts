@@ -10,8 +10,14 @@ import { useCallback, useLayoutEffect, useRef } from "react";
  * the render that puts the text in, places it and forgets it, so a later render
  * leaves the caret where the person put it. Its identity is stable.
  */
-export function useCaretPlacement(): (box: HTMLTextAreaElement | null, caret: number) => void {
-  const due = useRef<{ readonly box: HTMLTextAreaElement; readonly caret: number } | null>(null);
+export function useCaretPlacement(): (
+  box: HTMLTextAreaElement | null,
+  caret: number,
+) => void {
+  const due = useRef<{
+    readonly box: HTMLTextAreaElement;
+    readonly caret: number;
+  } | null>(null);
   useLayoutEffect(() => {
     if (!due.current) return;
     const { box, caret } = due.current;

@@ -10,7 +10,12 @@ vi.mock("./highlight", () => {
   return {
     prepare: async () => {},
     rehypeHighlightCode: () => (tree: { children: unknown[] }) => {
-      tree.children.push({ type: "element", tagName: "hr", properties: { className: ["highlighted"] }, children: [] });
+      tree.children.push({
+        type: "element",
+        tagName: "hr",
+        properties: { className: ["highlighted"] },
+        children: [],
+      });
     },
   };
 });
@@ -33,7 +38,9 @@ test("the highlighter loads only for Markdown with a code fence, once, and then 
 
   const first = renderMd("```sh\nls\n```");
   expect(first.querySelector(".highlighted")).toBeNull();
-  await vi.waitFor(() => expect(first.querySelector(".highlighted")).not.toBeNull(), { interval: 5 });
+  await vi.waitFor(() => expect(first.querySelector(".highlighted")).not.toBeNull(), {
+    interval: 5,
+  });
   // A later block needs no wait.
   expect(renderMd("~~~\nls\n~~~").querySelector(".highlighted")).not.toBeNull();
   expect(loads.count).toBe(1);

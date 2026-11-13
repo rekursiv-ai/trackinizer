@@ -1,5 +1,6 @@
 import type { FeedActorFacet, FeedFilters, MessageTarget } from "../api/sessions";
 import { type Level, levelKinds } from "./levels";
+import { must } from "../must";
 
 /** What a view picks: agents and rooms by name or pattern (`atlas-*`), CLIs by name; none picks all. */
 export type Selection = {
@@ -21,7 +22,9 @@ export type AgentGroup = {
 /** Whether `entry` matches `name`: a pattern's `*`s match any run of characters; any other entry is the name itself. */
 export function matches(entry: string, name: string): boolean {
   if (!entry.includes("*")) return entry === name;
-  const each = entry.split("*").map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"));
+  const each = entry
+    .split("*")
+    .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"));
   return new RegExp(`^${each.join(".*")}$`).test(name);
 }
 
@@ -34,9 +37,16 @@ export function isPicked(selection: readonly string[], name: string): boolean {
  * The names `selection` picks: each of `known` an entry matches, then each exact
  * entry not known, since an agent quiet in the facets' window still has records.
  */
-export function picked(selection: readonly string[], known: readonly string[]): string[] {
-  const unknown = selection.filter((entry) => !entry.includes("*") && !known.includes(entry));
-  return [...new Set(known)].filter((name) => isPicked(selection, name)).concat(unknown);
+export function picked(
+  selection: readonly string[],
+  known: readonly string[],
+): string[] {
+  const unknown = selection.filter(
+    (entry) => !entry.includes("*") && !known.includes(entry),
+  );
+  return [...new Set(known)]
+    .filter((name) => isPicked(selection, name))
+    .concat(unknown);
 }
 
 /**
@@ -45,11 +55,23 @@ export function picked(selection: readonly string[], known: readonly string[]): 
  * order the facets list them in, and its level's kinds. Null when a choice
  * picks no name, so that the feed reads nothing rather than everything.
  */
-export function feedFilter(view: Selection & { readonly level: Level }, agents: readonly FeedActorFacet[]): FeedFilters | null {
-  const actor = picked(view.agents, agents.map(({ actor }) => actor));
+export function feedFilter(
+  view: Selection & { readonly level: Level },
+  agents: readonly FeedActorFacet[],
+): FeedFilters | null {
+  const actor = picked(
+    view.agents,
+    agents.map(({ actor }) => actor),
+  );
   const room = picked(view.rooms, roomsOf(agents));
-  if ((view.agents.length && !actor.length) || (view.rooms.length && !room.length)) return null;
-  return { actor: actor.toSorted(), room: room.toSorted(), cli: view.clis.toSorted(), kind: levelKinds(view.level) };
+  if ((view.agents.length && !actor.length) || (view.rooms.length && !room.length))
+    return null;
+  return {
+    actor: actor.toSorted(),
+    room: room.toSorted(),
+    cli: view.clis.toSorted(),
+    kind: levelKinds(view.level),
+  };
 }
 
 /**
@@ -65,13 +87,17 @@ export function remember(
   const next = new Map(seen);
   for (const agent of agents) {
     const held = next.get(agent.actor);
-    if (!held || Date.parse(agent.last) >= Date.parse(held.last)) next.set(agent.actor, agent);
+    if (!held || Date.parse(agent.last) >= Date.parse(held.last))
+      next.set(agent.actor, agent);
   }
   return [...next].every(([actor, agent]) => seen.get(actor) === agent) ? seen : next;
 }
 
 /** The agents `view` shows, and whether that is every agent: it chose no agent, room or CLI. */
-export function shown(view: Selection, agents: readonly FeedActorFacet[]): { agents: FeedActorFacet[]; everyone: boolean } {
+export function shown(
+  view: Selection,
+  agents: readonly FeedActorFacet[],
+): { agents: FeedActorFacet[]; everyone: boolean } {
   const everyone = !view.agents.length && !view.rooms.length && !view.clis.length;
   const rooms = picked(view.rooms, roomsOf(agents));
   return {
@@ -86,10 +112,16 @@ export function shown(view: Selection, agents: readonly FeedActorFacet[]): { age
 }
 
 /** The agents whose name or a room holds `query`, in any case; a query with `*` is a pattern over names. */
-export function findAgents(agents: readonly FeedActorFacet[], query: string): FeedActorFacet[] {
+export function findAgents(
+  agents: readonly FeedActorFacet[],
+  query: string,
+): FeedActorFacet[] {
   const needle = query.trim().toLowerCase();
-  if (needle.includes("*")) return agents.filter(({ actor }) => matches(needle, actor.toLowerCase()));
-  return agents.filter(({ actor, rooms }) => [actor, ...rooms].some((name) => name.toLowerCase().includes(needle)));
+  if (needle.includes("*"))
+    return agents.filter(({ actor }) => matches(needle, actor.toLowerCase()));
+  return agents.filter(({ actor, rooms }) =>
+    [actor, ...rooms].some((name) => name.toLowerCase().includes(needle)),
+  );
 }
 
 /**
@@ -99,18 +131,27 @@ export function findAgents(agents: readonly FeedActorFacet[], query: string): Fe
  * five minutes and not ended; quiet is neither. A family is the name before its
  * last `-`, picked as a pattern so that it takes in new agents.
  */
-export function groupAgents(agents: readonly FeedActorFacet[], by: Grouping, now: number): AgentGroup[] {
+export function groupAgents(
+  agents: readonly FeedActorFacet[],
+  by: Grouping,
+  now: number,
+): AgentGroup[] {
   const newest = agents.toSorted((a, b) => Date.parse(b.last) - Date.parse(a.last));
   if (by === "none") return [{ key: "", agents: newest, pattern: null }];
   const groups = new Map<string, FeedActorFacet[]>();
   for (const one of newest) {
-    for (const key of keysOf(one, by, now)) groups.set(key, [...(groups.get(key) ?? []), one]);
+    for (const key of keysOf(one, by, now))
+      groups.set(key, [...(groups.get(key) ?? []), one]);
   }
-  const ordered = by === "state" ? STATES.filter((state) => groups.has(state)) : [...groups.keys()];
+  const ordered =
+    by === "state" ? STATES.filter((state) => groups.has(state)) : [...groups.keys()];
   return ordered.map((key) => {
-    const members = groups.get(key)!;
+    const members = must(groups.get(key));
     // A name with no `-` is a family of its own, which no pattern names.
-    const pattern = by === "family" && members.every(({ actor }) => actor !== key) ? `${key}-*` : null;
+    const pattern =
+      by === "family" && members.every(({ actor }) => actor !== key)
+        ? `${key}-*`
+        : null;
     return { key, agents: members, pattern };
   });
 }
@@ -120,11 +161,16 @@ export function groupAgents(agents: readonly FeedActorFacet[], by: Grouping, now
  * a family's, replaces the names it covers; without one, the names are added.
  * Clearing drops every entry that picks one of the names, a wider pattern too.
  */
-export function toggle(selection: readonly string[], names: readonly string[], pattern: string | null): string[] {
+export function toggle(
+  selection: readonly string[],
+  names: readonly string[],
+  pattern: string | null,
+): string[] {
   if (names.every((name) => isPicked(selection, name))) {
     return selection.filter((entry) => !names.some((name) => matches(entry, name)));
   }
-  if (pattern) return [...selection.filter((entry) => !matches(pattern, entry)), pattern];
+  if (pattern)
+    return [...selection.filter((entry) => !matches(pattern, entry)), pattern];
   return [...selection, ...names.filter((name) => !isPicked(selection, name))];
 }
 
@@ -133,12 +179,17 @@ export function toggle(selection: readonly string[], names: readonly string[], p
  * of its rooms among `rooms` (all of them when `rooms` is empty), or with no room
  * when it has none, since the server refuses a bare name in several rooms.
  */
-export function toTargets(agents: readonly FeedActorFacet[], rooms: readonly string[]): MessageTarget[] {
+export function toTargets(
+  agents: readonly FeedActorFacet[],
+  rooms: readonly string[],
+): MessageTarget[] {
   return agents
     .filter(({ ended }) => !ended)
     .flatMap(({ actor, rooms: in_ }): MessageTarget[] => {
       if (!in_.length) return [{ actor, room: null }];
-      return in_.filter((room) => !rooms.length || rooms.includes(room)).map((room) => ({ actor, room }));
+      return in_
+        .filter((room) => !rooms.length || rooms.includes(room))
+        .map((room) => ({ actor, room }));
     });
 }
 
@@ -153,14 +204,24 @@ const STATES = ["Working", "Quiet", "Ended"];
 const WORKING_MS = 5 * 60_000;
 
 /** The groups `agent` belongs in under `by`. */
-function keysOf(agent: FeedActorFacet, by: Exclude<Grouping, "none">, now: number): string[] {
+function keysOf(
+  agent: FeedActorFacet,
+  by: Exclude<Grouping, "none">,
+  now: number,
+): string[] {
   switch (by) {
     case "room":
       return agent.rooms.length ? [...agent.rooms] : ["(no room)"];
     case "cli":
       return [agent.cli ?? "(unknown)"];
     case "state":
-      return [agent.ended ? "Ended" : now - Date.parse(agent.last) < WORKING_MS ? "Working" : "Quiet"];
+      return [
+        agent.ended
+          ? "Ended"
+          : now - Date.parse(agent.last) < WORKING_MS
+            ? "Working"
+            : "Quiet",
+      ];
     case "family": {
       const dash = agent.actor.lastIndexOf("-");
       return [dash > 0 ? agent.actor.slice(0, dash) : agent.actor];

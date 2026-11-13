@@ -9,7 +9,12 @@ declare module "hast" {
 }
 
 /** A code block: its `pre`, the `code` in it, the language its fence names, and its text. */
-export type CodeBlockNode = { readonly pre: Element; readonly code: Element; readonly language: string | undefined; readonly text: string };
+export type CodeBlockNode = {
+  readonly pre: Element;
+  readonly code: Element;
+  readonly language: string | undefined;
+  readonly text: string;
+};
 
 /** Whether `source` has a fenced code block, which is when the highlighter loads. */
 export function hasFence(source: string): boolean {
@@ -22,8 +27,13 @@ export function* codeBlocks(tree: Root | Element): Generator<CodeBlockNode> {
     if (child.type !== "element") continue;
     const code = child.tagName === "pre" ? child.children[0] : undefined;
     if (code?.type === "element" && code.tagName === "code") {
-      const classes = Array.isArray(code.properties.className) ? code.properties.className.map(String) : [];
-      const language = classes.find((name) => name.startsWith("language-"))?.slice("language-".length).toLowerCase();
+      const classes = Array.isArray(code.properties.className)
+        ? code.properties.className.map(String)
+        : [];
+      const language = classes
+        .find((name) => name.startsWith("language-"))
+        ?.slice("language-".length)
+        .toLowerCase();
       yield { pre: child, code, language, text: textOf(code) };
     } else {
       yield* codeBlocks(child);
@@ -38,7 +48,10 @@ export function* codeBlocks(tree: Root | Element): Generator<CodeBlockNode> {
 export function rehypeJsonBlocks() {
   return (tree: Root) => {
     for (const { pre, language, text } of codeBlocks(tree)) {
-      const json = language === undefined || language === "json" || language === "jsonc" ? parseJson(text) : undefined;
+      const json =
+        language === undefined || language === "json" || language === "jsonc"
+          ? parseJson(text)
+          : undefined;
       if (json) pre.data = { ...pre.data, json };
     }
   };

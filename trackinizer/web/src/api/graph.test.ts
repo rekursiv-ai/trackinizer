@@ -1,8 +1,15 @@
 import { afterEach, expect, test, vi } from "vitest";
 import focusFixture from "../../test/testdata/graph/getGraph.focus.json";
 import fixture from "../../test/testdata/graph/getGraph.json";
-import { ALL_NODES, type FocusGraph, type Graph, getGraph, getGraphFocus } from "./graph";
+import {
+  ALL_NODES,
+  type FocusGraph,
+  type Graph,
+  getGraph,
+  getGraphFocus,
+} from "./graph";
 import { stubFetch } from "./testing";
+import { must } from "../must";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -34,7 +41,7 @@ test("getGraphFocus is a bodiless GET of /api/web/graph with the focus, hops and
   // As for getGraph, tsc checks the recorded answer against FocusGraph: every node has its hops.
   const body: FocusGraph = focusFixture.response.body;
   const sent = stubFetch(() => Response.json(body));
-  const focus = focusFixture.request.query[0]![1]!;
+  const focus = must(must(focusFixture.request.query[0])[1]);
   expect(await getGraphFocus({ focus, hops: 2, limit: 60 })).toEqual(body);
   expect(sent).toEqual([
     {
@@ -50,5 +57,7 @@ test("getGraphFocus is a bodiless GET of /api/web/graph with the focus, hops and
 test("getGraphFocus leaves hops and limit to the server when unset", async () => {
   const sent = stubFetch(() => Response.json({ nodes: [], edges: [] }));
   await getGraphFocus({ focus: "00000000-0000-4000-8000-000000000001" });
-  expect(sent.map(({ query }) => query)).toEqual(["?focus=00000000-0000-4000-8000-000000000001"]);
+  expect(sent.map(({ query }) => query)).toEqual([
+    "?focus=00000000-0000-4000-8000-000000000001",
+  ]);
 });
