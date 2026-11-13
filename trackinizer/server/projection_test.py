@@ -350,8 +350,8 @@ class TestFetchEdgesBulk:
         )
 
         out_sql, in_sql = (str(c.args[0]) for c in conn.fetch.await_args_list)
-        assert "readable_inquiry.id = edges.to_id AND ((FALSE) AND" in out_sql
-        assert "readable_inquiry.id = edges.from_id AND ((FALSE) AND" in in_sql
+        assert "readable_inquiry.id = edges.to_id AND (FALSE)" in out_sql
+        assert "readable_inquiry.id = edges.from_id AND (FALSE)" in in_sql
 
 
 def test_materialize_projects_the_rows_own_edges_onto_its_kind() -> None:
@@ -413,15 +413,12 @@ async def test_bulk_edges_keep_empty_subjects_and_bucket_both_endpoints(
     )
     assert outbound == {first: [], second: [outgoing]}
     assert inbound == {first: [incoming], second: []}
-    # Each read binds the ids, then the chat filing test's reader: the email first.
-    assert [entry.args[1:3] for entry in conn.fetch.await_args_list] == [
-        ([first, second], "reader@example.com"),
-        ([first, second], "reader@example.com"),
+    assert [entry.args[1:] for entry in conn.fetch.await_args_list] == [
+        ([first, second],),
+        ([first, second],),
     ]
-    # The chat a peer was filed from gates it under every policy.
     for sent in conn.fetch.await_args_list:
-        assert "AND (EXISTS" in str(sent.args[0])
-        assert ("((FALSE) AND (readable_inquiry." in str(sent.args[0])) is restricted
+        assert ("AND (EXISTS" in str(sent.args[0])) is restricted
 
 
 @pytest.mark.parametrize("has_edges", [False, True])

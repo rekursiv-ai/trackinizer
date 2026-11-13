@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Final, Self, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import hashlib
 import json
@@ -78,7 +78,6 @@ _INSERT_REVISION: Final = (
     "RETURNING report_id, revision, artifact_id, content, created_at"
 )
 _RECORD: Final = "SELECT kind, seq, title FROM inquiries WHERE id = $1"
-_FILED: Final = "SELECT filed_from_chat FROM inquiries WHERE id = $1"
 _EDGE: Final = (
     "SELECT valence, note FROM edges WHERE from_id = $1 "
     "AND to_id = $2 AND edge_kind = $3"
@@ -266,9 +265,13 @@ async def test_read_artifact_content_returns_the_stored_revision_or_none() -> No
 
 
 @pytest.mark.asyncio
-async def test_a_reader_reads_only_the_content_of_an_artifact_they_read() -> None:
-    """The row's read test, the store's policy's and the chat's, gates its content."""
+async def test_a_reader_reads_only_the_content_of_an_artifact_they_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store's policy gates the content as it gates the Artifact's row."""
     store, engine = make_store()
+    store.access_policy = DefaultPolicy()
+    monkeypatch.setattr(DefaultPolicy, "read_filter", Mock(return_value="FALSE"))
     artifact_id = uuid.uuid4()
     queue_field_rows(engine.conn, None)
 
@@ -281,10 +284,12 @@ async def test_a_reader_reads_only_the_content_of_an_artifact_they_read() -> Non
     assert found is None
     assert engine.conn.fetchrow.call_args is not None
     sql, *params = engine.conn.fetchrow.call_args.args
-    assert from_plain(sql, str).startswith(f"{_READ} AND (EXISTS (SELECT 1 FROM")
-    assert "readable_inquiry.filed_from_chat IS NULL" in from_plain(sql, str)
-    # The row's account, then the chat's read test of the same reader.
-    assert params[:3] == [artifact_id, "wes@example.com", ["open", "private"]]
+    assert from_plain(sql, str).startswith(_READ)
+    assert from_plain(sql, str).removeprefix(_READ) == (
+        " AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry "
+        "WHERE readable_inquiry.id = revisions.artifact_id AND (FALSE)))"
+    )
+    assert params == [artifact_id]
 
 
 def test_an_evidence_citation_names_its_claim_and_edge_together() -> None:
@@ -398,7 +403,6 @@ async def test_first_revision_creates_report_artifact_and_issue_edge() -> None:
         ("fetchrow", _RECORD, (record_id,)),
         ("fetchval", _USED, (run.user_id,)),
         ("fetchval", _NEXT_REVISION, (report_id,)),
-        ("fetchval", _FILED, (run.issue_id,)),
         ("fetchval", _CAUSE, (run.store.artifact_id,)),
         (
             "fetchrow",
@@ -460,40 +464,10 @@ async def test_next_revision_appends_to_report_and_supersedes_previous() -> None
     ]
     assert run.db.calls[4][2] == (previous_id,)
     assert run.db.calls[6] == ("fetchval", _NEXT_REVISION, (report_id,))
-    assert run.db.calls[7:9] == [
-        ("fetchval", _FILED, (run.issue_id,)),
-        ("fetchval", _FILED, (previous_id,)),
-    ]
-    assert run.db.calls[10][2][:2] == (report_id, 3)
+    assert run.db.calls[8][2][:2] == (report_id, 3)
     assert run.store.edges == [
         run.edge(to_id=run.issue_id, edge_kind="produced_by"),
         run.edge(to_id=previous_id, edge_kind="supersedes"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_a_revision_of_an_issue_filed_from_a_chat_is_filed_from_it() -> None:
-    """Unnamed, the publication takes its Issue's chat, so it is read as that chat."""
-    run = _Run()
-    began = uuid.uuid4()
-    run.db.answers[_FILED] = [began]
-
-    _ = await run.publish(_html_body(run))
-
-    filed = [
-        call
-        for call in run.db.calls
-        if call[1].startswith("UPDATE inquiries SET filed_from_chat")
-    ]
-    assert filed == [
-        (
-            "execute",
-            (
-                "UPDATE inquiries SET filed_from_chat = $2 "
-                "WHERE id = ANY($1::uuid[]) AND filed_from_chat IS NULL"
-            ),
-            ([run.store.artifact_id], began),
-        ),
     ]
 
 
@@ -891,7 +865,6 @@ class _Run:
                 _ISSUE: ["Issue"],
                 _USED: [0],
                 _NEXT_REVISION: [1],
-                _FILED: [None, None],
                 _CAUSE: [str(self.cause)],
                 _INSERT_REVISION: [_CREATED_AT],
             },

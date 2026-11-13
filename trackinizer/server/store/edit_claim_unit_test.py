@@ -20,7 +20,6 @@ from trackinizer.conftest import (
     queue_field_rows,
 )
 from trackinizer.server.access_policy import Principal
-from trackinizer.server.audience import filed_readable_sql
 from trackinizer.server.sql_fragments import CLAIM_NEXT_ISSUE_SQL
 from trackinizer.server.store import edit
 from trackinizer.server.store.change_id_slot import (
@@ -28,7 +27,6 @@ from trackinizer.server.store.change_id_slot import (
     set_client_change_id,
 )
 from trackinizer.server.store.core import Store
-from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Issue
@@ -119,19 +117,13 @@ async def test_new_claim_audits_attribution_and_projects_visible_edges(
             principal=principal,
         )
     assert claimed is issue
-    gate, bound = _chat_gate(after=2, email="reader@example.com")
     readable = (
-        vetted_sql(
-            " AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry WHERE "
-            "readable_inquiry.id = issue.id AND ((readable_inquiry.account = $2) "
-            "AND ",
-            gate,
-            ")))",
-        )
+        " AND (EXISTS (SELECT 1 FROM inquiries readable_inquiry WHERE "
+        "readable_inquiry.id = issue.id AND (readable_inquiry.account = $2)))"
         if restricted
         else ""
     )
-    args = ("worker", principal.email, *bound) if principal is not None else ("worker",)
+    args = ("worker", principal.email) if principal is not None else ("worker",)
     conn.fetchrow.assert_awaited_once_with(
         CLAIM_NEXT_ISSUE_SQL.format(readable=readable),
         *args,
@@ -356,30 +348,17 @@ async def test_replay_filters_the_original_issue_and_its_edges(claim_key: UUID) 
                 )
                 is issue
             )
-    gate, bound = _chat_gate(after=2, email=principal.email)
     conn.fetchrow.assert_awaited_with(
-        vetted_sql(
-            "SELECT * FROM inquiries WHERE id = $1 AND (EXISTS (SELECT 1 FROM "
-            "inquiries readable_inquiry WHERE readable_inquiry.id = inquiries.id "
-            "AND ((readable_inquiry.account = $2) AND ",
-            gate,
-            ")))",
-        ),
+        "SELECT * FROM inquiries WHERE id = $1 AND (EXISTS (SELECT 1 FROM "
+        "inquiries readable_inquiry WHERE readable_inquiry.id = inquiries.id "
+        "AND (readable_inquiry.account = $2)))",
         issue.id,
         principal.email,
-        *bound,
     )
     assert conn.fetchrow.call_args_list[0].args[1:] == (claim_key,)
     edges.assert_awaited_once_with(conn, issue.id, policy=policy, principal=principal)
     project.assert_called_once_with(row, {issue.id: outbound}, {issue.id: inbound})
     assert _peek_client_change_id() is None
-
-
-def _chat_gate(*, after: int, email: str) -> tuple[str, list[object]]:
-    """Return the chat test every gated read carries for ``email``, after ``after`` binds."""
-    params: list[object] = [None] * after
-    clause = filed_readable_sql("readable_inquiry", params=params, email=email)
-    return clause, params[after:]
 
 
 def _claim_audit(target: UUID) -> dict[str, object]:

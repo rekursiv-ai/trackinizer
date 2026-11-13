@@ -22,7 +22,6 @@ from trackinizer.lib.postgres import Conn
 from trackinizer.server.access_policy import DefaultPolicy, Principal
 from trackinizer.server.audience import (
     SessionReader,
-    filed_readable_sql,
     hidden_exists_sql,
 )
 from trackinizer.server.store import read
@@ -670,7 +669,7 @@ class TestPolicyGatedReads:
 
         assert await store.list_kind("Issue", principal=_READER) == []
 
-        assert "readable_inquiry.id = inquiries.id AND ((readable_inquiry.granted)" in (
+        assert "readable_inquiry.id = inquiries.id AND (readable_inquiry.granted))" in (
             _last_sql(conn.fetch)
         )
 
@@ -693,9 +692,7 @@ class TestPolicyGatedReads:
         )
         listed = _last_sql(conn.fetch)
         assert "(created" not in listed
-        # The three read tests bind the reader first, one each.
         gated: list[object] = []
-        _ = filed_readable_sql("r", params=gated, email=_READER.email)
         assert f"actor = ${3 * len(gated) + 1}" in listed
 
 
@@ -725,10 +722,7 @@ class TestProtectedHistory:
         store, _engine = make_store()
         store.access_policy = _Binding()
         params: list[object] = []
-        # Each reference binds the policy's email, then the chat filing test's values.
-        filed: list[object] = []
-        _ = filed_readable_sql("r", params=filed, email=_READER.email)
-        step = 1 + len(filed)
+        step = 1
 
         predicate = store.change_read_filter("c", params=params, principal=_READER)
 
@@ -744,13 +738,10 @@ class TestProtectedHistory:
         admin = Principal(email="root@example.com", role="admin")
 
         assert store.change_read_filter("c", params=[], principal=None) == "TRUE"
-        assert "'locked'" not in store.change_read_filter(
-            "c",
-            params=[],
-            principal=admin,
-        )
-        assert store.change_read_filter("c", params=[], principal=_READER).startswith(
-            "c.kind NOT IN ('locked', 'unlocked') AND (EXISTS",
+        assert store.change_read_filter("c", params=[], principal=admin) == "TRUE"
+        assert (
+            store.change_read_filter("c", params=[], principal=_READER)
+            == "c.kind NOT IN ('locked', 'unlocked')"
         )
 
 
