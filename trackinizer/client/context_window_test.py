@@ -2,7 +2,7 @@
 
 Every part here is read by its own provider's reader from lines shaped like the ones
 measured: claude's ``compact_boundary`` and flagged summary, codex's sealed
-``compacted`` line, the bot's ``context_splice``.
+``compacted`` line, and the bot's journal of IR records.
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from trackinizer.client.context_window import (
 )
 from trackinizer.client.conversation import Placed, Segment, lines
 from trackinizer.sagent.scripts.convert_session import claude, codex, sagent
+from trackinizer.sagent.session.jsonl import record_line
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,
@@ -183,49 +184,48 @@ def _codex_compacted(*, at: int, message: str = "") -> list[dict[str, object]]:
     ]
 
 
-def _sagent(*rows: dict[str, object]) -> list[SessionRecord]:
-    return list(sagent.normalize(StringIO("".join(json.dumps(r) + "\n" for r in rows))))
+def _sagent(*records: SessionRecord) -> list[SessionRecord]:
+    """Read ``records`` back from a journal sagent wrote of them."""
+    text = b"".join(record_line(record) for record in records).decode()
+    return list(sagent.normalize(StringIO(text)))
 
 
-def _epoch(second: int) -> float:
-    return datetime(2026, 10, 20, 10, 0, second, tzinfo=UTC).timestamp()
+def _iso(second: int) -> str:
+    return datetime(2026, 10, 20, 10, 0, second, tzinfo=UTC).isoformat()
 
 
-def _sagent_line(
-    kind: str,
-    text: str,
-    *,
-    at: int,
-    **fields: object,
-) -> dict[str, object]:
-    line: dict[str, object] = {
-        "kind": "history",
-        "ref": {"session_id": "agent", "ordinal": at},
-        "type": kind,
-        "text": text,
-        "attachments": [],
-        "id": at,
-        "parent_id": -1,
-        "timestamp": _epoch(at),
-        "hidden": False,
-    }
-    return line | fields
+def _peer(text: str, *, at: int, source: str | None = None) -> AgentToAgentMessage:
+    return AgentToAgentMessage(timestamp=_iso(at), content=text, sender=source)
 
 
-def _sagent_compaction(summary: str) -> dict[str, object]:
-    return {
-        "kind": "context_splice",
-        "ref": {"session_id": "agent", "ordinal": 99},
-        "mask": [],
-        "insert_after": None,
-        "payload": [{"type": "user", "text": summary, "timestamp": 0.0}],
-        "strategy": "summary",
-        "token_before": 9_000,
-        "token_after": 300,
-        "fallback_reason": "",
-        "preserved_tail_count": 0,
-        "paired_externally": [],
-    }
+def _answer(text: str, *, at: int) -> AssistantMessage:
+    return AssistantMessage(timestamp=_iso(at), content=text)
+
+
+def _shell(call_id: str, command: str, out: str, *, at: int) -> list[SessionRecord]:
+    """Return a Bash call and its result, as sagent journals them."""
+    return [
+        ToolCall(
+            timestamp=_iso(at),
+            call_id=call_id,
+            name="Bash",
+            arguments={"command": command},
+        ),
+        ToolResult(
+            timestamp=_iso(at + 1),
+            call_id=call_id,
+            state="done",
+            stdout=(out,),
+            result=BashResult(command=(command,)),
+        ),
+    ]
+
+
+def _sagent_compaction(summary: str) -> list[SessionRecord]:
+    return [
+        ContextCompaction(extra={"strategy": "summary", "token_before": 9_000}),
+        ContextClear(summary=summary),
+    ]
 
 
 def _segment(part: int, fmt: str, records: Sequence[SessionRecord]) -> Segment:
@@ -297,15 +297,15 @@ class TestTheCut:
 
     def test_the_cut_follows_time_order_across_parts(self) -> None:
         bot_early = _sagent(
-            _sagent_line("agent_send", "q1 before", at=1, source="ada"),
-            _sagent_line("agent_send", "q9 after", at=20, source="ada"),
+            _peer("q1 before", at=1, source="ada"),
+            _peer("q9 after", at=20, source="ada"),
         )
         compacting = _claude(
             _claude_user("claude before", uuid="u1", at=2),
             *_claude_compaction("Summary: q1 and claude before.", at=5),
             _claude_user("claude after", uuid="u2", at=6),
         )
-        bot_late = _sagent(_sagent_line("agent_send", "q10 later", at=30, source="bob"))
+        bot_late = _sagent(_peer("q10 later", at=30, source="bob"))
 
         seen = window(
             [
@@ -400,7 +400,7 @@ class TestTheCut:
             _segment(
                 0,
                 "assistant",
-                _sagent(_sagent_line("agent_send", "q1", at=1, source="ada")),
+                _sagent(_peer("q1", at=1, source="ada")),
             ),
             _segment(1, "claude", _claude(_claude_user("q2", uuid="u1", at=2))),
             _segment(
@@ -521,25 +521,15 @@ class TestTheBudget:
     """Newest whole turns within the target's budget, the note counting the rest."""
 
     def _turns(self, count: int) -> list[Segment]:
-        rows: list[dict[str, object]] = []
+        records: list[SessionRecord] = []
         for turn in range(count):
-            rows.extend(
+            records.extend(
                 [
-                    _sagent_line(
-                        "agent_send",
-                        f"q{turn:02d} " + "x" * 90,
-                        at=turn,
-                        source="ada",
-                    ),
-                    _sagent_line(
-                        "assistant",
-                        f"a{turn:02d} " + "y" * 90,
-                        at=turn,
-                        tool_calls=[],
-                    ),
+                    _peer(f"q{turn:02d} " + "x" * 90, at=turn, source="ada"),
+                    _answer(f"a{turn:02d} " + "y" * 90, at=turn),
                 ],
             )
-        return [_segment(0, "assistant", _sagent(*rows))]
+        return [_segment(0, "assistant", _sagent(*records))]
 
     def test_the_newest_whole_turns_that_fit_are_kept(self) -> None:
         parts = self._turns(40)
@@ -588,30 +578,11 @@ class TestTheBudget:
     def test_an_oversized_newest_turn_keeps_its_line_answer_and_newest_calls(
         self,
     ) -> None:
-        def call(name: str, at: int) -> list[dict[str, object]]:
-            return [
-                _sagent_line(
-                    "assistant",
-                    "",
-                    at=at,
-                    tool_calls=[
-                        {"id": name, "name": "Bash", "args": {"command": name}},
-                    ],
-                ),
-                {
-                    "kind": "history",
-                    "type": "tool_result",
-                    "call_id": name,
-                    "content": "z" * 400,
-                    "timestamp": _epoch(at),
-                },
-            ]
-
         part = _sagent(
-            _sagent_line("agent_send", "go", at=1, source="ada"),
-            *call("old", 2),
-            *call("new", 3),
-            _sagent_line("assistant", "done", at=4, tool_calls=[]),
+            _peer("go", at=1, source="ada"),
+            *_shell("old", "old", "z" * 400, at=2),
+            *_shell("new", "new", "z" * 400, at=4),
+            _answer("done", at=6),
         )
         seen = window([_segment(0, "assistant", part)])
         room = sum(
@@ -719,11 +690,8 @@ class TestTheBudget:
         self,
     ) -> None:
         """Its model's window decides: sagent compacts before a call it cannot hold."""
-        rows = [
-            _sagent_line("agent_send", f"q{turn:02d} " + "x" * 15_000, at=turn)
-            for turn in range(60)
-        ]
-        seen = window([_segment(0, "assistant", _sagent(*rows))])
+        peers = [_peer(f"q{turn:02d} " + "x" * 15_000, at=turn) for turn in range(60)]
+        seen = window([_segment(0, "assistant", _sagent(*peers))])
 
         loaded = cli_records(seen, "sagent", seq=_seven)
 
@@ -735,20 +703,8 @@ class TestTheBudget:
 
     def test_a_huge_shell_result_keeps_its_head_and_tail_and_its_call(self) -> None:
         part = _sagent(
-            _sagent_line("agent_send", "run it", at=1, source="ada"),
-            _sagent_line(
-                "assistant",
-                "",
-                at=2,
-                tool_calls=[{"id": "t1", "name": "Bash", "args": {"command": "make"}}],
-            ),
-            {
-                "kind": "history",
-                "type": "tool_result",
-                "call_id": "t1",
-                "content": "h" * 25_000 + "t" * 25_000,
-                "timestamp": _epoch(3),
-            },
+            _peer("run it", at=1, source="ada"),
+            *_shell("t1", "make", "h" * 25_000 + "t" * 25_000, at=2),
         )
         seen = window([_segment(0, "assistant", part)])
 
@@ -1051,9 +1007,9 @@ def test_a_target_reads_the_summary_with_its_own_flags_and_original_time(
 
 def test_a_summary_of_the_bot_opens_the_window_by_its_provider() -> None:
     part = _sagent(
-        _sagent_line("agent_send", "F1 is apples", at=1, source="ada"),
-        _sagent_compaction("Summary: ada said F1 is apples."),
-        _sagent_line("agent_send", "F2 is pears", at=2, source="ada"),
+        _peer("F1 is apples", at=1, source="ada"),
+        *_sagent_compaction("Summary: ada said F1 is apples."),
+        _peer("F2 is pears", at=2, source="ada"),
     )
 
     seen = window([_segment(0, "assistant", part)])
@@ -1070,7 +1026,7 @@ def test_nothing_left_out_asks_for_no_seq() -> None:
     def refuse() -> int:
         raise AssertionError("the note is not written, so its seq is not asked")
 
-    part = _sagent(_sagent_line("agent_send", "q1", at=1, source="ada"))
+    part = _sagent(_peer("q1", at=1, source="ada"))
     loaded = cli_records(window([_segment(0, "assistant", part)]), "codex", seq=refuse)
 
     assert loaded.skipped == 0
