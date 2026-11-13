@@ -281,15 +281,15 @@ async def test_two_parts_each_denormalize_to_their_own_file(store: Store) -> Non
 async def test_the_manifest_metadata_survives_storage(store: Store) -> None:
     """Rewriting needs how the file SPELLED its bytes, not just its records.
 
-    Claude's ascii-escaping convention rides on the ``TurnContext`` in force (a
-    majority flag plus its exception bitmap); without it the rewrite escapes
-    the wrong characters and the file differs while every record matches.
+    Which claude lines escaped their Unicode rides on the ``TurnContext`` in
+    force; without it the rewrite escapes the wrong lines and the file differs
+    while every record matches.
     """
     path = _TESTDATA / "claude_main.jsonl"
     session_id = await _session_row(store)
     with path.open(encoding="utf-8") as handle:
-        # The LAST context to state one: the majority moves as the file grows,
-        # so the reader restates it and the final statement is what holds.
+        # The LAST context to state one: the reader restates it as escaped
+        # lines arrive, and the final statement is what holds.
         stated = [
             record.encoding
             for record in claude.normalize(handle)

@@ -151,9 +151,8 @@ def denormalize(
         if isinstance(record, TurnContext)
     }
     fallback_context = next(iter(contexts.values()), TurnContext())
-    # The LAST context stating an encoding is the one in force: the escaping
-    # convention is a majority that moves as the file grows, so the reader
-    # restates it rather than resolving one final value.
+    # The LAST context stating an encoding is the one in force: the reader
+    # restates it as escaped lines arrive.
     metadata: dict[str, object] = {}
     for record in ordered:
         if isinstance(record, TurnContext) and record.encoding:
@@ -1708,7 +1707,7 @@ def _write_thinking(item: Thinking) -> dict[str, object]:
     block: dict[str, object] = {"type": "thinking", "thinking": readable or ""}
     if item.encrypted is not None:
         block["signature"] = item.encrypted
-    elif from_plain(item.extra.get("$signature_present"), bool, default=False):
+    elif item.extra.get("$signature_present") is True:
         block["signature"] = ""
     return block
 
@@ -1840,15 +1839,14 @@ class _Reader:
         # it has to be carried forward from the ``tool_use`` block that opened
         # it.
         self._tools: dict[str, tuple[str, str | None]] = {}
-        # Which lines were ASCII, packed as they arrive. The majority moves as
-        # the stream does, so the bits are stored as read and reinterpreted
-        # against whatever it is NOW -- the file's own convention decides which
-        # value is the exception, not which was seen first.
-        self._ascii_bits = bytearray()
+        # Which lines spelled non-ASCII text as ``\u`` escapes, packed as they
+        # arrive. Claude writes raw UTF-8, so these are the exceptions.
+        self._escaped_bits = bytearray()
+        self._escapes = 0
         self._total = 0
-        self._ascii_count = 0
         self._ends_newline = True
         self._encoding: Mapping[str, PlainTree] = {}
+        self._stated = (True, 0)
         # Where the opening clear will sit once it is known. Claude spreads
         # what a fresh context is GIVEN over several ``attachment`` lines --
         # its skills, its subagents, the tools it may call -- so the record
@@ -1874,13 +1872,13 @@ class _Reader:
             self._opening = self._at()
             self._pending.append(ContextClear(extra=({"$opens": True})))
         if self._total % 8 == 0:
-            self._ascii_bits.append(0)
-        if line.isascii():
-            self._ascii_bits[self._total // 8] |= 1 << (self._total % 8)
-            self._ascii_count += 1
+            self._escaped_bits.append(0)
+        record = _parse(line)
+        if _escapes_unicode(line, record):
+            self._escaped_bits[self._total // 8] |= 1 << (self._total % 8)
+            self._escapes += 1
         self._ends_newline = line.endswith("\n")
         self._total += 1
-        record = _parse(line)
         # Everything that narrows a field runs before anything is committed: a
         # line with one malformed field raised out of ``normalize`` and lost the
         # rest of the file. Kept as its text instead, it still writes back as
@@ -1997,31 +1995,27 @@ class _Reader:
             item,
         ]
 
-    # Correct for the prefix consumed, never final: ``ascii_escaped`` is a MAJORITY over
-    # the lines read, so it flips as the majority moves, and the exception bitmap is
-    # stored relative to it -- a flip reinterprets lines already emitted. A tailer has
-    # no EOF to resolve this at, so the reader restates and the last one before a record
-    # is the one in force.
+    # A tailer has no EOF, so the spelling is restated when it changes: on a line that
+    # escapes, or when the file stops or resumes ending on a newline. Never per line --
+    # each statement carries every escape so far.
     def _restate_encoding(self) -> None:
         """Emit the file's spelling whenever it stops being what was said."""
-        current = self._current_encoding()
-        if current == self._encoding:
+        stated = (not self._total or self._ends_newline, self._escapes)
+        if stated == self._stated:
             return
-        self._encoding = current
-        self._pending.append(TurnContext(encoding=current))
+        self._stated = stated
+        self._encoding = self._current_encoding()
+        self._pending.append(TurnContext(encoding=self._encoding))
 
     def _current_encoding(self) -> Mapping[str, PlainTree]:
         """How the file spells its bytes, for the lines consumed so far."""
-        ascii_default = self._ascii_count * 2 >= self._total
         return immutable(
             {
                 "newline_terminated": not self._total or self._ends_newline,
-                "ascii_escaped": ascii_default,
-                "ascii_escape_exceptions": _ascii_escape_exceptions(
-                    self._ascii_bits,
-                    self._total,
-                    default=ascii_default,
-                ),
+                "ascii_escaped": False,
+                "ascii_escape_exceptions": base64.b64encode(
+                    bytes(self._escaped_bits).rstrip(b"\0"),
+                ).decode("ascii"),
             },
         )
 
@@ -2069,26 +2063,16 @@ def _without_turn_envelope(
     return record if len(kept) == len(extra) else replace(record, extra=immutable(kept))
 
 
-_INVERTED: Final = bytes(range(255, -1, -1))
-"""A ``bytes.translate`` table flipping every bit of a byte."""
-
-
-# ``ascii_bits`` marks which lines WERE ascii, accumulated as the stream was read; the
-# majority is only known once it ends, so the stored bitmap is the difference against it
-# rather than the raw observation.
-def _ascii_escape_exceptions(
-    ascii_bits: bytearray,
-    total: int,
-    *,
-    default: bool,
-) -> str:
-    """Pack lines whose Unicode escaping differs from the majority."""
-    # Run once per line, so whole bytes in C: a loop over each bit made reading
-    # quadratic in Python steps.
-    packed = bytearray(ascii_bits.translate(_INVERTED) if default else ascii_bits)
-    if total % 8:
-        packed[-1] &= (1 << (total % 8)) - 1
-    return base64.b64encode(packed).decode("ascii")
+# A plain-ASCII line is spelled the same either way, so only a line whose text had
+# non-ASCII characters can be an escaped one.
+def _escapes_unicode(line: str, record: Mapping[str, object] | None) -> bool:
+    r"""Whether a line spelled non-ASCII text as ``\u`` escapes."""
+    return (
+        record is not None
+        and line.isascii()
+        and "\\u" in line
+        and not json.dumps(record, ensure_ascii=False).isascii()
+    )
 
 
 def _read_line_context(
@@ -2498,9 +2482,11 @@ def _read_assistant(
     return out
 
 
+# pragma: no mutate start -- a type bound; never evaluated.
 def _with_extra[
     T: AssistantMessage | Thinking | ToolCall | UserMessage | ToolResult,
 ](record: T, extra: dict[str, PlainTree]) -> T:
+    # pragma: no mutate end
     """Return the record carrying the line's residual, per axiom 10."""
     own = dict(mutable(record.extra))
     return replace(record, extra=immutable(extra | own))

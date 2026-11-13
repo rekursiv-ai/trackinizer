@@ -132,9 +132,8 @@ def test_the_opening_context_states_the_file_encoding(
 ) -> None:
     """Encoding rides the settings, because a rewrite needs it and it moves.
 
-    Claude spells non-ASCII by a MAJORITY over its lines, so the convention is
-    not knowable at line one; a later ``TurnContext`` restates it and
-    supersedes. Stating it here is what lets a writer reproduce the provider's
+    Which claude lines escape their Unicode is not knowable at line one; a
+    later ``TurnContext`` restates it and supersedes. Stating it here is what lets a writer reproduce the provider's
     own bytes without a session object to hang it on.
     """
     records = _read(adapter, native)
