@@ -94,6 +94,8 @@ class Canvas(Command):
             "trax canvas UUID capture canvas.png",
             "trax canvas UUID theme to light",
             "trax canvas UUID chat_side to right",
+            "trax canvas UUID font to inter",
+            "trax canvas UUID chat_text_size to 16",
             "trax canvas UUID theme to null",
         ),
         notes=(
@@ -113,7 +115,10 @@ class Canvas(Command):
             ),
             (
                 "KEY to VALUE sets the canvas owner's preference KEY (VALUE read as JSON "
-                "when it parses, else as text; null puts it back to its default)."
+                "when it parses, else as text; null puts it back to its default): "
+                "font, chat_text_size, canvas_text_size, interface_text_size, theme, "
+                "skin and the rest the trax skill lists; a refused value names the "
+                "key and what it takes."
             ),
         ),
     )
