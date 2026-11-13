@@ -350,14 +350,16 @@ def test_logout_disconnects_and_revokes_the_keys_its_logins_made(
     client, store, engine = route_client
     set_field_row(engine.conn, _host_row(owner=TEST_USER_EMAIL))
     _live_runs(relay)
-    processes, keys = [uuid.uuid4()], [uuid.uuid4(), uuid.uuid4()]
+    keys = [uuid.uuid4(), uuid.uuid4()]
     # The disconnect revokes the host's process keys first, then the logout its logins'.
     engine.conn.fetch.side_effect = [
-        [{"id": key} for key in processes],
+        [{"id": uuid.uuid4()}],
         [{"id": key} for key in keys],
     ]
     forgotten: list[uuid.UUID] = []
     monkeypatch.setattr(store, "forget_bearer_identity_for_key", forgotten.append)
+    hosts: list[uuid.UUID] = []
+    monkeypatch.setattr(store, "forget_bearer_identities_for_host", hosts.append)
 
     response = client.post(HOST_LOGOUT_PATH.format(name="box"))
 
@@ -370,7 +372,8 @@ def test_logout_disconnects_and_revokes_the_keys_its_logins_made(
         keys=2,
     )
     assert relay.processes(_HOST_ID) == []
-    assert forgotten == [*processes, *keys]
+    # The host's process keys leave the cache by their host, its logins' by their ids.
+    assert (hosts, forgotten) == ([_HOST_ID], keys)
     revoked = engine.conn.fetch.call_args
     assert revoked is not None
     sql = revoked.args[0]

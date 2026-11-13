@@ -199,14 +199,8 @@ class SessionSocket(AsyncResource):
             self._state = text
         elif isinstance(line, SettingsLine):
             self._settings = text
-        if not self._up.is_set():
-            return
-        # The relay closes a socket that sends more, which would cost every line
-        # after this one a redial.
-        if len(text.encode()) > MAX_FRAME_BYTES:
-            _LOG.warning("dropped a %s line of %d bytes", line.type, len(text))
-            return
-        self._outbox.put_nowait(text)
+        if self._up.is_set() and _fits(text):
+            self._outbox.put_nowait(text)
 
     async def inputs(self) -> AsyncIterator[Input]:
         """Yield each input the server sends, across reconnects, in order."""
@@ -256,7 +250,7 @@ class SessionSocket(AsyncResource):
             while True:
                 sent = (self._state, self._settings)
                 for kept in sent:
-                    if kept is not None:
+                    if kept is not None and _fits(kept):
                         await connection.send(kept)
                 if sent == (self._state, self._settings):
                     break
@@ -325,6 +319,19 @@ def retry_delays() -> Generator[float]:
     while True:
         yield delay_sec
         delay_sec = min(2 * delay_sec, 30.0)
+
+
+# The relay closes a socket that sends more, which would cost every line after this
+# one a redial; a kept state over it, sent again on each connection, would cost every
+# connection until the state changed. A state holds each line sent mid-turn whole,
+# its files' bytes included.
+def _fits(text: str) -> bool:
+    """Say whether ``text`` fits one frame; log a line that does not, which is dropped."""
+    size = len(text.encode())
+    if size > MAX_FRAME_BYTES:
+        _LOG.warning("dropped a line of %d bytes", size)
+        return False
+    return True
 
 
 def _fatal(error: Exception) -> Exception | None:

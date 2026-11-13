@@ -202,6 +202,23 @@ class _LifecycleMixin(_StoreShared):
         """
         self._forget_bearers_where(lambda identity: identity.api_key_id == key_id)
 
+    def forget_bearer_identities_for_host(self, host_id: UUID) -> None:
+        """Drop the cached entry of each key a start minted for a process on one host.
+
+        For a host taken out of service, which revokes every such key in its
+        transaction (``auth.revoke_host_process_keys``); a key a device login bound to
+        the host is not one, and stays until logging the host out revokes it.
+
+        Args:
+          host_id: The host whose agent processes' keys were revoked.
+
+        """
+        self._forget_bearers_where(
+            lambda identity: (
+                identity.process is not None and identity.process.host_id == host_id
+            ),
+        )
+
     def _forget_bearers_where(
         self,
         predicate: Callable[[auth.AuthIdentity], bool],

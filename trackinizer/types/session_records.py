@@ -79,6 +79,7 @@ __all__ = [
     "MAX_SEARCH_TEXT_BYTES",
     "SessionRecordRow",
     "payload_record",
+    "record_class",
     "record_kind",
     "record_time",
     "search_text",
@@ -114,6 +115,26 @@ def record_kind(record: TraxRecord) -> str:
     return type(record).__name__
 
 
+def record_class(kind: str) -> type[TraxRecord]:
+    """Return the record class a row's ``kind`` names, as :func:`record_kind` wrote it.
+
+    Args:
+      kind: A row's ``kind``, of any version.
+
+    Returns:
+      record_class: The class its payload decodes as.
+
+    Raises:
+      ValueError: ``kind`` names no record class.
+
+    """
+    # A row stored before a record type was renamed carries its old name.
+    found = _BY_KIND.get(RENAMED_KINDS.get(kind, kind))
+    if found is None:
+        raise ValueError(f"unknown session record kind {kind!r}")
+    return found
+
+
 def served_payload(
     kind: str,
     payload: Mapping[str, PlainTree],
@@ -147,7 +168,7 @@ def served_payload(
     ):
         return payload
     try:
-        return stored_payload(payload_record(payload, _record_class(kind)))
+        return stored_payload(payload_record(payload, record_class(kind)))
     # Ingest stores a client's payload without decoding it, and an offloaded
     # body's row holds only a stub. Raising here would fail the whole read for
     # one such row; its ``text`` column is still shown.
@@ -321,7 +342,7 @@ class SessionRecordRow:
           record: Decoded TraxRecord of the appropriate subtype.
 
         """
-        return payload_record(self.payload, _record_class(self.kind))
+        return payload_record(self.payload, record_class(self.kind))
 
 
 def _parts(record: object) -> tuple[str, ...]:
@@ -425,15 +446,6 @@ def _parsed(raw: str | None) -> datetime | None:
         return datetime.fromisoformat(raw)
     except ValueError:
         return None
-
-
-def _record_class(kind: str) -> type[TraxRecord]:
-    """Return the record class named by a row's ``kind``."""
-    # A row stored before a record type was renamed carries its old name.
-    found = _BY_KIND.get(RENAMED_KINDS.get(kind, kind))
-    if found is None:
-        raise ValueError(f"unknown session record kind {kind!r}")
-    return found
 
 
 def _members(alias: object) -> list[type]:

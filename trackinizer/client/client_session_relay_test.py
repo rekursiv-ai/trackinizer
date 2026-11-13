@@ -324,7 +324,12 @@ def test_the_daemons_session_wait_returns_the_next_start_or_none() -> None:
 
 
 def test_the_daemon_reports_how_a_process_it_started_ended() -> None:
-    ended = ProcessEnded(process_id=_PROCESS, exit_code=None, reason="no such folder")
+    ended = ProcessEnded(
+        process_id=_PROCESS,
+        exit_code=3,
+        reason="exited with code 3",
+        output="Traceback",
+    )
     recorder = _Recorder(httpx2.Response(204))
 
     with _client(recorder) as found:
@@ -333,7 +338,12 @@ def test_the_daemon_reports_how_a_process_it_started_ended() -> None:
     assert _sent(recorder.requests[0]) == (
         "POST",
         f"/api/hosts/{_HOST}/sessions/ended",
-        {"process_id": str(_PROCESS), "exit_code": None, "reason": "no such folder"},
+        {
+            "process_id": str(_PROCESS),
+            "exit_code": 3,
+            "reason": "exited with code 3",
+            "output": "Traceback",
+        },
     )
 
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Literal, Protocol, cast
 
 import asyncio
 import dataclasses
@@ -169,11 +169,15 @@ def host_idle_sec(app: FastAPI, host_id: uuid.UUID) -> float:
 async def host_closed(app: FastAPI, host_id: uuid.UUID) -> None:
     """End the tool connections, terminals and agent processes of a host taken out of service.
 
+    Its processes' keys, revoked with it, are forgotten from the bearer cache first, which
+    would honour each for up to a minute more.
+
     Args:
-      app: The application, whose state holds the relays.
+      app: The application, whose state holds the store and the relays.
       host_id: The host.
 
     """
+    cast("_State", app.state).store.forget_bearer_identities_for_host(host_id)
     tool_relay(app).close_host(host_id)
     await terminal_relay(app).close_host(host_id)
     await session_relay(app).stop_host(host_id)
@@ -589,16 +593,20 @@ async def _alive(term: Terminal, *, store: Store) -> bool:
 # A tool connection no host has dialed back for has no instance to compare yet, and its timer is short.
 # One that does not is logged, naming the check it failed, before the sweep ends it. A tool
 # connection no key opened is its asker's own browser's (``ToolRelay.join``), so it is asked
-# the browser form again: the asker still an active writer or admin, and the host theirs.
+# the browser form again, as a key's is asked whether the key still lives: still signed in
+# as the asker from this server's pages, else it counts as no key and fails ``key``; the
+# asker still an active writer or admin, and the host theirs.
 async def _connection_alive(connection: ToolConnection, *, app: FastAPI) -> bool:
     """Whether the key or browser that opened it, its asker and the attached host still qualify."""
+    api_key_id: uuid.UUID | Literal["browser"] | None = connection.api_key_id
+    signed_in = connection.signed_in
+    if api_key_id is None and signed_in is not None and await signed_in():
+        api_key_id = "browser"
     async with cast("_State", app.state).store.engine.acquire() as conn:
         access = await tool_access(
             conn,
             assistant=_assistant(app),
-            api_key_id="browser"
-            if connection.api_key_id is None
-            else connection.api_key_id,
+            api_key_id=api_key_id,
             asker=connection.asker,
             host=connection.host_id,
             instance=connection.instance,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Protocol, cast, override
 from unittest.mock import AsyncMock
 
@@ -20,7 +21,7 @@ from trackinizer.conftest import (
 )
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server import auth
-from trackinizer.server.auth import AuthIdentity, generate_token
+from trackinizer.server.auth import AuthIdentity, ProcessKey, generate_token
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import schema_migrations
@@ -117,6 +118,29 @@ class TestVerifiedBearerCache:
         assert [store.cached_bearer_identity(s) for s in "abc"] == [None, second, other]
         store.forget_bearer_identities(user)
         assert [store.cached_bearer_identity(s) for s in "abc"] == [None, None, other]
+
+    def test_forgetting_a_host_drops_its_process_keys_entries_alone(self) -> None:
+        """A device login's key bound to it, and other hosts' processes, stay."""
+        store, _engine = make_store()
+        host, elsewhere = uuid.uuid4(), uuid.uuid4()
+        mine, theirs = (
+            replace(
+                _identity(),
+                process=ProcessKey(
+                    process_id=uuid.uuid4(),
+                    session_id=uuid.uuid4(),
+                    host_id=bound,
+                ),
+            )
+            for bound in (host, elsewhere)
+        )
+        login = _identity()
+        for secret, identity in (("a", mine), ("b", theirs), ("c", login)):
+            store.remember_bearer_identity(secret, identity)
+
+        store.forget_bearer_identities_for_host(host)
+
+        assert [store.cached_bearer_identity(s) for s in "abc"] == [None, theirs, login]
 
     def test_a_key_bumps_once_per_interval(
         self,

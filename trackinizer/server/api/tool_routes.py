@@ -198,6 +198,9 @@ async def tools_agent_socket(
             host=name,
         )
         return
+    if api_key_id is None:
+        # Before the first await: the sweep may ask it from then on.
+        connection.signed_in = partial(_still_signed_in, websocket, asker=owner)
     _logger.info(
         "tool connection opened: connection=%s host=%s host_id=%s asker=%s key=%s assistant=%s",
         connection.id,
@@ -480,4 +483,19 @@ def _own_browser(websocket: WebSocket, *, email: str, asker: str | None) -> bool
         and is_strictly_same_origin(websocket)
         and not is_service_address(email)
         and (asker is None or asker.lower() == email.lower())
+    )
+
+
+# Asked by each sweep of a browser's tool connection, as a key's is asked whether the key
+# still lives: its cookie, read again, may have expired or be another person's now.
+async def _still_signed_in(websocket: WebSocket, *, asker: str) -> bool:
+    """Whether the socket's browser, authenticated again, is still the asker's own."""
+    try:
+        identity = await auth.request_user(websocket)
+    except HTTPException:
+        return False
+    return identity.api_key_id is None and _own_browser(
+        websocket,
+        email=identity.email,
+        asker=asker,
     )

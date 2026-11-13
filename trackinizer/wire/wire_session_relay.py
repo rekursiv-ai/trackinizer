@@ -167,7 +167,7 @@ LINES_PING_SEC: Final = 25
 keep-alive. A reader that hears nothing for 2.5 times this has lost the stream."""
 
 MAX_REASON_CHARS: Final = 4_096
-"""The most of a process's output a daemon reports as why it ended."""
+"""The most characters a daemon reports of why a process ended, and of its output."""
 
 type InputKind = Literal["UserMessage", "Halt", "Command"]
 """What a person may send the root agent: a line, a stop of the turn, or a slash
@@ -231,6 +231,11 @@ class AgentProcess(BaseModel):
 
     since: UtcDatetime
     """When it entered ``state``."""
+
+    output: str = ""
+    """The end of its output, as its daemon reported it when it ended: answered by
+    ``GET`` :data:`SESSION_PROCESS_PATH` to a writer of the session alone, and empty
+    for anyone else and in every line a viewer reads."""
 
 
 class EventLine(BaseModel):
@@ -451,7 +456,12 @@ class ProcessEnded(BaseModel):
 
     process_id: UUID
     exit_code: int | None
-    """Its exit status; ``None`` when it could not be started."""
+    """Its exit status; ``None`` when it could not be started, or ended unwatched."""
 
     reason: str = Field(max_length=MAX_REASON_CHARS)
-    """The end of its output, or why it could not be started."""
+    """Why it ended in the daemon's own words: its exit code, or why it could not be
+    started. Every reader of the session is told it."""
+
+    output: str = Field(default="", max_length=MAX_REASON_CHARS)
+    """The end of its output, which may hold anything the process printed: only a
+    writer of the session reads it."""

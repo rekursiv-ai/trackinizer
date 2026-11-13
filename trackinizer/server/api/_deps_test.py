@@ -60,6 +60,7 @@ from trackinizer.server.api._deps import (
 from trackinizer.server.api.tool_access import ToolAccess
 from trackinizer.server.config import Assistant, Config, RemoteAgentService
 from trackinizer.server.session_relay import SessionRelay
+from trackinizer.server.store.core import Store
 from trackinizer.server.terminals import Terminal, TerminalRelay
 from trackinizer.server.tool_lines import ResultIds
 from trackinizer.server.tool_relay import (
@@ -585,9 +586,14 @@ async def test_a_host_closed_ends_its_connections_terminals_and_agent_processes(
         del relay
         closed.append(("agent processes", host_id))
 
+    def keys_forgotten(store: Store, host_id: UUID) -> None:
+        del store
+        closed.append(("process keys", host_id))
+
     monkeypatch.setattr(ToolRelay, "close_host", connections_closed)
     monkeypatch.setattr(TerminalRelay, "close_host", terminals_closed)
     monkeypatch.setattr(SessionRelay, "stop_host", processes_stopped)
+    monkeypatch.setattr(Store, "forget_bearer_identities_for_host", keys_forgotten)
     app.state.tool_relay = ToolRelay(
         alive=AsyncMock(),
         connections_per_host=1,
@@ -595,11 +601,14 @@ async def test_a_host_closed_ends_its_connections_terminals_and_agent_processes(
         line_bytes=1 << 10,
     )
     app.state.terminals = TerminalRelay(alive=AsyncMock())
+    app.state.store, _engine = make_store()
     host_id = uuid4()
 
     await host_closed(app, host_id)
 
+    # Its processes' keys were revoked with it: none is honoured from the cache now.
     assert closed == [
+        ("process keys", host_id),
         ("tool connections", host_id),
         ("terminals", host_id),
         ("agent processes", host_id),
@@ -688,13 +697,41 @@ async def test_the_sweep_asks_the_browser_form_of_a_connection_a_browser_opened(
     failed: Check | None,
 ) -> None:
     app, rule = _app_with_assistant(monkeypatch, failed)
-    connection = dataclasses.replace(_pipe(instance=uuid4()), api_key_id=None)
+    connection = dataclasses.replace(
+        _pipe(instance=uuid4()),
+        api_key_id=None,
+        signed_in=AsyncMock(return_value=True),
+    )
 
     assert await _deps._connection_alive(connection, app=app) is (failed is None)
 
     assert rule.await_args is not None
     assert rule.await_args.kwargs["api_key_id"] == "browser"
     assert rule.await_args.kwargs["asker"] == connection.asker
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "signed_in",
+    [AsyncMock(return_value=False), None],
+    ids=["signed in no more", "no way to ask"],
+)
+async def test_the_sweep_asks_a_browser_no_longer_signed_in_as_one_with_no_key(
+    monkeypatch: pytest.MonkeyPatch,
+    signed_in: AsyncMock | None,
+) -> None:
+    """The rule then fails ``key``, as for a revoked key."""
+    app, rule = _app_with_assistant(monkeypatch, "key")
+    connection = dataclasses.replace(
+        _pipe(instance=uuid4()),
+        api_key_id=None,
+        signed_in=signed_in,
+    )
+
+    assert await _deps._connection_alive(connection, app=app) is False
+
+    assert rule.await_args is not None
+    assert rule.await_args.kwargs["api_key_id"] is None
 
 
 @pytest.mark.asyncio

@@ -126,6 +126,8 @@ async def _relay() -> AsyncGenerator[_Relay]:
         "127.0.0.1",
         0,
         process_request=relay.refuse,
+        # As the server takes a frame as large as the wire allows.
+        max_size=MAX_FRAME_BYTES,
     ) as server:
         relay.port = server.sockets[0].getsockname()[1]
         yield relay
@@ -206,6 +208,44 @@ async def test_a_new_connection_says_hello_then_the_last_state_and_settings() ->
         _STATE.model_dump_json(),
         _SETTINGS.model_dump_json(),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_line_of_the_frame_limit_exactly_is_sent() -> None:
+    line = _event(0)
+    padding = "x" * (MAX_FRAME_BYTES - len(line.model_dump_json().encode()) + 1)
+    whole = EventLine(kind=line.kind, payload={"text": padding})
+    async with _relay() as relay, _socket(relay) as socket:
+        socket.send(whole)
+        frames = await relay.until(2)
+
+    assert len(frames[1].encode()) == MAX_FRAME_BYTES
+
+
+@pytest.mark.asyncio
+async def test_a_kept_state_over_the_frame_limit_is_not_sent_on_a_new_connection(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    big = StateLine(
+        state=AgentState(
+            line="x" * MAX_FRAME_BYTES,
+            busy=False,
+            since=datetime(2026, 1, 1, tzinfo=UTC),
+        ),
+    )
+    size = len(big.model_dump_json().encode())
+    async with _relay() as relay, _socket(relay) as socket:
+        socket.send(big)
+        socket.send(_SETTINGS)
+        _ = await relay.until(2)
+        assert relay.live is not None
+        await relay.live.close(code=1011)
+        again = await relay.until(2, connection=1)
+
+    assert again == [_HELLO.model_dump_json(), _SETTINGS.model_dump_json()]
+    assert [record.getMessage() for record in caplog.records] == [
+        f"dropped a line of {size} bytes",
+    ] * 2
 
 
 @pytest.mark.asyncio

@@ -75,6 +75,11 @@
       "title": "Login Host",
       "type": "string"
      },
+     "output": {
+      "default": "",
+      "title": "Output",
+      "type": "string"
+     },
      "process_id": {
       "format": "uuid",
       "title": "Process Id",
@@ -18226,7 +18231,7 @@
     "summary": "Stop Process Route"
    },
    "get": {
-    "description": "Return the agent process serving a session, or the last that did.\n\nArgs:\n  session_id: The session.\n  request: Request carrying the relay.\n  identity: A viewer who may read the session.\n\nReturns:\n  process: The process; ``None`` for a session that has had none.\n\nRaises:\n  HTTPException: 403 for a caller who may not read the session; 404 for no\n    session.",
+    "description": "Return the agent process serving a session, or the last that did.\n\nEvery reader is told why it ended; a writer of the session, with the writer role,\nis also told the end of its output, which may hold anything it printed.\n\nArgs:\n  session_id: The session.\n  request: Request carrying the relay.\n  identity: A viewer who may read the session.\n\nReturns:\n  process: The process; ``None`` for a session that has had none.\n\nRaises:\n  HTTPException: 403 for a caller who may not read the session; 404 for no\n    session.",
     "operationId": "read_process_route_api_sessions__session_id__process_get",
     "parameters": [
      {

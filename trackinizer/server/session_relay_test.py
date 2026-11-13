@@ -62,6 +62,7 @@ _SINCE: Final = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 _STATE: Final = StateLine(state=AgentState(line="[3s]", busy=True, since=_SINCE))
 _SETTINGS: Final = SettingsLine(settings=(Setting(name=("model",), help_short="M"),))
 _HALT: Final = NewInput(kind="Halt", payload={"py/object": "Halt"})
+_AUTHOR: Final = "ada@x.y"
 
 
 class _Socket:
@@ -339,9 +340,14 @@ async def test_a_frame_the_wire_does_not_allow_closes_the_socket_as_a_bad_one(
     socket.push(frame)
     await served
 
-    assert await socket.close_code() == BAD_FRAME
+    assert socket.closed.result() == (
+        BAD_FRAME,
+        "the server reads one JSON line a frame",
+    )
     assert (await viewer.process()).reason == "disconnected"
-    assert f"process sent a bad frame: session={_SESSION}" in caplog.text
+    assert f"process sent a bad frame: session={_SESSION} bytes={len(frame)}" in [
+        record.getMessage() for record in caplog.records
+    ]
 
 
 @pytest.mark.parametrize(
@@ -738,6 +744,51 @@ async def test_a_viewer_one_line_past_its_lag_is_closed_and_reads_none_of_them()
     assert await viewer.ended()
 
 
+def _sized_line(size: int) -> EventLine:
+    """Return an event line that is ``size`` bytes as the process sends it."""
+    pad = size - len(_event(text="").model_dump_json().encode())
+    return _event(text="x" * pad)
+
+
+async def test_a_viewer_whose_unread_lines_pass_their_bytes_is_closed() -> None:
+    """Lines, not their bytes, were the only bound: 1024 frames of 2 MiB each."""
+    relay = SessionRelay(viewer_bytes=1_000)
+    slow, reading = _Viewer(relay), _Viewer(relay)
+    _ = await slow.next(), await reading.next()
+    socket = _Socket()
+    _ = _serve(relay, socket)
+    _ = await slow.process(), await reading.process()
+
+    for _ in range(2):
+        socket.push(_sized_line(450))
+        assert isinstance(await reading.next(), EventLine)
+    # A record counts as it is read: what the viewer is sent.
+    relay.publish_records(_SESSION, part=0, records=[RecordBody(idx=0, kind="X")])
+    assert isinstance(await reading.next(), RecordLine)
+
+    # Two lines and the record pass 1,000 bytes: it is closed, reading none of them.
+    assert await slow.ended()
+
+
+async def test_a_viewer_that_reads_its_lines_has_their_bytes_back() -> None:
+    relay = SessionRelay(viewer_bytes=1_000)
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    socket = _Socket()
+    _ = _serve(relay, socket)
+    _ = await viewer.process()
+
+    for _ in range(3):
+        socket.push(_sized_line(450))
+        assert isinstance(await viewer.next(), EventLine)
+    # All it read is its own again: a line of the whole budget, unread, still fits.
+    socket.push(_sized_line(1_000))
+    assert await viewer.next() == _sized_line(1_000)
+    socket.push(_STATE)
+
+    assert await viewer.next() == _STATE
+
+
 async def test_an_input_reaches_the_process_with_its_author_once() -> None:
     relay = SessionRelay()
     viewer = _Viewer(relay)
@@ -819,6 +870,27 @@ async def test_inputs_are_held_while_the_process_starts_then_sent_in_order() -> 
     _ = _serve(relay, socket)
 
     assert [(await socket.input()).id for _ in held] == [new.id for new in held]
+
+
+async def test_by_default_a_start_holds_256_inputs_and_a_viewer_lags_1024_lines() -> (
+    None
+):
+    relay = SessionRelay()
+    _ = _start(relay)
+    for _ in range(256):
+        _ = relay.send_input(_SESSION, _HALT, author="ada@x.y")
+    with pytest.raises(InputRefusedError, match="holds 256 inputs already"):
+        _ = relay.send_input(_SESSION, _HALT, author="ada@x.y")
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+
+    records = [RecordBody(idx=index, kind="X") for index in range(1024)]
+    relay.publish_records(_SESSION, part=0, records=records)
+    kept = [await viewer.next() for _ in range(1024)]
+    relay.publish_records(_SESSION, part=0, records=[*records, records[0]])
+
+    assert len(kept) == 1024
+    assert await viewer.ended()
 
 
 def _sized(size: int) -> NewInput:
@@ -925,6 +997,42 @@ async def test_an_input_nobody_serves_is_refused() -> None:
 
     with pytest.raises(NotLiveError):
         _ = relay.send_input(_SESSION, _HALT, author="ada@x.y")
+
+
+async def test_an_input_too_large_for_one_frame_is_refused_and_one_that_fits_goes() -> (
+    None
+):
+    relay = SessionRelay()
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    socket = _Socket()
+    _ = await _attached(relay, viewer, socket)
+    fits = _sized(MAX_FRAME_BYTES)
+
+    with pytest.raises(
+        InputRefusedError,
+        match=r"^an input is at most 2097152 bytes; this one is 2097153$",
+    ):
+        _ = relay.send_input(_SESSION, _sized(MAX_FRAME_BYTES + 1), author=_AUTHOR)
+    assert relay.send_input(_SESSION, fits, author=_AUTHOR) == fits.id
+
+    assert (await socket.input()).id == fits.id
+    assert socket.sent() == 0
+
+
+async def test_an_input_too_large_for_one_frame_is_not_held_for_a_starting_process() -> (
+    None
+):
+    relay = SessionRelay()
+    _ = _start(relay)
+
+    with pytest.raises(InputRefusedError, match=r"^an input is at most "):
+        _ = relay.send_input(_SESSION, _sized(3 << 20), author=_AUTHOR)
+    socket = _Socket()
+    _ = _serve(relay, socket)
+    await asyncio.sleep(0)
+
+    assert socket.sent() == 0
 
 
 async def test_an_input_sent_on_a_socket_that_was_replaced_is_not_sent_again() -> None:
@@ -1368,6 +1476,56 @@ async def test_a_stop_forgets_a_start_no_daemon_took_and_drops_held_inputs() -> 
         _ = relay.send_input(_SESSION, _HALT, author="ada@x.y")
 
 
+async def test_a_processs_output_is_kept_apart_from_the_reason_every_viewer_reads() -> (
+    None
+):
+    relay = SessionRelay()
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    _ = await _taken(relay)
+    _ = await viewer.process()
+    assert relay.output(_SESSION) == ""
+
+    relay.ended(
+        ProcessEnded(
+            process_id=_PROCESS,
+            exit_code=3,
+            reason="exited with code 3",
+            output="Traceback: secret",
+        ),
+        host_id=_HOST,
+    )
+    told = await viewer.process()
+    # A report after the detach says its reason and output again, as the last one.
+    relay.ended(
+        ProcessEnded(process_id=_PROCESS, exit_code=3, reason="again", output="later"),
+        host_id=_HOST,
+    )
+    again = await viewer.process()
+
+    assert (told.reason, told.output) == ("exited with code 3", "")
+    assert (again.reason, again.output) == ("again", "")
+    assert relay.output(_SESSION) == "later"
+    assert relay.output(_OTHER) == ""
+    # The next process's start forgets the last one's output.
+    _ = _start(relay, process=_OTHER)
+    assert relay.output(_SESSION) == ""
+
+
+async def test_a_new_process_attaching_forgets_the_last_ones_output() -> None:
+    relay = SessionRelay()
+    _ = await _taken(relay)
+    relay.ended(
+        ProcessEnded(process_id=_PROCESS, exit_code=3, reason="r", output="o"),
+        host_id=_HOST,
+    )
+
+    _ = _serve(relay, _Socket(), process=_OTHER)
+    await asyncio.sleep(0)
+
+    assert relay.output(_SESSION) == ""
+
+
 async def test_a_stop_of_nothing_or_of_an_ended_process_changes_nothing() -> None:
     relay = SessionRelay()
     assert await relay.stop(_SESSION) is None
@@ -1425,10 +1583,13 @@ async def test_a_stop_of_a_process_whose_socket_dropped_stops_it(
     assert attached.since < dropped.since == stopped.since
 
 
-async def test_an_end_from_the_host_it_was_offered_to_detaches_it_with_its_reason() -> (
-    None
-):
+async def test_an_end_from_the_host_it_was_offered_to_detaches_it_with_its_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Another session, held first, is passed over to find it."""
+    caplog.set_level(logging.INFO, logger=session_relay.__name__)
     relay = SessionRelay()
+    _ = _start(relay, session_id=_ENDED, process=_OTHER)
     _ = _start(relay)
     viewer = _Viewer(relay)
     _ = await viewer.next()
@@ -1444,6 +1605,14 @@ async def test_an_end_from_the_host_it_was_offered_to_detaches_it_with_its_reaso
     process = await viewer.process()
     assert (process.state, process.reason) == ("detached", "no login")
     assert await socket.close_code() == wire_terminals.CLOSE_ENDED
+    assert socket.closed.result() == (
+        wire_terminals.CLOSE_ENDED,
+        "its daemon saw it end",
+    )
+    assert _detached_said("no login") in _said(caplog)
+    other = relay.process(_ENDED)
+    assert other is not None
+    assert other.state == "starting"
     # The socket's own close comes after, and never overwrites what the daemon said.
     assert relay.process(_SESSION) == process
 

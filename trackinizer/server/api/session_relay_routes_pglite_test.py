@@ -758,6 +758,35 @@ async def test_an_input_nobody_serves_is_not_live(world: _World) -> None:
     assert refusal_detail_code(sent) == "not_live"
 
 
+async def test_a_line_of_files_and_no_words_reaches_the_process(world: _World) -> None:
+    headers = await world.key(await world.person("ada@x.y"))
+    session_id = await world.session("ada@x.y")
+    peer = world.process(
+        headers,
+        session_id,
+        hello=Hello(process_id=uuid.uuid4(), version="1", host="laptop"),
+    )
+    viewer = world.relay.lines(session_id, allowed=_always)
+    _ = await anext(viewer)
+    _ = await asyncio.wait_for(anext(viewer), 5)
+    picture = {"mime_descriptor": "image/png", "data": {"py/b64": "iVBORw0KGgo="}}
+    line = NewInput(
+        kind="UserMessage",
+        payload={"py/object": "UserMessage", "content": "", "attachments": [picture]},
+    )
+
+    sent = await world.call(
+        "POST",
+        SESSION_INPUTS_PATH.format(session_id=session_id),
+        headers=headers,
+        body=line.model_dump(mode="json"),
+    )
+
+    assert sent.status_code == 200
+    got = await peer.input()
+    assert (got.id, got.payload) == (line.id, line.payload)
+
+
 async def test_an_input_the_relay_will_not_hold_is_refused_saying_why(
     world: _World,
 ) -> None:
@@ -1157,6 +1186,59 @@ async def test_a_daemons_report_detaches_the_process_and_revokes_its_key(
     process = world.relay.process(session_id)
     assert process is not None
     assert (process.state, process.reason) == ("detached", "no login")
+
+
+async def test_a_processs_output_is_read_by_a_writer_of_its_session_alone(
+    world: _World,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bob reads ada's session, both of one organisation, and is told only how it ended."""
+    patch_state(monkeypatch, "config", _config(chat_orgs="single"))
+    ada = await _places(world)
+    async with world.store.engine.acquire() as conn:
+        adas, bobs = [
+            from_plain(
+                await conn.fetchval("SELECT id FROM users WHERE email = $1", email),
+                uuid.UUID,
+            )
+            for email in ("ada@x.y", "bob@x.y")
+        ]
+    # Her own key, at the viewer role, may read her session and write none of it.
+    hers_to_read, bob = await world.key(adas, ceiling="viewer"), await world.key(bobs)
+    laptop = await world.host("lab", owner="ada@x.y", facts=_RUNS)
+    session_id = await world.session("ada@x.y")
+    _ = await world.start(ada, session_id, host="lab")
+    serve = await world.served(laptop)
+    viewer = world.relay.lines(session_id, allowed=_always)
+    _ = await anext(viewer)
+    report = ProcessEnded(
+        process_id=serve.process_id,
+        exit_code=1,
+        reason="exited with code 1",
+        output="Traceback: secret=hunter2",
+    )
+
+    ended = await world.call(
+        "POST",
+        HOST_SESSIONS_ENDED_PATH.format(host_id=laptop.id),
+        headers=laptop.headers(),
+        body=report.model_dump(mode="json"),
+    )
+
+    assert ended.status_code == 204
+    told = await asyncio.wait_for(anext(viewer), 5)
+    assert isinstance(told, ProcessLine)
+    assert (told.process.reason, told.process.output) == ("exited with code 1", "")
+    path = SESSION_PROCESS_PATH.format(session_id=session_id)
+    hers, read, his = [
+        AgentProcess.model_validate((await world.call("GET", path, headers=h)).json())
+        for h in (ada, hers_to_read, bob)
+    ]
+    assert (hers.reason, hers.output) == (
+        "exited with code 1",
+        "Traceback: secret=hunter2",
+    )
+    assert (read.output, his.reason, his.output) == ("", "exited with code 1", "")
 
 
 async def test_a_process_key_its_daemon_reported_ended_is_refused_at_once(

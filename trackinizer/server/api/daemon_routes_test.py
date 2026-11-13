@@ -837,16 +837,15 @@ def test_revoke_closes_credentials_enrollments_and_the_daemon_instance(
     _as("admin")
     # The row's id as text, as a driver may hand it: the host is named by its UUID.
     set_field_row(engine.conn, {"id": str(_HOST_ID), "owner": "other@x.y"})
-    keys = [uuid.uuid4(), uuid.uuid4()]
-    engine.conn.fetch.return_value = [{"id": key} for key in keys]
+    engine.conn.fetch.return_value = [{"id": uuid.uuid4()}]
     forgotten: list[uuid.UUID] = []
-    monkeypatch.setattr(store, "forget_bearer_identity_for_key", forgotten.append)
+    monkeypatch.setattr(store, "forget_bearer_identities_for_host", forgotten.append)
 
     response = client.post(REVOKE_PATH.format(name="dev-1"))
 
     assert (response.status_code, response.content) == (204, b"")
     # Each process key revoked stops being honoured now, not when its cache entry ends.
-    assert forgotten == keys
+    assert forgotten == [_HOST_ID]
     select = engine.conn.fetchrow.call_args
     assert select is not None
     assert select.args == (
