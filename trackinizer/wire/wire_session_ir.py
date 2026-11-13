@@ -146,8 +146,8 @@ class ManifestBody(BaseModel):
 
     Re-sent rather than written once because it CHANGES as the file grows:
     ``records`` counts what has arrived, and the encoding a reader reports is
-    only correct for the prefix it has consumed -- claude's ascii-escaping
-    convention is a majority that is not decided until the stream ends.
+    only correct for the prefix it has consumed -- claude's escaped lines keep
+    arriving.
     """
 
     name: str = Field(min_length=1)

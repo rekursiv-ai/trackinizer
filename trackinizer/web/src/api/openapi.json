@@ -5115,7 +5115,7 @@
     "type": "object"
    },
    "ManifestBody": {
-    "description": "What one part's source file is, re-sent with every append batch.\n\nRe-sent rather than written once because it CHANGES as the file grows:\n``records`` counts what has arrived, and the encoding a reader reports is\nonly correct for the prefix it has consumed -- claude's ascii-escaping\nconvention is a majority that is not decided until the stream ends.",
+    "description": "What one part's source file is, re-sent with every append batch.\n\nRe-sent rather than written once because it CHANGES as the file grows:\n``records`` counts what has arrived, and the encoding a reader reports is\nonly correct for the prefix it has consumed -- claude's escaped lines keep\narriving.",
     "properties": {
      "format": {
       "default": "",

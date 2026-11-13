@@ -162,8 +162,8 @@ serializes part assignment: two appends racing on an unseen file both compute
 `records` is a live prefix bound -- every reader takes `idx < records` -- so a
 file that SHRANK leaves its tail rows inert rather than deleted.
 
-`metadata` is not decoration: claude's ascii-escaping convention (a majority
-flag plus its exception bitmap) rides in `SessionMetadata.extra`, and the
+`metadata` is not decoration: which claude lines escaped their Unicode (a
+bitmap of those lines) rides in `SessionMetadata.extra`, and the
 codex launch line is rebuilt from it. Rewriting without it yields a file that
 differs from the captured one while every record matches.
 
@@ -323,8 +323,7 @@ PartBody       part int (-1 is the legacy backfill, §3.5), name, format,
 `ManifestBody` is re-sent with EVERY append batch, not written once, because
 it CHANGES as the file grows: `records` counts what has arrived, and the
 metadata a normalizer reports is only correct for the prefix it consumed --
-claude's ascii-escaping convention is a majority not decided until the stream
-ends.
+claude's escaped lines keep arriving.
 
 ### 4.3 `SlashCommandBody`
 

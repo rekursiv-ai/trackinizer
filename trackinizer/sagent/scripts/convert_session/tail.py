@@ -129,11 +129,10 @@ class Tail[R]:
     def encoding(self) -> dict[str, object]:
         """How the file spells its bytes, for the prefix consumed so far.
 
-        Correct for what has been read, never final: claude's ascii-escaping
-        convention is a MAJORITY over the lines seen, so it moves as the file
-        grows and the reader restates it. The last statement is the one in
-        force, which is why this is re-read per batch rather than captured
-        once.
+        Correct for what has been read, never final: claude's reader restates
+        it when a line escapes its Unicode or the file's last newline changes.
+        The last statement is the one in force, which is why this is re-read
+        per batch rather than captured once.
         """
         return dict(self._encoding)
 
@@ -193,10 +192,10 @@ class Tail[R]:
                 # A raise ENDS a generator -- it cannot be resumed -- so the
                 # reader is rebuilt rather than mourned: one bad chunk costs
                 # one chunk and the file goes on being captured. What is lost
-                # is the state the dead reader held (claude's escaping majority
-                # is counted over the lines IT saw), which is the survivable
-                # direction: a moved majority respells some lines, a dead
-                # reader silently ends capture. No real adapter reaches this --
+                # is the state the dead reader held (claude's escaped lines are
+                # counted over the lines IT saw), which is the survivable
+                # direction: a lost escape respells one line, a dead reader
+                # silently ends capture. No real adapter reaches this --
                 # normalization is total, and a malformed line is an
                 # ``IncompleteRecord`` -- so it answers a broken one.
                 self._restart()

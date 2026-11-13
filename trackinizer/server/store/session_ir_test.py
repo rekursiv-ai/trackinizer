@@ -504,8 +504,8 @@ async def test_search_never_indexes_ciphertext(store: Store) -> None:
 async def test_manifest_upserts_per_batch(store: Store) -> None:
     """The manifest is re-written as the file grows, not once at the end.
 
-    ``metadata`` is only correct for the prefix consumed -- claude's ascii
-    majority is not final until EOF -- so every batch re-upserts it.
+    ``metadata`` is only correct for the prefix consumed -- claude's escaped
+    lines keep arriving -- so every batch re-upserts it.
     """
     session_id = await _session(store)
     await store.upsert_session_manifest(

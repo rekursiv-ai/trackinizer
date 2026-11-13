@@ -124,9 +124,8 @@ def _typed_result[T](record: object, kind: type[T]) -> T:
     return tool_result
 
 
-# Claude's escaping convention is a majority over the lines read, so the reader restates
-# it as a trailing :class:`TurnContext` whenever it moves -- the final record of a
-# stream is that state, not the act a line carried.
+# The reader restates the file's spelling as a trailing :class:`TurnContext` whenever it
+# changes -- the final record of a stream may be that state, not the act a line carried.
 def _last_act(records: Sequence[SessionRecord]) -> SessionRecord:
     """Return the last record that is not a restatement of the settings."""
     return next(
@@ -1792,8 +1791,8 @@ def test_mixed_unicode_escaping_is_preserved_per_line() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    # Encoding is RESTATED as the majority moves, so the spelling in force is
-    # the one the LAST context to state it carries.
+    # Encoding is RESTATED as it changes, so the spelling in force is the one
+    # the LAST context to state it carries.
     encodings = [
         record.encoding
         for record in records
@@ -2266,6 +2265,11 @@ def test_claude_writer_special_result_shapes() -> None:
         "thinking": "summary",
         "signature": "",
     }
+    assert claude._write_thinking(Thinking(encrypted="sig")) == {
+        "type": "thinking",
+        "thinking": "",
+        "signature": "sig",
+    }
 
 
 def test_a_line_context_reads_what_the_line_states_and_keeps_the_rest() -> None:
@@ -2515,23 +2519,31 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
     }
 
 
-@pytest.mark.parametrize("default", [True, False])
-@pytest.mark.parametrize("total", [3, 8, 11])
-def test_the_exception_bitmap_marks_each_line_against_the_majority(
-    total: int,
-    default: bool,
-) -> None:
-    was_ascii = [index % 3 != 1 for index in range(total)]
-    ascii_bits = bytearray((total + 7) // 8)
-    for index, flag in enumerate(was_ascii):
-        ascii_bits[index // 8] |= flag << (index % 8)
-    expected = bytearray((total + 7) // 8)
-    for index, flag in enumerate(was_ascii):
-        expected[index // 8] |= (flag != default) << (index % 8)
+def test_only_a_line_that_escapes_unicode_restates_the_spelling() -> None:
+    """Raw UTF-8 is claude's own; an escaped line is the exception, stated once."""
+    raw = '{"type":"user","message":{"role":"user","content":"é"}}\n'
+    plain = '{"type":"user","message":{"role":"user","content":"a\\u001b"}}\n'
+    escaped = '{"type":"user","message":{"role":"user","content":"\\u00e9"}}\n'
+    text = raw + plain * 9 + escaped + raw
 
-    packed = claude._ascii_escape_exceptions(ascii_bits, total, default=default)
+    records = list(claude.normalize(StringIO(text)))
+    out = StringIO()
+    claude.denormalize(records, out)
 
-    assert base64.b64decode(packed) == expected
+    stated = [r.encoding for r in records if isinstance(r, TurnContext) and r.encoding]
+    assert [dict(e) for e in stated] == [
+        {
+            "newline_terminated": True,
+            "ascii_escaped": False,
+            "ascii_escape_exceptions": "",
+        },
+        {
+            "newline_terminated": True,
+            "ascii_escaped": False,
+            "ascii_escape_exceptions": base64.b64encode(bytes([0, 4])).decode(),
+        },
+    ]
+    assert out.getvalue() == text
 
 
 def test_claude_writer_escapes_each_line_by_its_own_bit() -> None:

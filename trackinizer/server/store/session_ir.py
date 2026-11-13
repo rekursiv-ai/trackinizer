@@ -115,7 +115,7 @@ class SessionManifest:
     """How the file spells its bytes, as its reader stated it for this part.
 
     The ``TurnContext.encoding`` in force: ``newline_terminated`` plus, for
-    claude, the ascii-escaping majority and its exception bitmap. A rewrite
+    claude, the bitmap of lines that escaped their Unicode. A rewrite
     needs it verbatim, and nothing else in the IR carries it -- every record
     still matches without it while the bytes differ.
     """
@@ -598,8 +598,8 @@ class _SessionIRMixin(_CascadeAuditMixin):
         files then receive distinct parts, and a resumed file keeps its own part.
 
         Re-upserted per batch rather than written once: ``metadata`` is only
-        correct for the prefix consumed -- claude's ascii-escaping majority is
-        not decided until the stream ends -- and ``records`` grows with the
+        correct for the prefix consumed -- claude's escaped lines keep
+        arriving -- and ``records`` grows with the
         file. The key of the first write is kept as the part's opener; a later
         batch never changes it.
 
