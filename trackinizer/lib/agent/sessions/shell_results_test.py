@@ -1078,18 +1078,6 @@ def _lifted(script: str, *, stdout: str = "") -> ToolResult | None:
 def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
     """Position, time, call, path and residual all travel; the shell rides along."""
 
-    def shell(script: str) -> ToolResult[BashResult]:
-        return ToolResult(
-            context_id=3,
-            timestamp="t",
-            call_id="c9",
-            state="done",
-            stdout=("out",),
-            stderr=("err",),
-            result=BashResult(command=("bash", "-lc", script), exit_code=0),
-            extra={"k": 1},
-        )
-
     def extra(script: str, *, stdout: bool) -> dict[str, PlainTree]:
         replay: dict[str, PlainTree] = {"command": ("bash", "-lc", script)}
         if stdout:
@@ -1098,7 +1086,18 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
 
     patch = "patch a.txt << 'EOF'\n@@ -1 +1 @@\n-a\n+b\nEOF\n"
 
-    assert lift_shell_result(shell("cat a.txt")) == ToolResult(
+    assert lift_shell_result(
+        ToolResult(
+            context_id=3,
+            timestamp="t",
+            call_id="c9",
+            state="done",
+            stdout=("out",),
+            stderr=("err",),
+            result=BashResult(command=("bash", "-lc", "cat a.txt"), exit_code=0),
+            extra={"k": 1},
+        ),
+    ) == ToolResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1107,7 +1106,21 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         result=ReadResult(path="a.txt"),
         extra=extra("cat a.txt", stdout=False),
     )
-    assert lift_shell_result(shell("printf hi > a.txt")) == ToolResult(
+    assert lift_shell_result(
+        ToolResult(
+            context_id=3,
+            timestamp="t",
+            call_id="c9",
+            state="done",
+            stdout=("out",),
+            stderr=("err",),
+            result=BashResult(
+                command=("bash", "-lc", "printf hi > a.txt"),
+                exit_code=0,
+            ),
+            extra={"k": 1},
+        ),
+    ) == ToolResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1116,7 +1129,18 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         result=WriteResult(path="a.txt", content="hi"),
         extra=extra("printf hi > a.txt", stdout=True),
     )
-    assert lift_shell_result(shell("echo hi >> a.txt")) == ToolResult(
+    assert lift_shell_result(
+        ToolResult(
+            context_id=3,
+            timestamp="t",
+            call_id="c9",
+            state="done",
+            stdout=("out",),
+            stderr=("err",),
+            result=BashResult(command=("bash", "-lc", "echo hi >> a.txt"), exit_code=0),
+            extra={"k": 1},
+        ),
+    ) == ToolResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1125,7 +1149,18 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         result=EditResult(path="a.txt"),
         extra=extra("echo hi >> a.txt", stdout=True),
     )
-    assert lift_shell_result(shell(patch)) == ToolResult(
+    assert lift_shell_result(
+        ToolResult(
+            context_id=3,
+            timestamp="t",
+            call_id="c9",
+            state="done",
+            stdout=("out",),
+            stderr=("err",),
+            result=BashResult(command=("bash", "-lc", patch), exit_code=0),
+            extra={"k": 1},
+        ),
+    ) == ToolResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1134,7 +1169,21 @@ def test_each_lifted_kind_carries_every_field_of_its_shell_result() -> None:
         result=EditResult(path="a.txt"),
         extra=extra(patch, stdout=True),
     )
-    assert lift_shell_result(shell("sed -i s/a/b/ a.txt")) == ToolResult(
+    assert lift_shell_result(
+        ToolResult(
+            context_id=3,
+            timestamp="t",
+            call_id="c9",
+            state="done",
+            stdout=("out",),
+            stderr=("err",),
+            result=BashResult(
+                command=("bash", "-lc", "sed -i s/a/b/ a.txt"),
+                exit_code=0,
+            ),
+            extra={"k": 1},
+        ),
+    ) == ToolResult(
         context_id=3,
         timestamp="t",
         call_id="c9",
@@ -1411,30 +1460,51 @@ def test_a_heredoc_write_with_no_body_node_is_refused() -> None:
 
 
 def test_replay_keeps_a_command_it_cannot_reparse() -> None:
-    def read(command: list[str], path: str | None = None) -> ToolResult:
-        return ToolResult(
+
+    assert shell_result_for_replay(
+        ToolResult(
             call_id="c1",
             state="done",
-            result=ReadResult(path=path),
-            extra={"$shell": {"command": command}},
-        )
-
-    assert shell_result_for_replay(read(["ls"])) == ToolResult(
+            result=ReadResult(),
+            extra={"$shell": {"command": ["ls"]}},
+        ),
+    ) == ToolResult(
         call_id="c1",
         state="done",
         result=BashResult(command=("ls",)),
     )
-    assert shell_result_for_replay(read(["ls"], "b.txt")) == ToolResult(
+    assert shell_result_for_replay(
+        ToolResult(
+            call_id="c1",
+            state="done",
+            result=ReadResult(path="b.txt"),
+            extra={"$shell": {"command": ["ls"]}},
+        ),
+    ) == ToolResult(
         call_id="c1",
         state="done",
         result=BashResult(command=("ls",)),
     )
-    assert shell_result_for_replay(read([])) == ToolResult(
+    assert shell_result_for_replay(
+        ToolResult(
+            call_id="c1",
+            state="done",
+            result=ReadResult(),
+            extra={"$shell": {"command": []}},
+        ),
+    ) == ToolResult(
         call_id="c1",
         state="done",
         result=BashResult(command=()),
     )
-    assert shell_result_for_replay(read(["cat", "a.txt"])) == ToolResult(
+    assert shell_result_for_replay(
+        ToolResult(
+            call_id="c1",
+            state="done",
+            result=ReadResult(),
+            extra={"$shell": {"command": ["cat", "a.txt"]}},
+        ),
+    ) == ToolResult(
         call_id="c1",
         state="done",
         result=BashResult(command=("cat", "a.txt")),
