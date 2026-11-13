@@ -433,10 +433,7 @@ async def revoke_host(
                 detail="host belongs to another user",
             )
         host_id = from_plain(host["id"], UUID)
-        revoked = await _out_of_service(conn, host_id)
-    store = get_store(request)
-    for key_id in revoked:
-        store.forget_bearer_identity_for_key(key_id)
+        await _out_of_service(conn, host_id)
     return await _closed(request, host_id=host_id, owner=owner)
 
 
@@ -465,9 +462,9 @@ async def unregister_host(conn: Conn, *, name: str, owner: str) -> UUID | None:
     if host is None:
         return None
     host_id = from_plain(host["id"], UUID)
-    # Its callers hold no store to forget the processes' keys in, so each stays
-    # verified in this server's cache until its entry expires.
-    _ = await _out_of_service(conn, host_id)
+    # Its processes' keys leave the bearer cache with the rest of the host, in the
+    # caller's ``host_closed`` once this commits.
+    await _out_of_service(conn, host_id)
     await conn.execute("DELETE FROM hosts WHERE id = $1", host_id)
     return host_id
 
@@ -630,12 +627,12 @@ async def _token_is_usable(conn: Conn, *, parsed: ParsedSecret, name: str) -> bo
 # An enrollment token not yet used is closed too, so the revoke is not undone by a daemon
 # that joins with it. The keys minted for its agent processes go with it, as a process
 # dies with its host; a host that joins again keeps them, since its processes outlive
-# their daemon. Their ids are returned: the verified-bearer cache would honour each for
-# up to a minute more, so the caller forgets them once the transaction commits.
-async def _out_of_service(conn: Conn, host_id: UUID) -> list[UUID]:
+# their daemon. The verified-bearer cache would honour each for up to a minute more, so
+# the caller forgets the host's from it once the transaction commits.
+async def _out_of_service(conn: Conn, host_id: UUID) -> None:
     """Revoke the host's credential and its processes' keys, close its open enrollment, and free its daemon."""
     await _revoke_credentials(conn, host_id)
-    revoked = await revoke_host_process_keys(conn, host_id=host_id)
+    _ = await revoke_host_process_keys(conn, host_id=host_id)
     await conn.execute(
         "UPDATE host_enrollments SET used_at = now() "
         "WHERE host_id = $1 AND used_at IS NULL",
@@ -645,7 +642,6 @@ async def _out_of_service(conn: Conn, host_id: UUID) -> list[UUID]:
         "UPDATE hosts SET daemon_instance = NULL WHERE id = $1",
         host_id,
     )
-    return revoked
 
 
 # First, as nothing after the commit may keep a follower from hearing of it.
@@ -657,6 +653,7 @@ async def _closed(
 ) -> list[UUID]:
     """Tell the owner's listing, end a revoked host's tool connections, terminals and processes; return the processes' sessions."""
     hosts_changed(request, owner=owner)
+    get_store(request).forget_bearer_identities_for_host(host_id)
     get_tool_relay(request).close_host(host_id)
     await get_terminal_relay(request).close_host(host_id)
     return await get_session_relay(request).stop_host(host_id)

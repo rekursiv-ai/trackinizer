@@ -351,6 +351,9 @@ async def read_process_route(
 ) -> AgentProcess | None:
     """Return the agent process serving a session, or the last that did.
 
+    Every reader is told why it ended; a writer of the session, with the writer role,
+    is also told the end of its output, which may hold anything it printed.
+
     Args:
       session_id: The session.
       request: Request carrying the relay.
@@ -366,7 +369,17 @@ async def read_process_route(
     """
     session = await _session(request, session_id)
     await require_session_access(request, identity, session=session, mode="read")
-    return get_session_relay(request).process(session_id)
+    relay = get_session_relay(request)
+    process = relay.process(session_id)
+    if (
+        process is None
+        or identity.role == "viewer"
+        or not await _answers(
+            partial(_require_writer, request, identity, session=session),
+        )
+    ):
+        return process
+    return process.model_copy(update={"output": relay.output(session_id)})
 
 
 @router.delete(SESSION_PROCESS_PATH, response_model=AgentProcess | None)

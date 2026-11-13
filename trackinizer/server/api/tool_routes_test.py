@@ -13,13 +13,14 @@ from typing import TYPE_CHECKING, Final, cast, override
 from unittest.mock import AsyncMock, Mock
 from uuid import UUID
 
+import asyncio
 import logging
 import re
 
 from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute
 from starlette.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 from treekle import from_plain
 
 import pytest
@@ -50,10 +51,12 @@ from trackinizer.wire.wire_tools import (
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from starlette.testclient import WebSocketTestSession
 
     from trackinizer.server.api.tool_access import Check
-    from trackinizer.server.tool_relay import Inbound
+    from trackinizer.server.tool_relay import Inbound, ToolSocket
 
 
 _HOST = UUID(int=1)
@@ -365,6 +368,100 @@ def test_a_persons_browser_from_this_servers_pages_asks_for_its_own_hosts(
     }
     (opened,) = _logged(caplog, "tool connection opened:")
     assert (opened["asker"], opened["key"]) == ("ada@x.y", "browser")
+
+
+class _Joining(ToolRelay):
+    """A relay that keeps each tool connection the route joins, past its end."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            alive=_always_alive,
+            connections_per_host=16,
+            dial_back_sec=20,
+            line_bytes=1 << 20,
+        )
+        self.joined: list[ToolConnection] = []
+
+    @override
+    def join(
+        self,
+        host_id: UUID,
+        *,
+        agent: ToolSocket,
+        asker: str,
+        api_key_id: UUID | None,
+        inbound: Inbound,
+    ) -> ToolConnection:
+        connection = super().join(
+            host_id,
+            agent=agent,
+            asker=asker,
+            api_key_id=api_key_id,
+            inbound=inbound,
+        )
+        self.joined.append(connection)
+        return connection
+
+
+def _opened(monkeypatch: pytest.MonkeyPatch, *, browser: bool) -> ToolConnection:
+    """Open one agent socket to ``gx10``, a key's or a browser's; return its connection."""
+    relay = _Joining()
+    app = _app(monkeypatch, relay)
+    if browser:
+        _browser(monkeypatch)
+    with (
+        TestClient(app) as client,
+        client.websocket_connect(
+            TOOLS_WS_PATH.format(name="gx10"),
+            headers=_OWN_PAGE if browser else {},
+        ) as agent,
+    ):
+        agent.send_bytes(_HELLO)
+    (connection,) = relay.joined
+    return connection
+
+
+@pytest.mark.parametrize(
+    ("now", "signed_in"),
+    [
+        (SimpleNamespace(api_key_id=None, email="ADA@x.y"), True),
+        (HTTPException(status_code=401), False),
+        (SimpleNamespace(api_key_id=None, email="Bob@x.y"), False),
+        (SimpleNamespace(api_key_id=_KEY, email="Ada@x.y"), False),
+    ],
+    ids=["still hers", "signed out", "another person", "a key"],
+)
+def test_a_browsers_tool_connection_asks_again_whether_it_is_still_signed_in(
+    monkeypatch: pytest.MonkeyPatch,
+    now: SimpleNamespace | HTTPException,
+    signed_in: bool,
+) -> None:
+    """Its cookie expired, it signed in as another, or a key came in its place."""
+    connection = _opened(monkeypatch, browser=True)
+    assert connection.signed_in is not None
+    asked = (
+        AsyncMock(side_effect=now)
+        if isinstance(now, HTTPException)
+        else AsyncMock(return_value=now)
+    )
+    monkeypatch.setattr(auth, "request_user", asked)
+
+    assert asyncio.run(_answer(connection.signed_in)) is signed_in
+    # The socket's own handshake is authenticated again: its cookie as it is now.
+    assert asked.await_args is not None
+    (handshake,) = cast("tuple[object, ...]", asked.await_args.args)
+    assert isinstance(handshake, WebSocket)
+
+
+def test_a_keys_tool_connection_asks_no_browser_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _opened(monkeypatch, browser=False).signed_in is None
+
+
+async def _answer(ask: Callable[[], Awaitable[bool]]) -> bool:
+    """Return what ``ask`` answers."""
+    return await ask()
 
 
 @pytest.mark.parametrize(

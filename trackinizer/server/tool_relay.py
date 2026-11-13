@@ -33,6 +33,7 @@ injected, so every limit is tested without waiting for it.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Final, Protocol, override
 from uuid import UUID, uuid4
@@ -49,7 +50,7 @@ from trackinizer.wire.wire_tools import ToolOffer
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Coroutine
+    from collections.abc import Coroutine
 
 
 __all__ = [
@@ -149,6 +150,11 @@ class ToolConnection:
 
     daemon_mid_line: bool = False
     """Whether the daemon's last frame stopped inside a line."""
+
+    signed_in: Callable[[], Awaitable[bool]] | None = None
+    """For one the asker's own browser opened: asks again whether that browser is
+    still signed in as the asker, from this server's pages; ``None`` for a key's.
+    Its route sets it as the connection is joined."""
 
 
 class ToolRelay:

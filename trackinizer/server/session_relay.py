@@ -206,6 +206,9 @@ class SessionRelay:
         opens late, counted as each event line's bytes; past it none is kept until
         the next model call.
       viewer_lag: The most lines a viewer may fall behind; past it, it is closed.
+      viewer_bytes: The most bytes of lines a viewer may fall behind; past it, it is
+        closed, and opens again: 8 MiB, four frames. Counted by lines alone, a
+        viewer that reads nothing held 1024 frames (2 GiB) of the session's.
       held_inputs: The most inputs held for a process that is still starting.
       input_bytes: The most bytes of a session's inputs its process has not been sent
         yet, held while it starts or waiting on its socket, each at most one frame:
@@ -219,11 +222,13 @@ class SessionRelay:
         *,
         kept_bytes: int = 2 << 20,
         viewer_lag: int = 1024,
+        viewer_bytes: int = 4 * MAX_FRAME_BYTES,
         held_inputs: int = 256,
         input_bytes: int = 4 * MAX_FRAME_BYTES,
     ) -> None:
         self._kept_bytes = kept_bytes
         self._viewer_lag = viewer_lag
+        self._viewer_bytes = viewer_bytes
         self._held_inputs = held_inputs
         self._input_bytes = input_bytes
         self._sessions: dict[UUID, _Session] = {}
@@ -325,8 +330,8 @@ class SessionRelay:
         Yields:
           frame: An :class:`Opened` with the last state, the process and the last
             settings, then the event lines of a reply still being written, if one is,
-            then each line live. It ends when the viewer falls ``viewer_lag`` lines
-            behind, or a sweep finds its rule no longer holds.
+            then each line live. It ends when the viewer falls ``viewer_lag`` lines or
+            ``viewer_bytes`` behind, or a sweep finds its rule no longer holds.
 
         """
         live = self._sessions.setdefault(session_id, _Session())
@@ -342,7 +347,9 @@ class SessionRelay:
                 yield line
             while True:
                 while viewer.lines:
-                    yield viewer.lines.popleft()
+                    line, size = viewer.lines.popleft()
+                    viewer.unread -= size
+                    yield line
                 if viewer.dropped:
                     return
                 viewer.woken.clear()
@@ -380,10 +387,11 @@ class SessionRelay:
 
         """
         live = self._sessions.get(session_id)
-        if live is None:
+        if live is None or not live.viewers:
             return
         for record in records:
-            self._fan_out(live, RecordLine(part=part, record=record))
+            line = RecordLine(part=part, record=record)
+            self._fan_out(live, line, size=len(line.model_dump_json().encode()))
 
     def send_input(
         self,
@@ -491,6 +499,7 @@ class SessionRelay:
         live.offer = offer
         live.host_id = host_id
         live.held.clear()
+        live.output = ""
         self._offers.setdefault(host_id, deque()).append(offer)
         process = AgentProcess(
             session_id=session_id,
@@ -531,6 +540,20 @@ class SessionRelay:
         """
         live = self._sessions.get(session_id)
         return None if live is None else live.process
+
+    def output(self, session_id: UUID) -> str:
+        """Return the end of the output its daemon reported of the session's process.
+
+        Args:
+          session_id: The session.
+
+        Returns:
+          output: What the last process's daemon reported as it ended; empty before
+            a report, or once another process starts or attaches.
+
+        """
+        live = self._sessions.get(session_id)
+        return "" if live is None else live.output
 
     def live_process_ids(self) -> frozenset[UUID]:
         """Return the id of each process ``starting`` or ``attached``, on any host.
@@ -680,7 +703,8 @@ class SessionRelay:
 
         It counts only for the session's current process, reported by the host it was
         offered to: the daemon's reason replaces any other, and the process is
-        detached if it is not already. Any other report is ignored.
+        detached if it is not already. The end of its output is kept apart from what
+        any viewer reads (:meth:`output`). Any other report is ignored.
 
         Args:
           report: The process and why it ended.
@@ -695,9 +719,8 @@ class SessionRelay:
                 or live.host_id != host_id
             ):
                 continue
-            if process.state == "detached":
-                self._change(live, process.model_copy(update={"reason": report.reason}))
-                return
+            live.output = report.output
+            # One detached already keeps when it was, and takes the daemon's reason.
             connection = live.connection
             self._detach(session_id, live, reason=report.reason)
             if connection is not None:
@@ -814,6 +837,7 @@ class SessionRelay:
         else:
             live.host_id = host_id
             live.connection = connection
+            live.output = ""
             self._change(
                 live,
                 AgentProcess(
@@ -865,13 +889,14 @@ class SessionRelay:
                 return None
             # Only a text frame reads as a frame.
             assert isinstance(received, str)
+            size = len(received.encode())
             if isinstance(frame, EventLine):
-                self._keep(live, frame, size=len(received.encode()))
+                self._keep(live, frame, size=size)
             elif isinstance(frame, StateLine):
                 live.state = frame.state
             else:
                 live.settings = frame.settings
-            self._fan_out(live, frame)
+            self._fan_out(live, frame, size=size)
 
     # A finished reply is a record, stored or about to be, which a viewer reads with the
     # records: kept lines replaying it would draw it twice.
@@ -897,15 +922,19 @@ class SessionRelay:
                 f"the {self._input_bytes} it may; send this once it has read them",
             )
 
-    def _fan_out(self, live: _Session, line: ViewerFrame) -> None:
-        """Queue ``line`` for every viewer, closing one that falls too far behind."""
+    def _fan_out(self, live: _Session, line: ViewerFrame, *, size: int) -> None:
+        """Queue ``line``, ``size`` bytes, for every viewer; close one too far behind."""
         for viewer in live.viewers:
             if viewer.dropped:
                 continue
-            if len(viewer.lines) >= self._viewer_lag:
+            if (
+                len(viewer.lines) >= self._viewer_lag
+                or viewer.unread + size > self._viewer_bytes
+            ):
                 _drop(viewer)
             else:
-                viewer.lines.append(line)
+                viewer.lines.append((line, size))
+                viewer.unread += size
                 viewer.woken.set()
 
     async def _end(
@@ -962,7 +991,8 @@ class SessionRelay:
             process.state,
             process.reason,
         ):
-            self._fan_out(live, ProcessLine(process=process))
+            line = ProcessLine(process=process)
+            self._fan_out(live, line, size=len(line.model_dump_json().encode()))
 
     def _take_back_offer(self, live: _Session) -> None:
         """Forget a start no daemon has taken yet."""
@@ -1050,7 +1080,14 @@ class _Viewer:
     allowed: Allowed
     """The rule it was let in by, asked again by each sweep."""
 
-    lines: deque[ViewerFrame] = field(default_factory=deque[ViewerFrame])
+    lines: deque[tuple[ViewerFrame, int]] = field(
+        default_factory=deque[tuple[ViewerFrame, int]],
+    )
+    """Each line it has yet to read, and its bytes."""
+
+    unread: int = 0
+    """The bytes of ``lines``."""
+
     woken: asyncio.Event = field(default_factory=asyncio.Event)
     dropped: bool = False
     """Whether it is closed: it fell too far behind, or its rule no longer holds."""
@@ -1080,6 +1117,10 @@ class _Session:
     viewers: set[_Viewer] = field(default_factory=set[_Viewer])
     held: list[_Unsent] = field(default_factory=list[_Unsent])
     """Inputs sent while the process was starting."""
+
+    output: str = ""
+    """The end of the output its process's daemon reported as it ended, which only a
+    writer of the session reads; never in a line."""
 
 
 def _refusal(process: AgentProcess | None, hello: Hello) -> tuple[int, str] | None:

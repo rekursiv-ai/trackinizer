@@ -30,7 +30,7 @@ from trackinizer.sagent.session.types import (
 )
 from trackinizer.types.session_records import (
     _BY_KIND,
-    _record_class,
+    record_class,
     record_kind,
     search_text,
 )
@@ -59,7 +59,7 @@ class TestTheFieldSetIsDerived:
     def test_every_field_names_a_real_record_class(self) -> None:
         """The kind baked into each template must decode a stored row."""
         for field, kind in SESSION_RECORD_FIELDS.items():
-            assert _record_class(kind) in _BY_KIND.values(), (
+            assert record_class(kind) in _BY_KIND.values(), (
                 f"{field} names no record class"
             )
 
