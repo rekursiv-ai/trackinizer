@@ -20496,7 +20496,7 @@
   },
   "/auth/logout": {
    "post": {
-    "description": "Clear the session cookie and redirect the user back to ``/``.\n\nLogout mutates the session cookie, so it is a state-changing POST that a\ncross-origin page could trigger under ``SameSite=Lax`` (which allows\ntop-level same-site requests to carry the cookie) -- a forced-logout CSRF.\nReject a request whose ``Origin`` (or, as a fallback, ``Referer``) names a\ndifferent origin than this server's; a request with neither header (a\nnon-browser client such as the CLI) has no CSRF vector and is allowed.\n\nArgs:\n  request: HTTP request with Origin/Referer for CSRF validation.\n\nReturns:\n  response: 302 redirect to '/' with session cookie cleared.",
+    "description": "End the user's browser sessions, clear the cookie, and redirect back to ``/``.\n\nA live session cookie ends every browser session of its user, each copy of the\ncookie included: a cookie cannot be revoked alone. API keys stay live.\n\nLogout mutates the session cookie, so it is a state-changing POST that a\ncross-origin page could trigger under ``SameSite=Lax`` (which allows\ntop-level same-site requests to carry the cookie) -- a forced-logout CSRF.\nReject a request whose ``Origin`` (or, as a fallback, ``Referer``) names a\ndifferent origin than this server's; a request with neither header (a\nnon-browser client such as the CLI) has no CSRF vector and is allowed.\n\nArgs:\n  request: HTTP request with Origin/Referer for CSRF validation.\n\nReturns:\n  response: 302 redirect to '/' with session cookie cleared.",
     "operationId": "auth_logout_route_auth_logout_post",
     "responses": {
      "200": {

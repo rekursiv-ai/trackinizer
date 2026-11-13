@@ -21,13 +21,13 @@ if TYPE_CHECKING:
 def test_profile_flag_overrides_trackinizer_url(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    profile.save_profile("prod", Profile(url="http://prod:9000", author="alice"))
-    monkeypatch.setenv("TRACKINIZER_URL", "http://env:8766")
+    profile.save_profile("prod", Profile(url="https://prod:9000", author="alice"))
+    monkeypatch.setenv("TRACKINIZER_URL", "https://env:8766")
     client = connection.connect(
         argparse.Namespace(profile="prod", host=None, port=None),
     )
     try:
-        assert client.base_url == "http://prod:9000"
+        assert client.base_url == "https://prod:9000"
         assert client.author == "alice"
     finally:
         close_clients()
@@ -61,30 +61,30 @@ class TestTokenEnvironment:
         [
             pytest.param(
                 "prod",
-                {"TRACKINIZER_URL": "http://env:1", "TRACKINIZER_TOKEN": _KEY},
-                Target(url="http://prod:9000", author="alice", api_key="profile-key"),
+                {"TRACKINIZER_URL": "https://env:1", "TRACKINIZER_TOKEN": _KEY},
+                Target(url="https://prod:9000", author="alice", api_key="profile-key"),
                 id="row1-profile-flag-ignores-env-token",
             ),
             pytest.param(
                 None,
                 {
-                    "TRACKINIZER_URL": "http://env:1",
+                    "TRACKINIZER_URL": "https://env:1",
                     "TRACKINIZER_TOKEN": _KEY,
                     "TRACKINIZER_PROFILE": "prod",
                 },
-                Target(url="http://env:1", author="", api_key=_KEY),
+                Target(url="https://env:1", author="", api_key=_KEY),
                 id="row2-env-url-and-token",
             ),
             pytest.param(
                 None,
-                {"TRACKINIZER_URL": "http://env:1", "TRACKINIZER_PROFILE": "prod"},
-                Target(url="http://env:1", author="", api_key=""),
+                {"TRACKINIZER_URL": "https://env:1", "TRACKINIZER_PROFILE": "prod"},
+                Target(url="https://env:1", author="", api_key=""),
                 id="row3-env-url-alone-has-no-key",
             ),
             pytest.param(
                 None,
                 {"TRACKINIZER_PROFILE": "prod"},
-                Target(url="http://prod:9000", author="alice", api_key="profile-key"),
+                Target(url="https://prod:9000", author="alice", api_key="profile-key"),
                 id="row4-profile-environment",
             ),
         ],
@@ -98,7 +98,7 @@ class TestTokenEnvironment:
     ) -> None:
         profile.save_profile(
             "prod",
-            Profile(url="http://prod:9000", author="alice", api_key="profile-key"),
+            Profile(url="https://prod:9000", author="alice", api_key="profile-key"),
         )
         for name, value in env_pairs.items():
             monkeypatch.setenv(name, value)
@@ -109,10 +109,10 @@ class TestTokenEnvironment:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://env:1")
         monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
 
-        assert _resolve(port=9) == Target(url="http://env:9", author="", api_key=_KEY)
+        assert _resolve(port=9) == Target(url="https://env:9", author="", api_key=_KEY)
 
     def test_token_without_url_is_ignored(
         self,
@@ -122,7 +122,7 @@ class TestTokenEnvironment:
         """An ops shell exports only the token; the profile's own key stays in use."""
         profile.save_profile(
             "prod",
-            Profile(url="http://prod:9000", author="alice", api_key="profile-key"),
+            Profile(url="https://prod:9000", author="alice", api_key="profile-key"),
         )
         profile.switch_profile("prod")
         monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
@@ -137,7 +137,7 @@ class TestTokenEnvironment:
             close_clients()
 
         assert target == Target(
-            url="http://prod:9000",
+            url="https://prod:9000",
             author="alice",
             api_key="profile-key",
         )
@@ -148,13 +148,13 @@ class TestTokenEnvironment:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        profile.save_profile("a", Profile(url="http://a:1", api_key="key-a"))
-        profile.save_profile("b", Profile(url="http://b:1", api_key="key-b"))
+        profile.save_profile("a", Profile(url="https://a:1", api_key="key-a"))
+        profile.save_profile("b", Profile(url="https://b:1", api_key="key-b"))
         profile.switch_profile("a")
         monkeypatch.setenv("TRACKINIZER_PROFILE", "b")
         monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
 
-        assert _resolve() == Target(url="http://b:1", author="", api_key="key-b")
+        assert _resolve() == Target(url="https://b:1", author="", api_key="key-b")
 
     def test_token_without_url_and_without_profile_sends_no_key(
         self,
@@ -165,10 +165,10 @@ class TestTokenEnvironment:
         assert _resolve().api_key == ""
 
     def test_an_empty_token_is_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://env:1")
         monkeypatch.setenv("TRACKINIZER_TOKEN", "")
 
-        assert _resolve() == Target(url="http://env:1", author="", api_key="")
+        assert _resolve() == Target(url="https://env:1", author="", api_key="")
 
     @pytest.mark.parametrize(
         "bad_key",
@@ -180,7 +180,7 @@ class TestTokenEnvironment:
         monkeypatch: pytest.MonkeyPatch,
         bad_key: str,
     ) -> None:
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://env:1")
         monkeypatch.setenv("TRACKINIZER_TOKEN", bad_key)
 
         with pytest.raises(ClientError, match="printable ASCII") as caught:
@@ -194,10 +194,10 @@ class TestTokenEnvironment:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:9000"))
+        profile.save_profile("prod", Profile(url="https://prod:9000"))
         monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
 
-        assert _resolve(profile_name="prod").url == "http://prod:9000"
+        assert _resolve(profile_name="prod").url == "https://prod:9000"
 
 
 class TestTokenFile:
@@ -209,10 +209,10 @@ class TestTokenFile:
         tmp_path: Path,
     ) -> None:
         (tmp_path / "key").write_text(f"{_KEY}\n")
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://env:1")
         monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(tmp_path / "key"))
 
-        assert _resolve() == Target(url="http://env:1", author="", api_key=_KEY)
+        assert _resolve() == Target(url="https://env:1", author="", api_key=_KEY)
 
     def test_the_token_wins_over_the_file(
         self,
@@ -220,7 +220,7 @@ class TestTokenFile:
         tmp_path: Path,
     ) -> None:
         (tmp_path / "key").write_text("from-the-file\n")
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://env:1")
         monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
         monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(tmp_path / "key"))
 
@@ -232,7 +232,7 @@ class TestTokenFile:
         tmp_path: Path,
     ) -> None:
         missing = tmp_path / "missing"
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://env:1")
         monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(missing))
 
         with pytest.raises(ClientError) as caught:
@@ -250,7 +250,7 @@ class TestTokenFile:
         tmp_path: Path,
     ) -> None:
         (tmp_path / "key").write_text(f"{_KEY} trailing\n")
-        monkeypatch.setenv("TRACKINIZER_URL", "http://env:1")
+        monkeypatch.setenv("TRACKINIZER_URL", "https://env:1")
         monkeypatch.setenv("TRACKINIZER_TOKEN_FILE", str(tmp_path / "key"))
 
         with pytest.raises(ClientError) as caught:
@@ -272,7 +272,7 @@ class TestClientSharing:
     """
 
     def test_reuses_one_client_across_invocations(self) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:9000"))
+        profile.save_profile("prod", Profile(url="https://prod:9000"))
         args = argparse.Namespace(profile="prod", host=None, port=None)
         try:
             clients = [connection.connect(args) for _ in range(5)]
@@ -286,8 +286,8 @@ class TestClientSharing:
 
     def test_separates_clients_by_resolved_target(self) -> None:
         """Two profiles are two servers; they must not share a connection."""
-        profile.save_profile("a", Profile(url="http://a:9000"))
-        profile.save_profile("b", Profile(url="http://b:9000"))
+        profile.save_profile("a", Profile(url="https://a:9000"))
+        profile.save_profile("b", Profile(url="https://b:9000"))
         try:
             first = connection.connect(
                 argparse.Namespace(profile="a", host=None, port=None),
@@ -302,11 +302,14 @@ class TestClientSharing:
 
     def test_a_profile_rewrite_invalidates_the_cached_client(self) -> None:
         """A cached client still carries the OLD token after a token change."""
-        profile.save_profile("prod", Profile(url="http://prod:9000", api_key="old"))
+        profile.save_profile("prod", Profile(url="https://prod:9000", api_key="old"))
         args = argparse.Namespace(profile="prod", host=None, port=None)
         try:
             before = connection.connect(args)
-            profile.save_profile("prod", Profile(url="http://prod:9000", api_key="new"))
+            profile.save_profile(
+                "prod",
+                Profile(url="https://prod:9000", api_key="new"),
+            )
             after = connection.connect(args)
 
             assert before is not after
@@ -371,6 +374,32 @@ def test_malformed_environment_key_is_refused_without_echoing(
 
     assert token not in str(error.value)
     assert "secret" not in str(error.value)
+
+
+def test_a_plain_http_env_url_is_refused_before_its_key_is_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``TRACKINIZER_URL=http://...`` would send ``TRACKINIZER_TOKEN`` in clear."""
+    monkeypatch.setenv("TRACKINIZER_URL", "http://server.example")
+    monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
+
+    with pytest.raises(ClientError, match=r"TRACKINIZER_URL .* is plain http") as error:
+        _resolve()
+
+    assert _KEY not in str(error.value)
+
+
+def test_a_host_flag_cannot_point_a_loopback_http_url_at_another_host(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--host`` keeps the scheme, so a local http URL cannot reach a far host."""
+    monkeypatch.setenv("TRACKINIZER_URL", "http://127.0.0.1:8446")
+    monkeypatch.setenv("TRACKINIZER_TOKEN", _KEY)
+
+    with pytest.raises(ClientError, match="plain http"):
+        connection.connect(
+            argparse.Namespace(profile=None, host="server.example", port=None),
+        )
 
 
 if __name__ == "__main__":

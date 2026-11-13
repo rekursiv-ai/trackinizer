@@ -262,12 +262,13 @@ class TerminalWorld:
             )
         return user_id
 
-    def cookie(self, user_id: uuid.UUID) -> str:
+    def cookie(self, user_id: uuid.UUID, *, generation: int = 0) -> str:
         """Return the ``Cookie`` header value that signs ``user_id`` in."""
         signed = Response()
         set_session_cookie(
             signed,
             user_id=str(user_id),
+            generation=generation,
             secret=TERMINAL_SESSION_KEY,
             max_age_seconds=600,
         )

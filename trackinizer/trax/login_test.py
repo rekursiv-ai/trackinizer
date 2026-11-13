@@ -153,7 +153,7 @@ def test_a_login_saves_the_key_under_the_servers_host_and_makes_it_current(
     assert clock.slept == [5, 5]
     out = capsys.readouterr().out
     assert "https://trackinizer.example/auth/device?user_code=BCDF-GHJK" in out
-    assert "BCDF-GHJK" in out
+    assert "approve the code BCDF-GHJK" in out
     assert _KEY not in out
 
 
@@ -237,7 +237,7 @@ def test_plain_http_beyond_this_computer_is_refused_before_any_request(
 ) -> None:
     server = _Server([_approved()])
 
-    with pytest.raises(ClientError, match="plain http"):
+    with pytest.raises(ClientError, match=r"^login URL '.*' is plain http;"):
         _log_in(server, _Time(), url=url)
 
     assert server.requests == []
@@ -254,13 +254,30 @@ def test_plain_http_to_this_computer_is_allowed(url: str) -> None:
     assert result.role == "writer"
 
 
-def test_a_login_without_a_program_name_is_trax_logging_in() -> None:
+def test_a_login_naming_no_program_or_profile_is_traxs_named_for_its_server() -> None:
     # What ``trax profile NAME login URL`` sends: it names no program of its own.
     server = _Server([_approved()])
+    clock = _Time()
 
-    _log_in(server, _Time())
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(httpx2, "HTTPTransport", _server_transport(server))
+        result = login(
+            "https://trackinizer.example",
+            sleep=clock.sleep,
+            clock=clock.clock,
+        )
 
     assert server.bodies()[0]["client"] == "trax"
+    assert result.profile == "trackinizer.example"
+
+
+def test_a_program_name_the_server_would_refuse_is_refused_before_any_request() -> None:
+    server = _Server([_approved()])
+
+    with pytest.raises(ClientError, match=r"^login request returned a malformed"):
+        _log_in(server, _Time(), client="Not A Program")
+
+    assert server.requests == []
 
 
 def test_a_server_with_a_port_is_named_with_it() -> None:
@@ -352,7 +369,10 @@ def test_a_malformed_answer_is_reported_without_quoting_it() -> None:
         del request
         return httpx2.Response(201, json={"device_code": "SECRETMARKER"})
 
-    with pytest.raises(ClientError, match="malformed payload") as raised:
+    with pytest.raises(
+        ClientError,
+        match=f"^{DEVICE_CODE_PATH} returned a malformed payload$",
+    ) as raised:
         _log_in(garbled, _Time())
 
     assert "SECRETMARKER" not in str(raised.value)

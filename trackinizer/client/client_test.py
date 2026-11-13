@@ -129,7 +129,7 @@ class _ClientSpy(Client):
         get_results: list[PlainTree] | None = None,
         post_result: PlainTree | None = None,
     ) -> None:
-        super().__init__("http://server")
+        super().__init__("https://server")
         self.get_results: list[PlainTree] = list(get_results or [])
         self.post_result = post_result
         self.get_calls: list[tuple[str, dict[str, object] | None]] = []
@@ -223,30 +223,30 @@ class TestFlags:
         assert port_arg == 9000
 
     def test_from_args_host_port_override_profile(self) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:1000"))
+        profile.save_profile("prod", Profile(url="https://prod:1000"))
         client = connection.connect(
             argparse.Namespace(profile="prod", host="ex", port=9090),
         )
-        assert client.base_url == "http://ex:9090"
+        assert client.base_url == "https://ex:9090"
 
     def test_from_args_selects_named_profile(self) -> None:
-        profile.save_profile("prod", Profile(url="http://prod:9000", author="alice"))
+        profile.save_profile("prod", Profile(url="https://prod:9000", author="alice"))
         client = connection.connect(
             argparse.Namespace(profile="prod", host=None, port=None),
         )
-        assert client.base_url == "http://prod:9000"
+        assert client.base_url == "https://prod:9000"
         assert client.author == "alice"
 
     def test_from_args_partial_flags_fill_from_profile(self) -> None:
-        profile.save_profile("default", Profile(url="http://defaulthost:8888"))
+        profile.save_profile("default", Profile(url="https://defaulthost:8888"))
         host_only = connection.connect(
             argparse.Namespace(profile=None, host="other", port=None),
         )
-        assert host_only.base_url == "http://other:8888"
+        assert host_only.base_url == "https://other:8888"
         port_only = connection.connect(
             argparse.Namespace(profile=None, host=None, port=4242),
         )
-        assert port_only.base_url == "http://defaulthost:4242"
+        assert port_only.base_url == "https://defaulthost:4242"
 
     def test_from_args_without_flags_uses_trackinizer_url(
         self,
@@ -276,12 +276,12 @@ class TestFlags:
     def test_bare_client_reads_author_from_profile(self) -> None:
         profile.save_profile(
             "default",
-            Profile(url="http://defaulthost:8888", author="alice"),
+            Profile(url="https://defaulthost:8888", author="alice"),
         )
         client = connection.connect(
             argparse.Namespace(profile=None, host=None, port=None),
         )
-        assert client.base_url == "http://defaulthost:8888"
+        assert client.base_url == "https://defaulthost:8888"
         assert client.author == "alice"
 
     def test_from_args_without_flags_uses_default_profile(self) -> None:
@@ -407,12 +407,12 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, json={"ok": True})
 
-        with Client("http://server/") as client:
+        with Client("https://server/") as client:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
         req = seen["req"]
-        assert str(req.url) == "http://server/api/x"
+        assert str(req.url) == "https://server/api/x"
         assert req.method == "POST"
         assert json.loads(req.content) == {"a": 1}
         assert req.headers["Accept"] == "application/json"
@@ -426,7 +426,7 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, content=b"")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             result = client.get(
                 "/api/search",
@@ -434,7 +434,7 @@ class TestRequests:
             )
         assert result is None
         req = seen["req"]
-        assert str(req.url) == "http://server/api/search?q=a+b"
+        assert str(req.url) == "https://server/api/search?q=a+b"
         # GETs do not carry Idempotency-Key (no mutation to dedup).
         assert "Idempotency-Key" not in req.headers
 
@@ -445,7 +445,7 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, content=b"")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             client.get("/api/x")
         assert "Authorization" not in seen["req"].headers
@@ -457,7 +457,7 @@ class TestRequests:
             seen["req"] = request
             return httpx2.Response(200, content=b"")
 
-        with Client("http://server", api_key="trax_abcdef") as client:
+        with Client("https://server", api_key="trax_abcdef") as client:
             _install_mock_transport(client, handler)
             client.post("/api/x", body={"a": 1})
         assert seen["req"].headers["Authorization"] == "Bearer trax_abcdef"
@@ -467,7 +467,7 @@ class TestRequests:
             del request
             return httpx2.Response(409, content=b'{"detail":"bad"}')
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, http_error)
             with pytest.raises(ClientError, match="POST /x -> 409"):
                 client.post("/x")
@@ -480,7 +480,7 @@ class TestRequests:
                 json={"detail": "clash", "code": "conflict"},
             )
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             src = uuid.uuid4()
             dst = uuid.uuid4()
@@ -497,7 +497,7 @@ class TestRequests:
                 json={"detail": {"code": "chat_deleted", "message": "gone"}},
             )
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError) as exc_info:
                 client.get("/api/chats/x")
@@ -511,7 +511,7 @@ class TestRequests:
             del request
             raise httpx2.ConnectError("offline")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, connect_error)
             with pytest.raises(ClientError, match="GET /x failed: offline"):
                 client.get("/x")
@@ -561,7 +561,7 @@ class TestRequests:
             attempts.append(request)
             return httpx2.Response(503, content=b"down")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="POST /x -> 503"):
                 client.post("/x", timeout=1.0, retry_attempts=1)
@@ -592,7 +592,7 @@ class TestRequests:
                 return httpx2.Response(502, content=b"bad gateway")
             return httpx2.Response(200, json={"ok": True})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
@@ -627,7 +627,7 @@ class TestRequests:
                 return httpx2.Response(500, content=b"internal server error")
             return httpx2.Response(200, json={"ok": True})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             result = client.post("/api/x", body={"a": 1})
         assert result == {"ok": True}
@@ -648,7 +648,7 @@ class TestRequests:
             attempts.append(request)
             return httpx2.Response(503, content=b"down")
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="POST /x -> 503"):
                 client.post("/x")
@@ -679,7 +679,7 @@ class TestRequests:
             attempts.append(request)
             raise exc
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="POST /x failed:"):
                 client.post("/x")
@@ -699,7 +699,7 @@ def test_request_truncates_oversized_error_text() -> None:
         del request
         return httpx2.Response(400, content=big.encode())
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError) as exc_info:
             client.get("/x")
@@ -714,7 +714,7 @@ class TestVersion:
             del request
             return httpx2.Response(200, json={"sha": "deadbeef"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             assert client.version() == "deadbeef"
 
@@ -725,7 +725,7 @@ class TestVersion:
             del request
             return httpx2.Response(200, json={"sha": "unknown"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             assert client.version() == "unknown"
 
@@ -736,7 +736,7 @@ class TestVersion:
             del request
             return httpx2.Response(200, json={})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed payload"):
                 client.version()
@@ -758,7 +758,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"wrong": "shape"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.resolve_id(SeqRef(kind="Issue", seq=4))
@@ -770,7 +770,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json=[1, 2, 3])
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.resolve_id(UuidRef(uuid=uuid.uuid4()))
@@ -784,7 +784,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json=body)
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler=handler)
             with pytest.raises(ClientError) as missing_id:
                 client.resolve_id(SeqRef(kind="Issue", seq=4))
@@ -805,7 +805,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"kind": "Issue"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler=handler)
             with pytest.raises(ClientError) as err:
                 client.resolve_id(UuidRef(uuid=target, expected_kind="Belief"))
@@ -823,7 +823,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"nope": {}})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.resolve_ids([UuidRef(uuid=uuid.uuid4())])
@@ -835,7 +835,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"nope": "x"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.submit("Issue", {"title": "x"})
@@ -847,7 +847,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"id": "not-a-uuid"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.submit("Issue", {"title": "x"})
@@ -859,7 +859,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"nope": []})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.submit_batch([("Issue", {"title": "x"})])
@@ -871,7 +871,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json=[1, 2, 3])
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.next_issue()
@@ -883,7 +883,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(200, json={"not": "a list"})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.recent_changes()
@@ -957,7 +957,7 @@ class TestClientErrorContract:
             del request
             return httpx2.Response(201, json={"bogus": True})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match="malformed"):
                 client.session_start(SessionStart(cli="codex"))
@@ -1030,7 +1030,7 @@ class TestClientMethods:
             captured["r"] = request
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         assert (
             client.list_kind(
@@ -1059,7 +1059,7 @@ class TestClientMethods:
             seen.append(request)
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         client.list_kind("Issue")
         client.list_kind("Belief", status="active", limit=7, offset=3)
@@ -1088,7 +1088,7 @@ class TestClientMethods:
             del request
             return httpx2.Response(200, json=payload)
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="/api/inquiries returned a malformed"):
             client.list_kind("Issue")
@@ -1106,7 +1106,7 @@ class TestClientMethods:
             captured["r"] = request
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         assert (
             client.list_kind(
@@ -1127,7 +1127,7 @@ class TestClientMethods:
             seen.append(request)
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         client.list_kind("Issue", fields=("id", "labels"))
         client.list_kind("Issue")
@@ -1155,7 +1155,7 @@ class TestClientMethods:
                 )
             return httpx2.Response(200, json=[{"seq": MAX_LIST_LIMIT}])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         rows = client.list_kind_all("Issue")
         assert len(rows) == MAX_LIST_LIMIT + 1, "all rows across both pages"
@@ -1182,7 +1182,7 @@ class TestClientMethods:
                 )
             return httpx2.Response(200, json=[])
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         rows = client.list_kind_all("Issue")
         assert len(rows) == MAX_LIST_LIMIT
@@ -1669,25 +1669,25 @@ def test_public_methods_ignores_mutmut_copies() -> None:
 
 def test_server_url_rejects_credentials() -> None:
     with pytest.raises(ClientError, match="must not embed credentials"):
-        server_url("http://alice:secret@example.com", "test")
+        server_url("https://alice:secret@example.com", "test")
 
 
 def test_server_url_rejects_query() -> None:
     with pytest.raises(ClientError, match="must not contain query"):
-        server_url("http://example.com?x=1", "test")
+        server_url("https://example.com?x=1", "test")
 
 
 def test_server_url_rejects_fragment() -> None:
     with pytest.raises(ClientError, match="must not contain query"):
-        server_url("http://example.com#section", "test")
+        server_url("https://example.com#section", "test")
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        "http://:8765",  # `missing` host.
-        "http://example.com:abc",  # non-numeric port.
-        "http://example.com:99999",  # out-of-range port.
+        "https://:8765",  # `missing` host.
+        "https://example.com:abc",  # non-numeric port.
+        "https://example.com:99999",  # out-of-range port.
     ],
 )
 def test_server_url_rejects_malformed_host_or_port(raw: str) -> None:
@@ -1703,11 +1703,86 @@ def test_server_url_rejects_malformed_host_or_port(raw: str) -> None:
 
 @pytest.mark.parametrize(
     "raw",
-    ["http://example.com:8765", "http://example.com"],
+    ["https://example.com:8765", "https://example.com"],
 )
 def test_server_url_accepts_valid_host_and_port(raw: str) -> None:
     """A well-formed host (with or without a port) still passes unchanged."""
     assert server_url(raw, "test") == raw
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://example.com",
+        "http://example.com:8446",
+        "http://10.0.0.5:8446",
+        "http://[2001:db8::1]:8446",
+        "http://localhost.example.com",
+        "HTTP://Example.com",
+    ],
+)
+def test_server_url_refuses_plain_http_beyond_this_computer(raw: str) -> None:
+    """A key sent over plain http to another computer can be read on the way."""
+    with pytest.raises(ClientError) as refused:
+        server_url(raw, "TRACKINIZER_URL")
+
+    assert str(refused.value) == (
+        f"TRACKINIZER_URL {raw!r} is plain http; a key or command sent over it can "
+        "be read or rewritten on the way. Use https."
+    )
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["https://alice@example.com", "https://:secret@example.com"],
+)
+def test_server_url_refuses_a_user_or_a_password_alone(raw: str) -> None:
+    with pytest.raises(ClientError, match="must not embed credentials"):
+        server_url(raw, "test")
+
+
+@pytest.mark.parametrize("raw", ["ftp://example.com", "https:///path"])
+def test_server_url_refuses_another_scheme_or_no_host(raw: str) -> None:
+    with pytest.raises(ClientError) as refused:
+        server_url(raw, "test")
+
+    assert str(refused.value) == f"test has invalid URL {raw!r}"
+
+
+def test_server_url_trims_trailing_slashes_and_nothing_else() -> None:
+    assert server_url("https://example.com/BOX//", "test") == "https://example.com/BOX"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://127.0.0.1:8446",
+        "http://127.0.0.2:8446",
+        "http://localhost:8765",
+        "http://LOCALHOST",
+        "http://[::1]:8446",
+    ],
+)
+def test_server_url_takes_plain_http_on_this_computer(raw: str) -> None:
+    """A local stack, and the hosted stack's own hops, use a loopback address."""
+    assert server_url(raw, "test") == raw
+
+
+def test_a_client_refuses_plain_http_before_it_sends_anything() -> None:
+    """Today's edge answers plain http with a 301; the key must not cross first."""
+    sent: list[httpx2.Request] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        sent.append(request)
+        return httpx2.Response(301, headers={"Location": "https://example.com/"})
+
+    with pytest.raises(ClientError, match="plain http"):
+        Client(
+            "http://example.com",
+            api_key="tk_secret",
+            transport=httpx2.MockTransport(handler),
+        )
+    assert sent == []
 
 
 def test_request_wraps_malformed_json_on_2xx() -> None:
@@ -1722,7 +1797,7 @@ def test_request_wraps_malformed_json_on_2xx() -> None:
         del request
         return httpx2.Response(200, content=b"<html>oops")
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="malformed JSON"):
             client.get("/x")
@@ -1758,7 +1833,7 @@ def test_a_stale_canvas_operation_is_retried_once_on_the_live_revision() -> None
             return httpx2.Response(409, json={"detail": "stale canvas revision"})
         return httpx2.Response(200, json={"id": str(canvas), "revision": 6})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         state = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
 
@@ -1777,7 +1852,7 @@ def test_a_canvas_operation_refused_for_another_reason_is_not_retried() -> None:
         posts.append(1)
         return httpx2.Response(422, json={"detail": "Visual instance not found."})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match="422"):
             _ = client.apply_canvas_operation(canvas, operation={"kind": "hide"})
@@ -1799,7 +1874,7 @@ def test_a_navigation_reads_no_revision_and_names_the_route() -> None:
         )
         return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         state = client.navigate(canvas, route="#/lookup/abc")
 
@@ -1828,7 +1903,7 @@ def test_a_highlight_reads_no_revision_and_names_the_ids() -> None:
         )
         return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         state = client.highlight(canvas, ids=ids)
 
@@ -1859,7 +1934,7 @@ def test_a_chat_window_reads_no_revision_and_names_the_flag() -> None:
         )
         return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         state = client.chat_window(canvas, hidden=True)
 
@@ -1889,7 +1964,7 @@ def test_a_capture_posts_once_and_returns_the_picture() -> None:
         seen.append((request.method, request.url.path))
         return httpx2.Response(200, json=sent)
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         picture = client.capture_canvas(canvas)
 
@@ -1910,7 +1985,7 @@ def test_a_capture_that_is_not_the_picture_it_claims_is_refused() -> None:
             json={"width": 4, "height": 3, "mime": "image/png", "data": lie},
         )
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError) as raised:
             client.capture_canvas(canvas)
@@ -1927,7 +2002,7 @@ def test_a_capture_no_page_answered_is_a_424_that_is_not_retried() -> None:
         calls.append(request.url.path)
         return httpx2.Response(424, json={"detail": "No open page answered."})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError) as raised:
             client.capture_canvas(uuid.uuid4())
@@ -1951,7 +2026,7 @@ def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
         )
         return httpx2.Response(200, json={"id": str(canvas), "revision": 4})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         state = client.set_preferences(
             canvas,
@@ -1981,7 +2056,7 @@ def _answering(payload: PlainTree) -> Client:
         del request
         return httpx2.Response(200, json=payload)
 
-    client = Client("http://server")
+    client = Client("https://server")
     _install_mock_transport(client, handler)
     return client
 
@@ -2036,7 +2111,7 @@ def test_append_records_with_no_arguments_sends_a_bare_body() -> None:
         sent.append(json_loads(request.content, dict[str, object]))
         return httpx2.Response(200, json={"part": None, "written": 0, "skipped": 0})
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         _ = client.append_records(uuid.uuid4())
 
@@ -2064,7 +2139,7 @@ def test_append_records_posts_the_file_its_manifest_and_records() -> None:
         return httpx2.Response(200, json={"part": 2, "written": 1, "skipped": 0})
 
     manifest = ManifestBody(name="a.jsonl", ir_id=uuid.uuid4(), records=1)
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         response = client.append_records(
             session,
@@ -2100,7 +2175,7 @@ def test_append_records_names_the_verb_and_route_when_the_server_refuses_or_garb
         del request
         return httpx2.Response(status, json=payload)
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match=message):
             _ = client.append_records(uuid.uuid4())
@@ -2187,7 +2262,7 @@ def test_list_kind_sends_its_defaults_under_the_servers_parameter_names() -> Non
         seen.append(dict(parse_qsl(request.url.query.decode())))
         return httpx2.Response(200, json=[{"id": "a"}])
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         rows = client.list_kind("Issue", status="active", limit=7)
 
@@ -2205,7 +2280,7 @@ def test_list_kind_names_the_route_when_the_reply_is_malformed(
         del request
         return httpx2.Response(200, json=payload)
 
-    with Client("http://server") as client:
+    with Client("https://server") as client:
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match=r"/api/inquiries returned a malformed"):
             _ = client.list_kind("Issue")
@@ -2231,7 +2306,7 @@ def test_publish_artifact_content_posts_html_and_reads_the_revision(
     previous: uuid.UUID | None,
 ) -> None:
     """The route gets an HTML body; ``previous_id`` is sent only when given."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     issue_id, artifact_id = uuid.uuid4(), uuid.uuid4()
     posted: list[tuple[str, object]] = []
 
@@ -2264,7 +2339,7 @@ def test_publish_artifact_content_posts_html_and_reads_the_revision(
 
 def test_add_edge_reports_created(monkeypatch: pytest.MonkeyPatch) -> None:
     """A brand-new edge -> ``EdgeWrite(created=True, changed=True)``."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(
         client,
         "post",
@@ -2282,7 +2357,7 @@ def test_add_edge_existing_with_annotation_reports_changed_not_created(
     Creation is an upsert: the server applies the supplied annotation to the
     existing edge and emits a change. No 409, no error.
     """
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(
         client,
         "post",
@@ -2302,7 +2377,7 @@ def test_add_edge_existing_no_op_reports_neither(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A bare re-create of an existing edge is a no-op: ``change_id`` is None."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(client, "post", _edge_post(created=False, change_id=None))
     result = client.add_edge(uuid.uuid4(), uuid.uuid4(), "requires", actor="a")
     assert result == EdgeWrite(created=False, changed=False)
@@ -2318,7 +2393,7 @@ def test_add_edge_clear_labels_threads_through_labels_route(
     that writes NULL. The POST carries no ``labels`` key; the PUT carries the
     empty list (TRAX-CLI-004).
     """
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     monkeypatch.setattr(client, "post", _edge_post(created=False, change_id=None))
     puts: list[tuple[str, object]] = []
 
@@ -2337,7 +2412,7 @@ def test_add_edge_clear_labels_threads_through_labels_route(
 
 def test_add_edge_reraises_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     """``add_edge`` no longer special-cases any 409; transport errors raise."""
-    client = Client("http://example.com")
+    client = Client("https://example.com")
 
     def fake_post(path: str, *, body: object = None) -> None:
         del path, body
@@ -2390,7 +2465,7 @@ def test_annotate_edge_accepts_metadata_kwargs(
     kwargs out to a ``PUT`` carrying ``{"value": ..., "actor": ...}``
     for each field the caller actually supplied.
     """
-    client = Client("http://example.com")
+    client = Client("https://example.com")
     captured: list[tuple[str, object]] = []
 
     def fake_put(path: str, *, body: object = None) -> None:
@@ -2429,7 +2504,7 @@ class TestSessionMethods:
             seen["body"] = json.loads(request.content)
             return httpx2.Response(201, json={"id": str(sid), "seq": 3})
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         resp = client.session_start(SessionStart(cli="codex"))
         assert seen["path"] == "/api/sessions/start"
@@ -2475,7 +2550,7 @@ class TestSessionMethods:
             del request
             return httpx2.Response(200, json={"part": 1})
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         with pytest.raises(ClientError, match=f"/api/sessions/{sid}/records returned"):
             client.append_records(sid)
@@ -2488,7 +2563,7 @@ class TestSessionMethods:
             seen["path"] = request.url.path
             return httpx2.Response(200, json={"id": str(sid)})
 
-        client = Client("http://server")
+        client = Client("https://server")
         _install_mock_transport(client, handler)
         resp = client.session_end(sid)
         assert seen["path"] == f"/api/sessions/{sid}/end"
@@ -2501,7 +2576,7 @@ class TestSessionMethods:
             reads.append(_read_timeout(request))
             return httpx2.Response(200, json={})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             _ = client.get("/api/x", timeout=42.0)
 
@@ -2515,7 +2590,7 @@ class TestSessionMethods:
             bodies.append(json_loads(request.content))
             return httpx2.Response(200, json={"delivered": []})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             _ = client.send_message("lead", "hi")
             _ = client.send_message("lead", "hi", room="ops")
@@ -2540,7 +2615,7 @@ class TestSessionMethods:
             )
             return httpx2.Response(200, json={"delivered": [str(uuid.UUID(int=412))]})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             by_person = client.message_agent(lead, "hi")
             _ = client.message_agent(
@@ -2583,7 +2658,7 @@ class TestSessionMethods:
             del request
             return httpx2.Response(200, json={"sent": []})
 
-        with Client("http://server") as client:
+        with Client("https://server") as client:
             _install_mock_transport(client, handler)
             with pytest.raises(ClientError, match=r"^/api/messages returned"):
                 _ = client.message_agent(SessionAgent(label="lead", session=412), "hi")
@@ -4322,7 +4397,7 @@ def _recording(
 
 def test_server_url_rejects_a_url_it_cannot_parse() -> None:
     with pytest.raises(ClientError, match=r"^test has invalid URL$"):
-        server_url("http://[::1", "test")
+        server_url("https://[::1", "test")
 
 
 def test_resolve_ids_refuses_a_uuid_ref_of_the_wrong_kind() -> None:

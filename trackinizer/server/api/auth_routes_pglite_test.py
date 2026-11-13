@@ -414,6 +414,7 @@ async def _signed_in_as_other(
     set_session_cookie(
         signed,
         user_id=str(OTHER_USER_ID),
+        generation=0,
         secret=_SESSION_SECRET,
         max_age_seconds=600,
     )

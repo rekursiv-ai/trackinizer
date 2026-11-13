@@ -306,6 +306,7 @@ class _World:
         set_session_cookie(
             signed,
             user_id=str(user_id),
+            generation=0,
             secret=_SESSION_KEY,
             max_age_seconds=600,
         )

@@ -63,6 +63,7 @@ from trackinizer.server.auth import (
     current_human,
     current_user,
     effective_role,
+    end_session,
     generate_token,
     hash_secret,
     key_within_caller,
@@ -1539,7 +1540,12 @@ class TestCurrentHuman:
             },
         )
         assert (
-            await lookup_user_by_id(cast(Conn, conn), user_id=uuid.uuid4(), staff=())
+            await lookup_user_by_id(
+                cast(Conn, conn),
+                user_id=uuid.uuid4(),
+                generation=0,
+                staff=(),
+            )
             is None
         )
 
@@ -2045,6 +2051,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id=str(user_id),
+            generation=2,
             secret=secret,
             max_age_seconds=600,
         )
@@ -2053,7 +2060,7 @@ class TestSessionCookieRoundTrip:
             secret=secret,
             max_age_seconds=600,
         )
-        assert recovered == str(user_id)
+        assert recovered == (str(user_id), 2)
 
     def test_expired_cookie_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # Forge an expired cookie by lying about the clock during
@@ -2069,6 +2076,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id="abc",
+            generation=0,
             secret=secret,
             max_age_seconds=600,
         )
@@ -2091,6 +2099,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id="abc",
+            generation=0,
             secret=secret,
             max_age_seconds=600,
         )
@@ -2114,6 +2123,7 @@ class TestSessionCookieRoundTrip:
         set_session_cookie(
             response,
             user_id="abc",
+            generation=0,
             secret="signing-secret",  # noqa: S106 -- test fixture.
             max_age_seconds=600,
         )
@@ -2140,12 +2150,18 @@ class TestSessionCookieRoundTrip:
 # ---- current_user session/bearer precedence -------------------------------
 
 
-def _session_cookie_value(user_id: uuid.UUID, secret: str) -> str:
+def _session_cookie_value(
+    user_id: uuid.UUID,
+    secret: str,
+    *,
+    generation: int = 0,
+) -> str:
     """Build a freshly-signed session cookie for a given ``user_id``."""
     response = _FakeResponse()
     set_session_cookie(
         response,
         user_id=str(user_id),
+        generation=generation,
         secret=secret,
         max_age_seconds=600,
     )
@@ -2264,6 +2280,27 @@ class TestUserOf:
                 "hosted_domain": None,
             },
         )
+        cookie = _session_cookie_value(user_id, signing_key, generation=4)
+        request = _request_with(
+            engine,
+            None,
+            cookies={SESSION_COOKIE_NAME: cookie},
+            config=_config_with_session_secret(signing_key),
+        )
+
+        await request_user(request)
+
+        # The row must hold the generation the cookie was signed at: a logout since
+        # raised it, and the row then answers as absent.
+        assert engine.conn.fetchrow.call_args.args[1:] == (user_id, 4)
+
+    @pytest.mark.asyncio
+    async def test_a_cookie_a_logout_ended_is_not_authenticated(self) -> None:
+        user_id = uuid.uuid4()
+        signing_key = "session-secret-x"
+        engine = FakeEngine()
+        # What ``WHERE id = $1 AND session_generation = $2`` finds once it was raised.
+        engine.conn.fetchrow = AsyncMock(return_value=None)
         request = _request_with(
             engine,
             None,
@@ -2271,9 +2308,10 @@ class TestUserOf:
             config=_config_with_session_secret(signing_key),
         )
 
-        await request_user(request)
+        with pytest.raises(HTTPException) as refused:
+            await request_user(request)
 
-        assert user_id in engine.conn.fetchrow.call_args.args
+        assert refused.value.status_code == 401
 
     @pytest.mark.asyncio
     async def test_a_request_without_an_id_logs_an_empty_one(
@@ -2295,6 +2333,48 @@ class TestUserOf:
             if getattr(record, "event", "") == "trackinizer_auth_completed"
         ]
         assert logged == [""]
+
+
+class TestEndSession:
+    """A logout raises the cookie's user's generation, from the one it was signed at."""
+
+    @pytest.mark.asyncio
+    async def test_a_live_cookie_raises_its_users_generation_from_its_own(self) -> None:
+        user_id = uuid.uuid4()
+        engine = FakeEngine()
+        request = _request_with(
+            engine,
+            None,
+            cookies={
+                SESSION_COOKIE_NAME: _session_cookie_value(user_id, "k", generation=4),
+            },
+            config=_config_with_session_secret("k"),
+        )
+
+        await end_session(request)
+
+        engine.conn.execute.assert_awaited_once_with(
+            "UPDATE users SET session_generation = session_generation + 1 "
+            "WHERE id = $1 AND session_generation = $2",
+            user_id,
+            4,
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("forged", [False, True], ids=["no cookie", "forged"])
+    async def test_no_live_cookie_changes_nothing(self, *, forged: bool) -> None:
+        engine = FakeEngine()
+        cookie = _session_cookie_value(uuid.uuid4(), "another key")
+        request = _request_with(
+            engine,
+            None,
+            cookies={SESSION_COOKIE_NAME: cookie} if forged else {},
+            config=_config_with_session_secret("k"),
+        )
+
+        await end_session(request)
+
+        engine.conn.execute.assert_not_awaited()
 
 
 @pytest.mark.usefixtures("cheap_scrypt")
@@ -3199,6 +3279,7 @@ class TestCredentialEdges:
         set_session_cookie(
             response,
             user_id="not-a-uuid",
+            generation=0,
             secret=secret,
             max_age_seconds=600,
         )
@@ -3208,7 +3289,7 @@ class TestCredentialEdges:
             cookies={SESSION_COOKIE_NAME: response.cookies[SESSION_COOKIE_NAME]},
             config=_config_with_session_secret(secret),
         )
-        assert auth._try_read_session_user_id(request) is None
+        assert auth._try_read_session(request) is None
 
     @pytest.mark.asyncio
     async def test_a_cache_hit_without_a_key_is_refused(self) -> None:
