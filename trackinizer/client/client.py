@@ -2528,7 +2528,7 @@ class Client:
         frames = pydantic.TypeAdapter(wire_session_relay.ViewerFrame)
         try:
             with self._http.stream(
-                "GET",  # pragma: no mutate -- httpx upper-cases the method.
+                "GET",  # pragma: no mutate[case-insensitive]
                 where,
                 # The read outlasts the server's keep-alive, or a quiet session
                 # would end it.
@@ -3351,12 +3351,12 @@ def _error_code(response: httpx2.Response) -> str:
 def _sse_data(lines: Iterator[str]) -> Iterator[str]:
     """Yield the data of each unnamed server-sent event in ``lines``."""
     # A named event is the keep-alive, which carries nothing; a comment has no field.
-    named = False  # pragma: no mutate -- read for truth; None is as false.
+    named = False  # pragma: no mutate[truthiness]
     for line in lines:
         if line.startswith("event:"):
             named = True
         elif not line:
-            named = False  # pragma: no mutate -- read for truth; None is as false.
+            named = False  # pragma: no mutate[truthiness]
         elif line.startswith("data:") and not named:
             yield line.removeprefix("data:").strip()
 
