@@ -126,10 +126,8 @@ async def test_a_row_the_caller_may_not_read_is_absent_to_an_admin_too() -> None
     with pytest.raises(NotFoundError, match=f"inquiry {_B} not found"):
         await require_writable(request, _who("admin"), [_A, _B])
     assert engine.conn.fetchval.call_args is not None
-    # The chat filing test binds the reader first, then how the transcript test
-    # reads them.
-    sql, ids, kinds, reader, *_ = engine.conn.fetchval.call_args.args
-    assert (ids, kinds, reader) == ([_A, _B], ["Issue"], "x@example.com")
+    sql, ids, kinds = engine.conn.fetchval.call_args.args
+    assert (ids, kinds) == ([_A, _B], ["Issue"])
     assert "WHERE NOT EXISTS" in from_plain(sql, str)
     assert not engine.conn.fetch.called
 
@@ -155,8 +153,8 @@ async def test_no_locked_row_lets_a_writer_through() -> None:
     request, engine = _request([])
     await require_writable(request, _who("writer"), (_A, _B))
     assert engine.conn.fetch.call_args is not None
-    ids, peers, reader, *_ = engine.conn.fetch.call_args.args[1:]
-    assert (ids, peers, reader) == ([_A, _B], False, "x@example.com")
+    ids, peers = engine.conn.fetch.call_args.args[1:]
+    assert (ids, peers) == ([_A, _B], False)
 
 
 @pytest.mark.asyncio

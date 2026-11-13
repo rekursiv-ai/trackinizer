@@ -6221,18 +6221,6 @@
     "additionalProperties": false,
     "description": "A bounded publication request, separate from canvas mutations.",
     "properties": {
-     "chat": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Chat"
-     },
      "citations": {
       "items": {
        "$ref": "#/components/schemas/ArtifactCitationRef"
@@ -8742,18 +8730,6 @@
        }
       ],
       "title": "Actor"
-     },
-     "chat": {
-      "anyOf": [
-       {
-        "format": "uuid",
-        "type": "string"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Chat"
      },
      "edges": {
       "items": {

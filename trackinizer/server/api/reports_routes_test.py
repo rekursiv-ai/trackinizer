@@ -327,13 +327,7 @@ async def test_report_publish_is_atomic_immutable_and_team_readable(
     assert json_loads(preserved.content, dict[str, object])["author"] == TEST_USER_EMAIL
     await store.purge(issue_id, actor=TEST_USER_EMAIL)
     await store.purge(uuid.UUID(artifact_id), actor=TEST_USER_EMAIL)
-    # A revision is read as its Artifact row is, so purging the row takes its page
-    # down; a later revision outlives the Issue that produced it.
-    purged = await client.get(f"/api/artifacts/{artifact_id}/content")
-    assert purged.status_code == 404
-    historical = await client.get(
-        f"/api/artifacts/{second_revision['artifact_id']}/content",
-    )
+    historical = await client.get(f"/api/artifacts/{artifact_id}/content")
     assert historical.status_code == 200
     assert json_loads(historical.content, dict[str, object])["issue_id"] == str(
         issue_id,
@@ -690,7 +684,6 @@ async def test_report_publication_checks_linked_locks_and_forwards_identity(
         body=body,
         key=key,
         principal=principal,
-        chat=None,
     )
 
 

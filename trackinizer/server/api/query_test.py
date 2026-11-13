@@ -38,11 +38,6 @@ from trackinizer.conftest import (
     set_field_row,
 )
 from trackinizer.server import web
-from trackinizer.server.access_policy import (
-    DefaultPolicy,
-    Principal,
-    inquiry_read_filter,
-)
 from trackinizer.server.api import conftest, edit, query
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
@@ -1315,15 +1310,11 @@ def test_fields_keep_the_named_values_through_the_real_store(
             },
         ]
     sql, *params = engine.conn.fetch.call_args_list[3].args
-    gate, bound = _readable("inquiries.id", after=1)
-    n = 2 + len(bound)
-    assert sql == vetted_sql(
-        "SELECT * FROM inquiries WHERE kind = $1 AND (",
-        gate,
-        f") AND ((seq >= ${n} AND seq <= ${n + 1})) ",
-        f"ORDER BY created DESC, id DESC LIMIT ${n + 2} OFFSET ${n + 3}",
+    assert sql == (
+        "SELECT * FROM inquiries WHERE kind = $1 AND ((seq >= $2 AND seq <= $3)) "
+        "ORDER BY created DESC, id DESC LIMIT $4 OFFSET $5"
     )
-    assert params == [kind, *bound, 1, 1, 50, 0]
+    assert params == [kind, 1, 1, 50, 0]
 
 
 @pytest.mark.parametrize(
@@ -1456,14 +1447,12 @@ def test_brief_changes_drop_unset_keys_and_cut_text_through_the_real_store(
         for row in rows
         if row["kind"] == "edge_added"
     } == {str(child), str(parent)}
-    gate, bound = _readable_changes()
     assert engine.conn.fetch.call_args_list[0].args == (
-        vetted_sql(
-            "SELECT * FROM change_log WHERE (",
-            gate,
-            f") ORDER BY created DESC, id DESC LIMIT ${1 + len(bound)}",
+        (
+            "SELECT * FROM change_log "
+            "WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+            "ORDER BY created DESC, id DESC LIMIT $1"
         ),
-        *bound,
         200,
     )
 
@@ -1507,16 +1496,14 @@ def test_change_log_takes_several_kinds_before_its_limit_through_the_real_store(
     assert [
         row["kind"] for row in json_loads(one.content, list[dict[str, object]])
     ] == ["status"]
-    gate, bound = _readable_changes()
-    n = 1 + len(bound)
-    by_kind = vetted_sql(
-        "SELECT * FROM change_log WHERE (",
-        gate,
-        f") AND kind = ANY(${n}::text[]) ORDER BY created DESC, id DESC LIMIT ${n + 1}",
+    by_kind = (
+        "SELECT * FROM change_log "
+        "WHERE (change_log.kind NOT IN ('locked', 'unlocked')) "
+        "AND kind = ANY($1::text[]) ORDER BY created DESC, id DESC LIMIT $2"
     )
     assert [call.args for call in engine.conn.fetch.call_args_list] == [
-        (by_kind, *bound, ["status", "title"], 2),
-        (by_kind, *bound, ["status"], 200),
+        (by_kind, ["status", "title"], 2),
+        (by_kind, ["status"], 200),
     ]
 
 
@@ -1571,21 +1558,17 @@ def test_narrows_filters_lower_at_the_real_store_sql_boundary(
     )
     assert response.status_code == 200, response.text
     assert response.json() == []
-    # The read test binds right after the kind, so the filter's own value follows it.
-    gate, bound = _readable("inquiries.id", after=1)
-    sent = [bindings[0], *bound, *bindings[1:]]
+    count = len(bindings)
     engine.conn.fetch.assert_awaited_once_with(
         vetted_sql(
-            "SELECT * FROM inquiries WHERE kind = $1 AND (",
-            gate,
-            ") AND ",
-            predicate.replace("$VALUE", f"${2 + len(bound)}"),
+            "SELECT * FROM inquiries WHERE kind = $1 AND ",
+            predicate.replace("$VALUE", "$2"),
             " ORDER BY created DESC, id DESC LIMIT $",
-            str(len(sent) - 1),
+            str(count - 1),
             " OFFSET $",
-            str(len(sent)),
+            str(count),
         ),
-        *sent,
+        *bindings,
     )
 
 
@@ -1664,8 +1647,8 @@ def test_ancestors_materialize_real_store_rows_and_bind_exact_recursive_bounds(
             ],
         },
     ]
-    gate, bound = _readable("e.to_id", after=3)
-    readable = vetted_sql(" AND (", gate, ")")
+    bound: list[object] = []
+    readable = ""
     recursive = vetted_sql(
         "WITH RECURSIVE up(child, parent, depth) AS ("
         "    SELECT e.from_id, e.to_id, 1 FROM edges e "
@@ -1695,34 +1678,6 @@ def test_ancestors_materialize_real_store_rows_and_bind_exact_recursive_bounds(
     assert plain.status_code == 200
     assert json_loads(plain.content, list[dict[str, object]]) == [{"id": str(target)}]
     assert engine.conn.fetch.await_count == 3
-
-
-def _readable(reference: str, *, after: int) -> tuple[str, list[object]]:
-    """Return the read test a route ANDs in for the test user, after ``after`` binds."""
-    params: list[object] = [None] * after
-    clause = inquiry_read_filter(
-        reference,
-        policy=DefaultPolicy(),
-        principal=Principal(email=TEST_USER_EMAIL, role="writer"),
-        params=params,
-    )
-    return clause, params[after:]
-
-
-def _readable_changes() -> tuple[str, list[object]]:
-    """Return the read test of a change log's rows: kind, subject and peers."""
-    subject, first = _readable("change_log.subject_id", after=0)
-    old, second = _readable("change_log.old_peer_id", after=len(first))
-    new, third = _readable("change_log.new_peer_id", after=len(first) + len(second))
-    return vetted_sql(
-        "change_log.kind NOT IN ('locked', 'unlocked') AND (",
-        subject,
-        ") AND (change_log.old_peer_id IS NULL OR (",
-        old,
-        ")) AND (change_log.new_peer_id IS NULL OR (",
-        new,
-        "))",
-    ), [*first, *second, *third]
 
 
 def _briefed(row: Mapping[str, object]) -> dict[str, object]:
