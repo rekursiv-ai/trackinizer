@@ -29,7 +29,7 @@ from trackinizer.client.context_window import (
     window,
 )
 from trackinizer.client.conversation import Placed, Segment, lines
-from trackinizer.lib.agent.sessions import claude, codex, sagent
+from trackinizer.sagent.scripts.convert_session import claude, codex, sagent
 from trackinizer.sagent.session.types import (
     AgentToAgentMessage,
     AssistantMessage,

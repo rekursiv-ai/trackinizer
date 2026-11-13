@@ -536,7 +536,7 @@ RUNNER <cli> [--no-sync] [--out PATH] -- <cli args>
 
 ```
 adapters         claude, gemini, codex (file-tailers); iostream (PTY scrape)
-normalizer       one per FILE, from trackinizer.lib.agent.sessions; a session spans
+normalizer       one per FILE, from trackinizer.sagent.scripts.convert_session; a session spans
                  several files, and sharing one would number the second
                  file's records after the first's
 in-memory type   the IR record itself -> wire RecordBody at the sink

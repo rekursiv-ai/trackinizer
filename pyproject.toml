@@ -230,7 +230,7 @@ exclude = [
     # Test support no shipped module imports.
     "trackinizer/inquiry_readers_test_support.py",
     "trackinizer/lib/testing/**",
-    "trackinizer/lib/agent/sessions/testdata/**",
+    "trackinizer/sagent/scripts/convert_session/testdata/**",
     "trackinizer/lib/posix/testing.py",
     "trackinizer/lib/postgres/testing.py",
     "trackinizer/server/api/session_test_support.py",

@@ -810,7 +810,7 @@ CREATE TABLE IF NOT EXISTS experiment_metrics (
 
 -- ============================================================================
 -- Session IR storage: four tables holding captured sessions as
--- ``trackinizer.lib.agent.sessions`` records rather than the lossy per-turn
+-- ``trackinizer.sagent.scripts.convert_session`` records rather than the lossy per-turn
 -- ``Message`` union it replaced. Added in schema.019.sql; mirrored here so a
 -- fresh install (which runs only this baseline and marks the numbered
 -- migrations applied without executing them) gets them too.

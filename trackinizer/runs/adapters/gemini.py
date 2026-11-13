@@ -6,7 +6,7 @@ Unlike the others the session is ONE JSON object that gemini rewrites in place
 on every update, so there are no appended lines to follow: the runner re-reads
 the whole body on each change and feeds that.
 
-Reading it is ``trackinizer.lib.agent.sessions.gemini``'s job, not this module's --
+Reading it is ``trackinizer.sagent.scripts.convert_session.gemini``'s job, not this module's --
 one IR reader serves capture here AND the conversion paths.
 
 See ``docs/cli-scraping-investigation.md`` for the empirical layout.
@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING
 
 import hashlib
 
-from trackinizer.lib.agent.sessions import gemini
-from trackinizer.lib.agent.sessions.tail import Tail
+from trackinizer.sagent.scripts.convert_session import gemini
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 
 
 if TYPE_CHECKING:

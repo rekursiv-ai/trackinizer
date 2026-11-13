@@ -1,0 +1,2807 @@
+"""Normalize and denormalize Codex rollout streams.
+
+Codex nests every record under one ``payload``, so the outer line carries
+only its timestamp, kind, and -- in a file that numbers its lines -- an
+ordinal. What the record types do not name rides in ``extra``, which is what
+lets the writer replay the payload rather than approximate it.
+
+Key order is codex's own and fixed per payload type, so it lives here as a
+tuple per type rather than being stored on every record.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from dataclasses import replace
+from types import MappingProxyType
+from typing import Final, TextIO, cast
+
+import base64
+import binascii
+import json
+
+from treekle import (
+    Invalid,
+    MutablePlainTree,
+    PlainTree,
+    ReadError,
+    from_plain,
+    immutable,
+    json_loads,
+    mutable,
+)
+from treekle.absent import Absent
+
+from trackinizer.sagent.model.capability import (
+    SummaryKind,
+    ThinkingEffort,
+    literal_members,
+)
+from trackinizer.sagent.scripts.convert_session.codex_orders import payload_orders
+from trackinizer.sagent.scripts.convert_session.provider_fields import read_or_default
+from trackinizer.sagent.scripts.convert_session.shell_results import (
+    lift_shell_result,
+    shell_result_for_replay,
+)
+from trackinizer.sagent.scripts.convert_session.udiff import parse_udiff, render_udiff
+from trackinizer.sagent.scripts.convert_session.unmodeled import (
+    FieldState,
+    extract_unmodeled_fields,
+    read_field_keeping_invalid,
+    restore_unmodeled_fields,
+)
+from trackinizer.sagent.session.types import (
+    AgentSpawnResult,
+    AgentToAgentMessage,
+    AssistantMessage,
+    Attachment,
+    BashResult,
+    ContextClear,
+    ContextCompaction,
+    ContextState,
+    EditResult,
+    IncompleteRecord,
+    McpResult,
+    ReadResult,
+    SessionRecord,
+    Splice,
+    SystemMessage,
+    Thinking,
+    TokenUsage,
+    ToolCall,
+    ToolResult,
+    TurnContext,
+    UncategorizedRecord,
+    UncategorizedToolResult,
+    UserMessage,
+    WebFetchResult,
+    WebSearchHit,
+    WebSearchResult,
+    WriteResult,
+)
+
+
+__all__ = ["denormalize", "normalize"]
+
+
+_CompleteRecord = (
+    UserMessage
+    | AssistantMessage
+    | Thinking
+    | ToolCall
+    | ToolResult
+    | SystemMessage
+    | TokenUsage
+    | ContextState
+    | ContextCompaction
+    | ContextClear
+    | AgentToAgentMessage
+    | TurnContext
+    | UncategorizedRecord
+)
+
+
+def normalize(stream: TextIO) -> Iterator[SessionRecord]:
+    """Normalize a Codex rollout JSONL stream into its records.
+
+    Yields as it reads (axiom 11), so a caller tailing a live rollout sees a
+    record when its line lands rather than when the file ends -- a session
+    being written never ends, which is why returning one object could not
+    serve a tailer at all.
+
+    Args:
+      stream: Codex rollout JSONL text stream.
+
+    Yields:
+      record: Each record the rollout declares, in stream order.
+
+    """
+    reader = _Reader()
+    for line in stream:
+        yield from reader.read(line)
+    yield from reader.close()
+
+
+_FIELD_STATE_KEY: Final = "$__custom_json_fields__"
+"""Where :func:`extract_unmodeled_fields` records key order and per-field presence."""
+
+
+_MESSAGE_ROLES: Final = frozenset({"assistant", "developer", "system", "user"})
+"""The roles a codex message may carry.
+
+The API's own enum, and what 1449 captured rollouts contain: ``assistant``,
+``user``, and ``developer``, plus ``system`` which it accepts. Anything else
+is a foreign CLI's subtype and is rejected with ``invalid_enum_value``.
+"""
+
+
+def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
+    """Denormalize records as Codex rollout JSONL.
+
+    Two passes over the records, so they are held as a list: the launch line
+    is written from the context that CARRIES a payload and the newline
+    convention from the LAST context stating one, and either may sit anywhere
+    in the stream. The output is streamed, one line held back.
+
+    Args:
+      records: Provider-neutral records, in stream order.
+      stream: Destination text stream.
+
+    """
+    ordered = list(records)
+    # The one CARRYING a launch payload, not merely the first: a rollout whose
+    # first line is blank states its encoding before it declares itself, so the
+    # opening context is superseded rather than being the declaration.
+    settings = next(
+        (
+            record
+            for record in ordered
+            if isinstance(record, TurnContext) and "payload" in record.extra
+        ),
+        TurnContext(),
+    )
+    declaration: dict[str, object] = dict(settings.extra)
+    encoding_source = next(
+        (
+            cast(dict[str, object], record.encoding)
+            for record in ordered
+            if isinstance(record, TurnContext)
+        ),
+        dict[str, object](),
+    )
+    encoding: dict[str, object] = dict(encoding_source)
+    for record in ordered:
+        # A later context supersedes: whether the file ended on a newline is
+        # knowable only at EOF, so the reader restates it there.
+        if isinstance(record, TurnContext) and "newline_terminated" in record.encoding:
+            encoding = dict(record.encoding)
+    # Numbering lines is a per-file convention, and the launch line is the one
+    # that shows it: a file whose ``session_meta`` carries an ordinal numbers
+    # every line, one whose does not numbers none.
+    numbered = "ordinal" in declaration
+    at = from_plain(declaration.get("line"), int, default=0)
+    # One line held back, never the file (axiom 11): the last line may have to
+    # lose its newline, which is knowable only once the stream ends, and a 273
+    # MB session buffered whole cost 2.6 GB since one non-ASCII line widens the
+    # entire buffer. Everything before the held line is already written.
+    held: str | None = None
+    written = 0
+    launch = (
+        _write_line(
+            declaration.get("$launch_timestamp_raw", settings.timestamp),
+            from_plain(declaration.get("ordinal"), int, default=0)
+            if numbered
+            else None,
+            "session_meta",
+            # The prompt lives on the opening clear, so the launch payload is
+            # rebuilt from it rather than holding a second copy.
+            _with_instructions(
+                from_plain(
+                    declaration.get("payload"),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ),
+                ordered,
+            ),
+            template=from_plain(
+                declaration.get("$outer"),
+                dict[str, object],
+                default=dict[str, object](),
+            ),
+            include_timestamp=bool(declaration.get("$timestamp", True)),
+            payload_at=from_plain(declaration.get("$payload_at"), int, default=None),
+        )
+        if "payload" in declaration
+        else None
+    )
+    ordinal = (
+        from_plain(declaration.get("ordinal"), int, default=0) + 1 if numbered else 0
+    )
+    for group in _grouped(ordered):
+        item = group[0]
+        # The launch line goes back where it sat, which is after any blank
+        # line the file opened with.
+        if written == at and launch is not None:
+            if held is not None:
+                _ = stream.write(held)
+            held = launch
+            written += 1
+            launch = None
+        if isinstance(item, IncompleteRecord):
+            if held is not None:
+                _ = stream.write(held)
+            held = item.text
+            written += 1
+            ordinal += 1
+            continue
+        line_state, wire_item = _pop_line_state(item)
+        template = from_plain(
+            line_state.get("outer"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        raw_timestamp = template.get("timestamp")
+        timestamp = (
+            raw_timestamp
+            if wire_item.timestamp is None
+            and raw_timestamp is not None
+            and not isinstance(raw_timestamp, str)
+            else wire_item.timestamp
+        )
+        include_timestamp = (
+            "timestamp" in template if line_state else wire_item.timestamp is not None
+        )
+        payload_at = line_state.get("payload_at")
+        for outer, payload in _write_record(wire_item, group[1:]):
+            if held is not None:
+                _ = stream.write(held)
+            held = _write_line(
+                timestamp,
+                ordinal if numbered else None,
+                outer,
+                payload,
+                template=template,
+                include_timestamp=include_timestamp,
+                payload_at=(
+                    None if payload_at is None else from_plain(payload_at, int)
+                ),
+            )
+            written += 1
+            ordinal += 1
+    if launch is not None:
+        # A launch line whose recorded position sits past every record, which
+        # is how a rollout that opens with nothing but its declaration reads.
+        if held is not None:
+            _ = stream.write(held)
+        held = launch
+    if held is None:
+        return
+    _ = stream.write(
+        held.removesuffix("\n")
+        if encoding.get("newline_terminated") is False
+        else held,
+    )
+
+
+# The reader emptied ``base_instructions`` because the opening :class:`ContextClear`
+# states it, so an edited prompt reaches the wire from the record rather than from a
+# stored copy. Only the FIRST clear answers: a later one is a ``/new``, which the launch
+# line never described.
+#
+# Only the launch line's OWN share of it. The clear states everything the fresh context
+# was given, and codex keeps sending instructions after the launch line -- writing the
+# whole assembled prompt back put the skills block on a line codex never wrote it on.
+def _with_instructions(
+    payload: Mapping[str, object],
+    records: Sequence[SessionRecord],
+) -> dict[str, object]:
+    """Return the launch payload with its prompt restored from the clear."""
+    if "base_instructions" not in payload:
+        return dict(payload)
+    # ``None`` is the EMPTIED slot, not an absent key: the reader stencils a
+    # string prompt to null the way it stencils every other held value, so
+    # keying on the value skipped exactly the form it had emptied.
+    stencil = payload["base_instructions"]
+    opening = next(
+        (record for record in records if isinstance(record, ContextClear)),
+        None,
+    )
+    if opening is None or opening.system_prompt is None:
+        return dict(payload)
+    declared = opening.system_prompt[
+        : from_plain(dict(opening.extra).get("$declared"), int, default=0)
+    ]
+    if isinstance(stencil, Mapping):
+        held = cast(Mapping[str, object], stencil)
+        filled: object = {
+            key: declared if key == "text" else value for key, value in held.items()
+        }
+    else:
+        filled = declared
+    return {
+        key: filled if key == "base_instructions" else value
+        for key, value in payload.items()
+    }
+
+
+# A patch touching several files reads as one record per file, and they came off ONE
+# ``changes`` map -- so they are written back as one event rather than each emitting one
+# codex never wrote. A follower is recognized by carrying the same call id and no
+# residual of its own, which is what axiom 10 makes the mark of a record that did not
+# lead its line.
+#
+# Yielded, never accumulated (axiom 11): returning one list per record built a structure
+# proportional to the session -- measured at ~73 bytes per record, 15096 / 29496 / 58776
+# bytes for 200 / 400 / 800 -- which is the whole-file hold a writer is not allowed.
+# Only a patch's followers share a line, so the open group is bounded by the paths one
+# event touched.
+def _grouped(records: Sequence[SessionRecord]) -> Iterator[Sequence[SessionRecord]]:
+    """Yield the records of each line, grouped as the line they came from."""
+    open_group: list[SessionRecord] = []
+    for record in records:
+        leader = open_group[0] if open_group else None
+        if isinstance(record, ContextClear) and isinstance(leader, ContextCompaction):
+            # The window a compaction opened: one ``compacted`` line states
+            # both, so they are written from one group.
+            open_group.append(record)
+            continue
+        if (
+            isinstance(record, ToolResult)
+            and isinstance(record.result, EditResult | WriteResult)
+            and isinstance(leader, ToolResult)
+            and isinstance(leader.result, EditResult | WriteResult)
+        ):
+            # ``$codex_line`` is this reader's own note about the line, added
+            # after the split, so a follower carries it and nothing else.
+            own = {key for key in record.extra if key != "$codex_line"}
+            if record.call_id and record.call_id == leader.call_id and not own:
+                open_group.append(record)
+                continue
+        if open_group:
+            yield open_group
+        open_group = [record]
+    if open_group:
+        yield open_group
+
+
+# ``payload_at`` is where the payload key sat among the others; the template holds every
+# other key, since the payload is the record itself.
+def _write_line(
+    timestamp: object,
+    ordinal: int | None,
+    outer: str,
+    payload: Mapping[str, object],
+    *,
+    template: Mapping[str, object],
+    include_timestamp: bool = True,
+    payload_at: int | None = None,
+) -> str:
+    """Return one rollout line, in the order codex writes its outer keys."""
+    record: dict[str, object] = dict(mutable(template))
+    if include_timestamp:
+        if not template or "timestamp" in record:
+            # A mistyped timestamp is the log's own JSON, held frozen.
+            record["timestamp"] = mutable(timestamp)
+    else:
+        record.pop("timestamp", None)
+    if ordinal is not None and not template:
+        record["ordinal"] = ordinal
+    if not template or isinstance(record.get("type"), str):
+        record["type"] = outer
+    if payload_at is None:
+        record["payload"] = mutable(payload)
+    else:
+        keys = list(record)
+        record = {
+            key: mutable(payload) if key == "payload" else record[key]
+            for key in (*keys[:payload_at], "payload", *keys[payload_at:])
+        }
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+# The line's key order is stored only when :data:`_ORDER` cannot reproduce it. The table
+# is what the writer falls back to, so a line agreeing with it needs no copy -- 425
+# records on one captured rollout stored 13 distinct orders between them, 1.5% of the
+# whole normalized size.
+def _codex_residual(
+    source: Mapping[str, object],
+    consumed: Iterable[str] = (),
+    *,
+    kind: str = "",
+) -> dict[str, PlainTree]:
+    """Preserve residual fields while escaping provider dollar keys."""
+    extra = extract_unmodeled_fields(source, consumed)
+    dollar = {key: extra.pop(key) for key in tuple(extra) if key.startswith("$")}
+    if dollar:
+        extra["$wire"] = {"order": list(source), "values": dollar}
+    if list(source) != _canonical_order(source, kind=kind):
+        extra["$native_order"] = list(source)
+    return extra
+
+
+# The writer's own rule, so the reader can ask whether storing the line's order would
+# say anything the table does not: table keys the payload has, then anything the table
+# never named, which is how :func:`_ordered` splices.
+#
+# ``kind`` names a payload that carries no ``type`` of its own -- a ``compacted`` line
+# -- since the writer orders it by the line's kind; without it such a line's order was
+# never stored, and one written in another order came back in the table's.
+def _canonical_order(source: Mapping[str, object], *, kind: str = "") -> list[str]:
+    """Return the key order :data:`_ORDER` reproduces for this payload."""
+    order = payload_orders().get(
+        kind or from_plain(source.get("type"), str, default=""),
+        (),
+    )
+    return [key for key in order if key in source] + [
+        key for key in source if key not in order
+    ]
+
+
+def _ordered(kind: str, payload: Mapping[str, object]) -> dict[str, object]:
+    """Return one payload in its native or canonical key order."""
+    values = dict(payload)
+    native_order = from_plain(
+        values.pop("$native_order", []),
+        list[str],
+        default=list[str](),
+    )
+    wire = from_plain(values.pop("$wire", {}), dict[str, object])
+    wire_values = from_plain(
+        wire.get("values"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
+    values = {key: value for key, value in values.items() if not key.startswith("$")}
+    values.update(wire_values)
+    if not native_order:
+        native_order = from_plain(wire.get("order"), list[str], default=list[str]())
+    if native_order:
+        return {key: values[key] for key in native_order if key in values} | {
+            key: value for key, value in values.items() if key not in native_order
+        }
+    order = payload_orders().get(kind, ())
+    return {key: values[key] for key in order if key in values} | {
+        key: value for key, value in values.items() if key not in order
+    }
+
+
+# ``followers`` are the other records off the same line -- one patch event reads as one
+# record per path -- so the writer fills every entry of the one ``changes`` map rather
+# than emitting an event per record.
+def _write_record(
+    item: SessionRecord,
+    followers: Sequence[SessionRecord] = (),
+) -> list[tuple[str, dict[str, object]]]:
+    """Return the rollout lines one record becomes."""
+    if isinstance(item, TurnContext):
+        if "$codex_line" not in item.extra and "payload" in item.extra:
+            # The LAUNCH settings, which ``denormalize`` already wrote as the
+            # ``session_meta`` line. Codex states them once; emitting a
+            # ``turn_context`` here too would write the declaration twice.
+            return []
+        if not item.extra and item.encoding:
+            # A context stating only how the file was encoded -- the opening
+            # one before a launch line supersedes it, and the EOF restatement.
+            # Neither is a settings line codex ever wrote.
+            return []
+        return [("turn_context", _write_context(item))]
+    if isinstance(item, UncategorizedRecord):
+        # Only a record THIS reader wrote replays verbatim: its payload is a
+        # codex payload. Another provider's is that provider's bytes, and
+        # emitting it fabricated a codex line of a type codex never writes --
+        # a claude ``queue-operation`` became a codex outer record.
+        #
+        # Provenance is in the kind: codex namespaces its own
+        # (``event_msg/task_started``), claude names a bare line type. The
+        # mirror of the guard the claude writer already applies.
+        if "/" not in item.kind:
+            return []
+        outer, _, _ = item.kind.partition("/")
+        return [(outer, dict(item.payload))]
+    if isinstance(item, ContextState):
+        return [("world_state", _ordered("world_state", dict(item.extra)))]
+    if isinstance(item, ContextCompaction):
+        extra = mutable(item.extra)
+        echoes = from_plain(extra.pop("$echoes", ""), str)
+        if echoes:
+            # The bare marker, not the line that carries the summary.
+            return [("event_msg", _ordered(echoes, {"type": echoes, **extra}))]
+        # The window it opened follows it and holds what the line states, so
+        # the two records rebuild ONE ``compacted`` line.
+        window = next(
+            (record for record in followers if isinstance(record, ContextClear)),
+            ContextClear(),
+        )
+        return [("compacted", _write_compacted(window, extra))]
+    if isinstance(item, ContextClear):
+        # Derived: a window opens with one whatever caused it, and the line
+        # that caused it -- a launch or a compaction -- already wrote it.
+        return []
+    if isinstance(item, TokenUsage):
+        stored = mutable(item.extra)
+        nulls = set(from_plain(stored.get("$nulls"), list[str], default=list[str]()))
+        values: dict[str, object] = {
+            # ``None``, not the empty object the field holds: an object field
+            # cannot tell a null apart from an absent one.
+            "info": None if "info" in nulls else dict(item.info),
+            "rate_limits": None if "rate_limits" in nulls else dict(item.rate_limits),
+        }
+        payload = (
+            restore_unmodeled_fields(stored, values)
+            if _FIELD_STATE_KEY in stored
+            # No envelope means the line said nothing the table does not, so
+            # the fields ARE the payload -- in the order the table names, which
+            # is where a null field sat too.
+            else {
+                key: values[key]
+                for key in payload_orders().get("token_count", ())
+                if key in values and (values[key] is not None or key in nulls)
+            }
+        )
+        return [
+            (
+                "event_msg",
+                _ordered(
+                    "token_count",
+                    _codex_residual({"type": "token_count", **payload}),
+                ),
+            ),
+        ]
+    if isinstance(item, ToolResult):
+        result = _write_result(item, followers)
+        return [result] if result is not None else []
+    if isinstance(item, AgentToAgentMessage):
+        return [("response_item", _write_agent_message(item))]
+    if isinstance(item, SystemMessage) and "$event" in item.extra:
+        extra = mutable(item.extra)
+        del extra["$event"]
+        return [
+            (
+                "event_msg",
+                _ordered("error", {"type": "error", "message": item.content} | extra),
+            ),
+        ]
+    if isinstance(
+        item,
+        UserMessage | AssistantMessage | SystemMessage | Thinking | ToolCall,
+    ):
+        return [("response_item", _write_item(item))]
+    # A record with no Codex representation -- a fusion boundary, another
+    # CLI's state. Dropped here and reported by the converter's loss summary.
+    return []
+
+
+# ``item`` is the WINDOW the compaction opened, not the event: the summary and the
+# surviving turns are what the next context begins with, so that is where they live. The
+# event supplies only the line's own residual, which is what ``extra`` holds.
+#
+# The kept turns are the window's own :attr:`history`, written back through the ordinary
+# item writer rather than from a stored copy -- which is what lets an edited history
+# reach the wire.
+def _write_compacted(
+    item: ContextClear,
+    extra: dict[str, MutablePlainTree],
+) -> dict[str, object]:
+    """Return the ``compacted`` line a history replacement came from."""
+    # Presence before the pop: an EMPTY history is still a stated one (axiom 2).
+    stated = "$history" in extra or bool(item.history)
+    markers = from_plain(extra.pop("$history", []), list[object])
+    payload: dict[str, object] = {}
+    if (
+        item.summary is not None and ("message" in extra or "$message" in extra)
+    ) or not stated:
+        # ``message`` only where the line stated one. Codex seals the summary
+        # in the trailing marker instead, and writing it to both would invent a
+        # key 8 of 8 captured lines leave empty.
+        payload["message"] = item.summary
+    if stated:
+        payload["message"] = payload.get("message", "")
+        entries: list[object] = [
+            entry for record in item.history for _, entry in _write_record(record)[:1]
+        ]
+        entries.extend(
+            cast(dict[str, object], marker) if isinstance(marker, Mapping) else marker
+            for marker in markers
+        )
+        payload["replacement_history"] = entries
+    return _ordered("compacted", payload | extra)
+
+
+def _write_context(item: TurnContext) -> dict[str, object]:
+    """Return the settings line a turn context came from."""
+    stored = mutable(item.extra)
+    # The word this line used for its effort, when it was not the IR's own.
+    spelled = stored.pop("$effort", None)
+    values: dict[str, object] = {
+        "model": item.model,
+        "approval_policy": item.permission,
+    }
+    if item.effort is not None:
+        values["effort"] = (
+            spelled
+            if isinstance(spelled, str) and _effort(spelled) == item.effort
+            else item.effort
+        )
+    if item.summary_kind is not None:
+        values["summary"] = item.summary_kind
+    payload = restore_unmodeled_fields(stored, values)
+    # A record built by hand carries no stored order, so a field the replay
+    # envelope never named is appended rather than dropped.
+    for key, value in values.items():
+        if key not in payload and value is not None and key in {"effort", "summary"}:
+            payload[key] = value
+    return _ordered("turn_context", _codex_residual(payload))
+
+
+def _write_agent_message(item: AgentToAgentMessage) -> dict[str, object]:
+    """Return the response item a peer message came from."""
+    extra = mutable(item.extra)
+    blocks = _write_content(
+        item.content,
+        item.attachments,
+        extra,
+        text_key="input_text",
+    )
+    payload: dict[str, object] = {
+        "type": "agent_message",
+        "author": item.sender,
+        "recipient": item.recipient,
+        "content": blocks,
+        **extra,
+    }
+    return _ordered(
+        "agent_message",
+        {k: v for k, v in payload.items() if v is not None},
+    )
+
+
+def _write_item(
+    item: UserMessage | AssistantMessage | SystemMessage | Thinking | ToolCall,
+) -> dict[str, object]:
+    """Return the response item one act of the transcript came from."""
+    extra = mutable(item.extra)
+    if isinstance(item, Thinking):
+        # Reasoning has no content list, so its own splits stay here rather
+        # than going through the content writer.
+        summary_absent = bool(extra.pop("$summary_absent", False))
+        summary = _write_content(
+            item.summary if item.summary is not None else item.content,
+            (),
+            extra,
+            text_key="summary_text",
+        )
+        return _ordered(
+            "reasoning",
+            {
+                "type": "reasoning",
+                **({} if summary_absent and not summary else {"summary": summary}),
+                **(
+                    {"encrypted_content": item.encrypted}
+                    if item.encrypted is not None
+                    else {}
+                ),
+                **extra,
+            },
+        )
+    if isinstance(item, ToolCall):
+        return _write_call(item, extra)
+    role = (
+        "user"
+        if isinstance(item, UserMessage)
+        else "assistant"
+        if isinstance(item, AssistantMessage)
+        # A subtype outside the roles codex writes is another CLI's word, and
+        # sending it is a 400 rather than a stored oddity: claude's
+        # ``turn_duration`` crossed through as a role and failed the resumed
+        # session's FIRST request.
+        else item.subtype
+        if item.subtype in _MESSAGE_ROLES
+        else "system"
+    )
+    content_absent = bool(extra.pop("$content_absent", False))
+    blocks = _write_content(
+        item.content,
+        item.attachments,
+        extra,
+        text_key="output_text" if role == "assistant" else "input_text",
+    )
+    payload: dict[str, object] = {"type": "message", "role": role}
+    if blocks or (not content_absent and "content" not in extra):
+        payload["content"] = blocks
+    return _ordered("message", payload | extra)
+
+
+def _write_call(
+    item: ToolCall,
+    extra: dict[str, MutablePlainTree],
+) -> dict[str, object]:
+    """Return the response item a tool invocation came from."""
+    spaced = bool(extra.pop("$spaced", False))
+    present_value = extra.pop("$present", None)
+    present = (
+        set(from_plain(present_value, list[str]))
+        if isinstance(present_value, list)
+        else None
+    )
+    kind = from_plain(extra.get("type"), str, default="function_call")
+    if "$id" in extra:
+        id_key = from_plain(extra.pop("$id"), str)
+        arg_key = from_plain(extra.pop("$args"), str)
+        search_value = extra.pop("$kind")
+        search = search_value if isinstance(search_value, str) else ""
+        return _ordered(
+            search,
+            {"type": search}
+            | ({id_key: item.call_id} if id_key else {})
+            | ({arg_key: dict(item.arguments)} if arg_key else {})
+            | extra,
+        )
+    if kind == "function_call":
+        payload: dict[str, object] = {
+            "name": item.name,
+            # The source string when re-serializing cannot reproduce it, else
+            # raw UTF-8 matching the outer line: an em dash inside the nested
+            # argument string is written as itself, not escaped.
+            "arguments": from_plain(extra.pop("$raw"), str)
+            if "$raw" in extra
+            else json.dumps(
+                mutable(item.arguments),
+                ensure_ascii=False,
+                separators=None if spaced else (",", ":"),
+            ),
+            "call_id": item.call_id,
+        }
+    else:
+        payload = {
+            "call_id": item.call_id,
+            "name": item.name,
+            "input": from_plain(item.arguments.get("input"), str, default=""),
+        }
+    if present is not None:
+        defaults = {
+            "call_id": item.call_id == "",
+            "name": item.name == "",
+            "arguments": not item.arguments,
+            "input": payload.get("input") == "",
+        }
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if key in present or not defaults.get(key, False)
+        }
+    return _ordered(kind, {"type": kind} | payload | extra)
+
+
+# Which of codex's several spellings wrote it is on the record: an output response item,
+# a pre-0.149 ``*_end`` event, or an ``item_completed``.
+def _write_result(
+    item: ToolResult,
+    followers: Sequence[SessionRecord] = (),
+) -> tuple[str, dict[str, object]] | None:
+    """Return the line a tool's answer came from."""
+    item = shell_result_for_replay(item) or item
+    by_path = {
+        path: record
+        for record in (item, *followers)
+        if isinstance(record, ToolResult)
+        and isinstance(changed := record.result, EditResult | WriteResult)
+        and (path := changed.path or "")
+    }
+    extra = mutable(item.extra)
+    echoes = from_plain(extra.pop("$echoes", ""), str)
+    if echoes == "item_completed":
+        completed = _write_completed(item, extra, by_path)
+        return ("event_msg", completed) if completed is not None else None
+    if echoes:
+        return ("event_msg", _write_legacy_end(item, echoes, extra, by_path))
+    tool_result = item.result
+    # A pending or cancelled call has no output; only ``shown`` text is written.
+    if item.state in ("pending", "cancelled") and item.shown is None:
+        return None
+    # An output response item is the only spelling that carries the tool's own
+    # text, and only an ``UncategorizedToolResult`` is read from one; a typed
+    # result came from an event and took one of the branches above.
+    if isinstance(tool_result, UncategorizedToolResult) and item.state == "done":
+        return ("response_item", _write_output(item, extra))
+    if isinstance(
+        tool_result,
+        BashResult | ReadResult | WriteResult | EditResult | WebSearchResult,
+    ):
+        completed = _write_completed(item, extra, by_path)
+        return ("event_msg", completed) if completed is not None else None
+    payload: dict[str, object] = {
+        "type": "function_call_output",
+        "call_id": item.call_id,
+    }
+    # A fetch or a subagent report: acts codex has no event for -- across 400
+    # captured rollouts it writes neither -- but which it CAN carry, since
+    # every tool it does not model answers with a plain output item. Returning
+    # None instead dropped the record, so an act the source recorded left no
+    # trace at all; a generic output states what the tool returned, which is
+    # the most the target's vocabulary can say.
+    if isinstance(tool_result, WebFetchResult | AgentSpawnResult):
+        # Axiom 2: an UNSET content is not an empty one. Codex already states
+        # an absent ``output`` -- the reader records that state -- so a result
+        # that returned nothing omits the key rather than claiming it returned
+        # the empty string.
+        if content := "".join(text for text in item.stdout if isinstance(text, str)):
+            payload["output"] = content
+        return ("response_item", _ordered("function_call_output", payload | extra))
+    # Any other sagent tool's act, and an error no tool answered: codex has no event
+    # for them, so each states what the model read, as a tool codex does not model.
+    payload["output"] = item.text()
+    return ("response_item", _ordered("function_call_output", payload | extra))
+
+
+def _write_output(
+    item: ToolResult,
+    extra: dict[str, MutablePlainTree],
+) -> dict[str, object]:
+    """Return the output response item a result came from."""
+    kind = from_plain(extra.get("type"), str, default="function_call_output")
+    if extra.pop("$whole", False) is True:
+        return _ordered(kind, {"type": kind, "call_id": item.call_id, **extra})
+    output_absent = bool(extra.pop("$output_absent", False))
+    call_id_absent = bool(extra.pop("$call_id_absent", False))
+    content = "".join(text for text in item.stdout if isinstance(text, str))
+    output: object = content
+    if "$parts" in extra:
+        output = _write_content(
+            content,
+            item.attachments,
+            extra,
+            text_key="input_text",
+        )
+    payload: dict[str, object] = {"type": kind}
+    if not call_id_absent or item.call_id:
+        payload["call_id"] = item.call_id
+    if not output_absent or content or item.attachments:
+        payload["output"] = output
+    return _ordered(kind, payload | extra)
+
+
+def _write_legacy_end(
+    item: ToolResult,
+    kind: str,
+    extra: dict[str, MutablePlainTree],
+    by_path: Mapping[str, ToolResult],
+) -> dict[str, object]:
+    """Return the pre-0.149 ``*_end`` event an observation came from."""
+    present_value = extra.pop("$present", None)
+    present = (
+        set(from_plain(present_value, list[str]))
+        if isinstance(present_value, list)
+        else None
+    )
+    payload: dict[str, object] = {"type": kind, "call_id": item.call_id}
+    tool_result = item.result
+    if isinstance(tool_result, BashResult):
+        stdout = "".join(text for text in item.stdout if isinstance(text, str))
+        stderr = "".join(text for text in item.stderr if isinstance(text, str))
+        payload |= {
+            "command": list(tool_result.command or ()) or None,
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": tool_result.exit_code,
+        }
+        if present is not None:
+            defaults = {
+                "call_id": item.call_id == "",
+                "command": tool_result.command is None,
+                "stdout": stdout == "",
+                "stderr": stderr == "",
+                "exit_code": tool_result.exit_code is None,
+            }
+            payload = {
+                key: value
+                for key, value in payload.items()
+                if key == "type" or key in present or not defaults.get(key, False)
+            }
+    elif isinstance(tool_result, WebSearchResult):
+        payload["query"] = tool_result.query
+        payload["results"] = _write_rows(item, extra)
+    elif isinstance(tool_result, EditResult | WriteResult):
+        # The residual holds the per-path structure, but the VALUE is the
+        # record's own field -- an edit's splices, a write's content -- so an
+        # edited one has to reach the entry it came from.
+        _ = extra.pop("$splice_counts", None)
+        changes = _write_changes(
+            by_path,
+            from_plain(
+                extra.get("changes"),
+                dict[str, object],
+                default=dict[str, object](),
+            ),
+        )
+        if changes is not None:
+            extra["changes"] = changes
+    return _ordered(kind, {k: v for k, v in payload.items() if v is not None} | extra)
+
+
+# Codex writes one entry per path and one record answers for one path -- an UPDATE
+# carries its splices, an ADD the whole content it wrote -- so no boundary has to be
+# recovered: each record renders its own entry.
+def _write_changes(
+    by_path: Mapping[str, ToolResult],
+    stored: Mapping[str, object],
+) -> dict[str, MutablePlainTree] | None:
+    """Return a patch's per-path entries carrying each record's current value."""
+    if not stored:
+        return None
+    # WHICH key the record's field fills, as the reader recorded it. Guessing
+    # by key presence picked the wrong one for an entry carrying both: the
+    # reader emptied ``unified_diff`` and the writer rebuilt ``content``, so
+    # the diff came back null and the content was overwritten.
+    filled = {
+        path: found
+        for path, entry in stored.items()
+        if (
+            found := from_plain(
+                (from_plain(entry, dict[str, object], default=dict[str, object]())).get(
+                    "$filled",
+                ),
+                str,
+                default="",
+            )
+        )
+    }
+    paths = list(filled)
+    if not paths:
+        return None
+    out: dict[str, MutablePlainTree] = {}
+    for path, entry in stored.items():
+        found = dict(from_plain(entry, dict[str, object], default=dict[str, object]()))
+        owner = by_path.get(path)
+        if path in filled and owner is not None:
+            # Each entry from the record that owns THAT path: an add states the
+            # file's whole bytes, which a write holds outright; an update
+            # states a diff, which its splices render.
+            tool_result = owner.result
+            found[filled[path]] = (
+                (tool_result.content or "")
+                if isinstance(tool_result, WriteResult)
+                else render_udiff(
+                    tuple(item for item in owner.stdout if isinstance(item, Splice)),
+                )
+            )
+        # This reader's own note about the entry's shape, not a key codex
+        # wrote. ``_ordered`` strips ``$`` keys at the payload's top level;
+        # this one is nested inside ``changes``.
+        found.pop("$filled", None)
+        out[path] = mutable(found)
+    return out
+
+
+def _write_completed(
+    item: ToolResult,
+    extra: dict[str, MutablePlainTree],
+    by_path: Mapping[str, ToolResult] = MappingProxyType({}),
+) -> dict[str, object] | None:
+    """Return the ``item_completed`` event an observation came from."""
+    nested = from_plain(extra.pop("item", {}), dict[str, object])
+    present_value: object = nested.pop("$present", None)
+    present = (
+        set(from_plain(cast(list[object], present_value), list[str]))
+        if isinstance(present_value, list)
+        else None
+    )
+    inner: dict[str, object] = {"type": "", "id": item.call_id}
+    tool_result = item.result
+    shell = tool_result if isinstance(tool_result, BashResult) else None
+    stdout = "".join(text for text in item.stdout if isinstance(text, str))
+    stderr = "".join(text for text in item.stderr if isinstance(text, str))
+    if shell is not None:
+        kind = "CommandExecution"
+        inner |= {
+            "type": kind,
+            "command": list(shell.command or ()) or None,
+            "stdout": stdout,
+            "stderr": stderr,
+            "exit_code": shell.exit_code,
+        }
+    elif isinstance(tool_result, ReadResult):
+        # Codex has no read TOOL -- across 400 captured rollouts it names only
+        # exec_command, apply_patch, and write_stdin -- so it reads by running
+        # one, and that is the act this record crosses as (axiom 9: the same
+        # act keeps its meaning in the target's own vocabulary). Inventing a
+        # codex "FileRead" would put a shape on the wire codex never writes.
+        kind = "CommandExecution"
+        inner |= {
+            "type": kind,
+            # ``--`` first: a file whose name begins with a dash is an OPERAND,
+            # and ``cat -n`` runs a flag instead -- the act crossed as a command
+            # that reads nothing, and the record lost its type coming back.
+            "command": ["/bin/cat", "--", path]
+            if (path := tool_result.path or "")
+            else None,
+            "stdout": stdout,
+            "stderr": "",
+            "exit_code": 0,
+        }
+    elif isinstance(tool_result, EditResult | WriteResult):
+        # One act per path, and codex states both under ``changes``: an update
+        # writes a diff, an add the file's whole bytes.
+        kind = "FileChange"
+        inner["type"] = kind
+        if "changes" in nested:
+            # The residual holds the per-path structure, but the VALUE is the
+            # record's own field, so an edited one has to reach its entry.
+            _ = nested.pop("$splice_counts", None)
+            changes = _write_changes(
+                by_path,
+                from_plain(
+                    nested.get("changes"),
+                    dict[str, object],
+                    default=dict[str, object](),
+                ),
+            )
+            if changes is not None:
+                nested["changes"] = changes
+        elif tool_result.path is not None:
+            inner["changes"] = {
+                tool_result.path: {"content": tool_result.content or ""}
+                if isinstance(tool_result, WriteResult)
+                else {
+                    "unified_diff": render_udiff(
+                        tuple(
+                            stdout_item
+                            for stdout_item in item.stdout
+                            if isinstance(stdout_item, Splice)
+                        ),
+                    ),
+                },
+            }
+        elif isinstance(tool_result, EditResult) and any(
+            isinstance(stdout_item, Splice) for stdout_item in item.stdout
+        ):
+            return None
+    elif isinstance(tool_result, WebSearchResult):
+        kind = "WebSearch"
+        inner |= {"type": kind, "query": tool_result.query}
+    else:
+        return None
+    if present is not None:
+        defaults = {
+            "id": item.call_id == "",
+            "command": shell is not None and shell.command is None,
+            "stdout": shell is not None and stdout == "",
+            "stderr": shell is not None and stderr == "",
+            "exit_code": shell is not None and shell.exit_code is None,
+            "query": isinstance(tool_result, WebSearchResult)
+            and tool_result.query is None,
+        }
+        inner = {
+            key: value
+            for key, value in inner.items()
+            if key == "type" or key in present or not defaults.get(key, value is None)
+        }
+    payload = {key: value for key, value in inner.items() if value is not None} | nested
+    return _ordered(
+        "item_completed",
+        {"type": "item_completed", "item": _ordered(kind, payload), **extra},
+    )
+
+
+def _write_rows(
+    item: ToolResult,
+    extra: dict[str, MutablePlainTree],
+) -> list[object] | None:
+    """Return search results with opaque members in their original positions."""
+    if "$rows" not in extra:
+        return None
+    templates = from_plain(extra.pop("$rows", []), list[object])
+    row_order = extra.pop("$row_order", [])
+    order: list[str]
+    try:
+        order = from_plain(row_order, list[str])
+    except ReadError:
+        order = []
+    named = [
+        {"url": row.url, "title": row.title, "snippet": row.snippet}
+        for row in item.stdout
+        if isinstance(row, WebSearchHit)
+    ]
+    out: list[object] = []
+    row_index = 0
+    for index, kind in enumerate(order):
+        template: object = templates[index] if index < len(templates) else {}
+        if kind == "row":
+            if row_index >= len(named):
+                continue
+            if isinstance(template, Mapping):
+                out.append(
+                    cast(dict[str, object], template)
+                    | {
+                        key: value
+                        for key, value in named[row_index].items()
+                        if value is not None
+                    },
+                )
+            else:
+                out.append(template)
+            row_index += 1
+        elif index < len(templates):
+            out.append(
+                cast(dict[str, object], template)
+                if isinstance(template, Mapping)
+                else template,
+            )
+    out.extend(
+        {key: value for key, value in row.items() if value is not None}
+        for row in named[row_index:]
+    )
+    return out
+
+
+def _write_content(
+    content: str | None,
+    attachments: tuple[Attachment, ...],
+    extra: dict[str, MutablePlainTree],
+    *,
+    text_key: str,
+) -> list[object]:
+    """Return content members in native order, then append new semantics."""
+    parts_value = extra.pop("$parts", [])
+    parts: list[int]
+    try:
+        parts = from_plain(parts_value, list[int])
+    except ReadError:
+        parts = []
+    prose = _split(content, parts)
+    if "$templates" in extra:
+        templates = from_plain(extra.pop("$templates"), list[object])
+    else:
+        templates = from_plain(extra.pop("$blocks", []), list[object])
+    has_order = "$order" in extra
+    order_value = extra.pop("$order", [])
+    order: list[str]
+    try:
+        order = from_plain(order_value, list[str])
+    except ReadError:
+        order = []
+    if not has_order:
+        order = ["text"] * len(prose)
+        order.extend(["image"] * len(attachments))
+        order.extend(["other"] * len(templates))
+    blocks: list[object] = []
+    text_index = 0
+    image_index = 0
+    for index, kind in enumerate(order):
+        template: object = {}
+        if index < len(templates):
+            template = templates[index]
+        if kind == "text":
+            if text_index >= len(prose):
+                continue
+            block = from_plain(template, dict[str, object])
+            block.setdefault("type", text_key)
+            block["text"] = prose[text_index]
+            blocks.append(block)
+            text_index += 1
+        elif kind == "image":
+            if image_index >= len(attachments):
+                continue
+            block = from_plain(template, dict[str, object]) | _write_attachment(
+                attachments[image_index],
+            )
+            blocks.append(block)
+            image_index += 1
+        elif index < len(templates):
+            blocks.append(
+                cast(dict[str, object], template)
+                if isinstance(template, Mapping)
+                else template,
+            )
+    blocks.extend({"type": text_key, "text": part} for part in prose[text_index:])
+    blocks.extend(_write_attachment(image) for image in attachments[image_index:])
+    return blocks
+
+
+def _write_attachment(attachment: Attachment) -> dict[str, object]:
+    """Return the ``input_image`` block a binary came from."""
+    return {
+        "type": "input_image",
+        "image_url": (
+            f"data:{attachment.mime_descriptor};base64,"
+            f"{base64.b64encode(attachment.data).decode('ascii')}"
+        ),
+    }
+
+
+# By length rather than by separator: a block may itself contain the newline the reader
+# joined on, so splitting on it would land the boundary in the wrong place.
+def _split(content: str | None, lengths: Sequence[int]) -> list[str]:
+    """Return prose as the blocks the provider wrote it in."""
+    if content is None:
+        return []
+    if not lengths:
+        return [content]
+    if lengths == [0] and not content:
+        # Zero blocks, not one empty one: an image-only output has no text.
+        return []
+    out: list[str] = []
+    at = 0
+    for size in lengths:
+        out.append(content[at : at + size])
+        at += size + 1
+    return out if at == len(content) + 1 else [content]
+
+
+def _is_command_shape(value: object) -> bool:
+    """Return whether a command is a string or an all-string list."""
+    if isinstance(value, str):
+        return True
+    if not isinstance(value, list):
+        return False
+    values = cast(list[object], value)
+    return all(isinstance(part, str) for part in values)
+
+
+def _command(value: object) -> tuple[str, ...] | None:
+    """Read a command, which the provider writes as its argument list."""
+    if isinstance(value, str):
+        return (value,) if value else None
+    if not isinstance(value, list):
+        return None
+    values = cast(list[object], value)
+    parts = [part for part in values if isinstance(part, str)]
+    if len(parts) != len(values):
+        return None
+    return tuple(parts) if parts else None
+
+
+# ``ultra`` is codex's name for its top setting on 11111 captured turns; ``max`` is the
+# same setting on 26, written by the same models under the same CLI build -- so the IR
+# names one level and the line records which word it used.
+def _effort(
+    wire: str,
+    *,
+    aliases: Mapping[str, ThinkingEffort] = MappingProxyType({"ultra": "max"}),
+) -> ThinkingEffort | None:
+    """Read a reported effort level, resolving a provider's own spelling."""
+    if wire in aliases:
+        return aliases[wire]
+    if wire not in cast(tuple[ThinkingEffort, ...], literal_members(ThinkingEffort)):
+        return None
+    return wire
+
+
+def _summary_kind(wire: str) -> SummaryKind | None:
+    """Read a requested summary verbosity."""
+    if wire not in cast(tuple[SummaryKind, ...], literal_members(SummaryKind)):
+        return None
+    return wire
+
+
+class _Reader:
+    """Read a Codex rollout one line at a time.
+
+    Line by line, never the whole file as one string (axiom 11): ONE non-ASCII
+    character makes CPython store the entire string as 4 bytes per character,
+    so reading a 273 MB rollout whole cost 1.09 GB before any parsing. Per
+    line, that widening is confined to the lines that need it.
+
+    Private to :func:`normalize`, which is the only entry point: the generator
+    IS the incremental interface, so nothing outside needs a reader object.
+    """
+
+    def __init__(self) -> None:
+        # Only what is not yet the caller's: a yielded record is dropped, so the
+        # reader holds the opening's few lines rather than the session.
+        self._pending: list[SessionRecord] = []
+        # The stream index of ``_pending[0]``. A record names its context by
+        # stream index (axiom 5), which counts records already handed over.
+        self._base = 0
+        # The launch line's settings, once read: only the first one declares.
+        self._declared: dict[str, PlainTree] | None = None
+        # The index of the most recent ``turn_context``; every later record
+        # names it. The opening context sits at 0, and codex writes one per
+        # turn, so this moves as the stream advances.
+        self._context_id = 0
+        self._position = 0
+        self._ends_newline = True
+        # Where the opening clear sits, and what the fresh context was given.
+        # Codex NAMES a prompt on its launch line and then sends more before
+        # the first turn -- a skills block, a role prompt -- so the record
+        # that states what the model began from is only complete once an act
+        # arrives.
+        self._opening: int | None = None
+        self._given: list[str] = []
+
+    def read(self, line: str) -> Iterator[SessionRecord]:
+        """Consume one rollout line; yield the records it produced.
+
+        A record is the caller's once yielded (axiom 11), so the opening clear
+        is HELD until the instructions it states are complete: codex keeps
+        sending them after the launch line, and a clear already handed over
+        cannot gain them. Held records are released the moment the first act
+        closes the opening, which is the only point at which the window is
+        fully described.
+
+        Args:
+          line: One raw rollout line.
+
+        Returns:
+          result: Records parsed from this line; axiom 11 applies once yielded.
+
+        """
+        position = self._position
+        self._position += 1
+        self._ends_newline = line.endswith("\n")
+        if not position:
+            # Settings before the acts they govern. Codex declares them on its
+            # launch line, so a rollout that opens with one supersedes this
+            # immediately -- the reader states what it knows and restates.
+            self._pending.append(
+                TurnContext(
+                    # No ``ascii_escaped``: codex writes raw UTF-8 on every one
+                    # of 13138 captured non-ASCII lines, so the convention is
+                    # the format's, not the file's.
+                    encoding={"newline_terminated": True},
+                ),
+            )
+        self._read(line, position)
+        return self._release()
+
+    # Everything, once the opening is closed. While it is open, only the records BEFORE
+    # the clear: codex keeps sending instructions after its launch line, so the clear is
+    # not yet what it will be, and a record is the caller's the moment it is yielded
+    # (axiom 11).
+    def _release(self) -> Iterator[SessionRecord]:
+        """Hand over every record the window's state allows, and forget it."""
+        cut = (
+            len(self._pending) if self._opening is None else self._opening - self._base
+        )
+        released, self._pending = self._pending[:cut], self._pending[cut:]
+        self._base += cut
+        return iter(released)
+
+    def _at(self) -> int:
+        """Return the stream index the next appended record takes."""
+        return self._base + len(self._pending)
+
+    def close(self) -> Iterator[SessionRecord]:
+        """Yield what only the END of the stream could say.
+
+        Yields:
+          record: Final records if stream lacked a final newline or opening unclosed.
+
+        """
+        if self._opening is not None:
+            # A rollout that is nothing but its opening -- a launch line and
+            # its instructions, no turn yet. EOF closes the window that no
+            # first act closed, or the clear would never be handed over at all.
+            self._opening = None
+            yield from self._release()
+        if not self._ends_newline:
+            # Knowable only here: a later state record supersedes the opening
+            # one rather than mutating a record already handed to the caller.
+            yield TurnContext(encoding={"newline_terminated": False})
+
+    def _read(self, line: str, position: int) -> None:
+        """Append whatever one line contributes to the record stream."""
+        # Every line yields a record, so a blank one cannot vanish.
+        if not line.strip():
+            self._pending.append(IncompleteRecord(text=line))
+            return
+        try:
+            decoded = json_loads(line)
+        except json.JSONDecodeError:
+            self._pending.append(IncompleteRecord(text=line))
+            return
+        if not isinstance(decoded, dict):
+            self._pending.append(IncompleteRecord(text=line))
+            return
+        record = from_plain(decoded, dict[str, object])
+        # Every field is narrowed BEFORE anything is committed: a line with one
+        # malformed field raised out of ``normalize`` and lost the rest of the
+        # file. Kept as its text instead, it still writes back as its bytes.
+        try:
+            payload = from_plain(record["payload"], dict[str, object])
+            outer = read_or_default(record.get("type"), str, default="")
+            if outer == "session_meta" and self._declared is None:
+                launch = (
+                    _read_declaration(record, payload, position),
+                    read_or_default(record.get("timestamp"), str, default=None),
+                )
+                read: list[SessionRecord] = []
+            else:
+                launch = None
+                read = self._read_line(outer, record, payload)
+        except (KeyError, ReadError):
+            self._pending.append(IncompleteRecord(text=line))
+            return
+        if launch is not None:
+            self._launch(launch, payload, position)
+            return
+        for item in read:
+            if isinstance(item, TurnContext):
+                self._context_id = self._at()
+                self._pending.append(item)
+            else:
+                self._pending.append(self._opened_with(item))
+
+    def _read_line(
+        self,
+        outer: str,
+        record: Mapping[str, object],
+        payload: Mapping[str, object],
+    ) -> list[SessionRecord]:
+        """Return the records one line states, committing nothing."""
+        timestamp = read_or_default(record.get("timestamp"), str, default=None)
+        if outer == "session_meta":
+            # 19 captured rollouts declare the session twice -- a fork
+            # re-announcing itself. Only the first is the file's declaration;
+            # a later one is a record in the stream like any other.
+            repeat = UncategorizedRecord(
+                context_id=self._context_id,
+                timestamp=timestamp,
+                kind="session_meta/repeat",
+                payload=immutable(payload),
+            )
+            return [_with_line_state(repeat, record)]
+        if outer == "turn_context":
+            return [_with_line_state(_read_context(payload, timestamp), record)]
+        return [
+            _with_line_state(item, record)
+            for item in _read_records(outer, payload, self._context_id, timestamp)
+        ]
+
+    # The launch line IS settings, so it supersedes the opening context rather than
+    # becoming a record beside it. The clear that follows states what the model begins
+    # from; both are derived, so neither costs a line on the way back out.
+    def _launch(
+        self,
+        launch: tuple[dict[str, PlainTree], str | None],
+        payload: Mapping[str, object],
+        position: int,
+    ) -> None:
+        """Commit the launch line's context and the clear it opens."""
+        declaration, timestamp = launch
+        self._declared = declaration
+        declared = TurnContext(
+            timestamp=timestamp,
+            encoding={"newline_terminated": True},
+            extra=dict(declaration),
+        )
+        if position:
+            # A launch line the file did not open with -- 1 captured rollout
+            # begins with a blank one. The opening context has already been
+            # YIELDED by now, so it is superseded by a fresh record rather
+            # than rewritten: a record handed to the caller is the caller's
+            # (axiom 11), and overwriting index 0 lost the declaration into a
+            # slot the blank line's record had taken.
+            self._context_id = self._at()
+            self._pending.append(declared)
+        else:
+            # Still held: the first line has not been released yet.
+            if self._base != 0:
+                raise ValueError("Expected self._base == 0.")
+            self._pending[0] = declared
+        declared_prompt = _declared_instructions(payload)
+        opens: dict[str, PlainTree] = {"$opens": True}
+        if declared_prompt is not None:
+            self._given.append(declared_prompt)
+            # How much of the assembled prompt the LAUNCH LINE owns. The clear
+            # states everything the fresh context was given, and the rest
+            # arrives as later system messages -- so a writer rebuilding
+            # ``base_instructions`` from the whole thing put the skills block
+            # on the launch line, where codex never wrote it, and the rollout
+            # no longer matched its own bytes.
+            opens["$declared"] = len(declared_prompt)
+        self._opening = self._at()
+        self._pending.append(
+            ContextClear(
+                timestamp=timestamp,
+                cleared_session_id=read_or_default(
+                    payload.get("forked_from_id"),
+                    str,
+                    default=None,
+                ),
+                system_prompt=declared_prompt,
+                extra=opens,
+            ),
+        )
+
+    # The clear is what delineates a session, so it has to state everything the fresh
+    # context was GIVEN -- not only the prompt the launch line named. Codex sends its
+    # skills block and role prompt as ordinary system messages before the first turn,
+    # and a clear carrying just the declared one describes part of what the model saw,
+    # which a consumer cannot tell from all of it.
+    #
+    # The record still stands on its own: this fills a field, it does not consume the
+    # line. Dropping it would cost the rewrite its bytes.
+    def _opened_with(self, item: SessionRecord) -> SessionRecord:
+        """Fold an opening instruction into the clear, and return the record."""
+        if self._opening is None:
+            return item
+        if isinstance(item, SystemMessage) and (content := item.content or ""):
+            self._given.append(content)
+            at = self._opening - self._base
+            opening = self._pending[at]
+            assert isinstance(opening, ContextClear)
+            self._pending[at] = replace(
+                opening,
+                system_prompt="\n".join(self._given),
+            )
+            return item
+        if isinstance(item, UncategorizedRecord | ContextState):
+            # Bookkeeping around the opening rather than part of it: a turn
+            # boundary, a world-state snapshot. Neither is an instruction, and
+            # neither ends the opening.
+            return item
+        # The first act closes it: what follows is the conversation.
+        self._opening = None
+        return item
+
+
+# Returned as the residual of the opening :class:`TurnContext`, because a launch line IS
+# settings -- cwd, cli version, model provider, git state -- and axiom 6 makes a context
+# full state. There is no separate declaration record for it to live on.
+def _read_declaration(
+    record: Mapping[str, object],
+    payload: Mapping[str, object],
+    position: int,
+) -> dict[str, PlainTree]:
+    """Read the launch line: the settings a rollout opens with."""
+    extra: dict[str, PlainTree] = {}
+    # The whole payload verbatim, order included: codex writes keys no table
+    # anticipated (``dynamic_tools``, ``agent_role``), and a table that misses
+    # one misplaces it.
+    extra["payload"] = extract_unmodeled_fields(payload, ())
+    # Where the declaration sat, and whether the file numbers its lines: a
+    # rollout whose launch line carries an ordinal numbers every line.
+    extra["line"] = position
+    extra["$timestamp"] = "timestamp" in record
+    if "payload" in record:
+        # Only WHERE it sat, since the payload itself is stored above.
+        extra["$payload_at"] = list(record).index("payload")
+    # The instructions move to the opening ``ContextClear``, which is where the
+    # IR states what a session begins from. Held in BOTH places the whole
+    # system prompt was stored twice -- +18 KB on a 94 KB captured golden --
+    # which is the same duplication the ``$outer`` note below exists to stop.
+    # A STENCIL, not a deletion: the key keeps its place and its siblings --
+    # the object also carries a ``provenance`` naming the model that wrote the
+    # prompt, and no field on the clear holds that.
+    if _declared_instructions(payload) is not None:
+        stored = from_plain(extra["payload"], dict[str, object])
+        held = stored.get("base_instructions")
+        extra["payload"] = (
+            immutable(
+                {
+                    key: _emptied_instructions(value)
+                    if key == "base_instructions"
+                    else value
+                    for key, value in stored.items()
+                },
+            )
+            if isinstance(held, (Mapping, str))
+            else immutable(stored)
+        )
+    # WITHOUT the payload, which ``extra["payload"]`` above already is and
+    # ``_write_line`` overwrites from anyway. Keeping it stored the launch
+    # line's body twice -- and that body carries ``base_instructions``, so the
+    # whole system prompt was held twice: ~19 KB of a 112 KB captured golden.
+    # The rule ``_with_line_state`` states for every other line; this was the
+    # one path that skipped it.
+    extra["$outer"] = immutable(
+        {key: value for key, value in record.items() if key != "payload"},
+    )
+    # No ``$launch_timestamp_raw``: a string stamp is what the metadata's own
+    # field carries, so storing it here wrote every launch stamp twice. Only a
+    # MALFORMED one -- which the field cannot hold -- survives nowhere else.
+    raw = record.get("timestamp")
+    if raw is not None and not isinstance(raw, str):
+        extra["$launch_timestamp_raw"] = cast(PlainTree, raw)
+    if "ordinal" in record:
+        extra["ordinal"] = read_or_default(record.get("ordinal"), int, default=0)
+    return extra
+
+
+# The outer line WITHOUT its payload: the payload is the record, and :func:`_write_line`
+# overwrites the key from it, so keeping a copy stored every line's body twice -- 59.5%
+# of everything ``extra`` held.
+#
+# Nor its ``timestamp`` when the record's own field holds it: the writer reads the field
+# and only falls back to this copy for a stamp no field can carry. Storing both wrote
+# every stamp twice -- 1241 of 1470 records on one captured rollout. The key's POSITION
+# still matters, so an empty string marks where it sat.
+def _with_line_state(item: SessionRecord, outer: Mapping[str, object]) -> SessionRecord:
+    """Store Codex line replay state on its owning record."""
+    stencil: dict[str, object] = {}
+    for key, value in outer.items():
+        if key == "payload":
+            continue
+        stencil[key] = "" if key == "timestamp" and isinstance(value, str) else value
+    state: dict[str, MutablePlainTree] = {
+        "outer": mutable(stencil),
+    }
+    if "payload" in outer:
+        # Only WHERE it sat: the payload itself is the record.
+        state["payload_at"] = list(outer).index("payload")
+    if _is_canonical_line(outer):
+        return item
+    if isinstance(item, UncategorizedRecord):
+        payload = dict(item.payload)
+        if "$codex_line" in payload:
+            state["value"] = mutable(payload["$codex_line"])
+        payload["$codex_line"] = state
+        return replace(item, payload=payload)
+    if isinstance(item, IncompleteRecord):
+        return item
+    extra = mutable(item.extra)
+    extra["$codex_line"] = state
+    return replace(item, extra=extra)
+
+
+# The shape it emits: a string ``timestamp`` the record's field carries, the ``type`` it
+# is told, then ``payload`` last. A line with an extra key, a malformed stamp, or a
+# different order is not reproducible and keeps its own copy.
+def _is_canonical_line(outer: Mapping[str, object]) -> bool:
+    """Whether :func:`_write_line` rebuilds this outer line from the record."""
+    if list(outer) != ["timestamp", "type", "payload"]:
+        return False
+    return isinstance(outer["timestamp"], str) and isinstance(outer["type"], str)
+
+
+def _pop_line_state(
+    item: _CompleteRecord,
+) -> tuple[dict[str, object], _CompleteRecord]:
+    """Remove and return record-owned Codex line replay state."""
+    if isinstance(item, UncategorizedRecord):
+        payload = dict(item.payload)
+        state = from_plain(
+            payload.get("$codex_line"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        if not isinstance(state.get("outer"), Mapping):
+            return {}, item
+        payload.pop("$codex_line")
+        if "value" in state:
+            payload["$codex_line"] = mutable(state["value"])
+        return state, replace(item, payload=payload)
+    extra = mutable(item.extra)
+    state = from_plain(
+        extra.get("$codex_line"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
+    if not isinstance(state.get("outer"), Mapping):
+        return {}, item
+    extra.pop("$codex_line")
+    return state, replace(item, extra=extra)
+
+
+# A summary the IR does not name stays in the residual rather than being dropped, so the
+# field means what it says and the line still rewrites.
+def _read_context(payload: Mapping[str, object], timestamp: str | None) -> TurnContext:
+    """Read the settings line codex writes once per turn."""
+    model = read_field_keeping_invalid(payload, "model", str)
+    permission = read_field_keeping_invalid(payload, "approval_policy", str)
+    wire = read_or_default(payload.get("effort"), str, default="")
+    effort = _effort(wire)
+    summary = _summary_kind(read_or_default(payload.get("summary"), str, default=""))
+    # Through ``restore_unmodeled_fields``, not consumed and re-appended: a key the writer adds
+    # back lands at the end, and codex writes ``summary`` BEFORE
+    # ``truncation_policy`` on 57 captured rollouts.
+    fields: dict[str, FieldState[object]] = {
+        "model": model,
+        "approval_policy": permission,
+    }
+    if effort is not None:
+        fields["effort"] = effort
+    if summary is not None:
+        fields["summary"] = summary
+    extra = extract_unmodeled_fields(payload, fields=fields)
+    if effort is not None and wire != effort:
+        # Which spelling this line used. ``extract_unmodeled_fields`` keeps an original only
+        # for a value a round trip could RESPELL, which it judges numerically,
+        # so an aliased string would otherwise come back as the canonical name
+        # and rewrite 611 captured rollouts differently than codex wrote them.
+        extra["$effort"] = wire
+    return TurnContext(
+        timestamp=timestamp,
+        model=model if isinstance(model, str) else None,
+        effort=effort,
+        summary_kind=summary,
+        permission=permission if isinstance(permission, str) else None,
+        extra=immutable(extra),
+    )
+
+
+def _read_records(
+    outer: str,
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> list[SessionRecord]:
+    """Read one line into the records its payload carries."""
+    kind = read_or_default(payload.get("type"), str, default="")
+    if outer == "response_item":
+        return [_read_response_item(kind, payload, context_id, timestamp)]
+    if outer == "event_msg":
+        found = _read_event(kind, payload, context_id, timestamp)
+        return list(found) if isinstance(found, list) else [found]
+    if outer == "world_state":
+        return [
+            ContextState(
+                context_id=context_id,
+                timestamp=timestamp,
+                kind="world_state",
+                extra=_codex_residual(payload),
+            ),
+        ]
+    if outer == "compacted":
+        return _read_compacted(payload, context_id, timestamp)
+    # No silent fallback: an unrecognized kind is named so a coverage test
+    # counts it.
+    return [
+        UncategorizedRecord(
+            context_id=context_id,
+            timestamp=timestamp,
+            kind=f"{outer}/{kind or 'root'}",
+            payload=immutable(payload),
+        ),
+    ]
+
+
+# ``None`` marks the slot the clear's field fills, the way every other stencil in this
+# module does; a sibling key -- ``provenance`` -- survives nowhere else, so the object
+# is kept rather than replaced.
+def _emptied_instructions(value: object) -> PlainTree:
+    """Empty the prompt text a launch line declared, keeping its shape."""
+    if not isinstance(value, Mapping):
+        return None
+    declared = cast(Mapping[str, object], value)
+    return {
+        key: None if key == "text" else cast(PlainTree, item)
+        for key, item in declared.items()
+    }
+
+
+# Codex writes it as ``base_instructions``, which is either the text or an object
+# carrying it under ``text`` -- the captured corpus uses the object form, with a
+# ``provenance`` naming the model that produced it.
+def _declared_instructions(payload: Mapping[str, object]) -> str | None:
+    """Return the system prompt a codex launch line declares."""
+    declared = payload.get("base_instructions")
+    if isinstance(declared, str):
+        return declared
+    if not isinstance(declared, Mapping):
+        return None
+    return read_or_default(
+        cast(Mapping[str, object], declared).get("text"),
+        str,
+        default=None,
+    )
+
+
+# ``replacement_history`` is the context AFTER compacting -- the turns the CLI kept,
+# ending in a sealed ``compaction`` marker -- so it fills :attr:`history`, which is what
+# the field was declared for. Left in the residual it round-tripped and passed every
+# byte check while being invisible to a consumer: 343 KB across the captured corpus.
+#
+# The summary rides on that trailing marker rather than in ``message``: measured over
+# 1355 rollouts, 0 of 8 compacted lines populate ``message`` and all 8 carry
+# ``encrypted_content``.
+def _read_compacted(
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> list[SessionRecord]:
+    """Read the line that replaces a session's history with a summary."""
+    entries = read_or_default(
+        payload.get("replacement_history"),
+        list[object],
+        default=list[object](),
+    )
+    kept: list[SessionRecord] = []
+    sealed: str | None = None
+    for value in entries:
+        entry = read_or_default(value, dict[str, object], default=dict[str, object]())
+        if entry.get("type") == "compaction":
+            sealed = read_or_default(entry.get("encrypted_content"), str, default=None)
+            continue
+        kept.append(
+            _read_response_item(
+                read_or_default(entry.get("type"), str, default=""),
+                entry,
+                context_id,
+                timestamp,
+            ),
+        )
+    stated = read_or_default(payload.get("message"), str, default=None)
+    consumed: set[str] = set()
+    if stated is not None:
+        consumed.add("message")
+    if isinstance(payload.get("replacement_history"), list):
+        consumed.add("replacement_history")
+    extra = _codex_residual(payload, consumed, kind="compacted")
+    # Only a non-empty ``message`` is the summary; an empty one leaves it sealed.
+    if stated is not None and stated != "":
+        extra["$message"] = True
+    # WHICH shape the history was stored in, so the writer rebuilds the entry
+    # list rather than inventing one. Axiom 2: an empty list is a value.
+    if "replacement_history" in consumed:
+        extra["$history"] = [
+            cast(PlainTree, value)
+            for value in entries
+            if (
+                read_or_default(
+                    (
+                        read_or_default(
+                            value,
+                            dict[str, object],
+                            default=dict[str, object](),
+                        )
+                    ).get("type"),
+                    str,
+                    default="",
+                )
+            )
+            == "compaction"
+        ]
+    # TWO records: the event, then the window it opened. What a compaction
+    # PRODUCED -- the summary and the turns that survived -- is the next
+    # context, and every window opens with a clear whatever caused the reset.
+    # One rule for "what was the model looking at": the last clear plus every
+    # record after it.
+    return [
+        ContextCompaction(
+            context_id=context_id,
+            timestamp=timestamp,
+            extra=immutable(extra),
+        ),
+        ContextClear(
+            context_id=context_id,
+            timestamp=timestamp,
+            summary=stated or sealed,
+            history=tuple(kept),
+            extra={"$opens": True},
+        ),
+    ]
+
+
+def _read_response_item(
+    kind: str,
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> SessionRecord:
+    """Read one item of the transcript the model saw."""
+    if kind == "message":
+        return _read_message(payload, context_id, timestamp)
+    if kind == "reasoning":
+        return _read_thinking(payload, context_id, timestamp)
+    if kind in {"function_call", "custom_tool_call"}:
+        return _read_tool_call(payload, context_id, timestamp)
+    if kind in {"function_call_output", "custom_tool_call_output"}:
+        return _read_tool_result(payload, context_id, timestamp)
+    if kind in {"web_search_call", "tool_search_call"}:
+        # A search IS a tool invocation: it names an operation and carries
+        # arguments. Mapping it to a state record instead lost it on every
+        # cross-provider conversion. Its id is under ``id``, not ``call_id``.
+        return _read_search_call(payload, context_id, timestamp)
+    if kind == "tool_search_output":
+        # It answers with ``tools``, never an ``output``, so the record has no
+        # text and the writer must not synthesize any.
+        return ToolResult(
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(payload.get("call_id"), str, default=""),
+            state="done",
+            result=UncategorizedToolResult(),
+            extra=_codex_residual(payload, {"call_id"}) | {"$whole": True},
+        )
+    if kind == "agent_message":
+        parts, attachments, templates = _read_content(payload.get("content"))
+        extra = _codex_residual(payload, {"author", "recipient", "content"})
+        if len(parts) > 1:
+            extra["$parts"] = [len(part) for part in parts]
+        extra["$templates"] = templates
+        extra["$order"] = _block_order(payload.get("content"))
+        return AgentToAgentMessage(
+            context_id=context_id,
+            timestamp=timestamp,
+            content="\n".join(parts) if parts else None,
+            attachments=attachments,
+            sender=read_or_default(payload.get("author"), str, default=None),
+            recipient=read_or_default(payload.get("recipient"), str, default=None),
+            extra=immutable(extra),
+        )
+    return UncategorizedRecord(
+        context_id=context_id,
+        timestamp=timestamp,
+        kind=f"response_item/{kind}",
+        payload=immutable(payload),
+    )
+
+
+def _read_message(
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> SessionRecord:
+    """Read a message by the role that sent it."""
+    role_value = payload.get("role")
+    role = read_or_default(payload.get("role"), str, default=None)
+    content_value = payload.get("content")
+    content_list: list[object] = (
+        cast(list[object], content_value) if isinstance(content_value, list) else []
+    )
+    parts, attachments, templates = _read_content(content_list)
+    consumed: set[str] = set()
+    if isinstance(role_value, str):
+        consumed.add("role")
+    if isinstance(content_value, list):
+        consumed.add("content")
+    extra = _codex_residual(payload, consumed)
+    if "content" not in payload:
+        extra["$content_absent"] = True
+    elif isinstance(content_value, list):
+        extra["$templates"] = templates
+        extra["$order"] = _block_order(content_list)
+    if len(parts) > 1:
+        # Codex splits a long message across blocks, and the split is part of
+        # the bytes. A part may itself contain newlines, so the LENGTHS travel
+        # with the prose rather than a count.
+        extra["$parts"] = [len(part) for part in parts]
+    content = "\n".join(parts) if parts else None
+    if role == "user":
+        return UserMessage(
+            context_id=context_id,
+            timestamp=timestamp,
+            content=content,
+            attachments=attachments,
+            extra=immutable(extra),
+        )
+    if role == "assistant":
+        return AssistantMessage(
+            context_id=context_id,
+            timestamp=timestamp,
+            content=content,
+            attachments=attachments,
+            extra=immutable(extra),
+        )
+    # ``developer`` / ``system``: real instructions the model saw, so they
+    # belong in the record stream rather than being dropped for having an
+    # unexpected role.
+    return SystemMessage(
+        context_id=context_id,
+        timestamp=timestamp,
+        content=content,
+        attachments=attachments,
+        subtype=role,
+        extra=immutable(extra),
+    )
+
+
+def _block_order(content: object) -> list[PlainTree]:
+    """Return each content member's semantic kind in wire order."""
+    kinds: list[PlainTree] = []
+    values = (
+        from_plain(cast(list[object], content), list[object])
+        if isinstance(content, list)
+        else []
+    )
+    for value in values:
+        if not isinstance(value, Mapping):
+            kinds.append("other")
+            continue
+        part = from_plain(cast(dict[str, object], value), dict[str, object])
+        if isinstance(part.get("text"), str):
+            kinds.append("text")
+        elif _read_attachment(part) is not None:
+            kinds.append("image")
+        else:
+            kinds.append("other")
+    return kinds
+
+
+# A template is a STENCIL: the keys the block carried, minus the values the record's own
+# fields hold and the writer overwrites anyway. Keeping those stored every block's prose
+# twice, which was 23.2% of all ``extra``.
+def _read_content(
+    content: object,
+) -> tuple[tuple[str, ...], tuple[Attachment, ...], list[PlainTree]]:
+    """Split content into semantics and per-member wire templates."""
+    parts: list[str] = []
+    attachments: list[Attachment] = []
+    templates: list[PlainTree] = []
+    values = (
+        from_plain(cast(list[object], content), list[object])
+        if isinstance(content, list)
+        else []
+    )
+    for value in values:
+        if not isinstance(value, Mapping):
+            templates.append(cast(PlainTree, value))
+            continue
+        part = from_plain(cast(dict[str, object], value), dict[str, object])
+        if isinstance(part.get("text"), str):
+            parts.append(read_or_default(part.get("text"), str, default=""))
+            templates.append(_stencil(part, "text"))
+        elif (found := _read_attachment(part)) is not None:
+            # Whatever else the block carries. ``detail`` is metadata ABOUT the
+            # image, not a different kind of block, and refusing one that had
+            # it produced no attachment at all -- the image reached the IR
+            # nowhere, while the stencil kept its bytes and every byte check
+            # passed. The stencil holds every key the record's fields do not.
+            attachments.append(found)
+            templates.append(_stencil(part, "type", "image_url"))
+        else:
+            templates.append(cast(PlainTree, value))
+    return tuple(parts), tuple(attachments), templates
+
+
+# ``None`` rather than absent: the writer puts the field's value back, and a key it has
+# to append lands at the end rather than where it was.
+def _stencil(block: Mapping[str, object], *held: str) -> PlainTree:
+    """Return a block whose held values are emptied but whose keys still sit."""
+    return {
+        key: None if key in held else cast(PlainTree, value)
+        for key, value in block.items()
+    }
+
+
+def _read_thinking(
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> Thinking:
+    """Read reasoning, whose readable part is a summary codex may split."""
+    summary_value = payload.get("summary")
+    parts: list[str] = []
+    templates: list[PlainTree] = []
+    order: list[PlainTree] = []
+    for value in read_or_default(
+        payload.get("summary"),
+        list[object],
+        default=list[object](),
+    ):
+        if isinstance(value, Mapping):
+            block = from_plain(cast(dict[str, object], value), dict[str, object])
+            if isinstance(block.get("text"), str):
+                parts.append(read_or_default(block.get("text"), str, default=""))
+                templates.append(_stencil(block, "text"))
+                order.append("text")
+                continue
+        templates.append(cast(PlainTree, value))
+        order.append("other")
+    encrypted_text = read_or_default(
+        payload.get("encrypted_content"),
+        str,
+        default=None,
+    )
+    consumed: set[str] = set()
+    if isinstance(summary_value, list):
+        consumed.add("summary")
+    if encrypted_text is not None:
+        consumed.add("encrypted_content")
+    extra = _codex_residual(payload, consumed)
+    if "summary" not in payload:
+        extra["$summary_absent"] = True
+    elif isinstance(summary_value, list):
+        extra["$templates"] = templates
+        extra["$order"] = order
+    if len(parts) > 1:
+        extra["$parts"] = [len(part) for part in parts]
+    return Thinking(
+        context_id=context_id,
+        timestamp=timestamp,
+        summary="\n".join(parts) if parts else None,
+        encrypted=encrypted_text,
+        extra=immutable(extra),
+    )
+
+
+def _read_tool_call(
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> ToolCall | UncategorizedRecord:
+    """Read a tool invocation, whose arguments are JSON inside JSON."""
+    kind = read_or_default(payload.get("type"), str, default="")
+    freeform = kind != "function_call"
+    consumed: set[str] = set()
+    for key in ("call_id", "name"):
+        if isinstance(payload.get(key), str):
+            consumed.add(key)
+    input_key = "input" if freeform else "arguments"
+    if isinstance(payload.get(input_key), str):
+        consumed.add(input_key)
+    extra = _codex_residual(payload, consumed)
+    extra["$present"] = list(payload)
+    if freeform:
+        arguments: dict[str, object] = {
+            "input": read_or_default(payload.get("input"), str, default=""),
+        }
+    else:
+        text = read_or_default(payload.get("arguments"), str, default="")
+        parsed = _parse_arguments(text)
+        if parsed is None and isinstance(payload.get("arguments"), str):
+            # The model wrote something that is not JSON. Calling it an empty
+            # argument list would replace the call's real input with one it
+            # never had.
+            return UncategorizedRecord(
+                context_id=context_id,
+                timestamp=timestamp,
+                kind=f"response_item/{kind}",
+                payload=immutable(payload),
+            )
+        arguments = parsed or {}
+        # ``arguments`` is a STRING inside the line, so its own separator
+        # spacing is part of the bytes.
+        compact = json.dumps(arguments, ensure_ascii=False, separators=(",", ":"))
+        spaced = json.dumps(arguments, ensure_ascii=False)
+        if text == spaced:
+            extra["$spaced"] = True
+        elif text != compact:
+            # Neither spelling reproduces it: the model wrote a DUPLICATE key,
+            # and parsing kept only the last. The string itself is the value.
+            extra["$raw"] = text
+    return ToolCall(
+        context_id=context_id,
+        timestamp=timestamp,
+        call_id=from_plain(payload.get("call_id"), str, default=""),
+        name=read_or_default(payload.get("name"), str, default=""),
+        arguments=immutable(from_plain(arguments, dict[str, object])),
+        extra=immutable(extra),
+    )
+
+
+# ``arguments`` is JSON nested inside JSON, so a model that writes malformed JSON leaves
+# a syntactically valid record carrying an invalid string.
+def _parse_arguments(text: str) -> dict[str, object] | None:
+    """Parse a provider-supplied JSON argument string, or ``None`` if invalid."""
+    try:
+        return json_loads(text, dict[str, object])
+    except json.JSONDecodeError:
+        return None
+
+
+# Uncategorized by construction: a codex output line says only which call it answers, so
+# what the tool DID is knowable only from the call, and axiom 9 types the record by the
+# act. The ``item_completed`` event is where codex reports the act, and that reads into
+# a typed result.
+def _read_tool_result(
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> ToolResult:
+    """Read what one tool invocation returned."""
+    output = payload.get("output")
+    consumed = {"call_id"}
+    if isinstance(output, (str, list)):
+        consumed.add("output")
+    extra = _codex_residual(payload, consumed)
+    attachments: tuple[Attachment, ...] = ()
+    if isinstance(output, str):
+        content = output
+    elif isinstance(output, list):
+        output_list = read_or_default(
+            payload.get("output"),
+            list[object],
+            default=list[object](),
+        )
+        parts, attachments, templates = _read_content(output_list)
+        content = "\n".join(parts)
+        extra["$parts"] = [len(part) for part in parts] or [0]
+        extra["$templates"] = templates
+        extra["$order"] = _block_order(output_list)
+    else:
+        content = ""
+        if "output" not in payload:
+            extra["$output_absent"] = True
+    # Measured on a codex app rollout: an automation's heartbeat output names no
+    # call, and the writer would otherwise give it ``"call_id": ""``.
+    if "call_id" not in payload:
+        extra["$call_id_absent"] = True
+    return ToolResult(
+        context_id=context_id,
+        timestamp=timestamp,
+        call_id=from_plain(payload.get("call_id"), str, default=""),
+        state="done",
+        stdout=(*((content,) if content else ()), *attachments),
+        result=UncategorizedToolResult(),
+        extra=immutable(extra),
+    )
+
+
+def _read_search_call(
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> ToolCall:
+    """Read a web or tool search as the tool invocation it is."""
+    # Both the id and the input go under different keys per search kind: a web
+    # search writes ``id``/``action``, a tool search ``call_id``/``arguments``.
+    # Which pair held them decides where the writer puts them back.
+    # A search sometimes names neither, so ``$id`` may be absent entirely and
+    # the writer must not invent an empty one.
+    id_key = next((key for key in ("call_id", "id") if key in payload), "")
+    arg_key = next((key for key in ("action", "arguments") if key in payload), "")
+    consumed = {"type"}
+    if isinstance(payload.get(id_key), str):
+        consumed.add(id_key)
+    if isinstance(payload.get(arg_key), Mapping):
+        consumed.add(arg_key)
+    return ToolCall(
+        context_id=context_id,
+        timestamp=timestamp,
+        call_id=from_plain(payload.get(id_key), str, default=""),
+        name=(read_or_default(payload.get("type"), str, default="")).removesuffix(
+            "_call",
+        ),
+        arguments=immutable(
+            read_or_default(
+                payload.get(arg_key),
+                dict[str, object],
+                default=dict[str, object](),
+            ),
+        ),
+        extra=immutable(
+            _codex_residual(payload, consumed)
+            | {
+                "$id": id_key,
+                "$args": arg_key,
+                "$kind": read_or_default(payload.get("type"), str, default=""),
+            },
+        ),
+    )
+
+
+# Usually one record. A patch touching SEVERAL files is one record per file (axiom 10),
+# since ``changes`` is keyed by path and one record could name only one of them.
+def _read_event(
+    kind: str,
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> SessionRecord | list[SessionRecord]:
+    """Read one event the CLI reported alongside the transcript."""
+    if kind == "token_count":
+        info = _mapping_state(payload, "info")
+        rate_limits = _mapping_state(payload, "rate_limits")
+        usage_extra = extract_unmodeled_fields(
+            payload,
+            {"type"},
+            fields={"info": info, "rate_limits": rate_limits},
+        )
+        # Which of the two codex wrote as ``null``. The fields are objects, so
+        # a null read back as ``{}`` and the line rewrote as one -- 1033
+        # captured rollouts, every first count of a turn.
+        nulls = [
+            key
+            for key, state in (("info", info), ("rate_limits", rate_limits))
+            if state is None
+        ]
+        if nulls:
+            usage_extra["$nulls"] = nulls
+        # The envelope describes key order and field presence, and BOTH are
+        # already known: ``_ORDER["token_count"]`` names the order the writer
+        # falls back to, and ``$nulls`` names the field codex wrote as null.
+        # A payload that says nothing more than those needs no copy of it --
+        # one distinct envelope was stored 490 times on a single captured
+        # rollout, 3.6% of that file's whole normalized size.
+        if _is_canonical_usage(payload, usage_extra, (info, rate_limits)):
+            del usage_extra[_FIELD_STATE_KEY]
+        return TokenUsage(
+            context_id=context_id,
+            timestamp=timestamp,
+            info=immutable(
+                from_plain(cast(dict[str, object], info), dict[str, object])
+                if isinstance(info, Mapping)
+                else {},
+            ),
+            rate_limits=immutable(
+                from_plain(
+                    cast(dict[str, object], rate_limits),
+                    dict[str, object],
+                )
+                if isinstance(rate_limits, Mapping)
+                else {},
+            ),
+            extra=immutable(usage_extra),
+        )
+    if kind == "error":
+        return SystemMessage(
+            context_id=context_id,
+            timestamp=timestamp,
+            content=read_or_default(payload.get("message"), str, default=None),
+            subtype="error",
+            # An error is an EVENT, not a response item, so the writer needs
+            # to know which outer kind wrote it.
+            extra=_codex_residual(payload, {"message"}) | {"$event": True},
+        )
+    if kind == "item_completed":
+        return _read_completed(payload, context_id, timestamp)
+    if kind == "context_compacted":
+        # The marker codex writes beside the ``compacted`` line that carries
+        # the summary; both name one act, and this one holds no payload.
+        return ContextCompaction(
+            context_id=context_id,
+            timestamp=timestamp,
+            extra=_echoing(payload, kind, ()),
+        )
+    if kind == "mcp_tool_call_end":
+        # The connector's own result rides whole in the residual; the server and
+        # tool it ran are named as sagent names an MCP call.
+        invocation = read_or_default(
+            payload.get("invocation"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        return ToolResult(
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(payload.get("call_id"), str, default=""),
+            state="done",
+            result=McpResult(
+                server=read_or_default(invocation.get("server"), str, default=""),
+                tool=read_or_default(invocation.get("tool"), str, default=""),
+            ),
+            extra=_echoing(payload, kind, {"call_id"}),
+        )
+    # The pre-0.149 spelling of what ``item_completed`` now carries; the act
+    # is the same, so it reads into the same record.
+    if kind == "exec_command_end":
+        stdout = read_or_default(payload.get("stdout"), str, default="")
+        stderr = read_or_default(payload.get("stderr"), str, default="")
+        shell = ToolResult(
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(payload.get("call_id"), str, default=""),
+            state="done",
+            stdout=(stdout,) if stdout else (),
+            stderr=(stderr,) if stderr else (),
+            result=BashResult(
+                command=_command(payload.get("command")),
+                exit_code=read_or_default(payload.get("exit_code"), int, default=None),
+            ),
+            extra=_shell_residual(payload, kind),
+        )
+        return lift_shell_result(shell) or shell
+    if kind == "patch_apply_end":
+        changes = read_or_default(
+            payload.get("changes"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        edits, counts = _patch_edits(changes)
+        return _per_path_edits(
+            changes,
+            edits,
+            counts,
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(payload.get("call_id"), str, default=""),
+            extra=_stencil_changes(_echoing(payload, kind, {"call_id"}), counts),
+        )
+    if kind == "web_search_end":
+        results_value = payload.get("results")
+        values = (
+            from_plain(cast(list[object], results_value), list[object])
+            if isinstance(results_value, list)
+            else []
+        )
+        rows: list[dict[str, object]] = []
+        templates: list[PlainTree] = []
+        row_order: list[PlainTree] = []
+        for value in values:
+            if isinstance(value, Mapping):
+                row = from_plain(cast(dict[str, object], value), dict[str, object])
+                rows.append(row)
+                templates.append(cast(PlainTree, value))
+                row_order.append("row")
+            else:
+                templates.append(cast(PlainTree, value))
+                row_order.append("other")
+        consumed = {"type"}
+        for key in ("call_id", "query"):
+            if isinstance(payload.get(key), str):
+                consumed.add(key)
+        if isinstance(results_value, list):
+            consumed.add("results")
+        extra = _codex_residual(payload, consumed) | {"$echoes": kind}
+        if isinstance(results_value, list):
+            extra["$rows"] = templates
+            extra["$row_order"] = row_order
+        hits = _search_rows(rows)
+        hits_text = "\n\n".join(
+            "\n".join(
+                part for part in (hit.title, hit.url, hit.snippet) if part is not None
+            )
+            for hit in hits
+        )
+        return ToolResult(
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(payload.get("call_id"), str, default=""),
+            state="done",
+            stdout=(*((hits_text,) if hits_text else ()), *hits),
+            result=WebSearchResult(
+                # An empty query is a value: 2 captured searches carry one, and
+                # ``None`` would drop the key.
+                query=read_or_default(payload.get("query"), str, default="")
+                if "query" in payload
+                else None,
+            ),
+            extra=immutable(extra),
+        )
+    # ``event_msg/agent_message`` and its siblings are the CLI re-rendering a
+    # record that also arrives as a ``response_item``. An echo carries nothing
+    # the session does not already hold, so it keeps its bytes rather than
+    # entering the IR as a second copy of a turn.
+    return UncategorizedRecord(
+        context_id=context_id,
+        timestamp=timestamp,
+        kind=f"event_msg/{kind}",
+        payload=immutable(payload),
+    )
+
+
+# True when the line carries no key the record's fields do not hold, every field holds a
+# value the field's TYPE can carry, and the order is the one :data:`_ORDER` already
+# names. A malformed field -- ``"info":7``, which is no object -- survives nowhere but
+# the envelope, so that line keeps it.
+def _is_canonical_usage(
+    payload: Mapping[str, object],
+    extra: Mapping[str, PlainTree],
+    states: Sequence[FieldState[object]],
+) -> bool:
+    """Whether a usage line's envelope says only what the writer rebuilds."""
+    if set(extra) - {_FIELD_STATE_KEY, "$nulls"}:
+        return False
+    if any(isinstance(state, Invalid | Absent) for state in states):
+        return False
+    order = payload_orders().get("token_count", ())
+    return list(payload) == [key for key in order if key in payload]
+
+
+def _mapping_state(payload: Mapping[str, object], key: str) -> FieldState[object]:
+    """Read one object field without collapsing malformed values."""
+    state = read_field_keeping_invalid(payload, key, object)
+    if state is None or isinstance(state, (Absent, Invalid)):
+        return state
+    if isinstance(state, Mapping):
+        return cast(Mapping[str, object], state)
+    return Invalid(raw=cast(PlainTree, state))
+
+
+# Codex reports the same act under a pre-0.149 ``*_end`` event and under
+# ``item_completed``; nothing on the record distinguishes them, so the reader records
+# which one it saw.
+def _echoing(
+    payload: Mapping[str, object],
+    kind: str,
+    consumed: Iterable[str],
+) -> dict[str, PlainTree]:
+    """Return a residual that remembers which event spelling wrote it."""
+    return _codex_residual(payload, {"type", *consumed}) | {"$echoes": kind}
+
+
+# A stencil, not a deletion: the per-path structure around the diff is the provider's
+# and no field carries it, so the key stays and only its value goes. Keeping the value
+# too stored every diff twice -- 100% of one captured rollout's 91 KB of diff text, half
+# that file's whole IR growth.
+#
+# ``counts`` says how many splices each diff-bearing path contributed, which is the only
+# place that boundary survives: one path may hold SEVERAL hunks, so neither the splices
+# nor the rendered text reveals where a path ends.
+def _stencil_changes(
+    extra: dict[str, PlainTree],
+    counts: Sequence[int] = (),
+) -> dict[str, PlainTree]:
+    """Empty each patch entry's diff; the record's ``Splice`` items hold it."""
+    changes = extra.get("changes")
+    if not isinstance(changes, dict):
+        return extra
+    stencilled: dict[str, PlainTree] = {}
+    for path, entry in changes.items():
+        found = entry if isinstance(entry, dict) else None
+        # Whichever form this entry used, the record's own field now holds it:
+        # a diff for an update, the whole content for an add.
+        filled = next(
+            (
+                key
+                for key in ("unified_diff", "content")
+                if found is not None and isinstance(found.get(key), str)
+            ),
+            None,
+        )
+        if found is None or filled is None:
+            stencilled[path] = entry
+            continue
+        # WHICH key the record's field fills. An entry carrying both -- 9 of
+        # 451 captured events mix an add with an update -- was stencilled on
+        # one and rebuilt from the other, so the diff came back ``null`` and
+        # the content was overwritten with the splice's rendering.
+        stencilled[path] = {
+            key: None if key == filled else value for key, value in found.items()
+        } | {"$filled": filled}
+    out = extra | {"changes": stencilled}
+    if len(counts) > 1:
+        out["$splice_counts"] = list(counts)
+    return out
+
+
+def _shell_residual(payload: Mapping[str, object], kind: str) -> dict[str, PlainTree]:
+    """Return a shell result's residual without losing malformed fields."""
+    consumed = {"type"}
+    command_value = payload.get("command")
+    if _is_command_shape(command_value):
+        consumed.add("command")
+    for key, target in (
+        ("call_id", str),
+        ("stdout", str),
+        ("stderr", str),
+        ("exit_code", int),
+    ):
+        if read_or_default(payload.get(key), target, default=None) is not None:
+            consumed.add(key)
+    extra = _codex_residual(payload, consumed) | {"$echoes": kind}
+    extra["$present"] = list(payload)
+    return extra
+
+
+# Codex 0.149 replaced the per-kind ``*_end`` events with this one, moving the
+# discriminator down to ``item.type``.
+#
+# A patch is one record per PATH, since ``changes`` is keyed by one and a single record
+# could name only one of them.
+def _read_completed(
+    payload: Mapping[str, object],
+    context_id: int | None,
+    timestamp: str | None,
+) -> SessionRecord | list[SessionRecord]:
+    """Read an ``item_completed`` event by the kind of item it completed."""
+    item = read_or_default(
+        payload.get("item"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
+    item_type = read_or_default(item.get("type"), str, default="")
+    outer = _codex_residual(payload, {"type", "item"}) | {"$echoes": "item_completed"}
+    if item_type == "CommandExecution":
+        consumed = {"type"}
+        command_value = item.get("command")
+        if _is_command_shape(command_value):
+            consumed.add("command")
+        for key, target in (
+            ("id", str),
+            ("stdout", str),
+            ("stderr", str),
+            ("exit_code", int),
+        ):
+            if read_or_default(item.get(key), target, default=None) is not None:
+                consumed.add(key)
+        nested = _codex_residual(item, consumed)
+        nested["$present"] = list(item)
+        stdout = read_or_default(item.get("stdout"), str, default="")
+        stderr = read_or_default(item.get("stderr"), str, default="")
+        shell = ToolResult(
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(item.get("id"), str, default=""),
+            state="done",
+            stdout=(stdout,) if stdout else (),
+            stderr=(stderr,) if stderr else (),
+            result=BashResult(
+                command=_command(item.get("command")),
+                exit_code=read_or_default(item.get("exit_code"), int, default=None),
+            ),
+            extra=outer | {"item": nested},
+        )
+        return lift_shell_result(shell) or shell
+    if item_type == "FileChange":
+        consumed = {"type"}
+        if isinstance(item.get("id"), str):
+            consumed.add("id")
+        nested = _codex_residual(item, consumed)
+        nested["$present"] = list(item)
+        changes = read_or_default(
+            item.get("changes"),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        edits, counts = _patch_edits(changes)
+        return _per_path_edits(
+            changes,
+            edits,
+            counts,
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(item.get("id"), str, default=""),
+            extra=outer | {"item": _stencil_changes(nested, counts)},
+        )
+    if item_type == "WebSearch":
+        consumed = {"type"}
+        for key in ("id", "query"):
+            if isinstance(item.get(key), str):
+                consumed.add(key)
+        nested = _codex_residual(item, consumed)
+        nested["$present"] = list(item)
+        return ToolResult(
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=from_plain(item.get("id"), str, default=""),
+            state="done",
+            result=WebSearchResult(
+                query=read_or_default(item.get("query"), str, default=None),
+            ),
+            extra=outer | {"item": nested},
+        )
+    # ``AgentMessage``/``UserMessage``/``Reasoning`` complete an item that
+    # also arrives as its own ``response_item``; see the echo note above.
+    return UncategorizedRecord(
+        context_id=context_id,
+        timestamp=timestamp,
+        kind=f"event_msg/item_completed/{item_type}",
+        payload=immutable(payload),
+    )
+
+
+# Codex reports one entry per path in either of two forms. An UPDATE carries a
+# ``unified_diff``; an ADD carries the whole ``content`` -- 82 of 466 captured entries,
+# and 67 whole events carry nothing else. An add is a pure insertion, which the shape
+# already states as an empty ``before``, so it needs no field of its own and a mixed
+# event stays one record. Leaving it unharvested kept the bytes in the residual, which
+# round-trips to codex and so passes every byte check while making the file invisible to
+# a consumer that reads the record.
+#
+# Each path's diff is parsed ON ITS OWN and the results concatenated: joining the texts
+# first and parsing once moved a newline between adjacent paths, since the join added a
+# terminator the last line did not have.
+#
+# The per-path COUNTS come back too, because one path may contribute several splices --
+# a diff with two hunks is one file, not two -- so the boundary cannot be recovered from
+# the splices alone.
+def _patch_edits(changes: Mapping[str, object]) -> tuple[tuple[Splice, ...], list[int]]:
+    """Return a patch's replacements, and how many belong to each path."""
+    out: list[Splice] = []
+    counts: list[int] = []
+    for value in changes.values():
+        entry = read_or_default(value, dict[str, object], default=dict[str, object]())
+        content = entry.get("content")
+        if entry.get("unified_diff") is not None:
+            found = parse_udiff(
+                read_or_default(entry.get("unified_diff"), str, default=""),
+            )
+            out.extend(found)
+            counts.append(len(found))
+        elif isinstance(content, str):
+            out.append(Splice(before="", after=content))
+            counts.append(1)
+    return (tuple(out), counts)
+
+
+# ``changes`` is keyed BY path, so a record naming none describes an edit to no file --
+# and folding several paths' splices into one sequence loses which belongs to which. The
+# line's residual rides on the FIRST record (axiom 10), so the writer rebuilds one event
+# from the group rather than one per record.
+def _per_path_edits(
+    changes: Mapping[str, object],
+    edits: Sequence[Splice],
+    counts: Sequence[int],
+    *,
+    context_id: int | None,
+    timestamp: str | None,
+    call_id: str,
+    extra: Mapping[str, PlainTree],
+) -> list[SessionRecord]:
+    """Return one edit record per path the patch changed."""
+    paths = [
+        path
+        for path, entry in changes.items()
+        if isinstance(
+            (
+                read_or_default(entry, dict[str, object], default=dict[str, object]())
+            ).get("unified_diff"),
+            str,
+        )
+        or isinstance(
+            (
+                read_or_default(entry, dict[str, object], default=dict[str, object]())
+            ).get("content"),
+            str,
+        )
+    ]
+    out: list[SessionRecord] = []
+    at = 0
+    for index, path in enumerate(paths):
+        count = counts[index] if index < len(counts) else 0
+        found = tuple(edits[at : at + count])
+        # Only the first: one line, one residual (axiom 10).
+        own: dict[str, MutablePlainTree] = (
+            cast(dict[str, MutablePlainTree], extra) if index == 0 else {}
+        )
+        # A write ONLY when content is the form the entry used. An entry
+        # carrying both keys is an update whose diff the reader took, and
+        # typing it by key presence made the writer fill the wrong one.
+        entry = read_or_default(
+            changes.get(path),
+            dict[str, object],
+            default=dict[str, object](),
+        )
+        added = not isinstance(entry.get("unified_diff"), str) and isinstance(
+            entry.get("content"),
+            str,
+        )
+        out.append(
+            # An ADD states the file's whole bytes, which is what a write is --
+            # and codex's own writer maps a write back to this entry. Typing it
+            # as an edit left the IR unable to round-trip one.
+            ToolResult(
+                context_id=context_id,
+                timestamp=timestamp,
+                call_id=call_id,
+                state="done",
+                stdout=(f"Wrote {path or 'the file'}.",),
+                result=WriteResult(
+                    path=path,
+                    content=found[0].after if found else None,
+                ),
+                extra=own,
+            )
+            if added
+            else ToolResult(
+                context_id=context_id,
+                timestamp=timestamp,
+                call_id=call_id,
+                state="done",
+                stdout=(f"Edited {path or 'the file'}.", *found),
+                result=EditResult(path=path),
+                extra=own,
+            ),
+        )
+        at += count
+    return out or [
+        ToolResult(
+            context_id=context_id,
+            timestamp=timestamp,
+            call_id=call_id,
+            state="done",
+            stdout=("Edited the file.",),
+            result=EditResult(),
+            extra=immutable(extra),
+        ),
+    ]
+
+
+def _search_rows(rows: Sequence[Mapping[str, object]]) -> list[WebSearchHit]:
+    """Read a search's result rows."""
+    return [
+        WebSearchHit(
+            url=read_or_default(row.get("url"), str, default=None),
+            title=read_or_default(row.get("title"), str, default=None),
+            snippet=read_or_default(row.get("snippet"), str, default=None),
+        )
+        for row in rows
+    ]
+
+
+def _read_attachment(part: Mapping[str, object]) -> Attachment | None:
+    """Read an inline image, which codex writes as a data URL."""
+    if part.get("type") != "input_image":
+        return None
+    header, separator, data = (
+        read_or_default(part.get("image_url"), str, default="")
+    ).partition(
+        ",",
+    )
+    if (
+        not separator
+        or not header.startswith("data:")
+        or not header.endswith(";base64")
+    ):
+        return None
+    try:
+        decoded = base64.b64decode(data, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    return Attachment(
+        mime_descriptor=header.removeprefix("data:").removesuffix(";base64"),
+        data=decoded,
+    )

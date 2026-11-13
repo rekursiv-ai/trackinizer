@@ -1,0 +1,277 @@
+"""Reader-thread ownership and terminal records for pushed normalizers."""
+
+from __future__ import annotations
+
+from concurrent.futures import Future, ThreadPoolExecutor
+from functools import partial
+from typing import TYPE_CHECKING, TextIO, override
+
+import queue
+import threading
+
+import pytest
+
+from trackinizer.sagent.scripts.convert_session import tail
+from trackinizer.sagent.session.types import SessionRecord, TurnContext, UserMessage
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
+
+def test_failed_reader_cannot_end_the_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = tail.Tail(_records)
+    produced = _PausingQueue(lambda item: isinstance(item, tail._Failed))
+    reader._produced = produced
+    try:
+        assert reader.feed("first") == [UserMessage(content="first")]
+        previous = reader._reader
+        assert previous is not None
+        progress: queue.SimpleQueue[str] = queue.SimpleQueue()
+        join_previous = _observe_join(previous, monkeypatch, progress)
+        with ThreadPoolExecutor(max_workers=1) as callers:
+            failed = callers.submit(reader.feed, "boom")
+            failed.add_done_callback(partial(_returned, progress))
+            try:
+                assert produced.published.wait(2.0)
+                first_transition = progress.get(timeout=2.0)
+            finally:
+                produced.release.set()
+            with pytest.raises(ValueError, match="poison"):
+                failed.result(timeout=2.0)
+            join_previous(2.0)
+        assert reader.feed("recovered") == [UserMessage(content="recovered")], (
+            "the failed reader's terminal signal contaminated its replacement"
+        )
+        assert first_transition == "join", "restarted before the old reader exited"
+        assert not previous.is_alive()
+        assert reader.close() == [UserMessage(content="EOF")]
+        assert reader.close() == []
+    finally:
+        produced.release.set()
+        _finish_reader(reader)
+
+
+@pytest.mark.parametrize("finish_in_feed", [False, True])
+def test_terminal_result_waits_for_reader_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    finish_in_feed: bool,
+) -> None:
+    reader = tail.Tail(_records)
+    produced = _PausingQueue(lambda item: item is tail._ENDED)
+    reader._produced = produced
+    try:
+        assert reader.feed("first") == [UserMessage(content="first")]
+        worker = reader._reader
+        assert worker is not None
+        progress: queue.SimpleQueue[str] = queue.SimpleQueue()
+        join_worker = _observe_join(worker, monkeypatch, progress)
+        with ThreadPoolExecutor(max_workers=1) as callers:
+            completed = (
+                callers.submit(reader.feed, "finish")
+                if finish_in_feed
+                else callers.submit(reader.close)
+            )
+            completed.add_done_callback(partial(_returned, progress))
+            try:
+                assert produced.published.wait(2.0)
+                assert progress.get(timeout=2.0) == "join", (
+                    "returned a terminal result while the reader was still alive"
+                )
+                assert worker.is_alive()
+                assert not completed.done()
+            finally:
+                produced.release.set()
+                join_worker(2.0)
+            assert completed.result(timeout=2.0) == [UserMessage(content="EOF")]
+        assert not worker.is_alive()
+        assert reader.close() == []
+        assert reader.feed("ignored") == []
+    finally:
+        produced.release.set()
+        _finish_reader(reader)
+
+
+def test_unstarted_close_needs_no_reader() -> None:
+    reader = tail.Tail(_records)
+    assert reader.close() == []
+    assert reader.close() == []
+    assert reader._reader is None
+
+
+def _readlines(stream: TextIO) -> Iterator[str]:
+    """Yield each line ``readline`` answers, the end of the stream included."""
+    while True:
+        line = stream.readline()
+        yield line
+        if not line:
+            return
+
+
+def test_a_closed_stream_reads_as_ended_to_readline_too() -> None:
+    """``readline`` states the end as ``""``, as every text stream does."""
+    reader = tail.Tail(_readlines)
+
+    assert reader.feed("a\n") == ["a\n"]
+    assert reader.close() == [""]
+
+
+def test_a_fresh_reader_has_read_nothing() -> None:
+    reader = tail.Tail(_records)
+    assert reader.encoding == {}
+    assert reader._ended is False
+    assert reader._produced.empty()
+
+
+def test_a_restart_needs_a_reader() -> None:
+    with pytest.raises(ValueError, match=r"^Expected self\._reader is not None\.$"):
+        tail.Tail(_records)._restart()
+
+
+def test_an_end_signal_with_no_reader_is_refused() -> None:
+    reader = tail.Tail(_records)
+    reader._produced.put(tail._ENDED)
+    with pytest.raises(ValueError, match=r"^Expected self\._reader is not None\.$"):
+        _ = reader._collect()
+
+
+def test_a_stray_signal_is_never_returned_as_a_record() -> None:
+    reader = tail.Tail(_records)
+    reader._produced.put(tail._Signal())
+    with pytest.raises(
+        TypeError,
+        match=r"^Expected not isinstance\(item, _Signal\)\.$",
+    ):
+        _ = reader._collect()
+
+
+def test_the_reader_runs_on_a_daemon_thread() -> None:
+    """An abandoned tail's blocked reader must not hold the process open at exit."""
+    reader = tail.Tail(_records)
+    try:
+        assert reader.feed("first") == [UserMessage(content="first")]
+        assert reader._reader is not None
+        assert reader._reader.daemon is True
+    finally:
+        _finish_reader(reader)
+
+
+def test_the_encoding_follows_the_last_stated_context() -> None:
+    reader = tail.Tail(_contexts)
+    try:
+        assert reader.feed("ascii") == [TurnContext(encoding={"escape": "ascii"})]
+        assert reader.encoding == {"escape": "ascii"}
+        assert reader.feed("bare") == [TurnContext()]
+        assert reader.encoding == {"escape": "ascii"}
+        assert reader.feed("utf8") == [TurnContext(encoding={"escape": "utf8"})]
+        assert reader.encoding == {"escape": "utf8"}
+    finally:
+        _finish_reader(reader)
+
+
+def test_a_whole_file_reader_remembers_the_encoding_it_read() -> None:
+    reader = tail.Tail(_contexts, whole_file=True)
+    assert reader.feed("ascii\n") == [TurnContext(encoding={"escape": "ascii"})]
+    assert reader.encoding == {"escape": "ascii"}
+
+
+def test_a_pushed_stream_cannot_be_read_whole() -> None:
+    stream = tail._Pulled[SessionRecord](queue.SimpleQueue(), queue.SimpleQueue())
+    with pytest.raises(NotImplementedError, match="read by lines"):
+        _ = stream.read()
+
+
+def test_whole_file_reading_stays_threadless() -> None:
+    reader = tail.Tail(_records, whole_file=True)
+    assert reader.feed("first\n") == [
+        UserMessage(content="first"),
+        UserMessage(content="EOF"),
+    ]
+    assert reader.feed("second\n") == [
+        UserMessage(content="second"),
+        UserMessage(content="EOF"),
+    ]
+    assert reader.close() == []
+    assert reader._reader is None
+
+
+def _records(stream: TextIO) -> Iterator[SessionRecord]:
+    for line in stream:
+        text = line.rstrip("\n")
+        if text == "boom":
+            raise ValueError("poison")
+        if text == "finish":
+            break
+        yield UserMessage(content=text)
+    yield UserMessage(content="EOF")
+
+
+def _contexts(stream: TextIO) -> Iterator[SessionRecord]:
+    for line in stream:
+        text = line.rstrip("\n")
+        yield TurnContext(encoding={"escape": text} if text != "bare" else {})
+
+
+class _PausingQueue(queue.SimpleQueue[SessionRecord | tail._Signal]):
+    """Pause after publishing a selected signal, before the reader can exit."""
+
+    def __init__(
+        self,
+        pause_when: Callable[[SessionRecord | tail._Signal], bool],
+    ) -> None:
+        super().__init__()
+        self._pause_when = pause_when
+        self.published = threading.Event()
+        self.release = threading.Event()
+
+    @override
+    def put(
+        self,
+        item: SessionRecord | tail._Signal,
+        block: bool = True,
+        timeout: float | None = None,
+    ) -> None:
+        super().put(item, block=block, timeout=timeout)
+        if self._pause_when(item):
+            self.published.set()
+            self.release.wait()
+
+
+def _observe_join(
+    worker: threading.Thread,
+    monkeypatch: pytest.MonkeyPatch,
+    progress: queue.SimpleQueue[str],
+) -> Callable[[float | None], None]:
+    original_join = worker.join
+
+    def joining(timeout: float | None = None) -> None:
+        progress.put("join")
+        original_join(timeout)
+
+    monkeypatch.setattr(worker, "join", joining)
+    return original_join
+
+
+def _returned(
+    progress: queue.SimpleQueue[str],
+    completed: Future[list[SessionRecord]],
+) -> None:
+    del completed
+    progress.put("returned")
+
+
+def _finish_reader(reader: tail.Tail[SessionRecord]) -> None:
+    worker = reader._reader
+    if worker is not None:
+        reader._lines.put("")
+        worker.join(timeout=2.0)
+        assert not worker.is_alive()
+
+
+if __name__ == "__main__":
+    from trackinizer.lib.testing.runner import test_main
+
+    test_main(__file__)

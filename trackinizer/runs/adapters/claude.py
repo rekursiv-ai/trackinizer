@@ -8,7 +8,7 @@ for ``user`` / ``assistant`` lines the real category lives in
 list carries ``thinking`` / ``text`` / ``tool_use`` (assistant) or
 ``tool_result`` (a user line echoing tool output).
 
-Reading those lines is ``trackinizer.lib.agent.sessions.claude``'s job, not this
+Reading those lines is ``trackinizer.sagent.scripts.convert_session.claude``'s job, not this
 module's: one IR reader serves capture here AND the conversion/resume paths,
 so a dialect change is fixed once. What remains here is where the files live,
 which of them belong to THIS run, and how to recognise the CLI's own id.
@@ -27,9 +27,9 @@ import re
 
 from treekle import PlainTree, json_loads
 
-from trackinizer.lib.agent.sessions import claude
-from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.runs.adapters.custom_types import Subagent
+from trackinizer.sagent.scripts.convert_session import claude
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 
 
 if TYPE_CHECKING:
