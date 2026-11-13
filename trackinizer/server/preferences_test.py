@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock
 import uuid
 
 from pydantic import JsonValue
+from pydantic_core import to_json
+from treekle import from_plain
 
 import pydantic
 import pytest
@@ -18,6 +20,9 @@ from trackinizer.server.preferences import (
     SETTING,
     ChatView,
     Preferences,
+    assistant_settings_schema,
+    assistant_view,
+    inline_refs,
     stored_preferences,
     write_preferences,
 )
@@ -798,6 +803,57 @@ def test_a_value_past_its_bound_or_type_is_refused(
 ) -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate(change)
+
+
+def test_the_settings_an_agent_sees_are_every_assistant_key_whole_and_resettable() -> (
+    None
+):
+    schema = assistant_settings_schema()
+    keys = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
+    assert set(keys) == ASSISTANT_KEYS
+    assert "$ref" not in to_json(schema).decode()
+    assert (schema["type"], schema["additionalProperties"]) == ("object", False)
+    for key, offered in keys.items():
+        members = from_plain(offered["anyOf"], list[dict[str, JsonValue]])
+        assert members[1] == {"type": "null"}, key
+        # Said once, beside the choices: a model's own docstring may stay inside.
+        assert members[0].get("description") != offered["description"], key
+        assert offered["description"] == (Preferences.model_fields[key].description), (
+            key
+        )
+    canvas = from_plain(keys["canvas_text_size"]["anyOf"], list[dict[str, JsonValue]])
+    assert (canvas[0]["minimum"], canvas[0]["maximum"]) == (11, 20)
+
+
+def test_inlining_replaces_every_ref_in_lists_objects_and_definitions() -> None:
+    defs: dict[str, JsonValue] = {
+        "Size": {"type": "integer", "minimum": 10, "title": "Size"},
+        "Pair": {"type": "array", "prefixItems": [{"$ref": "#/$defs/Size"}]},
+    }
+    schema: JsonValue = {
+        "title": "Change",
+        "anyOf": [{"$ref": "#/$defs/Pair"}, {"type": "null"}],
+        "properties": {"size": {"$ref": "#/$defs/Size", "x-setting": True}},
+        "enum": ["a", "b"],
+    }
+
+    assert inline_refs(schema, defs) == {
+        "anyOf": [
+            {"type": "array", "prefixItems": [{"type": "integer", "minimum": 10}]},
+            {"type": "null"},
+        ],
+        "properties": {"size": {"type": "integer", "minimum": 10}},
+        "enum": ["a", "b"],
+    }
+
+
+def test_a_canvas_agent_sees_the_ui_settings_alone_the_defaults_filling_the_rest() -> (
+    None
+):
+    view = assistant_view({"font": "geist", "stars": ["a"], "retired_key": 1})
+    assert set(view) == ASSISTANT_KEYS
+    assert (view["font"], view["chat_text_size"]) == ("geist", 13)
+    assert assistant_view(None)["canvas_text_size"] == 14
 
 
 if __name__ == "__main__":

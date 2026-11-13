@@ -681,6 +681,67 @@ class Preferences(_Strict):
     )
 
 
+_SCHEMA_NOISE: Final = frozenset({"title", "x-setting"})
+"""Schema keys a model reading a tool's arguments does not need."""
+
+
+def assistant_settings_schema() -> dict[str, JsonValue]:
+    """Return the JSON schema of a change an agent may make to its owner's settings.
+
+    One property per ``ASSISTANT_KEYS`` key, each with the type, bounds, default and
+    description the server validates against, references inlined (a tool schema
+    stands alone), and each nullable: ``null`` puts the key back to its default.
+
+    Returns:
+      schema: An ``object`` schema that rejects any other key.
+
+    """
+    schema = from_plain(Preferences.model_json_schema(), dict[str, JsonValue])
+    defs = from_plain(schema["$defs"], dict[str, JsonValue])
+    properties = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
+    return {
+        "type": "object",
+        "properties": {
+            key: {
+                "anyOf": [
+                    inline_refs(
+                        {
+                            k: v
+                            for k, v in properties[key].items()
+                            if k != "description"
+                        },
+                        defs,
+                    ),
+                    {"type": "null"},
+                ],
+                "description": properties[key]["description"],
+            }
+            for key in Preferences.model_fields
+            if key in ASSISTANT_KEYS
+        },
+        "additionalProperties": False,
+    }
+
+
+def assistant_view(stored: object) -> dict[str, JsonValue]:
+    """Return the settings a canvas's agent sees of a user's stored preferences.
+
+    Args:
+      stored: The ``users.preferences`` value, as ``stored_preferences`` reads it.
+
+    Returns:
+      view: Every ``ASSISTANT_KEYS`` key, its default filling one not set.
+
+    """
+    view = stored_preferences(stored).model_dump(
+        # Every field dumps alike in either mode today; "json" keeps a later
+        # non-JSON type (a datetime, a set) sendable.
+        mode="json",  # pragma: no mutate
+        include=set(ASSISTANT_KEYS),
+    )
+    return from_plain(view, dict[str, JsonValue])
+
+
 def stored_preferences(stored: object) -> Preferences:
     """Read a user's stored preferences, the defaults filling every key not set.
 
@@ -702,6 +763,36 @@ def stored_preferences(stored: object) -> Preferences:
         if key in Preferences.model_fields
     }
     return Preferences.model_validate(known)
+
+
+def checked_change(change: Mapping[str, object]) -> Preferences:
+    """Return the preferences ``change`` sets, checked; its ``None`` keys are left out.
+
+    Args:
+      change: The keys to change: a value sets the key, ``None`` puts it back to
+        its default.
+
+    Returns:
+      checked: The defaults with every key ``change`` sets.
+
+    Raises:
+      ValueError: Naming a key no preference has or a value its key does not take,
+        every one named, each value's place in its key given.
+
+    """
+    unknown = sorted(set(change) - set(Preferences.model_fields))
+    if unknown:
+        raise ValueError(f"No such preference: {', '.join(unknown)}")
+    try:
+        return Preferences.model_validate(
+            {key: value for key, value in change.items() if value is not None},
+        )
+    except ValidationError as error:
+        problems = (
+            f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
+            for problem in error.errors()
+        )
+        raise ValueError("; ".join(problems)) from error
 
 
 async def write_preferences(
@@ -729,18 +820,8 @@ async def write_preferences(
         nothing is written.
 
     """
-    unknown = sorted(set(change) - set(Preferences.model_fields))
-    if unknown:
-        raise ValueError(f"No such preference: {', '.join(unknown)}")
     chosen = {key: value for key, value in change.items() if value is not None}
-    try:
-        checked = Preferences.model_validate(chosen)
-    except ValidationError as error:
-        problems = (
-            f"{'.'.join(map(str, problem['loc']))}: {problem['msg']}"
-            for problem in error.errors()
-        )
-        raise ValueError("; ".join(problems)) from error
+    checked = checked_change(change)
     stored = await conn.fetchrow(
         "UPDATE users SET preferences = "
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
@@ -757,3 +838,32 @@ async def write_preferences(
         user_id,
     )
     return None if stored is None else stored_preferences(stored["preferences"])
+
+
+def inline_refs(node: JsonValue, defs: Mapping[str, JsonValue]) -> JsonValue:
+    """Return ``node`` with every ``#/$defs/X`` reference replaced by ``X`` itself.
+
+    A tool's schema stands alone, so a reference into ``$defs`` cannot stay. A
+    definition referring to another is inlined too, and titles and the
+    ``x-setting`` mark go: a model reading the schema does not need them.
+
+    Args:
+      node: A JSON schema, or part of one.
+      defs: The schema's ``$defs``, by name.
+
+    Returns:
+      inlined: ``node`` with no ``$ref`` left.
+
+    """
+    if isinstance(node, list):
+        return [inline_refs(each, defs) for each in node]
+    if not isinstance(node, dict):
+        return node
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        return inline_refs(defs[ref.removeprefix("#/$defs/")], defs)
+    return {
+        key: inline_refs(value, defs)
+        for key, value in node.items()
+        if key not in _SCHEMA_NOISE
+    }
