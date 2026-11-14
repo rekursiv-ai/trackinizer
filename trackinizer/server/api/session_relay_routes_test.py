@@ -43,10 +43,12 @@ from trackinizer.wire.wire_session_relay import (
     SESSION_PROCESS_PATH,
     AgentState,
     Hello,
+    NewInput,
     Opened,
     ProcessSpec,
     StateLine,
 )
+from trackinizer.wire.wire_sessions import LINE_CANVAS
 from trackinizer.wire.wire_terminals import CLOSE_REFUSED
 
 
@@ -61,6 +63,7 @@ if TYPE_CHECKING:
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.auth import Role
     from trackinizer.server.store.core import Store
+    from trackinizer.wire.json_types import JSON
     from trackinizer.wire.wire_session_relay import ViewerFrame
 
 
@@ -1198,6 +1201,43 @@ async def test_a_stop_detaches_the_process_and_revokes_its_key_a_minute_later(
     assert revoked is not None
     assert revoked.args[1:] == (f"agent process {process_id}", None)
     assert forgotten == keys
+
+
+_NAMED: Final[JSON] = {
+    "content": "hi",
+    "extra": {LINE_CANVAS: str(UUID(int=7)), "files": 1},
+}
+"""A line as Chat sends it, naming the canvas it came from."""
+
+
+@pytest.mark.parametrize(
+    ("payload", "sender", "handed"),
+    [
+        (_NAMED, "ada@x.y", _NAMED),
+        (_NAMED, "Ada@X.Y", _NAMED),
+        (_NAMED, "bob@x.y", {"content": "hi", "extra": {"files": 1}}),
+        ({"content": "hi"}, "bob@x.y", {"content": "hi"}),
+        ({"content": "hi", "extra": "x"}, "bob@x.y", {"content": "hi", "extra": "x"}),
+    ],
+    ids=[
+        "the account's line names its canvas",
+        "whatever the case of its email",
+        "another person's names none, and keeps the rest",
+        "a line with no extra is as sent",
+        "an extra that is no object is the process's to refuse",
+    ],
+)
+def test_a_line_names_its_canvas_to_the_process_only_from_the_sessions_account(
+    payload: JSON,
+    sender: str,
+    handed: JSON,
+) -> None:
+    """Another person's line in a shared chat comes from a canvas the agent's key may not use."""
+    new = NewInput(kind="UserMessage", payload=payload)
+
+    passed = session_relay_routes._handed(new, sender=sender, account="ADA@x.y")
+
+    assert passed == NewInput(id=new.id, kind="UserMessage", payload=handed)
 
 
 if __name__ == "__main__":

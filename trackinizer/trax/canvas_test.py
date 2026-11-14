@@ -16,7 +16,12 @@ import pytest
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
 from trackinizer.trax import cli
-from trackinizer.trax.canvas import canvas_from_env
+from trackinizer.trax.canvas import (
+    canvas_from_env,
+    canvas_lines,
+    mark_operation,
+    show_operation,
+)
 from trackinizer.wire.wire_capture import CaptureImage
 
 
@@ -364,7 +369,16 @@ def test_canvas_show_without_params_does_not_read_the_catalog() -> None:
         (["show", "x.demo", "--param", "count=many"], "needs an integer"),
         (["show", "x.demo", "--param", "flag=yes"], "needs true or false"),
         (["show", "nothing.here", "--param", "a=b"], "not a visual in the catalog"),
-        (["hide", str(uuid.uuid4()), "--param", "label=a"], "only with show"),
+        (
+            ["hide", str(uuid.uuid4()), "--param", "label=a"],
+            "^--param is accepted only with show$",
+        ),
+        (
+            ["show", "trax.subgraph", "--record", "x"],
+            "^record is not a valid UUID: 'x'$",
+        ),
+        (["hide", "x"], "^instance is not a valid UUID: 'x'$"),
+        (["place", "x", "left"], "^instance is not a valid UUID: 'x'$"),
         (["--param", "label=a"], "does not accept operation arguments"),
     ],
 )
@@ -401,7 +415,7 @@ def test_canvas_navigate_moves_the_page_without_an_operation() -> None:
 def test_canvas_navigate_takes_exactly_one_route(arguments: list[str]) -> None:
     client = _CanvasClient()
 
-    with pytest.raises(ClientError, match="navigate requires one route"):
+    with pytest.raises(ClientError, match=r"^navigate requires one route$"):
         _canvas(client, *arguments)
 
     assert client.navigations == []
@@ -606,6 +620,31 @@ def test_canvas_mark_draws_a_box_from_two_corners_and_names_its_records() -> Non
             "points": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 1.0}],
             "covers": {"records": [str(record)] * 2},
         },
+    }
+
+
+def test_an_agent_tools_box_names_its_tile_or_the_window_as_the_command_never_does() -> (
+    None
+):
+    """The command and an agent's tool build their boxes and shows here alike."""
+    record = uuid.uuid4()
+    corners = [(0.1, 0.2), (0.4, 0.5)]
+    points = [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}]
+
+    on_tile = mark_operation(corners, records=[], tile=_TILE)
+    over_window = mark_operation(corners, window=True)
+    shown = show_operation("trax.files", record_id=record, params={"changed": False})
+
+    assert on_tile == {
+        "kind": "mark",
+        "mark": {"points": points, "covers": {"records": []}, "tile": str(_TILE)},
+    }
+    assert over_window == {"kind": "mark", "mark": {"points": points, "window": True}}
+    assert shown == {
+        "kind": "show",
+        "visual_type": "trax.files",
+        "record_id": str(record),
+        "params": {"changed": False},
     }
 
 
@@ -896,6 +935,29 @@ def test_canvas_prints_each_box_with_its_id_page_what_it_covers_and_a_window_s_o
             f"Experiment#12 Measured tails, {client.unlabeled}, inst-1"
         ),
         "  box m2 by jp over the window on no page covers: nothing",
+    ]
+
+
+def test_a_canvas_with_no_labels_names_a_box_s_rows_by_id_and_no_covers_as_nothing() -> (
+    None
+):
+    row = uuid.UUID(int=5)
+
+    lines = canvas_lines(
+        {
+            "id": "c",
+            "marks": [
+                {"id": "m1", "author": "agent", "covers": {"records": [str(row)]}},
+                {"id": "m2", "author": "jp"},
+            ],
+        },
+    )
+
+    assert lines == [
+        "canvas c revision 0 focused none",
+        "  (no visuals)",
+        f"  box m1 by agent on no page covers: {row}",
+        "  box m2 by jp on no page covers: nothing",
     ]
 
 

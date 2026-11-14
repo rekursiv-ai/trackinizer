@@ -16565,6 +16565,29 @@
     "summary": "Set Preferences Route"
    }
   },
+  "/api/me/preferences/agent": {
+   "get": {
+    "description": "Describe the settings an agent's own tool may change for the caller.\n\nAn agent process reads it as it starts, so its tool offers each key with the\ntype, bounds and default this server checks a change against.\n\nArgs:\n  identity: The account whose settings it describes; every account's are one.\n\nReturns:\n  schema: The JSON schema of a change: an object of the keys, each nullable.",
+    "operationId": "agent_settings_route_api_me_preferences_agent_get",
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "additionalProperties": {
+          "$ref": "#/components/schemas/JsonValue"
+         },
+         "title": "Response Agent Settings Route Api Me Preferences Agent Get",
+         "type": "object"
+        }
+       }
+      },
+      "description": "Successful Response"
+     }
+    },
+    "summary": "Agent Settings Route"
+   }
+  },
   "/api/me/profile": {
    "get": {
     "description": "Return the authenticated caller's profile fields.\n\nThe ``/me`` and ``/admin`` pages need the caller's name and role, and\nthis endpoint is the only way the browser can learn them: the session\ncookie is HttpOnly, so JS can't decode it. The shape mirrors the\n``users`` table minus ``status``, since a disabled caller never\nreaches this route.\n\nArgs:\n  request: FastAPI Request context (used to get the store).\n  identity: Authenticated user from Bearer token or session cookie.\n\nReturns:\n  result: JSON with user_id, email, name, role, last_login, the user's\n    preferences (every key, defaults filled), the id of the API key the request\n    used (``None`` for a browser session) and the host a device login made it\n    for (``None`` for a key made another way), and the audiences the credential\n    reads and opens into, with its pin if any.",

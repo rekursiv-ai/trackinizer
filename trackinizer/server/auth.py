@@ -77,6 +77,7 @@ __all__ = [
     "PAGE_ACCOUNT_HEADER",
     "PAGE_USER_PARAM",
     "PROCESS_KEY_PREFIX",
+    "PROCESS_KEY_SESSION_SQL",
     "PROCESS_KEY_SQL",
     "ROLE_ORDER",
     "TOKEN_PREFIX_LEN",
@@ -157,6 +158,13 @@ PROCESS_KEY_SQL: Final = (
 )
 """True of an ``api_keys`` row, read as ``credential``, that a start minted for an
 agent process: bound to the host the process runs on, and named for the process."""
+
+PROCESS_KEY_SESSION_SQL: Final = (
+    f"NULLIF(split_part(credential.name, '{_FOR_SESSION}', 2), '')"
+)
+"""The session an ``api_keys`` row, read as ``credential``, that :data:`PROCESS_KEY_SQL`
+is true of was minted for, as text, read from its name as :class:`ProcessKey` reads
+it; NULL for a key minted before keys named their session."""
 
 BOOTSTRAP_ADMIN_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_ADMIN"
 BOOTSTRAP_TOKEN_FILE_ENV: Final[str] = "TRACKINIZER_BOOTSTRAP_TOKEN_FILE"  # noqa: S105 -- env-var name, not a credential.

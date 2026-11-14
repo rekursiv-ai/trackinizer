@@ -26,12 +26,18 @@ from trackinizer.trax.render import echo
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import Callable, Mapping, Sequence
 
     from trackinizer.client.client import Client
 
 
-__all__ = ["Canvas", "canvas_from_env"]
+__all__ = [
+    "Canvas",
+    "canvas_from_env",
+    "canvas_lines",
+    "mark_operation",
+    "show_operation",
+]
 
 
 def canvas_from_env(environ: Mapping[str, str]) -> uuid.UUID | None:
@@ -52,6 +58,65 @@ def canvas_from_env(environ: Mapping[str, str]) -> uuid.UUID | None:
             except ValueError:
                 return None
     return None
+
+
+def show_operation(
+    visual_type: str,
+    *,
+    record_id: uuid.UUID | None = None,
+    placement: str | None = None,
+    params: Mapping[str, str | int | bool] | None = None,
+) -> dict[str, object]:
+    """Return the operation that shows a visual: this command's, and an agent tool's.
+
+    Args:
+      visual_type: The visual, as the catalog names it.
+      record_id: The record it shows; ``None`` for none.
+      placement: Where an old client's spot puts it; ``None`` for the focused panel.
+      params: Its params, each named one set anew; ``None`` keeps a shown visual's.
+
+    Returns:
+      operation: The ``show`` operation.
+
+    """
+    operation: dict[str, object] = {"kind": "show", "visual_type": visual_type}
+    if placement is not None:
+        operation["placement"] = placement
+    if record_id is not None:
+        operation["record_id"] = str(record_id)
+    if params is not None:
+        operation["params"] = dict(params)
+    return operation
+
+
+def mark_operation(
+    points: Sequence[tuple[float, float]],
+    *,
+    records: Sequence[uuid.UUID] | None = None,
+    tile: uuid.UUID | None = None,
+    window: bool = False,
+) -> dict[str, object]:
+    """Return the operation that draws a red box: this command's, and an agent tool's.
+
+    Args:
+      points: Two opposite corners, each ``(x, y)`` as fractions: of ``tile``'s body,
+        of the window with ``window``, else of the stage.
+      records: The records it covers; ``None`` names none.
+      tile: The visual it is drawn on, which it shows with; ``None`` for none.
+      window: Whether it is drawn over the whole window, on no tile.
+
+    Returns:
+      operation: The ``mark`` operation.
+
+    """
+    mark: dict[str, object] = {"points": [{"x": x, "y": y} for x, y in points]}
+    if records is not None:
+        mark["covers"] = {"records": [str(each) for each in records]}
+    if tile is not None:
+        mark["tile"] = str(tile)
+    if window:
+        mark["window"] = True
+    return {"kind": "mark", "mark": mark}
 
 
 class Canvas(Command):
@@ -210,6 +275,152 @@ class Canvas(Command):
         _print_canvas(updated)
 
 
+def canvas_lines(payload: object) -> list[str]:
+    """Say what a canvas holds, a line each: this command's print, and an agent tool's.
+
+    Args:
+      payload: The canvas as the server answers it.
+
+    Returns:
+      lines: Its id, revision and focused visual; its page and the owner's
+        preferences, where it has them; each visual by type, id, placement and
+        record; then each red box with its id, page and what it covers.
+
+    """
+    state = from_plain(payload, dict[str, object])
+    canvas_id = from_plain(state.get("id"), str, default="unknown")
+    revision = from_plain(state.get("revision"), int, default=0)
+    focused = from_plain(state.get("focused_instance"), str, default="none")
+    lines = [f"canvas {canvas_id} revision {revision} focused {focused}"]
+    # The page a person's tab on the canvas is on, as their browser last saved it.
+    page = from_plain(state.get("page"), str, default="")
+    if page != "":
+        lines.append(f"  page {page}")
+    preferences = from_plain(
+        state.get("preferences"),
+        dict[str, object],
+        default=dict[str, object](),
+    )
+    if preferences != {}:
+        lines.append(
+            "  preferences "
+            + " ".join(
+                f"{key}={json.dumps(value)}"
+                for key, value in sorted(preferences.items())
+            ),
+        )
+    visuals = from_plain(
+        state.get("visuals"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    )
+    if not visuals:
+        lines.append("  (no visuals)")
+    for visual in visuals:
+        instance_id = from_plain(visual.get("id"), str, default="unknown")
+        visual_type = from_plain(visual.get("type"), str, default="unknown")
+        placement = from_plain(visual.get("placement"), str, default="main")
+        record_id = from_plain(visual.get("record_id"), str, default="")
+        target = f" record={record_id}" if record_id != "" else ""
+        lines.append(f"  {visual_type} {instance_id} {placement}{target}")
+    return lines + _mark_lines(state)
+
+
+def _mark_lines(state: Mapping[str, object]) -> list[str]:
+    """Say every box with its id, page and what it covers, a line each."""
+    labels = from_plain(
+        state.get("record_labels"),
+        dict[str, str],
+        default=dict[str, str](),
+    )
+    lines: list[str] = []
+    for mark in from_plain(
+        state.get("marks"),
+        list[dict[str, object]],
+        default=list[dict[str, object]](),
+    ):
+        covers = from_plain(
+            mark.get("covers"),
+            dict[str, list[str]],
+            default=dict[str, list[str]](),
+        )
+        named = [labels.get(each, each) for each in covers.get("records", [])]
+        named += covers.get("instances", [])
+        over = " over the window" if mark.get("window") is True else ""
+        lines.append(
+            f"  box {mark.get('id')} by {mark.get('author')}{over} "
+            f"on {mark.get('page') or 'no page'} covers: {', '.join(named) or 'nothing'}",
+        )
+    return lines
+
+
+def _canvas_uuid(value: str, label: str) -> uuid.UUID:
+    """Parse one UUID and report malformed command-line identifiers clearly."""
+    try:
+        return uuid.UUID(value)
+    except ValueError as error:
+        raise ClientError(f"{label} is not a valid UUID: {value!r}") from error
+
+
+_CANVAS_ACTIONS: Final = (
+    "show",
+    "navigate",
+    "highlight",
+    "hide",
+    "focus",
+    "place",
+    "mark",
+    "capture",
+)
+"""The operations a canvas takes by name; any other word starts ``KEY to VALUE``."""
+
+
+class _CanvasArgs(Protocol):
+    canvas_id: str | None
+    action: str | None
+    subject: list[str]
+    record: str | None
+    placement: str | None
+    param: list[str]
+    page: str | None
+
+
+# ``trax canvas show trax.subgraph`` parses ``show`` as the id; when that is not a
+# UUID and ``$TRAX_CANVAS`` (or ``$LC_TRAX_CANVAS``) names a canvas, the words
+# shift right by one and the canvas is the id.
+def _with_default_canvas(args: _CanvasArgs) -> _CanvasArgs:
+    """Fill in the id an agent run's session was placed on when the command names none."""
+    named = args.canvas_id
+    if named is not None:
+        try:
+            _ = uuid.UUID(named)
+        except ValueError:
+            pass
+        else:
+            return args
+    canvas = canvas_from_env(
+        {
+            name: value
+            for name in ("TRAX_CANVAS", "LC_TRAX_CANVAS")
+            if (value := env(name)) is not None
+        },
+    )
+    if canvas is None:
+        if named is None:
+            raise ClientError(
+                "no canvas: give its UUID, or run inside a recorded agent run "
+                "placed on a canvas ($TRAX_CANVAS)",
+            )
+        return args
+    if named is not None:
+        args.action, args.subject = (
+            named,
+            [word for word in (args.action, *args.subject) if word is not None],
+        )
+    args.canvas_id = str(canvas)
+    return args
+
+
 def _canvas_operation(
     args: _CanvasArgs,
     *,
@@ -223,13 +434,16 @@ def _canvas_operation(
     if args.action == "show":
         if len(subject) != 1:
             raise ClientError("show requires one visual type")
-        operation = {"kind": "show", "visual_type": subject[0]}
-        if args.placement is not None:
-            operation["placement"] = args.placement
-        if args.record is not None:
-            operation["record_id"] = str(_canvas_uuid(args.record, "record"))
-        if args.param:
-            operation["params"] = _canvas_params(args.param, parameters=parameters)
+        operation = show_operation(
+            subject[0],
+            record_id=None
+            if args.record is None
+            else _canvas_uuid(args.record, "record"),
+            placement=args.placement,
+            params=_canvas_params(args.param, parameters=parameters)
+            if args.param
+            else None,
+        )
     elif args.action == "navigate":
         if len(subject) != 1 or args.record is not None or args.placement is not None:
             raise ClientError("navigate requires one route")
@@ -287,18 +501,16 @@ def _mark(
         )
     if len(subject) != 2 or subject[0] in {"clear", "remove"}:
         raise ClientError("mark takes X1,Y1 X2,Y2, or remove MARK_ID, or clear")
-    mark: dict[str, object] = {"points": [_mark_point(point) for point in subject]}
-    if args.record is not None:
-        mark["covers"] = {
-            "records": [
-                str(_canvas_uuid(item, "record"))
-                for item in args.record.split(",")
-                if item
-            ],
-        }
     return client.apply_canvas_operation(
         canvas_id,
-        operation={"kind": "mark", "mark": mark},
+        operation=mark_operation(
+            [_mark_point(point) for point in subject],
+            records=None
+            if args.record is None
+            else [
+                _canvas_uuid(item, "record") for item in args.record.split(",") if item
+            ],
+        ),
     )
 
 
@@ -336,11 +548,11 @@ def _capture(client: Client, *, canvas_id: uuid.UUID, args: _CanvasArgs) -> None
         )
 
 
-def _mark_point(text: str) -> dict[str, float]:
+def _mark_point(text: str) -> tuple[float, float]:
     """Read ``X,Y`` as fractions of the stage."""
     try:
         x, y = text.split(",")
-        return {"x": float(x), "y": float(y)}
+        return float(x), float(y)
     except ValueError as error:
         raise ClientError(
             f"a point is X,Y fractions of the stage, not {text!r}",
@@ -446,133 +658,5 @@ def _visual_parameters(client: Client, *, visual_type: str) -> dict[str, str]:
 
 def _print_canvas(payload: object) -> None:
     """Print canvas and visual identifiers in a compact readable form."""
-    state = from_plain(payload, dict[str, object])
-    canvas_id = from_plain(state.get("id"), str, default="unknown")
-    revision = from_plain(state.get("revision"), int, default=0)
-    focused = from_plain(state.get("focused_instance"), str, default="none")
-    echo(f"canvas {canvas_id} revision {revision} focused {focused}")
-    # The page a person's tab on the canvas is on, as their browser last saved it.
-    page = from_plain(state.get("page"), str, default="")
-    if page != "":
-        echo(f"  page {page}")
-    preferences = from_plain(
-        state.get("preferences"),
-        dict[str, object],
-        default=dict[str, object](),
-    )
-    if preferences != {}:
-        echo(
-            "  preferences "
-            + " ".join(
-                f"{key}={json.dumps(value)}"
-                for key, value in sorted(preferences.items())
-            ),
-        )
-    visuals = from_plain(
-        state.get("visuals"),
-        list[dict[str, object]],
-        default=list[dict[str, object]](),
-    )
-    if not visuals:
-        echo("  (no visuals)")
-    for visual in visuals:
-        instance_id = from_plain(visual.get("id"), str, default="unknown")
-        visual_type = from_plain(visual.get("type"), str, default="unknown")
-        placement = from_plain(visual.get("placement"), str, default="main")
-        record_id = from_plain(visual.get("record_id"), str, default="")
-        target = f" record={record_id}" if record_id != "" else ""
-        echo(f"  {visual_type} {instance_id} {placement}{target}")
-    _print_marks(state)
-
-
-def _print_marks(state: Mapping[str, object]) -> None:
-    """Print every box with its id, page and what it covers."""
-    labels = from_plain(
-        state.get("record_labels"),
-        dict[str, str],
-        default=dict[str, str](),
-    )
-    for mark in from_plain(
-        state.get("marks"),
-        list[dict[str, object]],
-        default=list[dict[str, object]](),
-    ):
-        covers = from_plain(
-            mark.get("covers"),
-            dict[str, list[str]],
-            default=dict[str, list[str]](),
-        )
-        named = [labels.get(each, each) for each in covers.get("records", [])]
-        named += covers.get("instances", [])
-        over = " over the window" if mark.get("window") is True else ""
-        echo(
-            f"  box {mark.get('id')} by {mark.get('author')}{over} "
-            f"on {mark.get('page') or 'no page'} covers: {', '.join(named) or 'nothing'}",
-        )
-
-
-def _canvas_uuid(value: str, label: str) -> uuid.UUID:
-    """Parse one UUID and report malformed command-line identifiers clearly."""
-    try:
-        return uuid.UUID(value)
-    except ValueError as error:
-        raise ClientError(f"{label} is not a valid UUID: {value!r}") from error
-
-
-_CANVAS_ACTIONS: Final = (
-    "show",
-    "navigate",
-    "highlight",
-    "hide",
-    "focus",
-    "place",
-    "mark",
-    "capture",
-)
-"""The operations a canvas takes by name; any other word starts ``KEY to VALUE``."""
-
-
-class _CanvasArgs(Protocol):
-    canvas_id: str | None
-    action: str | None
-    subject: list[str]
-    record: str | None
-    placement: str | None
-    param: list[str]
-    page: str | None
-
-
-# ``trax canvas show trax.subgraph`` parses ``show`` as the id; when that is not a
-# UUID and ``$TRAX_CANVAS`` (or ``$LC_TRAX_CANVAS``) names a canvas, the words
-# shift right by one and the canvas is the id.
-def _with_default_canvas(args: _CanvasArgs) -> _CanvasArgs:
-    """Fill in the id an agent run's session was placed on when the command names none."""
-    named = args.canvas_id
-    if named is not None:
-        try:
-            _ = uuid.UUID(named)
-        except ValueError:
-            pass
-        else:
-            return args
-    canvas = canvas_from_env(
-        {
-            name: value
-            for name in ("TRAX_CANVAS", "LC_TRAX_CANVAS")
-            if (value := env(name)) is not None
-        },
-    )
-    if canvas is None:
-        if named is None:
-            raise ClientError(
-                "no canvas: give its UUID, or run inside a recorded agent run "
-                "placed on a canvas ($TRAX_CANVAS)",
-            )
-        return args
-    if named is not None:
-        args.action, args.subject = (
-            named,
-            [word for word in (args.action, *args.subject) if word is not None],
-        )
-    args.canvas_id = str(canvas)
-    return args
+    for line in canvas_lines(payload):
+        echo(line)

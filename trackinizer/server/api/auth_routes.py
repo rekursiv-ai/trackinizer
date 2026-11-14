@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Annotated, cast
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, JsonValue
 from treekle import from_plain
 
 from trackinizer.server.api._deps import get_store
@@ -42,6 +42,7 @@ from trackinizer.server.auth import (
 )
 from trackinizer.server.preferences import (
     Preferences,
+    assistant_settings_schema,
     stored_preferences,
     write_preferences,
 )
@@ -56,6 +57,7 @@ if TYPE_CHECKING:
 __all__ = [
     "CreateTokenBody",
     "TokenRoleChangeBody",
+    "agent_settings_route",
     "create_token_route",
     "list_tokens_route",
     "profile_route",
@@ -198,6 +200,26 @@ async def set_preferences_route(
     if preferences is None:
         raise HTTPException(status_code=404, detail="User not found")
     return preferences
+
+
+@router.get("/api/me/preferences/agent")
+async def agent_settings_route(
+    identity: Annotated[AuthIdentity, Depends(current_user)],
+) -> dict[str, JsonValue]:
+    """Describe the settings an agent's own tool may change for the caller.
+
+    An agent process reads it as it starts, so its tool offers each key with the
+    type, bounds and default this server checks a change against.
+
+    Args:
+      identity: The account whose settings it describes; every account's are one.
+
+    Returns:
+      schema: The JSON schema of a change: an object of the keys, each nullable.
+
+    """
+    del identity
+    return assistant_settings_schema()
 
 
 @router.post("/api/me/tokens")

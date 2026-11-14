@@ -70,6 +70,13 @@ ASSISTANT_KEYS: Final = frozenset(
 UI's, each marked ``SETTING`` below. Every other key (the user's own data) stays
 the user's alone."""
 
+AGENT_KEYS: Final = ASSISTANT_KEYS - {"cli_folder", "autofix", "automerge"}
+"""The settings an agent's own tool may change for the person, with the key a start
+minted for its process: how the app looks and reads. Not the folder an agent starts
+in, whose skills and AGENTS.md the next agent loads, nor what agents do to pull
+requests: an agent a line in a shared chat steered would change what every later
+agent of the person does."""
+
 SETTING: Final[JsonDict] = {"x-setting": True}
 """Marks a field as one of the UI's settings: Settings shows it in the
 preferences document, with its description as the comment above it."""
@@ -677,9 +684,9 @@ _SCHEMA_NOISE: Final = frozenset({"title", "x-setting"})
 
 
 def assistant_settings_schema() -> dict[str, JsonValue]:
-    """Return the JSON schema of a change an agent may make to its owner's settings.
+    """Return the JSON schema of a change an agent's tool may make to its owner's settings.
 
-    One property per ``ASSISTANT_KEYS`` key, each with the type, bounds, default and
+    One property per ``AGENT_KEYS`` key, each with the type, bounds, default and
     description the server validates against, references inlined (a tool schema
     stands alone), and each nullable: ``null`` puts the key back to its default.
 
@@ -708,7 +715,7 @@ def assistant_settings_schema() -> dict[str, JsonValue]:
                 "description": properties[key]["description"],
             }
             for key in Preferences.model_fields
-            if key in ASSISTANT_KEYS
+            if key in AGENT_KEYS
         },
         "additionalProperties": False,
     }

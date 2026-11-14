@@ -16,6 +16,7 @@ import pytest
 
 from trackinizer.mock_test_support import AsyncMockProtocol, MockConnection
 from trackinizer.server.preferences import (
+    AGENT_KEYS,
     ASSISTANT_KEYS,
     SETTING,
     ChatView,
@@ -789,7 +790,9 @@ def test_the_settings_an_agent_sees_are_every_assistant_key_whole_and_resettable
 ):
     schema = assistant_settings_schema()
     keys = from_plain(schema["properties"], dict[str, dict[str, JsonValue]])
-    assert set(keys) == ASSISTANT_KEYS
+    assert set(keys) == AGENT_KEYS
+    # What the next agent loads, and what agents do to pull requests, stay the person's.
+    assert {"cli_folder", "autofix", "automerge"} == ASSISTANT_KEYS - AGENT_KEYS
     assert "$ref" not in to_json(schema).decode()
     assert (schema["type"], schema["additionalProperties"]) == ("object", False)
     for key, offered in keys.items():

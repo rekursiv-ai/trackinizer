@@ -57,6 +57,7 @@ __all__ = [
     "FEED_HISTOGRAM_PATH",
     "FEED_PATH",
     "GIT_LABEL_PREFIX",
+    "LINE_CANVAS",
     "SEND_MESSAGE_PATH",
     "SESSIONS_PATH",
     "SESSION_API_PATHS",
@@ -531,6 +532,12 @@ agent's."""
 CONTEXT_TRAILER: Final = "\nTrackinizer context (verify with trax): "
 """Where a person's line ends, as an agent reads it, and what it was told of where the
 line came from begins, as JSON. Whatever shows or summarizes the line cuts it here."""
+
+LINE_CANVAS: Final = "canvas_id"
+"""The key of a line's ``extra`` under which Chat names the canvas the line was sent
+from, a UUID as text. The server passes it on to the agent process only from the
+session's own account (``session_relay_routes``), and the process moves its agents'
+canvas tools to the canvas it names."""
 
 
 class ConsoleRelay(BaseModel):

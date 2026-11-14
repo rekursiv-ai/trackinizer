@@ -44,7 +44,7 @@ then closes with a code (``wire_session_relay``).
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
@@ -131,12 +131,13 @@ from trackinizer.wire.wire_session_relay import (
     ServeSession,
     ViewerFrame,
 )
+from trackinizer.wire.wire_sessions import LINE_CANVAS
 from trackinizer.wire.wire_terminals import CLOSE_REFUSED
 from trackinizer.wire.wire_tools import WAIT_MAX_SEC
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Mapping
+    from collections.abc import AsyncGenerator, Awaitable
 
     from starlette.requests import HTTPConnection
 
@@ -258,7 +259,7 @@ async def send_input_route(
     try:
         sent = get_session_relay(request).send_input(
             session_id,
-            body,
+            _handed(body, sender=identity.email, account=session.account),
             author=identity.email,
         )
     # Also while a process whose socket dropped dials again: a start then would take
@@ -716,6 +717,22 @@ class _Place:
     remote: bool
     """Whether it is a remote agent service, which serves accounts other than its
     own, by the configuration."""
+
+
+# The agent process moves its agents' canvas tools to the canvas a line names, and its
+# key may use only a canvas of its own account (``canvas_store``), which is the
+# session's: only the account's key, or the one that opened the session, serves it
+# (``session_access``). A line another person posts into a shared chat comes from
+# their own canvas. Its name is dropped here, where the sender is attested, so every
+# process is told a canvas by its own account alone: passed on, it would leave the
+# account's tools on a canvas their key is refused, until the account's tab reloads.
+def _handed(body: NewInput, *, sender: str, account: str) -> NewInput:
+    """Return ``body`` as the process is handed it: naming its canvas only from ``account``."""
+    extra = body.payload.get("extra")
+    if sender.lower() == account.lower() or not isinstance(extra, Mapping):
+        return body
+    kept = {key: value for key, value in extra.items() if key != LINE_CANVAS}
+    return body.model_copy(update={"payload": {**body.payload, "extra": kept}})
 
 
 async def _session(connection: HTTPConnection, session_id: UUID) -> AgentSession:
