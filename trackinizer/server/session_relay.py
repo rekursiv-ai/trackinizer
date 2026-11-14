@@ -682,8 +682,8 @@ class SessionRelay:
             no daemon has.
 
         Returns:
-          gave_up: Whether it was detached, as :data:`NOT_STARTED` once taken and
-            :data:`NOT_TAKEN` while queued; the caller then revokes its key.
+          gave_up: Whether it was detached, failed, as :data:`NOT_STARTED` once taken
+            and :data:`NOT_TAKEN` while queued; the caller then revokes its key.
 
         """
         live = self._sessions.get(session_id)
@@ -695,7 +695,12 @@ class SessionRelay:
             or (live.offer is None) != taken
         ):
             return False
-        self._detach(session_id, live, reason=NOT_STARTED if taken else NOT_TAKEN)
+        self._detach(
+            session_id,
+            live,
+            reason=NOT_STARTED if taken else NOT_TAKEN,
+            failed=True,
+        )
         return True
 
     def ended(self, report: ProcessEnded, *, host_id: UUID) -> None:
@@ -703,8 +708,10 @@ class SessionRelay:
 
         It counts only for the session's current process, reported by the host it was
         offered to: the daemon's reason replaces any other, and the process is
-        detached if it is not already. The end of its output is kept apart from what
-        any viewer reads (:meth:`output`). Any other report is ignored.
+        detached if it is not already, as failed when it was still starting, was
+        given up on, or exited with a code other than 0 or none. The end of its output
+        is kept apart from what any viewer reads (:meth:`output`). Any other report is
+        ignored.
 
         Args:
           report: The process and why it ended.
@@ -722,7 +729,17 @@ class SessionRelay:
             live.output = report.output
             # One detached already keeps when it was, and takes the daemon's reason.
             connection = live.connection
-            self._detach(session_id, live, reason=report.reason)
+            self._detach(
+                session_id,
+                live,
+                reason=report.reason,
+                # Still starting, it never said ``Hello`` and no one stopped it; one
+                # given up on stays failed whatever its late exit says.
+                failed=report.exit_code != 0
+                or process.state == "starting"
+                or process.failed,
+                exit_code=report.exit_code,
+            )
             if connection is not None:
                 _close(connection, wire_terminals.CLOSE_ENDED, "its daemon saw it end")
             return
@@ -956,7 +973,18 @@ class SessionRelay:
             await connection.socket.close(*closing)
         return detached
 
-    def _detach(self, session_id: UUID, live: _Session, *, reason: str) -> None:
+    # A process that ``failed`` is logged as a warning, with ``exit_code`` and the end
+    # of its output, so a start that never came up can be alerted on; any other detach,
+    # a person's stop included, is logged as info.
+    def _detach(
+        self,
+        session_id: UUID,
+        live: _Session,
+        *,
+        reason: str,
+        failed: bool = False,
+        exit_code: int | None = None,
+    ) -> None:
         """Detach the process: forget its socket, its start and all it said it was."""
         process = live.process
         assert isinstance(process, AgentProcess)
@@ -972,16 +1000,29 @@ class SessionRelay:
                 update={
                     "state": "detached",
                     "reason": reason,
+                    "failed": failed,
                     "since": process.since if process.state == "detached" else _now(),
                 },
             ),
         )
-        _logger.info(
-            "process detached: session=%s process=%s reason=%r",
-            session_id,
-            process.process_id,
-            reason,
-        )
+        if failed:
+            _logger.warning(
+                "agent start failed: session=%s process=%s host=%s exit_code=%s "
+                "reason=%r output=%r",
+                session_id,
+                process.process_id,
+                process.host,
+                exit_code,
+                reason,
+                live.output,
+            )
+        else:
+            _logger.info(
+                "process detached: session=%s process=%s reason=%r",
+                session_id,
+                process.process_id,
+                reason,
+            )
 
     def _change(self, live: _Session, process: AgentProcess) -> None:
         """Hold ``process`` as the session's, telling viewers when its state or reason moved."""

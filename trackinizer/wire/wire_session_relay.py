@@ -226,6 +226,11 @@ class AgentProcess(BaseModel):
     """Why it is ``detached``: ``stopped``, ``exited``, ``disconnected``, or what its
     daemon reported; empty otherwise."""
 
+    failed: bool = False
+    """Whether it is ``detached`` as a failure: given up on before its ``Hello``, ended
+    while still starting, or reported by its daemon with an exit code other than 0,
+    or none. A person's stop is no failure."""
+
     version: str = ""
     """Its client's version, once it has said :class:`Hello`."""
 

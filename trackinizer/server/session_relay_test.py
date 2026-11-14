@@ -1247,12 +1247,13 @@ async def test_a_start_taken_and_never_answered_is_detached_as_not_started(
     assert relay.give_up(_SESSION, process_id=_PROCESS, taken=True) is True
 
     told = await viewer.process()
-    assert (told.process_id, told.state, told.reason) == (
+    assert (told.process_id, told.state, told.reason, told.failed) == (
         _PROCESS,
         "detached",
         "not started",
+        True,
     )
-    assert _detached_said("not started") in _said(caplog)
+    assert _warned(caplog) == [_failed_said("not started")]
     # Never offered again: run twice, each would cut the other's socket.
     assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
     with pytest.raises(NotLiveError):
@@ -1277,12 +1278,13 @@ async def test_a_start_still_queued_is_given_up_on_as_one_its_host_did_not_take(
     assert relay.give_up(_SESSION, process_id=_PROCESS, taken=False) is True
 
     told = await viewer.process()
-    assert (told.process_id, told.state, told.reason) == (
+    assert (told.process_id, told.state, told.reason, told.failed) == (
         _PROCESS,
         "detached",
         "its host did not take it",
+        True,
     )
-    assert _detached_said("its host did not take it") in _said(caplog)
+    assert _warned(caplog) == [_failed_said("its host did not take it")]
     assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
     with pytest.raises(NotLiveError):
         _ = relay.send_input(_SESSION, _HALT, author="ada@x.y")
@@ -1597,19 +1599,30 @@ async def test_an_end_from_the_host_it_was_offered_to_detaches_it_with_its_reaso
     served = await _attached(relay, viewer, socket)
 
     relay.ended(
-        ProcessEnded(process_id=_PROCESS, exit_code=1, reason="no login"),
+        ProcessEnded(
+            process_id=_PROCESS,
+            exit_code=1,
+            reason="no login",
+            output="run the login first\n",
+        ),
         host_id=_HOST,
     )
     await served
 
     process = await viewer.process()
-    assert (process.state, process.reason) == ("detached", "no login")
+    assert (process.state, process.reason, process.failed) == (
+        "detached",
+        "no login",
+        True,
+    )
     assert await socket.close_code() == wire_terminals.CLOSE_ENDED
     assert socket.closed.result() == (
         wire_terminals.CLOSE_ENDED,
         "its daemon saw it end",
     )
-    assert _detached_said("no login") in _said(caplog)
+    assert _warned(caplog) == [
+        _failed_said("no login", exit_code=1, output="run the login first\n"),
+    ]
     other = relay.process(_ENDED)
     assert other is not None
     assert other.state == "starting"
@@ -1635,21 +1648,95 @@ async def test_an_end_after_the_socket_closed_still_gives_the_daemons_reason() -
 
     told = await viewer.process()
     assert (told.state, told.reason, told.since) == ("detached", "bye", exited.since)
+    assert told.failed is False
 
 
-async def test_an_end_that_never_started_detaches_the_start() -> None:
+@pytest.mark.parametrize(
+    ("exit_code", "reason", "output"),
+    [
+        (2, "exited with code 2", "Error: --detach needs a value\n"),
+        (None, "no folder", ""),
+        (0, "exited with code 0", "usage: agent run\n"),
+    ],
+    ids=["exited", "could not be started", "exited cleanly before its hello"],
+)
+async def test_an_end_that_never_started_is_warned_of_with_its_code_and_output(
+    caplog: pytest.LogCaptureFixture,
+    exit_code: int | None,
+    reason: str,
+    output: str,
+) -> None:
+    """The process never said ``Hello``: whatever its code, its start failed."""
+    caplog.set_level(logging.INFO, logger=session_relay.__name__)
     relay = SessionRelay()
-    _ = _start(relay)
-    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    _ = await _taken(relay)
 
     relay.ended(
-        ProcessEnded(process_id=_PROCESS, exit_code=None, reason="no folder"),
+        ProcessEnded(
+            process_id=_PROCESS,
+            exit_code=exit_code,
+            reason=reason,
+            output=output,
+        ),
         host_id=_HOST,
     )
 
     process = relay.process(_SESSION)
     assert process is not None
-    assert (process.state, process.reason) == ("detached", "no folder")
+    assert (process.state, process.reason, process.failed) == (
+        "detached",
+        reason,
+        True,
+    )
+    assert relay.output(_SESSION) == output
+    assert _warned(caplog) == [
+        _failed_said(reason, exit_code=exit_code, output=output),
+    ]
+    assert _detached_said(reason) not in _said(caplog)
+
+
+async def test_a_start_given_up_on_stays_failed_whatever_its_late_exit_says(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Its late ``Hello`` was told it ended, and it exited 0: its start still failed."""
+    caplog.set_level(logging.INFO, logger=session_relay.__name__)
+    relay = SessionRelay()
+    _ = await _taken(relay)
+    assert relay.give_up(_SESSION, process_id=_PROCESS, taken=True) is True
+
+    relay.ended(
+        ProcessEnded(process_id=_PROCESS, exit_code=0, reason="exited with code 0"),
+        host_id=_HOST,
+    )
+
+    process = relay.process(_SESSION)
+    assert process is not None
+    assert (process.reason, process.failed) == ("exited with code 0", True)
+    assert _warned(caplog) == [
+        _failed_said("not started"),
+        _failed_said("exited with code 0", exit_code=0),
+    ]
+
+
+async def test_a_start_a_person_stopped_that_then_exits_cleanly_is_no_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """It never said ``Hello``, but a person's stop is no failure."""
+    caplog.set_level(logging.INFO, logger=session_relay.__name__)
+    relay = SessionRelay()
+    _ = await _taken(relay)
+    _ = await relay.stop(_SESSION)
+
+    relay.ended(
+        ProcessEnded(process_id=_PROCESS, exit_code=0, reason="exited with code 0"),
+        host_id=_HOST,
+    )
+
+    process = relay.process(_SESSION)
+    assert process is not None
+    assert (process.reason, process.failed) == ("exited with code 0", False)
+    assert _warned(caplog) == []
+    assert _detached_said("exited with code 0") in _said(caplog)
 
 
 async def test_the_same_end_twice_tells_viewers_once() -> None:
@@ -1726,9 +1813,31 @@ def _detached_said(reason: str) -> str:
     return f"process detached: session={_SESSION} process={_PROCESS} reason={reason!r}"
 
 
+def _failed_said(
+    reason: str,
+    *,
+    exit_code: int | None = None,
+    output: str = "",
+) -> str:
+    """Return the warning logged as ``_SESSION``'s ``_PROCESS``, on lab-box, fails."""
+    return (
+        f"agent start failed: session={_SESSION} process={_PROCESS} host=lab-box "
+        f"exit_code={exit_code} reason={reason!r} output={output!r}"
+    )
+
+
 def _said(caplog: pytest.LogCaptureFixture) -> list[str]:
     """Return each line logged, whole."""
     return [record.getMessage() for record in caplog.records]
+
+
+def _warned(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Return each line logged as a warning, whole."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    ]
 
 
 def _tick(monkeypatch: pytest.MonkeyPatch) -> None:
