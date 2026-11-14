@@ -2786,7 +2786,7 @@ Notes:
             delivered = client.send_message(target, text, room=room)
             scope = f"@{target}" if room is None else f"@{target}:{room}"
         if not delivered:
-            echo(f"undelivered: no live session takes messages for {scope}")
+            echo(f"undelivered: no agent is connected to a live session {scope} names")
             return
         echo(f"sent to {len(delivered)} session(s)")
 

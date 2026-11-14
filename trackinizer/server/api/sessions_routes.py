@@ -45,7 +45,7 @@ from trackinizer.server.auth import (
 from trackinizer.server.session_relay import InputRefusedError, NotLiveError
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.wire.bodies import SubmitAgentSession
-from trackinizer.wire.wire_session_relay import NewInput
+from trackinizer.wire.wire_session_relay import INPUT_REFUSED, NewInput
 from trackinizer.wire.wire_sessions import (
     SendMessage,
     SendMessageResponse,
@@ -184,7 +184,8 @@ async def send_message_route(
     sessions that match. Each live session is sent the text through the agent process
     serving it, which holds it while it starts. Delivery is drop-if-absent -- the
     response lists the sessions sent to; an empty list means no agent process serves
-    a live session the target names now.
+    a live session the target names now. A send none took and a process refused, as
+    larger than a frame or past what it holds unread, is 409 ``input_refused``.
 
     The sender is written by the route, never read from the body: the caller's email,
     or ``label#number`` for an agent of another session. A body that names
@@ -406,6 +407,7 @@ async def _sessions(
     return [found.id]
 
 
+# A send no target took and one refused is that refusal, 409 ``input_refused``.
 async def _sent(
     request: Request,
     targets: Sequence[UUID],
@@ -416,6 +418,7 @@ async def _sent(
     """Send ``body``'s text to each target's agent process; return those sent to."""
     relay = get_session_relay(request)
     sent: list[UUID] = []
+    refused: InputRefusedError | None = None
     for session_id in targets:
         try:
             _ = relay.send_input(
@@ -428,10 +431,16 @@ async def _sent(
                 recipient="" if body.to is None else body.to.label,
                 booked=body.booked,
             )
-        # Its process went, or holds all the inputs it may, since it was found.
-        except (NotLiveError, InputRefusedError):
+        # Its process went since it was found.
+        except NotLiveError:
+            continue
+        except InputRefusedError as error:
+            refused = error
             continue
         sent.append(session_id)
+    # Told as an empty receipt, a refusal reads as no session taking messages.
+    if refused is not None and not sent:
+        raise refusal(409, code=INPUT_REFUSED, message=str(refused)) from refused
     return sent
 
 

@@ -261,11 +261,14 @@ async def send_input_route(
             body,
             author=identity.email,
         )
+    # Also while a process whose socket dropped dials again: a start then would take
+    # the session from it, so the refusal tells no one to start one.
     except NotLiveError as error:
         raise refusal(
             409,
             code=NOT_LIVE,
-            message="no agent process serves this session; start one",
+            message="no agent process is connected to this session now, so nothing "
+            "was sent",
         ) from error
     except InputRefusedError as error:
         raise refusal(409, code=INPUT_REFUSED, message=str(error)) from error

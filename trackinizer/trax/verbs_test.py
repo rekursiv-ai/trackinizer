@@ -2698,7 +2698,7 @@ def test_send_says_which_target_took_nothing(
     monkeypatch.setattr(client, "message_agent", Mock(return_value=[]))
     run(["send", target, "hi"], client)
     assert capsys.readouterr().out == (
-        f"undelivered: no live session takes messages for {said}\n"
+        f"undelivered: no agent is connected to a live session {said} names\n"
     )
 
 

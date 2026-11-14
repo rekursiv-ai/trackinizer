@@ -307,7 +307,7 @@ function SessionComposer({ row }: { row: DetailRow }) {
         placeholder="Message the agent"
         failure={(error) =>
           error instanceof ApiError && error.status === 409 && error.code === NOT_LIVE
-            ? "No agent is running in this session, so nothing was sent."
+            ? "No agent is connected to this session now, so nothing was sent."
             : error instanceof ApiError &&
                 error.status >= 400 &&
                 error.status < 500 &&
