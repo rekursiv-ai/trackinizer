@@ -103,7 +103,7 @@ test("a send to a session no agent serves says so, and keeps the draft", async (
   await box.fill("Anyone there?");
   await box.press("Enter");
   await expect(transcript.getByRole("alert")).toHaveText(
-    "No agent is running in this session, so nothing was sent.",
+    "No agent is connected to this session now, so nothing was sent.",
   );
   await expect(box).toHaveValue("Anyone there?");
 });

@@ -1115,16 +1115,23 @@ def test_a_process_that_went_since_it_was_found_is_sent_none(
     assert _delivered(client.post("/api/messages", json=_to(_NUMBER))) == []
 
 
-def test_a_process_that_holds_all_the_inputs_it_may_is_sent_none(
+def test_a_send_its_process_refuses_is_refused_saying_why(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Told as an empty receipt, a refusal read as no live session taking messages."""
     client, store, _ = route_client
     lead = _numbered(_NUMBER)
     _held(monkeypatch, store, lead)
     relay = _relayed(monkeypatch, {lead.id: "attached"}, full=frozenset({lead.id}))
 
-    assert _delivered(client.post("/api/messages", json=_to(_NUMBER))) == []
+    sent = client.post("/api/messages", json=_to(_NUMBER))
+
+    assert sent.status_code == 409, sent.text
+    assert json_loads(sent.content, dict[str, dict[str, str]])["detail"] == {
+        "code": "input_refused",
+        "message": "the agent holds all it may",
+    }
     assert relay.sent == []
 
 
@@ -1173,9 +1180,11 @@ def test_a_name_sends_to_the_root_of_each_session_an_agent_process_serves(
     assert relay.sent == [(served.id, _STATUS, TEST_USER_EMAIL, "", None)]
 
 
-def test_a_session_whose_process_went_meanwhile_leaves_the_rest_sent(
+@pytest.mark.parametrize("refused", [False, True])
+def test_a_session_whose_process_went_or_refuses_meanwhile_leaves_the_rest_sent(
     route_client: tuple[TestClient, Store, FakeEngine],
     monkeypatch: pytest.MonkeyPatch,
+    refused: bool,
 ) -> None:
     client, store, _ = route_client
     gone, served = _numbered(_NUMBER), _numbered(_NUMBER + 1)
@@ -1188,7 +1197,8 @@ def test_a_session_whose_process_went_meanwhile_leaves_the_rest_sent(
     relay = _relayed(
         monkeypatch,
         {gone.id: "attached", served.id: "attached"},
-        gone=frozenset({gone.id}),
+        gone=frozenset() if refused else frozenset({gone.id}),
+        full=frozenset({gone.id}) if refused else frozenset(),
     )
 
     sent = client.post("/api/messages", json={"actor": "scientist", "text": "status?"})

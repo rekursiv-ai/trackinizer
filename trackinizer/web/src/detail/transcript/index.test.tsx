@@ -1973,7 +1973,7 @@ test("a session no agent process serves says so and keeps the draft; a send with
   fireEvent.change(box, { target: { value: "Are you there?" } });
   fireEvent.click(section.getByRole("button", { name: "Send message" }));
   expect((await section.findByRole("alert")).textContent).toBe(
-    "No agent is running in this session, so nothing was sent.",
+    "No agent is connected to this session now, so nothing was sent.",
   );
   expect(box).toHaveProperty("value", "Are you there?");
   expect(section.queryByRole("button", { name: "Retry message" })).toBeNull();

@@ -744,9 +744,33 @@ async def test_an_input_reaches_the_process_under_its_senders_name(
     assert (got.id, got.author, got.payload) == (new.id, "ada@x.y", {"content": "hi"})
 
 
-async def test_an_input_nobody_serves_is_not_live(world: _World) -> None:
+@pytest.mark.parametrize(
+    "dropped",
+    [False, True],
+    ids=["none ran", "its socket dropped"],
+)
+async def test_an_input_nobody_serves_is_not_live(
+    world: _World,
+    *,
+    dropped: bool,
+) -> None:
+    """A process whose socket dropped still runs, and dials again: it is not connected."""
     headers = await world.key(await world.person("ada@x.y"))
     session_id = await world.session("ada@x.y")
+    if dropped:
+        peer = world.process(
+            headers,
+            session_id,
+            hello=Hello(process_id=uuid.uuid4(), version="1", host="laptop"),
+        )
+        viewer = world.relay.lines(session_id, allowed=_always)
+        _ = await anext(viewer)
+        _ = await asyncio.wait_for(anext(viewer), 5)
+        peer.leave(1006)
+        await asyncio.wait_for(asyncio.gather(*world.tasks), 5)
+        process = world.relay.process(session_id)
+        assert process is not None
+        assert (process.state, process.reason) == ("detached", "disconnected")
 
     sent = await world.call(
         "POST",
@@ -756,7 +780,11 @@ async def test_an_input_nobody_serves_is_not_live(world: _World) -> None:
     )
 
     assert sent.status_code == 409
-    assert refusal_detail_code(sent) == "not_live"
+    assert from_plain(sent.json(), dict[str, dict[str, str]])["detail"] == {
+        "code": "not_live",
+        "message": "no agent process is connected to this session now, so nothing "
+        "was sent",
+    }
 
 
 async def test_a_line_of_files_and_no_words_reaches_the_process(world: _World) -> None:
