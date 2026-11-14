@@ -20,6 +20,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
+from trackinizer.server.preferences import assistant_settings_schema
 
 
 if TYPE_CHECKING:
@@ -725,6 +726,17 @@ class TestProfileRoute:
 
 
 class TestPreferences:
+    def test_an_agent_is_told_the_settings_its_own_tool_may_change(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+
+        r = client.get("/api/me/preferences/agent")
+
+        assert r.status_code == 200, r.text
+        assert r.json() == assistant_settings_schema()
+
     def test_sets_and_resets_keys_in_one_statement(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

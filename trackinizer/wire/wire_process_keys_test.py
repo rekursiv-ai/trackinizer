@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
+from trackinizer.wire.wire_capture import CAPTURES_PATH
 from trackinizer.wire.wire_process_keys import PROCESS_KEY_ROUTES, WEBSOCKET
 from trackinizer.wire.wire_session_ir import (
     session_parts_path,
@@ -37,6 +38,11 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("GET", TERMINAL_HOSTS_CHANGES_PATH),
         (WEBSOCKET, TOOLS_WS_PATH),
         ("POST", "/api/messages"),
+        ("GET", "/api/canvases/{canvas_id}"),
+        ("POST", "/api/canvases/{canvas_id}/operations"),
+        ("POST", CAPTURES_PATH),
+        ("GET", "/api/inquiries/{kind}/{seq}"),
+        ("GET", "/api/me/preferences/agent"),
     } == PROCESS_KEY_ROUTES - {
         (method, path) for method, path in PROCESS_KEY_ROUTES if "{session_id}" in path
     }

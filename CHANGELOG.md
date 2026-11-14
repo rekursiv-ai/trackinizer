@@ -7,6 +7,24 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Added
 
+- `GET /api/me/preferences/agent` gives the schema of
+  the settings an agent's own tool may change, `preferences.AGENT_KEYS`: the
+  assistant's keys but `cli_folder`, `autofix` and `automerge`. A key a start
+  minted for an agent process reaches it, and its `preferences` operation sets those
+  keys alone; any other is refused 422 and nothing is written.
+- A key a start minted for an agent process reaches the canvas routes its agents'
+  Canvas tool calls (`GET /api/canvases/{canvas_id}`, `POST .../operations`, `POST
+  .../captures`) and `GET /api/inquiries/{kind}/{seq}`, and of its account's
+  canvases uses only the one whose Chat shows its own session: the canvas of the
+  chat its session holds, or the one made for its session. No placed session or
+  running chat of its account opens any other to it.
+- `POST /api/sessions/{id}/inputs` passes on the canvas a line names
+  (`extra.canvas_id`) only when the session's own account sent the line. Another
+  person's line in a shared chat comes from their own canvas, which the key of
+  the session's agent may not use.
+- `trax.canvas.show_operation` and `mark_operation` build the `show` and `mark`
+  operations, and `canvas_lines` says what a canvas holds, a line each, for `trax
+  canvas` and an agent's Canvas tool alike.
 - Remote agents: a service that starts the agents of other accounts, each confined.
   `TRACKINIZER_REMOTE_AGENT_SERVICES` names each, `{"name", "account", "admits"}`,
   enrolled as a host under a service account and confirmed as it enrolls;

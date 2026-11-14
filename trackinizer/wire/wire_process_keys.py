@@ -37,9 +37,21 @@ PROCESS_KEY_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         (WEBSOCKET, "/api/hosts/{name}/tools/ws"),
         # Its agents' messages to another session's agents, sent as its own session's.
         ("POST", "/api/messages"),
+        # Its agents' canvas tools (``know/op/client/tools/canvas.py``): the canvas
+        # whose Chat shows its session, and no other (``canvas_store``), and a row
+        # named ``Kind#seq``, as the account reads it.
+        ("GET", "/api/canvases/{canvas_id}"),
+        ("POST", "/api/canvases/{canvas_id}/operations"),
+        ("POST", "/api/canvases/{canvas_id}/captures"),
+        ("GET", "/api/inquiries/{kind}/{seq}"),
+        # Its agents' Canvas tool's ``set``: the settings it offers. It changes them
+        # through the canvas's ``preferences`` operation, and only those
+        # (``canvas_routes.refuse_process_settings``).
+        ("GET", "/api/me/preferences/agent"),
     },
 )
 """Every route an agent process calls with the key a start minted for it, by method
 and path: what its client calls as it restores and saves its session and follows its
-account's hosts, its socket, and its agents' tool connections and messages. A route
-nobody lists is refused to that key until someone does."""
+account's hosts, its socket, its agents' tool connections and messages, and what its
+agents' own tools call. A route nobody lists is refused to that key until someone
+does: an agent gets an ability by a tool, and the tool's routes are listed with it."""
