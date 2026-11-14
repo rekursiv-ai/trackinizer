@@ -66,6 +66,11 @@
    "AgentProcess": {
     "description": "The agent process serving a session, or the last one that did.",
     "properties": {
+     "failed": {
+      "default": false,
+      "title": "Failed",
+      "type": "boolean"
+     },
      "host": {
       "title": "Host",
       "type": "string"
