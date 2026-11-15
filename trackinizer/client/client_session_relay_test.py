@@ -29,6 +29,7 @@ from trackinizer.wire.wire_session_relay import (
     ProcessSpec,
     ServeSession,
     StateLine,
+    StopProcess,
 )
 
 
@@ -295,23 +296,26 @@ def test_open_lines_raises_a_client_error_naming_the_stream_it_cannot_read(
     assert raised.value.status_code is None
 
 
-def test_the_daemons_session_wait_returns_the_next_start_or_none() -> None:
+def test_the_daemons_session_wait_returns_the_next_start_a_stop_or_none() -> None:
     serve = ServeSession(
         session_id=_SESSION,
         process_id=_PROCESS,
         token=f"key-{_PROCESS.hex}",
         spec=_SPEC,
     )
+    stop = StopProcess(process_id=_PROCESS)
     recorder = _Recorder(
         httpx2.Response(200, json=serve.model_dump(mode="json")),
         httpx2.Response(200, json=None),
+        httpx2.Response(200, json=stop.model_dump(mode="json")),
     )
 
     with _client(recorder) as found:
         first = found.wait_session(_HOST, instance=_INSTANCE, wait_sec=25)
         second = found.wait_session(_HOST, instance=_INSTANCE, wait_sec=0)
+        third = found.wait_session(_HOST, instance=_INSTANCE, wait_sec=0)
 
-    assert (first, second) == (serve, None)
+    assert (first, second, third) == (serve, None, stop)
     sent = recorder.requests[0]
     assert (sent.method, sent.url.path, dict(parse_qsl(sent.url.query.decode()))) == (
         "GET",

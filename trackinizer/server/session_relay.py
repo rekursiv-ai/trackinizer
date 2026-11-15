@@ -86,6 +86,7 @@ from trackinizer.wire.wire_session_relay import (
     ServeSession,
     Setting,
     StateLine,
+    StopProcess,
     ViewerFrame,
 )
 
@@ -233,6 +234,8 @@ class SessionRelay:
         self._input_bytes = input_bytes
         self._sessions: dict[UUID, _Session] = {}
         self._offers: dict[UUID, deque[ServeSession]] = {}
+        self._stops: dict[UUID, deque[StopProcess]] = {}
+        """Stops each remote agent service is to carry out, by its host."""
         self._waiters: dict[UUID, list[asyncio.Future[bool]]] = {}
 
     async def serve_process(
@@ -498,6 +501,7 @@ class SessionRelay:
         )
         live.offer = offer
         live.host_id = host_id
+        live.remote = remote
         live.held.clear()
         live.output = ""
         self._offers.setdefault(host_id, deque()).append(offer)
@@ -606,6 +610,7 @@ class SessionRelay:
             return None
         if not _stoppable(live.process):
             return live.process
+        live.stopped = live.process.process_id
         # The one it detached: a start may replace ``live.process`` while the
         # socket closes, and the caller revokes the key of the process returned.
         return await self._end(
@@ -621,20 +626,22 @@ class SessionRelay:
         *,
         wait_sec: float,
         dropped: Dropped,
-    ) -> ServeSession | None:
-        """Return the host's next start, holding up to ``wait_sec`` for one.
+    ) -> ServeSession | StopProcess | None:
+        """Return the host's next stop or start, holding up to ``wait_sec`` for one.
 
-        A start is handed out once, and only to a caller still there to take it.
+        Each is handed out once, and only to a caller still there to take it; a stop
+        before any start.
 
         Args:
           host_id: The host whose daemon asks.
           wait_sec: How long to hold.
-          dropped: Says whether the caller has gone; asked only with a start to
-            take, just before taking it.
+          dropped: Says whether the caller has gone; asked only with a stop or a
+            start to take, just before taking it.
 
         Returns:
-          serve: The oldest start offered to the host; ``None`` when none came in time,
-            or the caller has gone.
+          serve: The oldest stop the host's remote agent service is to carry out, else
+            the oldest start offered to it; ``None`` when none came in time, or the
+            caller has gone.
 
         Raises:
           HostRevokedError: The host was revoked while its daemon waited.
@@ -643,6 +650,12 @@ class SessionRelay:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + wait_sec
         while True:
+            if host_id in self._stops:
+                if await dropped():
+                    return None
+                if (stop := self._stopped(host_id)) is not None:
+                    return stop
+                continue
             if host_id in self._offers:
                 if await dropped():
                     return None
@@ -709,9 +722,9 @@ class SessionRelay:
         It counts only for the session's current process, reported by the host it was
         offered to: the daemon's reason replaces any other, and the process is
         detached if it is not already, as failed when it was still starting, was
-        given up on, or exited with a code other than 0 or none. The end of its output
-        is kept apart from what any viewer reads (:meth:`output`). Any other report is
-        ignored.
+        given up on, or exited with a code other than 0 or none with no person's stop
+        before. The end of its output is kept apart from what any viewer reads
+        (:meth:`output`). Any other report is ignored.
 
         Args:
           report: The process and why it ended.
@@ -734,8 +747,14 @@ class SessionRelay:
                 live,
                 reason=report.reason,
                 # Still starting, it never said ``Hello`` and no one stopped it; one
-                # given up on stays failed whatever its late exit says.
-                failed=report.exit_code != 0
+                # given up on stays failed whatever its late exit says. No code is a
+                # daemon that restarted while it ran, which sees its end and not how.
+                # One a person stopped did not fail, whatever its code: its service
+                # ends it with a TERM, which sagent answers 130.
+                failed=(
+                    report.exit_code not in (0, None)
+                    and live.stopped != process.process_id
+                )
                 or process.state == "starting"
                 or process.failed,
                 exit_code=report.exit_code,
@@ -768,6 +787,8 @@ class SessionRelay:
                     closing=(wire_terminals.CLOSE_HOST_REVOKED, "its host was revoked"),
                 )
                 stopped.append(session_id)
+        # A revoked host's daemon takes nothing more.
+        _ = self._stops.pop(host_id, None)
         self._wake(host_id, revoked=True)
         return stopped
 
@@ -964,6 +985,14 @@ class SessionRelay:
     ) -> AgentProcess:
         """Detach the session's process for ``reason``, closing its socket; return it."""
         connection = live.connection
+        # A remote agent service that took the start runs the process, and ends it
+        # whole: an agent broken into need not heed its socket's close. An untaken
+        # start runs nowhere, and a person's own daemon ends its agents itself.
+        if live.remote and live.offer is None and live.host_id is not None:
+            assert isinstance(live.process, AgentProcess)
+            stop = StopProcess(process_id=live.process.process_id)
+            self._stops.setdefault(live.host_id, deque()).append(stop)
+            self._wake(live.host_id)
         self._detach(session_id, live, reason=reason)
         # Read before the close is awaited, while it is still the session's.
         detached = live.process
@@ -1047,6 +1076,21 @@ class SessionRelay:
         queue.remove(offer)
         if not queue:
             del self._offers[live.host_id]
+
+    def _stopped(self, host_id: UUID) -> StopProcess | None:
+        """Hand out the host's oldest stop, once."""
+        queue = self._stops.get(host_id)
+        if queue is None:
+            return None
+        stop = queue.popleft()
+        if not queue:
+            del self._stops[host_id]
+        _logger.info(
+            "process stop handed to its service: process=%s host_id=%s",
+            stop.process_id,
+            host_id,
+        )
+        return stop
 
     def _take(self, host_id: UUID) -> ServeSession | None:
         """Hand out the host's oldest start, once."""
@@ -1142,9 +1186,16 @@ class _Session:
     host_id: UUID | None = None
     """The host its process was offered to, or that its ``Hello`` named."""
 
+    remote: bool = False
+    """Whether its process was offered to a remote agent service, which ends it whole
+    on a stop."""
+
     connection: _Connection | None = None
     offer: ServeSession | None = None
     """A start no daemon has taken yet."""
+
+    stopped: UUID | None = None
+    """The last process a person stopped, whose exit code then tells of no failure."""
 
     state: AgentState | None = None
     settings: tuple[Setting, ...] = ()

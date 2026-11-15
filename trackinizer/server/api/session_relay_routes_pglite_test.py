@@ -78,6 +78,7 @@ from trackinizer.wire.wire_session_relay import (
     ProcessSpec,
     RecordLine,
     ServeSession,
+    StopProcess,
 )
 from trackinizer.wire.wire_terminals import (
     CLOSE_ENDED,
@@ -167,7 +168,7 @@ class _Relay(SessionRelay):
         *,
         wait_sec: float,
         dropped: Dropped,
-    ) -> ServeSession | None:
+    ) -> ServeSession | StopProcess | None:
         # Set in the step that goes on to hold the wait, so a test woken by it finds
         # the wait held.
         self.waiting.set()
