@@ -1005,6 +1005,17 @@ def test_the_help_states_the_module_and_each_flag(
     out = capsys.readouterr().out
     assert "Convert agent sessions between native formats" in out
     assert "Write to this file." in out
+    # Trackinizer ships this module without ``upgrade``.
+    assert "upgrade" not in out
+
+
+def test_the_help_ends_with_the_epilog_a_caller_gives(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"], epilog="more commands")
+
+    assert capsys.readouterr().out.rstrip().endswith("more commands")
 
 
 def test_the_help_has_no_description_when_docstrings_are_stripped(

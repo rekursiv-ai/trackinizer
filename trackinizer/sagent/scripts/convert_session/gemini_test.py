@@ -9,6 +9,7 @@ would replay, and about a re-read yielding the same records the last one did.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from io import StringIO
 from typing import TypedDict
 
@@ -243,14 +244,85 @@ def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
     }
 
 
-def test_a_timestamp_survives_the_gemini_round_trip() -> None:
-    """When a record states a time, converting must not silently discard it.
+def test_a_call_stating_nothing_reads_as_an_unnamed_call_with_no_arguments() -> None:
+    records = _read(_document({"type": "gemini", "toolCalls": [dict[str, object]()]}))
 
-    Gemini's own documents carry no per-message stamp, so the writer wrote
-    none -- and a claude or codex session, where every record states one, lost
-    every timestamp crossing in. Kept in the message's residual, which is where
-    the reader already restores keys the format does not model.
+    assert [r for r in records if isinstance(r, ToolCall)] == [
+        ToolCall(call_id="", name="", arguments={}),
+    ]
+
+
+def test_an_edited_turn_writes_its_new_content_and_time() -> None:
+    text = _document({"id": "m1", "timestamp": "t0", "type": "user", "content": "hi"})
+    edited = [
+        replace(r, content="bye", timestamp="t9") if isinstance(r, UserMessage) else r
+        for r in _read(text)
+    ]
+    out = StringIO()
+
+    gemini.denormalize(edited, out)
+
+    assert json_loads(out.getvalue(), _Document)["messages"] == [
+        {"id": "m1", "timestamp": "t9", "type": "user", "content": "bye"},
+    ]
+
+
+def test_another_cli_s_bookkeeping_is_no_gemini_message() -> None:
+    out = StringIO()
+
+    gemini.denormalize(
+        [
+            TurnContext(encoding={"newline_terminated": True}),
+            UncategorizedRecord(kind="queue-operation", payload={"type": "x"}),
+            UserMessage(content="hi"),
+        ],
+        out,
+    )
+
+    assert json_loads(out.getvalue(), _Document)["messages"] == [
+        {"type": "user", "content": "hi"},
+    ]
+
+
+def test_a_gemini_cli_message_reads_its_time_and_rewrites_exactly() -> None:
+    """Gemini-cli writes ``{id, timestamp, type, content, ...}`` for every message.
+
+    The reader took a time only from a ``$timestamp`` key, so every real stamp
+    was lost, and the writer put ``type`` and ``content`` first.
     """
+    text = _document(
+        {
+            "id": "m1",
+            "timestamp": "2026-11-13T10:00:01Z",
+            "type": "user",
+            "content": "hi",
+        },
+        {
+            "id": "m2",
+            "timestamp": "2026-11-13T10:00:02Z",
+            "type": "gemini",
+            "content": "",
+            "toolCalls": [{"id": "t1", "name": "ls", "args": dict[str, object]()}],
+            "model": "gemini-3",
+        },
+    )
+
+    records = _read(text)
+    out = StringIO()
+    gemini.denormalize(records, out)
+
+    assert [r.timestamp for r in records if not isinstance(r, IncompleteRecord)][
+        2:
+    ] == [
+        "2026-11-13T10:00:01Z",
+        "2026-11-13T10:00:02Z",
+        "2026-11-13T10:00:02Z",
+    ]
+    assert out.getvalue() == text
+
+
+def test_a_timestamp_survives_the_gemini_round_trip() -> None:
+    """When a record states a time, converting must not silently discard it."""
     records = [UserMessage(content="hi", timestamp="2026-01-01T00:00:00Z")]
 
     out = StringIO()
@@ -323,12 +395,12 @@ def test_a_tool_call_after_a_user_turn_gets_a_timestamped_gemini_turn() -> None:
     )
 
     messages = json_loads(out.getvalue(), _Document)["messages"]
-    assert messages[1] == {
-        "type": "gemini",
-        "content": "",
-        "$timestamp": "t",
-        "toolCalls": [{"id": "t", "name": "run", "args": {}}],
-    }
+    assert list(messages[1].items()) == [
+        ("timestamp", "t"),
+        ("type", "gemini"),
+        ("content", ""),
+        ("toolCalls", [{"id": "t", "name": "run", "args": {}}]),
+    ]
 
 
 def test_an_uncategorized_record_is_written_as_its_payload() -> None:
@@ -379,9 +451,20 @@ def test_different_foreign_streams_of_one_length_get_different_ids() -> None:
         {"type": "gemini", "content": {}},
         {"type": "gemini", "content": "", "toolCalls": "x"},
         {"type": "gemini", "content": "", "toolCalls": [7]},
+        {"type": "gemini", "content": "", "toolCalls": [None]},
+        {"type": "user", "content": "x", "timestamp": 7},
         7,
     ],
-    ids=["type", "user-content", "gemini-content", "calls", "call", "scalar"],
+    ids=[
+        "type",
+        "user-content",
+        "gemini-content",
+        "calls",
+        "call",
+        "null-call",
+        "timestamp",
+        "scalar",
+    ],
 )
 def test_a_malformed_message_round_trips(message: object) -> None:
     # One malformed field raised ``ReadError`` out of ``normalize`` and lost
@@ -444,16 +527,15 @@ def test_every_field_of_a_document_reads_where_its_record_keeps_it() -> None:
             "sessionId": "s1",
             "projectHash": "p",
             "messages": [
-                {"type": "user", "content": "hi", "$timestamp": "t0", "id": "u1"},
+                {"id": "u1", "timestamp": "t0", "type": "user", "content": "hi"},
                 {"type": "user"},
                 {
                     "type": "gemini",
                     "content": "run",
-                    "$timestamp": "t1",
+                    "timestamp": "t1",
                     "model": "m",
                     "toolCalls": [
                         {"id": "c1", "name": "f", "args": {"a": 1}, "status": "ok"},
-                        None,
                     ],
                 },
                 {"type": "gemini"},
@@ -464,15 +546,24 @@ def test_every_field_of_a_document_reads_where_its_record_keeps_it() -> None:
         },
     )
 
-    assert _read(text) == [
+    records = _read(text)
+
+    assert records[:2] == [
         TurnContext(
             encoding={"newline_terminated": True},
             extra={"sessionId": "s1", "projectHash": "p", "$compact": False},
         ),
         ContextClear(extra={"$opens": True}),
-        UserMessage(timestamp="t0", content="hi", extra={"id": "u1"}),
-        UserMessage(content=""),
-        AssistantMessage(timestamp="t1", content="run", extra={"model": "m"}),
+    ]
+    turns = [r for r in records if isinstance(r, UserMessage | AssistantMessage)]
+    assert [(type(r), r.timestamp, r.content) for r in turns] == [
+        (UserMessage, "t0", "hi"),
+        (UserMessage, None, ""),
+        (AssistantMessage, "t1", "run"),
+        (AssistantMessage, None, ""),
+        (AssistantMessage, None, ""),
+    ]
+    assert [r for r in records if isinstance(r, ToolCall | UncategorizedRecord)] == [
         ToolCall(
             timestamp="t1",
             call_id="c1",
@@ -480,12 +571,12 @@ def test_every_field_of_a_document_reads_where_its_record_keeps_it() -> None:
             arguments={"a": 1},
             extra={"status": "ok"},
         ),
-        ToolCall(timestamp="t1", call_id="", name=""),
-        AssistantMessage(content=""),
-        AssistantMessage(content="", extra={"$tool_calls_present": True}),
         UncategorizedRecord(kind="", payload={"content": "untyped"}),
         UncategorizedRecord(kind="", payload={"$message": 7}),
     ]
+    out = StringIO()
+    gemini.denormalize(records, out)
+    assert out.getvalue() == text
 
 
 def test_a_compact_document_with_any_characters_round_trips_byte_exact() -> None:

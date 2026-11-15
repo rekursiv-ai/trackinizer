@@ -29,6 +29,8 @@ from treekle import (
 from trackinizer.sagent.scripts.convert_session.provider_fields import read_or_default
 from trackinizer.sagent.scripts.convert_session.unmodeled import (
     extract_unmodeled_fields,
+    field_state,
+    restore_unmodeled_fields,
 )
 from trackinizer.sagent.session.types import (
     AssistantMessage,
@@ -104,11 +106,17 @@ def denormalize(
         return
     declared = next(
         (record for record in ordered if isinstance(record, TurnContext)),
-        TurnContext(),
+        None,
     )
-    stored = mutable(declared.extra)
+    stored = mutable(declared.extra) if declared is not None else {}
+    # Gemini's reader states ``$compact``; another CLI's bookkeeping is no message.
+    foreign = declared is not None and "$compact" not in stored
     compact = bool(stored.pop("$compact", None))
-    messages = _write_messages(body)
+    messages = _write_messages(
+        [record for record in body if not isinstance(record, UncategorizedRecord)]
+        if foreign
+        else body,
+    )
     document: dict[str, MutablePlainTree] = {}
     # Only keys a gemini document itself carries. Another adapter's metadata
     # names its own conventions -- claude states ``ascii_escaped`` and an
@@ -137,46 +145,33 @@ def denormalize(
 def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
     """Normalize one gemini message into its acts."""
     kind = read_or_default(message.get("type"), str, default="")
-    if kind == "user":
-        return [
-            UserMessage(
-                content=from_plain(message.get("content"), str, default=""),
-                timestamp=read_or_default(message.get("$timestamp"), str, default=None),
-                extra=immutable(
-                    extract_unmodeled_fields(
-                        message,
-                        ("type", "content", "$timestamp"),
-                    ),
-                ),
-            ),
-        ]
-    if kind != "gemini":
+    if kind not in {"user", "gemini"}:
         return [
             UncategorizedRecord(
                 kind=kind,
                 payload=immutable(message),
             ),
         ]
-    calls = from_plain(message.get("toolCalls"), list[object], default=list[object]())
-    stamp = read_or_default(message.get("$timestamp"), str, default=None)
-    kept = dict(
+    # A modeled field of the wrong type raises, and the caller keeps the message whole.
+    content = from_plain(message["content"], str) if "content" in message else ""
+    stamp = from_plain(message["timestamp"], str) if "timestamp" in message else None
+    calls = (
+        from_plain(message["toolCalls"], list[object]) if "toolCalls" in message else []
+    )
+    extra = immutable(
         extract_unmodeled_fields(
             message,
-            ("type", "content", "toolCalls", "$timestamp"),
+            fields={
+                key: message[key]
+                for key in ("type", "content", "timestamp", "toolCalls")
+                if key in message
+            },
         ),
     )
-    if "toolCalls" in message and not calls:
-        # Axiom 2: an empty list is a VALUE, not absence. The writer rebuilds
-        # ``toolCalls`` from the sibling ToolCall records, of which there are
-        # none here -- so without this the key would vanish on rewrite and the
-        # document would not match the bytes it was read from.
-        kept["$tool_calls_present"] = True
+    if kind == "user":
+        return [UserMessage(content=content, timestamp=stamp, extra=extra)]
     return [
-        AssistantMessage(
-            content=from_plain(message.get("content"), str, default=""),
-            timestamp=stamp,
-            extra=immutable(kept),
-        ),
+        AssistantMessage(content=content, timestamp=stamp, extra=extra),
         *(
             ToolCall(
                 call_id=from_plain(call.get("id"), str, default=""),
@@ -193,10 +188,7 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
                     extract_unmodeled_fields(call, ("id", "name", "args")),
                 ),
             )
-            for call in (
-                from_plain(value, dict[str, object], default=dict[str, object]())
-                for value in calls
-            )
+            for call in (from_plain(value, dict[str, object]) for value in calls)
         ),
     ]
 
@@ -213,38 +205,10 @@ def _write_messages(
     for record in records:
         match record:
             case UserMessage():
-                out.append(
-                    {
-                        "type": "user",
-                        "content": record.content or "",
-                        # A gemini document states no per-message time, so a
-                        # stamp from another provider survives only here. Under
-                        # a ``$`` key, which the reader strips: a native
-                        # document has none, and adding one would rewrite bytes
-                        # gemini itself wrote.
-                        **(
-                            {"$timestamp": stamp}
-                            if (stamp := record.timestamp or "")
-                            else {}
-                        ),
-                        **mutable(record.extra),
-                    },
-                )
+                out.append(_written_message(record, "user"))
                 open_turn = None
             case AssistantMessage():
-                extra = mutable(record.extra)
-                empty_calls = extra.pop("$tool_calls_present", None) is not None
-                open_turn = {
-                    "type": "gemini",
-                    "content": record.content or "",
-                    **(
-                        {"$timestamp": stamp}
-                        if (stamp := record.timestamp or "")
-                        else {}
-                    ),
-                    **extra,
-                    **({"toolCalls": []} if empty_calls else {}),
-                }
+                open_turn = _written_message(record, "gemini")
                 out.append(open_turn)
             case ToolCall():
                 # A call belongs to the turn that made it: gemini nests them,
@@ -256,9 +220,10 @@ def _write_messages(
                 # folding it there claimed the person made the call. Asserting
                 # a turn was already open instead aborted the conversion.
                 if open_turn is None:
-                    open_turn = {"type": "gemini", "content": ""}
-                    if stamp := record.timestamp or "":
-                        open_turn["$timestamp"] = stamp
+                    open_turn = _written_message(
+                        AssistantMessage(timestamp=record.timestamp),
+                        "gemini",
+                    )
                     out.append(open_turn)
                 calls = open_turn.setdefault("toolCalls", [])
                 assert isinstance(calls, list)
@@ -282,6 +247,36 @@ def _write_messages(
                 # this format reports lossy rather than inventing one.
                 continue
     return out
+
+
+def _written_message(
+    record: UserMessage | AssistantMessage,
+    kind: str,
+) -> dict[str, MutablePlainTree]:
+    """Return the message a turn came from, its keys where gemini wrote them."""
+    content = record.content or ""
+    stored = mutable(record.extra)
+    if field_state(stored, "type") is None:
+        # Another CLI's turn, in gemini-cli's own key order.
+        return {
+            **({"timestamp": record.timestamp} if record.timestamp is not None else {}),
+            "type": kind,
+            "content": content,
+            **stored,
+        }
+    return mutable(
+        immutable(
+            restore_unmodeled_fields(
+                stored,
+                {
+                    "type": kind,
+                    "content": content,
+                    "timestamp": record.timestamp,
+                    "toolCalls": [],
+                },
+            ),
+        ),
+    )
 
 
 def _read(text: str) -> list[SessionRecord]:

@@ -6,15 +6,13 @@ denormalized to the requested target. Converting to the source's own format is
 therefore a losslessness check, which is what ``verify`` reports.
 
 Each path may be a session file or a directory of them, so one command serves
-a single file and a whole corpus. ``upgrade`` (see ``upgrade.py``) rewrites old
-sagent journals in place, as resuming one would.
+a single file and a whole corpus.
 
 Examples:
   python -m trackinizer.sagent.scripts.convert_session convert session.jsonl --to json
   python -m trackinizer.sagent.scripts.convert_session convert session.json --to claude
   python -m trackinizer.sagent.scripts.convert_session convert s.jsonl --to sagent -o session.jsonl
   python -m trackinizer.sagent.scripts.convert_session verify ~/captured --workers 5
-  python -m trackinizer.sagent.scripts.convert_session upgrade --dry-run
 
 """
 
@@ -123,12 +121,14 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     formats: tuple[Format, ...] = ("claude", "codex", "gemini", "json", "sagent"),
+    epilog: str | None = None,
 ) -> int:
     """Convert sessions and return the process exit code.
 
     Args:
       argv: Command-line arguments (or sys.argv[1:] if None).
       formats: Supported output formats.
+      epilog: Text the help shows after the flags: the commands a caller adds.
 
     Returns:
       result: Exit code (0 on success).
@@ -136,6 +136,7 @@ def main(
     """
     parser = argparse.ArgumentParser(
         description=(__doc__ or "").strip(),
+        epilog=epilog,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser, formats=formats)

@@ -19,6 +19,7 @@ from treekle import PlainTree, immutable, json_loads
 
 from trackinizer.sagent.session.jsonl import read_record, record_line
 from trackinizer.sagent.session.types import (
+    FORMER_TAPE_KINDS,
     RENAMED_KINDS,
     IncompleteRecord,
     SessionRecord,
@@ -83,18 +84,7 @@ def is_sagent(head: str) -> bool:
         today's tagged record, or a kind only an old sagent wrote.
 
     """
-    only_sagent = {
-        "meta",
-        "history",
-        "tool_state",
-        "context_override",
-        "context_splice",
-        "persistent_agent",
-        "runtime_event",
-        "event",
-        "update",
-        "clear",
-    }
+    only_sagent = {*FORMER_TAPE_KINDS, "meta", "tool_state", "runtime_event", "event"}
     for line in head.splitlines():
         if not line.strip():
             continue

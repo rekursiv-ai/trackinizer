@@ -45,7 +45,10 @@ from trackinizer.sagent.scripts.convert_session.claude_orders import (
     system_order,
     user_order,
 )
-from trackinizer.sagent.scripts.convert_session.provider_fields import read_or_default
+from trackinizer.sagent.scripts.convert_session.provider_fields import (
+    MISSING_TIMESTAMP,
+    read_or_default,
+)
 from trackinizer.sagent.scripts.convert_session.shell_results import (
     lift_shell_result,
     rewrite_shell_source,
@@ -172,14 +175,17 @@ def denormalize(
     # needing claude's identity keys synthesized, since claude's transcript is
     # a LINKED LIST and the real CLI does not load a file without one.
     #
-    # The ENCODING is what says: every adapter states one on its opening
-    # context, and only claude's names an escaping convention. A stream built
-    # BY HAND states none at all and is left alone -- nothing resumes one, and
-    # adding keys there would rewrite bytes the caller chose.
+    # The ENCODING is what says: only claude's names an escaping convention. A
+    # stream built BY HAND states no context at all and is left alone -- nothing
+    # resumes one, and adding keys there would rewrite bytes the caller chose.
     foreign = (
-        any(isinstance(record, TurnContext) and record.encoding for record in ordered)
+        any(isinstance(record, TurnContext) for record in ordered)
         and "ascii_escaped" not in metadata
     )
+    if foreign:
+        ordered = _transcript_records_from_another_cli(
+            ordered,
+        )
     renamed, synthesized = (
         _foreign_calls(ordered) if foreign else ({}, dict[str, ToolCall | None]())
     )
@@ -228,8 +234,71 @@ def denormalize(
             # result reaching back for its own found nothing when only the
             # head was registered, and the rename it carried was dropped.
             calls=[r for r in group if isinstance(r, ToolCall)],
+            escaped=(
+                head.payload if isinstance(head, UncategorizedRecord) else head.extra
+            ).get("$ascii_escaped")
+            is True,
         )
     emitter.close()
+
+
+# Claude refuses a file with an unstamped line ("No conversation found").
+def _transcript_records_from_another_cli(
+    records: Sequence[SessionRecord],
+) -> list[SessionRecord]:
+    """Return another CLI's session as records a claude transcript holds, each stamped."""
+    last = next(
+        (
+            r.timestamp
+            for r in records
+            if not isinstance(r, IncompleteRecord) and r.timestamp is not None
+        ),
+        MISSING_TIMESTAMP,
+    )
+    unanswered: set[str] = set()
+    kept: list[SessionRecord] = []
+    for record in records:
+        if isinstance(record, TurnContext):
+            unanswered.clear()
+        elif isinstance(record, ToolCall):
+            unanswered.add(record.call_id)
+        elif isinstance(record, ToolResult) and record.call_id in unanswered:
+            unanswered.remove(record.call_id)
+        elif isinstance(record, ToolResult) and unanswered:
+            # An act run inside a call still open, such as the shell command codex's
+            # ``exec`` ran: Anthropic rejects a result no call asked for.
+            continue
+        if isinstance(record, UncategorizedRecord | IncompleteRecord):
+            continue
+        # Anthropic rejects a seal it did not make.
+        if isinstance(record, Thinking) and record.reasoning_id is not None:
+            continue
+        last = record.timestamp if record.timestamp is not None else last
+        kept.append(replace(record, timestamp=last))
+    return kept
+
+
+# Every provider records one somewhere -- codex on its launch settings and on each turn
+# context -- and it is the same value claude repeats per line.
+def _stated_cwd(records: Sequence[SessionRecord]) -> str:
+    """Return the working directory the source session named, if any."""
+    for record in records:
+        if isinstance(record, TurnContext):
+            payload = from_plain(
+                record.extra.get("payload"),
+                dict[str, object],
+                default=dict[str, object](),
+            )
+            stated = payload.get("cwd")
+            if isinstance(stated, str):
+                return stated
+            break
+    for record in records:
+        if isinstance(record, TurnContext):
+            found = record.cwd if record.cwd is not None else record.extra.get("cwd")
+            if isinstance(found, str):
+                return found
+    return ""
 
 
 # ONE table per call, derived in one pass, so the rename and the synthesis cannot
@@ -324,29 +393,6 @@ def _rename_calls(line: dict[str, object], renamed: Mapping[str, str]) -> None:
             found["name"] = name
 
 
-# Every provider records one somewhere -- codex on its launch settings and on each turn
-# context -- and it is the same value claude repeats per line.
-def _stated_cwd(records: Sequence[SessionRecord]) -> str:
-    """Return the working directory the source session named, if any."""
-    for record in records:
-        if isinstance(record, TurnContext):
-            payload = from_plain(
-                record.extra.get("payload"),
-                dict[str, object],
-                default=dict[str, object](),
-            )
-            stated = payload.get("cwd")
-            if isinstance(stated, str):
-                return stated
-            break
-    for record in records:
-        if isinstance(record, TurnContext):
-            found = (record.extra).get("cwd")
-            if isinstance(found, str):
-                return found
-    return ""
-
-
 # Returns the line and the uuid the NEXT one points at. The id is DERIVED from ``seed``
 # and the line's position, not minted fresh, so converting the same stream twice
 # produces the same bytes -- a random uuid would make every conversion differ from the
@@ -397,7 +443,8 @@ class _Emitter:
 
     Args:
       stream: Destination for finished lines.
-      escaped_default: Whether the file escapes non-ASCII by convention.
+      escaped_default: Whether the file escapes non-ASCII by convention, for
+        records stored before each escaped line carried its own flag.
       exceptions: Bitmap of lines departing from that convention.
       newline_terminated: Whether the source file ended with a newline.
       lookahead: How many rendered lines stay editable behind the write
@@ -416,19 +463,19 @@ class _Emitter:
         escaped_default: bool,
         exceptions: bytes,
         newline_terminated: bool,
-        lookahead: int = 32,
+        lookahead: int = 32,  # pragma: no mutate -- any window past 9 lines serves.
     ) -> None:
         self._stream = stream
         self._escaped_default = escaped_default
         self._exceptions = exceptions
         self._newline_terminated = newline_terminated
         self._lookahead = lookahead
-        self._pending: deque[tuple[int, dict[str, object] | str]] = deque()
+        self._pending: deque[tuple[int, dict[str, object] | str, bool]] = deque()
         # Where each open call's rendered line sits in ``_pending``, so a
         # result can reach back into the object rather than re-render it.
         self._calls: dict[str, dict[str, object]] = {}
         self._index = 0
-        self._held: str | None = None
+        self._held: str | None = None  # pragma: no mutate -- "" writes nothing too.
 
     def add(
         self,
@@ -436,6 +483,7 @@ class _Emitter:
         *,
         record: SessionRecord | None = None,
         calls: Sequence[ToolCall] = (),
+        escaped: bool = False,
     ) -> None:
         """Queue one line, applying any shell edit it makes to an open call.
 
@@ -447,6 +495,7 @@ class _Emitter:
           line: Claude JSONL-line dict or text repr; None for line-less records.
           record: SessionRecord if this line produced one (shell edit context).
           calls: ToolCall invocations the line opened (by id).
+          escaped: Whether the line spelled non-ASCII text as escapes.
 
         """
         if line is None:
@@ -455,7 +504,7 @@ class _Emitter:
             return
         if record is not None:
             self._apply_shell_edit(record)
-        self._pending.append((self._index, line))
+        self._pending.append((self._index, line, escaped))
         self._index += 1
         if isinstance(line, dict):
             for call in calls:
@@ -523,7 +572,7 @@ class _Emitter:
 
     def _release(self) -> None:
         """Write the oldest queued line, one behind so ``close`` can trim it."""
-        index, line = self._pending.popleft()
+        index, line, escaped = self._pending.popleft()
         if self._held is not None:
             _ = self._stream.write(self._held)
         if isinstance(line, str):
@@ -536,7 +585,7 @@ class _Emitter:
         self._held = (
             json.dumps(
                 mutable(line),
-                ensure_ascii=self._escaped_default != exception,
+                ensure_ascii=escaped or self._escaped_default != exception,
                 separators=(",", ":"),
             )
             + "\n"
@@ -620,7 +669,11 @@ def _write_group(
         # types, none containing a slash.
         if "/" in head.kind:
             return None
-        return dict(mutable(head.payload))
+        return {
+            key: value
+            for key, value in mutable(head.payload).items()
+            if key != "$ascii_escaped"
+        }
     if isinstance(head, UserMessage):
         return _write_user(head, context, settings, group)
     if isinstance(head, ToolResult):
@@ -1839,19 +1892,14 @@ class _Reader:
         # it has to be carried forward from the ``tool_use`` block that opened
         # it.
         self._tools: dict[str, tuple[str, str | None]] = {}
-        # Which lines spelled non-ASCII text as ``\u`` escapes, packed as they
-        # arrive. Claude writes raw UTF-8, so these are the exceptions.
-        self._escaped_bits = bytearray()
-        self._escapes = 0
-        self._total = 0
+        self._started = False  # pragma: no mutate[truthiness]
         self._ends_newline = True
-        self._encoding: Mapping[str, PlainTree] = {}
-        self._stated = (True, 0)
+        self._stated_newline = True
         # Where the opening clear will sit once it is known. Claude spreads
         # what a fresh context is GIVEN over several ``attachment`` lines --
         # its skills, its subagents, the tools it may call -- so the record
         # that states them cannot be built from line one.
-        self._opening: int | None = None
+        self._opening: int | None = None  # pragma: no mutate -- set before any read.
         self._given: list[str] = []
 
     def read(self, line: str) -> Iterator[SessionRecord]:
@@ -1864,21 +1912,16 @@ class _Reader:
           result: Iterator of SessionRecord objects parsed from the line.
 
         """
-        if not self._total:
+        if not self._started:
             # Settings before the acts they govern, then the context the
             # window opens from.
-            self._encoding = self._current_encoding()
-            self._pending.append(TurnContext(encoding=self._encoding))
+            self._started = True
+            self._pending.append(TurnContext(encoding=self._current_encoding()))
             self._opening = self._at()
             self._pending.append(ContextClear(extra=({"$opens": True})))
-        if self._total % 8 == 0:
-            self._escaped_bits.append(0)
         record = _parse(line)
-        if _escapes_unicode(line, record):
-            self._escaped_bits[self._total // 8] |= 1 << (self._total % 8)
-            self._escapes += 1
+        escaped = _escapes_unicode(line, record)
         self._ends_newline = line.endswith("\n")
-        self._total += 1
         # Everything that narrows a field runs before anything is committed: a
         # line with one malformed field raised out of ``normalize`` and lost the
         # rest of the file. Kept as its text instead, it still writes back as
@@ -1891,6 +1934,8 @@ class _Reader:
             self._pending.append(IncompleteRecord(text=line))
         else:
             context, records, calls = read
+            if escaped and records:
+                records[0] = _marked_escaped(records[0])
             if context is not self._context:
                 self._context = context
                 self._pending.append(context)
@@ -1995,27 +2040,22 @@ class _Reader:
             item,
         ]
 
-    # A tailer has no EOF, so the spelling is restated when it changes: on a line that
-    # escapes, or when the file stops or resumes ending on a newline. Never per line --
-    # each statement carries every escape so far.
+    # A tailer has no EOF, so the spelling is restated when the file stops or resumes
+    # ending on a newline. An escaped line says so on its own record instead.
     def _restate_encoding(self) -> None:
         """Emit the file's spelling whenever it stops being what was said."""
-        stated = (not self._total or self._ends_newline, self._escapes)
-        if stated == self._stated:
+        if self._ends_newline == self._stated_newline:
             return
-        self._stated = stated
-        self._encoding = self._current_encoding()
-        self._pending.append(TurnContext(encoding=self._encoding))
+        self._stated_newline = self._ends_newline
+        self._pending.append(TurnContext(encoding=self._current_encoding()))
 
     def _current_encoding(self) -> Mapping[str, PlainTree]:
-        """How the file spells its bytes, for the lines consumed so far."""
+        r"""How the file spells its bytes, for the lines consumed so far."""
         return immutable(
             {
-                "newline_terminated": not self._total or self._ends_newline,
+                "newline_terminated": self._ends_newline,
                 "ascii_escaped": False,
-                "ascii_escape_exceptions": base64.b64encode(
-                    bytes(self._escaped_bits).rstrip(b"\0"),
-                ).decode("ascii"),
+                "ascii_escape_exceptions": "",
             },
         )
 
@@ -2061,6 +2101,19 @@ def _without_turn_envelope(
         )
     }
     return record if len(kept) == len(extra) else replace(record, extra=immutable(kept))
+
+
+# A line's first record is the one its line is written from.
+def _marked_escaped(record: SessionRecord) -> SessionRecord:
+    r"""Return ``record`` marked as leading a line that spelled non-ASCII as ``\u``."""
+    if isinstance(record, IncompleteRecord):
+        return record
+    if isinstance(record, UncategorizedRecord):
+        return replace(
+            record,
+            payload=immutable({**record.payload, "$ascii_escaped": True}),
+        )
+    return replace(record, extra=immutable({**record.extra, "$ascii_escaped": True}))
 
 
 # A plain-ASCII line is spelled the same either way, so only a line whose text had
