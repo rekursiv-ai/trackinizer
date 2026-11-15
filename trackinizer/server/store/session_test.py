@@ -257,6 +257,50 @@ async def test_past_runs_read_a_hosts_runs_for_one_account() -> None:
     )
 
 
+@pytest.mark.parametrize("found", [None, UUID(int=7)])
+@pytest.mark.asyncio
+async def test_a_spawned_session_is_found_under_its_spawner_by_its_cli_id(
+    found: UUID | None,
+) -> None:
+    """The query's own rows are proven on PGlite (``sessions_routes_test``)."""
+    conn = make_conn()
+    conn.fetchval = AsyncMock(return_value=found)
+    store, _ = make_store(conn)
+
+    assert await store.spawned_session(UUID(int=1), cli_session_id="a/b") == found
+    conn.fetchval.assert_awaited_once_with(
+        "SELECT child.id FROM edges "
+        "JOIN inquiries AS child ON child.id = edges.from_id "
+        "WHERE edges.to_id = $1 AND edges.edge_kind = 'produced_by' "
+        "AND child.kind = 'AgentSession' "
+        "AND child.agentsession_cli_session_id = $2 "
+        "ORDER BY child.seq LIMIT 1",
+        UUID(int=1),
+        "a/b",
+    )
+
+
+@pytest.mark.parametrize("below", [False, True])
+@pytest.mark.asyncio
+async def test_a_session_is_below_another_as_the_database_answers(below: bool) -> None:
+    conn = make_conn()
+    conn.fetchval = AsyncMock(return_value=below)
+    store, _ = make_store(conn)
+
+    assert await store.is_spawned_below(UUID(int=2), root=UUID(int=1)) is below
+    conn.fetchval.assert_awaited_once_with(
+        "WITH RECURSIVE up(id) AS ("
+        "SELECT to_id FROM edges WHERE from_id = $1 "
+        "AND edge_kind = 'produced_by' AND to_kind = 'AgentSession' "
+        "UNION SELECT edges.to_id FROM edges JOIN up ON edges.from_id = up.id "
+        "WHERE edges.edge_kind = 'produced_by' "
+        "AND edges.to_kind = 'AgentSession') "
+        "SELECT EXISTS (SELECT 1 FROM up WHERE id = $2)",
+        UUID(int=2),
+        UUID(int=1),
+    )
+
+
 class TestSetSessionAudience:
     """``set_session_audience`` moves a session only for one of its owners."""
 

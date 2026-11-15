@@ -91,6 +91,23 @@ class TestSessionStart:
                 cli_session_id="chat:21056",
             )
 
+    def test_a_spawned_session_is_named_by_its_own_cli_session_id(self) -> None:
+        # The id is what finds the child again under the same spawner after a
+        # restart; without one every start would open another child.
+        with pytest.raises(ValidationError, match="spawned_by needs a cli_session_id"):
+            SessionStart(cli="sagent", spawned_by=uuid.UUID(int=1))
+        child = SessionStart(
+            cli="sagent",
+            cli_session_id="abc/kid",
+            spawned_by=uuid.UUID(int=1),
+            note="kid",
+        )
+        assert (child.spawned_by, child.note) == (uuid.UUID(int=1), "kid")
+
+    def test_a_note_says_what_spawned_a_session_and_nothing_else(self) -> None:
+        with pytest.raises(ValidationError, match="note needs spawned_by"):
+            SessionStart(cli="sagent", cli_session_id="abc", note="kid")
+
 
 class TestSessionEnd:
     def test_rejects_whitespace_only_cli_session_id(self) -> None:

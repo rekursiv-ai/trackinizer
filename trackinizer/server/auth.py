@@ -420,8 +420,9 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
 
     A key a start minted for an agent process reaches only the routes that process
     calls (``wire_process_keys.PROCESS_KEY_ROUTES``), and a route that names a
-    session only for the session its process was started for: anything else is 403
-    here, before the route's own code acts on it.
+    session only for the session its process was started for and the sessions its
+    agents spawned (:func:`process_reaches`): anything else is 403 here, before the
+    route's own code acts on it.
 
     ``request.app.state.store`` must hold the live :class:`Store` (it owns the
     engine and the ``last_used_at`` throttle). Raises 401 when no credential
@@ -469,7 +470,7 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
         )
         if identity is None:
             raise HTTPException(status_code=401, detail="invalid bearer token")
-        _require_process_route(request, identity)
+        await _require_process_route(request, identity, store=store)
         return identity
     session = _try_read_session(request)
     if session is not None:
@@ -483,6 +484,32 @@ async def request_user(request: HTTPConnection) -> AuthIdentity:
             _refuse_another_page(request, identity)
             return identity
     raise HTTPException(status_code=401, detail="not authenticated")
+
+
+async def process_reaches(
+    store: _StoreLike,
+    *,
+    process: ProcessKey,
+    session_id: uuid.UUID,
+) -> bool:
+    """Return whether a process key acts for ``session_id``.
+
+    It acts for the session its process was started for, and each session an agent
+    of that session spawned, at any depth; a key that names no session, for none.
+
+    Args:
+      store: Reads the ``produced_by`` edges between sessions.
+      process: What the key was minted for.
+      session_id: The session a request names.
+
+    Returns:
+      reaches: Whether the key may act for it.
+
+    """
+    own = process.session_id
+    return own is not None and (
+        session_id == own or await store.is_spawned_below(session_id, root=own)
+    )
 
 
 def extract_bearer(request: HTTPConnection) -> str | None:
@@ -1320,8 +1347,13 @@ def _refuse_another_page(request: HTTPConnection, identity: AuthIdentity) -> Non
 # every session and host of the account. Refused where a bearer becomes an identity, so
 # a route nobody listed is refused too, before its own code runs; ``scope["route"]`` is
 # the route the router matched, the one each list entry names.
-def _require_process_route(connection: HTTPConnection, identity: AuthIdentity) -> None:
-    """Refuse a process key on a route its process does not call, or for another session."""
+async def _require_process_route(
+    connection: HTTPConnection,
+    identity: AuthIdentity,
+    *,
+    store: _StoreLike,
+) -> None:
+    """Refuse a process key on a route its process does not call, or outside its tree."""
     process = identity.process
     if process is None:
         return
@@ -1336,14 +1368,23 @@ def _require_process_route(connection: HTTPConnection, identity: AuthIdentity) -
         process.session_id is not None
         and isinstance(route, Route | WebSocketRoute)
         and (method, route.path) in PROCESS_KEY_ROUTES
-        and named in {None, str(process.session_id)}
+        and (named is None or await _reaches_named(store, process=process, named=named))
     ):
         return
     raise HTTPException(
         status_code=403,
         detail="an agent process's key reaches only what its process calls, for its "
-        "own session",
+        "own session and the sessions its agents spawned",
     )
+
+
+async def _reaches_named(store: _StoreLike, *, process: ProcessKey, named: str) -> bool:
+    """Return whether ``process`` reaches the session a path names; no id names none."""
+    try:
+        session_id = uuid.UUID(named)
+    except ValueError:
+        return False
+    return await process_reaches(store, process=process, session_id=session_id)
 
 
 async def _resolve_session_identity(
@@ -1602,6 +1643,13 @@ class _StoreLike(Protocol):
     def should_bump_api_key_last_used(self, key_id: uuid.UUID) -> bool: ...
 
     def remember_bearer_identity(self, secret: str, identity: AuthIdentity) -> None: ...
+
+    async def is_spawned_below(
+        self,
+        session_id: uuid.UUID,
+        *,
+        root: uuid.UUID,
+    ) -> bool: ...
 
 
 # Starlette's ``State`` is a bag of dynamic attributes; this names the two the

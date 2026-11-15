@@ -582,6 +582,62 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             for row in rows
         ]
 
+    async def spawned_session(
+        self,
+        spawner: UUID,
+        *,
+        cli_session_id: str,
+    ) -> UUID | None:
+        """Return the session ``produced_by`` ``spawner`` under ``cli_session_id``, if any.
+
+        Args:
+          spawner: The session whose agent spawned it.
+          cli_session_id: Its CLI's own id.
+
+        Returns:
+          session_id: The first such session opened; ``None`` when there is none.
+
+        """
+        async with self.engine.acquire() as conn:
+            found = await conn.fetchval(
+                "SELECT child.id FROM edges "
+                "JOIN inquiries AS child ON child.id = edges.from_id "
+                "WHERE edges.to_id = $1 AND edges.edge_kind = 'produced_by' "
+                "AND child.kind = 'AgentSession' "
+                "AND child.agentsession_cli_session_id = $2 "
+                "ORDER BY child.seq LIMIT 1",
+                spawner,
+                cli_session_id,
+            )
+        return None if found is None else _uuid(found)
+
+    # ``UNION`` drops a session seen before, so a cycle of edges ends the walk.
+    async def is_spawned_below(self, session_id: UUID, *, root: UUID) -> bool:
+        """Return whether ``session_id`` was spawned by ``root``'s session, at any depth.
+
+        Args:
+          session_id: The session asked about.
+          root: The session at the top.
+
+        Returns:
+          below: Whether a chain of ``produced_by`` edges between sessions leads
+            from ``session_id`` up to ``root``; ``False`` for ``root`` itself.
+
+        """
+        async with self.engine.acquire() as conn:
+            below = await conn.fetchval(
+                "WITH RECURSIVE up(id) AS ("
+                "SELECT to_id FROM edges WHERE from_id = $1 "
+                "AND edge_kind = 'produced_by' AND to_kind = 'AgentSession' "
+                "UNION SELECT edges.to_id FROM edges JOIN up ON edges.from_id = up.id "
+                "WHERE edges.edge_kind = 'produced_by' "
+                "AND edges.to_kind = 'AgentSession') "
+                "SELECT EXISTS (SELECT 1 FROM up WHERE id = $2)",
+                session_id,
+                root,
+            )
+        return from_plain(below, bool)
+
     async def silent_sessions(self, *, before: datetime) -> list[UUID]:
         """Return each live session last heard from at or before ``before``.
 

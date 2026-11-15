@@ -2,9 +2,9 @@
 
 The server refuses such a key 403 on every route not listed here, and on a listed
 route that names a session, for every session but the one its process was started
-for (``server.auth.request_user``). A test walks every route the server serves with
-one, and the agent process's own test records each request its client sends against
-this list.
+for and those its agents spawned (``server.auth.process_reaches``). A test walks
+every route the server serves with one, and the agent process's own test records
+each request its client sends against this list.
 
 Paths are written out, as ``audience.SESSION_CONTENT_ROUTES`` writes them, so this
 module imports nothing: ``server.auth`` reads it, and every service that imports
@@ -31,6 +31,9 @@ PROCESS_KEY_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("GET", "/api/sessions/{session_id}/records"),
         ("POST", "/api/sessions/{session_id}/records"),
         (WEBSOCKET, "/api/sessions/{session_id}/process/ws"),
+        # The session of each agent its agents spawn, which the start route opens
+        # only ``spawned_by`` a session the key acts for.
+        ("POST", "/api/sessions/start"),
         # Its account's hosts, which its agents' tools run on.
         ("GET", "/api/terminals/hosts"),
         ("GET", "/api/terminals/hosts/changes"),

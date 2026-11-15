@@ -41,6 +41,7 @@ from trackinizer.server.api.session_relay_routes import stop_process
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
+    process_reaches,
     require_role,
 )
 from trackinizer.server.session_relay import InputRefusedError, NotLiveError
@@ -98,6 +99,13 @@ async def session_start_route(
     session is 403, and so is one a science chat takes no run from: only its opening
     key, the assistant's or its starter's attach to a chat. An unknown id is 404.
 
+    ``spawned_by`` names the session whose agent spawned this one, which the caller
+    must write (403 else; 404 for no session). The start re-opens the session already
+    ``produced_by`` it under ``cli_session_id``, whichever key opened that, else opens
+    one in its audience; either way it links this one ``produced_by`` it, ``note``
+    the edge's note. An agent process's key starts only such a session, spawned by a
+    session it acts for (``auth.process_reaches``).
+
     Args:
       body: Session metadata (title, cli, cli_session_id, attach, started, rooms,
         account, idempotency_key, private, keep_audience).
@@ -125,10 +133,32 @@ async def session_start_route(
         if body.attach is None
         else await _require_attach(request, identity, session_id=body.attach)
     )
+    spawner = (
+        None
+        if body.spawned_by is None
+        else await _require_spawner(request, identity, session_id=body.spawned_by)
+    )
+    if identity.process is not None and spawner is None:
+        raise HTTPException(
+            status_code=403,
+            detail="an agent process's key starts only the session of an agent one "
+            "of its agents spawned",
+        )
+    held: UUID | None = None
+    if spawner is not None:
+        assert isinstance(body.cli_session_id, str)
+        held = await store.spawned_session(
+            spawner.id,
+            cli_session_id=body.cli_session_id,
+        )
     audience: str | None = None
     title = body.title or f"{body.cli} session"
     labels: list[str] | None = None
-    audience = audience or granted_audience(identity, private=body.private)
+    audience = (
+        audience
+        or (None if spawner is None else spawner.audience)
+        or granted_audience(identity, private=body.private)
+    )
     # An AgentSession is an inquiry like any other, so it carries the same
     # account attribution: default to the authenticated creator, validate it is
     # an active user before minting the row (the gate the submit / edit routes
@@ -156,10 +186,19 @@ async def session_start_route(
         requested_actor=_actor(identity, body.actor),
         audience=audience,
         api_key_id=identity.api_key_id,
-        attach=body.attach,
-        keep_audience=body.keep_audience,
+        attach=held or body.attach,
+        keep_audience=body.keep_audience or spawner is not None,
         principal=await request_principal(request, identity),
     )
+    if spawner is not None:
+        _ = await store.add_edge(
+            from_id=session_id,
+            to_id=spawner.id,
+            edge_kind="produced_by",
+            note=body.note,
+            api_key_id=identity.api_key_id,
+            actor=_actor(identity, body.actor),
+        )
     row = await require_session(store, session_id)
     require_session_write_access(identity, row)
     return SessionStartResponse(
@@ -345,6 +384,31 @@ async def _require_attach(
 ) -> AgentSession:
     """Return the session a run re-opens, refusing a caller who may not run on it."""
     session = await require_session(get_store(request), session_id)
+    require_session_write_access(identity, session)
+    await require_session_access(request, identity, session=session, mode="write")
+    return session
+
+
+# A chat's own writer rule is not asked: a child adds no run to its spawner's chat.
+async def _require_spawner(
+    request: Request,
+    identity: AuthIdentity,
+    *,
+    session_id: UUID,
+) -> AgentSession:
+    """Return the session that spawned the one a start opens, refusing a non-writer."""
+    store = get_store(request)
+    session = await require_session(store, session_id)
+    if identity.process is not None and not await process_reaches(
+        store,
+        process=identity.process,
+        session_id=session_id,
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="an agent process's key reaches only its own session and the "
+            "sessions its agents spawned",
+        )
     require_session_write_access(identity, session)
     await require_session_access(request, identity, session=session, mode="write")
     return session

@@ -11,6 +11,7 @@ from trackinizer.wire.wire_session_ir import (
     session_records_path,
 )
 from trackinizer.wire.wire_session_relay import SESSION_PROCESS_WS_PATH
+from trackinizer.wire.wire_sessions import SESSION_START_PATH
 from trackinizer.wire.wire_terminals import (
     TERMINAL_HOSTS_CHANGES_PATH,
     TERMINAL_HOSTS_PATH,
@@ -41,6 +42,7 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("GET", "/api/canvases/{canvas_id}"),
         ("POST", "/api/canvases/{canvas_id}/operations"),
         ("POST", CAPTURES_PATH),
+        ("POST", SESSION_START_PATH),
         ("GET", "/api/inquiries/{kind}/{seq}"),
         ("GET", "/api/me/preferences/agent"),
     } == PROCESS_KEY_ROUTES - {

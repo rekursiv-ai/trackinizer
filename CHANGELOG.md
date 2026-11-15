@@ -7,6 +7,12 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Added
 
+- `POST /api/sessions/start` takes `spawned_by` and `note`: the session whose agent
+  spawned this one, and what spawned it. The start links the session `produced_by`
+  the spawner and opens it in the spawner's audience, or re-opens the one already
+  linked under its `cli_session_id`, whichever key opened it. A key a start minted
+  for an agent process starts only such a session, spawned in its own session's
+  tree, and reaches the parts and records of each session in that tree.
 - `GET /api/chats/{conversation_id}` gives the head session's number, `seq`.
 - `GET /api/me/preferences/agent` gives the schema of
   the settings an agent's own tool may change, `preferences.AGENT_KEYS`: the

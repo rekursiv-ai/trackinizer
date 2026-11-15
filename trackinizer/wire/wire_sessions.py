@@ -173,6 +173,16 @@ class SessionStart(BaseModel):
     only a session it mints: what an upload of a finished session asks. A server that
     predates the field hides the ``open`` session a ``private`` start re-opens."""
 
+    spawned_by: uuid.UUID | None = None
+    """The session whose agent spawned this one, which the caller may write. The start
+    re-opens the session already ``produced_by`` it under ``cli_session_id``, else opens
+    one in its audience; either way it links this one ``produced_by`` it. ``private``
+    is not read: a child is read by whoever reads its spawner."""
+
+    note: str = ""
+    """What spawned it, as the CLI names it (sagent's label): the ``produced_by``
+    edge's note. Only with ``spawned_by``."""
+
     _reject_blank_scalars = field_validator(
         "cli",
         "cli_session_id",
@@ -199,10 +209,14 @@ class SessionStart(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _attach_excludes_cli_session_id(self) -> Self:
-        """Refuse a start that re-opens a session and also names a CLI session id."""
+    def _ids_agree(self) -> Self:
+        """Refuse a start whose ids disagree on which session it opens."""
         if self.attach is not None and self.cli_session_id is not None:
             raise ValueError("attach and cli_session_id are exclusive")
+        if self.spawned_by is not None and self.cli_session_id is None:
+            raise ValueError("spawned_by needs a cli_session_id")
+        if self.note and self.spawned_by is None:
+            raise ValueError("note needs spawned_by")
         return self
 
 
