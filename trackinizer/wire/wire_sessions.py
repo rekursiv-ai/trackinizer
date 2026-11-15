@@ -51,7 +51,6 @@ def _reject_blank(value: str | None) -> str | None:
 __all__ = [
     "CAMPAIGN_ASKER_INFIX",
     "CANVAS_LABEL_PREFIX",
-    "CONSOLE_RELAY_MARK",
     "CONTEXT_TRAILER",
     "FEED_FACETS_PATH",
     "FEED_HISTOGRAM_PATH",
@@ -72,9 +71,6 @@ __all__ = [
     "CanvasMark",
     "CanvasRecordContext",
     "CanvasVisibleVisual",
-    "ConsoleRelay",
-    "ConsoleRelayReceipt",
-    "ConsoleTarget",
     "FeedActorFacet",
     "FeedBucket",
     "FeedCursor",
@@ -513,22 +509,6 @@ class CanvasMark(BaseModel):
     """The records under it that exist."""
 
 
-class ConsoleTarget(BaseModel):
-    """An agent a Console line was sent to, as ``@actor`` or ``@actor:room``."""
-
-    actor: str = Field(min_length=1)
-    room: str | None = None
-
-    _validate_scalars = field_validator("actor", "room", mode="after")(
-        staticmethod(_reject_blank),
-    )
-
-
-CONSOLE_RELAY_MARK: Final = "→ "
-"""What a Console relay line starts with in a canvas's chat: an arrow, then a space.
-The web draws a line that starts with it as a relay, neither the person's nor the
-agent's."""
-
 CONTEXT_TRAILER: Final = "\nTrackinizer context (verify with trax): "
 """Where a person's line ends, as an agent reads it, and what it was told of where the
 line came from begins, as JSON. Whatever shows or summarizes the line cuts it here."""
@@ -538,39 +518,6 @@ LINE_CANVAS: Final = "canvas_id"
 from, a UUID as text. The server passes it on to the agent process only from the
 session's own account (``session_relay_routes``), and the process moves its agents'
 canvas tools to the canvas it names."""
-
-
-class ConsoleRelay(BaseModel):
-    """What a person sent agents directly from the Console, told to their canvas's chat.
-
-    Posted by the browser after the per-agent sends. No chat takes it: a chat's agent
-    answers every input it is sent, and no input is a silent one.
-    """
-
-    targets: list[ConsoleTarget] = Field(min_length=1, max_length=200)
-    text: str = Field(min_length=1, max_length=_MAX_MESSAGE_CHARS)
-
-    def line(self) -> str:
-        """Return the chat line that records the relay: ``-> a, b:room: text``.
-
-        Returns:
-          line: The relay mark, each target as ``actor`` or ``actor:room``, then
-            the text.
-
-        """
-        names = ", ".join(
-            target.actor if target.room is None else f"{target.actor}:{target.room}"
-            for target in self.targets
-        )
-        return f"{CONSOLE_RELAY_MARK}{names}: {self.text}"
-
-
-class ConsoleRelayReceipt(BaseModel):
-    """Whether a Console relay reached the canvas's chat."""
-
-    delivered: bool
-    """Always false: no chat takes a relay. The agents already have the message, so
-    this is not an error."""
 
 
 type MessageKind = Literal["ask", "reply", "tell"]
