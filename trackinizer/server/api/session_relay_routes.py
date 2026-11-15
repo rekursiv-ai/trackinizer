@@ -22,9 +22,12 @@ its credential authenticates then.
 
 A start finds its place before anything is minted: the host it runs on, which takes
 it on its daemon's held wait, and the host whose login it uses. Either answers 409
-``no_place`` when it cannot serve the start. The process's key is minted under the
-caller's account, capped at the caller's role and at ``writer``, bound to the host and
-named for the process and its session (``auth.process_key_name``). It reaches only the
+``no_place`` when it cannot serve the start. A remote agent service serves the people
+its configuration names, and whoever the deployment's agent policy says it serves too;
+a remote agent's start, and each line sent to one, is refused as that policy says
+(``agent_policy_gate``). The process's key is minted under the caller's account, capped at the caller's role
+and at ``writer``, bound to the host and named for the process and its session
+(``auth.process_key_name``). It reaches only the
 routes an agent process calls (``wire_process_keys.PROCESS_KEY_ROUTES``), each for
 its own process's session alone, and is refused 403 on every other before the route
 acts (``auth.request_user``): a key that could do more would reach every session and
@@ -70,6 +73,7 @@ from treekle import from_plain
 from trackinizer.server import auth
 from trackinizer.server.api._deps import (
     auth_is_disabled,
+    get_agent_policy,
     get_default_remote_agent_service,
     get_later,
     get_remote_agent_services,
@@ -81,6 +85,7 @@ from trackinizer.server.api._routes_shared import (
     request_engine,
     require_instance,
 )
+from trackinizer.server.api.agent_policy_gate import refuse_line, refuse_start
 from trackinizer.server.api.session_access import require_session_access
 from trackinizer.server.api.session_identity import require_session
 from trackinizer.server.audience import person_audiences
@@ -250,13 +255,18 @@ async def send_input_route(
 
     Raises:
       HTTPException: 403 for a caller who may not write the session, or post into
-        its chat; 404 for no session; 409 ``not_live`` when no process serves it,
-        and ``input_refused`` for an input larger than a frame or past what its
-        process holds unread.
+        its chat; 404 for no session; a line to a remote agent the agent policy
+        refuses, as it says; 409 ``not_live`` when no process serves it, and
+        ``input_refused`` for an input larger than a frame or past what its process
+        holds unread.
 
     """
     session = await _session(request, session_id)
     await require_session_access(request, identity, session=session, mode="post")
+    # A slash line can run a turn as a line does (``/defer``, ``/compact``); only a
+    # stop always goes through.
+    if body.kind in ("UserMessage", "Command"):
+        await refuse_line(request, identity, session_id=session_id)
     try:
         sent = get_session_relay(request).send_input(
             session_id,
@@ -301,7 +311,8 @@ async def start_process_route(
 
     Raises:
       HTTPException: 403 for a caller who may not write the session; 404 for no
-        session; 409 ``no_place`` when a place it names cannot serve the start.
+        session; 409 ``no_place`` when a place it names cannot serve the start; a
+        remote agent's start the agent policy refuses, as it says.
 
     """
     session = await _session(request, session_id)
@@ -311,6 +322,8 @@ async def start_process_route(
     if current is not None and current.state != "detached":
         return current
     place = await _start_place(request, identity, spec=body)
+    if place.remote:
+        await refuse_start(request, identity, session_id=session_id)
     process_id = uuid4()
     async with request_engine(request).acquire() as conn:
         _, token, _, _ = await create_api_key(
@@ -823,6 +836,8 @@ async def _start_place(
     if not name:
         raise _no_place("this server names no host to run agents on; name one")
     services = get_remote_agent_services(request)
+    policy = get_agent_policy(request)
+    served = policy is not None and policy.serves(identity.email)
     async with request_engine(request).acquire() as conn:
         # The default the server names is a remote agent service; a host named is
         # the caller's own first. A service must also say it confines each process.
@@ -834,6 +849,7 @@ async def _start_place(
             facts={SESSIONS_FACT: True},
             service_facts={SESSIONS_FACT: True, REMOTE_AGENTS_FACT: True},
             services=services,
+            served=served,
         )
         signs_in = not spec.login_host or await _place(
             conn,
@@ -843,6 +859,7 @@ async def _start_place(
             facts={LOGINS_FACT: True},
             service_facts={LOGINS_FACT: True},
             services=services,
+            served=served,
         )
     if runs is None:
         raise _no_place(f"no host {name} runs agents for you")
@@ -854,7 +871,8 @@ async def _start_place(
 
 
 # A remote agent service is one the configuration names, admits the caller, and
-# reports ``service_facts``.
+# reports ``service_facts``. It admits its ``admits``, patterns of the kind staff
+# holds, matched as staff is, and whoever the agent policy says it serves too.
 async def _place(
     conn: Conn,
     identity: AuthIdentity,
@@ -864,6 +882,7 @@ async def _place(
     facts: Mapping[str, bool],
     service_facts: Mapping[str, bool],
     services: tuple[RemoteAgentService, ...],
+    served: bool,
 ) -> _Place | None:
     """Find the host ``name``: the caller's own reporting ``facts``, else a service."""
     if own and (
@@ -871,11 +890,14 @@ async def _place(
     ):
         return _Place(host_id=found, host=name, remote=False)
     service = next((each for each in services if each.name == name), None)
-    # Its admits are patterns of the kind staff holds, matched as staff is.
-    if service is None or STAFF not in person_audiences(
-        identity.email,
-        hosted_domain=identity.hosted_domain,
-        staff=service.admits,
+    if service is None or not (
+        served
+        or STAFF
+        in person_audiences(
+            identity.email,
+            hosted_domain=identity.hosted_domain,
+            staff=service.admits,
+        )
     ):
         return None
     found = await _host_id(conn, name=name, owner=service.account, facts=service_facts)

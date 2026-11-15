@@ -33,6 +33,7 @@ from trackinizer.server.api import _deps
 from trackinizer.server.api._deps import (
     Later,
     auth_is_disabled,
+    get_agent_policy,
     get_assistant,
     get_chat_orgs,
     get_default_remote_agent_service,
@@ -668,6 +669,37 @@ def test_the_remote_agent_services_and_the_default_are_the_configs_or_none() -> 
         get_remote_agent_services(request),
         get_default_remote_agent_service(request),
     ) == ((service,), "remote-agents")
+
+
+class _Policy:
+    def serves(self, asker: str) -> bool:
+        del asker
+        return False
+
+    async def refusal(
+        self,
+        engine: object,
+        *,
+        asker: str,
+        session_id: object,
+        work: str,
+    ) -> None:
+        del engine, asker, session_id, work
+
+    async def stored(self, engine: object, **shown: object) -> None:
+        del engine, shown
+
+
+def test_the_agent_policy_is_the_one_the_lifespan_kept_or_none() -> None:
+    app = FastAPI()
+    request = _request(app)
+    assert get_agent_policy(request) is None
+    app.state.agent_policy = object()
+    assert get_agent_policy(request) is None
+    policy = _Policy()
+    app.state.agent_policy = policy
+
+    assert get_agent_policy(request) is policy
 
 
 def test_the_app_holds_one_later_made_on_first_use() -> None:

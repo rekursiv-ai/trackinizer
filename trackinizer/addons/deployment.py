@@ -24,7 +24,9 @@ from trackinizer.server.visuals.catalog import Canvas
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator, Mapping
+
+    from trackinizer.server.agent_policy import AgentPolicy
 
 
 __all__ = [
@@ -63,7 +65,8 @@ class Deployment:
         Raises:
           DeploymentError: A field is no addon config, or an addon's router holds a
             WebSocket route.
-          ValueError: Two addons each set an access policy; a server asks one.
+          ValueError: Two addons each set an access policy, or an agent policy; a
+            server asks one.
 
         """
         self.visuals = config.visuals.make()
@@ -83,19 +86,16 @@ class Deployment:
             except TypeError as err:
                 raise DeploymentError(f"Addon {name!r}: {err}") from err
         self._catalog = AddonCatalogBody(addons=descriptions)
-        governing = {
-            name: manifest.access_policy
-            for name, manifest in self.manifests.items()
-            if manifest.access_policy is not None
-        }
-        if len(governing) > 1:
-            raise ValueError(
-                f"Addons {', '.join(sorted(governing))} each set an access policy; "
-                "a deployment takes at most one.",
-            )
-        self.access_policy: AccessPolicy = next(
-            iter(governing.values()),
-            DefaultPolicy(),
+        governing = _one(
+            "an access policy",
+            {name: manifest.access_policy for name, manifest in self.manifests.items()},
+        )
+        self.access_policy: AccessPolicy = (
+            DefaultPolicy() if governing is None else governing
+        )
+        self.agent_policy: AgentPolicy | None = _one(
+            "an agent policy",
+            {name: manifest.agent_policy for name, manifest in self.manifests.items()},
         )
 
     def catalog(self) -> AddonCatalogBody:
@@ -231,3 +231,14 @@ def _addon_configs(config: Deployment.Config) -> Iterator[tuple[str, Makeable[ob
                 "addon config or None.",
             )
         yield config_field.name, value
+
+
+def _one[T](part: str, by_addon: Mapping[str, T | None]) -> T | None:
+    """Return the ``part`` the one addon that sets it sets; ``None`` when none does."""
+    setting = {name: each for name, each in by_addon.items() if each is not None}
+    if len(setting) > 1:
+        raise ValueError(
+            f"Addons {', '.join(sorted(setting))} each set {part}; a deployment "
+            "takes at most one.",
+        )
+    return next(iter(setting.values()), None)

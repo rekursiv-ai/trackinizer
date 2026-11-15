@@ -409,7 +409,9 @@ class Input(BaseModel):
     kind: InputKind
     payload: JSON
     recipient: str = ""
-    """The agent it is for, by its label in the session; empty for the root."""
+    """The agent it is for, by its label in the session; empty for the root. A
+    ``Halt`` for ``all`` halts every agent of the process: the server's, when the
+    deployment's agent policy asks it to."""
 
     booked: MessageKind | None = None
     """How the sending agent's team booked it; ``None`` for a person's input."""

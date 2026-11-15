@@ -10,7 +10,6 @@ import pytest
 
 from trackinizer.wire.wire_science_chat import (
     CHAT_SESSION_PREFIX,
-    NO_KEY,
     ChatForkAt,
     ChatSent,
     ChatStart,
@@ -77,7 +76,6 @@ def test_a_started_chat_always_names_its_session() -> None:
 
     with pytest.raises(ValidationError, match="session_id"):
         _ = ChatSent.model_validate({**sent, "session_id": None})
-    assert NO_KEY == "no_key"
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ import functools
 import logging
 import uuid
 
+from trackinizer.server.agent_policy import AgentPolicy
 from trackinizer.server.api.replays import Replays
 from trackinizer.server.api.tool_access import tool_access
 from trackinizer.server.capture_relay import CaptureRelay
@@ -421,6 +422,21 @@ def get_default_remote_agent_service(request: HTTPConnection) -> str:
 
     """
     return _config(cast("FastAPI", request.app)).default_remote_agent_service
+
+
+def get_agent_policy(request: HTTPConnection) -> AgentPolicy | None:
+    """Return the deployment's agent policy, which the lifespan keeps; ``None`` for none.
+
+    Args:
+      request: Request.
+
+    Returns:
+      policy: What decides the remote agents' work; ``None`` where nothing does.
+
+    """
+    app = cast("FastAPI", request.app)
+    policy = cast(object, getattr(app.state, "agent_policy", None))
+    return policy if isinstance(policy, AgentPolicy) else None
 
 
 def get_chat_orgs(request: Request) -> ChatOrgs:

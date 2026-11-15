@@ -189,6 +189,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     async with build_engine(config) as engine:
         app.state.engine = engine
         app.state.access_policy = app_deployment(app).access_policy
+        app.state.agent_policy = app_deployment(app).agent_policy
         app.state.store = Store(
             engine,
             embed=build_embedder(config.embedder),

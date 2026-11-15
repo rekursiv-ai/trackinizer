@@ -591,6 +591,22 @@ async def test_records_for_a_session_nobody_watches_go_nowhere() -> None:
     assert relay.process(_SESSION) is None
 
 
+async def test_what_the_server_says_reaches_each_viewer_now_and_is_not_kept() -> None:
+    relay = SessionRelay()
+    said = _event("CommandOutput")
+    relay.tell(_SESSION, said)
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+
+    relay.tell(_SESSION, said)
+
+    assert await viewer.next() == said
+    late = _Viewer(relay)
+    assert isinstance(await late.next(), Opened)
+    relay.tell(_SESSION, _event("ModelCallStarted"))
+    assert await late.next() == _event("ModelCallStarted")
+
+
 async def test_a_late_viewer_gets_the_reply_since_its_model_call_then_live_lines() -> (
     None
 ):
