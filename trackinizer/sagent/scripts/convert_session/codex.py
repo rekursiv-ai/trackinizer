@@ -15,6 +15,7 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import replace
 from types import MappingProxyType
 from typing import Final, TextIO, cast
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import base64
 import binascii
@@ -38,7 +39,10 @@ from trackinizer.sagent.model.capability import (
     literal_members,
 )
 from trackinizer.sagent.scripts.convert_session.codex_orders import payload_orders
-from trackinizer.sagent.scripts.convert_session.provider_fields import read_or_default
+from trackinizer.sagent.scripts.convert_session.provider_fields import (
+    MISSING_TIMESTAMP,
+    read_or_default,
+)
 from trackinizer.sagent.scripts.convert_session.shell_results import (
     lift_shell_result,
     shell_result_for_replay,
@@ -135,7 +139,18 @@ is a foreign CLI's subtype and is rejected with ``invalid_enum_value``.
 """
 
 
-def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
+CLI_VERSION: Final = "0.150.1"
+"""The codex version a launch line claims when no installed codex can be asked."""
+
+
+def denormalize(
+    records: Iterable[SessionRecord],
+    stream: TextIO,
+    *,
+    session_id: UUID | None = None,
+    cwd: str | None = None,
+    cli_version: str = CLI_VERSION,
+) -> None:
     """Denormalize records as Codex rollout JSONL.
 
     Two passes over the records, so they are held as a list: the launch line
@@ -146,9 +161,34 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     Args:
       records: Provider-neutral records, in stream order.
       stream: Destination text stream.
+      session_id: The id another CLI's session is declared under; derived from
+        what it holds when omitted, so one conversion names one id.
+      cwd: The directory another CLI's session is declared in; the one it
+        named when omitted.
+      cli_version: The codex version another CLI's session claims it.
 
     """
     ordered = list(records)
+    contexts = [record for record in ordered if isinstance(record, TurnContext)]
+    # Codex's reader states its launch payload, or an encoding naming no escaping.
+    if contexts and not any(
+        "payload" in context.extra
+        or (
+            context.encoding
+            and "ascii_escaped" not in context.encoding
+            and "$compact" not in context.extra
+        )
+        for context in contexts
+    ):
+        stated = (c.cwd if c.cwd is not None else c.extra.get("cwd") for c in contexts)
+        ordered = _rollout_records_from_another_cli(
+            ordered,
+            session_id=session_id,
+            cwd=next((d for d in stated if isinstance(d, str)), "")
+            if cwd is None
+            else cwd,
+            cli_version=cli_version,
+        )
     # The one CARRYING a launch payload, not merely the first: a rollout whose
     # first line is blank states its encoding before it declares itself, so the
     # opening context is superseded rather than being the declaration.
@@ -184,7 +224,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     # lose its newline, which is knowable only once the stream ends, and a 273
     # MB session buffered whole cost 2.6 GB since one non-ASCII line widens the
     # entire buffer. Everything before the held line is already written.
-    held: str | None = None
+    held: str | None = None  # pragma: no mutate -- "" writes nothing too.
     written = 0
     launch = (
         _write_line(
@@ -214,9 +254,8 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
         if "payload" in declaration
         else None
     )
-    ordinal = (
-        from_plain(declaration.get("ordinal"), int, default=0) + 1 if numbered else 0
-    )
+    # Read only where ``numbered``, as each line writes it below.
+    ordinal = from_plain(declaration.get("ordinal"), int, default=0) + 1
     for group in _grouped(ordered):
         item = group[0]
         # The launch line goes back where it sat, which is after any blank
@@ -225,7 +264,7 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
             if held is not None:
                 _ = stream.write(held)
             held = launch
-            written += 1
+            # ``written`` places only the launch line, so it is not counted on.
             launch = None
         if isinstance(item, IncompleteRecord):
             if held is not None:
@@ -281,6 +320,69 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
         if encoding.get("newline_terminated") is False
         else held,
     )
+
+
+# Codex refuses a rollout without a launch line, and skips an unstamped line on resume.
+def _rollout_records_from_another_cli(
+    records: Sequence[SessionRecord],
+    *,
+    session_id: UUID | None,
+    cwd: str,
+    cli_version: str,
+) -> list[SessionRecord]:
+    """Return another CLI's session as records a rollout can be written from."""
+    opened = next(
+        (
+            r.timestamp
+            for r in records
+            if not isinstance(r, IncompleteRecord) and r.timestamp is not None
+        ),
+        MISSING_TIMESTAMP,
+    )
+    kept: list[SessionRecord] = []
+    last = opened
+    for record in records:
+        if isinstance(record, IncompleteRecord) or (
+            isinstance(record, UncategorizedRecord) and "/" not in record.kind
+        ):
+            continue
+        unsealed = (
+            replace(record, encrypted=None)
+            if isinstance(record, Thinking) and record.reasoning_id is None
+            else record
+        )
+        last = unsealed.timestamp if unsealed.timestamp is not None else last
+        kept.append(replace(unsealed, timestamp=last))
+    said = next(
+        (
+            r.content
+            for r in kept
+            if isinstance(r, UserMessage) and r.content is not None
+        ),
+        "",
+    )
+    named = str(session_id or uuid5(NAMESPACE_URL, f"{opened}/{len(kept)}/{said:.64}"))
+    declared = TurnContext(
+        timestamp=opened,
+        encoding={"newline_terminated": True},
+        extra={
+            "ordinal": 0,
+            "$timestamp": True,
+            # Measured: codex refuses a payload naming only its id ("No saved session found").
+            "payload": {
+                "id": named,
+                "session_id": named,
+                "timestamp": opened,
+                "cwd": cwd,
+                "originator": "codex-tui",
+                "cli_version": cli_version,
+                "source": "cli",
+                "thread_source": "user",
+                "model_provider": "openai",
+            },
+        },
+    )
+    return [declared, *kept]
 
 
 # The reader emptied ``base_instructions`` because the opening :class:`ContextClear`
@@ -499,13 +601,29 @@ def _write_record(
         outer, _, _ = item.kind.partition("/")
         return [(outer, dict(item.payload))]
     if isinstance(item, ContextState):
-        return [("world_state", _ordered("world_state", dict(item.extra)))]
+        return [
+            (
+                "world_state",
+                _ordered(
+                    "world_state",  # pragma: no mutate -- the order table names none.
+                    dict(item.extra),
+                ),
+            ),
+        ]
     if isinstance(item, ContextCompaction):
         extra = mutable(item.extra)
         echoes = from_plain(extra.pop("$echoes", ""), str)
         if echoes:
             # The bare marker, not the line that carries the summary.
-            return [("event_msg", _ordered(echoes, {"type": echoes, **extra}))]
+            return [
+                (
+                    "event_msg",
+                    _ordered(
+                        echoes,  # pragma: no mutate -- the order table names none.
+                        {"type": echoes, **extra},
+                    ),
+                ),
+            ]
         # The window it opened follows it and holds what the line states, so
         # the two records rebuild ONE ``compacted`` line.
         window = next(
@@ -534,7 +652,7 @@ def _write_record(
             # is where a null field sat too.
             else {
                 key: values[key]
-                for key in payload_orders().get("token_count", ())
+                for key in payload_orders()["token_count"]
                 if key in values and (values[key] is not None or key in nulls)
             }
         )
@@ -542,14 +660,13 @@ def _write_record(
             (
                 "event_msg",
                 _ordered(
-                    "token_count",
+                    "token_count",  # pragma: no mutate -- built in this order above.
                     _codex_residual({"type": "token_count", **payload}),
                 ),
             ),
         ]
     if isinstance(item, ToolResult):
-        result = _write_result(item, followers)
-        return [result] if result is not None else []
+        return _write_result(item, followers)
     if isinstance(item, AgentToAgentMessage):
         return [("response_item", _write_agent_message(item))]
     if isinstance(item, SystemMessage) and "$event" in item.extra:
@@ -663,7 +780,8 @@ def _write_item(
     if isinstance(item, Thinking):
         # Reasoning has no content list, so its own splits stay here rather
         # than going through the content writer.
-        summary_absent = bool(extra.pop("$summary_absent", False))
+        summary_absent = extra.get("$summary_absent") is True
+        id_absent = extra.get("$id_absent") is True
         summary = _write_content(
             item.summary if item.summary is not None else item.content,
             (),
@@ -674,6 +792,11 @@ def _write_item(
             "reasoning",
             {
                 "type": "reasoning",
+                **(
+                    {"id": item.reasoning_id}
+                    if item.reasoning_id is not None and not id_absent
+                    else {}
+                ),
                 **({} if summary_absent and not summary else {"summary": summary}),
                 **(
                     {"encrypted_content": item.encrypted}
@@ -698,7 +821,6 @@ def _write_item(
         if item.subtype in _MESSAGE_ROLES
         else "system"
     )
-    content_absent = bool(extra.pop("$content_absent", False))
     blocks = _write_content(
         item.content,
         item.attachments,
@@ -706,7 +828,8 @@ def _write_item(
         text_key="output_text" if role == "assistant" else "input_text",
     )
     payload: dict[str, object] = {"type": "message", "role": role}
-    if blocks or (not content_absent and "content" not in extra):
+    # A ``content`` the residual holds replaces this one.
+    if blocks or extra.get("$content_absent") is not True:
         payload["content"] = blocks
     return _ordered("message", payload | extra)
 
@@ -777,42 +900,46 @@ def _write_call(
 def _write_result(
     item: ToolResult,
     followers: Sequence[SessionRecord] = (),
-) -> tuple[str, dict[str, object]] | None:
-    """Return the line a tool's answer came from."""
+) -> list[tuple[str, dict[str, object]]]:
+    """Return the lines a tool's answer came from."""
     item = shell_result_for_replay(item) or item
     by_path = {
         path: record
         for record in (item, *followers)
         if isinstance(record, ToolResult)
         and isinstance(changed := record.result, EditResult | WriteResult)
-        and (path := changed.path or "")
+        and (path := changed.path) is not None
     }
     extra = mutable(item.extra)
     echoes = from_plain(extra.pop("$echoes", ""), str)
     if echoes == "item_completed":
         completed = _write_completed(item, extra, by_path)
-        return ("event_msg", completed) if completed is not None else None
+        return [("event_msg", completed)] if completed is not None else []
     if echoes:
-        return ("event_msg", _write_legacy_end(item, echoes, extra, by_path))
+        return [("event_msg", _write_legacy_end(item, echoes, extra, by_path))]
     tool_result = item.result
     # A pending or cancelled call has no output; only ``shown`` text is written.
     if item.state in ("pending", "cancelled") and item.shown is None:
-        return None
+        return []
     # An output response item is the only spelling that carries the tool's own
     # text, and only an ``UncategorizedToolResult`` is read from one; a typed
-    # result came from an event and took one of the branches above.
+    # result codex wrote came from an event and took one of the branches above.
     if isinstance(tool_result, UncategorizedToolResult) and item.state == "done":
-        return ("response_item", _write_output(item, extra))
-    if isinstance(
-        tool_result,
-        BashResult | ReadResult | WriteResult | EditResult | WebSearchResult,
-    ):
-        completed = _write_completed(item, extra, by_path)
-        return ("event_msg", completed) if completed is not None else None
+        return [("response_item", _write_output(item, extra))]
     payload: dict[str, object] = {
         "type": "function_call_output",
         "call_id": item.call_id,
     }
+    if isinstance(
+        tool_result,
+        BashResult | ReadResult | WriteResult | EditResult | WebSearchResult,
+    ):
+        # Measured: codex resumes a call with no output item as "aborted"; the
+        # event is only what its TUI shows.
+        completed = _write_completed(item, extra, by_path)
+        payload["output"] = item.text()
+        output = ("response_item", payload)
+        return [("event_msg", completed), output] if completed is not None else [output]
     # A fetch or a subagent report: acts codex has no event for -- across 400
     # captured rollouts it writes neither -- but which it CAN carry, since
     # every tool it does not model answers with a plain output item. Returning
@@ -826,11 +953,11 @@ def _write_result(
         # the empty string.
         if content := "".join(text for text in item.stdout if isinstance(text, str)):
             payload["output"] = content
-        return ("response_item", _ordered("function_call_output", payload | extra))
+        return [("response_item", _ordered("function_call_output", payload | extra))]
     # Any other sagent tool's act, and an error no tool answered: codex has no event
     # for them, so each states what the model read, as a tool codex does not model.
     payload["output"] = item.text()
-    return ("response_item", _ordered("function_call_output", payload | extra))
+    return [("response_item", _ordered("function_call_output", payload | extra))]
 
 
 def _write_output(
@@ -2053,13 +2180,17 @@ def _read_thinking(
         default=list[object](),
     ):
         if isinstance(value, Mapping):
+            # pragma: no mutate start -- a cast does nothing at run time.
             block = from_plain(cast(dict[str, object], value), dict[str, object])
-            if isinstance(block.get("text"), str):
-                parts.append(read_or_default(block.get("text"), str, default=""))
+            # pragma: no mutate end
+            if isinstance(text := block.get("text"), str):
+                parts.append(text)
                 templates.append(_stencil(block, "text"))
                 order.append("text")
                 continue
+        # pragma: no mutate start -- a cast does nothing at run time.
         templates.append(cast(PlainTree, value))
+        # pragma: no mutate end
         order.append("other")
     encrypted_text = read_or_default(
         payload.get("encrypted_content"),
@@ -2071,7 +2202,13 @@ def _read_thinking(
         consumed.add("summary")
     if encrypted_text is not None:
         consumed.add("encrypted_content")
+    reasoning_id = read_or_default(payload.get("id"), str, default=None)
+    if reasoning_id is not None:
+        consumed.add("id")
     extra = _codex_residual(payload, consumed)
+    if reasoning_id is None and "id" not in payload:
+        reasoning_id = ""
+        extra["$id_absent"] = True
     if "summary" not in payload:
         extra["$summary_absent"] = True
     elif isinstance(summary_value, list):
@@ -2084,6 +2221,7 @@ def _read_thinking(
         timestamp=timestamp,
         summary="\n".join(parts) if parts else None,
         encrypted=encrypted_text,
+        reasoning_id=reasoning_id,
         extra=immutable(extra),
     )
 

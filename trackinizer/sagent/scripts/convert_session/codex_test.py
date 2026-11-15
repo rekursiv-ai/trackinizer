@@ -6,15 +6,21 @@ from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import json
+import re
 
 from treekle import MutablePlainTree, from_plain, json_loads, mutable
 
 import pytest
 
 from trackinizer.sagent.scripts.convert_session import codex
-from trackinizer.sagent.scripts.convert_session.codex import _grouped
+from trackinizer.sagent.scripts.convert_session.codex import (
+    _grouped,
+    _rollout_records_from_another_cli,
+)
+from trackinizer.sagent.scripts.convert_session.provider_fields import MISSING_TIMESTAMP
 from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
     field_paths,
     mistyped,
@@ -1014,6 +1020,335 @@ def test_foreign_provider_residuals_do_not_enter_codex_wire() -> None:
     assert "$claude" not in output.getvalue()
 
 
+def test_another_cli_s_session_becomes_a_rollout_codex_resumes() -> None:
+    """Launch line first, every line stamped, the other CLI's bookkeeping left out."""
+    claude_context = TurnContext(
+        cwd="/w",
+        encoding={"newline_terminated": True, "ascii_escaped": False},
+    )
+    output = StringIO()
+
+    codex.denormalize(
+        [
+            claude_context,
+            UncategorizedRecord(kind="queue-operation", payload={"queued": 1}),
+            IncompleteRecord(text="{torn\n"),
+            UserMessage(timestamp="2026-01-01T00:00:00Z", content="hi"),
+            Thinking(content="plan", encrypted="claude-signature"),
+            AssistantMessage(content="yo"),
+        ],
+        output,
+    )
+
+    lines = [
+        json_loads(line, dict[str, object]) for line in output.getvalue().splitlines()
+    ]
+    assert lines[0]["type"] == "session_meta"
+    assert {line["timestamp"] for line in lines} == {"2026-01-01T00:00:00Z"}
+    assert "queued" not in output.getvalue()
+    assert "torn" not in output.getvalue()
+    assert "claude-signature" not in output.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("payload", "thinking"),
+    [
+        (
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [
+                    {"type": "summary_text", "text": "a"},
+                    7,
+                    {"type": "summary_text", "text": "b"},
+                ],
+                "encrypted_content": "gAAA",
+            },
+            Thinking(
+                summary="a\nb",
+                encrypted="gAAA",
+                reasoning_id="rs_1",
+                extra={
+                    "type": "reasoning",
+                    "$templates": [
+                        {"type": "summary_text", "text": None},
+                        7,
+                        {"type": "summary_text", "text": None},
+                    ],
+                    "$order": ["text", "other", "text"],
+                    "$parts": [1, 1],
+                },
+            ),
+        ),
+        (
+            {"type": "reasoning"},
+            Thinking(
+                reasoning_id="",
+                extra={
+                    "type": "reasoning",
+                    "$id_absent": True,
+                    "$summary_absent": True,
+                },
+            ),
+        ),
+        (
+            {"type": "reasoning", "id": 7, "summary": "x", "encrypted_content": 8},
+            Thinking(
+                extra={
+                    "type": "reasoning",
+                    "id": 7,
+                    "summary": "x",
+                    "encrypted_content": 8,
+                },
+            ),
+        ),
+        (
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "a"}]},
+            Thinking(
+                summary="a",
+                reasoning_id="",
+                extra={
+                    "type": "reasoning",
+                    "$id_absent": True,
+                    "$templates": [{"type": "summary_text", "text": None}],
+                    "$order": ["text"],
+                },
+            ),
+        ),
+    ],
+    ids=["whole", "bare", "mistyped", "one-part"],
+)
+def test_reasoning_reads_each_field_codex_states_and_keeps_the_rest(
+    payload: dict[str, object],
+    thinking: Thinking,
+) -> None:
+    assert codex._read_thinking(payload, 3, "t") == replace(
+        thinking,
+        context_id=3,
+        timestamp="t",
+    )
+
+
+@pytest.mark.parametrize(
+    ("thinking", "written"),
+    [
+        (
+            Thinking(
+                summary="s",
+                content="c",
+                encrypted="e",
+                reasoning_id="rs_1",
+                extra={"z": 1, "content": []},
+            ),
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "summary": [{"type": "summary_text", "text": "s"}],
+                "content": [],
+                "encrypted_content": "e",
+                "z": 1,
+            },
+        ),
+        (
+            Thinking(content="c"),
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "c"}]},
+        ),
+        (
+            Thinking(
+                reasoning_id="",
+                extra={"$summary_absent": True, "$id_absent": True},
+            ),
+            {"type": "reasoning"},
+        ),
+    ],
+    ids=["whole", "content-as-summary", "absent"],
+)
+def test_reasoning_writes_each_field_in_codex_s_order(
+    thinking: Thinking,
+    written: dict[str, object],
+) -> None:
+    assert list(codex._write_item(thinking).items()) == list(written.items())
+
+
+@pytest.mark.parametrize(
+    ("message", "written"),
+    [
+        (
+            AssistantMessage(content="a", extra={"id": "m1"}),
+            {
+                "type": "message",
+                "id": "m1",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "a"}],
+            },
+        ),
+        (
+            UserMessage(content="u"),
+            {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "u"}],
+            },
+        ),
+        (
+            UserMessage(extra={"$content_absent": True}),
+            {"type": "message", "role": "user"},
+        ),
+    ],
+    ids=["assistant", "user", "content-absent"],
+)
+def test_a_message_writes_its_role_s_text_blocks_in_codex_s_order(
+    message: UserMessage | AssistantMessage,
+    written: dict[str, object],
+) -> None:
+    assert list(codex._write_item(message).items()) == list(written.items())
+
+
+def test_a_patch_without_its_event_marker_takes_each_path_from_its_record() -> None:
+    edited = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=(Splice(before="a", after="b"),),
+        result=EditResult(path="/a"),
+        extra={
+            "item": {
+                "type": "FileChange",
+                "changes": {"/a": {"unified_diff": None, "$filled": "unified_diff"}},
+            },
+        },
+    )
+
+    (event, _) = codex._write_result(edited)
+
+    assert event[1]["item"] == {
+        "type": "FileChange",
+        "id": "c",
+        "changes": {
+            "/a": {"unified_diff": render_udiff((Splice(before="a", after="b"),))},
+        },
+    }
+
+
+def test_an_edit_naming_no_file_is_only_what_the_model_read() -> None:
+    edited = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("ok", Splice(before="a", after="b")),
+        result=EditResult(),
+    )
+
+    assert codex._write_result(edited) == [
+        (
+            "response_item",
+            {"type": "function_call_output", "call_id": "c", "output": edited.text()},
+        ),
+    ]
+    assert (
+        codex._write_result(
+            replace(edited, extra={"$echoes": "item_completed"}),
+        )
+        == []
+    )
+
+
+def test_a_fetch_writes_all_its_text_in_codex_s_order() -> None:
+    fetched = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("a", "b"),
+        result=WebFetchResult(),
+        extra={"id": "x"},
+    )
+
+    (written,) = codex._write_result(fetched)
+
+    assert list(written[1].items()) == [
+        ("type", "function_call_output"),
+        ("id", "x"),
+        ("call_id", "c"),
+        ("output", "ab"),
+    ]
+
+
+def _launch_line(named: str, opened: str) -> TurnContext:
+    """Return the launch line a rollout from another CLI opens with."""
+    return TurnContext(
+        timestamp=opened,
+        encoding={"newline_terminated": True},
+        extra={
+            "ordinal": 0,
+            "$timestamp": True,
+            "payload": {
+                "id": named,
+                "session_id": named,
+                "timestamp": opened,
+                "cwd": "/w",
+                "originator": "codex-tui",
+                "cli_version": "9.9",
+                "source": "cli",
+                "thread_source": "user",
+                "model_provider": "openai",
+            },
+        },
+    )
+
+
+def test_another_cli_s_records_are_stamped_unsealed_and_opened_by_a_launch() -> None:
+    task = UncategorizedRecord(kind="event_msg/task_started", payload={"x": 1})
+    records = [
+        IncompleteRecord(text="{torn\n"),
+        UncategorizedRecord(kind="queue-operation"),
+        task,
+        UserMessage(),
+        UserMessage(timestamp="t1", content="hi"),
+        Thinking(content="plan", encrypted="claude-signature"),
+        UserMessage(timestamp="t2", content="more"),
+        Thinking(encrypted="gAAA", reasoning_id="rs_1"),
+    ]
+
+    rollout = _rollout_records_from_another_cli(
+        records,
+        session_id=None,
+        cwd="/w",
+        cli_version="9.9",
+    )
+
+    assert rollout == [
+        _launch_line(str(uuid5(NAMESPACE_URL, "t1/6/hi")), "t1"),
+        replace(task, timestamp="t1"),
+        UserMessage(timestamp="t1"),
+        UserMessage(timestamp="t1", content="hi"),
+        Thinking(timestamp="t1", content="plan"),
+        UserMessage(timestamp="t2", content="more"),
+        Thinking(timestamp="t2", encrypted="gAAA", reasoning_id="rs_1"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("session_id", "named"),
+    [
+        (None, str(uuid5(NAMESPACE_URL, "1970-01-01T00:00:00.000Z/1/"))),
+        (UUID(int=7), "00000000-0000-0000-0000-000000000007"),
+    ],
+    ids=["derived", "given"],
+)
+def test_a_session_stating_no_time_opens_at_the_epoch_under_its_id(
+    session_id: UUID | None,
+    named: str,
+) -> None:
+    rollout = _rollout_records_from_another_cli(
+        [AssistantMessage(content="yo")],
+        session_id=session_id,
+        cwd="/w",
+        cli_version="9.9",
+    )
+
+    assert rollout == [
+        _launch_line(named, "1970-01-01T00:00:00.000Z"),
+        AssistantMessage(timestamp="1970-01-01T00:00:00.000Z", content="yo"),
+    ]
+
+
 def test_a_read_crosses_as_the_command_codex_reads_with() -> None:
     """A read reaches codex's wire, in codex's own vocabulary.
 
@@ -1037,9 +1372,14 @@ def test_a_read_crosses_as_the_command_codex_reads_with() -> None:
         output,
     )
 
-    assert output.getvalue() == _event(
-        '{"type":"item_completed","item":{"type":"CommandExecution","id":"c",'
-        '"command":["/bin/cat","--","/a"],"stdout":"x","stderr":"","exit_code":0}}',
+    # The output item is what codex's model reads on resume; the event, its TUI.
+    assert output.getvalue() == (
+        _event(
+            '{"type":"item_completed","item":{"type":"CommandExecution","id":"c",'
+            '"command":["/bin/cat","--","/a"],"stdout":"x","stderr":"","exit_code":0}}',
+        )
+        + '{"type":"response_item","payload":'
+        '{"type":"function_call_output","call_id":"c","output":"x"}}\n'
     )
 
 
@@ -1693,9 +2033,36 @@ def test_a_canonical_key_order_is_not_stored_per_record() -> None:
     assert isinstance(record, Thinking)
 
     assert "$native_order" not in record.extra, "the table already holds it"
+    assert record.reasoning_id == "r1"
 
     output = StringIO()
     codex.denormalize(records, output)
+    assert output.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    ("item", "reasoning_id"),
+    [
+        ('{"type":"reasoning","id":"r1","summary":[],"encrypted_content":"s"}', "r1"),
+        ('{"type":"reasoning","summary":[],"encrypted_content":"s"}', ""),
+        ('{"type":"reasoning","id":"","summary":[],"encrypted_content":"s"}', ""),
+    ],
+    ids=["id", "no-id", "empty-id"],
+)
+def test_reasoning_names_openai_as_its_sealer_and_rewrites_exactly(
+    item: str,
+    reasoning_id: str,
+) -> None:
+    """A seal goes back only to its issuer, and codex's reasoning is OpenAI's."""
+    native = META + _item(item)
+    records = list(codex.normalize(StringIO(native)))
+    thinking = records[-1]
+    output = StringIO()
+
+    codex.denormalize(records, output)
+
+    assert isinstance(thinking, Thinking)
+    assert thinking.reasoning_id == reasoning_id
     assert output.getvalue() == native
 
 
@@ -1986,19 +2353,24 @@ def test_codex_writer_handles_unmapped_and_special_records() -> None:
     error = SystemMessage(content="oops", extra={"$event": True})
     assert codex._write_record(error)[0][0] == "event_msg"
     assert codex._write_record(SystemMessage(content="ok"))[0][0] == "response_item"
-    assert (
-        codex._write_result(
+    assert [
+        line_type
+        for line_type, _ in codex._write_result(
             ToolResult(call_id="c", state="done", result=WebSearchResult(query="q")),
         )
-        is not None
-    )
+    ] == ["event_msg", "response_item"]
     fetched = ToolResult(
         call_id="c",
         state="done",
         stdout=("x",),
         result=WebFetchResult(),
     )
-    assert codex._write_result(fetched) is not None
+    assert codex._write_result(fetched) == [
+        (
+            "response_item",
+            {"type": "function_call_output", "call_id": "c", "output": "x"},
+        ),
+    ]
     assert (
         codex._write_completed(
             ToolResult(call_id="c", state="done", result=WebFetchResult()),
@@ -2060,6 +2432,21 @@ def test_codex_completed_result_preserves_missing_edit_path() -> None:
     assert codex._write_completed(result, {}) is None
 
 
+def test_another_cli_s_shell_result_states_what_codex_s_model_reads() -> None:
+    ran = ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("boom",),
+        result=BashResult(command=("false",), exit_code=1),
+    )
+    (event, output) = codex._write_result(ran)
+    assert event[0] == "event_msg"
+    assert output == (
+        "response_item",
+        {"type": "function_call_output", "call_id": "c", "output": "boom\n[exit 1]"},
+    )
+
+
 def test_a_result_codex_has_no_event_for_is_written_as_what_the_model_read() -> None:
     grepped = ToolResult(
         call_id="c",
@@ -2067,10 +2454,12 @@ def test_a_result_codex_has_no_event_for_is_written_as_what_the_model_read() -> 
         stdout=("a.py:1:x",),
         result=GrepResult(),
     )
-    assert codex._write_result(grepped) == (
-        "response_item",
-        {"type": "function_call_output", "call_id": "c", "output": "a.py:1:x"},
-    )
+    assert codex._write_result(grepped) == [
+        (
+            "response_item",
+            {"type": "function_call_output", "call_id": "c", "output": "a.py:1:x"},
+        ),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2089,10 +2478,12 @@ def test_a_pending_failed_or_uncategorized_result_is_written_as_its_text(
     record: ToolResult,
     output: str,
 ) -> None:
-    assert codex._write_result(record) == (
-        "response_item",
-        {"type": "function_call_output", "call_id": "c", "output": output},
-    )
+    assert codex._write_result(record) == [
+        (
+            "response_item",
+            {"type": "function_call_output", "call_id": "c", "output": output},
+        ),
+    ]
 
 
 def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
@@ -2116,8 +2507,8 @@ def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
     assert launch.getvalue() == (
         'first\n{"timestamp":null,"type":"session_meta","payload":{}}\n'
     )
-    assert codex._write_result(ToolResult(call_id="c", state="pending")) is None
-    assert codex._write_result(ToolResult(call_id="c", state="cancelled")) is None
+    assert codex._write_result(ToolResult(call_id="c", state="pending")) == []
+    assert codex._write_result(ToolResult(call_id="c", state="cancelled")) == []
     assert (
         codex._write_output(
             ToolResult(
@@ -2309,6 +2700,293 @@ def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
             failed.append(f"{path}: the line reads worse than without the field")
 
     assert failed == [], "\n".join(failed)
+
+
+def _numeric_launch_stamp(line: str) -> str:
+    """Return ``line`` with a launch line's timestamp a number, as one rollout had."""
+    record = json_loads(line, dict[str, object])
+    if record.get("type") != "session_meta":
+        return line
+    record["timestamp"] = 7
+    return json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+
+
+@pytest.mark.parametrize(
+    "rollout",
+    [
+        "".join(FIXTURE),
+        "\n" + "".join(FIXTURE),
+        "".join(re.sub(r',"ordinal":\d+', "", line) for line in FIXTURE),
+        "".join(FIXTURE).removesuffix("\n"),
+        "".join(_numeric_launch_stamp(line) for line in FIXTURE),
+        "".join([*FIXTURE[1:], FIXTURE[0]]),
+        "".join([*FIXTURE[:3], "{torn\n", *FIXTURE[3:]]),
+    ],
+    ids=[
+        "as-captured",
+        "blank-first",
+        "unnumbered",
+        "no-final-newline",
+        "numeric-launch-stamp",
+        "launch-last",
+        "torn-middle",
+    ],
+)
+def test_a_rollout_writes_back_exactly_however_its_lines_sit(rollout: str) -> None:
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(rollout)), output)
+
+    assert output.getvalue() == rollout
+
+
+@pytest.mark.parametrize(
+    ("context", "cwd", "declared"),
+    [
+        (TurnContext(cwd="/a", encoding={"ascii_escaped": False}), None, "/a"),
+        (
+            TurnContext(extra={"cwd": "/b"}, encoding={"ascii_escaped": False}),
+            None,
+            "/b",
+        ),
+        (TurnContext(encoding={"ascii_escaped": False}), None, ""),
+        (TurnContext(cwd="/a", encoding={"ascii_escaped": False}), "/c", "/c"),
+    ],
+    ids=["field", "extra", "none", "given"],
+)
+def test_another_cli_s_session_is_declared_where_and_as_what_it_was_asked(
+    context: TurnContext,
+    cwd: str | None,
+    declared: str,
+) -> None:
+    output = StringIO()
+
+    codex.denormalize(
+        [context, UserMessage(content="hi")],
+        output,
+        session_id=UUID(int=5),
+        cwd=cwd,
+        cli_version="9.9",
+    )
+
+    launch = json_loads(output.getvalue().splitlines()[0], dict[str, object])
+    assert launch["payload"] == {
+        "id": str(UUID(int=5)),
+        "session_id": str(UUID(int=5)),
+        "timestamp": MISSING_TIMESTAMP,
+        "cwd": declared,
+        "originator": "codex-tui",
+        "cli_version": "9.9",
+        "source": "cli",
+        "thread_source": "user",
+        "model_provider": "openai",
+    }
+
+
+def test_a_rollout_codex_wrote_is_not_rebuilt_as_another_cli_s() -> None:
+    native = StringIO()
+    codex.denormalize(
+        [TurnContext(encoding={"newline_terminated": True}), UserMessage(content="hi")],
+        native,
+    )
+    compacted = StringIO()
+    codex.denormalize(
+        [
+            TurnContext(
+                encoding={"newline_terminated": True},
+                extra={"$compact": True},
+            ),
+            UserMessage(content="hi"),
+        ],
+        compacted,
+    )
+
+    assert "session_meta" not in native.getvalue()
+    assert "session_meta" in compacted.getvalue()
+
+
+@pytest.mark.parametrize(
+    ("launch", "ordinals"),
+    [
+        (
+            TurnContext(extra={"ordinal": 4, "payload": {"id": "s"}}),
+            [4, 5, 6, 7],
+        ),
+        (TurnContext(extra={"payload": {"id": "s"}}), [None, None, None, None]),
+    ],
+    ids=["numbered", "unnumbered"],
+)
+def test_lines_added_to_a_rollout_are_numbered_on_from_its_launch(
+    launch: TurnContext,
+    ordinals: list[int | None],
+) -> None:
+    output = StringIO()
+
+    codex.denormalize(
+        [
+            launch,
+            IncompleteRecord(text="{torn\n"),
+            UserMessage(timestamp="t", content="a"),
+            AssistantMessage(content="b"),
+        ],
+        output,
+    )
+
+    lines = output.getvalue().splitlines()
+    assert lines[1] == "{torn"
+    assert [
+        None if line == "{torn" else json_loads(line, dict[str, object]).get("ordinal")
+        for line in lines
+    ] == [ordinals[0], None, *ordinals[2:]]
+    assert '"timestamp":"t"' in lines[2]
+    assert '"timestamp"' not in lines[3]
+    assert '"timestamp"' in lines[0]
+
+
+def test_a_launch_stating_a_null_ordinal_and_payload_numbers_from_zero() -> None:
+    output = StringIO()
+
+    codex.denormalize(
+        [
+            TurnContext(extra={"ordinal": None, "payload": None}),
+            UserMessage(content="a"),
+        ],
+        output,
+    )
+
+    launch, said = (
+        json_loads(line, dict[str, object]) for line in output.getvalue().splitlines()
+    )
+    assert (launch["ordinal"], launch["payload"], said["ordinal"]) == (0, {}, 1)
+
+
+@pytest.mark.parametrize(
+    "rollout",
+    [
+        "\n\n" + "".join(FIXTURE),
+        "".join([*FIXTURE[1:3], FIXTURE[0], *FIXTURE[3:]]),
+    ],
+    ids=["two-blank-lines-first", "launch-third"],
+)
+def test_the_launch_line_goes_back_where_it_sat(rollout: str) -> None:
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(rollout)), output)
+
+    assert output.getvalue() == rollout
+
+
+def test_a_line_whose_time_was_cleared_writes_its_time_null() -> None:
+    records = [
+        replace(r, timestamp=None) if isinstance(r, UserMessage) else r
+        for r in codex.normalize(StringIO("".join(FIXTURE)))
+    ]
+    output = StringIO()
+
+    codex.denormalize(records, output)
+
+    said = [
+        json_loads(line, dict[str, object])
+        for line in output.getvalue().splitlines()
+        if '"role":"user"' in line
+    ]
+    assert said
+    assert all(line["timestamp"] is None for line in said)
+
+
+def test_an_error_event_is_written_in_codex_s_order() -> None:
+    failed = SystemMessage(
+        content="boom",
+        extra={"$event": True, "z": 1, "codex_error_info": "x"},
+    )
+
+    ((outer, payload),) = codex._write_record(failed)
+
+    assert outer == "event_msg"
+    assert list(payload.items()) == [
+        ("type", "error"),
+        ("message", "boom"),
+        ("codex_error_info", "x"),
+        ("z", 1),
+    ]
+
+
+def test_a_launch_stated_unstamped_is_written_unstamped() -> None:
+    output = StringIO()
+
+    codex.denormalize(
+        [TurnContext(timestamp="t", extra={"$timestamp": False, "payload": {}})],
+        output,
+    )
+
+    assert '"timestamp"' not in output.getvalue()
+
+
+def test_which_settings_records_become_a_turn_context_line() -> None:
+    restated = TurnContext(
+        extra={
+            "payload": {"cwd": "/w"},
+            "$codex_line": {"outer": {"type": "turn_context"}},
+        },
+    )
+
+    assert [outer for outer, _ in codex._write_record(restated)] == ["turn_context"]
+    assert [outer for outer, _ in codex._write_record(TurnContext())] == [
+        "turn_context",
+    ]
+    assert codex._write_record(TurnContext(extra={"payload": {}})) == []
+    assert codex._write_record(TurnContext(encoding={"newline_terminated": True})) == []
+
+
+def test_a_compaction_with_no_window_after_it_still_writes_its_line() -> None:
+    assert [outer for outer, _ in codex._write_record(ContextCompaction())] == [
+        "compacted",
+    ]
+
+
+def test_a_usage_is_written_in_codex_s_order() -> None:
+    usage = TokenUsage(rate_limits={"r": 2}, info={"a": 1})
+
+    assert codex._write_record(usage) == [
+        (
+            "event_msg",
+            {"type": "token_count", "info": {"a": 1}, "rate_limits": {"r": 2}},
+        ),
+    ]
+    ((_, payload),) = codex._write_record(usage)
+    assert list(payload) == ["type", "info", "rate_limits"]
+
+
+def test_a_usage_codex_stated_as_null_is_written_null() -> None:
+    usage = TokenUsage(info={}, extra={"$nulls": ["info"]})
+
+    assert codex._write_record(usage) == [
+        ("event_msg", {"type": "token_count", "info": None, "rate_limits": {}}),
+    ]
+
+
+def test_a_world_state_and_an_event_marker_keep_no_note_of_the_reader_s() -> None:
+    lines = codex._write_record(ContextState(extra={"b": 1, "$note": 2}))
+    marker = codex._write_record(
+        ContextCompaction(extra={"$echoes": "context_compacted", "z": 1}),
+    )
+
+    assert lines == [("world_state", {"b": 1})]
+    assert marker == [("event_msg", {"type": "context_compacted", "z": 1})]
+
+
+def test_a_result_codex_has_no_event_for_keeps_its_residual_in_codex_s_order() -> None:
+    failed = ToolResult(
+        call_id="c",
+        state="failed",
+        stderr=("boom",),
+        result=GrepResult(),
+        extra={"id": "x"},
+    )
+
+    ((_, payload),) = codex._write_result(failed)
+
+    assert list(payload) == ["type", "id", "call_id", "output"]
 
 
 def _swapped(index: int, record: object) -> str:

@@ -147,6 +147,7 @@ def test_sagent_is_recognized_by_its_record_kinds() -> None:
         "tool_state",
         "context_override",
         "context_splice",
+        "context_clear",
         "persistent_agent",
         "runtime_event",
         "event",

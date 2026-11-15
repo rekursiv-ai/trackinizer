@@ -1,6 +1,7 @@
 """One field of a provider's session log, read the way a missing one is.
 
     read_or_default    # (value, target, default=) -> value, or default when it is not a target
+    MISSING_TIMESTAMP  # the time a session that states none is written with
 
 A session log is another program's file. One field of the wrong type -- a failed
 call's ``toolUseResult`` is a bare string, an MCP tool's a list -- must cost the
@@ -9,12 +10,17 @@ record that field, not the record: the reader keeps the rest of the line typed.
 
 from __future__ import annotations
 
-from typing import overload
+from typing import Final, overload
 
 from treekle import ReadError, from_plain
 
 
-__all__ = ["read_or_default"]
+__all__ = ["MISSING_TIMESTAMP", "read_or_default"]
+
+
+MISSING_TIMESTAMP: Final = "1970-01-01T00:00:00.000Z"
+"""The time written for a session that states none: claude and codex refuse a
+line with no time."""
 
 
 @overload

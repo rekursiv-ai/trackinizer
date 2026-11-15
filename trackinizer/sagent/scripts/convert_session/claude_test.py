@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Final
 from unittest.mock import patch
 
 import base64
+import binascii
 import json
 
 from treekle import ReadError, from_plain, json_loads
@@ -17,6 +18,10 @@ import pytest
 
 from trackinizer.sagent.scripts.convert_session import claude
 from trackinizer.sagent.scripts.convert_session.claude import _group
+from trackinizer.sagent.scripts.convert_session.shell_results import (
+    rewrite_shell_source,
+)
+from trackinizer.sagent.scripts.convert_session.tail import Tail
 from trackinizer.sagent.scripts.convert_session.testdata.mistype import (
     field_paths,
     mistyped,
@@ -1398,10 +1403,13 @@ def test_a_neutral_tool_result_emits_a_complete_claude_block() -> None:
 
     claude.denormalize(records, out)
 
-    assert (
-        out.getvalue() == '{"type":"user","message":{"role":"user","content":['
+    assert out.getvalue() == (
+        '{"parentUuid":null,"isSidechain":false,"type":"user","message":'
+        '{"role":"user","content":['
         '{"type":"tool_result","tool_use_id":"c1","content":"ok"}]},'
-        '"sessionId":"s1"}\n'
+        '"timestamp":"1970-01-01T00:00:00.000Z",'
+        '"sessionId":"s1","userType":"external","cwd":"","version":"2.1.241",'
+        '"uuid":"281e2493-8e17-56d5-94de-df1e217d5a73"}\n'
     )
 
 
@@ -1673,8 +1681,10 @@ def test_foreign_residual_does_not_leak_into_synthesized_claude_wire() -> None:
     claude.denormalize(records, output)
 
     assert output.getvalue() == (
-        '{"type":"user","message":{"role":"user","content":['
-        '{"type":"text","text":"hi"}]},"uuid":"u1","sessionId":"s1"}\n'
+        '{"parentUuid":null,"isSidechain":false,"type":"user","message":'
+        '{"role":"user","content":[{"type":"text","text":"hi"}]},"uuid":"u1",'
+        '"timestamp":"1970-01-01T00:00:00.000Z",'
+        '"sessionId":"s1","userType":"external","cwd":"","version":"2.1.241"}\n'
     )
 
 
@@ -1791,14 +1801,6 @@ def test_mixed_unicode_escaping_is_preserved_per_line() -> None:
 
     records = list(claude.normalize(StringIO(native)))
 
-    # Encoding is RESTATED as it changes, so the spelling in force is the one
-    # the LAST context to state it carries.
-    encodings = [
-        record.encoding
-        for record in records
-        if isinstance(record, TurnContext) and record.encoding
-    ]
-    assert isinstance(encodings[-1]["ascii_escape_exceptions"], str)
     output = StringIO()
     claude.denormalize(records, output)
     assert output.getvalue() == native
@@ -1889,6 +1891,166 @@ def test_a_foreign_call_after_its_result_is_written_once() -> None:
     ]
 
     assert _tool_uses(records) == ["a"]
+
+
+def test_a_foreign_act_run_inside_an_open_call_is_left_out() -> None:
+    """Codex's ``exec`` reports the shell command it ran before its own answer."""
+    records = [
+        _FOREIGN,
+        ToolCall(call_id="exec", name="exec"),
+        ToolResult(call_id="inner", state="done", result=BashResult(command=("ls",))),
+        ToolResult(call_id="exec", state="done", result=UncategorizedToolResult()),
+        _FOREIGN,
+        ToolCall(call_id="interrupted", name="exec"),
+        _FOREIGN,
+        ToolResult(call_id="search", state="done", result=WebSearchResult(query="q")),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    assert [
+        r.call_id
+        for r in claude.normalize(StringIO(output.getvalue()))
+        if isinstance(r, ToolResult)
+    ] == ["exec", "search"]
+
+
+def _written_lines(records: list[SessionRecord]) -> list[dict[str, object]]:
+    """Return the claude lines ``records`` are written as, parsed."""
+    output = StringIO()
+    claude.denormalize(records, output)
+    return [
+        json_loads(line, dict[str, object]) for line in output.getvalue().splitlines()
+    ]
+
+
+def test_another_cli_s_lines_take_the_last_stated_time_and_stay_raw_utf8() -> None:
+    lines = _written_lines(
+        [
+            _FOREIGN,
+            UserMessage(timestamp="t1", content="é"),
+            AssistantMessage(content="b"),
+            UserMessage(timestamp="t2", content="c"),
+        ],
+    )
+
+    assert [line["timestamp"] for line in lines] == ["t1", "t1", "t2"]
+    output = StringIO()
+    claude.denormalize([_FOREIGN, UserMessage(content="é")], output)
+    assert "é" in output.getvalue()
+
+
+def test_a_result_another_cli_called_for_is_linked_to_the_line_before_it() -> None:
+    lines = _written_lines(
+        [
+            TurnContext(cwd="/w", encoding={"newline_terminated": True}),
+            UserMessage(content="hi"),
+            AssistantMessage(content="ok"),
+            ToolResult(call_id="x", state="done", result=WebSearchResult(query="q")),
+        ],
+    )
+
+    _, said, called, _ = lines
+    assert (called["parentUuid"], called["cwd"]) == (said["uuid"], "/w")
+
+
+def test_a_prompt_source_line_states_the_turn_s_permission_mode() -> None:
+    lines = _written_lines(
+        [
+            TurnContext(
+                context_id=0,
+                permission="plan",
+                encoding={"newline_terminated": True},
+            ),
+            UserMessage(context_id=0, content="hi", extra={"promptSource": "typed"}),
+        ],
+    )
+
+    assert lines[0]["permissionMode"] == "plan"
+
+
+def test_a_spelling_naming_no_exceptions_writes_every_line_raw() -> None:
+    output = StringIO()
+
+    claude.denormalize(
+        [
+            TurnContext(encoding={"newline_terminated": True, "ascii_escaped": False}),
+            UserMessage(content="é"),
+        ],
+        output,
+    )
+
+    assert "é" in output.getvalue()
+
+
+def test_a_corrupt_escape_bitmap_is_refused() -> None:
+    corrupt = TurnContext(
+        encoding={
+            "newline_terminated": True,
+            "ascii_escaped": False,
+            "ascii_escape_exceptions": "!!",
+        },
+    )
+
+    with pytest.raises(binascii.Error):
+        claude.denormalize([corrupt, UserMessage(content="hi")], StringIO())
+
+
+def test_a_line_s_text_and_result_together_round_trip() -> None:
+    native = _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":[{"type":"text","text":"a"},'
+            '{"type":"tool_result","tool_use_id":"c1","content":"ok"}]}'
+        ),
+    )
+
+    assert _round_trip(native) == native
+
+
+def test_an_edited_usage_is_written_from_its_record() -> None:
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"text","text":"b"}],'
+            '"usage":{"output_tokens":1}}'
+        ),
+    )
+    records = [
+        replace(r, info={"output_tokens": 9}) if isinstance(r, TokenUsage) else r
+        for r in claude.normalize(StringIO(native))
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    assert '"usage":{"output_tokens":9}' in output.getvalue()
+
+
+def test_another_cli_s_bookkeeping_and_openai_s_seal_stay_out_of_claude() -> None:
+    records = [
+        _FOREIGN,
+        UncategorizedRecord(kind="event_msg/task_started", payload={"x": 1}),
+        IncompleteRecord(text="{torn\n"),
+        UserMessage(content="hi"),
+        Thinking(encrypted="gAAA-openai", reasoning_id="rs_1"),
+        Thinking(content="plan"),
+        AssistantMessage(content="yo"),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    written = output.getvalue()
+    assert "task_started" not in written
+    assert "torn" not in written
+    assert "gAAA-openai" not in written
+    assert [
+        r.content
+        for r in claude.normalize(StringIO(written))
+        if isinstance(r, Thinking)
+    ] == ["plan"]
 
 
 @pytest.mark.parametrize("late_call", [False, True])
@@ -2419,6 +2581,28 @@ def test_a_system_line_reads_a_mistyped_field_as_absent() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("records", "cwd"),
+    [
+        (
+            (
+                TurnContext(extra={"payload": {"cwd": 7}}),
+                TurnContext(extra={"cwd": "/work"}),
+            ),
+            "/work",
+        ),
+        ((TurnContext(cwd="/sagent", extra={"cwd": "/other"}),), "/sagent"),
+        ((TurnContext(extra={"payload": {"cwd": 7}}),), ""),
+    ],
+    ids=["envelope", "sagent", "none"],
+)
+def test_the_first_context_naming_a_directory_names_the_cwd(
+    records: tuple[SessionRecord, ...],
+    cwd: str,
+) -> None:
+    assert claude._stated_cwd(records) == cwd
+
+
 def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
     assert claude._rename_calls({"message": 7}, {}) is None
     assert claude._rename_calls({"message": {"content": {}}}, {}) is None
@@ -2429,16 +2613,6 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
         )
         is None
     )
-    assert (
-        claude._stated_cwd(
-            (
-                TurnContext(extra={"payload": {"cwd": 7}}),
-                TurnContext(extra={"cwd": "/work"}),
-            ),
-        )
-        == "/work"
-    )
-    assert claude._stated_cwd((TurnContext(extra={"payload": {"cwd": 7}}),)) == ""
     assert (
         claude._write_group((TokenUsage(info={"input_tokens": 1}),), TurnContext(), {})
         is None
@@ -2519,8 +2693,8 @@ def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
     }
 
 
-def test_only_a_line_that_escapes_unicode_restates_the_spelling() -> None:
-    """Raw UTF-8 is claude's own; an escaped line is the exception, stated once."""
+def test_only_a_line_that_escapes_unicode_carries_the_flag() -> None:
+    """Raw UTF-8 is claude's own; an escaped line says so itself, on its own record."""
     raw = '{"type":"user","message":{"role":"user","content":"é"}}\n'
     plain = '{"type":"user","message":{"role":"user","content":"a\\u001b"}}\n'
     escaped = '{"type":"user","message":{"role":"user","content":"\\u00e9"}}\n'
@@ -2531,19 +2705,46 @@ def test_only_a_line_that_escapes_unicode_restates_the_spelling() -> None:
     claude.denormalize(records, out)
 
     stated = [r.encoding for r in records if isinstance(r, TurnContext) and r.encoding]
+    users = [r for r in records if isinstance(r, UserMessage)]
     assert [dict(e) for e in stated] == [
         {
             "newline_terminated": True,
             "ascii_escaped": False,
             "ascii_escape_exceptions": "",
         },
-        {
-            "newline_terminated": True,
-            "ascii_escaped": False,
-            "ascii_escape_exceptions": base64.b64encode(bytes([0, 4])).decode(),
-        },
     ]
+    assert [i for i, r in enumerate(users) if "$ascii_escaped" in r.extra] == [10]
+    assert users[10].extra["$ascii_escaped"] is True
     assert out.getvalue() == text
+
+
+def test_an_all_escaped_transcript_states_its_spelling_once() -> None:
+    escaped = '{"type":"user","message":{"role":"user","content":"\\u00e9"}}\n'
+    text = escaped * 1000
+
+    records = list(claude.normalize(StringIO(text)))
+    out = StringIO()
+    claude.denormalize(records, out)
+
+    assert len([r for r in records if isinstance(r, TurnContext) and r.encoding]) == 1
+    assert out.getvalue() == text
+
+
+def test_an_unparsed_line_keeps_its_bytes_and_needs_no_mark() -> None:
+    unparsed = IncompleteRecord(text="{torn\n")
+
+    assert claude._marked_escaped(unparsed) is unparsed
+
+
+def test_an_escaped_line_of_a_type_claude_alone_writes_keeps_its_spelling() -> None:
+    escaped = '{"type":"summary","summary":"\\u00e9"}\n'
+    raw = '{"type":"summary","summary":"é"}\n'
+
+    records = list(claude.normalize(StringIO(escaped + raw)))
+    out = StringIO()
+    claude.denormalize(records, out)
+
+    assert out.getvalue() == escaped + raw
 
 
 def test_claude_writer_escapes_each_line_by_its_own_bit() -> None:
@@ -2564,6 +2765,63 @@ def test_claude_writer_escapes_each_line_by_its_own_bit() -> None:
         '{"t":"é"}',
         '{"t":"\\u00e9"}',
     ]
+
+
+def test_claude_writer_reads_a_bit_past_the_first_byte() -> None:
+    stream = StringIO()
+    writer = claude._Emitter(
+        stream,
+        escaped_default=False,
+        exceptions=bytes([0, 0b1]),
+        newline_terminated=True,
+    )
+    for _ in range(9):
+        writer.add({"t": "é"})
+    writer.close()
+
+    assert [line.isascii() for line in stream.getvalue().splitlines()] == [
+        *([False] * 8),
+        True,
+    ]
+
+
+def test_releasing_one_line_keeps_another_line_s_open_call_editable() -> None:
+    stream = StringIO()
+    writer = claude._Emitter(
+        stream,
+        escaped_default=False,
+        exceptions=b"",
+        newline_terminated=True,
+        lookahead=2,
+    )
+    read = ToolResult(
+        call_id="c",
+        state="done",
+        result=ReadResult(path="b.txt"),
+        extra={"$shell": True},
+    )
+    edited = rewrite_shell_source("cat a.txt", ReadResult(path="b.txt"))
+    call_line: dict[str, object] = {
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "c",
+                    "name": "Bash",
+                    "input": {"command": "cat a.txt"},
+                },
+            ],
+        },
+    }
+
+    writer.add({"n": 0})
+    writer.add(call_line, calls=(ToolCall(call_id="c", name="Bash"),))
+    writer.add({"n": 1})
+    writer.add({"n": 2}, record=read)
+    writer.close()
+
+    assert edited != "cat a.txt"
+    assert json.dumps(edited) in stream.getvalue()
 
 
 def test_claude_writer_keeps_lookahead_lines_editable() -> None:
@@ -2964,19 +3222,21 @@ def test_claude_user_reader_preserves_unknown_blocks() -> None:
     assert records[0].extra["$content_value"] == {"future": 1}
 
 
-# ``A`` is a line that spells its text in ``\u`` escapes, ``U`` one in raw UTF-8: the
+# ``A`` is a line that spells its text in ``\u`` escapes, ``U`` one in raw UTF-8, and
+# ``M`` raw UTF-8 beside a control character's escape, which every encoder writes: the
 # escaped lines are the exceptions, however many there are and wherever they come.
 @pytest.mark.parametrize(
     "pattern",
-    ["AUUAAAAUUUUUUAU", "UAAUUUUAAAAAAUA", "AAAAAAAAAU", "UA"],
+    ["AUUAAAAUUUUUUAU", "UAAUUUUAAAAAAUA", "AAAAAAAAAU", "UA", "AMU"],
 )
 def test_escaped_and_raw_lines_each_write_back_as_they_were_read(pattern: str) -> None:
     escaped = "caf" + chr(92) + "u00e9"  # codespell:ignore caf.
     raw = "caf" + chr(0xE9)  # codespell:ignore caf.
+    content = {"A": escaped, "U": raw, "M": raw + chr(92) + "u001b[0m"}
     native = "".join(
         _line(
             type='"user"',
-            message=f'{{"role":"user","content":"{escaped if kind == "A" else raw}"}}',
+            message=f'{{"role":"user","content":"{content[kind]}"}}',
         )
         for kind in pattern
     )
@@ -2985,23 +3245,66 @@ def test_escaped_and_raw_lines_each_write_back_as_they_were_read(pattern: str) -
     output = StringIO()
     claude.denormalize(records, output)
 
-    bits = bytearray((len(pattern) + 7) // 8)
-    for index, kind in enumerate(pattern):
-        if kind == "A":
-            bits[index // 8] |= 1 << (index % 8)
-    last = [r.encoding for r in records if isinstance(r, TurnContext) and r.encoding][
-        -1
-    ]
+    users = [r for r in records if isinstance(r, UserMessage)]
     assert output.getvalue() == native
-    assert (last["ascii_escaped"], last["ascii_escape_exceptions"]) == (
-        False,
-        base64.b64encode(bytes(bits).rstrip(b"\0")).decode(),
+    assert [i for i, r in enumerate(users) if "$ascii_escaped" in r.extra] == [
+        i for i, kind in enumerate(pattern) if kind == "A"
+    ]
+
+
+def test_a_prefix_of_a_transcript_reads_as_a_prefix_of_its_records() -> None:
+    """An upload resumes a grown file at the record count it stored."""
+    escaped = "caf" + chr(92) + "u00e9"  # codespell:ignore caf.
+    lines = [
+        _line(
+            type='"user"',
+            message=f'{{"role":"user","content":"{escaped if n in (3, 5) else n}"}}',
+        )
+        for n in range(8)
+    ]
+    whole = list(claude.normalize(StringIO("".join(lines))))
+
+    for cut in range(1, len(lines)):
+        part = list(claude.normalize(StringIO("".join(lines[:cut]))))
+        assert whole[: len(part)] == part, cut
+
+
+def test_a_spelling_stored_escaped_by_default_writes_its_raw_lines_raw() -> None:
+    """Records stored before lines carried their own flag: the file's bitmap says."""
+    escaped = "caf" + chr(92) + "u00e9"  # codespell:ignore caf.
+    raw = "caf" + chr(0xE9)  # codespell:ignore caf.
+    native = "".join(
+        _line(type='"user"', message=f'{{"role":"user","content":"{content}"}}')
+        for content in (escaped, raw, escaped)
     )
+    records = [
+        replace(
+            record,
+            encoding={
+                "newline_terminated": True,
+                "ascii_escaped": True,
+                "ascii_escape_exceptions": base64.b64encode(b"\x02").decode(),
+            },
+        )
+        if isinstance(record, TurnContext) and record.encoding
+        else replace(
+            record,
+            extra={k: v for k, v in record.extra.items() if k != "$ascii_escaped"},
+        )
+        if isinstance(record, UserMessage)
+        else record
+        for record in claude.normalize(StringIO(native))
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    assert output.getvalue() == native
 
 
-# A line that escapes is a new spelling: the points a reader restates it at are part of
-# the stored records, whose positions name them. Lines 2 and 9 escape here.
-def test_the_spelling_is_stated_first_then_restated_only_as_it_changes() -> None:
+# The spelling is stated before the first act; a line that escapes says so on its own
+# record, so nothing is restated for it. Lines 2 and 9 escape here.
+def test_the_spelling_is_stated_first_and_an_escaped_line_restates_nothing() -> None:
     escaped = "caf" + chr(92) + "u00e9"  # codespell:ignore caf.
     native = "".join(
         _line(
@@ -3016,13 +3319,13 @@ def test_the_spelling_is_stated_first_then_restated_only_as_it_changes() -> None
     encodings = [
         r.encoding for r in records if isinstance(r, TurnContext) and r.encoding
     ]
-    assert [e["ascii_escape_exceptions"] for e in encodings] == [
-        "",
-        base64.b64encode(b"\x04").decode(),
-        base64.b64encode(b"\x04\x02").decode(),
+    assert [dict(e) for e in encodings] == [
+        {
+            "newline_terminated": True,
+            "ascii_escaped": False,
+            "ascii_escape_exceptions": "",
+        },
     ]
-    assert all(e["newline_terminated"] is True for e in encodings)
-    assert all(e["ascii_escaped"] is False for e in encodings)
     assert isinstance(records[0], TurnContext)
     assert records[0].encoding == encodings[0]
     assert isinstance(records[1], ContextClear)
@@ -3046,6 +3349,26 @@ def test_a_transcript_without_a_final_newline_says_so_and_writes_back() -> None:
     ]
     assert encodings[-1]["newline_terminated"] is False
     assert output.getvalue() == native
+
+
+def test_a_tailed_file_restates_its_newline_only_when_it_changes() -> None:
+    lines = [
+        _line(type='"user"', message=f'{{"role":"user","content":"{n}"}}')
+        for n in range(4)
+    ]
+    tail = Tail(claude.normalize)
+
+    records = [
+        record
+        for chunk in (lines[0].removesuffix("\n"), *lines[1:])
+        for record in tail.feed(chunk)
+    ]
+
+    assert [
+        r.encoding["newline_terminated"]
+        for r in records
+        if isinstance(r, TurnContext) and r.encoding
+    ] == [True, False, True]
 
 
 def test_what_the_harness_gives_at_the_head_is_the_opening_clears_prompt() -> None:
