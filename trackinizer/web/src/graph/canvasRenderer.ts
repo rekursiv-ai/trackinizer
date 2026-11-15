@@ -9,6 +9,7 @@ import { mix } from "./encode";
 import { type Layout, layout } from "./layout";
 import type { DrawLink, DrawNode } from "./model";
 import type { CreateRenderer, IslandInk, Renderer } from "./renderer";
+import "./tokens.css";
 
 /** The camera and what it frames, in world units; `k` is screen pixels per unit. */
 type Camera = { x: number; y: number; k: number };
@@ -39,7 +40,15 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
   let grouped: ((node: DrawNode) => string | undefined) | null = null;
   let groupingSignature: string | null = null;
   let named: ((key: string) => string | undefined) | null = null;
-  let ink: IslandInk = { title: "#ececec", count: "#a3a3a3", outline: "#000" };
+  // The theme's own colours, re-read when it switches: `encode.ts` resolves the
+  // node looks the same way, so dots and wires move together. Until `nameIslands`
+  // hands the island ink over, the names borrow the paint's.
+  let paint = readPaint();
+  let ink: IslandInk = { title: paint.ink, count: paint.inkQuiet, outline: paint.ground };
+  const themeWatch = new MutationObserver(() => {
+    paint = readPaint();
+  });
+  themeWatch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   let islands: { key: string; box: Box }[] = [];
   /**
    * The cross-island evidence hairlines actually drawn, thinned to the design's
@@ -217,7 +226,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.globalCompositeOperation = "source-over";
     ctx.globalAlpha = 1;
-    ctx.fillStyle = "#000";
+    ctx.fillStyle = paint.ground;
     ctx.fillRect(0, 0, w, h);
     const k = camera.k;
     // The camera: world to screen, so every width and font below is in world
@@ -248,7 +257,9 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
       // selected record lights its own links as rays instead.
       if (pass === 1 && (focus === null || focus.lit)) break;
       for (const group of EDGE_GROUPS) {
-        ctx.strokeStyle = group.sign ? (group.positive ? SUPPORT : AGAINST) : (group.color ?? STRUCT);
+        ctx.strokeStyle = group.sign
+          ? (group.positive ? paint.support : paint.against)
+          : (paint.edges[group.kind ?? ""] ?? paint.struct);
         ctx.lineWidth = group.sign ? lw * 1.3 : lw;
         ctx.globalAlpha =
           pass === 1
@@ -289,7 +300,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
       }
       if (!any) continue;
       ctx.globalAlpha = (focus ? (focus.lit ? 0.3 : 0.4) : 1) * (positive ? 0.34 : 0.38) * dens * (1 - far * 0.3);
-      ctx.strokeStyle = positive ? SUPPORT : AGAINST;
+      ctx.strokeStyle = positive ? paint.support : paint.against;
       ctx.lineWidth = hair;
       ctx.stroke();
     }
@@ -308,7 +319,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         const width = (cited ? 2.2 + 2.6 * Math.abs(link.valence!) : 2.4) / k;
         ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = 0.85;
-        ctx.strokeStyle = "#000";
+        ctx.strokeStyle = paint.ground;
         ctx.lineWidth = width + 2.4 / k;
         ctx.setLineDash(NO_DASH);
         ctx.beginPath();
@@ -316,7 +327,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         ctx.stroke();
         ctx.globalCompositeOperation = "source-over";
         ctx.globalAlpha = 1;
-        ctx.strokeStyle = cited ? (link.valence! < 0 ? AGAINST : SUPPORT) : other.look.fill;
+        ctx.strokeStyle = cited ? (link.valence! < 0 ? paint.against : paint.support) : other.look.fill;
         ctx.lineWidth = width;
         ctx.setLineDash(link.kind === "favors" ? [5 / k, 3 / k] : [12 / k, 3 / k]);
         ctx.lineDashOffset = -(((now / 45) % 1000) / k);
@@ -388,12 +399,12 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
       if (keyline && !dim) {
         // Close in, a hair of black between neighbours keeps a dense ball legible.
         ctx.lineWidth = 1 / k;
-        ctx.strokeStyle = "#000";
+        ctx.strokeStyle = paint.ground;
         ctx.stroke();
       }
     }
-    if (selected) ring(selected, "#ececec", 1.4, 4, k);
-    if (hovered && hovered !== selected) ring(hovered, "#a3a3a3", 1, 3, k);
+    if (selected) ring(selected, paint.ink, 1.4, 4, k);
+    if (hovered && hovered !== selected) ring(hovered, paint.inkQuiet, 1, 3, k);
     ctx.globalAlpha = 1;
   };
 
@@ -523,14 +534,14 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
       const wide = rw + tw + 8 / k;
       if (!strong && !fits(x, node.y!, wide)) continue;
       if (strong) placed.push({ left: x - 8 / k, top: node.y! - 11 / k, right: x + wide + 8 / k, bottom: node.y! + 11 / k });
-      ctx.strokeStyle = "#000";
+      ctx.strokeStyle = paint.ground;
       ctx.font = `400 ${10 / k}px ${mono}`;
       ctx.strokeText(ref, x, node.y!);
-      ctx.fillStyle = "#a3a3a3";
+      ctx.fillStyle = paint.inkQuiet;
       ctx.fillText(ref, x, node.y!);
       ctx.font = `${strong ? "500" : "400"} ${11.5 / k}px ${font}`;
       ctx.strokeText(title, x + rw + 6 / k, node.y!);
-      ctx.fillStyle = "#ececec";
+      ctx.fillStyle = paint.ink;
       ctx.fillText(title, x + rw + 6 / k, node.y!);
     }
   };
@@ -684,6 +695,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
     dispose() {
       alive = false;
       observer.disconnect();
+      themeWatch.disconnect();
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("mousedown", onDown);
       window.removeEventListener("mousemove", onMove);
@@ -696,20 +708,25 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
   return api;
 };
 
-/** The prototype's edge passes: structure quiet, evidence in its valence colour. */
+/**
+ * The prototype's edge passes: structure quiet, evidence in its valence colour.
+ * A structural pass is one edge kind, so its colour is a single token read and
+ * the whole pass strokes in one path — which is what keeps a field of thousands
+ * of wires cheap, and why the colour is named by kind here rather than carried.
+ */
 const EDGE_GROUPS: {
-  color?: string;
+  kind?: string;
   sign: boolean;
   positive?: boolean;
   dash?: boolean;
   base: number;
   of: (link: DrawLink) => boolean;
 }[] = [
-  { color: "#8fa6e6", sign: false, base: 0.3, of: (l) => l.kind === "narrows" },
-  { color: "#d9c08a", sign: false, base: 0.3, of: (l) => l.kind === "requires" },
-  { color: "#a9a6cf", sign: false, base: 0.26, of: (l) => l.kind === "produced_by" },
-  { color: "#e08fa8", sign: false, base: 0.4, of: (l) => l.kind === "supersedes" },
-  { color: "#8f93e0", sign: false, base: 0.18, of: (l) => l.kind === "cites_paper" },
+  { kind: "narrows", sign: false, base: 0.3, of: (l) => l.kind === "narrows" },
+  { kind: "requires", sign: false, base: 0.3, of: (l) => l.kind === "requires" },
+  { kind: "produced_by", sign: false, base: 0.26, of: (l) => l.kind === "produced_by" },
+  { kind: "supersedes", sign: false, base: 0.4, of: (l) => l.kind === "supersedes" },
+  { kind: "cites_paper", sign: false, base: 0.18, of: (l) => l.kind === "cites_paper" },
   // Evidence carries the picture even at the fit out (the video's green and
   // orange strands): a brighter alpha than the structure's, at the same width.
   { sign: true, positive: true, base: 0.72, of: (l) => l.kind === "proves" && (l.valence ?? 0) >= 0 },
@@ -718,9 +735,51 @@ const EDGE_GROUPS: {
   { sign: true, positive: false, dash: true, base: 0.48, of: (l) => l.kind === "favors" && (l.valence ?? 0) < 0 },
 ];
 
-const SUPPORT = "#9fd4a8";
-const AGAINST = "#f5b07a";
-const STRUCT = "#a9a6cf";
+/**
+ * What the canvas paints with, from the theme's own tokens (`tokens.css`) — the
+ * same ones `readPalette` gives the node looks. Read here rather than taken from
+ * a look because a pass strokes one path for every wire of a kind, so it needs
+ * the kind's colour once, not each link's.
+ */
+type Paint = {
+  readonly edges: { readonly [kind: string]: string };
+  readonly support: string;
+  readonly against: string;
+  /** A wire of a kind the theme names no colour for. */
+  readonly struct: string;
+  /** A record's title, and the quieter ink its ref is set in. */
+  readonly ink: string;
+  readonly inkQuiet: string;
+  /** What the field is painted on, and what a letter or a keyline is outlined in. */
+  readonly ground: string;
+};
+
+function readPaint(): Paint {
+  const style = getComputedStyle(document.documentElement);
+  const token = (name: string) => style.getPropertyValue(name).trim();
+  const struct = token("--g-edge-produced_by") || token("--g-fallback");
+  return {
+    edges: Object.fromEntries(STRUCTURAL.map((kind) => [kind, token(`--g-edge-${kind}`) || struct])),
+    support: token("--g-vpos"),
+    against: token("--g-vneg"),
+    struct,
+    ink: token("--text"),
+    inkQuiet: token("--g-fallback"),
+    ground: token("--g-bg"),
+  };
+}
+
+/**
+ * The edge kinds that take a colour of their own, read off the passes rather
+ * than listed again here so the two cannot drift apart.
+ *
+ * Five of the seven stored kinds: `proves` and `favors` are missing because they
+ * are not drawn by kind at all. A citation wears its VALENCE — mint for support,
+ * amber against — so its pass asks for `support`/`against` and never for an
+ * edge colour. (`tokens.css` still names `--g-edge-proves`, for the detail's
+ * preview, which knows a wire's kind without its sign.)
+ */
+const STRUCTURAL: readonly string[] = EDGE_GROUPS.flatMap((group) => group.kind ?? []);
 const NO_DASH: number[] = [];
 const EVERY = () => true;
 const WHOLE = "whole";

@@ -104,8 +104,9 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
   const membersOf = new Map<string, string[]>();
   for (const [id, key] of topOf) bump(membersOf, key, id);
   const refined = new Map<string, string>();
+  const cap = islandCap(nodes.length);
   for (const [key, members] of membersOf) {
-    for (const [islandKey, row] of split(key, members, childrenOf)) {
+    for (const [islandKey, row] of split(key, members, childrenOf, cap)) {
       if (headless.has(key)) headless.add(islandKey);
       for (const id of row) refined.set(id, islandKey);
     }
@@ -203,10 +204,24 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
   return { homes, headless: new Set([...headless].filter((key) => homes.get(key) === key)) };
 }
 
-/** The most records an island holds before it is cut into bands: the design's
- * biggest thread (948 with its papers attached) fits whole, so a line of
- * inquiry is never split. */
-const ISLAND_CAP = 960;
+/**
+ * The most of the window one island may hold before it is cut into bands. A
+ * share rather than a count: what makes a field unreadable is not an island of
+ * some particular size, it is one island being the field and the rest a fringe
+ * around it, and that is a question about the window the reader asked for — so
+ * widening the window lets a thread grow with it instead of hitting a number
+ * chosen against some other graph's biggest thread.
+ */
+const ISLAND_SHARE = 0.4;
+/**
+ * …but a narrow window is often one line of inquiry and nothing else, where a
+ * share would cut a whole thread into bands and invent structure that is not
+ * there. Below this no family is split at any share.
+ */
+const SPLIT_FLOOR = 240;
+
+/** The cap a window of `total` records puts on one island. */
+const islandCap = (total: number): number => Math.max(SPLIT_FLOOR, Math.ceil(total * ISLAND_SHARE));
 /** A family smaller than this joins the island its records touch most. */
 const MIN_ISLAND_NODES = 24;
 
@@ -215,8 +230,8 @@ const MIN_ISLAND_NODES = 24;
  * from its crown, chunked, so each island is a connected band of the inquiry —
  * a sub-issue and what hangs off it — and all of them come out much of a size.
  */
-function split(key: string, members: string[], childrenOf: Map<string, string[]>): [string, string[]][] {
-  if (members.length <= ISLAND_CAP) return [[key, members]];
+function split(key: string, members: string[], childrenOf: Map<string, string[]>, cap: number): [string, string[]][] {
+  if (members.length <= cap) return [[key, members]];
   const memberSet = new Set(members);
   const depth = new Map([[key, 0]]);
   const queue = [key];
@@ -229,7 +244,7 @@ function split(key: string, members: string[], childrenOf: Map<string, string[]>
     }
   }
   const ordered = [...members].sort((a, b) => (depth.get(a) ?? members.length) - (depth.get(b) ?? members.length));
-  const chunks = Math.ceil(ordered.length / ISLAND_CAP);
+  const chunks = Math.ceil(ordered.length / cap);
   const per = Math.ceil(ordered.length / chunks);
   const pieces: [string, string[]][] = [];
   for (let at = 0; at < ordered.length; at += per) {
