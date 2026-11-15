@@ -86,6 +86,11 @@
 .cp-crumb-last { color: var(--text); }
 .cp-lines-note { margin-left: auto; color: var(--muted); font-size: 10.5px; }
 
+/* The editor's host. CodeMirror measures itself against this box, so it must have a real
+   height rather than growing with the document — that is what makes it virtualize. */
+.cp-cm { flex: 1; min-height: 0; overflow: hidden; }
+
+/* The listing shown until the editor's chunk arrives, and kept if it never does. */
 .cp-scroll { overflow: auto; min-height: 0; flex: 1; }
 /* `font: inherit` on both, and it is load-bearing: the UA stylesheet gives `pre` and `code`
    their own `font-family: monospace`, which beats inheritance, so without this the code

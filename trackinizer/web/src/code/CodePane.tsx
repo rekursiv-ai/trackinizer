@@ -9,8 +9,9 @@
 // code it is about are one thing. A station with no session yet files against its workstream
 // instead (`code/scope.ts`), and the pane names which, since the two do not live equally long.
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type DragEvent, type ReactNode, useMemo, useRef, useState } from "react";
+import { type DragEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { readCodeFile, readCodeSnapshot } from "../api/code";
+import { chunk } from "../router/lazy";
 import { languageOf } from "../detail/transcript/steps";
 import { useHighlighter } from "../markdown/CodeBlock";
 import type { ElementContent } from "hast";
@@ -19,6 +20,7 @@ import { EmptyState } from "../ui/view";
 import { ReadFailure } from "../ui/failure";
 import { Icon } from "../ui/icons";
 import { skippedCount, walkDataTransfer, walkFileList, type Walked } from "./importFolder";
+import type { Editor } from "./editor";
 import { type CodeScope, scopeName } from "./scope";
 import { uploadWalk } from "./upload";
 import "../markdown/highlight.css";
@@ -345,26 +347,97 @@ function Crumbs({ path, lines }: { readonly path: string; readonly lines: number
   );
 }
 
-/** One file, highlighted and numbered, read-only. */
+/**
+ * One file, read-only: CodeMirror once its chunk has arrived, the plain highlighted listing
+ * until then.
+ *
+ * The listing is not dead weight. It paints immediately on the first open, while CodeMirror
+ * is still being fetched, and it is what a browser that fails to load the chunk keeps — so
+ * the pane degrades to a readable file rather than to nothing.
+ */
 function FileText({ path, text }: { readonly path: string; readonly text: string }) {
+  const lines = useMemo(() => text.replace(/\n$/, "").split("\n").length, [text]);
+  const editor = useEditorModule();
+  return (
+    <>
+      <Crumbs path={path} lines={lines} />
+      {editor ? <CodeMirrorFile mount={editor.mountEditor} path={path} text={text} /> : <PlainFile path={path} text={text} />}
+    </>
+  );
+}
+
+/** The editor module, once its chunk has loaded; undefined until then. Loaded once per page. */
+function useEditorModule(): EditorModule | undefined {
+  const [module, setModule] = useState<EditorModule | undefined>(loadedEditor);
+  useEffect(() => {
+    if (loadedEditor) return;
+    let mounted = true;
+    void (editorLoad ??= chunk(import("./editor")))
+      .then((loaded) => {
+        loadedEditor = loaded;
+        if (mounted) setModule(loaded);
+      })
+      // A chunk that will not load leaves the plain listing in place, which still reads.
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
+  return module;
+}
+
+type EditorModule = typeof import("./editor");
+let loadedEditor: EditorModule | undefined;
+let editorLoad: Promise<EditorModule> | undefined;
+
+/** The CodeMirror view: mounted once, then handed each file in turn. */
+function CodeMirrorFile({
+  mount,
+  path,
+  text,
+}: {
+  readonly mount: EditorModule["mountEditor"];
+  readonly path: string;
+  readonly text: string;
+}) {
+  const host = useRef<HTMLDivElement>(null);
+  const editor = useRef<Editor | null>(null);
+  useEffect(() => {
+    const parent = host.current;
+    if (!parent) return;
+    const view = mount(parent, path, text);
+    editor.current = view;
+    return () => {
+      editor.current = null;
+      view.destroy();
+    };
+    // Mounted once: a later file is handed to the live view below, which keeps its
+    // scroll handling and find panel rather than tearing the editor down per file.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mount]);
+  useEffect(() => {
+    editor.current?.show(path, text);
+  }, [path, text]);
+  return <div className="cp-cm" ref={host} />;
+}
+
+/** The fallback listing: highlighted and numbered, no editor. */
+function PlainFile({ path, text }: { readonly path: string; readonly text: string }) {
   const highlighter = useHighlighter(true);
   const language = languageOf(path);
   const coloured = useMemo(() => highlighter?.highlightLines(text, language), [highlighter, text, language]);
   const rows = useMemo(() => text.replace(/\n$/, "").split("\n"), [text]);
   return (
-    <>
-      <Crumbs path={path} lines={rows.length} />
-      <div className="cp-scroll">
-        <pre className="cp-pre">
-          {rows.map((row, at) => (
-            <span className="cp-row" key={at}>
-              <span className="cp-n">{at + 1}</span>
-              <code className="cp-tok">{coloured?.[at] ? <Tokens nodes={coloured[at]!} /> : row}</code>
-            </span>
-          ))}
-        </pre>
-      </div>
-    </>
+    <div className="cp-scroll">
+      <pre className="cp-pre">
+        {rows.map((row, at) => (
+          <span className="cp-row" key={at}>
+            <span className="cp-n">{at + 1}</span>
+            <code className="cp-tok">{coloured?.[at] ? <Tokens nodes={coloured[at]!} /> : row}</code>
+          </span>
+        ))}
+      </pre>
+    </div>
   );
 }
 

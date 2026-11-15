@@ -88,14 +88,23 @@ test("the pane says it is read-only, which is the asymmetry it exists to hold", 
   serve({ paths: ["src/app.ts"], text: "export const a = 1;\n" });
   const { container } = draw();
   expect(await screen.findByText("Read-only")).toBeTruthy();
+
+  // With a file actually open, which is the only state that could offer a caret.
+  await userEvent.click(await screen.findByRole("button", { name: "app.ts" }));
+  await waitFor(() => expect(container.querySelector(".cm-editor")).toBeTruthy());
+
   expect(container.querySelector("textarea")).toBeNull();
+  // The folder picker is the one input, and the only write the reader owns.
   expect(container.querySelector("input:not([type=file])")).toBeNull();
-  expect(container.querySelector("[contenteditable]")).toBeNull();
+  // The editor sets `contenteditable="false"`, so the claim is that nothing is EDITABLE,
+  // not that nothing carries the attribute — the latter would pass only before it mounted.
+  expect(container.querySelector('[contenteditable="true"]')).toBeNull();
+  expect(container.querySelector('[contenteditable=""]')).toBeNull();
 });
 
 test("the snapshot's paths draw as a tree, and picking a file reads it and numbers its lines", async () => {
   serve({ paths: ["README.md", "src/app.ts"], text: "const a = 1;\nconst b = 2;\n" });
-  draw();
+  const view = draw();
   // Folders are their own nodes, named with the trailing slash `fileTree` gives them;
   // the leaf carries the file's name alone.
   expect(await screen.findByText("src/")).toBeTruthy();
@@ -103,13 +112,20 @@ test("the snapshot's paths draw as a tree, and picking a file reads it and numbe
   const leaf = screen.getByRole("button", { name: "app.ts" });
   await userEvent.click(leaf);
 
-  // The file's own path heads it as a breadcrumb, so a scrolled file still says which it is,
-  // and every line is numbered.
+  // The file's own path heads it as a breadcrumb, so a scrolled file still says which it is.
   const crumbs = await screen.findByText("app.ts", { selector: ".cp-crumb-last" });
   expect(crumbs.closest(".cp-crumbs")!.textContent).toContain("src");
   expect(screen.getByText("2 lines")).toBeTruthy();
-  await waitFor(() => expect(screen.getByText("1", { selector: ".cp-n" })).toBeTruthy());
-  expect(screen.getByText("2", { selector: ".cp-n" })).toBeTruthy();
+
+  // The editor arrives as a chunk of its own, so the file first paints as the plain
+  // listing and then becomes CodeMirror. Both number every line; wait for the end state.
+  const { container } = view;
+  await waitFor(() => expect(container.querySelector(".cm-editor")).toBeTruthy());
+  const gutter = [...container.querySelectorAll(".cm-lineNumbers .cm-gutterElement")].map((line) => line.textContent);
+  expect(gutter).toContain("1");
+  expect(gutter).toContain("2");
+  // Read-only in the DOM, not only in the state: no caret is ever offered.
+  expect(container.querySelector(".cm-content")!.getAttribute("contenteditable")).toBe("false");
 });
 
 test("a file is read by path from the session's own record, not from a guess at the tree", async () => {
