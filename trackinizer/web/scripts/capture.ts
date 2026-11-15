@@ -107,12 +107,29 @@ export async function settledRequests(page: Page, open: ReadonlySet<Request>, qu
  * places on every run. Some 5,000 nodes take tens of seconds.
  */
 export async function graphSettled(page: Page): Promise<void> {
-  await page.locator(".graph-count").filter({ hasText: /\d nodes?$/ }).waitFor();
   const read = () =>
     page.evaluate(() => {
-      const debug = (window as unknown as { trackinizer: { graph(): { nodes: { screen: unknown }[] } } }).trackinizer;
-      return JSON.stringify(debug.graph().nodes.map((node) => node.screen));
+      const hook = (window as unknown as { trackinizer?: { graph?: () => { nodes: { screen: unknown }[] } } }).trackinizer;
+      const nodes = typeof hook?.graph === "function" ? hook.graph().nodes : [];
+      return nodes.length > 0 ? JSON.stringify(nodes.map((node) => node.screen)) : "";
     });
+  // Drawn yet, asked of the same hook the settling is then read from, rather than
+  // of the counts in the view's header. Those are a display: the element has been
+  // renamed once and its text now reads "5,000 nodes, 7,792 edges" where it used
+  // to end at the nodes, and each change broke this wait silently — the capture
+  // timed out on a graph that was drawing perfectly well. The hook is what the
+  // settling below already trusts, so gate on the same thing.
+  //
+  // `window.trackinizer` is there from the boot; the view hangs `graph` on it when
+  // it mounts, so the wait is for the function to appear and then to report nodes.
+  await page.waitForFunction(
+    () => {
+      const hook = (window as unknown as { trackinizer?: { graph?: () => { nodes: unknown[] } } }).trackinizer;
+      return typeof hook?.graph === "function" && hook.graph().nodes.length > 0;
+    },
+    undefined,
+    { timeout: 120_000 },
+  );
   let last = "";
   for (const deadline = Date.now() + 180_000; Date.now() < deadline; await page.waitForTimeout(1_000)) {
     const now = await read();

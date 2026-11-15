@@ -9,7 +9,6 @@
 .graph-search:focus-within { outline: 2px solid var(--accent-hover); outline-offset: 2px; }
 .graph-search input { flex: 1; min-width: 0; border: 0; background: none; outline: none; font-size: 12.5px; color: var(--text); }
 .graph-search input::placeholder { color: var(--muted); }
-.graph-count { font-size: 12.5px; white-space: nowrap; }
 .graph .view-tools .btn[aria-pressed="true"] { background: var(--surface-hover); color: var(--text); }
 
 /* The focus row: a chips row (lists.css) of its own. */
@@ -288,8 +287,7 @@
 .graph .graph-search { font: 12px var(--mono); }
 .graph .graph-search input { font: 12px var(--mono); color: var(--p-fg); }
 .graph .graph-search input::placeholder { color: var(--p-muted); }
-.graph .proto-stat,
-.graph .graph-count { font: 400 11.5px var(--mono); color: var(--p-muted); }
+.graph .proto-stat { font: 400 11.5px var(--mono); color: var(--p-muted); }
 .graph .proto-fit { font: 500 12px var(--mono); color: var(--p-fg-2); }
 .graph .proto-fit:hover { color: var(--p-fg); }
 
