@@ -129,6 +129,7 @@ from trackinizer.wire.wire_session_relay import (
     ProcessEnded,
     ProcessSpec,
     ServeSession,
+    StopProcess,
     ViewerFrame,
 )
 from trackinizer.wire.wire_sessions import LINE_CANVAS
@@ -557,8 +558,11 @@ async def sessions_wait_route(
     request: Request,
     instance: UUID,
     wait_sec: Annotated[float, Query(ge=0)] = WAIT_MAX_SEC,
-) -> ServeSession | None:
+) -> ServeSession | StopProcess | None:
     """Hold until a session asks to start on this host, then return it; else ``null``.
+
+    A remote agent service's wait is handed, before any start, each stop of a process
+    it took: it ends the process whole, which may not heed its socket's close.
 
     The host's own credential authenticates, as for a heartbeat. A start is handed out
     once, and never to a caller that has gone. One whose answer is lost all the same,
@@ -573,7 +577,8 @@ async def sessions_wait_route(
       wait_sec: How long to hold, clamped to 25 seconds.
 
     Returns:
-      serve: The start to run, or ``None`` when none came in time.
+      serve: The stop to carry out or the start to run, or ``None`` when none came
+        in time.
 
     Raises:
       HTTPException: 403 on a server with authentication off, or when another daemon
@@ -593,7 +598,7 @@ async def sessions_wait_route(
         )
     except HostRevokedError as error:
         raise host_revoked() from error
-    if serve is not None:
+    if isinstance(serve, ServeSession):
         _ = get_later(request).run(
             _STARTED_SEC,
             partial(

@@ -145,6 +145,7 @@ if TYPE_CHECKING:
         ProcessEnded,
         ProcessSpec,
         ServeSession,
+        StopProcess,
         ViewerFrame,
     )
     from trackinizer.wire.wire_sessions import (
@@ -2564,7 +2565,7 @@ class Client:
         *,
         instance: uuid.UUID,
         wait_sec: float,
-    ) -> ServeSession | None:
+    ) -> ServeSession | StopProcess | None:
         """Hold up to ``wait_sec`` for a session to start here, as the daemon.
 
         Args:
@@ -2574,7 +2575,8 @@ class Client:
             exceeds it, or the client would abort the very wait it asked for.
 
         Returns:
-          serve: The start to run, or ``None`` when none came in time.
+          serve: The start to run, a stop of a process it runs (a remote agent
+            service's alone), or ``None`` when neither came in time.
 
         """
         # A plain read, as the tool wait is: the server hands a start once, so one
@@ -2586,11 +2588,14 @@ class Client:
             params={"instance": str(instance), "wait_sec": wait_sec},
             timeout=wire_sessions.held_read_timeout(wait_sec),
         )
-        return (
-            None
-            if response is None
-            else _validate_model(wire_session_relay.ServeSession, response, where)
-        )
+        if response is None:
+            return None
+        if (
+            isinstance(response, dict)
+            and cast("dict[str, object]", response).get("type") == "stop"
+        ):
+            return _validate_model(wire_session_relay.StopProcess, response, where)
+        return _validate_model(wire_session_relay.ServeSession, response, where)
 
     def report_process_ended(self, host_id: uuid.UUID, ended: ProcessEnded) -> None:
         """Report that an agent process this daemon started exited, or never ran."""

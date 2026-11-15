@@ -109,6 +109,7 @@ __all__ = [
     "Setting",
     "SettingsLine",
     "StateLine",
+    "StopProcess",
     "ViewerFrame",
 ]
 
@@ -452,6 +453,20 @@ class ServeSession(BaseModel):
     remote: bool = False
     """Whether the server placed it with a remote agent service, whose daemon must
     confine it: one that confines nothing refuses it."""
+
+
+class StopProcess(BaseModel):
+    """A stop of a process a remote agent service runs, which its daemon carries out.
+
+    The server stops a process by closing its socket, which an agent that was broken
+    into need not heed; its service ends it whole. Only a remote agent service's wait
+    is handed one.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    type: Literal["stop"] = "stop"
+    process_id: UUID
 
 
 class ProcessEnded(BaseModel):

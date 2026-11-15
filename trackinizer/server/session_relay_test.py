@@ -38,9 +38,11 @@ from trackinizer.wire.wire_session_relay import (
     ProcessLine,
     ProcessSpec,
     RecordLine,
+    ServeSession,
     Setting,
     SettingsLine,
     StateLine,
+    StopProcess,
 )
 
 
@@ -115,6 +117,11 @@ async def _always() -> bool:
 async def _here() -> bool:
     """Answer no: a wait's caller that is still there."""
     return False
+
+
+async def _gone() -> bool:
+    """Answer yes: a wait's caller that has gone."""
+    return True
 
 
 class _Viewer:
@@ -1064,7 +1071,7 @@ async def test_a_start_wakes_its_hosts_wait_and_is_handed_out_once() -> None:
         "lab-box",
         _PROCESS,
     )
-    assert serve is not None
+    assert isinstance(serve, ServeSession)
     assert (serve.session_id, serve.process_id, serve.token) == (
         _SESSION,
         _PROCESS,
@@ -1082,7 +1089,7 @@ async def test_a_start_for_remote_agents_tells_its_daemon_so() -> None:
 
     serve = await relay.wait(_HOST, wait_sec=0, dropped=_here)
 
-    assert serve is not None
+    assert isinstance(serve, ServeSession)
     assert serve.remote is True
 
 
@@ -1136,12 +1143,68 @@ async def test_starts_on_one_host_are_handed_out_in_turn_and_a_stop_takes_its_ow
     first = await asyncio.wait_for(waiting, 1)
     _ = await relay.stop(sessions[2])
 
-    assert first is not None
+    assert isinstance(first, ServeSession)
     assert first.session_id == sessions[0]
     second = await relay.wait(_HOST, wait_sec=0, dropped=_here)
-    assert second is not None
+    assert isinstance(second, ServeSession)
     assert second.session_id == sessions[1]
     assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
+
+
+async def test_a_stop_of_a_process_a_remote_agent_service_took_is_handed_to_its_wait() -> (
+    None
+):
+    """An agent broken into need not heed its socket's close: its service ends it."""
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    taken = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+
+    _ = await relay.stop(_SESSION)
+
+    assert isinstance(taken, ServeSession)
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_here) == StopProcess(
+        process_id=_PROCESS,
+    )
+    # Handed once.
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
+
+
+async def test_a_stop_reaches_no_person_s_host_nor_a_start_no_service_took() -> None:
+    """A person's own daemon ends its agents itself; an untaken start runs nowhere."""
+    relay = SessionRelay()
+    _ = _start(relay)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    _ = _start(relay, session_id=_OTHER, process=_ENDED, host_id=_LAPTOP, remote=True)
+
+    _ = await relay.stop(_SESSION)
+    _ = await relay.stop(_OTHER)
+
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
+    assert await relay.wait(_LAPTOP, wait_sec=0, dropped=_here) is None
+
+
+async def test_a_held_wait_is_handed_a_stop_at_once() -> None:
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    waiting = asyncio.ensure_future(relay.wait(_HOST, wait_sec=1, dropped=_here))
+    await asyncio.sleep(0)
+
+    _ = await relay.stop(_SESSION)
+
+    assert await asyncio.wait_for(waiting, 0.5) == StopProcess(process_id=_PROCESS)
+
+
+async def test_a_stop_goes_to_no_wait_whose_caller_left() -> None:
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    _ = await relay.stop(_SESSION)
+
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_gone) is None
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_here) == StopProcess(
+        process_id=_PROCESS,
+    )
 
 
 async def test_of_two_waits_on_one_host_one_takes_the_start() -> None:
@@ -1189,7 +1252,7 @@ async def test_a_wait_whose_caller_dropped_takes_no_start_and_the_next_wait_gets
     serve = await relay.wait(_HOST, wait_sec=0, dropped=_here)
 
     assert (left, dropped.asked) == (None, 1)
-    assert serve is not None
+    assert isinstance(serve, ServeSession)
     assert serve.process_id == _PROCESS
 
 
@@ -1225,11 +1288,34 @@ async def test_two_live_waits_and_one_start_hand_it_out_once() -> None:
     ]
 
 
+async def test_two_live_waits_and_one_stop_hand_it_out_once() -> None:
+    """Each asks after the stop woke both; the one that answers second waits on."""
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    first, second = _Asked(gone=False), _Asked(gone=False)
+    waits = [
+        asyncio.ensure_future(relay.wait(_HOST, wait_sec=5, dropped=asked))
+        for asked in (first, second)
+    ]
+    await asyncio.sleep(0)
+
+    _ = await relay.stop(_SESSION)
+    done, held = await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
+    _ = _start(relay, session_id=_ENDED, process=_OTHER)
+    taken = [await asyncio.wait_for(wait, 1) for wait in (*done, *held)]
+
+    assert (first.asked, second.asked) == (1, 2)
+    assert taken[0] == StopProcess(process_id=_PROCESS)
+    assert isinstance(taken[1], ServeSession)
+    assert taken[1].process_id == _OTHER
+
+
 async def _taken(relay: SessionRelay, *, process: UUID = _PROCESS) -> AgentProcess:
     """Start ``process`` and have its host's daemon take the start."""
     started = _start(relay, process=process)
     serve = await relay.wait(_HOST, wait_sec=0, dropped=_here)
-    assert serve is not None
+    assert isinstance(serve, ServeSession)
     return started
 
 
@@ -1377,7 +1463,7 @@ async def test_a_late_hello_after_the_give_up_is_refused_and_a_new_start_runs() 
     assert await late.close_code() == wire_terminals.CLOSE_ENDED
     assert (again.process_id, again.state) == (_OTHER, "starting")
     serve = await relay.wait(_HOST, wait_sec=0, dropped=_here)
-    assert serve is not None
+    assert isinstance(serve, ServeSession)
     assert (serve.process_id, serve.token) == (_OTHER, f"key-{_OTHER.hex}")
 
 
@@ -1400,7 +1486,10 @@ async def test_a_wait_with_nothing_offered_answers_none_in_its_time() -> None:
     assert await relay.wait(_HOST, wait_sec=0.001, dropped=_here) is None
 
 
-async def test_a_stop_closes_the_socket_as_ended() -> None:
+async def test_a_stop_closes_the_socket_as_ended(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger=session_relay.__name__)
     relay = SessionRelay()
     viewer = _Viewer(relay)
     _ = await viewer.next()
@@ -1413,7 +1502,12 @@ async def test_a_stop_closes_the_socket_as_ended() -> None:
     assert stopped is not None
     assert (stopped.state, stopped.reason) == ("detached", "stopped")
     assert await socket.close_code() == wire_terminals.CLOSE_ENDED
+    assert socket.closed.result() == (
+        wire_terminals.CLOSE_ENDED,
+        "a person stopped this process",
+    )
     assert await viewer.process() == stopped
+    assert _detached_said("stopped") in _said(caplog)
 
 
 class _SlowToClose(_Socket):
@@ -1630,6 +1724,33 @@ async def test_an_end_from_the_host_it_was_offered_to_detaches_it_with_its_reaso
     assert relay.process(_SESSION) == process
 
 
+async def test_a_process_that_ran_and_ended_with_no_code_said_is_no_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Its daemon restarted while it ran: it saw the end, but not its exit code."""
+    caplog.set_level(logging.INFO, logger=session_relay.__name__)
+    relay = SessionRelay()
+    _ = _start(relay)
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    served = await _attached(relay, viewer, _Socket())
+
+    relay.ended(
+        ProcessEnded(process_id=_PROCESS, exit_code=None, reason="ended unwatched"),
+        host_id=_HOST,
+    )
+    await served
+
+    process = await viewer.process()
+    assert (process.state, process.reason, process.failed) == (
+        "detached",
+        "ended unwatched",
+        False,
+    )
+    assert _warned(caplog) == []
+    assert _detached_said("ended unwatched") in _said(caplog)
+
+
 async def test_an_end_after_the_socket_closed_still_gives_the_daemons_reason() -> None:
     relay = SessionRelay()
     _ = _start(relay)
@@ -1737,6 +1858,35 @@ async def test_a_start_a_person_stopped_that_then_exits_cleanly_is_no_failure(
     assert (process.reason, process.failed) == ("exited with code 0", False)
     assert _warned(caplog) == []
     assert _detached_said("exited with code 0") in _said(caplog)
+
+
+async def test_a_running_agent_a_person_stopped_that_its_service_ended_is_no_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The service ends a stopped agent's unit (TERM), and sagent answers it 130.
+
+    Measured: Chat said "The agent on remote-agents failed: exited with code 130"
+    after Stop the agent.
+    """
+    caplog.set_level(logging.INFO, logger=session_relay.__name__)
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    served = await _attached(relay, viewer, _Socket())
+    _ = await relay.stop(_SESSION)
+    await served
+    said = "exited with code 130"
+    report = ProcessEnded(process_id=_PROCESS, exit_code=130, reason=said)
+
+    # The service's report may come twice, as its retries send it.
+    relay.ended(report, host_id=_HOST)
+    relay.ended(report, host_id=_HOST)
+
+    process = relay.process(_SESSION)
+    assert process is not None
+    assert (process.state, process.reason, process.failed) == ("detached", said, False)
+    assert _warned(caplog) == []
 
 
 async def test_the_same_end_twice_tells_viewers_once() -> None:
@@ -2046,6 +2196,37 @@ async def test_a_sweep_closes_the_socket_of_a_process_its_key_may_no_longer_serv
     assert _detached_said("refused") in _said(caplog)
     with pytest.raises(NotLiveError):
         _ = relay.send_input(_SESSION, _HALT, author="ada@x.y")
+
+
+async def test_a_sweep_of_a_remote_agent_hands_its_service_a_stop() -> None:
+    """A key refused ends its agent's unit too: one broken into need not heed a close."""
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    rule = _Rule()
+    served = _serve(relay, _Socket(), host_id=_HOST, allowed=rule)
+    assert (await viewer.process()).state == "attached"
+    rule.holds = False
+
+    await relay.sweep()
+    await served
+
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_here) == StopProcess(
+        process_id=_PROCESS,
+    )
+
+
+async def test_a_host_stopped_hands_out_no_stop_after_it() -> None:
+    """A revoked service takes nothing more, so no stop waits for it."""
+    relay = SessionRelay()
+    _ = _start(relay, remote=True)
+    _ = await relay.wait(_HOST, wait_sec=0, dropped=_here)
+
+    assert await relay.stop_host(_HOST) == [_SESSION]
+
+    assert await relay.wait(_HOST, wait_sec=0, dropped=_here) is None
 
 
 async def test_a_rule_that_cannot_be_asked_leaves_its_stream_and_socket_up(
