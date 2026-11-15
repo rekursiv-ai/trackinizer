@@ -84,6 +84,7 @@ __all__ = [
     "NOT_LIVE",
     "NO_PLACE",
     "REMOTE_AGENTS_FACT",
+    "REMOTE_AGENT_FLAGS",
     "SESSIONS_FACT",
     "SESSION_INPUTS_PATH",
     "SESSION_LINES_PATH",
@@ -111,6 +112,7 @@ __all__ = [
     "StateLine",
     "StopProcess",
     "ViewerFrame",
+    "remote_flags_refused",
 ]
 
 SESSION_LINES_PATH: Final = "/api/sessions/{session_id}/lines"
@@ -438,7 +440,54 @@ class ProcessSpec(BaseModel):
     """The folder on ``host`` to start in."""
 
     args: tuple[str, ...] = ()
-    """sagent's own command-line flags, as a person would type them."""
+    """sagent's own command-line flags, as a person would type them, after the
+    client's ``--time TIME`` when the start has a time limit. A remote agent takes only
+    :data:`REMOTE_AGENT_FLAGS` (:func:`remote_flags_refused`)."""
+
+
+REMOTE_AGENT_FLAGS: Final = frozenset(
+    {
+        "--time",
+        "--name",
+        "--model",
+        "--model.thinking.effort",
+        "--max-budget-usd",
+        "--max-tool-call-rounds",
+        "--system-prompt",
+        "--append-system-prompt",
+    },
+)
+"""The flags a remote agent's start may carry, each once and with its value: a campaign
+lead's time limit, label, model, effort, caps and prompt.
+None of them reaches past the confinement the service adds after them: its tools,
+providers, directives, skills or MCP servers."""
+
+
+def remote_flags_refused(args: tuple[str, ...]) -> str:
+    """Say why a remote agent refuses a start's ``args``; empty when it takes them.
+
+    Args:
+      args: The start's flags, ``ProcessSpec.args``.
+
+    Returns:
+      why: The first word it refuses and why, as ``a remote agent takes no --tools``;
+        ``""`` when each is one of :data:`REMOTE_AGENT_FLAGS`, once, with a value that
+        is no flag, and ``--time`` comes first.
+
+    """
+    seen: set[str] = set()
+    for at in range(0, len(args), 2):
+        flag = args[at]
+        if flag not in REMOTE_AGENT_FLAGS:
+            return f"a remote agent takes no {flag}"
+        if flag == "--time" and at:
+            return "a remote agent takes --time first"
+        if at + 1 == len(args) or args[at + 1].startswith("--"):
+            return f"a remote agent takes {flag} with a value"
+        if flag in seen:
+            return f"a remote agent takes {flag} once"
+        seen.add(flag)
+    return ""
 
 
 class ServeSession(BaseModel):

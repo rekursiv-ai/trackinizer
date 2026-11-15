@@ -402,6 +402,65 @@ def test_a_host_says_each_thing_it_offers_by_a_fact_of_its_own() -> None:
     ) == ("sessions", "remote_agents", "logins")
 
 
+def test_a_remote_agent_takes_a_campaign_lead_s_flags() -> None:
+    """The lead's time, label, model, effort, budget, rounds and prompt, each valued."""
+    lead = (
+        "--time",
+        "2:00:00",
+        "--name",
+        "lead-tiles-20261115-1800",
+        "--model",
+        "opus",
+        "--model.thinking.effort",
+        "high",
+        "--max-budget-usd",
+        "5",
+        "--max-tool-call-rounds",
+        "200",
+        "--system-prompt",
+        "# Research lead\n\n- run the loop",
+        "--append-system-prompt",
+        "Brief: Issue#7",
+    )
+
+    assert wire_session_relay.remote_flags_refused(lead) == ""
+    assert wire_session_relay.remote_flags_refused(()) == ""
+
+
+@pytest.mark.parametrize(
+    ("args", "why"),
+    [
+        (("--tools", "Bash"), "a remote agent takes no --tools"),
+        (("--add-dir", "/"), "a remote agent takes no --add-dir"),
+        (("--model=opus",), "a remote agent takes no --model=opus"),
+        (("--name", "a", "--time", "1:00"), "a remote agent takes --time first"),
+        (("--model",), "a remote agent takes --model with a value"),
+        (
+            ("--name", "a", "--model", "--tools"),
+            "a remote agent takes --model with a value",
+        ),
+        (("--model", "a", "--model", "b"), "a remote agent takes --model once"),
+        (("opus",), "a remote agent takes no opus"),
+    ],
+    ids=[
+        "a confining flag",
+        "another",
+        "a joined value",
+        "a time not first",
+        "a missing value",
+        "a flag as a value",
+        "a flag twice",
+        "a bare word",
+    ],
+)
+def test_a_remote_agent_refuses_any_other_flag_saying_which(
+    args: tuple[str, ...],
+    why: str,
+) -> None:
+    """A flag such as ``--tools`` or ``--add-dir`` would reach past the confinement."""
+    assert wire_session_relay.remote_flags_refused(args) == why
+
+
 if __name__ == "__main__":
     from trackinizer.lib.testing.runner import test_main
 
