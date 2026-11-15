@@ -1,5 +1,8 @@
 import { type MouseEvent, type ReactNode, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type Meta, useMeta } from "../app/boot";
+import { type Meta, useMeta, useProfile } from "../app/boot";
+import { CodePane } from "../code/CodePane";
+import { codeScope } from "../code/scope";
+import { useStation } from "../stations/useStation";
 import { isPageCounts, isStrings, useTabState } from "../app/tabState";
 import { BulkBar } from "../bulk/BulkBar";
 import { ColumnsView } from "../columns";
@@ -89,6 +92,10 @@ export function InquiryList({
   const { navigate, route } = useRouter();
   const [state, update] = useTabState(`trackinizer.v2.list.${id}`, readListState, () => initialState(kinds, meta));
   const views = offeredViews(kinds);
+  // Code files a tree against the chat session, so it needs the station that names it.
+  // Asked for only on the list that offers Code, so no other list makes the request.
+  const station = useStation({ enabled: views.includes("code") });
+  const profile = useProfile();
   // Columns lives in the hash, with the Issues selected column by column.
   const path = route.name === "list" && views.includes("columns") ? (route.columns ?? null) : null;
   const view: View = path ? "columns" : views.includes(state.view) ? state.view : "list";
@@ -225,6 +232,22 @@ export function InquiryList({
   useEffect(() => {
     if (shown) return whenIdle(() => void DetailView.preload().catch(() => {}));
   }, [shown]);
+
+  // Code shows no rows, so none of the row tools apply to it: it keeps the header and the
+  // switch that leads back to the list, and nothing else. Every hook above has already run,
+  // so this return changes no hook order.
+  if (view === "code") {
+    return (
+      <div className="view">
+        <ViewHeader icon={icon} title={title} />
+        <div className="view-tools" onMouseDown={keepFocus}>
+          <div className="spacer" />
+          <ViewSwitch offered={views} view={view} onChange={pickView} />
+        </div>
+        <CodePane scope={codeScope(station.data)} owner={profile.email} />
+      </div>
+    );
+  }
 
   return (
     <div className="view">

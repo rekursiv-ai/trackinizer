@@ -643,6 +643,44 @@ When a tree is too large or its node seqs must be referenced later, split across
 commands instead -- capture each new seq from the output, then attach its
 children by ref.
 
+## The session's code
+
+A research session can carry the code it is about. Someone drops a folder into the
+web app's Files place (its Code view), which files that tree as a snapshot of the
+session's own record; `trax code` is how you read and change it. **You write those
+files; the person only reads them** -- that asymmetry is the feature, so do not ask
+them to paste a file you can read, or to apply an edit you can make.
+
+```bash
+trax code RECORD_UUID                           # list the files, with sizes
+trax code RECORD_UUID read src/app.ts           # print one file
+trax code RECORD_UUID write src/app.ts to @local.ts   # create or replace
+trax code RECORD_UUID write notes.md to -       # ... from stdin
+trax code RECORD_UUID del src/dead.ts           # remove a path
+trax code RECORD_UUID diff OTHER_RECORD_UUID    # what changed between two records
+```
+
+`RECORD_UUID` is the session the code belongs to -- the `session_id` of the chat you
+are answering, or the workstream when a station has no session yet. In a `trax run`
+session the station is `$TRAX_WORKSPACE` and the workstream `$TRAX_WORKSTREAM`; read
+`trax workspace $TRAX_WORKSPACE` to find the session rather than guessing.
+
+Three properties to work with rather than against:
+
+- **A snapshot is a whole map**, so every write re-files it. The last map filed wins:
+  do not run two `trax code ... write` commands on one record concurrently, or one
+  will drop the other's paths.
+- **Blobs are content-addressed per owner**, so rewriting a file to bytes the store
+  already holds uploads nothing. Writing a file back unchanged is cheap, not wasteful.
+- **Text only, 1 MiB a file.** The importer already skipped `.git`, `node_modules`,
+  build output and binaries; if a path you expect is missing it was almost certainly
+  skipped on the way in, not lost.
+
+Read before you write (`read`, not a guess at what the file holds), and prefer one
+`write` per file over rewriting a tree. When a change is worth recording as an
+artifact, that is still a `codechange` row with its commit SHA -- `trax code` holds
+the working tree, not the history.
+
 ## Environment variables
 
 `trax env` lists the org's variables; `trax env NAME to VALUE` sets one and

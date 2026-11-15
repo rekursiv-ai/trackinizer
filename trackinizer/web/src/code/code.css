@@ -1,0 +1,127 @@
+/* The code pane: a session's imported tree on the left, the file open on the right, read-only.
+   `markdown/highlight.css` colours the tokens; this file lays them out and draws the chrome.
+
+   The pane carries `.ui-panel`, which is what puts it in the design's own faces (Inter and
+   JetBrains Mono Variable, `styles.css`). Without it a code surface falls back to the system
+   mono stack, which is the single biggest reason a pane like this reads as unfinished. */
+
+.cp { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; background: var(--bg); }
+
+/* The pane's own tools, under the list's: what is here, that it cannot be edited, and the import. */
+.cp-bar {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 7px 14px; border-bottom: 1px solid var(--line); background: var(--surface);
+}
+.cp-bar .spacer { flex: 1; }
+.cp-count { font: 11.5px/1 var(--mono); color: var(--muted); letter-spacing: -0.1px; }
+.cp-partial { font: 11px/1 var(--mono); color: var(--amber); overflow-wrap: anywhere; }
+/* Stated, not implied: the reader supplies the tree and the agent writes inside it. */
+.cp-ro {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border: 1px solid var(--line-strong);
+  border-radius: 999px; font: 10px/1.6 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--muted);
+}
+.cp-picker { display: none; }
+
+.cp-progress {
+  display: flex; align-items: center; gap: 10px; flex: none;
+  padding: 7px 14px; border-bottom: 1px solid var(--line); font: 11.5px/1 var(--mono); color: var(--ink-muted);
+}
+.cp-track { flex: 1; max-width: 240px; height: 3px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.cp-fill { display: block; height: 100%; background: var(--accent); transition: width 120ms linear; }
+.cp-report {
+  margin: 0; flex: none; padding: 7px 14px; border-bottom: 1px solid var(--line);
+  font-size: 12.5px; color: var(--muted);
+}
+.cp-report.is-bad { color: var(--error-text); }
+.cp-hint { margin: 0; padding: 14px; font-size: 12.5px; color: var(--muted); }
+
+/* Tree and file side by side; each scrolls on its own so a long file never moves the tree. */
+.cp-split { display: grid; grid-template-columns: minmax(190px, 260px) 1fr; flex: 1; min-height: 0; }
+
+/* ---- the tree -------------------------------------------------------------------- */
+
+.cp-tree, .cp-tree ul { list-style: none; margin: 0; padding: 0; }
+.cp-tree {
+  overflow: auto; min-height: 0; padding: 8px 0 14px;
+  border-right: 1px solid var(--line); background: var(--surface);
+}
+/* Indent guides: the hairline a reader follows from a nested file back up to its folder.
+   Drawn on the list, not the row, so one line spans the whole group. */
+.cp-tree ul { margin-left: 9px; padding-left: 9px; border-left: 1px solid var(--line); }
+.cp-tree li { padding: 0; }
+
+.cp-row-btn {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 10px 3px 8px;
+  border: 0; border-left: 2px solid transparent; background: none; cursor: pointer; text-align: left;
+  font: 12px/1.5 var(--mono); color: var(--ink-muted); letter-spacing: -0.1px;
+}
+.cp-row-btn:hover { background: var(--surface-hover); color: var(--text); }
+.cp-row-btn:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.cp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The open file: tinted, with an accent edge, as an editor marks the active tab. */
+.cp-leaf.is-open { background: var(--accent-soft); border-left-color: var(--accent); color: var(--text); }
+.cp-chev { flex: none; display: inline-flex; color: var(--muted); transition: transform 120ms ease; }
+.cp-dot { flex: none; width: 6px; height: 6px; border-radius: 2px; background: currentColor; opacity: 0.55; }
+/* The file glyph takes its language's colour from the code ramp, so a tree reads by
+   kind at a glance without inventing an icon set. */
+.cp-dot.is-ts, .cp-dot.is-tsx { color: var(--code-key); }
+.cp-dot.is-js, .cp-dot.is-jsx, .cp-dot.is-json { color: var(--code-number); }
+.cp-dot.is-py { color: var(--code-string); }
+.cp-dot.is-md, .cp-dot.is-txt { color: var(--muted); }
+.cp-dot.is-css, .cp-dot.is-scss { color: var(--code-literal); }
+.cp-dot.is-sh, .cp-dot.is-bash, .cp-dot.is-yml, .cp-dot.is-yaml, .cp-dot.is-toml { color: var(--code-keyword); }
+
+/* ---- the open file --------------------------------------------------------------- */
+
+.cp-file { display: flex; flex-direction: column; overflow: hidden; min-width: 0; min-height: 0; background: var(--bg); }
+
+/* The path as a breadcrumb, pinned: scrolling a long file must never lose which file it is. */
+.cp-crumbs {
+  display: flex; align-items: center; gap: 4px; flex: none; flex-wrap: wrap;
+  padding: 8px 14px; border-bottom: 1px solid var(--line); background: var(--surface);
+  font: 11.5px/1.4 var(--mono); color: var(--muted);
+}
+.cp-crumb-sep { color: var(--muted); }
+.cp-crumb-last { color: var(--text); }
+.cp-lines-note { margin-left: auto; color: var(--muted); font-size: 10.5px; }
+
+.cp-scroll { overflow: auto; min-height: 0; flex: 1; }
+/* `font: inherit` on both, and it is load-bearing: the UA stylesheet gives `pre` and `code`
+   their own `font-family: monospace`, which beats inheritance, so without this the code
+   column renders in the browser's default mono instead of the design's face. */
+.cp-pre { margin: 0; padding: 8px 0 24px; background: none; width: max-content; min-width: 100%; font: inherit; }
+.cp-row { display: flex; align-items: baseline; font: 12.5px/1.65 var(--mono); }
+/* The active line. Hover alone, since nothing here takes a caret. */
+.cp-row:hover { background: var(--accent-soft); }
+/* `tabular-nums` so the gutter does not shift width as the line count passes a power of
+   ten, and a right rule so numbers read as a gutter rather than as part of the code. */
+.cp-n {
+  flex: 0 0 auto; min-width: 4em; padding: 0 12px 0 14px; text-align: right;
+  border-right: 1px solid var(--line); color: var(--ink-machine);
+  font-variant-numeric: tabular-nums; user-select: none;
+}
+.cp-row:hover .cp-n { color: var(--text); }
+.cp-tok { min-width: 0; padding: 0 16px 0 14px; white-space: pre; color: var(--text); font: inherit; }
+
+/* ---- the drop target ------------------------------------------------------------- */
+
+.cp.is-over::after {
+  content: ""; position: absolute; inset: 6px; border: 1.5px dashed var(--accent);
+  border-radius: var(--panel-radius); pointer-events: none;
+}
+.cp-drop {
+  position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; background: color-mix(in srgb, var(--bg) 88%, transparent); color: var(--ink-muted); pointer-events: none;
+}
+.cp-drop p { margin: 0; font-size: 13px; }
+.cp-drop .cp-drop-icon {
+  display: grid; place-items: center; width: 46px; height: 46px; border-radius: var(--panel-radius);
+  background: var(--accent-soft); color: var(--accent-hover);
+}
+
+@media (max-width: 700px) {
+  /* Stacked: a 190px tree beside a code column is unreadable on a phone. */
+  .cp-split { grid-template-columns: 1fr; grid-template-rows: minmax(110px, 28%) 1fr; }
+  .cp-tree { border-right: 0; border-bottom: 1px solid var(--line); }
+}

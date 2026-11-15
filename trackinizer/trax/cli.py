@@ -37,6 +37,7 @@ from trackinizer.trax.profile import (
     read_profile,
     unmatched_server_hint,
 )
+from trackinizer.trax.code_verb import Code
 from trackinizer.trax.render import SHOW_IDS, echo
 from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.trax.verbs import (
@@ -187,6 +188,7 @@ DISPATCHERS: tuple[type[Command], ...] = (
     Version,
     Export,
     Workspace,
+    Code,
     Doctor,
     Help,
     Profiles,

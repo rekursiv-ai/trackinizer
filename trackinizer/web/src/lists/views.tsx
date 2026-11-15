@@ -4,7 +4,7 @@
  * by the top of their ancestry, Outline, which nests them under their parents,
  * and Columns, which drills from root Issues down through their children.
  */
-export type View = "list" | "streams" | "outline" | "columns";
+export type View = "list" | "streams" | "outline" | "columns" | "code";
 
 /**
  * A view the list's stored state keeps. Columns lives in the hash instead, with
@@ -15,12 +15,19 @@ export type StoredView = Exclude<View, "columns">;
 
 /** The views a list of `kinds` offers: the new views follow `narrows`, which joins Issue to Issue. */
 export function offeredViews(kinds: readonly string[]): readonly View[] {
-  return kinds.length === 1 && kinds[0] === "Issue" ? ["list", "streams", "outline", "columns"] : ["list"];
+  if (kinds.length !== 1) return ["list"];
+  if (kinds[0] === "Issue") return ["list", "streams", "outline", "columns"];
+  // Code shows no rows at all: it is the session's own source, which belongs beside the
+  // changes recorded in it rather than in a place of its own.
+  return kinds[0] === CODE_KIND ? ["list", "code"] : ["list"];
 }
+
+/** The kind whose list offers Code: a session's source sits beside the changes made in it. */
+export const CODE_KIND = "CodeChange";
 
 /** Whether `value` is a view the stored state keeps, as one read back may not be. */
 export function isStoredView(value: unknown): value is StoredView {
-  return value === "list" || value === "streams" || value === "outline";
+  return value === "list" || value === "streams" || value === "outline" || value === "code";
 }
 
 /** The switch between the `offered` views, in the list's tools; none when there is one. */
@@ -50,4 +57,5 @@ const VIEW_NAMES: { readonly [view in View]: string } = {
   streams: "Streams",
   outline: "Outline",
   columns: "Columns",
+  code: "Code",
 };
