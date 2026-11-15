@@ -21,6 +21,14 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+def _decompress_as_stdlib(data: bytes) -> bytes:
+    """Decode every frame with the wheel, failing with its error as the stdlib does."""
+    try:
+        return zstd_compat._decompress_frames(data)
+    except ValueError as error:
+        raise zstandard.ZstdError(str(error)) from None
+
+
 try:
     zstd = cast("zstd_compat._StdlibZstd", importlib.import_module("compression.zstd"))
 except ImportError:
@@ -29,9 +37,9 @@ except ImportError:
     zstd = cast(
         "zstd_compat._StdlibZstd",
         SimpleNamespace(
-            ZstdError=ValueError,
+            ZstdError=zstandard.ZstdError,
             compress=zstandard.compress,
-            decompress=zstd_compat._decompress_frames,
+            decompress=_decompress_as_stdlib,
             open=zstd_compat._Frames,
         ),
     )
