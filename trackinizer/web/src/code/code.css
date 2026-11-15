@@ -5,7 +5,18 @@
    JetBrains Mono Variable, `styles.css`). Without it a code surface falls back to the system
    mono stack, which is the single biggest reason a pane like this reads as unfinished. */
 
-.cp { position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; background: var(--bg); }
+/* The pane's syntax ramp, mapped onto `--code-*` HERE rather than at the root. Both
+   renderers read those names — lowlight's stylesheet for the fallback listing, and the
+   editor's own highlight style — so one override moves them together, and the transcript
+   and diff views keep GitHub's ramp untouched. */
+.cp {
+  --code-keyword: var(--syn-keyword);
+  --code-string: var(--syn-string);
+  --code-number: var(--syn-number);
+  --code-key: var(--syn-property);
+  --code-literal: var(--syn-function);
+  position: relative; display: flex; flex-direction: column; min-height: 0; flex: 1; background: var(--bg);
+}
 
 /* The pane's own tools, under the list's: what is here, that it cannot be edited, and the import. */
 .cp-bar {

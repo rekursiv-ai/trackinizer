@@ -55,6 +55,17 @@
      colour and --muted keep 4.5:1. */
   --diff-add: #2ea04326;
   --diff-del: #f8514926;
+  /* THE CODE PANE'S OWN SYNTAX RAMP. The --code-* set above is GitHub's, and it stays
+     the transcript's and the diff's. A whole file read at length wanted a palette of
+     this app rather than of GitHub, so the pane takes the station bar's four group
+     hues, which already sit together by design. Each clears 4.5:1 on every surface in
+     both themes (styles.test.ts); the pane maps --code-* onto these (code/code.css),
+     so the editor and the plain listing follow one ramp. */
+  --syn-keyword: var(--group-1);
+  --syn-string: var(--group-2);
+  --syn-number: var(--group-2);
+  --syn-function: var(--group-3);
+  --syn-property: var(--group-4);
   --control-height: 32px;
   --radius: 6px;
   --panel-radius: 10px;

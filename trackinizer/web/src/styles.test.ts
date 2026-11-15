@@ -151,6 +151,28 @@ test("each code colour meets WCAG AA's 4.5:1 on every surface, and each theme se
   }
 });
 
+test("the code pane's syntax ramp meets WCAG AA's 4.5:1 on every surface, in both themes", () => {
+  // The pane reads a whole file at length, so its ramp is held to the same bar as the
+  // transcript's `--code-*`. These name the station bar's group hues rather than carrying
+  // their own hex, which is the point — one palette, used twice — so the reference is
+  // resolved here before the contrast is measured.
+  const dark = declarations(":root");
+  const light = new Map([...dark, ...declarations(':root[data-theme="light"]')]);
+  const names = [...dark.keys()].filter((name) => name.startsWith("--syn-"));
+  expect(names).toEqual(["--syn-keyword", "--syn-string", "--syn-number", "--syn-function", "--syn-property"]);
+  for (const [theme, tokens] of [["dark", dark], ["light", light]] as const) {
+    for (const name of names) {
+      const value = tokens.get(name)!;
+      const reference = /^var\((--[\w-]+)\)$/.exec(value);
+      const hex = reference ? tokens.get(reference[1]!) : value;
+      expect(hex, `${name} resolves in the ${theme} theme`).toMatch(/^#[0-9a-f]{6}$/i);
+      for (const surface of ["--bg", "--surface", "--surface-raised", "--surface-hover"]) {
+        expect(contrast(hex!, tokens.get(surface)!), `${theme} ${name} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  }
+});
+
 /** The colour a primary button's background is: a token, or a token mixed with black, as `color-mix` does in sRGB. */
 function background(value: string, tokens: Map<string, string>): string {
   const token = /^var\((--[\w-]+)\)$/.exec(value);

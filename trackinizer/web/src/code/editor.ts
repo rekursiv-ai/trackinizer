@@ -73,17 +73,18 @@ async function languageFor(path: string): Promise<Extension | null> {
 }
 
 /**
- * Syntax colours, mapped onto the five `--code-*` tokens the app already defines and proves
- * at WCAG AA on every surface (`styles.test.ts`). CodeMirror's own themes are not used: one
- * would bring a second palette that neither theme switch nor the contrast test knows about.
+ * Syntax colours, mapped onto the pane's `--syn-*` ramp (`styles.css`), which is the station
+ * bar's four group hues and clears WCAG AA on every surface in both themes (`styles.test.ts`).
+ * CodeMirror's own themes are not used: one would bring a second palette that neither the
+ * theme switch nor the contrast test knows about.
  */
 const highlight = HighlightStyle.define([
-  { tag: [tags.keyword, tags.moduleKeyword, tags.controlKeyword, tags.operatorKeyword], color: "var(--code-keyword)" },
-  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--code-string)" },
-  { tag: [tags.number, tags.bool, tags.null, tags.integer, tags.float], color: "var(--code-number)" },
-  { tag: [tags.atom, tags.className, tags.typeName, tags.namespace], color: "var(--code-literal)" },
-  { tag: [tags.propertyName, tags.attributeName, tags.variableName, tags.labelName], color: "var(--code-key)" },
-  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: "var(--code-key)" },
+  { tag: [tags.keyword, tags.moduleKeyword, tags.controlKeyword, tags.operatorKeyword], color: "var(--syn-keyword)" },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: "var(--syn-string)" },
+  { tag: [tags.number, tags.bool, tags.null, tags.integer, tags.float], color: "var(--syn-number)" },
+  { tag: [tags.atom, tags.className, tags.typeName, tags.namespace], color: "var(--syn-function)" },
+  { tag: [tags.propertyName, tags.attributeName, tags.variableName, tags.labelName], color: "var(--syn-property)" },
+  { tag: [tags.function(tags.variableName), tags.function(tags.propertyName)], color: "var(--syn-function)" },
   { tag: [tags.comment, tags.lineComment, tags.blockComment, tags.docComment], color: "var(--muted)", fontStyle: "italic" },
   { tag: [tags.heading, tags.strong], color: "var(--text)", fontWeight: "600" },
   { tag: tags.emphasis, fontStyle: "italic" },

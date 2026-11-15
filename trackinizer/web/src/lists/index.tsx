@@ -239,19 +239,25 @@ export function InquiryList({
   if (view === "code") {
     return (
       <div className="view">
-        <ViewHeader icon={icon} title={title} />
-        <div className="view-tools" onMouseDown={keepFocus}>
-          <div className="spacer" />
-          <ViewSwitch offered={views} view={view} onChange={pickView} />
-        </div>
+        {/* The switch rides in the header's own slot rather than a tools row of its own:
+            with no tabs, filters or sort to carry, that row held one control and a gap. */}
+        <ViewHeader icon={icon} title={title} beside={<ViewSwitch offered={views} view={view} onChange={pickView} />} />
         <CodePane scope={codeScope(station.data)} owner={profile.email} />
       </div>
     );
   }
 
+  // Where the switch sits. On the Code list it rides in the header, because the Code view
+  // has no tools row to put it in — and a control that jumped between rows as you toggled
+  // would be worse than either place.
+  const switchInHeader = views.includes("code");
   return (
     <div className="view">
-      <ViewHeader icon={icon} title={title} />
+      <ViewHeader
+        icon={icon}
+        title={title}
+        beside={switchInHeader ? <ViewSwitch offered={views} view={view} onChange={pickView} /> : undefined}
+      />
       <div className="view-tools" onMouseDown={keepFocus}>
         <Tabs tab={state.tab} onChange={(tab) => setQuery(withTab(query, tab))} />
         <div className="spacer" />
@@ -284,7 +290,7 @@ export function InquiryList({
             onPick={(value) => update((s) => ({ ...s, ordering: offeredOrderings.find((o) => o === value) ?? ordering }))}
           />
         )}
-        <ViewSwitch offered={views} view={view} onChange={pickView} />
+        {switchInHeader ? null : <ViewSwitch offered={views} view={view} onChange={pickView} />}
       </div>
       <FilterChips
         query={query}
