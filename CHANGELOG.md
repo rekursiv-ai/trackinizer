@@ -208,6 +208,11 @@ All notable trackinizer changes are documented here. This project follows
     `RUN_ENDING_REFUSALS` and `SessionEnd.failed`.
   - The assistant no longer reads, writes or drains a chat it opened or was given,
     and uses no canvas; it acts for an `asker` as before.
+- **Breaking:** `trackinizer.client.chat_forks` and `trackinizer.client.context_window`,
+  which nothing calls any more.
+- **Breaking:** `wire_sessions.ConsoleRelay`, `ConsoleRelayReceipt`, `ConsoleTarget`
+  and `CONSOLE_RELAY_MARK`, the body and answer of a Console relay route no client
+  calls any more.
 
 - `Client.exec_command`, `POST /api/machines/{name}/exec` and
   `POST /api/machines/{id}/exec/{exec_id}/result`, with no replacement.

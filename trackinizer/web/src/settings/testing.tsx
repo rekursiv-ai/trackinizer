@@ -237,8 +237,6 @@ function answer(
   const [method, path] = call.split(" ") as [string, string];
   const parts = path.split("/").slice(1);
   if (call === "GET /api/me/profile") return Response.json(caller);
-  if (call === "POST /api/me/settings-artifact")
-    return Response.json({ artifact_id: "fixture-settings-artifact" });
   if (call === "GET /api/me/tokens") return Response.json({ tokens: server.tokens });
   if (call === "GET /api/admin/users") return Response.json({ users: server.users });
   if (call === "GET /api/admin/allowlist")

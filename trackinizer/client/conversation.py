@@ -7,8 +7,7 @@ steps:
 
 - :func:`read_segments` reads each part, oldest first.
 - :func:`placed` orders every record by when it happened rather than by part number.
-- ``context_window.window`` cuts that order at the last compaction, and :func:`neutral`
-  turns what is left into one provider-neutral list.
+- :func:`neutral` turns that order into one provider-neutral list.
 - :func:`projected` or :func:`lines` projects that list for a CLI file or for the bot.
 
 A person's line is the bot's own ``AgentToAgentMessage``, or a ``UserMessage`` that the

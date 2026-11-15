@@ -786,7 +786,6 @@ PATCH /api/canvases/<uuid>
 PUT  /api/canvases/<uuid>/page
 PUT  /api/canvases/<uuid>/layout
 POST /api/canvases/<uuid>/operations
-POST /api/canvases/<uuid>/relay
 ```
 
 `GET /api/visuals` returns safe descriptors and the default visual type. It
@@ -940,14 +939,6 @@ that may use the canvas (below).
 canvas (`wire_canvas_keys.py`). Anyone signed in may ask, since an id grants
 nothing; no such canvas is 404, and a key two canvases share is 409.
 
-`POST /api/canvases/<uuid>/relay` with `{"targets": [{"actor", "room"}], "text"}`
-and a required `Idempotency-Key` tells the canvas's chat what its owner sent
-agents directly from the Console, after the per-agent `POST /api/messages`
-sends; it is the browser's own and a canvas that is not the owner's is 404. One
-request is one Console line, however many targets. No chat takes it: a chat's
-agent answers every input it is sent, and no input is a silent one. The response is
-`{"delivered": false}`, which is never an error.
-
 **The assistant.** The server's `--assistant ACTOR=EMAIL`, or
 `$TRACKINIZER_ASSISTANT`, names one assistant: the account `EMAIL`, whose keys act
 for an `asker`, and whose live AgentSession with the granted actor `ACTOR` (or
@@ -1082,8 +1073,7 @@ and, under `domain`, the starter's organisation. Anyone else's post, of any `kin
 every other member's on a `single` server included, is 403
 `{"detail": {"code": "chat_not_shared", "message": ...}}` and queues
 nothing, whether the conversation is named by `conversation_id` or by the
-`Idempotency-Key` of a post that names none; a Console relay from their canvas is
-`delivered: false`. Such a member forks the chat to continue. The chat's starter is
+`Idempotency-Key` of a post that names none. Such a member forks the chat to continue. The chat's starter is
 the account of
 its oldest session that the assistant opened or that its own account's key opened,
 or, before any session carries the id, the
@@ -1110,7 +1100,7 @@ null.
 Sharing. `PUT /api/chats/<uuid>/shares/<email>` (writer role, browser only) shares a
 chat with one person, who then reads it and posts into it as its starter does;
 `DELETE` of the same path stops sharing it, so they read none of it from then on and
-their next line, by Chat or by a Console relay, is refused while their earlier lines
+their next line is refused while their earlier lines
 stay. The email is stored lowercase; a malformed one is 422. A share follows the
 conversation, whatever sessions it holds. Only the chat's starter (Forking above says
 who that is) shares it; the starter or an admin unshares it. An admin's share, to
