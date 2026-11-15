@@ -331,7 +331,7 @@ def _request_with(
     page_account: str | None = None,
     page_user: str | None = None,
     route: BaseRoute | None = None,
-    session_id: uuid.UUID | None = None,
+    session_id: uuid.UUID | str | None = None,
 ) -> Request:
     """Build a fake :class:`fastapi.Request` carrying its headers + the engine."""
     request = MagicMock()
@@ -1396,16 +1396,20 @@ def _calls(route: BaseRoute) -> list[str]:
     return []
 
 
+# ``spawned_below`` is the database's answer to whether ``named`` was spawned below
+# ``session_id``.
 async def _let_through(
     route: BaseRoute | None,
     *,
     method: str = "GET",
-    named: uuid.UUID | None = None,
+    named: uuid.UUID | str | None = None,
     session_id: uuid.UUID | None = _OWN_SESSION,
     engine: FakeEngine | None = None,
+    spawned_below: bool = False,
 ) -> bool:
     """Say whether a process key of ``session_id`` is let through to ``route``."""
     engine = engine or FakeEngine()
+    engine.conn.fetchval.return_value = spawned_below
     store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
     store.remember_bearer_identity(
         "trax_process",
@@ -1439,14 +1443,14 @@ async def _let_through(
         403,
         (
             "an agent process's key reaches only what its process calls, for its own "
-            "session"
+            "session and the sessions its agents spawned"
         ),
     )
     return False
 
 
 class TestProcessKeyRoutes:
-    """A process key reaches only what its process calls, for its own session alone."""
+    """A process key reaches only what its process calls, for its own session's tree."""
 
     @pytest.mark.asyncio
     async def test_every_route_of_the_server_refuses_it_unless_listed(self) -> None:
@@ -1472,17 +1476,27 @@ class TestProcessKeyRoutes:
         assert len(refused) > len(passed)
 
     @pytest.mark.asyncio
-    async def test_a_listed_route_takes_it_for_its_own_session_alone(self) -> None:
+    async def test_a_listed_route_takes_it_for_its_own_session_and_its_children(
+        self,
+    ) -> None:
         routes = dict(iter_route_leaves(_served_app()))
         records = routes["/api/sessions/{session_id}/records"]
         socket = routes[SESSION_PROCESS_WS_PATH]
         messages = routes["/api/messages"]
+        child = uuid.UUID(int=9)
 
         assert await _let_through(socket, named=_OWN_SESSION)
         assert await _let_through(records, method="POST", named=_OWN_SESSION)
         assert await _let_through(messages, method="POST")
-        assert not await _let_through(socket, named=uuid.UUID(int=9))
-        assert not await _let_through(records, method="POST", named=uuid.UUID(int=9))
+        assert await _let_through(
+            records,
+            method="POST",
+            named=child,
+            spawned_below=True,
+        )
+        assert not await _let_through(socket, named=child)
+        assert not await _let_through(records, method="POST", named=child)
+        assert not await _let_through(records, method="POST", named="not-an-id")
         # A key minted before keys named their session acts for none.
         assert not await _let_through(messages, method="POST", session_id=None)
         # A request no route matched names no route a process calls.

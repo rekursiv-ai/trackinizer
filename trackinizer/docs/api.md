@@ -619,6 +619,20 @@ write the session is 403. A science chat takes an attach only from its opening k
 a key of the configured assistant, or a key of the account that started it (403
 otherwise).
 
+`POST /api/sessions/start` takes `spawned_by`, the session whose agent spawned this
+one, which the caller must write (403 otherwise, 404 for no session), and `note`,
+what spawned it (sagent's label). It needs a `cli_session_id`, and `note` needs
+`spawned_by` (422 otherwise). The start re-opens the session already `produced_by`
+the spawner under that `cli_session_id`, whichever key opened it, else opens one in
+the spawner's audience, `private` being ignored; either way it links the session
+`produced_by` the spawner, `note` the edge's. An agent process starts each child an
+agent spawns this way, at the child's first save, a sagent child named by its
+journal's folders from the root's down (`<root folder>/<child folder>`), and an
+upload of a finished session names and links each sub-agent the same way. A key a
+start minted for an agent process may start only such a session, spawned by its own
+session or one below it, and reaches the parts and records of each session its agents
+spawned, at any depth (`auth.process_reaches`).
+
 An AgentSession carries an `audience` (`open`, `private` or `staff`) saying who may
 read its transcript. Only the transcript is gated: the session's title, actor, rooms,
 times, cost, edges and `audience`, and every row it files, stay readable by anyone

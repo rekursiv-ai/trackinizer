@@ -912,6 +912,140 @@ async def test_a_run_attaches_to_an_ended_session_and_adds_the_next_part(
     assert unknown.status_code == 404, unknown.text
 
 
+# -- A session an agent of another spawned, linked ``produced_by`` it --
+
+
+async def _spawned(
+    client: httpx2.AsyncClient,
+    cli_session_id: str,
+    *,
+    spawner: uuid.UUID | None = None,
+    note: str = "",
+) -> tuple[int, uuid.UUID | None, str]:
+    """Start sagent's session ``cli_session_id``; return the status, its id, its audience."""
+    spawn = {} if spawner is None else {"spawned_by": str(spawner), "note": note}
+    started = await client.post(
+        "/api/sessions/start",
+        json={"cli": "sagent", "cli_session_id": cli_session_id, **spawn},
+    )
+    if started.status_code != 201:
+        return started.status_code, None, ""
+    body = json_loads(started.content, dict[str, object])
+    return (
+        started.status_code,
+        uuid.UUID(from_plain(body["id"], str)),
+        from_plain(body["audience"], str),
+    )
+
+
+async def _spawn_edges(store: Store) -> set[tuple[uuid.UUID, uuid.UUID, str]]:
+    """Return every ``produced_by`` edge between two sessions: child, spawner, note."""
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT from_id, to_id, note FROM edges WHERE edge_kind = 'produced_by' "
+            "AND from_kind = 'AgentSession' AND to_kind = 'AgentSession'",
+        )
+    return {
+        (
+            from_plain(row["from_id"], uuid.UUID),
+            from_plain(row["to_id"], uuid.UUID),
+            from_plain(row["note"], str, default=""),
+        )
+        for row in rows
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_spawned_session_is_linked_to_its_spawner_and_read_as_it_is(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    await _active_user(store)
+    _, root, _ = await _spawned(client, "abc")
+    assert root is not None
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_audience = 'private' WHERE id = $1",
+            root,
+        )
+
+    _, kid, kid_audience = await _spawned(client, "abc/k", spawner=root, note="kid")
+    assert kid is not None
+    _, grandkid, _ = await _spawned(client, "abc/k/g", spawner=kid, note="grandkid")
+    again = await _spawned(client, "abc/k", spawner=root, note="kid")
+
+    assert grandkid is not None
+    assert kid_audience == "private"
+    assert again == (201, kid, "private")
+    assert await _spawn_edges(store) == {
+        (kid, root, "kid"),
+        (grandkid, kid, "grandkid"),
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_another_key_re_opens_the_child_its_spawner_already_has(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A restarted agent process holds a key of its own, which opened no child."""
+    client, store = pglite_route_client
+    await _active_user(store)
+    _, root, _ = await _spawned(client, "abc")
+    _, kid, _ = await _spawned(client, "abc/k", spawner=root, note="kid")
+    assert kid is not None
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
+            "VALUES ($1, $2, 'k', 'hash', 'trax_before', 'writer')",
+            TEST_API_KEY_ID,
+            TEST_USER_ID,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_opened_by_api_key_id = $2, "
+            "status = 'complete', agentsession_ended = clock_timestamp() "
+            "WHERE id = $1",
+            kid,
+            TEST_API_KEY_ID,
+        )
+
+    status, again, _ = await _spawned(client, "abc/k", spawner=root, note="kid")
+
+    assert (status, again) == (201, kid)
+    assert (await session_row(store, session_id=kid)).ended is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_agent_process_starts_only_a_child_in_its_own_sessions_tree(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    client, store = pglite_route_client
+    await _active_user(store)
+    _, root, _ = await _spawned(client, "abc")
+    _, other, _ = await _spawned(client, "xyz")
+    assert root is not None
+    install_identity(
+        replace(
+            make_test_identity(api_key_id=None),
+            process=ProcessKey(
+                process_id=uuid.UUID(int=1),
+                session_id=root,
+                host_id=uuid.UUID(int=3),
+            ),
+        ),
+    )
+
+    unspawned = await _spawned(client, "abc/free")
+    outside = await _spawned(client, "xyz/k", spawner=other, note="kid")
+    status, kid, _ = await _spawned(client, "abc/k", spawner=root, note="kid")
+    below = await _spawned(client, "abc/k/g", spawner=kid, note="grandkid")
+
+    assert (unspawned[0], outside[0]) == (403, 403)
+    assert (status, below[0]) == (201, 201)
+
+
 # -- A message to one agent of a session, through whichever way it takes messages --
 
 _NUMBER = 412

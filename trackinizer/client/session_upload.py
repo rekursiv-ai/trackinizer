@@ -42,9 +42,12 @@ if TYPE_CHECKING:
 
     from trackinizer.runs.redact import Redactor
     from trackinizer.types.streams import TraxRecord
+    from trackinizer.wire.wire_session_ir import PartBody
+    from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 __all__ = [
+    "PartUploader",
     "RecordAppender",
     "append_batch",
     "record_bodies",
@@ -65,6 +68,18 @@ class RecordAppender(Protocol):
         records: Sequence[RecordBody],
     ) -> object:
         """Append one part's records, idempotent on their positions."""
+        ...
+
+
+class PartUploader(RecordAppender, Protocol):
+    """The ``Client`` calls that continue a part: open, read what is held, append."""
+
+    def session_start(self, body: SessionStart) -> SessionStartResponse:
+        """Open the session, or re-open the one the caller holds under its CLI id."""
+        ...
+
+    def read_session_parts(self, session_id: UUID) -> list[PartBody]:
+        """Return the parts the server holds of the session."""
         ...
 
 
