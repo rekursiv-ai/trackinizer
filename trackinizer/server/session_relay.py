@@ -396,6 +396,19 @@ class SessionRelay:
             line = RecordLine(part=part, record=record)
             self._fan_out(live, line, size=len(line.model_dump_json().encode()))
 
+    def tell(self, session_id: UUID, line: EventLine) -> None:
+        """Pass a line the server says to every viewer of the session now; none is kept.
+
+        Args:
+          session_id: The session.
+          line: What to say, as an agent process's event line reads.
+
+        """
+        live = self._sessions.get(session_id)
+        if live is None:
+            return
+        self._fan_out(live, line, size=len(line.model_dump_json().encode()))
+
     def send_input(
         self,
         session_id: UUID,

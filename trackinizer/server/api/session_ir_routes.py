@@ -15,7 +15,8 @@ who neither opened the session nor reads it. A read takes an ``asker`` and a ``c
 the configured assistant reads for that user, on the user's rights and never its own,
 into the chat it answers them in (see ``require_session_access``), and anyone else's
 ``asker`` and ``chat`` are ignored. Tenant scope is derived by joining to
-``inquiries``, as every session route does.
+``inquiries``, as every session route does. An append by a remote agent's process
+key is shown, once stored, to the deployment's agent policy (``agent_policy_gate``).
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from trackinizer.server.api._deps import (
     get_store,
 )
 from trackinizer.server.api._routes_shared import refusal
+from trackinizer.server.api.agent_policy_gate import after_stored
 from trackinizer.server.api.session_access import (
     require_session_access,
     require_session_write_access,
@@ -145,6 +147,15 @@ async def append_session_records_route(
             session_id,
             part=appended.part,
             records=[_served(row) for row in stored if row.idx in shown],
+        )
+    # After the store commits, so the policy is shown only records that are kept.
+    if appended.part is not None:
+        await after_stored(
+            request,
+            identity,
+            session_id=session_id,
+            part=appended.part,
+            records=body.records,
         )
     await store.record_session_seen(
         session_id,

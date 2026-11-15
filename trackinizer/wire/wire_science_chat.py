@@ -44,7 +44,6 @@ __all__ = [
     "CHAT_TITLE",
     "FORK_EDGE_LABEL",
     "FORK_POINT_PREFIX",
-    "NO_KEY",
     "POSTER_LABEL_PREFIX",
     "SCIENCE_CHAT_LABEL",
     "AssistantPrompt",
@@ -63,10 +62,6 @@ __all__ = [
 CHATS_PATH: Final = "/api/chats"
 CHAT_PATH: Final = "/api/chats/{conversation_id}"
 CHAT_SHARE_PATH: Final = "/api/chats/{conversation_id}/shares/{email}"
-
-NO_KEY: Final = "no_key"
-"""The ``code`` of a 409 for a chat started by someone with no live API key: its
-session is opened under one."""
 
 SCIENCE_CHAT_LABEL: Final = "science-chat"
 """The label every science chat session carries."""

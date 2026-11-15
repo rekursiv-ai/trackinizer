@@ -28,7 +28,13 @@ from trackinizer.server.visuals.catalog import Canvas, StaticVisual
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from uuid import UUID
+
     from trackinizer.addons.addon import ServerContext, StandaloneContext
+    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.agent_policy import AgentWork, Halt, Refusal
+    from trackinizer.wire.wire_session_ir import RecordBody
 
 
 class NamedAddon:
@@ -103,6 +109,74 @@ class Overgoverned(Makes["Deployment"], Deployment.Config):
     """The first policy."""
 
     rival: GoverningAddon.Config = field(default_factory=GoverningAddon.Config)
+    """The second policy."""
+
+
+class _AgentPolicy:
+    """An agent policy that serves no one beyond admits, refuses nothing, halts none."""
+
+    def serves(self, asker: str) -> bool:
+        del asker
+        return False
+
+    async def refusal(
+        self,
+        engine: DatabaseEngine,
+        *,
+        asker: str,
+        session_id: UUID,
+        work: AgentWork,
+    ) -> Refusal | None:
+        del engine, asker, session_id, work
+        return None
+
+    async def stored(
+        self,
+        engine: DatabaseEngine,
+        *,
+        session_id: UUID,
+        part: int,
+        records: Sequence[RecordBody],
+        live: Sequence[UUID],
+    ) -> Halt | None:
+        del engine, session_id, part, records, live
+        return None
+
+
+class DecidingAddon:
+    """A test addon that sets the deployment's agent policy."""
+
+    class Config(Fig["DecidingAddon"]):
+        pass
+
+    def __init__(self, config: Config) -> None:
+        del config
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Deciding",
+            description="Decides remote agents' work.",
+            agent_policy=_AgentPolicy(),
+        )
+
+
+class Decided(Makes["Deployment"], Deployment.Config):
+    """A deployment with one agent-policy addon and one plain addon."""
+
+    agents: DecidingAddon.Config = field(default_factory=DecidingAddon.Config)
+    """The addon whose policy the server asks about its remote agents."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """An addon that sets no policy."""
+
+
+class Overdecided(Makes["Deployment"], Deployment.Config):
+    """A deployment with two addons that each set an agent policy."""
+
+    agents: DecidingAddon.Config = field(default_factory=DecidingAddon.Config)
+    """The first policy."""
+
+    rival: DecidingAddon.Config = field(default_factory=DecidingAddon.Config)
     """The second policy."""
 
 
@@ -256,8 +330,13 @@ def test_a_field_that_is_not_an_addon_config_is_refused() -> None:
 
 
 def test_an_addon_config_that_builds_no_addon_is_refused() -> None:
-    with pytest.raises(DeploymentError, match=r"Field 'first' builds a ChildOnly"):
+    with pytest.raises(DeploymentError) as refused:
         Odd().make()
+
+    assert str(refused.value) == (
+        "Field 'first' builds a ChildOnly, which has no manifest(); every field of a "
+        "deployment but 'visuals' is an addon config or None."
+    )
 
 
 def test_a_websocket_route_is_refused_naming_the_addon() -> None:
@@ -286,8 +365,35 @@ def test_the_one_addon_that_sets_a_policy_governs_the_deployment() -> None:
 
 
 def test_two_addons_that_each_set_a_policy_are_refused() -> None:
-    with pytest.raises(ValueError, match=r"Addons access, rival each set an access"):
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Addons access, rival each set an access policy; a deployment takes at "
+            r"most one\.$"
+        ),
+    ):
         Overgoverned().make()
+
+
+def test_the_one_addon_that_sets_an_agent_policy_decides_the_deployments_agents() -> (
+    None
+):
+    deployment = Decided().make()
+
+    assert deployment.agent_policy is deployment.manifest("agents").agent_policy
+    assert isinstance(deployment.agent_policy, _AgentPolicy)
+    assert two_addons().make().agent_policy is None
+
+
+def test_two_addons_that_each_set_an_agent_policy_are_refused() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Addons agents, rival each set an agent policy; a deployment takes at "
+            r"most one\.$"
+        ),
+    ):
+        Overdecided().make()
 
 
 def test_a_factory_path_resolves_and_takes_overrides() -> None:

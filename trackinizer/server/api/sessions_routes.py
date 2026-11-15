@@ -25,6 +25,7 @@ from trackinizer.server.api._deps import (
     get_store,
 )
 from trackinizer.server.api._routes_shared import refusal
+from trackinizer.server.api.agent_policy_gate import refuse_line
 from trackinizer.server.api.session_access import (
     granted_audience,
     require_attributable,
@@ -206,7 +207,8 @@ async def send_message_route(
     an admin grants no input rights. Same-account cross-agent messaging remains.
     When any live session the target resolves to is one the sender may not message,
     the whole send is 403 ``session_audience`` and nothing is sent, so a send never
-    reports a delivery that did not happen.
+    reports a delivery that did not happen; one to a remote agent the agent policy
+    refuses is answered as it says, the same way.
 
     A browser reaches a science chat through its canvas, so its send to one is refused
     with 409 ("Open its canvas to talk to this chat"); a key's send reaches the chat's
@@ -257,6 +259,8 @@ async def send_message_route(
         process = relay.process(session_id)
         if process is None or process.state == "detached":
             continue
+        # As the access check, before anything is sent: one refusal refuses the send.
+        await refuse_line(request, identity, session_id=session_id)
         targets.append(session_id)
     key = _idempotency_key(request)
     # One receipt per key: a replay answers what the first send answered, and two

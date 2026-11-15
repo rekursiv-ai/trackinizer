@@ -6,7 +6,7 @@ against a real database.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import partial
 from types import SimpleNamespace
@@ -53,7 +53,7 @@ from trackinizer.wire.wire_terminals import CLOSE_REFUSED
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from fastapi import Request, WebSocket
     from fastapi.testclient import TestClient
@@ -61,9 +61,12 @@ if TYPE_CHECKING:
     from starlette.types import Message
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.agent_policy import AgentWork, Halt, Refusal
     from trackinizer.server.auth import Role
     from trackinizer.server.store.core import Store
     from trackinizer.wire.json_types import JSON
+    from trackinizer.wire.wire_session_ir import RecordBody
     from trackinizer.wire.wire_session_relay import ViewerFrame
 
 
@@ -875,10 +878,12 @@ async def _placed(
     admits: tuple[str, ...] = ("ada@x.y",),
     default: str = "remote-agents",
     hosted_domain: str | None = None,
+    policy: _Serving | None = None,
 ) -> session_relay_routes._Place:
     """Return where ada's start ``spec`` runs, over the database's ``steps``."""
     engine = ExchangeEngine(*steps)
     patch_state(monkeypatch, "engine", engine)
+    patch_state(monkeypatch, "agent_policy", policy)
     patch_state(
         monkeypatch,
         "config",
@@ -953,6 +958,95 @@ async def test_a_start_runs_on_her_own_host_first_else_a_service_that_admits_her
         host=spec.host or "remote-agents",
         remote=remote,
     )
+
+
+@dataclass(slots=True, kw_only=True)
+class _Serving:
+    """An agent policy that serves whom a test says; the start's place is all asked."""
+
+    serving: frozenset[str]
+    asked: list[str] = field(default_factory=list[str])
+
+    def serves(self, asker: str) -> bool:
+        self.asked.append(asker)
+        return asker in self.serving
+
+    async def refusal(
+        self,
+        engine: DatabaseEngine,
+        *,
+        asker: str,
+        session_id: UUID,
+        work: AgentWork,
+    ) -> Refusal | None:
+        del engine, asker, session_id, work
+        return None
+
+    async def stored(
+        self,
+        engine: DatabaseEngine,
+        *,
+        session_id: UUID,
+        part: int,
+        records: Sequence[RecordBody],
+        live: Sequence[UUID],
+    ) -> Halt | None:
+        del engine, session_id, part, records, live
+        return None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("spec", "steps", "remote"),
+    [
+        (
+            ProcessSpec(),
+            (_found("remote-agents", _AGENTS, _REMOTE, _SERVICE_HOST),),
+            True,
+        ),
+        (
+            ProcessSpec(host="lab", login_host="remote-agents"),
+            (
+                _found("lab", "ada@x.y", _RUNS, _HERS),
+                _found("remote-agents", "ada@x.y", _LOGINS, None),
+                _found("remote-agents", _AGENTS, _LOGINS, _SERVICE_HOST),
+            ),
+            False,
+        ),
+    ],
+    ids=["its agent", "its model calls"],
+)
+async def test_a_service_serves_one_its_patterns_name_not_whom_the_policy_serves(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    spec: ProcessSpec,
+    steps: tuple[Says, ...],
+    remote: bool,
+) -> None:
+    policy = _Serving(serving=frozenset({"ada@x.y"}))
+
+    placed = await _placed(monkeypatch, spec, *steps, admits=(), policy=policy)
+
+    assert (placed.host, placed.remote) == (spec.host or "remote-agents", remote)
+    assert policy.asked == ["ada@x.y"]
+
+
+@pytest.mark.asyncio
+async def test_a_service_serves_none_beyond_its_patterns_the_policy_does_not_serve(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(HTTPException) as refused:
+        _ = await _placed(
+            monkeypatch,
+            ProcessSpec(),
+            admits=(),
+            policy=_Serving(serving=frozenset({"bob@x.y"})),
+        )
+
+    assert refused.value.detail == {
+        "code": "no_place",
+        "message": "no host remote-agents runs agents for you",
+    }
 
 
 @pytest.mark.asyncio

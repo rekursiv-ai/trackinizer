@@ -19,6 +19,11 @@ contributes, and each part says where it runs:
 - An **access policy** answers who may read, write or run each resource
   (:mod:`trackinizer.server.access_policy`). At most one addon of a
   deployment sets one; with none, today's rules answer.
+- An **agent policy** decides the work of the server's remote agents: whom a remote
+  agent service serves beyond its admits, whether an agent's start or a line to it
+  goes ahead, and what follows the records one stored
+  (:mod:`trackinizer.server.agent_policy`). At most one addon of a deployment
+  sets one; with none, a service serves its admits and nothing is refused or halted.
 
 A deployment (:mod:`trackinizer.addons.deployment`) names the addons it
 runs; leaving an addon out switches it off everywhere at once.
@@ -37,6 +42,7 @@ from pydantic import BaseModel, Field
 
 from trackinizer.client.client import Client
 from trackinizer.server.access_policy import AccessPolicy
+from trackinizer.server.agent_policy import AgentPolicy
 from trackinizer.server.store.core import Store
 
 
@@ -135,6 +141,8 @@ class AddonManifest:
         own, so none may share one (``schema.NNN.sql`` is trackinizer's).
       access_policy: The policy the server asks before each guarded write; a
         deployment refuses two addons that each set one.
+      agent_policy: The policy the server asks about its remote agents' work; a
+        deployment refuses two addons that each set one.
 
     """
 
@@ -146,6 +154,7 @@ class AddonManifest:
     open_routers: Sequence[APIRouter] = ()
     migrations: Sequence[tuple[str, str]] = ()
     access_policy: AccessPolicy | None = None
+    agent_policy: AgentPolicy | None = None
 
     def describe(self, name: str) -> AddonDescription:
         """Project the manifest to its inert wire description.
