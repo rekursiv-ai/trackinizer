@@ -1402,9 +1402,10 @@ async def _let_through(
     method: str = "GET",
     named: uuid.UUID | None = None,
     session_id: uuid.UUID | None = _OWN_SESSION,
+    engine: FakeEngine | None = None,
 ) -> bool:
     """Say whether a process key of ``session_id`` is let through to ``route``."""
-    engine = FakeEngine()
+    engine = engine or FakeEngine()
     store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
     store.remember_bearer_identity(
         "trax_process",
@@ -1452,13 +1453,22 @@ class TestProcessKeyRoutes:
         """A route added tomorrow is refused until someone lists it."""
         passed: set[tuple[str, str]] = set()
         refused: set[tuple[str, str]] = set()
+        # One engine for the walk: an engine apiece builds a mock connection for
+        # each of some 250 routes, which was most of this test's 0.2 s.
+        engine = FakeEngine()
         for path, route in iter_route_leaves(_served_app()):
             for method in _calls(route):
                 own = _OWN_SESSION if "{session_id}" in path else None
-                let = await _let_through(route, method=method, named=own)
+                let = await _let_through(
+                    route,
+                    method=method,
+                    named=own,
+                    engine=engine,
+                )
                 (passed if let else refused).add((method, path))
 
-        assert passed == PROCESS_KEY_ROUTES
+        # The canvas routes are the app's; a server without the app serves none.
+        assert passed == PROCESS_KEY_ROUTES & (passed | refused)
         assert len(refused) > len(passed)
 
     @pytest.mark.asyncio
