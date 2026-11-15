@@ -78,6 +78,8 @@ export class FakeRenderer implements Renderer {
   zooms: number[] = [];
   /** The titles of the nodes centred on, in order. */
   centred: string[] = [];
+  /** Each node the canvas was asked to hold the light on; null when the field was handed back. */
+  selects: (string | null)[] = [];
   /** Each fit to some nodes: the titles of the visible ones it framed, and what covered the canvas as it framed them. */
   framed: { titles: string[]; covered: Covered }[] = [];
   /** What covered the canvas at each `refit`. */
@@ -116,6 +118,10 @@ export class FakeRenderer implements Renderer {
     return { x: 10 * node.seq, y: 20 };
   }
 
+  select(node: DrawNode | null): void {
+    this.selects.push(node ? node.title : null);
+  }
+
   /** The drawn node titled `title`. */
   node(title: string): DrawNode {
     const found = this.nodes.find((drawn) => drawn.title === title);
@@ -144,9 +150,19 @@ export class FakeRenderer implements Renderer {
   }
 
   nameIslands(name: ((key: string) => string | undefined) | null, ink: { title: string; count: string; outline: string }): void {
-    this.islandNames = name
-      ? new Map([...this.groups?.entries() ?? []].flatMap(([, key]) => (key === undefined ? [] : [[key, name(key) ?? ""]])))
-      : null;
+    if (!name) {
+      this.islandNames = null;
+      this.islandInk = ink;
+      return;
+    }
+    // An island the view gives no name for is one the canvas draws nothing on,
+    // so only the named keys are recorded.
+    this.islandNames = new Map<string, string>();
+    for (const key of new Set(this.groups?.values() ?? [])) {
+      if (key === undefined) continue;
+      const title = name(key);
+      if (title !== undefined) this.islandNames.set(key, title);
+    }
     this.islandInk = ink;
   }
 

@@ -67,6 +67,8 @@ export type Standing = {
   readonly label?: string | null;
   /** Inside a lit focus: draw the kind's own hue at every zoom, not the distant tint. */
   readonly near?: boolean;
+  /** How much of itself it draws, 0 to 1: how far it has come up in a replay. */
+  readonly appear?: number;
 };
 
 /** How one edge is drawn; its arrow takes its colour. */
@@ -104,13 +106,13 @@ export type NodeShape = {
 export function nodeLook(
   shape: NodeShape,
   palette: Palette,
-  { dimmed = false, far = false, halo = null, label = null, near = false }: Standing = {},
+  { dimmed = false, far = false, halo = null, label = null, near = false, appear = 1 }: Standing = {},
 ): NodeLook {
   const fill = palette.kinds[shape.kind] ?? palette.fallback;
   const retired = shape.status === "abandoned" || shape.status === "invalid";
   const belief = shape.kind === "Belief";
   const judgement = belief ? shape.judgement : undefined;
-  const fade = far ? FAR_FADE : 1;
+  const fade = (far ? FAR_FADE : 1) * appear;
   const alpha = (dimmed ? DIMMED_ALPHA : retired ? RETIRED_ALPHA : 1) * fade;
   const fillAlpha = dimmed || retired ? alpha : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
   // The design's sizes: a base by kind (a Belief the biggest of the small, so a

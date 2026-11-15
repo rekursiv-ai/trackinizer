@@ -13,6 +13,9 @@ export type GraphNode = {
   /** A Belief's verdict and certainty, absent when unset and on other kinds. */
   readonly judgement?: string;
   readonly confidence?: number;
+  /** What the record has spent, in USD, both axes or neither: absent until it pays. */
+  readonly cost_agent_usd?: number;
+  readonly cost_resource_usd?: number;
 };
 
 /** One edge, stored child to parent: `from_id` narrows, or proves, `to_id`. */
@@ -22,6 +25,10 @@ export type GraphEdge = {
   readonly edge_kind: string;
   /** A citation's sign and weight, -1 to 1; absent on every other edge. */
   readonly valence?: number;
+  /** When the wire was made, from the audit that made it; absent for a wire older than the trail. */
+  readonly asserted?: string;
+  /** Who made it: a person or an agent run. Absent with `asserted`. */
+  readonly actor?: string;
 };
 
 export type Graph = { readonly nodes: readonly GraphNode[]; readonly edges: readonly GraphEdge[] };

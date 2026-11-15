@@ -1,4 +1,5 @@
 import { type CSSProperties, useState } from "react";
+import { usd } from "../detail/fields";
 import { dateTime, useMinuteClock } from "../detail/time";
 import { formatRoute } from "../router/route";
 import { shortAge } from "../lists/Row";
@@ -7,6 +8,7 @@ import { KindIcon } from "../ui/kinds";
 import { StatusGlyph } from "../ui/glyphs";
 import type { Graph, GraphNode } from "../api/graph";
 import { type Palette, panelKind } from "./encode";
+import { RecordProse, RecordTail } from "./GraphRecord";
 import {
   type GraphView,
   membersOf,
@@ -65,8 +67,6 @@ export function ThreadBriefing({
   const turns = turnsOf(group, view);
   const relied = reliedOn(members, view);
   const next = nextExperiments(group, view);
-  const held = relied.filter(({ belief }) => belief.judgement === "proven");
-  const broken = relied.filter(({ belief }) => belief.judgement === "disproven");
   return (
     <aside className="briefing" aria-label="Cluster briefing">
       {onBack ? (
@@ -119,32 +119,14 @@ export function ThreadBriefing({
           <p className="briefing-sub muted num">{members.length.toLocaleString("en-US")} records under no root</p>
         </div>
       )}
-      {root && (held.length > 0 || broken.length > 0) ? (
-        <section className="briefing-sec">
-          <h5>
-            summary
-          </h5>
-          <p className="briefing-prose">
-            This thread set out to {lower(root.title.replace(/[.?]$/, ""))}.{" "}
-            {held[0] ? (
-              <>
-                So far the evidence shows <NodePill node={held[0].belief} palette={palette} onSelect={onSelectNode} /> {held[0].belief.title};{" "}
-              </>
-            ) : (
-              "Nothing is proven yet. "
-            )}
-            {broken[0] ? (
-              <>
-                The evidence rules out <NodePill node={broken[0].belief} palette={palette} onSelect={onSelectNode} /> {broken[0].belief.title}.{" "}
-              </>
-            ) : (
-              "Nothing has been ruled out yet. "
-            )}
-            Of {claims} claim{claims === 1 ? "" : "s"}, {verdicts.proven} proven, {verdicts.disproven} disproven and{" "}
-            {verdicts.unproven} still open, from {experiments} experiment{experiments === 1 ? "" : "s"} and {sources} source
-            {sources === 1 ? "" : "s"}.
-          </p>
-        </section>
+      {/* The root's own summary, under the thread's heading: the row's prose,
+          which a person or an agent writes here, and not a sentence the panel
+          writes for it. `.record` scopes it to the panel's rules for a record's
+          own text, without that panel's box. */}
+      {root ? (
+        <div className="record record-brief">
+          <RecordProse node={root} />
+        </div>
       ) : null}
       {turns.length > 0 ? (
         <section className="briefing-sec">
@@ -180,6 +162,16 @@ export function ThreadBriefing({
             </button>
           ))}
         </section>
+      ) : null}
+      {/* And the root as a record: its parents and children, with the rail's
+          "+ add" on each side, the changes on it, and every field it has. A
+          thread's briefing answers what the thread concluded; this answers where
+          the question itself sits, and it is the same read every other record
+          gets, not a second panel stacked on this one. */}
+      {root ? (
+        <div className="record record-brief">
+          <RecordTail node={root} graph={graph} palette={palette} onSelectNode={onSelectNode} />
+        </div>
       ) : null}
     </aside>
   );
@@ -284,6 +276,7 @@ function NextRow({ entry, palette, onSelect }: { entry: NextExperiment; palette:
         <span>conf {(belief.confidence ?? 0.5).toFixed(2)}</span>
         <span>{entry.evidence} evidence</span>
         {entry.leaning > 0 ? <span>{entry.leaning} lean on it</span> : null}
+        <span>{entry.price.priced ? `~${usd(entry.price.usd)} per test` : "no test priced yet"}</span>
       </div>
     </div>
   );
@@ -306,10 +299,6 @@ const tint = (palette: Palette, kind: string) => ({ "--c": panelKind(palette, ki
 /** A belief's verdict dot: filled when proven, hollow when disproven, dimmed when open. */
 function BeliefDot({ belief }: { belief: GraphNode }) {
   return <span className={`briefing-dot ${belief.judgement === "disproven" ? "is-hollow" : belief.judgement === "proven" ? "is-proven" : "is-open"}`} />;
-}
-
-function lower(text: string): string {
-  return text.charAt(0).toLowerCase() + text.slice(1);
 }
 
 /** A title shortened to one line's worth, as the design's lists do; the row's

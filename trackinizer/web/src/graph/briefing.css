@@ -36,6 +36,12 @@
 .briefing-sec-side { margin-left: auto; color: var(--muted); }
 .briefing-prose { margin: 0; font-size: 12.5px; line-height: 1.6; color: var(--muted); }
 
+/* A record read inside a briefing: its own summary, and its parents, children,
+   changes and fields. `.record` is written as a panel that scrolls on its own
+   at its own width, so here it gives both up and flows with the briefing, keeping
+   only the inks and the editors' scope that block declares. */
+.briefing .record-brief { flex: none; min-height: 0; overflow: visible; padding: 0 14px; }
+
 .briefing-turns { list-style: none; margin: 0; padding: 0 0 0 12px; border-left: 1px solid var(--line-strong); }
 .briefing-turn { position: relative; padding: 0 0 10px; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
 .briefing-turn::before { content: ""; position: absolute; left: -16px; top: 6px; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }

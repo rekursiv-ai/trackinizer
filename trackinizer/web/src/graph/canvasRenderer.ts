@@ -675,6 +675,12 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
     screenOf(node) {
       return toScreen(node.x ?? 0, node.y ?? 0);
     },
+    select(node) {
+      // A selection made without the pointer — by search, a link, a cluster's
+      // name — wears the same light a click on the node gives it. The next frame
+      // picks it up; `tick` never stops drawing.
+      selected = node;
+    },
     dispose() {
       alive = false;
       observer.disconnect();

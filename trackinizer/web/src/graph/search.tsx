@@ -77,8 +77,9 @@ export type MatchGroup = { readonly name: string | null; readonly rows: readonly
  * with the count.
  *
  * Each group lists its first `MAX_ROWS`. The rows are numbered across the
- * groups, `marked` the one the keys marked, which scrolls into view; each row's
- * element id is `<id>-<number>`.
+ * groups, `marked` the one standing for the pick — the keys move it, and a click
+ * on a row sets it to that row, so the list always names what is open beside it.
+ * A marked row scrolls into view; each row's element id is `<id>-<number>`.
  */
 export function SearchResults({
   id,
@@ -97,7 +98,8 @@ export function SearchResults({
   groups: readonly MatchGroup[];
   marked: number;
   hopsOf: (row: GraphNode) => number | undefined;
-  onPick: (row: GraphNode) => void;
+  /** The match picked, and its number in the list. */
+  onPick: (row: GraphNode, at: number) => void;
   onFocus: (row: GraphNode) => void;
   panel: Panel;
 }) {
@@ -117,7 +119,7 @@ export function SearchResults({
         className={at === marked ? "row is-focused" : "row"}
         // The search box keeps the keyboard, so typing goes on after a click.
         onMouseDown={(event) => event.preventDefault()}
-        onClick={() => onPick(match)}
+        onClick={() => onPick(match, at)}
         onDoubleClick={() => onFocus(match)}
       >
         <KindIcon kind={match.kind} size={14} />

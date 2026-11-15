@@ -53,6 +53,13 @@ export type Renderer = {
   centre(node: DrawNode): void;
   /** Where `node` is, in pixels from the host's top left. */
   screenOf(node: DrawNode): { x: number; y: number };
+  /**
+   * Make `node` the canvas's own selection, as a click on it does: it and the
+   * wires it holds keep the light while the field dims, and it is ringed and
+   * named. Null hands the field back. A selection the view makes without the
+   * pointer — from search, a link, a cluster's name — still has to reach here.
+   */
+  select(node: DrawNode | null): void;
   /** Stop drawing and let the host go. */
   dispose(): void;
 };
@@ -318,6 +325,9 @@ export const forceGraphRenderer: CreateRenderer = (host, events, covered) => {
     screenOf(node) {
       return graph.graph2ScreenCoords(node.x ?? 0, node.y ?? 0);
     },
+    // This canvas takes its light from the model's looks alone, which already name
+    // the strong node, so a selection made off the canvas asks for nothing here.
+    select() {},
     dispose() {
       resize.disconnect();
       host.removeEventListener("dblclick", onDoubleClick);

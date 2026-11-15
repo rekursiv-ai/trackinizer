@@ -27,10 +27,12 @@ from trackinizer.web.scripts.seed_graph import (
     SeededGraph,
     cascade_order,
     claims,
+    cost_for,
     islands,
     seed_graph,
     showcase,
     spread,
+    summary_for,
 )
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
@@ -192,7 +194,10 @@ def test_a_complete_session_that_carries_edges_ends_after_they_land() -> None:
     client = _FakeClient()
     seeded = seed_graph(client, structure, actor="ada@example.com")
     assert client.ended == [seeded.ids[7], seeded.ids[9]]
-    assert client.calls[-2:] == [("edges",), ("session_end",)]
+    # The cost writes are a second pass over the finished graph, so they trail
+    # every structural write; the ordering this checks is among the structural ones.
+    structural = [call for call in client.calls if call != ("cost",)]
+    assert structural[-2:] == [("edges",), ("session_end",)]
 
 
 def test_every_person_is_an_example_address() -> None:
@@ -218,6 +223,30 @@ def test_a_belief_is_judged_by_its_proves_edges() -> None:
     client, _ = _seeded()
     assert client.items[3][1]["judgement"] == "proven"
     assert client.items[9][1]["judgement"] == "unproven"
+
+
+def test_every_record_is_seeded_with_its_summary_written() -> None:
+    # A panel that opens on "add a summary" on nine hundred rows reads as an
+    # empty tool; the demo is of a graph people have been keeping.
+    client, _ = _seeded()
+    assert all(str(body["description"]).strip() for _, body in client.items)
+
+
+def test_a_summary_says_the_record_says() -> None:
+    summary = summary_for(
+        "Belief",
+        "Label smoothing hurts recall on the held-out set",
+        owner="ada@example.com",
+        verdict="proven",
+        confidence=0.8,
+    )
+    assert "{w" not in summary
+    assert "0.80" in summary
+    assert "label smoothing" in summary.lower()
+    # A record with nothing to name gets no summary rather than a hole where the
+    # name would have been.
+    assert summary_for("Belief", "Label smoothing hurts recall") == ""
+    assert "{owner}" not in summary_for("Paper", "Sparse warmup schedules for small-batch training")
 
 
 def test_no_kind_repeats_a_built_title_before_it_has_used_every_one() -> None:
@@ -250,6 +279,64 @@ def test_two_seeds_write_the_same() -> None:
     assert first.calls == second.calls
     assert first.items == second.items
     assert first.edges == second.edges
+    assert first.costs == second.costs
+
+
+def test_every_priced_kind_is_charged_on_both_axes() -> None:
+    # A seed must give every kind that plausibly spends money a real cost on the
+    # axis it spends on -- an Experiment its GPU-hours, an AgentSession its tokens --
+    # while a claim and the question above it, which spend nothing to state, stay
+    # off the ledger entirely.
+    client, seeded = _seeded()
+    kinds = {n.kind: seeded.ids[i] for i, n in enumerate(_STRUCTURE.nodes)}
+    charged: dict[uuid.UUID, dict[str, float]] = {}
+    for target_id, axis, value in client.costs:
+        charged.setdefault(target_id, {})[axis] = value
+    for kind in ("Experiment", "AgentSession", "Paper"):
+        paid = charged.get(kinds[kind], {})
+        assert paid["marginal_cost_agent_usd"] > 0
+        assert paid["marginal_cost_resource_usd"] > 0
+    # Issue and Belief are not priced at all: no write, so nothing on either axis.
+    for kind in ("Issue", "Belief"):
+        assert kinds[kind] not in charged
+
+
+def test_an_experiment_costs_more_compute_than_a_paper() -> None:
+    # The lab's whole story in one comparison: a run burns hours of GPU, a citation
+    # burns a download. The resource axis is where that shows.
+    experiment = cost_for("Experiment", "1.3B warmup sweep")["marginal_cost_resource_usd"]
+    paper = cost_for("Paper", "Sparse warmup schedules for small-batch training")[
+        "marginal_cost_resource_usd"
+    ]
+    assert experiment > paper
+    assert cost_for("Issue", "Plan the Q4 compute budget") == {}
+    assert cost_for("Belief", "Cosine decay beats linear past 20k steps") == {}
+
+
+def test_a_cost_is_the_same_figure_every_time_its_title_is() -> None:
+    # The value is drawn from a hash of the title, not a roll of a die, so the same
+    # record charged twice lands on the same number and two seeds write alike.
+    title = "Report: the warmup sweep"
+    assert cost_for("Artifact", title) == cost_for("Artifact", title)
+
+
+def test_cost_writes_follow_the_charges_of_a_full_seed() -> None:
+    # Every one of the five thousand records that spends gets its writes in node
+    # order, and none of the claims or asks do, so the count is the priced kinds.
+    client = _FakeClient()
+    structure = claims(spread(load(GRAPH_STRUCTURE.read_text())))
+    seeded = seed_graph(client, structure, actor="ada@example.com")
+    priced = {
+        n: seeded.ids[n]
+        for n, node in enumerate(structure.nodes)
+        if node.kind in {"Experiment", "AgentSession", "CodeChange", "Artifact", "Paper", "WebResult", "WebSearch"}
+    }
+    written = {tid for tid, _axis, _value in client.costs}
+    assert written == set(priced.values())
+    # The order the writes land in is the order the nodes were seeded in.
+    rank = {tid: n for n, tid in enumerate(seeded.ids)}
+    order = [tid for tid, _axis, _value in client.costs]
+    assert order == sorted(order, key=rank.__getitem__)
 
 
 def test_in_cascade_order_the_committed_structure_walks_a_fifth_as_far() -> None:
@@ -381,6 +468,7 @@ class _FakeClient:
     )
     ended: list[uuid.UUID] = field(default_factory=list)
     edges: list[tuple[uuid.UUID, str, uuid.UUID, object]] = field(default_factory=list)
+    costs: list[tuple[uuid.UUID, str, float]] = field(default_factory=list)
     _ids: itertools.count[int] = field(default_factory=lambda: itertools.count(1))
     _made: set[uuid.UUID] = field(default_factory=set)
 
@@ -418,6 +506,21 @@ class _FakeClient:
         assert session_id in self._made
         self.calls.append(("session_end",))
         self.ended.append(session_id)
+
+    def add_cost(
+        self,
+        target_id: uuid.UUID,
+        field: str,
+        value: float,
+        *,
+        actor: str,
+        reason: str = "",  # noqa: ARG002 -- the protocol's audit note; unused here.
+    ) -> None:
+        assert actor
+        assert target_id in self._made
+        assert field in {"marginal_cost_agent_usd", "marginal_cost_resource_usd"}
+        self.calls.append(("cost",))
+        self.costs.append((target_id, field, value))
 
     def _end(
         self,

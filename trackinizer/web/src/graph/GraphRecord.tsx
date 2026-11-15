@@ -28,14 +28,17 @@ import {
 } from "./briefing";
 import "./record.css";
 
-/** How many rows a section stands open with. */
-const SHOWN = 6;
+/**
+ * How many rows a section stands open with, and how many changes the panel tells,
+ * unless the caller raises them: the graph's own panel keeps the design's fold, and
+ * a canvas visual reads its bounds from the catalog.
+ */
+export const DEFAULT_ROWS = 6;
+export const DEFAULT_CHANGES = 3;
 /** How many votes a ledger stands open with, as many as the design's did. */
 const LEDGER = 12;
 /** How many of the records leaning on this one the panel names. */
 const LEANERS = 8;
-/** The changes the panel tells, of the last 50 the server sends. */
-const TOLD = 3;
 
 /**
  * The record, as the design prototype's panel told it: its ref and verdict, what
@@ -54,12 +57,16 @@ export function GraphRecord({
   palette,
   onSelectNode,
   onHoverPeer,
+  rows = DEFAULT_ROWS,
+  changes = DEFAULT_CHANGES,
 }: {
   node: GraphNode;
   graph: Graph;
   palette: Palette;
   onSelectNode: (node: GraphNode) => void;
   onHoverPeer?: (node: GraphNode | null) => void;
+  rows?: number;
+  changes?: number;
 }) {
   const meta = useMeta();
   const read = useQuery(detailQueries.detail(node.id));
@@ -85,8 +92,6 @@ export function GraphRecord({
   // A record the canvas gives no owner waits for its row before it says
   // "unassigned", so the line never reads one thing and then its opposite.
   const who = ownedBy ?? (detail ? "unassigned" : undefined);
-  const description = fields.find((field) => field.name === "description");
-  const prose = fields.filter((field) => field.look.place === "text" && field.name !== "description" && field.value !== undefined);
   const edit = (field: Field | undefined, chip: ReactNode) =>
     detail && field ? <PropertyEditor detail={detail} field={field}>{chip}</PropertyEditor> : chip;
   const chain = chainOf(node, view);
@@ -139,41 +144,10 @@ export function GraphRecord({
         </p>
       </div>
 
-      {/* The summary: the row's own prose, which every kind can carry and a human
-          or an agent can write here, in place. It stands open whether or not it
-          has been filled, so the column is the same on every record. */}
-      {detail && description ? (
-        <Section name="summary">
-          <TextEditor detail={detail} field={description}>
-            <div className="rec-text" data-field="description">
-              {typeof description.value === "string" ? (
-                <Markdown source={description.value} kinds={meta.kinds} />
-              ) : (
-                <p className="rec-empty">Add a summary — click to write it.</p>
-              )}
-            </div>
-          </TextEditor>
-        </Section>
-      ) : null}
-      {detail
-        ? prose.map((field) => (
-            <Section key={field.name} name={field.look.label.toLowerCase()}>
-              <TextEditor detail={detail} field={field}>
-                <div className="rec-text" data-field={field.name}>
-                  <Markdown source={String(field.value)} kinds={meta.kinds} />
-                </div>
-              </TextEditor>
-            </Section>
-          ))
-        : null}
-      {read.isError ? (
-        <p className="rec-note">
-          Could not read the record: {read.error.message}{" "}
-          <button type="button" className="rec-act" onClick={() => void read.refetch()}>
-            retry
-          </button>
-        </p>
-      ) : null}
+      {/* The record's own prose, and its lineage, activity and fields: both read
+          the row themselves, so a thread's briefing can carry them for its root
+          without holding the rest of this panel. */}
+      <RecordProse node={node} />
 
       {belief && node.confidence !== undefined ? (
         <Section name="confidence">
@@ -290,39 +264,138 @@ export function GraphRecord({
 
       {casts.length > 0 ? (
         <Section name="proves / favors" count={casts.length}>
-          <Ledger rows={casts} ink={ink} onSelect={onSelectNode} onHoverPeer={onHoverPeer} most={SHOWN} />
+          <Ledger rows={casts} ink={ink} onSelect={onSelectNode} onHoverPeer={onHoverPeer} most={rows} />
         </Section>
       ) : null}
 
-      {/* Its lineage, as the detail's rail has it: the records above it and the
-          ones below, then the rest, each neighbour named once with every verb
-          that joins it, and the rail's own "+ add" on each side. */}
+      {/* Its lineage, then what the caller adds, then its activity and its fields. */}
+      <RecordTail
+        node={node}
+        graph={graph}
+        palette={palette}
+        onSelectNode={onSelectNode}
+        onHoverPeer={onHoverPeer}
+        rows={rows}
+        changes={changes}
+      >
+        {next[0] ? (
+          <Section name="best next experiment">
+            <p className="rec-prose">
+              {next[0].template ? (
+                <>
+                  {next[0].rerun ? "Re-run" : "Adapt"} <Pill node={next[0].template} ink={ink} onSelect={onSelectNode} /> to settle{" "}
+                  <Pill node={next[0].belief} ink={ink} onSelect={onSelectNode} />
+                </>
+              ) : (
+                <>
+                  Design a first experiment to settle <Pill node={next[0].belief} ink={ink} onSelect={onSelectNode} />
+                </>
+              )}
+            </p>
+          </Section>
+        ) : null}
+      </RecordTail>
+    </div>
+  );
+}
+
+/**
+ * The record's own prose: the summary every kind carries, which a person or an
+ * agent writes here, and the rest of its text fields. It stands open whether or
+ * not the summary has been filled, so the column is the same on every record.
+ *
+ * It reads the row itself rather than taking one from a panel above, so a
+ * thread's briefing can carry a root's summary under its own hero.
+ */
+export function RecordProse({ node }: { node: GraphNode }) {
+  const meta = useMeta();
+  const read = useQuery(detailQueries.detail(node.id));
+  const detail = read.data;
+  const row = detail?.self;
+  const fields = row === undefined ? [] : kindFields(row, meta.fieldOwners);
+  const description = fields.find((field) => field.name === "description");
+  const prose = fields.filter((field) => field.look.place === "text" && field.name !== "description" && field.value !== undefined);
+  return (
+    <>
+      {detail && description ? (
+        <Section name="summary">
+          <TextEditor detail={detail} field={description}>
+            <div className="rec-text" data-field="description">
+              {typeof description.value === "string" ? (
+                <Markdown source={description.value} kinds={meta.kinds} />
+              ) : (
+                <p className="rec-empty">Add a summary — click to write it.</p>
+              )}
+            </div>
+          </TextEditor>
+        </Section>
+      ) : null}
+      {detail
+        ? prose.map((field) => (
+            <Section key={field.name} name={field.look.label.toLowerCase()}>
+              <TextEditor detail={detail} field={field}>
+                <div className="rec-text" data-field={field.name}>
+                  <Markdown source={String(field.value)} kinds={meta.kinds} />
+                </div>
+              </TextEditor>
+            </Section>
+          ))
+        : null}
+      {read.isError ? (
+        <p className="rec-note">
+          Could not read the record: {read.error.message}{" "}
+          <button type="button" className="rec-act" onClick={() => void read.refetch()}>
+            retry
+          </button>
+        </p>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The record's own tail: its lineage with the rail's "+ add" on each side, what
+ * the caller stands between the lineage and the log (a panel's own sections), then
+ * the changes and every field the panel has not already shown.
+ */
+export function RecordTail({
+  node,
+  graph,
+  palette,
+  onSelectNode,
+  onHoverPeer,
+  rows = DEFAULT_ROWS,
+  changes = DEFAULT_CHANGES,
+  children = null,
+}: {
+  node: GraphNode;
+  graph: Graph;
+  palette: Palette;
+  onSelectNode: (node: GraphNode) => void;
+  onHoverPeer?: (node: GraphNode | null) => void;
+  rows?: number;
+  changes?: number;
+  children?: ReactNode;
+}) {
+  const meta = useMeta();
+  const read = useQuery(detailQueries.detail(node.id));
+  const now = useMinuteClock();
+  const view: GraphView = viewOf(graph);
+  const ink = (kind: string) => panelKind(palette, kind);
+  const detail = read.data;
+  const row = detail?.self;
+  const fields = row === undefined ? [] : kindFields(row, meta.fieldOwners);
+  return (
+    <>
       {detail ? (
         <RelationFlows detail={detail}>
-          <Lineage detail={detail} view={view} ink={ink} onSelect={onSelectNode} onHoverPeer={onHoverPeer} />
+          <Lineage detail={detail} view={view} ink={ink} most={rows} onSelect={onSelectNode} onHoverPeer={onHoverPeer} />
         </RelationFlows>
       ) : null}
-
-      {next[0] ? (
-        <Section name="best next experiment">
-          <p className="rec-prose">
-            {next[0].template ? (
-              <>
-                {next[0].rerun ? "Re-run" : "Adapt"} <Pill node={next[0].template} ink={ink} onSelect={onSelectNode} /> to settle{" "}
-                <Pill node={next[0].belief} ink={ink} onSelect={onSelectNode} />
-              </>
-            ) : (
-              <>
-                Design a first experiment to settle <Pill node={next[0].belief} ink={ink} onSelect={onSelectNode} />
-              </>
-            )}
-          </p>
-        </Section>
-      ) : null}
-
-      {read.data ? <Activity items={activityItems(read.data.changes)} detail={read.data} fields={fields} now={now} ink={ink} /> : null}
+      {children}
+      {detail ? <Activity items={activityItems(detail.changes)} detail={detail} fields={fields} now={now} ink={ink} most={changes} /> : null}
       {row !== undefined ? <AllFields row={row} fields={fields} /> : null}
-    </div>
+    </>
   );
 }
 
@@ -476,19 +549,21 @@ function Lineage({
   detail,
   view,
   ink,
+  most,
   onSelect,
   onHoverPeer,
 }: {
   detail: Detail;
   view: GraphView;
   ink: (kind: string) => string;
+  most: number;
   onSelect: (node: GraphNode) => void;
   onHoverPeer?: (node: GraphNode | null) => void;
 }) {
   const meta = useMeta();
   const rail = relationGroups(detail, meta.edges);
   const peers = (rows: readonly PeerRow[]) => (
-    <Peers rows={rows} view={view} ink={ink} onSelect={onSelect} onHoverPeer={onHoverPeer} />
+    <Peers rows={rows} view={view} ink={ink} most={most} onSelect={onSelect} onHoverPeer={onHoverPeer} />
   );
   return (
     <>
@@ -515,17 +590,19 @@ function Peers({
   rows,
   view,
   ink,
+  most,
   onSelect,
   onHoverPeer,
 }: {
   rows: readonly PeerRow[];
   view: GraphView;
   ink: (kind: string) => string;
+  most: number;
   onSelect: (node: GraphNode) => void;
   onHoverPeer?: (node: GraphNode | null) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const shown = open ? rows : rows.slice(0, SHOWN);
+  const shown = open ? rows : rows.slice(0, most);
   return (
     <>
       {shown.map(({ peer, names }) => {
@@ -559,35 +636,37 @@ function Peers({
           </a>
         );
       })}
-      {!open && rows.length > SHOWN ? (
+      {!open && rows.length > most ? (
         <button type="button" className="rec-more" onClick={() => setOpen(true)}>
-          +{rows.length - SHOWN} more
+          +{rows.length - most} more
         </button>
       ) : null}
     </>
   );
 }
 
-/** The changes the server names, newest first, three of them. */
+/** The changes the server names, newest first, as many as the panel tells. */
 function Activity({
   items,
   detail,
   fields,
   now,
   ink,
+  most,
 }: {
   items: readonly ActivityItem[];
   detail: Detail;
   fields: readonly Field[];
   now: number;
   ink: (kind: string) => string;
+  most: number;
 }) {
   const meta = useMeta();
   if (items.length === 0) return null;
   return (
     <Section name="activity" count={detail.changes.length}>
       {items
-        .slice(-TOLD)
+        .slice(-most)
         .reverse()
         .map((item, index) => {
           const changes: readonly Change[] = item.type === "change" ? [item.change] : item.changes;
@@ -607,7 +686,7 @@ function Activity({
             </div>
           );
         })}
-      {items.length > TOLD ? <p className="rec-more-note">{items.length - TOLD} earlier</p> : null}
+      {items.length > most ? <p className="rec-more-note">{items.length - most} earlier</p> : null}
     </Section>
   );
 }

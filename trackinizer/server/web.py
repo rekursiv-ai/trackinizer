@@ -395,7 +395,8 @@ async def web_get(
 
 
 _GRAPH_NODE_COLS: Final = (
-    "id, kind, seq, title, status, created, owner, belief_judgement, belief_confidence"
+    "id, kind, seq, title, status, created, owner, belief_judgement, belief_confidence,"
+    " marginal_cost_agent_usd, marginal_cost_resource_usd"
 )
 
 # The ids ``/graph`` returns: the newest ``$1`` nodes, each followed by the older nodes
@@ -446,7 +447,8 @@ async def web_graph(
     Nodes are the light projection (id, kind, seq, title, status, created,
     belief judgement/confidence), ordered by ``created`` ascending so the replay
     animation adds them in authoring order; edges carry ``from_id`` -> ``to_id``,
-    ``edge_kind``, and ``valence`` when present. The detail view
+    ``edge_kind``, ``valence`` when present, and, for a wire the audit trail
+    covers, ``asserted`` — when it was made — and ``actor``. The detail view
     (:func:`web_get`) serves the full per-kind fields for one node on demand.
 
     Args:
@@ -503,11 +505,34 @@ async def web_graph(
             "WHERE from_id = ANY($1) AND to_id = ANY($1)",
             [r["id"] for r in node_rows],
         )
+        # A wire has no key of its own: ``PRIMARY KEY (from_id, to_id, edge_kind)``
+        # is its identity, and when it was asserted and by whom are not columns of
+        # ``edges`` but the audit the write left behind. ``store/edge.py`` emits a
+        # paired ``edge_added``, one per end, so the child's side -- the row whose
+        # ``subject_id`` is the edge's ``from_id`` -- is the one that dates the wire
+        # as stored. The newest add is the standing one: a remove and a re-add puts
+        # the present row in, and an as-of question asks after that assertion.
+        asserted_rows = await conn.fetch(
+            "SELECT DISTINCT ON (subject_id, new_peer_id, new_peer_edge_kind) "
+            "subject_id, new_peer_id, new_peer_edge_kind, created, actor FROM change_log "
+            "WHERE kind = 'edge_added' AND subject_id = ANY($1) AND new_peer_id = ANY($1) "
+            "ORDER BY subject_id, new_peer_id, new_peer_edge_kind, created DESC",
+            [r["id"] for r in node_rows],
+        )
     nodes = [_graph_node(r) for r in node_rows]
     if distances:
         for node, row in zip(nodes, node_rows, strict=True):
             node["hops"] = distances[_record_uuid(row, "id")]
-    return {"nodes": nodes, "edges": [_graph_edge(r) for r in edge_rows]}
+    asserted = {
+        (
+            _record_uuid(row, "subject_id"),
+            _record_uuid(row, "new_peer_id"),
+            _record_str(row, "new_peer_edge_kind"),
+        ):
+            row
+        for row in asserted_rows
+    }
+    return {"nodes": nodes, "edges": [_graph_edge(r, asserted) for r in edge_rows]}
 
 
 @router.get("/subscribe")
@@ -1151,7 +1176,9 @@ def _build_term_clause(
 # Carries id, kind, seq, title, status (so the view can dim retired ``abandoned`` /
 # ``invalid`` nodes), created (the replay order key), and -- for Beliefs -- judgement +
 # confidence so the view can encode a claim's verdict and certainty. The two belief
-# fields are emitted only when present, so a non-Belief row stays clean.
+# fields are emitted only when present, so a non-Belief row stays clean. The cost axes
+# are a row's running totals; both are emitted together, and only when the record has
+# spent something, so an unpriced node carries no cost keys at all.
 def _graph_node(row: asyncpg.Record) -> WebView:
     """Light node projection for the graph view."""
     out: WebView = {
@@ -1168,13 +1195,21 @@ def _graph_node(row: asyncpg.Record) -> WebView:
         out["judgement"] = row["belief_judgement"]
     if row["belief_confidence"] is not None:
         out["confidence"] = row["belief_confidence"]
+    agent = row["marginal_cost_agent_usd"] or 0.0
+    resource = row["marginal_cost_resource_usd"] or 0.0
+    if agent or resource:
+        out["cost_agent_usd"] = agent
+        out["cost_resource_usd"] = resource
     return out
 
 
 # ``valence`` is present only on ``proves`` / ``favors`` citations (NULL on structural
 # edges); the key is omitted when absent so the SPA never has to special-case a null.
-def _graph_edge(row: asyncpg.Record) -> WebView:
-    """Typed directed link for the graph view."""
+def _graph_edge(
+    row: asyncpg.Record,
+    asserted: dict[tuple[UUID, UUID, str], asyncpg.Record],
+) -> WebView:
+    """Typed directed link for the graph view, dated by the audit that made it."""
     out: WebView = {
         "from_id": str(_record_uuid(row, "from_id")),
         "to_id": str(_record_uuid(row, "to_id")),
@@ -1183,6 +1218,10 @@ def _graph_edge(row: asyncpg.Record) -> WebView:
     valence = row["valence"]
     if valence is not None:
         out["valence"] = valence
+    audit = asserted.get((_record_uuid(row, "from_id"), _record_uuid(row, "to_id"), str(out["edge_kind"])))
+    if audit is not None:
+        out["asserted"] = _isoformat(_record_datetime(audit, "created"))
+        out["actor"] = _record_str(audit, "actor")
     return out
 
 

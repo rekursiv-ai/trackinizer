@@ -13,8 +13,13 @@ Only the text the screenshots and the demo show is written by hand, in
 islands and fill its roots list, and the showcase, the island the demo opens
 and the Belief in it that it selects, with descriptions and labels. Every other
 title is built from that file's word lists for its kind, the nodes of a kind taking
-its titles in turn. Every choice follows from a node's index, so every seed writes
-the same.
+its titles in turn, and every record's summary from its prose, so a panel opens on
+text someone has written rather than on a blank — it stands in for theirs, and they
+overwrite it there. Then each record that plausibly spent money is charged its cost
+from the same file's ranges, an Experiment for its GPU-hours and an AgentSession for
+its tokens, through the client's own cost writes; a Belief or an Issue is left at
+zero, because a claim does not spend, testing one does. Every choice follows from a
+node's index, and every cost from a hash of its title, so every seed writes the same.
 """
 
 from __future__ import annotations
@@ -51,6 +56,12 @@ GRAPH_CONTENTS: Final = _CWD / "graph_contents.json"
 """The hand-written text: roots' titles, newest first, the showcase, word lists."""
 
 
+@functools.lru_cache(maxsize=1)
+def _contents() -> Mapping[str, object]:
+    """``GRAPH_CONTENTS``, read once: a seed gives every node its summary."""
+    return DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()), default=None)
+
+
 class GraphClient(Protocol):
     """The writes ``seed_graph`` makes, as :class:`Client` makes them."""
 
@@ -70,6 +81,18 @@ class GraphClient(Protocol):
         body: SessionEnd | None = None,
     ) -> object:
         """End the session ``session_id``."""
+        ...
+
+    def add_cost(
+        self,
+        target_id: uuid.UUID,
+        field: str,
+        value: float,
+        *,
+        actor: str,
+        reason: str = "",
+    ) -> None:
+        """Add ``value`` USD to one ``marginal_cost`` axis of ``target_id``."""
         ...
 
 
@@ -433,7 +456,9 @@ def seed_graph(
     """
     found = islands(structure)
     picked = showcase(structure, found)
-    ids = _write(client, structure, _bodies(structure, found, picked), actor=actor)
+    bodies = _bodies(structure, found, picked)
+    ids = _write(client, structure, bodies, actor=actor)
+    _charge(client, structure, bodies, ids, actor=actor)
     return SeededGraph(ids=tuple(ids), root=ids[picked.root], belief=ids[picked.belief])
 
 
@@ -556,7 +581,7 @@ def _bodies(
     picked: Showcase,
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()), default=None)
+    contents = _contents()
     written = ListCodec.coerce(contents.get("roots"), str)
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
     kinds = DictCodec.coerce(contents.get("kinds"), default=None)
@@ -595,6 +620,18 @@ def _bodies(
                 judgement,
                 0.5,
             )
+        stated = body.get("confidence")
+        # Every record is opened with its summary written: a panel that says "add
+        # a summary" on nine hundred rows reads as an empty tool, and the demo is
+        # of a graph people have been keeping. The text stands in for what a
+        # person would have typed, and they overwrite it there.
+        body["description"] = summary_for(
+            node.kind,
+            str(body["title"]),
+            owner=str(body["owner"]),
+            verdict=str(body.get("judgement", "")),
+            confidence=float(stated) if isinstance(stated, float) else None,
+        )
         if n in {picked.root, picked.belief}:
             body |= DictCodec.coerce(
                 shown.get("root" if n == picked.root else "belief"),
@@ -602,6 +639,159 @@ def _bodies(
             )
         bodies.append(body)
     return bodies
+
+
+# A record's summary, which the panels show under its title.
+#
+# The variants in ``graph_contents.json`` are the hand-written text: each stands
+# in for what a person would have typed, and picks up the record's own words so it
+# reads about the thing its title names. ``{w0}`` and friends are the kind's word
+# lists found inside the title, so a Belief titled "Label smoothing hurts recall"
+# gets "Label smoothing" and "hurts recall" back as slots.
+def summary_for(
+    kind: str,
+    title: str,
+    *,
+    owner: str = "",
+    verdict: str = "",
+    confidence: float | None = None,
+) -> str:
+    """Return the summary ``seed_graph`` gives a record of ``kind`` titled ``title``.
+
+    Args:
+      kind: The record's kind, a key in the contents' ``prose``.
+      title: Its title, which the variant is read against.
+      owner: Who the record is assigned to.
+      verdict: A Belief's judgement.
+      confidence: A Belief's confidence.
+
+    Returns:
+      summary: The variant's text, with the record's own words in it; empty when
+        every variant for the kind names something this record does not have.
+
+    """
+    contents = _contents()
+    prose = DictCodec.coerce(contents.get("prose"), default=None)
+    variants = ListCodec.coerce(prose.get(kind), str)
+    if not variants:
+        raise ValueError(f"No prose written for kind {kind!r}.")
+    # A variant that names what the record lacks would read as a hole where the
+    # word should be, so it is not offered: a record with no owner gets a summary
+    # that does not name one.
+    missing = [
+        name
+        for name, stated in (
+            ("owner", owner),
+            ("verdict", verdict),
+            ("conf", "" if confidence is None else "0"),
+        )
+        if not stated
+    ]
+    usable = [
+        text
+        for text in variants
+        if not any(f"{{{name}}}" in text for name in missing)
+    ]
+    if not usable:
+        return ""
+    vocabulary = DictCodec.coerce(
+        DictCodec.coerce(contents.get("kinds"), default=None).get(kind),
+        default=None,
+    )
+    words = [
+        ListCodec.coerce(row, str)
+        for row in ListCodec.coerce(
+            DictCodec.coerce(vocabulary, default=None).get("words"),
+        )
+    ]
+    found: dict[str, str] = {}
+    for slot, pool in enumerate(words):
+        hit = next((word for word in pool if word.lower() in title.lower()), "")
+        found[f"w{slot}"] = hit
+        found[f"W{slot}"] = hit[:1].upper() + hit[1:]
+    # Counted over every variant, so a title keeps its summary whether or not the
+    # record has the words some of them name: short of one, it takes the nearest
+    # variant that can be said.
+    return usable[
+        min(
+            int(hashlib.blake2b(title.encode(), digest_size=8).hexdigest(), 16)
+            % len(variants),
+            len(usable) - 1,
+        )
+    ].format(
+        Title=title,
+        title=title[:1].lower() + title[1:],
+        owner=owner,
+        verdict=verdict,
+        conf="" if confidence is None else f"{confidence:.2f}",
+        **found,
+    )
+
+
+# A record's cost, which the ledger keeps beside its summary.
+#
+# The ranges in ``graph_contents.json`` are the lab's own: an Experiment's GPU-hours,
+# an AgentSession's tokens. The two axes -- ``agent`` and ``resource`` -- are charged
+# through the client's ``add_cost``, one write each, because the running totals on an
+# inquiry row are not settable fields but the sum of its change log. A kind absent
+# from the block, a Belief or an Issue, is left at zero: stating a claim costs
+# nothing, and the honest story and the cheap one agree that the spend is on the runs
+# that tested it, not the record that holds the verdict.
+_AGENT_AXIS: Final = "marginal_cost_agent_usd"
+_RESOURCE_AXIS: Final = "marginal_cost_resource_usd"
+
+
+def cost_for(kind: str, title: str) -> dict[str, float]:
+    """Return the axes ``seed_graph`` charges a record of ``kind`` titled ``title``.
+
+    Args:
+      kind: The record's kind, a key in the contents' ``cost``, or absent for a kind
+        that spends nothing.
+      title: Its title, which the value is drawn from, so two seeds charge the same.
+
+    Returns:
+      cost: Each axis name the record pays, mapped to its USD amount; empty when the
+        kind spends nothing.
+
+    """
+    block = DictCodec.coerce(_contents().get("cost"), default=None)
+    spans = block.get(kind)
+    if not isinstance(spans, Mapping):
+        # A kind absent from the block -- a Belief, an Issue -- spends nothing.
+        return {}
+    charged: dict[str, float] = {}
+    for axis, field in (("agent", _AGENT_AXIS), ("resource", _RESOURCE_AXIS)):
+        row = ListCodec.coerce(spans.get(axis), float)
+        if len(row) != 2:
+            continue
+        low, high = row
+        # The same title, the same figure: a value between the bounds at the position
+        # the title's hash lands on, drawn to a cent, exactly as ``summary_for`` picks
+        # a variant from the hash rather than the roll of a die.
+        span = int(hashlib.blake2b(title.encode(), digest_size=8).hexdigest(), 16)
+        amount = round(low + span / 2**64 * (high - low), 2)
+        if amount > 0:
+            charged[field] = amount
+    return charged
+
+
+def _charge(
+    client: GraphClient,
+    structure: Structure,
+    bodies: Sequence[Mapping[str, object]],
+    ids: Sequence[uuid.UUID],
+    *,
+    actor: str,
+) -> None:
+    """Accrue each created record's cost through ``client``, in node order.
+
+    Every spend-bearing kind gets one ``add_cost`` write per axis it pays; a Belief or
+    an Issue, whose cost is empty, is written nothing at all. Node order fixes the
+    sequence, so two seeds make the same writes in the same order.
+    """
+    for n, node in enumerate(structure.nodes):
+        for field, amount in cost_for(node.kind, str(bodies[n]["title"])).items():
+            client.add_cost(ids[n], field, amount, actor=actor)
 
 
 def _verdicts(structure: Structure) -> dict[int, str]:

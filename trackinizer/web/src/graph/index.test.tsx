@@ -1,10 +1,11 @@
 import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import { ALL_NODES, type Graph } from "../api/graph";
+import { ALL_NODES, type Graph, type GraphEdge, type GraphNode } from "../api/graph";
 import { type Sent, stubFetch } from "../api/testing";
+import type { WorkspaceState } from "../api/workspaces";
 import { MetaContext } from "../app/boot";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { LiveContext } from "../live";
@@ -13,6 +14,7 @@ import { testClient } from "../live/testing";
 import { RouterProvider } from "../router/router";
 import { SIDEBAR } from "../app/Sidebar";
 import { type Panel, usePanel } from "../ui/panel";
+import { type WorkspaceActions, WorkspaceActionsProvider } from "../visuals/workspaceActions";
 import { GraphView } from ".";
 import { graphQuery } from "./live";
 import { edge, FakeRenderer, META, node, uuid } from "./testing";
@@ -44,9 +46,12 @@ vi.mock("../ui/Peek", async (importOriginal) => {
 });
 
 // The record reads `/api/web/get` and the schema's field tables with it; what the
-// graph's own tests follow is which record the panel holds, not what it says.
+// graph's own tests follow is which record the panel holds, not what it says. A
+// thread's briefing mounts the same two blocks for its root, so it stubs them too.
 vi.mock("./GraphRecord", () => ({
   GraphRecord: ({ node }: { node: { kind: string; seq: number } }) => <p>{`${node.kind}#${node.seq} record`}</p>,
+  RecordProse: ({ node }: { node: { kind: string; seq: number } }) => <p>{`${node.kind}#${node.seq} summary`}</p>,
+  RecordTail: ({ node }: { node: { kind: string; seq: number } }) => <p>{`${node.kind}#${node.seq} tail`}</p>,
 }));
 
 let client: QueryClient;
@@ -54,6 +59,8 @@ let renderer: FakeRenderer;
 let sent: Sent[];
 /** What the server answers for each limit. */
 let answers: Map<number, Graph | Promise<Response>>;
+let tree: () => ReactElement;
+let view: ReturnType<typeof render>;
 
 const GRAPH: Graph = {
   nodes: [node(1), node(2), node(3, { kind: "Paper", title: "A paper" })],
@@ -70,6 +77,9 @@ beforeEach(() => {
   document.documentElement.style.setProperty("--accent-hover", "match");
   // jsdom has none; the roots list scrolls its marked row into view.
   Element.prototype.scrollIntoView = () => {};
+  // Nor pointer capture; the timeline's scrub takes it on the way down.
+  Element.prototype.setPointerCapture = () => {};
+  Element.prototype.releasePointerCapture = () => {};
   sent = stubFetch(async (request) => {
     const answer = answers.get(Number(new URL(request.url).searchParams.get("limit")))!;
     return answer instanceof Promise ? answer : Response.json(answer);
@@ -88,21 +98,65 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function show({ hub = null }: { hub?: LiveHub | null } = {}) {
-  return render(
+function show({ hub = null, canvas = null }: { hub?: LiveHub | null; canvas?: WorkspaceActions | null } = {}) {
+  tree = () => (
     <QueryClientProvider client={client}>
       <MetaContext value={META}>
         <RouterProvider kinds={META.kinds}>
           <LiveContext value={hub}>
             <CommandRegistryContext value={new CommandRegistry()}>
               <Shortcuts />
-              <GraphView createRenderer={renderer.create} />
+              <WorkspaceActionsProvider value={canvas}>
+                <GraphView createRenderer={renderer.create} />
+              </WorkspaceActionsProvider>
             </CommandRegistryContext>
           </LiveContext>
         </RouterProvider>
       </MetaContext>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  view = render(tree());
+  return view;
+}
+
+/** Re-read the canvas, as the tab's poll does after an agent writes to it. */
+const canvasTick = () => act(() => view.rerender(tree()));
+
+/**
+ * The canvas the graph shares its selection with. `asked` and `hidden` are what
+ * it was told to show and take away; `send` moves it the way an agent's operation
+ * does, and the state it holds answers to the graph's reads.
+ */
+function canvasStub(recordId: string | null) {
+  const asked: string[] = [];
+  const hidden: string[] = [];
+  const withRecord = (id: string | null): WorkspaceState => ({
+    id: "ws",
+    revision: 1,
+    connected_session_id: null,
+    focused_instance: null,
+    visuals: id === null ? [] : [{ id: "pane", type: "trax.record", version: 1, placement: "side", record_id: id, params: {} }],
+  });
+  let state: WorkspaceState | null = withRecord(recordId);
+  const actions: WorkspaceActions = {
+    busy: false,
+    writeError: null,
+    revealRecord: async () => true,
+    showVisual: async (_type, id) => {
+      asked.push(id);
+      state = withRecord(id);
+      return true;
+    },
+    connectSession: () => {},
+    hideVisual: (instanceId) => {
+      hidden.push(instanceId);
+      state = withRecord(null);
+    },
+    get workspace() {
+      return state;
+    },
+  };
+  return { actions, asked, hidden, send: (id: string | null) => (state = withRecord(id)) };
 }
 
 /** Show the graph and wait for the count its first answer gives. */
@@ -417,8 +471,35 @@ test("every fit leaves out the strip on the canvas's right that Peek or the key 
     { right: 180, left: 260 },
   ]);
   act(() => renderer.events!.click(renderer.node("Issue 1")));
-  // The briefing keeps its corner while the record reads beside it, so both are left out.
-  expect(renderer.covered!()).toEqual({ right: 360, left: 260 });
+  // One panel at a time: the record takes the corner the briefing held, so only the
+  // panel itself is left out of a fit.
+  expect(renderer.covered!()).toEqual({ right: 360, left: 0 });
+});
+
+test("hiding the briefing hands its column back to the canvas, and its pill in the corner brings it back", async () => {
+  // The same lay-out as the test above: the key 180 px in from the right of an
+  // 800 px canvas, the briefing 260 px wide at its left.
+  const boxes: [string, { left: number; top: number; right: number; bottom: number }][] = [
+    [".graph-canvas", { left: 0, top: 0, right: 800, bottom: 600 }],
+    [".graph-key", { left: 620, top: 12, right: 788, bottom: 400 }],
+    [".proto-briefing", { left: 0, top: 0, right: 260, bottom: 600 }],
+  ];
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const box = boxes.find(([selector]) => this.matches(selector))?.[1] ?? { left: 0, top: 0, right: 0, bottom: 0 };
+    return { ...box, x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top } as DOMRect;
+  });
+  keepKey();
+  const { user } = await shown();
+  await user.click(screen.getByRole("button", { name: "Hide panel" }));
+  expect(document.querySelector(".proto-briefing.is-hidden")).not.toBeNull();
+  // Slid out, it covers nothing, whatever the transition is doing: the frame keeps
+  // its left edge, and frames again as the panel goes.
+  expect(renderer.covered!()).toEqual({ right: 180, left: 0 });
+  expect(renderer.refits.at(-1)).toEqual({ right: 180, left: 0 });
+  // The pill takes the corner it left; picked, the column covers it again.
+  await user.click(screen.getByRole("button", { name: "Show the briefing" }));
+  expect(document.querySelector(".proto-briefing.is-hidden")).toBeNull();
+  expect(renderer.covered!()).toEqual({ right: 180, left: 260 });
 });
 
 test("an answer that changes only fields repaints; one that changes which inquiries show draws them anew", async () => {
@@ -523,6 +604,23 @@ test("a click selects a node: Peek opens on it, it takes the strong halo, and it
   expect(dimmed()).toEqual(["Issue 1"]);
 });
 
+test("a selection made without the pointer holds the canvas's light too, and clearing it hands the field back", async () => {
+  const { user } = await shown();
+  act(() => renderer.events!.click(renderer.node("Issue 1")));
+  // The view hands the field back on its way in, then asks for the node the click
+  // picked; a later clear hands it back again.
+  expect(renderer.selects).toEqual([null, "Issue 1"]);
+  act(() => renderer.events!.click(null));
+  await peekGone();
+  expect(renderer.selects.at(-1)).toBe(null);
+  // A search pick, which the pointer never touched, lights it the same way.
+  await user.click(search());
+  fireEvent.change(search(), { target: { value: "paper" } });
+  await user.keyboard("{Enter}");
+  expect(renderer.selects.at(-1)).toBe("A paper");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Paper#3");
+});
+
 test("a click on the background, or Esc, clears the selection", async () => {
   const { user } = await shown();
   act(() => renderer.events!.click(renderer.node("Issue 2")));
@@ -531,6 +629,39 @@ test("a click on the background, or Esc, clears the selection", async () => {
   act(() => renderer.events!.click(renderer.node("Issue 2")));
   await user.keyboard("{Escape}");
   await peekGone();
+});
+
+test("the selection and the canvas's record are one thing: what an agent shows arrives as the selection, and a pick goes out as the same operation", async () => {
+  const canvas = canvasStub(uuid(3));
+  show({ canvas: canvas.actions });
+  await screen.findByText("3 nodes, 2 edges");
+  // A record already on the canvas is the selection, and the graph does not write
+  // it back: an agent's show, seen by a tab that opened after it.
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Paper#3");
+  expect(canvas.asked).toEqual([]);
+  expect(renderer.selects).toEqual([null, "A paper"]);
+  // The graph's own pick is the operation an agent writes: the same show, the other way.
+  act(() => renderer.events!.click(renderer.node("Issue 1")));
+  expect(canvas.asked).toEqual([uuid(1)]);
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
+  // An agent moving the canvas moves the field, which answers the write with a
+  // write of its own only once — it does not echo.
+  act(() => canvas.send(uuid(2)));
+  canvasTick();
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
+  expect(renderer.selects.at(-1)).toBe("Issue 2");
+  expect(canvas.asked).toEqual([uuid(1)]);
+  // Taking it off the canvas ends the selection, and the graph lets it go.
+  act(() => canvas.send(null));
+  canvasTick();
+  await peekGone();
+  expect(canvas.hidden).toEqual([]);
+  // With nothing on the canvas, a pick puts a record back, and a clear takes it off.
+  act(() => renderer.events!.click(renderer.node("Issue 1")));
+  expect(canvas.asked).toEqual([uuid(1), uuid(1)]);
+  act(() => renderer.events!.click(null));
+  await peekGone();
+  expect(canvas.hidden).toEqual(["pane"]);
 });
 
 test("a link in Peek to a node the graph draws selects it in place and centres on it; Open and others navigate", async () => {
@@ -593,6 +724,11 @@ test("search lights its matches on the canvas and lists them newest first; Enter
   // A click picks too.
   await user.click(screen.getAllByRole("option")[1]!);
   expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
+  // ...and marks the row it picked, so the list names what stands open beside it,
+  // and the keys step on from there rather than from where they left off.
+  expect(titles(screen.getAllByRole("option").filter((row) => row.classList.contains("is-focused")))).toEqual(["Issue 1"]);
+  await user.keyboard("{ArrowUp}{Enter}");
+  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
 });
 
 test("search finds no node a filter hides, so a pick never centres on empty space (G4)", async () => {
@@ -661,20 +797,72 @@ test("the keys: f fits, / goes to search", async () => {
   expect((document.activeElement as HTMLInputElement).value).toBe("");
 });
 
-test("the timeline's play grows the graph from nothing, and an answer that waits for it draws after (F10)", async () => {
+test("the timeline's play sweeps the field as it was made, one record at a time, and an answer that waits for it draws after (F10)", async () => {
   await shown();
   vi.useFakeTimers();
+  const drawn = renderer.counts.length;
   fireEvent.click(screen.getByRole("button", { name: "Replay the graph's growth" }));
-  expect(renderer.counts).toEqual([3, 0]);
+  // The graph is sent once, when it arrives; playing only shows more of it.
+  expect(renderer.counts).toHaveLength(drawn);
+  // The oldest record is up first, coming up: a twenty-fourth of its own ink,
+  // since the newest 24 of a sweep are what the ramp raises.
+  expect(renderer.shown()).toEqual(["Issue 1"]);
+  expect(renderer.node("Issue 1").look.fillAlpha).toBeCloseTo(1 / 24, 5);
+  // The count in the tools is the cut's own, as the design's `setCut` writes it.
+  expect(count()).toBe("1 node, 0 edges");
+  // Three records cross in the design's 14 s x 3/2500 + 4 s, so 4.02 s: three
+  // quarters through, the second record is up and the paper is not yet.
+  act(() => vi.advanceTimersByTime(3000));
+  expect(renderer.shown()).toEqual(["Issue 1", "Issue 2"]);
+  // A wire draws only with both its ends: Issue 2's to Issue 1 is up, the
+  // paper's waits for the record the place has not reached.
+  expect(renderer.links.map((link) => link.hidden)).toEqual([false, true]);
+  // and the count says so: two records, the one wire between them.
+  expect(count()).toBe("2 nodes, 1 edge");
   // While it runs, an answer waits for it.
   act(() => client.setQueryData(graphQuery(1000).queryKey, { nodes: [node(1), node(2)], edges: [edge(2, 1)] }));
-  // 1x is a node every 70 ms; once the whole is grown the waiting answer draws.
-  act(() => vi.advanceTimersByTime(70 * 3));
-  expect(renderer.counts).toEqual([3, 0, 1, 2, 3, 2]);
-  expect(renderer.sets).toEqual([true, false, false, false, true, false]);
+  expect(renderer.counts).toHaveLength(drawn);
+  // The sweep's end: the whole is shown, and the waiting answer draws.
+  act(() => vi.advanceTimersByTime(1200));
+  expect(renderer.counts).toHaveLength(drawn + 1);
   expect(renderer.shown()).toEqual(["Issue 1", "Issue 2"]);
   expect(screen.getByRole("button", { name: "Replay the graph's growth" })).toBeTruthy();
   vi.useRealTimers();
+});
+
+test("the timeline's scrub draws the graph as it stood at that date, and never re-sends it (F10)", async () => {
+  // Three records over a fortnight, so a pointer a third along the track is
+  // plainly before the second's date and plainly after the first's.
+  answers.set(1000, {
+    nodes: [
+      node(1, { created: "2026-09-01T00:00:00+00:00" }),
+      node(2, { created: "2026-09-08T00:00:00+00:00" }),
+      node(3, { kind: "Paper", title: "A paper", created: "2026-09-15T00:00:00+00:00" }),
+    ],
+    edges: GRAPH.edges,
+  });
+  await shown();
+  const drawn = renderer.counts.length;
+  const track = screen.getByRole("slider", { name: "Replay position" });
+  // jsdom gives every box a rect of zeros; the track reads the fraction off its own width.
+  track.getBoundingClientRect = () =>
+    ({ left: 0, right: 200, top: 0, bottom: 24, width: 200, height: 24, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect;
+  fireEvent.pointerDown(track, { clientX: 70, pointerId: 1 });
+  expect(renderer.shown()).toEqual(["Issue 1"]);
+  // A record long made draws outright: the ramp is for arrivals under a moving
+  // place, not a wash over the last of a field whose records are all behind it.
+  expect(renderer.node("Issue 1").look.fillAlpha).toBe(1);
+  fireEvent.pointerMove(track, { clientX: 130, pointerId: 1, buttons: 1 });
+  expect(renderer.shown()).toEqual(["Issue 1", "Issue 2"]);
+  expect(renderer.links.map((link) => link.hidden)).toEqual([false, true]);
+  expect(count()).toBe("2 nodes, 1 edge");
+  expect(screen.getByText(/^Sep/).textContent).toBe("Sep 8, 2 nodes");
+  expect(renderer.counts).toHaveLength(drawn);
+  // The track's far end: every record is behind the stand, so the count is the
+  // whole field again and the date line stops naming a part of it.
+  fireEvent.pointerMove(track, { clientX: 200, pointerId: 1, buttons: 1 });
+  expect(count()).toBe("3 nodes, 2 edges");
+  expect(screen.getByText(/^Sep/).textContent).toBe("Sep 15");
 });
 
 test("a limit changed during Replay stops it, and the new limit's answer draws at once (GR-02)", async () => {
@@ -873,6 +1061,37 @@ test("the graph opens grouped by root: each root's subgraph is an island with it
   expect(renderer.nodes.map((drawn) => drawn.look.label)).toEqual(Array(6).fill(null));
 });
 
+/** A record made `min` minutes into the design's day. */
+const madeAt = (min: number) => new Date(Date.UTC(2026, 8, 20, 0, min)).toISOString().replace("Z", "+00:00");
+
+/** An inquiry: `head` and `size` - 1 records that narrow it, all made from `at` on. */
+function inquiry(head: number, size: number, at: number): [GraphNode[], GraphEdge[]] {
+  const nodes = Array.from({ length: size }, (_, i) => node(head + i, { created: madeAt(at + i) }));
+  return [nodes, nodes.slice(1).map((child) => edge(child.seq, head))];
+}
+
+// Two inquiries of 30, an hour and ten hours into the day, and 25 records the feed
+// left unlinked late after both: no inquiry was alive when they happened, so the
+// field has no ball to hand them to and gathers them into one of their own.
+const [MORN, MORN_LINKS] = inquiry(1, 30, 60);
+const [NOON, NOON_LINKS] = inquiry(40, 30, 600);
+const DUST = Array.from({ length: 25 }, (_, i) => node(100 + i, { created: madeAt(2000 + i) }));
+const DUSTY: Graph = { nodes: [...MORN, ...NOON, ...DUST], edges: [...MORN_LINKS, ...NOON_LINKS] };
+
+test("a ball gathered from records nobody built on wears no name: it is not a line of inquiry", async () => {
+  answers.set(1000, DUSTY);
+  history.replaceState(null, "", "#/graph");
+  await shown("85 nodes, 58 edges");
+  const dust = renderer.groups!.get("Issue 100")!;
+  // The unlinked late-comers keep a ball of their own instead of a tail on either inquiry.
+  expect(dust).not.toBe(uuid(1));
+  expect(dust).not.toBe(uuid(40));
+  expect([...renderer.groups!.values()].filter((key) => key === dust).length).toEqual(25);
+  // Each inquiry is named for the record at its head; the ball of dust has no head,
+  // so none of their titles may be worn as one.
+  expect(Object.fromEntries(renderer.islandNames!)).toEqual({ [uuid(1)]: "Issue 1", [uuid(40)]: "Issue 40" });
+});
+
 test("an island clicked on the canvas opens its root's briefing in Peek and frames the island; Unrooted is only framed", async () => {
   answers.set(1000, TREES);
   history.replaceState(null, "", "#/graph");
@@ -923,7 +1142,7 @@ const FLAGGED: Graph = {
   edges: [edge(5, 4, "proves", { valence: -0.9 }), edge(6, 4, "proves", { valence: -0.6 })],
 };
 
-test("a needs-attention row lights the beliefs it counts, names them under itself and fits to them; a belief opens beside the list, and Escape hands the canvas back", async () => {
+test("a needs-attention row lights the beliefs it counts, names them under itself and fits to them; a belief opens in the briefing's place, and Escape hands the canvas back", async () => {
   answers.set(1000, FLAGGED);
   history.replaceState(null, "", "#/graph");
   const { user } = await shown("4 nodes, 2 edges");
@@ -935,10 +1154,11 @@ test("a needs-attention row lights the beliefs it counts, names them under itsel
   expect(dimmed()).toEqual(expect.arrayContaining(["Issue 1", "Cache sweep", "Seed repeat"]));
   expect(renderer.framed.at(-1)!.titles).toEqual(["Warm cache reads win"]);
   expect(flagged()!.textContent).toContain("2 against");
-  // Reading one of them does not lose the set: its record opens beside the list, which holds.
+  // Reading one of them pushes the record onto the panel: one view, never two, as
+  // the prototype's #side stack does. The lit set still holds the canvas.
   await user.click(within(flagged()!).getByRole("button", { name: /Warm cache reads win/ }));
   expect(peek()!.textContent).toContain("Belief#4");
-  expect(flagged()).not.toBeNull();
+  expect(flagged()).toBeNull();
   // The one being read wears the selection's ring; the set still holds the light.
   expect(halos()).toEqual(["Warm cache reads win: halo"]);
   expect(dimmed()).toEqual(expect.arrayContaining(["Cache sweep", "Seed repeat"]));

@@ -36,7 +36,7 @@ import { hopCounts, isWithin, reach } from "./hops";
 import { graphQuery, useLiveGraph } from "./live";
 import { type DrawNode, GraphModel, type Lens, wires } from "./model";
 import { useThemePalette } from "./palette";
-import { type SignalKey, Briefing, Timeline, binsOf } from "./protoChrome";
+import { BRIEFING, type SignalKey, Briefing, BriefingShow, Timeline, binsOf } from "./protoChrome";
 import { type Covered, type CreateRenderer, type Renderer } from "./renderer";
 import { canvasRenderer } from "./canvasRenderer";
 import { replay } from "./replay";
@@ -44,6 +44,7 @@ import { islandHomes } from "./islands";
 import { findRoots } from "./roots";
 import { hopsName, MAX_ROWS, type MatchGroup, RESULTS, SearchBox, type SearchKey, SearchResults, searchNodes } from "./search";
 import { ThreadBriefing } from "./ThreadBriefing";
+import { useWorkspaceActions } from "../visuals/workspaceActions";
 
 /** The graph route, as the hash holds it. */
 type Place = Extract<Route, { name: "graph" }>;
@@ -94,6 +95,7 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   const peek = usePanel(PEEK);
   const results = usePanel(RESULTS);
   const sidebar = usePanel(SIDEBAR);
+  const briefing = usePanel(BRIEFING);
   const graph = useQuery(graphQuery(view.limit));
   const failure = useLiveGraph(view.limit);
   const data = graph.data;
@@ -121,28 +123,43 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   const [marked, setMarked] = useState(-1);
   const byId = useMemo(() => new Map(nodes.map((row) => [row.id, row])), [nodes]);
   const selected = selectedId === null ? undefined : byId.get(selectedId);
-  const replayer = useReplay(model, renderer, () => setSelectedId(null));
+  const replayer = useReplay(() => setSelectedId(null));
   /** The timeline's bars and the date the view stands at, from the graph's own dates. */
   const timelineBins = useMemo(() => (data ? binsOf(data) : NO_BINS), [data]);
-  const byAge = useMemo(() => (data ? [...data.nodes].sort((a, b) => a.created.localeCompare(b.created)) : NO_NODES), [data]);
+  const byAge = useMemo(() => (data ? [...data.nodes].sort((a, b) => Date.parse(a.created) - Date.parse(b.created)) : NO_NODES), [data]);
   const replayDate = useMemo(() => {
     if (byAge.length === 0) return "";
     const at = byAge[Math.min(byAge.length - 1, Math.round(replayer.position * (byAge.length - 1)))];
     return new Date(at.created).toLocaleDateString("en-US", { month: "short", day: "numeric" });
   }, [byAge, replayer.position]);
-  /** Draw the graph as it stood at `fraction` of its life, as the timeline's scrub asks. */
+  /**
+   * The records the timeline's place draws: the oldest `position` of the graph
+   * by `created`, the newest `ARRIVING` of them still coming up while it plays.
+   * The graph itself is never re-sent — a replay shows more of it, which is what
+   * keeps the islands where they settled, forming rather than re-laying out —
+   * and one rule serves playing and scrubbing both, as the design's `cut` did.
+   * A scrub's place holds still, so it draws every record behind it outright:
+   * the ramp is for the newest few arriving under a moving place, not a wash
+   * over the last of a field whose records are all long made.
+   */
+  const shown = useMemo(() => {
+    if (byAge.length === 0 || replayer.position >= 1) return null;
+    const cut = Math.max(1, Math.min(byAge.length, Math.round(replayer.position * byAge.length)));
+    const map = new Map<string, number>();
+    for (let at = 0; at < cut; at++) {
+      const age = cut - at;
+      map.set(byAge[at]!.id, replayer.running && age < ARRIVING ? age / ARRIVING : 1);
+    }
+    return map;
+  }, [byAge, replayer.position, replayer.running]);
+  /**
+   * Draw the graph as it stood at `fraction` of its life, as the timeline's
+   * scrub asks: the same showing a replay does, stopped where the pointer is.
+   */
   const scrubTo = useEffectEvent((fraction: number) => {
     if (!data) return;
     replayer.stop();
     replayer.at(fraction);
-    const count = Math.max(1, Math.round(fraction * byAge.length));
-    const kept = new Set(byAge.slice(0, count).map((row) => row.id));
-    const prefix: Graph = {
-      nodes: byAge.slice(0, count),
-      edges: data.edges.filter((edge) => kept.has(edge.from_id) && kept.has(edge.to_id)),
-    };
-    if (model.apply(prefix)) renderer?.setData(model.nodes, model.links, null);
-    else renderer?.repaint();
   });
   /** The limit whose graph was last drawn anew: a new limit's graph is framed once it settles. */
   const drawn = useRef<number | null>(null);
@@ -181,6 +198,18 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   /** The graph's wires as the canvas holds them: the server's edges less each `produced_by`
       that only companions a `narrows` or a `requires` between the same two Issues. */
   const wiresDrawn = useMemo(() => (data === undefined ? [] : wires(data)), [data]);
+  /**
+   * What the tools count, as the design's `setCut` writes it: while the timeline
+   * stands partway through the graph's life, the cut's own records and only the
+   * wires whose both ends are among them. So the number climbs with the sweep
+   * instead of claiming the whole field while Replay holds records back.
+   */
+  const fieldCount = useMemo(() => {
+    if (shown === null) return [nodes.length, wiresDrawn.length];
+    let wiresMade = 0;
+    for (const row of wiresDrawn) if (shown.has(row.from_id) && shown.has(row.to_id)) wiresMade++;
+    return [shown.size, wiresMade];
+  }, [shown, nodes.length, wiresDrawn]);
   const groups = matchGroups(matches, focusNode && focus && lit ? { node: focusNode, hops: focus.hops, lit } : null);
   const rows = groups.flatMap((group) => group.rows.slice(0, MAX_ROWS));
   const markedAt = Math.min(marked, rows.length - 1);
@@ -209,8 +238,9 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
       strong: new Set([focusNode?.id, selected?.id, peer?.id].filter((id) => id !== undefined)),
       matches: new Set([...matches.map((row) => row.id), ...(signal?.ids ?? [])]),
       labelled: new Set([...(roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? []), ...litLabels, ...(peer ? [peer.id] : [])]),
+      shown,
     }),
-    [shownBy, lit, focusNode, only, selected, peer, matches, roots, litLabels, signal],
+    [shownBy, lit, focusNode, only, selected, peer, matches, roots, litLabels, signal, shown],
   );
 
   const focusOn = (row: GraphNode) => go({ focus: { ref: { kind: row.kind, seq: row.seq }, hops: focus?.hops ?? 1 } });
@@ -272,9 +302,9 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
     if (focusKey !== null) frameFocus();
   }, [focusKey, renderer]);
   // Showing or hiding the key, or collapsing Peek, changes what covers the
-  // canvas, and the roots list, the search results or the app's sidebar how
-  // wide it is: frame again once it has rendered.
-  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${sidebar.collapsed}`;
+  // canvas, and the roots list, the search results, the briefing or the app's
+  // sidebar how wide it is: frame again once it has rendered.
+  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${briefing.collapsed} ${sidebar.collapsed}`;
   const panelsShown = useRef(panels);
   useLayoutEffect(() => {
     if (panelsShown.current === panels) return;
@@ -284,7 +314,8 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   // The field of islands: one compact ball per line of inquiry, as many as the
   // inquiry has, none of them a giant — see islands.ts. Ungrouped, the hash's
   // group=none, the dust stands alone: no homes, no names.
-  const homes = useMemo(() => (grouped && data ? islandHomes(data) : null), [grouped, data]);
+  const islands = useMemo(() => (grouped && data ? islandHomes(data) : null), [grouped, data]);
+  const homes = islands?.homes ?? null;
   useEffect(() => renderer?.group(homes ? (node) => homes.get(node.id) : null), [renderer, homes]);
   // Each island's name while grouped: its root's title, in the theme's inks. The
   // canvas draws them only while zoomed out far enough that root labels alone
@@ -295,8 +326,11 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
     // record's title can crown it.
     const names = new Map<string, string>(data.nodes.map((node) => [node.id, node.title || "(untitled)"]));
     for (const group of roots.groups) if (group.root) names.set(group.key, group.root.title || "(untitled)");
+    // ...but not a record that heads nothing: a ball of records no one built on
+    // would otherwise wear one of their titles as if it were the inquiry.
+    for (const key of islands?.headless ?? []) names.delete(key);
     return names;
-  }, [roots, data]);
+  }, [roots, data, islands]);
   useEffect(() => {
     if (!renderer) return;
     renderer.nameIslands(
@@ -327,6 +361,52 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
     renderer?.fit((node) => framing.has(node.id));
     setFraming(null);
   }, [framing, renderer]);
+  // The canvas's own light — the field dimmed, the wires drawn out, the ring and
+  // the name — follows a selection made anywhere, not only one the pointer made.
+  useEffect(() => {
+    renderer?.select(selected ? (model.find(selected.id) ?? null) : null);
+  }, [renderer, model, selected]);
+  // The selection is shared with the canvas, and one operation crosses either
+  // way: a pick here is the `show trax.record` an agent writes, and an agent's
+  // `show` arrives as this view's own selection. `wrote` is what this tab last
+  // sent, so the answer to its own write cannot move the view under the pointer.
+  const canvas = useWorkspaceActions();
+  const recordPane = canvas?.workspace?.visuals.find((visual) => visual.type === "trax.record");
+  const wrote = useRef<string | null | undefined>(undefined);
+  const sawRecord = useRef(false);
+  useEffect(() => {
+    if (!canvas) return;
+    // Nothing selected and nothing sent yet: the graph has no claim on the canvas,
+    // and an agent's record already on it is the agent's to keep.
+    if (selectedId === null && wrote.current === undefined) return;
+    if (selectedId === wrote.current) return;
+    wrote.current = selectedId;
+    if (selectedId === null) {
+      if (recordPane) canvas.hideVisual?.(recordPane.id);
+    } else {
+      // A selection moves the record, not the pane, which stays where it was put.
+      void canvas.showVisual("trax.record", selectedId);
+    }
+  }, [canvas, selectedId, recordPane]);
+  useEffect(() => {
+    if (!canvas) return;
+    if (recordPane === undefined) {
+      // No record on the canvas is the canvas holding its silence — until it had
+      // one, when an agent taking it away is the selection ending.
+      if (sawRecord.current) {
+        sawRecord.current = false;
+        wrote.current = null;
+        setSelectedId(null);
+      }
+      return;
+    }
+    sawRecord.current = true;
+    const shown = recordPane.record_id ?? null;
+    if (shown === wrote.current) return;
+    wrote.current = shown;
+    setSelectedId(shown);
+    if (shown) setCentring(shown);
+  }, [canvas, recordPane]);
   /**
    * A root picked in the roots list or by its island's name: its briefing takes
    * the roots list's place, Peek opens on the root, and its island is framed
@@ -372,6 +452,7 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   useCommands([
     { id: "graph.fit", title: "Fit the graph", keys: ["f"], section: "Graph", run: () => renderer?.fit() },
     { id: "graph.search", title: "Search the graph", keys: ["/"], section: "Graph", run: () => searchBox.current?.focus() },
+    ...(data && !searching ? [panelCommand(briefing)] : []),
     ...(searching ? [panelCommand(results)] : []),
     ...(selected
       ? [
@@ -429,7 +510,7 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
         />
         <div className="spacer" />
         <span className="proto-stat num">
-          {data === undefined ? "loading…" : `${counted(nodes.length, "node")}, ${counted(wiresDrawn.length, "edge")}`}
+          {data === undefined ? "loading…" : `${counted(fieldCount[0], "node")}, ${counted(fieldCount[1], "edge")}`}
         </span>
         <LimitMenu limit={view.limit} onLimit={setLimit} />
         <button type="button" className="btn ghost proto-fit" title="Fit the graph (f)" onClick={() => renderer?.fit()}>
@@ -473,7 +554,12 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
             groups={groups}
             marked={markedAt}
             hopsOf={(row) => (focus ? reached?.get(row.id) : undefined)}
-            onPick={select}
+            onPick={(row, at) => {
+              // The click marks its own row, so the list names what it opened: the
+              // keys step on from there.
+              setMarked(at);
+              select(row);
+            }}
             onFocus={focusOn}
             panel={results}
           />
@@ -489,11 +575,26 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
             </div>
           ) : null}
           {asking ? <AskToDraw count={nodes.length} onDraw={() => setConsent(view.limit)} onFewer={() => setLimit(ASK_ABOVE)} /> : null}
-          {/* The briefing keeps its corner while a record reads beside it: it is the
-              way back, and the flagged list is what a record is read against. Only a
-              search takes the corner, and only a search needs it. */}
-          {data && !searching ? (
-            <Briefing graph={data} palette={palette} onPick={select} onSignal={showSignal} signal={signal?.key ?? null} />
+          {/* One panel, as the prototype's #side stack is: the briefing holds the
+              corner until a record is picked, and the record's own panel takes it --
+              a thread's root reads as that cluster, so drawing the briefing beside it
+              would list the same rows on both sides of the field. The crumb names the
+              way back. Only a search takes the corner besides the briefing, and only a
+              search needs it. Hid, the briefing slides out and leaves its own pill, so
+              the canvas has the width. */}
+          {data && !searching && !(selected && !peek.collapsed) ? (
+            <>
+              <Briefing
+                graph={data}
+                palette={palette}
+                panel={briefing}
+                roots={roots}
+                onPick={select}
+                onSignal={showSignal}
+                signal={signal?.key ?? null}
+              />
+              {briefing.collapsed ? <BriefingShow panel={briefing} /> : null}
+            </>
           ) : null}
           <div className="proto-legend">
             {keyShown ? (
@@ -526,6 +627,7 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
               position={replayer.position}
               playing={replayer.running}
               date={replayDate}
+              grown={shown === null ? null : shown.size}
               onScrub={(fraction) => scrubTo(fraction)}
               onToggle={() => {
                 if (replayer.running) replayer.stop();
@@ -550,9 +652,16 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
                   row={selected}
                   panel={peek}
                   onClose={() => setSelectedId(null)}
+                  // What the panel covers is what a fit frames around: once the drag
+                  // lets go, the field is framed again in the room the panel left it.
+                  onResizeEnd={() => renderer?.refit()}
                   crumbs={
                     threadGroup ? (
-                      <span className="peek-crumb mono">briefing</span>
+                      // The stack's home crumb, as the prototype's #sBack is: pressing it
+                      // leaves the record, and the briefing takes its corner back.
+                      <button type="button" className="peek-crumb mono" title="Back to the briefing" onClick={() => setSelectedId(null)}>
+                        briefing
+                      </button>
                     ) : ownGroup?.root ? (
                       <button type="button" className="peek-crumb mono" title={ownGroup.root.title} onClick={() => select(ownGroup.root!)}>
                         briefing / {ownGroup.root.title || "(untitled)"}
@@ -636,6 +745,9 @@ function coveredOf(host: HTMLElement): Covered {
   for (const selector of [".graph-peek > :not([hidden])", ".proto-briefing", ".graph-key", ".graph-zoom"]) {
     const at = host.parentElement!.querySelector(selector)?.getBoundingClientRect();
     if (!at || at.width === 0) continue;
+    // A briefing slid past the viewport's edge covers nothing, mid-slide or settled:
+    // its class says so rather than a rect the transition is still moving.
+    if (selector === ".proto-briefing" && host.parentElement!.querySelector(`${selector}.is-hidden`)) continue;
     if ((at.left + at.right) / 2 < middle) left = Math.max(left, at.right - canvas.left);
     else right = Math.max(right, canvas.right - at.left);
   }
@@ -685,44 +797,35 @@ function usePeekLinks(meta: Meta, drawn: readonly GraphNode[], selected: GraphNo
 }
 
 /**
- * Replay, restartable, at a speed that may change while it runs. While it
- * runs the graph shows what it has grown, and answers wait; `onStart` clears
- * what the view had picked.
+ * Replay, restartable. While it runs the view shows the graph up to where the
+ * sweep has reached, and answers wait; `onStart` clears what the view had picked.
  */
-function useReplay(model: GraphModel, renderer: Renderer | null, onStart: () => void) {
+function useReplay(onStart: () => void) {
   const [running, setRunning] = useState(false);
-  const [speed, setSpeedState] = useState(1);
   /** How far through the graph's life the view stands, 0 to 1; 1 when not replaying. */
   const [position, setPosition] = useState(1);
-  const speedNow = useRef(1);
   const stop = useRef(() => {});
   useEffect(() => () => stop.current(), []);
   return {
     running,
     position,
     at: (fraction: number) => setPosition(fraction),
-    speed,
-    setSpeed: (next: number) => {
-      speedNow.current = next;
-      setSpeedState(next);
-    },
     stop: () => {
       stop.current();
       setRunning(false);
       setPosition(1);
     },
     start: (graph: Graph) => {
-      if (!renderer) return;
       stop.current();
       onStart();
       setRunning(true);
+      // Back to the first record at once: the sweep's first frame comes a frame
+      // later, and the field must not show whole in between.
+      setPosition(0);
       stop.current = replay(graph, {
-        speed: () => speedNow.current,
-        step: (grown) => {
-          setPosition(graph.nodes.length === 0 ? 1 : grown.nodes.length / graph.nodes.length);
-          if (model.apply(grown)) renderer.setData(model.nodes, model.links, grown.nodes.length === graph.nodes.length ? EVERY_NODE : null);
-          else renderer.repaint();
-        },
+        // The graph is not re-sent: the whole of it is already drawn, and the
+        // place moves over it, so the islands stay where they settled and fill.
+        step: setPosition,
         done: () => {
           setRunning(false);
           setPosition(1);
@@ -779,7 +882,7 @@ function useDebugHook(
           const { id, kind, seq, title, status, owner, hidden, x, y } = node;
           return { id, kind, seq, title, status, owner, hidden, x, y, r: node.look.radius, home: homes?.get(id) ?? null, screen: screenOf(node) };
         }),
-        links: model.links.map(({ from, to, kind, valence, hidden }) => ({ from, to, kind, valence, hidden })),
+        links: model.links.map(({ from, to, kind, valence, asserted, actor, hidden }) => ({ from, to, kind, valence, asserted, actor, hidden })),
         selected,
         focus,
       };
@@ -843,6 +946,8 @@ const STATE_KEY = "trackinizer.v2.graph";
 const TIP_OFFSET_PX = 12;
 /** The most nodes of a lit neighbourhood that name themselves under it. */
 const LABELLED_MAX = 24;
+/** How many of the newest records a replay brings up rather than just turning on: the design's 24. */
+const ARRIVING = 24;
 const NO_NODES: readonly GraphNode[] = [];
 const NO_BINS: readonly number[] = [];
 const NO_STRINGS: ReadonlySet<string> = new Set();

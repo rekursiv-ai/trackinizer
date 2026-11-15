@@ -738,8 +738,11 @@ class TestRoutes:
                         "title": "root",
                         "status": "active",
                         "created": early,
+                        "owner": "ada@example.com",
                         "belief_judgement": "proven",
                         "belief_confidence": 0.8,
+                        "marginal_cost_agent_usd": 0.42,
+                        "marginal_cost_resource_usd": 0.0,
                     },
                     {
                         "id": child_id,
@@ -748,11 +751,33 @@ class TestRoutes:
                         "title": "child",
                         "status": "complete",
                         "created": late,
+                        "owner": None,
                         "belief_judgement": None,
                         "belief_confidence": None,
+                        "marginal_cost_agent_usd": 0.0,
+                        "marginal_cost_resource_usd": 0.0,
                     },
                 ],
                 edge_rows,
+                [
+                    {
+                        "subject_id": child_id,
+                        "new_peer_id": root_id,
+                        "new_peer_edge_kind": "favors",
+                        "created": late,
+                        "actor": "ada@example.com",
+                    },
+                    # The parent's mirror of the same assertion: it dates the peer's
+                    # view of the wire, not the wire as stored, so it must not be the
+                    # row the edge carries.
+                    {
+                        "subject_id": root_id,
+                        "new_peer_id": child_id,
+                        "new_peer_edge_kind": "favors",
+                        "created": late,
+                        "actor": "ada@example.com",
+                    },
+                ],
             ],
         )
         graph = await web.web_graph(
@@ -770,18 +795,31 @@ class TestRoutes:
             "title": "root",
             "status": "active",
             "created": early.isoformat(),
+            "owner": "ada@example.com",
             "judgement": "proven",
             "confidence": 0.8,
+            # A row's cost is its running total; both axes travel together.
+            "cost_agent_usd": 0.42,
+            "cost_resource_usd": 0.0,
         }
         # A non-Belief node omits the belief-only fields entirely.
         assert "judgement" not in nodes[1]
         assert "confidence" not in nodes[1]
+        # And a record that has spent nothing carries no cost at all, so the
+        # panel can tell an unpriced row from a free one.
+        assert "cost_agent_usd" not in nodes[1]
+        assert "cost_resource_usd" not in nodes[1]
         assert edges == [
             {
                 "from_id": str(child_id),
                 "to_id": str(root_id),
                 "edge_kind": "favors",
                 "valence": 0.4,
+                # The wire's identity is its ends and kind, so when it was made and
+                # by whom come from the audit that made it: the child's own
+                # ``edge_added``, not the parent's mirror of it.
+                "asserted": late.isoformat(),
+                "actor": "ada@example.com",
             },
         ]
         # Nodes must be ordered by ``created`` ascending so the replay
@@ -812,6 +850,9 @@ class TestRoutes:
                         "valence": None,
                     },
                 ],
+                # No audit row for this wire: a key omitted, not a null carried, so
+                # the SPA has the same one shape for a wire it cannot date.
+                [],
             ],
         )
         graph = await web.web_graph(
@@ -847,7 +888,9 @@ class TestRoutes:
                 limit=limit,
             )
             assert graph == {"nodes": [], "edges": []}
-            assert engine.conn.fetch.call_args_list[-2].args[1] == limit
+            # Three reads per answer: the bounded node list, its edges, the audit
+            # rows dating them. The first is the one ``limit`` caps.
+            assert engine.conn.fetch.call_args_list[-3].args[1] == limit
 
     @pytest.mark.asyncio
     async def test_subscribe_streams_sse(self) -> None:
@@ -1900,6 +1943,55 @@ async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
         assert _edge_ids(graph) == {
             (a, b) for a, b in whole if a in nodes and b in nodes
         }, limit
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_dates_a_wire_from_the_audit_that_made_it(
+    pglite_store: Store,
+) -> None:
+    """A wire's ``asserted`` and ``actor`` are read out of ``change_log``.
+
+    ``edges`` has no id, no timestamp and no author: its primary key is its
+    identity, so the only record of who drew a wire and when is the paired
+    ``edge_added`` the write left behind -- the child's own row, keyed by the
+    same ``from_id``, ``to_id`` and ``edge_kind`` as the edge it dates. A wire
+    the trail does not cover, like a row inserted straight into the table,
+    carries neither key rather than a guessed one.
+    """
+    account = "alice@example.com"
+    child = await pglite_store.submit_issue(SubmitIssue(account=account, title="dated child"))
+    parent = await pglite_store.submit_issue(SubmitIssue(account=account, title="dated parent"))
+    raw_from = await pglite_store.submit_issue(SubmitIssue(account=account, title="raw from"))
+    raw_to = await pglite_store.submit_issue(SubmitIssue(account=account, title="raw to"))
+    await pglite_store.add_edge(
+        from_id=child,
+        to_id=parent,
+        edge_kind="narrows",
+        actor="alice",
+    )
+    async with pglite_store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind)"
+            " VALUES ($1, 'Issue', $2, 'Issue', 'narrows')",
+            raw_from,
+            raw_to,
+        )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=5_000)
+    by_triple = {
+        (str(row["from_id"]), str(row["to_id"]), str(row["edge_kind"])): row
+        for row in ListCodec.mappings(graph["edges"])
+    }
+    dated = by_triple[(str(child), str(parent), "narrows")]
+    assert dated["actor"] == "alice"
+    # The audit stamps the write's own clock, so the view can rely on a real
+    # instant but not on a value it could have predicted.
+    assert datetime(2026, 1, 1, tzinfo=UTC) <= datetime.fromisoformat(dated["asserted"])
+    assert datetime.fromisoformat(dated["asserted"]) <= datetime.now(UTC) + timedelta(minutes=1)
+    raw = by_triple[(str(raw_from), str(raw_to), "narrows")]
+    assert "asserted" not in raw
+    assert "actor" not in raw
 
 
 @pytest.mark.db_pglite

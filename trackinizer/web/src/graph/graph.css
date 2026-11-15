@@ -31,12 +31,14 @@
    It stands on the right, where the design put its legend, so the legend folds away
    while a record is open: one panel per corner. Collapsing the record brings the
    key back, and the strip leaves room for it (below).
-   The width is between the design and us: its `#insp` is 360px, which reads well
-   only because its 20px title wraps, and at its 340px briefing width a chain step's
-   title ellipsised. 430px holds a chain row on one line without leaving the 13px
-   body text lost across the card. */
+   The width starts between the design and us: its `#insp` is 360px, which reads
+   well only because its 20px title wraps, and at its 340px briefing width a chain
+   step's title ellipsised. 430px holds a chain row on one line without leaving the
+   13px body text lost across the card — and it is only where the drag on Peek's
+   left edge starts, since how much of the field a record should leave is not one
+   reader's answer. */
 .graph-peek .peek {
-  top: 52px; right: 14px; bottom: 62px; width: min(430px, 66%);
+  top: 52px; right: 14px; bottom: 62px; width: min(var(--peek-w, 430px), 82%);
   background: rgba(10, 10, 10, .92); border: 1px solid #1f1f1f; border-radius: 8px;
   box-shadow: 0 18px 50px rgba(0, 0, 0, .55); backdrop-filter: blur(12px); overflow: hidden;
 }
@@ -126,7 +128,22 @@
   display: flex; flex-direction: column; min-height: 0;
   background: rgba(10, 10, 10, .92); border: 1px solid #1f1f1f; border-radius: 10px;
   color: #ececec; backdrop-filter: blur(6px);
+  transition: transform .24s cubic-bezier(.3, .7, .2, 1);
 }
+/* Hidden, it slides past the viewport's edge rather than going: the design's
+   `#side.hidden`, and its `#sShow` pill takes the corner the panel left. */
+.proto-briefing.is-hidden { transform: translateX(calc(-100% - 24px)); }
+.proto-hide {
+  width: 24px; height: 24px; border: 0; border-radius: 4px; background: none;
+  display: grid; place-items: center; color: #6e6e6e; cursor: pointer;
+}
+.proto-hide:hover { color: #ececec; background: #171717; }
+.proto-show {
+  position: absolute; z-index: 2; top: 52px; left: 14px; height: 28px; padding: 0 10px;
+  display: flex; align-items: center; gap: 6px; border: 1px solid #2e2e2e; border-radius: 6px;
+  background: rgba(0, 0, 0, .6); font: 12px var(--mono); color: #a3a3a3; cursor: pointer;
+}
+.proto-show:hover { color: #ececec; border-color: #6e6e6e; }
 .proto-briefing > header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 1px solid #1f1f1f;
@@ -139,10 +156,6 @@
 }
 .proto-briefing-body h3 em { font-style: normal; color: #6e6e6e; }
 .proto-asof { display: flex; justify-content: space-between; align-items: center; font: 400 11.5px var(--mono); color: #6e6e6e; }
-.proto-windows button {
-  border: 0; background: none; color: #6e6e6e; font: 500 11.5px var(--mono); padding: 2px 5px; cursor: pointer;
-}
-.proto-windows button.on { color: #ececec; }
 .proto-summary { margin: 10px 0 0; color: #a3a3a3; }
 .proto-summary b { color: #ececec; font-weight: 600; }
 .proto-camein { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
@@ -204,6 +217,14 @@
 .proto-next { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
 .proto-next button { border: 0; background: none; padding: 0; color: #ececec; font-size: 12.5px; text-align: left; cursor: pointer; }
 .proto-next-line { display: block; color: #4cc9a0; font-size: 11.5px; margin-top: 2px; }
+/* The row's receipts, the design's `.bm`: one mono line of counts, the price last. */
+.proto-next-meta { display: flex; flex-wrap: wrap; gap: 2px 12px; margin-top: 3px; font: 10.5px var(--mono); color: #6e6e6e; }
+/* The bill, the design's `.spend`: four boxes of the same size, ink over its name. */
+.proto-spend { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.proto-spend div { padding: 7px 8px; border-radius: 6px; background: #171717; }
+.proto-spend b { display: block; font: 500 13px var(--mono); color: #ececec; }
+.proto-spend small { display: block; margin-top: 1px; font: 10px var(--mono); color: #6e6e6e; }
+.proto-spend-note { margin: 8px 0 0; font-size: 12px; line-height: 1.45; color: #a3a3a3; }
 
 .proto-timeline {
   position: absolute; z-index: 3; left: 0; right: 0; bottom: 0; height: 44px;
@@ -278,8 +299,6 @@
 .graph .proto-briefing-body h3 { font: 500 10.5px var(--mono); color: var(--p-muted); }
 .graph .proto-briefing-body h3 em { color: var(--p-muted); }
 .graph .proto-asof { font: 400 11px var(--mono); color: var(--p-muted); }
-.graph .proto-windows button { font: 10.5px var(--mono); color: var(--p-muted); }
-.graph .proto-windows button.on { color: var(--p-fg); }
 /* Prose in the column is the body's own 13px, as the design's was; only labels,
    counts and refs step down into mono. */
 .graph .proto-summary { font-size: 13px; line-height: 1.5; color: var(--p-fg-2); }

@@ -151,6 +151,54 @@ function leansOn(id: string, view: GraphView): number {
   return leaning;
 }
 
+/** What a record paid for itself, both axes together. */
+export function costOf(node: GraphNode): number {
+  return (node.cost_agent_usd ?? 0) + (node.cost_resource_usd ?? 0);
+}
+
+/** How many records `id` stands as the producer of. */
+function producedCount(id: string, { edgesOf }: GraphView): number {
+  return (edgesOf.get(id) ?? []).filter((edge) => edge.to_id === id && edge.edge_kind === "produced_by").length;
+}
+
+/**
+ * What it took to make `node`: its own cost plus each producer's, split among
+ * everything that one produced. Repeating a record means paying for the work
+ * behind it, not only its own line.
+ */
+export function shareOf(node: GraphNode, view: GraphView): number {
+  let total = costOf(node);
+  for (const edge of view.edgesOf.get(node.id) ?? []) {
+    if (edge.from_id !== node.id || edge.edge_kind !== "produced_by") continue;
+    const producer = view.byId.get(edge.to_id);
+    if (!producer) continue;
+    total += costOf(producer) / Math.max(1, producedCount(producer.id, view));
+  }
+  return total;
+}
+
+/** What a thread with nothing priced is assumed to pay for one test, the design's own figure. */
+export const FALLBACK_TEST_USD = 20;
+
+/** One test's price in `nodes`' thread: the median experiment's cost, and whether the thread paid it. */
+export type TestPrice = { readonly usd: number; readonly priced: boolean };
+
+/**
+ * The typical price of one experiment in a thread: the median across its
+ * experiments, producers included. A thread with no experiment, or none that
+ * has spent anything, reads as `FALLBACK_TEST_USD` and `priced: false`, so a
+ * panel can say the figure is an assumption rather than a bill.
+ */
+export function testPriceOf(nodes: readonly GraphNode[], view: GraphView): TestPrice {
+  const costs = nodes
+    .filter((node) => node.kind === "Experiment")
+    .map((node) => shareOf(node, view))
+    .filter((cost) => cost > 0)
+    .sort((a, b) => a - b);
+  if (costs.length === 0) return { usd: FALLBACK_TEST_USD, priced: false };
+  return { usd: costs[Math.floor(costs.length / 2)]!, priced: true };
+}
+
 /** One experiment worth making next: the claim it would settle, and how. */
 export type NextExperiment = {
   readonly belief: GraphNode;
@@ -162,17 +210,22 @@ export type NextExperiment = {
   readonly rerun: boolean;
   readonly evidence: number;
   readonly leaning: number;
+  /** What one test in this thread costs, per-dollar ranking included. */
+  readonly price: TestPrice;
 };
 
 /**
  * The experiments best made next among `nodes`' open claims: the more undecided
- * a claim, the more evidence it has drawn and the more leans on it, the sooner
- * it is worth settling. The same data always gives the same list.
+ * a claim and the more that rides on it, the sooner it is worth settling — per
+ * dollar a test costs, so a cheap answer to the same question comes first. The
+ * same data always gives the same list.
  */
 export function nextExperiments(group: RootGroup, view: GraphView, take = 3): NextExperiment[] {
-  const experiments = membersOf(group, view).filter((node) => node.kind === "Experiment");
+  const members = membersOf(group, view);
+  const experiments = members.filter((node) => node.kind === "Experiment");
+  const price = testPriceOf(members, view);
   const out: NextExperiment[] = [];
-  for (const node of membersOf(group, view)) {
+  for (const node of members) {
     if (node.kind !== "Belief" || node.judgement === "proven" || node.judgement === "disproven") continue;
     const load = loadOf(node, view);
     const evidence = load.for + load.against;
@@ -180,16 +233,52 @@ export function nextExperiments(group: RootGroup, view: GraphView, take = 3): Ne
     if (evidence === 0 && leaning === 0) continue;
     const undecided = 1 - Math.abs(2 * (node.confidence ?? 0.5) - 1) * 0.85;
     const contested = load.for > 0 && load.against > 0 ? 1.5 : 1;
-    const score = undecided * contested * Math.log2(2 + evidence + leaning * 3);
+    const score = (undecided * contested * Math.log2(2 + evidence + leaning * 3)) / Math.sqrt(price.usd);
     // What to run: the strongest experiment that cites it, else the thread's newest.
     const citing = evidenceOf(node, view).filter(({ node: other }) => other.kind === "Experiment");
     const strongest = citing
       .map((citation) => ({ citation, weight: Math.abs(citation.edge.valence ?? 0) }))
       .sort((a, b) => b.weight - a.weight)[0];
     const template = strongest ? strongest.citation.node : (experiments.at(-1) ?? null);
-    out.push({ belief: node, score, template, rerun: strongest !== undefined, evidence, leaning });
+    out.push({ belief: node, score, template, rerun: strongest !== undefined, evidence, leaning, price });
   }
   return out.sort((a, b) => b.score - a.score).slice(0, take);
+}
+
+/** What a panel's records cost, and per verdict their own proofs settled. */
+export type Spend = {
+  readonly agent: number;
+  readonly resource: number;
+  readonly total: number;
+  /** Settled claims one of `paid`'s proofs bears on. */
+  readonly settled: number;
+  /** `total` over `settled`; null when nothing has settled, so no cost per verdict is claimed. */
+  readonly perSettled: number | null;
+};
+
+/**
+ * The bill for `paid`: each axis's total, and what per verdict those records'
+ * own proofs settled. A claim counts as settled here only when a proof among
+ * `paid` bears on it, whichever window the claim itself was made in — the
+ * design divided its spend by the verdicts its own records moved.
+ */
+export function spendOf(paid: readonly GraphNode[], view: GraphView): Spend {
+  const [agent, resource] = paid.reduce(
+    ([a, r], node) => [a + (node.cost_agent_usd ?? 0), r + (node.cost_resource_usd ?? 0)],
+    [0, 0],
+  );
+  const settled = new Set<string>();
+  for (const node of paid) {
+    for (const edge of view.edgesOf.get(node.id) ?? []) {
+      if (edge.from_id !== node.id || edge.edge_kind !== "proves") continue;
+      const belief = view.byId.get(edge.to_id);
+      if (belief?.kind === "Belief" && (belief.judgement === "proven" || belief.judgement === "disproven")) {
+        settled.add(belief.id);
+      }
+    }
+  }
+  const total = agent + resource;
+  return { agent, resource, total, settled: settled.size, perSettled: settled.size === 0 ? null : total / settled.size };
 }
 
 /** What a node's panel tells of where it came from: its chain of produced_by up to a root, parent first. */

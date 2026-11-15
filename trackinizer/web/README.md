@@ -775,9 +775,12 @@ Each builds the app into `dist-screenshots/` and starts its own server, with
 `--no-auth` and a fresh data directory: the screenshots on port 8812, the video
 on 8829. `scripts/seed_screenshots.py` seeds it, first with a graph of some
 5,000 nodes (`scripts/seed_graph.py`, from the shape alone in
-`scripts/graph_structure.json`, with invented titles where text shows), then
+`scripts/graph_structure.json`, with invented titles and summaries where text
+shows), then
 three research efforts and three agents talking in two rooms; every person in it
-is an `example.com` address. The screenshots are the graph grouped by root, the
+is an `example.com` address. `scripts/seed_summaries.py` gives those summaries to
+a graph seeded before the seeder wrote them, and leaves every record someone has
+written into alone. The screenshots are the graph grouped by root, the
 console, and one Belief, Paper and Experiment, at 1280 by 800 and twice the
 scale, in the dark theme, each lossless WebP, captured once its requests have
 answered and its fonts have loaded, and the graph once its layout has stopped.

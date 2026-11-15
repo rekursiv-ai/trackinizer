@@ -1,15 +1,26 @@
-/* The graph's record panel (GraphRecord.tsx): the design prototype's `#side`
-   body, on the app's own data. Every rule stands under `.graph`, both because the
-   panel belongs to the graph alone — the lists' detail is the app's own — and
-   because graph.css sets a `.mono` element's size from its parent, so a role's
-   size is stated here with the family it belongs to rather than through `.mono`.
+/* The record panel (GraphRecord.tsx): the design prototype's `#side` body, on the
+   app's own data. Every rule stands under `.record`, both because the panel
+   belongs to a record alone — the lists' detail is the app's own — and because the
+   panel mounts in two hosts: the graph's right modal, and any canvas tile that
+   shows `trax.record`. It carries its own inks and face below so it reads the same
+   in either, and a role's size is stated here with the family it belongs to rather
+   than through `.mono`, which graph.css sets from the canvas's parent.
    Mono is for a `Kind#seq`, a count, a cost or a date; everything a record *says*
    is the sans, at the three inks `--p-fg`, `--p-fg-2` and `--p-muted` name. */
 
-.graph .record {
+.record {
   flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
-  padding: 0 16px 14px; color: var(--p-fg);
+  padding: 0 18px 18px; color: var(--p-fg);
   scrollbar-width: thin; scrollbar-color: #2e2e2e transparent;
+  /* The design's three steps, restated on the panel as well as on `.graph`: a tile
+     that mounts the record visual has no `.graph` above it to inherit them from. */
+  font: 13px/1.5 var(--sans);
+  letter-spacing: normal;
+  --p-fg: #ffffff;
+  --p-fg-2: #e8e8ec;
+  --p-muted: #c2c2cb;
+  --p-vpos: #4fd693;
+  --p-vneg: #ff9257;
   /* The panel holds the app's own editors, whose sheets are written against the
      light theme's tokens. Rebinding them here — and only here — paints a Markdown
      body, a title input and an editor's box on the design's black ground without
@@ -27,156 +38,160 @@
   --accent-hover: #9db4ff;
 }
 /* One reference's `Kind#seq`, wearing its kind's hue, which the component passes in. */
-.graph .rec-kref { flex: none; font: 11px var(--mono); }
+.record .rec-kref { flex: none; font: 11px var(--mono); }
 
 /* The hero: its ref and verdict chips, what it says, and who and when. The design
    set the title at 20px against 10.5px mono section heads, and that spread is what
    makes its panel read as organised; the flat 15px/12px we had made every line
    shout at once. The heads stay the sans, as asked, at the design's small step. */
-.graph .rec-h { padding-top: 14px; }
-.graph .rec-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
-.graph .rec-ref .rec-kref { font-size: 12px; font-weight: 500; }
-.graph .rec-chip { padding: 1.5px 6px; border-radius: 3px; font: 10.5px var(--mono); color: var(--p-fg-2); background: #1f1f22; }
-.graph .rec-chip.is-proven { background: rgba(181, 221, 154, .12); color: #b5dd9a; }
-.graph .rec-chip.is-disproven { background: rgba(242, 167, 176, .12); color: #f2a7b0; }
-.graph .rec-chip.is-undecidable { background: rgba(205, 184, 245, .12); color: #cdb8f5; }
-.graph .rec-title { margin: 8px 0 0; font-size: 20px; font-weight: 500; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; color: var(--p-fg); }
-.graph .rec-sub { margin: 4px 0 0; font: 11px var(--mono); color: #d6d6dd; }
+.record .rec-h { padding-top: 18px; }
+.record .rec-ref { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0; }
+.record .rec-ref .rec-kref { font-size: 12px; font-weight: 500; }
+.record .rec-chip { padding: 1.5px 6px; border-radius: 3px; font: 10.5px var(--mono); color: var(--p-fg-2); background: #1f1f22; }
+.record .rec-chip.is-proven { background: rgba(181, 221, 154, .12); color: #b5dd9a; }
+.record .rec-chip.is-disproven { background: rgba(242, 167, 176, .12); color: #f2a7b0; }
+.record .rec-chip.is-undecidable { background: rgba(205, 184, 245, .12); color: #cdb8f5; }
+.record .rec-title { margin: 10px 0 0; font-size: 20px; font-weight: 500; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; color: var(--p-fg); }
+.record .rec-sub { margin: 6px 0 0; font: 11px var(--mono); color: #d6d6dd; }
 /* Paired words the meta line must not split across rows. */
-.graph .rec-nowrap { white-space: nowrap; }
+.record .rec-nowrap { white-space: nowrap; }
 
 /* The editable blocks. A title and a summary are the app's own editors — click
    the text, type, ⌘ or Enter to save — so their rules come from editors.css and
    the tokens rebound above. These few lines only set the sizes this panel uses. */
-.graph .record .d-title { margin: 8px 0 0; font-size: 20px; font-weight: 500; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; }
-.graph .record .rec-text { font-size: 13px; line-height: 1.6; color: var(--p-fg-2); }
-.graph .record .rec-text .md { font-size: 13px; line-height: 1.6; }
-.graph .record .rec-empty { margin: 0; font-size: 13px; color: #6e6e78; }
-.graph .record .md-edit { gap: 7px; }
-.graph .record .md-edit textarea { min-height: 90px; padding: 9px 11px; font-size: 13px; line-height: 1.6; }
-.graph .record .md-edit-foot { font-size: 11.5px; }
-.graph .record .md-edit-foot .ed-why { width: 130px; }
+.record .d-title { margin: 10px 0 0; font-size: 20px; font-weight: 500; line-height: 1.3; letter-spacing: -0.01em; text-wrap: balance; }
+.record .rec-text { font-size: 13px; line-height: 1.6; color: var(--p-fg-2); }
+.record .rec-text .md { font-size: 13px; line-height: 1.6; }
+.record .rec-empty { margin: 0; font-size: 13px; color: #6e6e78; }
+.record .md-edit { gap: 7px; }
+.record .md-edit textarea { min-height: 90px; padding: 9px 11px; font-size: 13px; line-height: 1.6; }
+.record .md-edit-foot { font-size: 11.5px; }
+.record .md-edit-foot .ed-why { width: 130px; }
 /* A chip that opens a menu is the chip: no button box, no padding of its own. */
-.graph .record .prop-btn { min-height: 0; margin: 0; padding: 0; display: inline-flex; }
-.graph .record .prop-btn:hover:not(:disabled) > .rec-chip { background: #2a2a2e; }
+.record .prop-btn { min-height: 0; margin: 0; padding: 0; display: inline-flex; }
+.record .prop-btn:hover:not(:disabled) > .rec-chip { background: #2a2a2e; }
 /* The owner is a word in a sentence, not a chip; it takes a cue on hover only. */
-.graph .record .prop-btn:hover:not(:disabled) > .rec-owner { color: var(--p-fg); text-decoration: underline dotted; }
+.record .prop-btn:hover:not(:disabled) > .rec-owner { color: var(--p-fg); text-decoration: underline dotted; }
 /* A neighbour past the view's limit leaves the graph for its own page. */
-.graph .record a.rec-row { text-decoration: none; }
+.record a.rec-row { text-decoration: none; }
 
-/* A section: the design's heading, in the sans, at the size a label is read at. */
-.graph .rec-sec { padding-top: 16px; }
-.graph .rec-sec h5 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 7px; font-size: 11px; font-weight: 500; color: var(--p-muted); }
-.graph .rec-sec h5 span { font: 10.5px var(--mono); color: #c9c9d2; }
+/* A section: the design's heading, in the sans, at the size a label is read at.
+   Its rhythm — 14px between sections, 6px under a head — was measured on the
+   design's 340px panel. This one is a quarter wider and carries twice its
+   sections, so the same rhythm reads packed: these two are that rhythm scaled
+   with the measure it now runs on. */
+.record .rec-sec { padding-top: 14px; }
+.record .rec-sec h5 { display: flex; align-items: baseline; gap: 6px; margin: 0 0 6px; font-size: 10.5px; font-weight: 500; color: var(--p-muted); }
+.record .rec-sec h5 span { font: 10.5px var(--mono); color: #c9c9d2; }
 /* "+ add" rides the far end of a lineage heading, quiet until the pointer nears. */
-.graph .rec-add { margin-left: auto; padding: 1px 5px; border: 1px solid transparent; border-radius: 4px; background: none; color: #6e6e78; font: 10.5px var(--mono); cursor: pointer; }
-.graph .rec-add:hover:not(:disabled) { border-color: #2e2e2e; background: #171717; color: var(--p-fg); }
-.graph .rec-add:disabled { cursor: default; }
+.record .rec-add { margin-left: auto; padding: 1px 5px; border: 1px solid transparent; border-radius: 4px; background: none; color: #6e6e78; font: 10.5px var(--mono); cursor: pointer; }
+.record .rec-add:hover:not(:disabled) { border-color: #2e2e2e; background: #171717; color: var(--p-fg); }
+.record .rec-add:disabled { cursor: default; }
 
 /* Confidence: the author's own, from the middle of the bar toward its own side.
    The design drew this 3px; at that height a fill the width of a low confidence is
    a hairline nobody can see, so the bar is 5px and its track a step off black. */
-.graph .rec-conf { display: flex; align-items: center; gap: 10px; font: 11.5px var(--mono); color: var(--p-fg-2); }
-.graph .rec-cbar { position: relative; flex: 1; height: 5px; border-radius: 3px; background: #26262c; }
-.graph .rec-cbar i { position: absolute; top: -4px; left: 50%; width: 1px; height: 13px; background: #8a8a92; }
-.graph .rec-cbar b { position: absolute; top: 0; height: 5px; border-radius: 3px; }
+.record .rec-conf { display: flex; align-items: center; gap: 10px; font: 11.5px var(--mono); color: var(--p-fg-2); }
+.record .rec-cbar { position: relative; flex: 1; height: 5px; border-radius: 3px; background: #26262c; }
+.record .rec-cbar i { position: absolute; top: -4px; left: 50%; width: 1px; height: 13px; background: #8a8a92; }
+.record .rec-cbar b { position: absolute; top: 0; height: 5px; border-radius: 3px; }
 
-.graph .rec-note { margin: 8px 0 0; font-size: 12px; line-height: 1.5; color: var(--p-fg-2); }
+.record .rec-note { margin: 9px 0 0; font-size: 12px; line-height: 1.55; color: var(--p-fg-2); }
 /* A count in prose stands out, not italicised, as the design's did. */
-.graph .rec-note em { font-style: normal; color: var(--p-fg); }
-.graph .rec-note.is-warn { border-left: 2px solid var(--p-vneg); padding-left: 9px; }
-.graph .rec-prose { margin: 0; font-size: 13px; line-height: 1.65; color: var(--p-fg-2); }
+.record .rec-note em { font-style: normal; color: var(--p-fg); }
+.record .rec-note.is-warn { border-left: 2px solid var(--p-vneg); padding-left: 9px; }
+.record .rec-prose { margin: 0; font-size: 13px; line-height: 1.65; color: var(--p-fg-2); }
 
 /* The evidence mix: what a claim's citations are made of, and how much of it holds. */
-.graph .rec-mix { display: flex; flex-wrap: wrap; gap: 5px 14px; margin: 0; font: 12px var(--mono); color: var(--p-fg-2); }
-.graph .rec-mix i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--p-muted); }
+.record .rec-mix { display: flex; flex-wrap: wrap; gap: 5px 14px; margin: 0; font: 12px var(--mono); color: var(--p-fg-2); }
+.record .rec-mix i { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--p-muted); }
 /* The canvas's kind hues, one step into the black ground, as `panelKind` lifts them. */
-.graph .rec-mix i.is-exp { background: color-mix(in srgb, var(--g-kind-Experiment, #b69cff) 72%, #ffffff); }
-.graph .rec-mix i.is-source { background: color-mix(in srgb, var(--g-kind-Paper, #67d4e8) 72%, #ffffff); }
-.graph .rec-mix i.is-belief { background: color-mix(in srgb, var(--g-kind-Belief, #4cc9a0) 72%, #ffffff); }
-.graph .rec-mix i.is-work { background: color-mix(in srgb, var(--g-kind-Issue, #6e8efb) 72%, #ffffff); }
-.graph .rec-mix.sub { margin-top: 7px; font-size: 11.5px; color: var(--p-muted); }
-.graph .rec-mix .is-against { color: var(--p-vneg); }
+.record .rec-mix i.is-exp { background: color-mix(in srgb, var(--g-kind-Experiment, #b69cff) 72%, #ffffff); }
+.record .rec-mix i.is-source { background: color-mix(in srgb, var(--g-kind-Paper, #67d4e8) 72%, #ffffff); }
+.record .rec-mix i.is-belief { background: color-mix(in srgb, var(--g-kind-Belief, #4cc9a0) 72%, #ffffff); }
+.record .rec-mix i.is-work { background: color-mix(in srgb, var(--g-kind-Issue, #6e8efb) 72%, #ffffff); }
+.record .rec-mix.sub { margin-top: 9px; font-size: 11.5px; color: var(--p-muted); }
+.record .rec-mix .is-against { color: var(--p-vneg); }
 
 /* The ledger: each vote's bar out from the middle, solid for a proof, dashed for a lean. */
-.graph .rec-lrow, .graph .rec-row {
-  width: 100%; padding: 4px 5px; margin: 0 -5px; border: 0; border-radius: 4px;
+.record .rec-lrow, .record .rec-row {
+  width: 100%; padding: 6px 6px; margin: 0 -6px; border: 0; border-radius: 4px;
   background: none; color: inherit; font-size: 12px; text-align: left; cursor: pointer;
 }
-.graph .rec-lrow { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 10px; }
-.graph .rec-row { display: flex; align-items: center; gap: 8px; }
-.graph .rec-lrow:hover, .graph .rec-row:hover { background: #171717; }
-.graph .rec-vb { position: relative; height: 6px; }
-.graph .rec-vb::before { content: ""; position: absolute; top: -3px; bottom: -3px; left: 50%; width: 1px; background: #2e2e2e; }
-.graph .rec-vb i { position: absolute; top: 0; height: 6px; border-radius: 1px; }
-.graph .rec-vb.is-for { color: var(--p-vpos); }
-.graph .rec-vb.is-for i { background: var(--p-vpos); }
-.graph .rec-vb.is-against { color: var(--p-vneg); }
-.graph .rec-vb.is-against i { background: var(--p-vneg); }
+.record .rec-lrow { display: grid; grid-template-columns: 56px 1fr; align-items: center; gap: 10px; }
+.record .rec-row { display: flex; align-items: center; gap: 8px; }
+.record .rec-lrow:hover, .record .rec-row:hover { background: #171717; }
+.record .rec-vb { position: relative; height: 6px; }
+.record .rec-vb::before { content: ""; position: absolute; top: -3px; bottom: -3px; left: 50%; width: 1px; background: #2e2e2e; }
+.record .rec-vb i { position: absolute; top: 0; height: 6px; border-radius: 1px; }
+.record .rec-vb.is-for { color: var(--p-vpos); }
+.record .rec-vb.is-for i { background: var(--p-vpos); }
+.record .rec-vb.is-against { color: var(--p-vneg); }
+.record .rec-vb.is-against i { background: var(--p-vneg); }
 /* A `favors` edge leans without proving; the design draws the lean dashed. */
-.graph .rec-vb i.is-favor { background: none; border: 1px dashed currentColor; }
-.graph .rec-lt { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.graph .rec-lt .rec-kref, .graph .rec-row .rec-kref { min-width: 104px; }
-.graph .rec-lt-title, .graph .rec-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--p-fg); }
-.graph .rec-row-side { flex: none; margin-left: auto; font: 10.5px var(--mono); color: var(--p-muted); }
+.record .rec-vb i.is-favor { background: none; border: 1px dashed currentColor; }
+.record .rec-lt { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.record .rec-lt .rec-kref, .record .rec-row .rec-kref { min-width: 104px; }
+.record .rec-lt-title, .record .rec-row-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--p-fg); }
+.record .rec-row-side { flex: none; margin-left: auto; font: 10.5px var(--mono); color: var(--p-muted); }
 /* A belief's verdict, as the canvas draws it: filled when proven, hollow when disproven, dim while open. */
-.graph .rec-dot { flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: none; }
-.graph .rec-dot.is-proven { background: var(--p-vpos); }
-.graph .rec-dot.is-disproven { border: 1.3px solid var(--p-vneg); }
-.graph .rec-dot.is-unproven { background: color-mix(in srgb, var(--g-kind-Belief, #4cc9a0) 72%, #ffffff); opacity: .5; }
+.record .rec-dot { flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; background: none; }
+.record .rec-dot.is-proven { background: var(--p-vpos); }
+.record .rec-dot.is-disproven { border: 1.3px solid var(--p-vneg); }
+.record .rec-dot.is-unproven { background: color-mix(in srgb, var(--g-kind-Belief, #4cc9a0) 72%, #ffffff); opacity: .5; }
 
 /* Connections, one section per verb. A row's dot wears its kind's hue. */
-.graph .rec-ndot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
-.graph .rec-more { display: block; margin: 0; padding: 3px 0; border: 0; background: none; font: 11px var(--mono); color: var(--p-muted); text-align: left; cursor: pointer; }
-.graph .rec-more:hover { color: var(--p-fg-2); }
+.record .rec-ndot { flex: none; width: 6px; height: 6px; border-radius: 50%; }
+.record .rec-more { display: block; margin: 0; padding: 5px 0; border: 0; background: none; font: 11px var(--mono); color: var(--p-muted); text-align: left; cursor: pointer; }
+.record .rec-more:hover { color: var(--p-fg-2); }
 
 /* Where it came from: the chain of what produced it. */
-.graph .rec-step { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; min-width: 0; }
-.graph .rec-step-title { font-size: 12px; color: var(--p-fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.graph .rec-verb { flex-basis: 100%; margin-left: 10px; padding: 1px 0 1px 12px; border-left: 1px solid #2e2e2e; font: 10.5px var(--mono); color: var(--p-muted); }
+.record .rec-step { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px; margin-top: 2px; min-width: 0; }
+.record .rec-step-title { font-size: 12px; color: var(--p-fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record .rec-verb { flex-basis: 100%; margin-left: 10px; padding: 1px 0 1px 12px; border-left: 1px solid #2e2e2e; font: 10.5px var(--mono); color: var(--p-muted); }
 
 /* A reference in prose wears its kind's hue, passed in as `--c`. */
-.graph .rec-pill {
+.record .rec-pill {
   display: inline-flex; align-items: center; gap: 4px; padding: 1.5px 7px; border-radius: 4px;
   border: 1px solid color-mix(in srgb, var(--c) 70%, transparent);
   background: color-mix(in srgb, var(--c) 14%, transparent);
   color: var(--c); font: 500 11px var(--mono); cursor: pointer;
 }
-.graph .rec-pill:hover { background: color-mix(in srgb, var(--c) 24%, transparent); }
+.record .rec-pill:hover { background: color-mix(in srgb, var(--c) 24%, transparent); }
 
 /* What the record cost, on its own two axes. */
-.graph .rec-spend { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
-.graph .rec-spend div { padding: 8px; border-radius: 6px; background: #171717; }
-.graph .rec-spend b { display: block; font: 500 13.5px var(--mono); color: var(--p-fg); }
-.graph .rec-spend small { display: block; margin-top: 2px; font: 10.5px var(--mono); color: var(--p-muted); }
+.record .rec-spend { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+.record .rec-spend div { padding: 7px 8px; border-radius: 6px; background: #171717; }
+.record .rec-spend b { display: block; font: 500 13px var(--mono); color: var(--p-fg); }
+.record .rec-spend small { display: block; margin-top: 1px; font: 10px var(--mono); color: var(--p-muted); }
 
 /* Who changed it last. */
-.graph .rec-ahd { display: grid; grid-template-columns: 18px 1fr auto; gap: 9px; align-items: center; font-size: 12px; color: var(--p-fg-2); }
+.record .rec-ahd { display: grid; grid-template-columns: 18px 1fr auto; gap: 9px; align-items: center; font-size: 12px; color: var(--p-fg-2); }
 /* A row is exactly as tall as its avatar, so without this the entries touch. */
-.graph .rec-ahd + .rec-ahd { margin-top: 7px; }
-.graph .rec-a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.graph .rec-a b { font-weight: 500; color: var(--p-fg); }
-.graph .rec-when { font: 10.5px var(--mono); color: var(--p-muted); white-space: nowrap; }
-.graph .rec-more-note { margin: 6px 0 0; font: 11px var(--mono); color: var(--p-muted); }
+.record .rec-ahd + .rec-ahd { margin-top: 10px; }
+.record .rec-a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.record .rec-a b { font-weight: 500; color: var(--p-fg); }
+.record .rec-when { font: 10.5px var(--mono); color: var(--p-muted); white-space: nowrap; }
+.record .rec-more-note { margin: 8px 0 0; font: 11px var(--mono); color: var(--p-muted); }
 
 /* Every field, folded shut: the design's `all fields`. */
-.graph .rec-raw { margin-top: 15px; }
-.graph .rec-raw summary {
+.record .rec-raw { margin-top: 15px; }
+.record .rec-raw summary {
   padding: 8px 10px; border: 1px solid #2e2e2e; border-radius: 6px; background: #171717;
   color: var(--p-fg); font: 500 12px var(--mono); list-style: none; cursor: pointer;
 }
-.graph .rec-raw summary::-webkit-details-marker { display: none; }
-.graph .rec-raw summary::before { content: "▸ "; }
-.graph .rec-raw[open] summary::before { content: "▾ "; }
-.graph .rec-rawg { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 0; font: 11.5px var(--mono); }
-.graph .rec-rawg dt { color: var(--p-muted); }
-.graph .rec-rawg dd { margin: 0; color: var(--p-fg-2); word-break: break-word; }
+.record .rec-raw summary::-webkit-details-marker { display: none; }
+.record .rec-raw summary::before { content: "▸ "; }
+.record .rec-raw[open] summary::before { content: "▾ "; }
+.record .rec-rawg { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 8px 0 0; font: 11.5px var(--mono); }
+.record .rec-rawg dt { color: var(--p-muted); }
+.record .rec-rawg dd { margin: 0; color: var(--p-fg-2); word-break: break-word; }
 /* A pair lines up with its neighbours while the dump stays valid HTML. */
-.graph .rec-rawpair { display: contents; }
+.record .rec-rawpair { display: contents; }
 
 /* The panel's commands, and the foot that carries them, as the design's `.ia` did. */
-.graph .rec-act {
+.record .rec-act {
   padding: 3px 9px; border: 1px solid #2e2e2e; border-radius: 5px; background: none;
   color: var(--p-fg-2); font: 11.5px var(--mono); text-decoration: none; cursor: pointer;
 }
-.graph .rec-act:hover { background: #171717; border-color: var(--p-muted); color: var(--p-fg); }
+.record .rec-act:hover { background: #171717; border-color: var(--p-muted); color: var(--p-fg); }

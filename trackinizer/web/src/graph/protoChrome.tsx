@@ -6,29 +6,76 @@
 import { animate, motion } from "framer-motion";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
 import type { Graph, GraphNode } from "../api/graph";
-import { type GraphView, type NextExperiment, evidenceOf, loadOf, nextExperiments, viewOf } from "./briefing";
+import { usd } from "../detail/fields";
+import { type Panel, type PanelSpec } from "../ui/panel";
+import {
+  type GraphView,
+  type NextExperiment,
+  type Spend,
+  costOf,
+  evidenceOf,
+  loadOf,
+  nextExperiments,
+  spendOf,
+  viewOf,
+} from "./briefing";
 import { type Palette, panelKind, panelValence } from "./encode";
-import type { RootGroup } from "./roots";
+import { UNROOTED, type RootGroup, type Roots } from "./roots";
 
-/** The windows the briefing can read the graph over. */
-export type Window = 7 | 30 | 0;
+/** The briefing's own panel: the graph route keeps it open, as the design's `#side` starts. */
+export const BRIEFING: PanelSpec = { id: "graph.briefing", name: "the briefing", side: "left" };
+
+/** The arrow the design draws in its panel's header: one to hide it. */
+const HIDE_GLYPH = (
+  <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+    <path
+      d="M8 2L4 6l4 4M2 1.5v9"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+  </svg>
+);
+
+/** The pill that takes the panel's corner while it is hidden, the design's `#sShow`. */
+export function BriefingShow({ panel }: { panel: Panel }) {
+  return (
+    <button
+      type="button"
+      className="proto-show"
+      aria-label="Show the briefing"
+      aria-controls="proto-briefing"
+      onClick={() => panel.setCollapsed(false)}
+    >
+      <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+        <path d="M2 3h8M2 6h8M2 9h5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+      </svg>
+      briefing
+    </button>
+  );
+}
 
 /** What the briefing panel says about the whole graph. */
 export type HomeBriefing = {
   readonly asOf: Date;
-  /** New records in the window, and the verdicts its own votes moved. */
+  /** Records the field holds, and the verdicts their own votes moved. */
   readonly fresh: number;
   readonly broke: number;
   readonly brokeNow: number;
   readonly gained: number;
   readonly gainedNow: number;
-  /** What arrived in the window, by what it is: the bars. */
+  /** What the field holds, by what it is: the bars. */
   readonly cameIn: readonly { readonly label: string; readonly tint: string; readonly count: number }[];
-  /** The claims the window settled, newest first, with the record that settled each. */
+  /** The claims the field has settled, newest proof first. */
   readonly learned: readonly { readonly cite: GraphNode; readonly verdict: string; readonly belief: GraphNode }[];
   readonly outOfDate: readonly Flagged[];
   readonly againstOdds: readonly Flagged[];
   readonly next: readonly NextExperiment[];
+  readonly spend: Spend;
+  /** The line of work that spent most, named by its root; null when nothing has spent. */
+  readonly topSpend: { readonly title: string; readonly usd: number; readonly share: number } | null;
 };
 
 /** A belief the briefing flags, and how much load-bearing evidence stands against it. */
@@ -52,22 +99,21 @@ const CAME_IN: readonly { readonly label: string; readonly tint: string; readonl
   { label: "Beliefs", tint: "#4cc9a0", kinds: ["Belief"] },
 ];
 
-/** Read `graph` the way the prototype's briefing does, over the last `days` (0 for all of it). */
-export function homeBriefing(graph: Graph, days: Window): HomeBriefing {
+/** Read `graph` the way the prototype's briefing does, over all of it.
+ *  `roots`, when the caller groups the canvas, names the thread the field spent most on. */
+export function homeBriefing(graph: Graph, roots: Roots | null = null): HomeBriefing {
   const view = viewOf(graph);
   const asOf = graph.nodes.reduce((latest, node) => (node.created > latest ? node.created : latest), "");
   const asOfDate = asOf === "" ? new Date() : new Date(asOf);
-  const from = days === 0 ? "" : new Date(asOfDate.getTime() - days * DAY_MS).toISOString();
-  const inWindow = (node: GraphNode) => node.created >= from;
-  const fresh = graph.nodes.filter(inWindow).length;
-  // What moved is read off the votes that arrived, as the design did it: a belief
-  // took counter-evidence when a record the window holds proved against it. Its
-  // verdict now — disproven, proven — is the parenthetical, so a window that
-  // settled nothing says so rather than repeating the whole store's tally.
+  const fresh = graph.nodes.length;
+  // What moved is read off the votes the field holds, as the design did it: a
+  // belief took counter-evidence when a record proved against it. Its verdict
+  // now — disproven, proven — is the parenthetical, so a graph that settled
+  // nothing says so rather than repeating a tally from elsewhere.
   let [broke, brokeNow, gained, gainedNow] = [0, 0, 0, 0];
   for (const node of graph.nodes) {
     if (node.kind !== "Belief") continue;
-    const cast = evidenceOf(node, view).filter(({ node: cite, edge }) => edge.edge_kind === "proves" && inWindow(cite));
+    const cast = evidenceOf(node, view).filter(({ edge }) => edge.edge_kind === "proves");
     if (cast.some(({ edge }) => (edge.valence ?? 1) < 0)) {
       broke += 1;
       if (node.judgement === "disproven") brokeNow += 1;
@@ -80,15 +126,15 @@ export function homeBriefing(graph: Graph, days: Window): HomeBriefing {
   const cameIn = CAME_IN.map(({ label, tint, kinds }) => ({
     label,
     tint,
-    count: graph.nodes.filter((node) => kinds.includes(node.kind) && inWindow(node)).length,
+    count: graph.nodes.filter((node) => kinds.includes(node.kind)).length,
   }));
-  // What the window settled: a claim only counts as learned when the proof that
-  // settled it arrived in the window, newest proof first, as the design ordered it.
+  // What the field settled: a claim only counts as learned when a proof stands
+  // behind its verdict, newest proof first, as the design ordered it.
   const learned = graph.nodes
     .filter((node) => node.kind === "Belief" && (node.judgement === "proven" || node.judgement === "disproven"))
     .flatMap((belief) => {
       const strongest = evidenceOf(belief, view)
-        .filter(({ node: cite, edge }) => edge.edge_kind === "proves" && inWindow(cite))
+        .filter(({ edge }) => edge.edge_kind === "proves")
         .sort((a, b) => Math.abs(b.edge.valence ?? 0) - Math.abs(a.edge.valence ?? 0))[0];
       return strongest ? [{ cite: strongest.node, verdict: belief.judgement!, belief }] : [];
     })
@@ -103,6 +149,19 @@ export function homeBriefing(graph: Graph, days: Window): HomeBriefing {
       .filter((row) => row.against >= heaviest)
       .sort((a, b) => b.against - a.against || b.belief.created.localeCompare(a.belief.created));
   const all: RootGroup = { key: "*", root: null, members: graph.nodes.map((node) => node.id), newest: asOf, kinds: new Map() };
+  const spend = spendOf(graph.nodes, view);
+  // The heaviest thread: the design named the one root that spent most, and said
+  // it as a share of the whole bill. Under no roots there is no thread to name,
+  // so the note stays quiet rather than crediting the graph at large.
+  const byThread = new Map<string, number>();
+  for (const node of graph.nodes) {
+    const home = roots?.home.get(node.id);
+    if (!home || home === UNROOTED) continue;
+    byThread.set(home, (byThread.get(home) ?? 0) + costOf(node));
+  }
+  const [heaviest, spent] = [...byThread].sort(([, a], [, b]) => b - a)[0] ?? [];
+  const crown = heaviest === undefined ? undefined : view.byId.get(heaviest);
+  const topSpend = crown && spent && spend.total > 0 ? { title: crown.title || "(untitled)", usd: spent, share: spent / spend.total } : null;
   return {
     asOf: asOfDate,
     fresh,
@@ -115,30 +174,35 @@ export function homeBriefing(graph: Graph, days: Window): HomeBriefing {
     outOfDate: flagged(1),
     againstOdds: flagged(2),
     next: nextExperiments(all, view, 3),
+    spend,
+    topSpend,
   };
 }
 
-const DAY_MS = 86_400_000;
-
-/** The briefing panel: the whole graph, read over a window. `palette` tints each
+/** The briefing panel: the whole graph the field draws. `palette` tints each
  *  ref with its kind's own hue, as the design's panels do. A row of `needs
  *  attention` picked calls `onSignal` with the beliefs it counts; `signal` names
- *  the one standing open. */
+ *  the one standing open. `roots` is the canvas's grouping, which lets `spend`
+ *  name the thread it fell on. Hidden, it slides past the viewport's edge and
+ *  leaves `BriefingShow` in its corner; the canvas takes the width back. */
 export function Briefing({
   graph,
   palette,
+  panel,
+  roots,
   onPick,
   onSignal,
   signal,
 }: {
   graph: Graph;
   palette: Palette;
+  panel: Panel;
+  roots?: Roots | null;
   onPick: (node: GraphNode) => void;
   onSignal: (key: SignalKey, ids: readonly string[]) => void;
   signal: SignalKey | null;
 }) {
-  const [days, setDays] = useState<Window>(7);
-  const brief = useMemo(() => homeBriefing(graph, days), [graph, days]);
+  const brief = useMemo(() => homeBriefing(graph, roots ?? null), [graph, roots]);
   const peak = Math.max(1, ...brief.cameIn.map((row) => row.count));
   // A ref in prose is small text: the canvas's hue lifted a step, which is how
   // the design colours a `Kind#seq` in its panels.
@@ -147,38 +211,39 @@ export function Briefing({
     ({ "--c": panelValence(judgement === "disproven" ? palette.against : palette.support) } as CSSProperties);
   return (
     <motion.aside
-      className="proto-briefing"
-      initial={{ x: -16, opacity: 0 }}
-      animate={{ x: 0, opacity: 1 }}
-      transition={{ type: "spring", stiffness: 320, damping: 30 }}
+      id="proto-briefing"
+      className={panel.collapsed ? "proto-briefing is-hidden" : "proto-briefing"}
+      inert={panel.collapsed}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.24, ease: "easeOut" }}
     >
       <header>
         <span>briefing</span>
+        <button
+          type="button"
+          className="proto-hide"
+          aria-label="Hide panel"
+          aria-expanded="true"
+          aria-controls="proto-briefing"
+          onClick={() => panel.setCollapsed(true)}
+        >
+          {HIDE_GLYPH}
+        </button>
       </header>
       <div className="proto-briefing-body">
         <div className="proto-asof">
           <span>as of {brief.asOf.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}</span>
-          <span className="proto-windows">
-            {([7, 30, 0] as Window[]).map((span) => (
-              <button key={span} type="button" className={span === days ? "on" : ""} onClick={() => setDays(span)}>
-                {span === 0 ? "all" : `${span}d`}
-              </button>
-            ))}
-          </span>
         </div>
         <p className="proto-summary">
-          {/* The design's three sentences, each read over the window: what arrived, what
+          {/* The design's three sentences, each read over the field: what it holds, what
               its own votes settled, and how many verdicts have fallen behind. The middle
-              two go quiet when the window holds neither event nor flag. */}
+              two go quiet when the graph holds neither event nor flag. */}
           {brief.fresh === 0 ? (
-            <>Nothing new {days === 0 ? "yet" : `in the last ${days} days`}. </>
-          ) : days === 0 ? (
-            <>
-              <b>{brief.fresh}</b> records in total.{" "}
-            </>
+            <>Nothing recorded yet. </>
           ) : (
             <>
-              <b>{brief.fresh}</b> new records in the last {days} days.{" "}
+              <b>{brief.fresh.toLocaleString("en-US")}</b> records in view.{" "}
             </>
           )}
           {brief.broke > 0 || brief.gained > 0 ? (
@@ -294,9 +359,42 @@ export function Briefing({
                 </span>
               </button>
               <span className="proto-next-line">{row.belief.title || "(untitled)"}</span>
+              {/* The row's receipts, as the design's third line: what the claim is worth
+                  settling and what one test in the thread costs to settle it. */}
+              <span className="proto-next-meta num">
+                <span>conf {(row.belief.confidence ?? 0.5).toFixed(2)}</span>
+                <span>{row.evidence} evidence</span>
+                {row.leaning > 0 ? <span>{row.leaning} lean on it</span> : null}
+                <span>{row.price.priced ? `~${usd(row.price.usd)} per test` : "no test priced yet"}</span>
+              </span>
             </li>
           ))}
         </ul>
+        <h3>spend</h3>
+        <div className="proto-spend">
+          <div>
+            <b className="num">{usd(brief.spend.total)}</b>
+            <small>total</small>
+          </div>
+          <div>
+            <b className="num">{usd(brief.spend.resource)}</b>
+            <small>compute</small>
+          </div>
+          <div>
+            <b className="num">{usd(brief.spend.agent)}</b>
+            <small>agents</small>
+          </div>
+          <div>
+            <b className="num">{brief.spend.perSettled === null ? "–" : usd(brief.spend.perSettled)}</b>
+            <small>per verdict settled</small>
+          </div>
+        </div>
+        {brief.topSpend ? (
+          <p className="proto-spend-note">
+            Most spent on <em>{brief.topSpend.title}</em> ({usd(brief.topSpend.usd)},{" "}
+            {Math.round(brief.topSpend.share * 100)}%).
+          </p>
+        ) : null}
       </div>
     </motion.aside>
   );
@@ -323,6 +421,7 @@ export function Timeline({
   position,
   playing,
   date,
+  grown,
   onScrub,
   onToggle,
 }: {
@@ -331,6 +430,8 @@ export function Timeline({
   position: number;
   playing: boolean;
   date: string;
+  /** How many of the graph's records the stand has reached, or null at its end. */
+  grown: number | null;
   onScrub: (fraction: number) => void;
   onToggle: () => void;
 }) {
@@ -372,7 +473,10 @@ export function Timeline({
           transition={{ type: "spring", stiffness: 400, damping: 34 }}
         />
       </div>
-      <span className="proto-date num">{date}</span>
+      <span className="proto-date num">
+        {date}
+        {grown === null ? null : `, ${grown.toLocaleString()} nodes`}
+      </span>
     </div>
   );
 }

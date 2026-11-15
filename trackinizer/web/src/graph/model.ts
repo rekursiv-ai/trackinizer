@@ -37,6 +37,9 @@ export type DrawLink = {
   readonly to: string;
   readonly kind: string;
   valence?: number;
+  /** When the wire was made and by whom, from the audit that made it. */
+  asserted?: string;
+  actor?: string;
   /** The layout's ends: the ids, until the layout swaps in their nodes. */
   source: string | DrawNode;
   target: string | DrawNode;
@@ -66,6 +69,12 @@ export type Lens = {
   readonly matches: ReadonlySet<string>;
   /** Nodes whose titles show under them: the roots, while grouped. */
   readonly labelled: ReadonlySet<string>;
+  /**
+   * Where the timeline stands: each id that draws, and how much of itself it
+   * draws, 1 for settled — the newest arrivals come up over a few steps. Null
+   * shows the whole graph, which is where the view sits when nothing replays.
+   */
+  readonly shown: ReadonlyMap<string, number> | null;
 };
 
 /** Nothing hidden, lit or found. */
@@ -79,6 +88,7 @@ export const PLAIN_LENS: Lens = {
   strong: new Set(),
   matches: new Set(),
   labelled: new Set(),
+  shown: null,
 };
 
 /**
@@ -141,14 +151,16 @@ export class GraphModel {
       return drawn;
     });
     this.links = wires(graph)
-      .map(({ from_id: from, to_id: to, edge_kind: kind, valence }) => {
+      .map(({ from_id: from, to_id: to, edge_kind: kind, valence, asserted, actor }) => {
         const kept = linksBefore.get(linkKey(from, to, kind));
         if (kept) {
           kept.valence = valence;
+          kept.asserted = asserted;
+          kept.actor = actor;
           return kept;
         }
         addedLinks += 1;
-        return { from, to, kind, valence, source: from, target: to, look: NO_LINK_LOOK, hidden: false };
+        return { from, to, kind, valence, asserted, actor, source: from, target: to, look: NO_LINK_LOOK, hidden: false };
       });
     this.#byId = new Map(this.nodes.map((drawn) => [drawn.id, drawn]));
     // Every node was kept or added, so with none added a count that differs means
@@ -195,16 +207,21 @@ export class GraphModel {
   }
 
   #restyle(): void {
-    const { hiddenKinds, hiddenStatuses, hiddenOwners, lit, skipEdges, only, strong, matches, labelled } = this.#lens;
+    const { hiddenKinds, hiddenStatuses, hiddenOwners, lit, skipEdges, only, strong, matches, labelled, shown } = this.#lens;
     for (const drawn of this.nodes) {
       const far = lit?.get(drawn.id);
       const dimmed = lit !== null && far === undefined;
       const halo = strong.has(drawn.id) ? "strong" : matches.has(drawn.id) ? "match" : null;
       const label = labelled.has(drawn.id) ? drawn.title || "(untitled)" : null;
+      // A replay grows the graph by showing more of it, not by re-sending it: a
+      // record before the timeline's place is not drawn at all, and the few
+      // behind it come up as they are reached.
+      const appear = shown === null ? 1 : shown.get(drawn.id) ?? 0;
       // What a focus lights keeps its kind's hue at every zoom: the reader asked
       // what this neighbourhood is made of, and the answer should not wait for a zoom.
-      drawn.look = nodeLook(drawn, this.#palette, { dimmed, far: far !== undefined && far >= 2, halo, label, near: lit !== null && !dimmed });
+      drawn.look = nodeLook(drawn, this.#palette, { dimmed, far: far !== undefined && far >= 2, halo, label, near: lit !== null && !dimmed, appear });
       drawn.hidden =
+        appear === 0 ||
         hiddenKinds.has(drawn.kind) ||
         hiddenStatuses.has(drawn.status) ||
         hiddenOwners.has(drawn.owner ?? "") ||

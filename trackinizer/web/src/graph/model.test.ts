@@ -58,6 +58,21 @@ test("a link keeps its object across applies, and a valence change restyles that
   expect(link.look.color).toBe("against");
 });
 
+test("a wire's date and actor ride on the link, and a re-assertion updates them in place", () => {
+  const model = new GraphModel(PALETTE);
+  const made = { asserted: "2026-09-01T00:00:00+00:00", actor: "run 41" };
+  model.apply({ nodes: [node(1), node(2)], edges: [edge(2, 1, "narrows", made)] });
+  expect(model.links[0]).toMatchObject(made);
+  // A remove and a re-add is a new assertion of the same identity, so the fields
+  // change while the object, and the layout's reading of it, does not.
+  const again = { asserted: "2026-09-08T00:00:00+00:00", actor: "ada@example.com" };
+  expect(model.apply({ nodes: [node(1), node(2)], edges: [edge(2, 1, "narrows", again)] })).toBe(false);
+  expect(model.links[0]).toMatchObject(again);
+  // A wire the audit does not cover carries neither, rather than a stale one.
+  model.apply({ nodes: [node(1), node(2)], edges: [edge(2, 1)] });
+  expect([model.links[0]?.asserted, model.links[0]?.actor]).toEqual([undefined, undefined]);
+});
+
 test("a node counts the distinct inquiries it shares an edge with", () => {
   const model = new GraphModel(PALETTE);
   model.apply({ nodes: [node(1), node(2), node(3)], edges: [edge(2, 1), edge(2, 1, "produced_by"), edge(3, 2, "requires")] });
@@ -164,4 +179,37 @@ test("the nodes the lens labels carry their titles as labels; the rest none", ()
   expect(model.nodes.map((drawn) => drawn.look.label?.text)).toEqual(["Issue 1", "(untitled)"]);
   model.show(PALETTE, LENS);
   expect(model.nodes.map((drawn) => drawn.look.label)).toEqual([null, null]);
+});
+
+test("the timeline's place shows the records it has reached, brings the newest of them up over a few steps, and leaves the graph itself alone (RS-01)", () => {
+  const model = new GraphModel(PALETTE);
+  model.apply(CHAIN);
+  const before = model.nodes;
+  // Reached 1 and 2, 3 and 4 behind the place, 5 halfway up.
+  model.show(PALETTE, { ...LENS, shown: new Map([[uuid(1), 1], [uuid(2), 1], [uuid(5), 0.5]]) });
+  expect(model.nodes).toBe(before);
+  expect(model.nodes.map((drawn) => drawn.hidden)).toEqual([false, false, true, true, false]);
+  // A link draws only with both its ends: 5's own wire to 3 goes with 3.
+  expect(model.links.map((link) => link.hidden)).toEqual([false, true, true, true]);
+  // Behind the place a record draws nothing of itself; the one in hand half.
+  expect(model.nodes.map((drawn) => drawn.look.fillAlpha)).toEqual([1, 1, 0, 0, 0.5]);
+  model.show(PALETTE, LENS);
+  expect(model.nodes.map((drawn) => drawn.hidden)).toEqual([false, false, false, false, false]);
+  expect(model.nodes.map((drawn) => drawn.look.fillAlpha)).toEqual([1, 1, 1, 1, 1]);
+});
+
+test("a record still arriving keeps its own look's proportions, not a flat wash", () => {
+  const belief = node(1, { kind: "Belief", judgement: "undecidable", confidence: 0.5 });
+  const look = (appear: number) => {
+    const model = new GraphModel(PALETTE);
+    model.apply({ nodes: [belief], edges: [] });
+    model.show(PALETTE, appear === 1 ? LENS : { ...LENS, shown: new Map([[uuid(1), appear]]) });
+    return byId(model, 1).look;
+  };
+  const settled = look(1);
+  const halfway = look(0.5);
+  expect(halfway.fillAlpha).toBeCloseTo(settled.fillAlpha / 2);
+  expect(halfway.washAlpha).toBeCloseTo(settled.washAlpha / 2);
+  expect(halfway.ringAlpha).toBeCloseTo(settled.ringAlpha / 2);
+  expect(halfway.wash).toBe(settled.wash);
 });

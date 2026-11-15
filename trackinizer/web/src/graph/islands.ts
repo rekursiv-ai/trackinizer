@@ -1,6 +1,16 @@
 import type { Graph } from "../api/graph";
 import { micros } from "../live/rows";
 
+export type Islands = {
+  /** Record -> the island it is drawn in. An island's key names it: see `headless`. */
+  homes: Map<string, string>;
+  /** Keys of islands whose keying record heads nothing in its own family: a ball of
+   * records nobody built on, gathered only because they happened while a real
+   * inquiry was alive. It is not a line of inquiry, so no title of its own may be
+   * worn as one. */
+  headless: Set<string>;
+};
+
 /**
  * The design's field of islands: one compact ball per line of inquiry, as many
  * as the window holds and none of them a giant. A line of inquiry is a family —
@@ -11,12 +21,13 @@ import { micros } from "../live/rows";
  * most, or touching nothing, the island whose records were alive when it
  * happened — so the field stays a field of balls, never a haze of specks.
  */
-export function islandHomes({ nodes, edges }: Graph): Map<string, string> {
+export function islandHomes({ nodes, edges }: Graph): Islands {
   const childrenOf = new Map<string, string[]>();
   const parentOf = new Map<string, string>();
   const kin = new Map<string, string[]>();
   const adj = new Map<string, string[]>();
   const byId = new Map(nodes.map((node) => [node.id, node]));
+  const headless = new Set<string>();
   // The server hangs a produced_by beside every narrows and every requires
   // between two Issues, and a requires across lines of inquiry is common:
   // counting its companion as kin would sew the threads into one family. So a
@@ -85,13 +96,19 @@ export function islandHomes({ nodes, edges }: Graph): Map<string, string> {
         if (at > crownAt) [crown, crownAt] = [id, at];
       }
     }
+    // The other half of that promise, kept: a satellite that was picked only
+    // because the family has no head may not name the island it ends up in.
+    if (!(childrenOf.get(crown)?.length ?? 0)) headless.add(crown);
     for (const id of members) topOf.set(id, crown);
   }
   const membersOf = new Map<string, string[]>();
   for (const [id, key] of topOf) bump(membersOf, key, id);
   const refined = new Map<string, string>();
   for (const [key, members] of membersOf) {
-    for (const [islandKey, row] of split(key, members, childrenOf)) for (const id of row) refined.set(id, islandKey);
+    for (const [islandKey, row] of split(key, members, childrenOf)) {
+      if (headless.has(key)) headless.add(islandKey);
+      for (const id of row) refined.set(id, islandKey);
+    }
   }
   const parent = new Map<string, string>();
   const find = (key: string): string => {
@@ -180,7 +197,10 @@ export function islandHomes({ nodes, edges }: Graph): Map<string, string> {
     if (small === undefined) break;
     absorb(small, (touch.get(small)?.size ?? 0) > 0 ? ranked[ranked.length - 1]! : nearest(small, ranked));
   }
-  return new Map([...refined].map(([id, key]) => [id, find(key)]));
+  const homes = new Map([...refined].map(([id, key]) => [id, find(key)]));
+  // Only the islands that survived absorption are asked about: a headless family
+  // that a real ball took in is named by that ball's head, not by its satellite.
+  return { homes, headless: new Set([...headless].filter((key) => homes.get(key) === key)) };
 }
 
 /** The most records an island holds before it is cut into bands: the design's
