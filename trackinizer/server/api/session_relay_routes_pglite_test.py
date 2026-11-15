@@ -531,8 +531,8 @@ async def test_a_start_finds_its_place_or_no_place_over_every_pairing(
     ("config", "spec"),
     [
         (_config(default_remote_agent_service=""), {}),
-        (_config(), {"args": ["--model", "opus"]}),
-        (_config(), {"host": "remote-agents", "args": ["--model", "opus"]}),
+        (_config(), {"args": ["--tools", "Bash"]}),
+        (_config(), {"host": "remote-agents", "args": ["--add-dir", "/"]}),
         (_config(remote_agent_services=()), {"host": "remote-agents"}),
         (
             _config(

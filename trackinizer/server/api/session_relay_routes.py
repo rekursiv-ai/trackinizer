@@ -136,6 +136,7 @@ from trackinizer.wire.wire_session_relay import (
     ServeSession,
     StopProcess,
     ViewerFrame,
+    remote_flags_refused,
 )
 from trackinizer.wire.wire_sessions import LINE_CANVAS
 from trackinizer.wire.wire_terminals import CLOSE_REFUSED
@@ -863,8 +864,8 @@ async def _start_place(
         )
     if runs is None:
         raise _no_place(f"no host {name} runs agents for you")
-    if runs.remote and spec.args:
-        raise _no_place(f"{name} runs agents for others, and takes no sagent flags")
+    if runs.remote and (refused := remote_flags_refused(spec.args)):
+        raise _no_place(f"{name} runs agents for others: {refused}")
     if not signs_in:
         raise _no_place(f"no host {spec.login_host} answers model calls for you")
     return runs

@@ -924,6 +924,11 @@ async def _placed(
             (_found("remote-agents", _AGENTS, _REMOTE, _SERVICE_HOST),),
             True,
         ),
+        (
+            ProcessSpec(args=("--time", "2:00:00", "--max-budget-usd", "5")),
+            (_found("remote-agents", _AGENTS, _REMOTE, _SERVICE_HOST),),
+            True,
+        ),
         (ProcessSpec(host="lab"), (_found("lab", "ada@x.y", _RUNS, _HERS),), False),
         (
             ProcessSpec(host="remote-agents"),
@@ -942,7 +947,13 @@ async def _placed(
             False,
         ),
     ],
-    ids=["the default service", "a host of hers", "the service by name", "her login"],
+    ids=[
+        "the default service",
+        "a campaign lead on the default service",
+        "a host of hers",
+        "the service by name",
+        "her login",
+    ],
 )
 async def test_a_start_runs_on_her_own_host_first_else_a_service_that_admits_her(
     monkeypatch: pytest.MonkeyPatch,
@@ -1127,11 +1138,11 @@ async def test_a_service_that_admits_a_domain_admits_one_google_says_is_of_it(
             "no host remote-agents runs agents for you",
         ),
         (
-            ProcessSpec(args=("--model", "opus")),
+            ProcessSpec(args=("--model", "opus", "--tools", "Bash")),
             (_found("remote-agents", _AGENTS, _REMOTE, _SERVICE_HOST),),
             ("ada@x.y",),
             "remote-agents",
-            "remote-agents runs agents for others, and takes no sagent flags",
+            "remote-agents runs agents for others: a remote agent takes no --tools",
         ),
         (
             ProcessSpec(host="lab", login_host="laptop"),
