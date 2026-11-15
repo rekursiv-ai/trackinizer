@@ -7,6 +7,7 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Added
 
+- `GET /api/chats/{conversation_id}` gives the head session's number, `seq`.
 - `GET /api/me/preferences/agent` gives the schema of
   the settings an agent's own tool may change, `preferences.AGENT_KEYS`: the
   assistant's keys but `cli_folder`, `autofix` and `automerge`. A key a start

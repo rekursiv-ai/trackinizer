@@ -218,6 +218,9 @@ class ChatHead(BaseModel):
 
     conversation_id: uuid.UUID
     session_id: uuid.UUID
+    seq: int
+    """The session's number, as ``AgentSession#<seq>`` names it."""
+
     title: str
     cli: str | None
     """The CLI the session says it runs, which a title its start minted names."""
