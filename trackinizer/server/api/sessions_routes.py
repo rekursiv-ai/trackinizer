@@ -88,7 +88,8 @@ async def session_start_route(
     holds the chat chose it (its ``opens_as``). A ``cli_session_id`` of a deleted
     science chat (``chat:<id>``) is 410 ``chat_deleted``. A science chat's session is
     titled ``Science chat`` whatever ``title`` says, since every key reads the row and
-    only the chat's members read its lines.
+    only the chat's members read its lines, and labelled ``science-chat``, so a run that
+    starts under a new ``chat:`` id begins that chat as Chat's own start does.
 
     ``attach`` re-opens that session by its id instead: it is live again if it had
     ended, its ``cli_session_id`` stays, and the run's file becomes its next part. The
@@ -125,6 +126,7 @@ async def session_start_route(
     )
     audience: str | None = None
     title = body.title or f"{body.cli} session"
+    labels: list[str] | None = None
     audience = audience or granted_audience(identity, private=body.private)
     # An AgentSession is an inquiry like any other, so it carries the same
     # account attribution: default to the authenticated creator, validate it is
@@ -148,6 +150,7 @@ async def session_start_route(
             rooms=body.rooms,
             account=account,
             idempotency_key=body.idempotency_key,
+            labels=labels,
         ),
         requested_actor=_actor(identity, body.actor),
         audience=audience,
