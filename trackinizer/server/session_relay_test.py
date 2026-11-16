@@ -551,6 +551,24 @@ async def test_the_last_state_and_settings_are_kept_for_the_next_viewer() -> Non
     assert opened.process == relay.process(_SESSION)
 
 
+async def test_the_state_is_the_attached_process_s_last_and_goes_with_it() -> None:
+    relay = SessionRelay()
+    viewer = _Viewer(relay)
+    _ = await viewer.next()
+    socket = _Socket()
+    served = await _attached(relay, viewer, socket)
+    before = relay.state(_SESSION)
+    socket.push(_STATE)
+    _ = await viewer.next()
+    sent = relay.state(_SESSION)
+    socket.push(1000)
+    await served
+    assert (await viewer.process()).state == "detached"
+
+    assert (before, sent, relay.state(_SESSION)) == (None, _STATE.state, None)
+    assert relay.state(_OTHER) is None
+
+
 async def test_stored_records_reach_viewers_and_are_not_kept() -> None:
     relay = SessionRelay()
     viewer = _Viewer(relay)

@@ -89,6 +89,9 @@ class ListedSession(BaseModel):
     live: bool
     """An agent process serves it now: the session relay holds one attached."""
 
+    working: bool
+    """Its agents work now, as its process last said (``AgentState.working``)."""
+
     host: str | None
     """The host its agent process runs on, or last ran on since the server started;
     None when no process of it has."""
@@ -335,6 +338,7 @@ def _listed(
         else _placed(row, places=places)
     )
     process = relay.process(session_id)
+    state = relay.state(session_id)
     return ListedSession(
         id=session_id,
         seq=from_plain(row["seq"], int),
@@ -352,6 +356,7 @@ def _listed(
         first_line=lines.first_line,
         last_line=lines.last_line,
         live=process is not None and process.state == "attached",
+        working=state is not None and state.working,
         host=None if process is None else process.host,
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import asyncio
@@ -40,7 +41,7 @@ from trackinizer.server.api.session_test_support import (
 )
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.session_relay import SessionRelay
-from trackinizer.wire.wire_session_relay import NewInput
+from trackinizer.wire.wire_session_relay import AgentState, NewInput
 
 
 @pytest.fixture
@@ -249,16 +250,29 @@ async def test_an_attached_process_serves_its_session_for_the_block_alone() -> N
 
 
 @pytest.mark.asyncio
+async def test_an_attached_process_says_its_state_once_attached() -> None:
+    relay = SessionRelay()
+    session = uuid.uuid4()
+    state = AgentState(line="", busy=True, since=datetime(2026, 11, 15, tzinfo=UTC))
+
+    async with attached_process(relay, session, state=state):
+        during = relay.state(session)
+
+    assert (during, relay.state(session)) == (state, None)
+
+
+@pytest.mark.asyncio
 async def test_an_open_socket_takes_what_it_is_sent_and_closes_once() -> None:
     """The process the support attaches is let in by a rule that always holds."""
     assert await session_test_support._always()
-    socket = session_test_support._OpenSocket()
+    socket = session_test_support._OpenSocket(["said"])
 
     await socket.send_text("ignored")
+    said = await socket.receive()
     await socket.close(1001)
     await socket.close(1000)
 
-    assert await socket.receive() == 1001
+    assert (said, await socket.receive()) == ("said", 1001)
 
 
 def test_a_serving_relay_serves_every_session_and_notes_each_send_in_order() -> None:

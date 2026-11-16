@@ -131,11 +131,27 @@
     "type": "object"
    },
    "AgentState": {
-    "description": "What the root agent is doing now: the whole source of a viewer's status line.",
+    "description": "What the session's agents are doing now.\n\nThe source of a viewer's status line, its spinners, and its count of what runs\nin the background.",
     "properties": {
+     "agents": {
+      "default": [],
+      "items": {
+       "type": "string"
+      },
+      "title": "Agents",
+      "type": "array"
+     },
      "busy": {
       "title": "Busy",
       "type": "boolean"
+     },
+     "jobs": {
+      "default": [],
+      "items": {
+       "$ref": "#/components/schemas/BackgroundJob"
+      },
+      "title": "Jobs",
+      "type": "array"
      },
      "line": {
       "title": "Line",
@@ -153,12 +169,31 @@
       "format": "date-time",
       "title": "Since",
       "type": "string"
+     },
+     "turn_ended": {
+      "anyOf": [
+       {
+        "format": "date-time",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Turn Ended"
+     },
+     "working": {
+      "description": "Whether anything of the session works: the root, a job, or a child agent.",
+      "readOnly": true,
+      "title": "Working",
+      "type": "boolean"
      }
     },
     "required": [
      "line",
      "busy",
-     "since"
+     "since",
+     "working"
     ],
     "title": "AgentState",
     "type": "object"
@@ -709,6 +744,50 @@
    },
    "AudienceName": {
     "type": "string"
+   },
+   "BackgroundJob": {
+    "description": "A tool call an agent of the session runs apart from its turn.\n\nOne asked to run in the background or later, or detached from a turn that\nstopped waiting for it.",
+    "properties": {
+     "agent": {
+      "default": "",
+      "title": "Agent",
+      "type": "string"
+     },
+     "call_id": {
+      "title": "Call Id",
+      "type": "string"
+     },
+     "started": {
+      "format": "date-time",
+      "title": "Started",
+      "type": "string"
+     },
+     "state": {
+      "enum": [
+       "sleeping",
+       "running"
+      ],
+      "title": "State",
+      "type": "string"
+     },
+     "title": {
+      "title": "Title",
+      "type": "string"
+     },
+     "tool": {
+      "title": "Tool",
+      "type": "string"
+     }
+    },
+    "required": [
+     "call_id",
+     "tool",
+     "title",
+     "started",
+     "state"
+    ],
+    "title": "BackgroundJob",
+    "type": "object"
    },
    "BatchEdge": {
     "description": "One edge in a :class:`SubmitBatch`.\n\nEach endpoint is named EITHER by batch item index (``from_index`` /\n``to_index``, 0-based into ``items``) for a row created in this batch,\nOR by an existing row's ``from_id`` / ``to_id`` UUID. Exactly one of\nindex/id must be set per endpoint. Index references are the only way to\nlink two brand-new rows -- inline-created targets have no id until the\nbatch commits. Annotations mirror :class:`CreateEdge`.",
@@ -4429,6 +4508,10 @@
       "title": "Title",
       "type": "string"
      },
+     "working": {
+      "title": "Working",
+      "type": "boolean"
+     },
      "workspace_id": {
       "anyOf": [
        {
@@ -4459,6 +4542,7 @@
      "first_line",
      "last_line",
      "live",
+     "working",
      "host"
     ],
     "title": "ListedSession",
