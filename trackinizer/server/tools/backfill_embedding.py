@@ -342,13 +342,15 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     # Measured 2026-10-31 on the production host (Zen 5, 64 cores, AVX-512 BF16), the
     # 0.6B model in bf16, compiled and frozen, batches of 8: 9.0 vec/s at 16 threads,
     # 14.1 at 32, 15.7 at 64. Past half the physical cores a thread buys little and
-    # takes a core the box's other work needs.
+    # takes a core the box's other work needs. Capped at 16 by operator decision
+    # 2026-11-15: a quarter of a 128-CPU host was 32 threads busy on every round with
+    # work, even a 2-vector one.
     parser.add_argument(
         "--cpu-threads",
         type=int,
-        default=max(1, (os.cpu_count() or 4) // 4),
+        default=min(16, max(1, (os.cpu_count() or 4) // 4)),
         help="Torch threads --follow embeds with on CPU (default: a quarter of "
-        "the logical CPUs, the measured knee).",
+        "the logical CPUs, the measured knee, at most 16).",
     )
     parser.add_argument(
         "--gpu-backfill",

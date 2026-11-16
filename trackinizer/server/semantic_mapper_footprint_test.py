@@ -27,7 +27,6 @@ class TestProse:
             "UserMessage",
             "AssistantMessage",
             "AgentToAgentMessage",
-            "ToolCall",
             "ContextCompaction",
             "WebFetchResult",
             "WebSearchResult",
@@ -136,11 +135,12 @@ _FOOTPRINT: dict[str, tuple[bool, bool, str]] = {
     "UserMessage": (True, True, "full"),
     "AssistantMessage": (True, True, "full"),
     "AgentToAgentMessage": (True, True, "full"),
-    "ToolCall": (True, True, "full"),
     "ContextCompaction": (True, True, "full"),
     "WebFetchResult": (True, True, "full"),
     "WebSearchResult": (True, True, "full"),
-    # Prose, F-only (embed=False). SystemMessage: user override 2026-09-20.
+    # Prose, F-only (embed=False). SystemMessage: user override 2026-09-20;
+    # ToolCall: user override 2026-11-15.
+    "ToolCall": (True, False, "full"),
     "SystemMessage": (True, False, "full"),
     "Thinking": (True, False, "full"),
     "IncompleteRecord": (True, False, "full"),

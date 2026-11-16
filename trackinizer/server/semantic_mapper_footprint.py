@@ -4,12 +4,15 @@ The session-indexing footprint table as a
 :class:`~trackinizer.server.semantic_mapper.SemanticMapper`. Four
 classes of record:
 
-- EMBEDDED PROSE -- messages, tool-call args, compaction summaries, web
-  results: the whole text, term-searched AND embedded, chunked when long.
-- FTS-ONLY PROSE -- system prompts, thinking, incomplete records: the whole
-  text on the term surface only, no vector. ``SystemMessage`` moved here by
-  operator decision 2026-09-20 (system prompts are near-duplicate spam);
-  ``Thinking`` and ``IncompleteRecord`` are prose that is not worth a vector.
+- EMBEDDED PROSE -- messages, compaction summaries, web results: the whole
+  text, term-searched AND embedded, chunked when long.
+- FTS-ONLY PROSE -- tool-call args, system prompts, thinking, incomplete
+  records: the whole text on the term surface only, no vector. ``ToolCall``
+  moved here by operator decision 2026-11-15 (commands and file contents were
+  79% of the vectors, and the term surface already finds them);
+  ``SystemMessage`` by operator decision 2026-09-20 (system prompts are
+  near-duplicate spam); ``Thinking`` and ``IncompleteRecord`` are prose that is
+  not worth a vector.
 - HEADED -- shell/script output, stream captures, and file write/edit
   receipts: the first :data:`HEAD_CHARS` characters, term-searched but NOT
   embedded (machine output = F(head)+B per the doc). The verdict line
@@ -59,9 +62,9 @@ still matches one of them."""
 class FootprintMapper:
     """The session_indexing.md footprint table, applied per record kind."""
 
-    # KEEP the name "footprint-v1" across this policy narrowing (SystemMessage,
-    # Thinking, IncompleteRecord and the stream/tool heads dropping to
-    # embed=False). ``session_embeddings`` keys on ``(model, mapper)``, so a new
+    # KEEP the name "footprint-v1" across this policy narrowing (ToolCall,
+    # SystemMessage, Thinking, IncompleteRecord and the stream/tool heads dropping
+    # to embed=False). ``session_embeddings`` keys on ``(model, mapper)``, so a new
     # name would orphan every existing vector and force a re-embed of the ~1.26M
     # still-valid ones. The narrowed policy makes the current vectors a strict
     # SUBSET of what v1 would produce today; a subset is correct to keep, and the
@@ -124,7 +127,6 @@ _EMBEDDED_PROSE: Final = frozenset(
         "UserMessage",
         "AssistantMessage",
         "AgentToAgentMessage",
-        "ToolCall",
         "ContextCompaction",
         "WebFetchResult",
         "WebSearchResult",
@@ -132,10 +134,12 @@ _EMBEDDED_PROSE: Final = frozenset(
 )
 
 # Prose kept on the term surface only, never embedded (doc footprint table, "F").
+# ToolCall: operator decision 2026-11-15 -- 79% of the vectors, found by terms.
 # SystemMessage: operator decision 2026-09-20 -- system prompts are near-duplicate
 # spam, so they term-search but do not earn a vector.
 _FTS_ONLY_PROSE: Final = frozenset(
     {
+        "ToolCall",
         "SystemMessage",
         "Thinking",
         "IncompleteRecord",
