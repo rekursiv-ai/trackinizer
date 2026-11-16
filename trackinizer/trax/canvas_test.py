@@ -9,7 +9,7 @@ import base64
 import re
 import uuid
 
-from treekle import from_plain
+from treekle import PlainTree, from_plain
 
 import pytest
 
@@ -19,6 +19,7 @@ from trackinizer.trax import cli
 from trackinizer.trax.canvas import (
     canvas_from_env,
     canvas_lines,
+    chat_lines,
     mark_operation,
     show_operation,
 )
@@ -33,6 +34,37 @@ _PICTURES = {"image/png": b"\x89PNG\r\n\x1a\nfake", "image/jpeg": b"\xff\xd8\xff
 _BOX_1 = uuid.UUID("b1b1b1b1-0000-0000-0000-000000000000")
 _BOX_2 = uuid.UUID("b2b2b2b2-0000-0000-0000-000000000000")
 _TILE = uuid.UUID("71717171-0000-0000-0000-000000000000")
+
+_WORKSPACES: list[dict[str, PlainTree]] = [
+    {"id": "w1", "seq": 1, "title": "Scratch", "scratch": True, "hidden": False},
+    {"id": "w2", "seq": 12, "title": "Paper review", "scratch": False, "hidden": True},
+    {"id": "w3", "seq": 13, "title": "Empty", "scratch": False, "hidden": False},
+]
+"""The account's workspaces, in the bar's order: its default, a hidden one, an empty one."""
+
+_CANVASES: list[dict[str, PlainTree]] = [
+    {"id": "c1", "name": "loose", "workspace_id": None, "session": {"seq": 412}},
+    {
+        "id": "c2",
+        "name": "Draft",
+        "workspace_id": "w2",
+        "session": None,
+        "hidden": True,
+    },
+    {"id": "c3", "name": "Figures", "workspace_id": "w2", "session": {"seq": 7}},
+    {"id": "c4", "name": "Notes", "workspace_id": "w1"},
+]
+"""The account's canvases: one in no workspace, a closed one, one with no chat."""
+
+_ALL_CHATS: list[str] = [
+    "Issue#1 Scratch (default)",
+    "  loose  canvas c1  AgentSession#412",
+    "  Notes  canvas c4  no chat",
+    "Issue#12 Paper review (hidden)",
+    "  Draft  canvas c2  no chat (closed)",
+    "  Figures  canvas c3  AgentSession#7",
+    "Issue#13 Empty",
+]
 
 _CATALOG: dict[str, object] = {
     "default_visual": "trax.browse",
@@ -73,6 +105,21 @@ class _CanvasClient:
             {"id": str(_BOX_1), "author": "person"},
             {"id": str(_BOX_2), "author": "agent"},
         ]
+        self.renames: list[str] = []
+        self.listed: list[str] = []
+
+    def list_canvases(self) -> list[dict[str, PlainTree]]:
+        self.listed.append("canvases")
+        return _CANVASES
+
+    def list_workspaces(self) -> list[dict[str, PlainTree]]:
+        self.listed.append("workspaces")
+        return _WORKSPACES
+
+    def rename_canvas(self, canvas_id: uuid.UUID, *, name: str) -> dict[str, PlainTree]:
+        self._at(canvas_id)
+        self.renames.append(name)
+        return {"name": name}
 
     def get(self, path: str) -> dict[str, object]:
         self.reads.append(path)
@@ -959,6 +1006,136 @@ def test_a_canvas_with_no_labels_names_a_box_s_rows_by_id_and_no_covers_as_nothi
         f"  box m1 by agent on no page covers: {row}",
         "  box m2 by jp on no page covers: nothing",
     ]
+
+
+@pytest.mark.parametrize(
+    ("query", "lines"),
+    [
+        ("", _ALL_CHATS),
+        # A workspace whose title holds it keeps every chat in it.
+        ("PAPER", _ALL_CHATS[3:6]),
+        # Of the others, only the chats whose name holds it.
+        ("notes", [_ALL_CHATS[0], _ALL_CHATS[2]]),
+        ("o", _ALL_CHATS[:3]),
+        ("zzz", ["no workspace or chat matches 'zzz'"]),
+    ],
+    ids=["all", "by-workspace", "by-chat", "chats-in-default", "none"],
+)
+def test_chats_are_said_by_workspace_and_kept_by_its_title_or_their_name(
+    query: str,
+    lines: list[str],
+) -> None:
+    assert chat_lines(_CANVASES, _WORKSPACES, query=query) == lines
+
+
+def test_a_chat_in_no_workspace_is_said_nowhere_when_the_account_has_no_default() -> (
+    None
+):
+    ungrouped = [canvas for canvas in _CANVASES if canvas["workspace_id"] is None]
+
+    assert chat_lines(ungrouped, _WORKSPACES[1:], query="") == [
+        "Issue#12 Paper review (hidden)",
+        "Issue#13 Empty",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("arguments", "query"),
+    [([], ""), (["Paper", "review"], "Paper review"), (["notes"], "notes")],
+    ids=["all", "two-words", "one-word"],
+)
+def test_canvas_list_prints_the_chats_its_query_keeps_on_any_canvas(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    arguments: list[str],
+    query: str,
+) -> None:
+    """``list`` is no canvas's action: a run placed on one still lists them all."""
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_CANVAS", str(client.canvas))
+
+    _bare(client, "list", *arguments)
+
+    assert capsys.readouterr().out.splitlines() == chat_lines(
+        _CANVASES,
+        _WORKSPACES,
+        query=query,
+    )
+    assert client.listed == ["canvases", "workspaces"]
+    assert client.reads == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--record", str(uuid.uuid4())],
+        ["--placement", "main"],
+        ["--param", "a=b"],
+        ["--page", "#/graph"],
+    ],
+    ids=["record", "placement", "param", "page"],
+)
+def test_canvas_list_takes_no_option(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(
+        ClientError,
+        match=r"^list takes at most a QUERY and no option$",
+    ):
+        _bare(client, "list", "review", *arguments)
+
+    assert client.listed == []
+
+
+def test_canvas_rename_names_the_canvas_with_the_words_after_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+
+    _canvas(client, "rename", "paper", "review ")
+
+    assert client.renames == ["paper review"]
+    assert (
+        capsys.readouterr().out == f"canvas {client.canvas} renamed to paper review\n"
+    )
+    assert client.operations == []
+
+
+def test_canvas_rename_with_no_id_renames_the_canvas_the_session_was_placed_on(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_CANVAS", str(client.canvas))
+
+    _bare(client, "rename", "notes")
+
+    assert client.renames == ["notes"]
+    assert capsys.readouterr().out == f"canvas {client.canvas} renamed to notes\n"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["rename"],
+        ["rename", " "],
+        ["rename", "notes", "--record", str(uuid.uuid4())],
+        ["rename", "notes", "--placement", "main"],
+        ["rename", "notes", "--param", "a=b"],
+        ["rename", "notes", "--page", "#/graph"],
+    ],
+    ids=["no-name", "blank", "record", "placement", "param", "page"],
+)
+def test_canvas_rename_takes_one_name_and_nothing_else(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(
+        ClientError,
+        match=r"^rename takes one NAME and no other argument$",
+    ):
+        _canvas(client, *arguments)
+
+    assert client.renames == []
 
 
 if __name__ == "__main__":

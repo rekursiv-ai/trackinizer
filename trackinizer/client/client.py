@@ -1918,6 +1918,67 @@ class Client:
         where = f"/api/canvases/{canvas_id}"
         return dict(_require_mapping(self.get(where), where))
 
+    def list_canvases(self) -> list[dict[str, PlainTree]]:
+        """List the account's canvases: each one's name, workspace and session.
+
+        Returns:
+          canvases: As the server lists them, the one changed last first.
+
+        """
+        where = "/api/canvases"
+        return [
+            dict(_require_mapping(each, where))
+            for each in _require_list(self.get(where), where)
+        ]
+
+    def rename_canvas(self, canvas_id: uuid.UUID, *, name: str) -> dict[str, PlainTree]:
+        """Rename one of the account's canvases, the tab its chat is in.
+
+        Args:
+          canvas_id: The canvas.
+          name: Its new name, unique among the account's canvases.
+
+        Returns:
+          named: The canvas's name now, and nothing else of it.
+
+        """
+        where = f"/api/canvases/{canvas_id}/name"
+        return dict(_require_mapping(self.put(where, body={"name": name}), where))
+
+    def list_workspaces(self) -> list[dict[str, PlainTree]]:
+        """List the account's workspaces, hidden ones too, in the bar's order.
+
+        Returns:
+          workspaces: Each workspace Issue's id, number and title, as the server
+            lists them.
+
+        """
+        where = "/api/workspaces"
+        return [
+            dict(_require_mapping(each, where))
+            for each in _require_list(self.get(where, params={"hidden": True}), where)
+        ]
+
+    def rename_workspace(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        title: str,
+    ) -> dict[str, PlainTree]:
+        """Rename one of the account's workspaces, as the tab bar does.
+
+        Args:
+          workspace_id: The workspace Issue.
+          title: Its new title.
+
+        Returns:
+          workspace: The renamed workspace.
+
+        """
+        where = f"/api/workspaces/{workspace_id}"
+        renamed = self.patch(where, body={"title": title})
+        return dict(_require_mapping(renamed, where))
+
     def apply_canvas_operation(
         self,
         canvas_id: uuid.UUID,

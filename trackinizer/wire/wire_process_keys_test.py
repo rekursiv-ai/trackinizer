@@ -45,6 +45,10 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("POST", SESSION_START_PATH),
         ("GET", "/api/inquiries/{kind}/{seq}"),
         ("GET", "/api/me/preferences/agent"),
+        ("GET", "/api/workspaces"),
+        ("PATCH", "/api/workspaces/{workspace_id}"),
+        ("GET", "/api/canvases"),
+        ("PUT", "/api/canvases/{canvas_id}/name"),
     } == PROCESS_KEY_ROUTES - {
         (method, path) for method, path in PROCESS_KEY_ROUTES if "{session_id}" in path
     }

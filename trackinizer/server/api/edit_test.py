@@ -14,7 +14,10 @@ from treekle import from_plain
 import pytest
 
 from trackinizer.conftest import make_store, new_uuid, set_field_row
-from trackinizer.server.api.conftest import TEST_USER_EMAIL, make_test_identity
+from trackinizer.server.api.conftest import (
+    TEST_USER_EMAIL,
+    make_test_identity,
+)
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.wire.bodies import FieldSet

@@ -96,10 +96,14 @@ __all__ = [
     "SessionStart",
     "SessionStartResponse",
     "campaign_asker_label",
+    "checked_canvas_name",
     "session_audience_path",
     "session_place_path",
 ]
 
+
+_CANVAS_NAME_MAX: Final = 120
+"""The most characters a canvas's name has, trimmed."""
 
 CAMPAIGN_ASKER_INFIX: Final = ":asker:"
 """What joins a campaign's slug and the email of the person who launched it, in the
@@ -111,6 +115,25 @@ caller."""
 type FeedWhose = Literal["mine", "campaigns", "everyone"]
 """Whose sessions a feed read keeps: the caller's own, those of the campaigns the
 caller launched, or every one the caller reads."""
+
+
+def checked_canvas_name(name: str) -> str:
+    """Return a canvas's name trimmed, as each route and command naming one takes it.
+
+    Args:
+      name: The name as given.
+
+    Returns:
+      name: Trimmed, 1 to 120 characters.
+
+    Raises:
+      ValueError: Trimmed, it is empty or longer than 120 characters.
+
+    """
+    name = name.strip()
+    if not name or len(name) > _CANVAS_NAME_MAX:
+        raise ValueError(f"A canvas name is 1 to {_CANVAS_NAME_MAX} characters.")
+    return name
 
 
 def campaign_asker_label(slug: str, email: str) -> str:
@@ -272,6 +295,17 @@ class PlaceSession(BaseModel):
 
     git: GitRef | None = None
     """The run's checkout, when it is on a branch of a git work tree."""
+
+    name: str | None = Field(default=None, max_length=1_000)
+    """A name for the canvas that holds the run's chat: the canvas is renamed so and
+    opened, so its tab shows by that name. ``None`` leaves the canvas as it is, and a
+    canvas made for the chat closed."""
+
+    @field_validator("name")
+    @classmethod
+    def _trimmed_and_bounded(cls, name: str | None) -> str | None:
+        """Hold a supplied name to a canvas's bounds."""
+        return None if name is None else checked_canvas_name(name)
 
 
 class SessionPlacement(BaseModel):

@@ -1116,6 +1116,31 @@ class FakeClient:
         )
         return {"id": str(canvas_id), "revision": 0, "visuals": []}
 
+    def list_canvases(self) -> list[dict[str, PlainTree]]:
+        """List canvases."""
+        self.calls.append(("list_canvases", (), {}))
+        return []
+
+    def rename_canvas(self, canvas_id: uuid.UUID, *, name: str) -> dict[str, PlainTree]:
+        """Rename a canvas."""
+        self.calls.append(("rename_canvas", (canvas_id,), {"name": name}))
+        return {"name": name}
+
+    def list_workspaces(self) -> list[dict[str, PlainTree]]:
+        """List workspaces."""
+        self.calls.append(("list_workspaces", (), {}))
+        return []
+
+    def rename_workspace(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        title: str,
+    ) -> dict[str, PlainTree]:
+        """Rename a workspace."""
+        self.calls.append(("rename_workspace", (workspace_id,), {"title": title}))
+        return {"id": str(workspace_id), "title": title}
+
     def add_subscriber(
         self,
         target_id: uuid.UUID,
