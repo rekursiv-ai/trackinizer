@@ -241,6 +241,11 @@ class _WriterBusyError(RuntimeError):
     """Another process holds the model's writer lock, so the run wrote nothing."""
 
 
+def _default_cpu_threads(cpus: int | None) -> int:
+    """Return a quarter of ``cpus``, at least 1 and at most 16; 1 when unknown."""
+    return 1 if cpus is None else min(16, max(1, cpus // 4))
+
+
 def _add_arguments(parser: argparse.ArgumentParser) -> None:
     """Register flags on ``parser``."""
     parser.add_argument("dsn", help="Postgres DSN of the trackinizer database.")
@@ -348,7 +353,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--cpu-threads",
         type=int,
-        default=min(16, max(1, (os.cpu_count() or 4) // 4)),
+        default=_default_cpu_threads(os.cpu_count()),
         help="Torch threads --follow embeds with on CPU (default: a quarter of "
         "the logical CPUs, the measured knee, at most 16).",
     )
