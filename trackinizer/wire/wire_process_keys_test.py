@@ -62,6 +62,8 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("POST", "/api/addons/knowhost/hosts"),
         ("POST", "/api/addons/knowhost/hosts/{host_id}/pause"),
         ("POST", "/api/addons/knowhost/hosts/{host_id}/resume"),
+        ("GET", "/api/addons/knowspend/limits"),
+        ("PUT", "/api/addons/knowspend/limits"),
     } == PROCESS_KEY_ROUTES.keys() - {
         (method, path) for method, path in PROCESS_KEY_ROUTES if "{session_id}" in path
     }

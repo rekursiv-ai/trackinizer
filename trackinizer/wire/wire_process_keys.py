@@ -53,6 +53,9 @@ PROCESS_KEY_ROUTES: Final[
         ("DELETE", "/api/sessions/{session_id}/process"): "descendant",
         ("GET", "/api/sessions/{session_id}/lines"): "descendant",
         ("GET", "/api/inquiries/{target_id}"): "descendant",
+        # Its account's limits; it changes only the one on each campaign.
+        ("GET", "/api/addons/knowspend/limits"): "account",
+        ("PUT", "/api/addons/knowspend/limits"): "account",
         # Its account's hosts, which its agents' tools run on.
         ("GET", "/api/terminals/hosts"): "account",
         ("GET", "/api/terminals/hosts/changes"): "account",
