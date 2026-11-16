@@ -14,6 +14,7 @@ Three layers:
 
 from __future__ import annotations
 
+from copy import copy
 from dataclasses import replace
 from functools import cache
 from pathlib import Path
@@ -1408,7 +1409,9 @@ async def _let_through(
     spawned_below: bool = False,
 ) -> bool:
     """Say whether a process key of ``session_id`` is let through to ``route``."""
-    engine = engine or FakeEngine()
+    if engine is None:
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(return_value={"account": "ada@example.com"})
     engine.conn.fetchval.return_value = spawned_below
     store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
     store.remember_bearer_identity(
@@ -1433,6 +1436,8 @@ async def _let_through(
         route=route,
         session_id=named,
     )
+    if isinstance(route, Route) and "{target_id}" in route.path and named is not None:
+        request.path_params["target_id"] = request.path_params.pop("session_id")
     try:
         _ = await request_user(request)
     except HTTPException as error:
@@ -1460,19 +1465,28 @@ class TestProcessKeyRoutes:
         # One engine for the walk: an engine apiece builds a mock connection for
         # each of some 250 routes, which was most of this test's 0.2 s.
         engine = FakeEngine()
-        for path, route in iter_route_leaves(_served_app()):
+        engine.conn.fetchrow = AsyncMock(return_value={"account": "ada@example.com"})
+        for path, original in iter_route_leaves(_served_app()):
+            route = copy(original)
+            if isinstance(route, Route | WebSocketRoute):
+                route.path = path
             for method in _calls(route):
-                own = _OWN_SESSION if "{session_id}" in path else None
+                own = (
+                    uuid.UUID(int=9)
+                    if "{session_id}" in path or "{target_id}" in path
+                    else None
+                )
                 let = await _let_through(
                     route,
                     method=method,
                     named=own,
                     engine=engine,
+                    spawned_below=True,
                 )
                 (passed if let else refused).add((method, path))
 
         # The canvas routes are the app's; a server without the app serves none.
-        assert passed == PROCESS_KEY_ROUTES & (passed | refused)
+        assert passed == PROCESS_KEY_ROUTES.keys() & (passed | refused)
         assert len(refused) > len(passed)
 
     @pytest.mark.asyncio
@@ -1501,6 +1515,104 @@ class TestProcessKeyRoutes:
         assert not await _let_through(messages, method="POST", session_id=None)
         # A request no route matched names no route a process calls.
         assert not await _let_through(None, method="POST")
+
+    @pytest.mark.asyncio
+    async def test_route_scope_comes_from_the_allowlist(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        path = "/api/sessions/{session_id}/records"
+        monkeypatch.setattr(auth, "PROCESS_KEY_ROUTES", {("GET", path): "descendant"})
+        route = dict(iter_route_leaves(_served_app()))[path]
+
+        assert not await _let_through(route, named=_OWN_SESSION, spawned_below=True)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "path", "account_checked"),
+        [
+            ("PUT", "/api/sessions/{session_id}/process", True),
+            ("POST", "/api/sessions/{session_id}/records", False),
+            ("GET", "/api/inquiries/{target_id}", False),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "account",
+        ["ada@example.com", "ADA@EXAMPLE.COM", "bob@example.com", None],
+    )
+    async def test_descendant_account_is_checked_before_the_handler(
+        self,
+        method: str,
+        path: str,
+        account: str | None,
+        *,
+        account_checked: bool,
+    ) -> None:
+        engine = FakeEngine()
+        engine.conn.fetchrow = AsyncMock(
+            return_value=None if account is None else {"account": account},
+        )
+        route = dict(iter_route_leaves(_served_app()))[path]
+
+        assert await _let_through(
+            route,
+            method=method,
+            named=uuid.UUID(int=9),
+            spawned_below=True,
+            engine=engine,
+        ) is (
+            not account_checked
+            or (account is not None and account.lower() == "ada@example.com")
+        )
+        if account_checked:
+            engine.conn.fetchrow.assert_awaited_once_with(
+                "SELECT account FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
+                uuid.UUID(int=9),
+            )
+        else:
+            engine.conn.fetchrow.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method", "path"),
+        [
+            ("PUT", "/api/sessions/{session_id}/process"),
+            ("DELETE", "/api/sessions/{session_id}/process"),
+            ("GET", "/api/sessions/{session_id}/process"),
+            ("GET", "/api/sessions/{session_id}/lines"),
+            ("GET", "/api/inquiries/{target_id}"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        ("named", "below", "allowed"),
+        [
+            (_OWN_SESSION, False, False),
+            (_OWN_SESSION, True, False),
+            (uuid.UUID(int=9), True, True),
+            (uuid.UUID(int=9), False, False),
+            ("not-an-id", True, False),
+        ],
+        ids=["own", "own-in-cycle", "descendant", "sibling", "invalid"],
+    )
+    async def test_launch_management_reaches_only_descendants(
+        self,
+        method: str,
+        path: str,
+        named: uuid.UUID | str,
+        *,
+        below: bool,
+        allowed: bool,
+    ) -> None:
+        route = dict(iter_route_leaves(_served_app()))[path]
+        assert (
+            await _let_through(
+                route,
+                method=method,
+                named=named,
+                spawned_below=below,
+            )
+            is allowed
+        )
 
     @pytest.mark.asyncio
     async def test_a_person_s_key_is_let_through_wherever_its_route_lets_it(

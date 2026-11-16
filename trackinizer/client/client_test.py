@@ -1562,7 +1562,7 @@ _FAKE_EXEMPT: frozenset[str] = frozenset(
     | {"wait_terminals", "hosts_version"}
     | {"wait_tools", "wait_exec", "post_exec_result"}
     | {"start_process", "read_process", "stop_process", "send_input"}
-    | {"open_lines", "wait_session", "report_process_ended"}
+    | {"open_lines", "lines_stream", "wait_session", "report_process_ended"}
     | {"job_submit", "job_list", "job_view", "job_grant", "job_read_grant"}
     | {"job_grant_serial", "job_start", "job_cancel", "job_secret_names"}
     | {"job_put_secret", "job_delete_secret"}

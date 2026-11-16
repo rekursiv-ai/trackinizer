@@ -20,6 +20,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.websockets import WebSocketDisconnect
 from treekle import from_plain
 
+import httpx2
 import pytest
 
 from trackinizer.conftest import ExchangeEngine, Says, executed_sql, make_store
@@ -41,6 +42,7 @@ from trackinizer.wire.wire_session_relay import (
     SESSION_INPUTS_PATH,
     SESSION_LINES_PATH,
     SESSION_PROCESS_PATH,
+    AgentProcess,
     AgentState,
     Hello,
     NewInput,
@@ -1306,6 +1308,116 @@ async def test_a_stop_detaches_the_process_and_revokes_its_key_a_minute_later(
     assert revoked is not None
     assert revoked.args[1:] == (f"agent process {process_id}", None)
     assert forgotten == keys
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "body"),
+    [
+        ("PUT", {}),
+        ("DELETE", None),
+        ("GET", None),
+        ("PUT", {"host": "lab"}),
+        ("PUT", {"host": ""}),
+        ("PUT", {"login_host": "lab"}),
+        ("PUT", {"login_host": ""}),
+        ("PUT", {"cwd": "/work"}),
+        ("PUT", {"cwd": "~"}),
+    ],
+)
+@pytest.mark.parametrize("stopped", [False, True])
+@pytest.mark.parametrize(
+    ("account", "status"),
+    [("ada@x.y", 200), ("ADA@X.Y", 200), ("bob@x.y", 403)],
+    ids=["own-account", "case-insensitive", "foreign-account-even-if-opener"],
+)
+async def test_process_control_requires_the_descendants_own_account(
+    monkeypatch: pytest.MonkeyPatch,
+    method: str,
+    body: dict[str, str] | None,
+    account: str,
+    status: int,
+    *,
+    stopped: bool,
+) -> None:
+    status = 403 if body is not None and body else status
+    store, engine = make_store()
+    served = FastAPI()
+    served.include_router(session_relay_routes.router)
+    served.state.store, served.state.engine = store, engine
+    served.state.config = Config()
+    served.state.session_relay = SessionRelay()
+    served.state.later = _Later()
+    session = replace(live_session(opened_by_api_key_id=_CALLERS), account=account)
+    monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=session))
+    engine.conn.fetchval.return_value = True
+    engine.conn.fetchrow = AsyncMock(return_value={"account": account})
+    identity = AuthIdentity(
+        user_id=UUID(int=9),
+        api_key_id=_CALLERS,
+        email="ada@x.y",
+        role="writer",
+        process=ProcessKey(
+            process_id=UUID(int=2),
+            session_id=UUID(int=3),
+            host_id=UUID(int=4),
+        ),
+    )
+    store.remember_bearer_identity("trax_process", identity)
+    current = served.state.session_relay.start(
+        session.id,
+        ProcessSpec(),
+        process_id=UUID(int=5),
+        host_id=UUID(int=4),
+        host="lab",
+        token=f"key-{UUID(int=5).hex}",
+        remote=False,
+    )
+    if stopped:
+        current = await served.state.session_relay.stop(session.id)
+    place = AsyncMock(
+        return_value=session_relay_routes._Place(
+            host_id=UUID(int=4),
+            host="lab",
+            remote=False,
+        ),
+    )
+    mint = AsyncMock(
+        return_value=(_CALLERS, f"key-{UUID(int=8).hex}", "prefix", "writer"),
+    )
+    monkeypatch.setattr(session_relay_routes, "_start_place", place)
+    monkeypatch.setattr(session_relay_routes, "create_api_key", mint)
+    async with httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=served),
+        base_url="http://testserver",
+        headers={"Authorization": "Bearer trax_process"},
+    ) as http:
+        answer = await http.request(
+            method,
+            SESSION_PROCESS_PATH.format(session_id=session.id),
+            json=body,
+        )
+    assert answer.status_code == status, answer.text
+    if status == 200:
+        assert AgentProcess.model_validate_json(answer.content).state == (
+            "starting"
+            if method == "PUT" or (method == "GET" and not stopped)
+            else "detached"
+        )
+        if method == "PUT" and stopped:
+            assert mint.await_args is not None
+            assert mint.await_args.kwargs["user_id"] == identity.user_id
+            assert mint.await_args.kwargs["minter"] == identity
+            assert mint.await_args.kwargs["host_id"] == UUID(int=4)
+            assert mint.await_args.kwargs["ceiling"] == "writer"
+            assert len(served.state.later.asked) == 1
+        else:
+            mint.assert_not_awaited()
+    else:
+        assert served.state.session_relay.process(session.id) == current
+        assert served.state.later.asked == []
+        place.assert_not_awaited()
+        mint.assert_not_awaited()
 
 
 _NAMED: Final[JSON] = {

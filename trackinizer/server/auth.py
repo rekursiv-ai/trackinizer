@@ -41,12 +41,12 @@ import time
 import uuid
 
 from fastapi import Depends, HTTPException, Request
-from starlette.routing import Route, WebSocketRoute
 
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.api._origin import require_own_page_write
 from trackinizer.server.audience import key_audiences, person_audiences
 from trackinizer.server.notify import tx
+from trackinizer.server.route_iter import matched_route_path
 from trackinizer.server.session import read_session_cookie
 from trackinizer.server.values import vetted_sql
 from trackinizer.wire.audience import AUDIENCES, OPEN, PRIVATE
@@ -1357,34 +1357,73 @@ async def _require_process_route(
     process = identity.process
     if process is None:
         return
-    route = cast(object, connection.scope.get("route"))
+    refused = HTTPException(
+        status_code=403,
+        detail="an agent process's key reaches only what its process calls, for its "
+        "own session and the sessions its agents spawned",
+    )
+    path = matched_route_path(connection)
+    if path is None:
+        raise refused
     method = (
         WEBSOCKET
         if connection.scope["type"] == "websocket"
         else cast(str, connection.scope["method"])
     )
-    named = cast("str | None", connection.path_params.get("session_id"))
+    scope = PROCESS_KEY_ROUTES.get((method, path))
+    named = cast(
+        "str | None",
+        connection.path_params.get("session_id")
+        or connection.path_params.get("target_id"),
+    )
     if (
         process.session_id is not None
-        and isinstance(route, Route | WebSocketRoute)
-        and (method, route.path) in PROCESS_KEY_ROUTES
-        and (named is None or await _reaches_named(store, process=process, named=named))
+        and scope is not None
+        and (
+            scope == "account"
+            or (
+                named is not None
+                and await _reaches_named(
+                    store,
+                    process=process,
+                    named=named,
+                    descendants_only=scope == "descendant",
+                    account=identity.email
+                    if "session_id" in connection.path_params
+                    else None,
+                )
+            )
+        )
     ):
         return
-    raise HTTPException(
-        status_code=403,
-        detail="an agent process's key reaches only what its process calls, for its "
-        "own session and the sessions its agents spawned",
-    )
+    raise refused
 
 
-async def _reaches_named(store: _StoreLike, *, process: ProcessKey, named: str) -> bool:
-    """Return whether ``process`` reaches the session a path names; no id names none."""
+async def _reaches_named(
+    store: _StoreLike,
+    *,
+    process: ProcessKey,
+    named: str,
+    descendants_only: bool,
+    account: str | None,
+) -> bool:
+    """Return whether ``process`` reaches the named session for this route's scope."""
     try:
         session_id = uuid.UUID(named)
     except ValueError:
         return False
-    return await process_reaches(store, process=process, session_id=session_id)
+    if descendants_only and session_id == process.session_id:
+        return False
+    if not await process_reaches(store, process=process, session_id=session_id):
+        return False
+    if not descendants_only or account is None:
+        return True
+    async with store.engine.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT account FROM inquiries WHERE id = $1 AND kind = 'AgentSession'",
+            session_id,
+        )
+    return row is not None and cast(str, row["account"]).lower() == account.lower()
 
 
 async def _resolve_session_identity(

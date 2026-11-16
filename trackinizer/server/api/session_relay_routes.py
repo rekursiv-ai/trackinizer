@@ -28,13 +28,11 @@ a remote agent's start, and each line sent to one, is refused as that policy say
 (``agent_policy_gate``). The process's key is minted under the caller's account, capped at the caller's role
 and at ``writer``, bound to the host and named for the process and its session
 (``auth.process_key_name``). It reaches only the
-routes an agent process calls (``wire_process_keys.PROCESS_KEY_ROUTES``), each for
-its own process's session alone, and is refused 403 on every other before the route
-acts (``auth.request_user``): a key that could do more would reach every session and
-host of its account. Of the routes here that leaves its session's socket, which it
-opens for the process it was minted for alone; elsewhere its session's parts and
-records, its account's hosts and their tools, and a message sent as an agent of its
-session (``sessions_routes``). It is revoked by its
+routes an agent process calls (``wire_process_keys.PROCESS_KEY_ROUTES``), within
+its session's spawned tree (``auth.request_user``). Process start and stop require a
+strict descendant in the same account, never the key's own session; its socket,
+parts and records also accept its own session. Its account's hosts and their tools,
+and messages sent as an agent of its session, retain their route checks. It is revoked by its
 name: when its daemon reports the process ended, a minute after a stop, 30 seconds
 after its daemon took the start if it neither attached nor was reported by then, as
 long after the start as a host takes to read offline if no daemon took it by then,
@@ -318,6 +316,12 @@ async def start_process_route(
     """
     session = await _session(request, session_id)
     await _require_writer(request, identity, session=session)
+    if identity.process is not None and body.model_fields_set & {
+        "host",
+        "login_host",
+        "cwd",
+    }:
+        raise HTTPException(status_code=403)
     relay = get_session_relay(request)
     current = relay.process(session_id)
     if current is not None and current.state != "detached":
