@@ -937,7 +937,10 @@ def test_compile_cache_round_trips_through_the_path(
     assert loader.loaded == b"COMPILED-ARTIFACTS"
 
 
-@pytest.mark.parametrize(("cpus", "threads"), [(128, 16), (32, 8), (8, 2), (None, 1)])
+@pytest.mark.parametrize(
+    ("cpus", "threads"),
+    [(128, 16), (32, 8), (10, 2), (8, 2), (2, 1), (None, 1)],
+)
 def test_cpu_threads_default_is_a_quarter_of_the_cpus_at_most_16(
     monkeypatch: pytest.MonkeyPatch,
     cpus: int | None,
@@ -992,7 +995,9 @@ def test_add_arguments_registers_defaults_and_overrides() -> None:
     assert actions["interval_sec"].type is int
     assert default("interval_sec") == 60
     assert actions["cpu_threads"].type is int
-    assert default("cpu_threads") == min(16, max(1, (os.cpu_count() or 4) // 4))
+    assert default("cpu_threads") == backfill_embedding._default_cpu_threads(
+        os.cpu_count(),
+    )
     assert actions["gpu_backfill"].nargs == 0
     assert default("gpu_backfill") is False
     assert actions["gpu_backfill_min_records"].type is int
