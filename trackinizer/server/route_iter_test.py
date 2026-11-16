@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, FastAPI, Request, Response, WebSocket
 from fastapi.routing import APIRoute, APIWebSocketRoute
+from fastapi.testclient import TestClient
 from starlette.requests import HTTPConnection
 from starlette.routing import Host, Mount, Route, WebSocketRoute
 
@@ -141,6 +142,27 @@ async def test_matched_path_uses_the_requested_inclusion() -> None:
             answer = await client.get(f"{prefix}/knowhost/hosts/7")
             assert answer.status_code == 200
             assert answer.text == f"{prefix}/knowhost/hosts/{{host_id}}"
+
+
+@pytest.mark.parametrize("prefix", ["", "/api"])
+def test_matched_path_of_a_websocket_is_its_full_template(prefix: str) -> None:
+    """FastAPI's include context names no path for a socket; its route names it in full."""
+    seen: list[str | None] = []
+
+    async def socket(websocket: WebSocket, session_id: str) -> None:
+        del session_id
+        seen.append(matched_route_path(websocket))
+        await websocket.accept()
+        await websocket.close()
+
+    inner = APIRouter()
+    inner.add_api_websocket_route("/sessions/{session_id}/process/ws", socket)
+    app = FastAPI()
+    app.include_router(inner, prefix=prefix)
+    with TestClient(app).websocket_connect(f"{prefix}/sessions/s1/process/ws"):
+        pass
+
+    assert seen == [f"{prefix}/sessions/{{session_id}}/process/ws"]
 
 
 @pytest.mark.parametrize("kind", ["http", "websocket", "missing"])

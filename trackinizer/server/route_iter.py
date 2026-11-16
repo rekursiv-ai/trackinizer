@@ -59,9 +59,20 @@ class ApiRouteLeaf:
 
 
 def matched_route_path(connection: HTTPConnection) -> str | None:
-    """Return the matched route's full template, including lazy router prefixes."""
+    """Return the matched route's full template, including lazy router prefixes.
+
+    Args:
+      connection: The request or socket, after routing.
+
+    Returns:
+      path: The template, as ``/api/sessions/{session_id}/process/ws``; ``None``
+        when no route matched.
+
+    """
     context = cast(object, _get_scope_effective_route_context(connection.scope))
-    if isinstance(context, _EffectiveRouteContext):
+    # A socket's include context holds no path (FastAPI 0.162); its route already
+    # holds the full template, prefixes included.
+    if isinstance(context, _EffectiveRouteContext) and context.path:
         return context.path
     route = connection.scope.get("route")
     return route.path if isinstance(route, Route | WebSocketRoute) else None
