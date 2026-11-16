@@ -806,8 +806,11 @@ class _SessionIRMixin(_CascadeAuditMixin):
         Each prefix becomes the target's next part, numbered from 0 in the order given,
         under the source part's file name, metadata, id and format, so a reader takes
         the copy as it took the original. Its records keep their positions, stamps,
-        payloads, ciphertext and offloaded bodies. The target must hold no part yet:
-        one it holds collides with the copy, and the caller's transaction fails.
+        payloads, ciphertext and offloaded bodies, and their vectors and freshness
+        markers for every ``(mapper, model)``: the text is the original's, so its
+        ``text_md5`` holds and the embedding sweep has nothing to redo. The target
+        must hold no part yet: one it holds collides with the copy, and the caller's
+        transaction fails.
 
         Args:
           conn: The caller's connection, inside its transaction.
@@ -817,6 +820,7 @@ class _SessionIRMixin(_CascadeAuditMixin):
           api_key_id: The key each copied part is recorded as opened by.
 
         """
+        # pragma: no mutate[case-insensitive] start
         copied = "unnest($3::int[], $4::int[], $5::int[]) AS copied(part, records, into_part)"
         arguments = (
             source,
@@ -872,6 +876,32 @@ class _SessionIRMixin(_CascadeAuditMixin):
             ),
             *arguments,
         )
+        await conn.execute(
+            vetted_sql(
+                "INSERT INTO session_embeddings (session_id, part, idx, field, chunk, ",
+                "mapper, model, embedding, text_md5, created) ",
+                "SELECT $2, copied.into_part, e.idx, e.field, e.chunk, e.mapper, ",
+                "e.model, e.embedding, e.text_md5, e.created ",
+                "FROM session_embeddings AS e JOIN ",
+                copied,
+                " ON copied.part = e.part WHERE e.session_id = $1 ",
+                "AND e.idx < copied.records",
+            ),
+            *arguments,
+        )
+        await conn.execute(
+            vetted_sql(
+                "INSERT INTO session_index_state (session_id, part, idx, mapper, ",
+                "model, text_md5, created) ",
+                "SELECT $2, copied.into_part, s.idx, s.mapper, s.model, s.text_md5, ",
+                "s.created FROM session_index_state AS s JOIN ",
+                copied,
+                " ON copied.part = s.part WHERE s.session_id = $1 ",
+                "AND s.idx < copied.records",
+            ),
+            *arguments,
+        )
+        # pragma: no mutate end
 
 
 def _manifest(row: asyncpg.Record) -> SessionManifest:
