@@ -540,10 +540,14 @@ class PostgresEngine:
             min_size=1,
             max_size=self._max_size,
             init=_init_connection,
+            server_settings=_SERVER_SETTINGS,
         )
         listener: asyncpg.Connection[asyncpg.Record] | None = None
         try:
-            listener = await asyncpg.connect(dsn=self._dsn)
+            listener = await asyncpg.connect(
+                dsn=self._dsn,
+                server_settings=_SERVER_SETTINGS,
+            )
             await _init_connection(listener)
             await listener.add_listener(self._listen_channel, self._on_notify)
         except BaseException:
@@ -611,6 +615,14 @@ class PostgresEngine:
         """
         return self._bus.subscribe(channel)
 
+
+_SERVER_SETTINGS: Final = {"jit": "off"}
+"""Settings every ``PostgresEngine`` connection opens with.
+
+Postgres JIT-compiles any query whose plan estimate passes ``jit_above_cost``. A
+correlated read filter (trackinizer's chat filing test) estimates ~1e8 for a 0.4 ms
+query, and the compile took ~5 s on every issue read in production (2026-11-15).
+"""
 
 _LOCK_OWNER_ATTR: Final = "_loop_conn_guard_owner"
 
