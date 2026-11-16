@@ -1139,13 +1139,18 @@ async def test_postgres_enter_configures_pool_listener_and_exit(
     assert await engine.__aenter__() is engine
     assert engine._pool is pool
     assert engine._listener is listener
+    # JIT off: a compile costs seconds on a fast read whose plan only estimates high.
     create_pool.assert_awaited_once_with(
         dsn="postgresql:///unused",
         min_size=1,
         max_size=8,
         init=init,
+        server_settings={"jit": "off"},
     )
-    connect.assert_awaited_once_with(dsn="postgresql:///unused")
+    connect.assert_awaited_once_with(
+        dsn="postgresql:///unused",
+        server_settings={"jit": "off"},
+    )
     assert initialized == [listener]
     add_listener.assert_awaited_once_with("updates", engine._on_notify)
     await engine.__aexit__()
