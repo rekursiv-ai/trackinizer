@@ -37,6 +37,7 @@ operation. Either way the raw httpx2 exception never escapes the
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, Literal, NamedTuple, Self, cast
 from urllib.parse import quote, urlparse
 
@@ -68,7 +69,7 @@ logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Generator, Iterator
     from types import TracebackType
 
     import pydantic
@@ -2596,8 +2597,21 @@ class Client:
             not one.
 
         """
+        with self.lines_stream(session_id) as frames:
+            yield from frames
+
+    @contextmanager
+    def lines_stream(self, session_id: uuid.UUID) -> Generator[Iterator[ViewerFrame]]:
+        """Open viewer frames; close the HTTP response when the context exits.
+
+        Args:
+          session_id: The session to watch.
+
+        Yields:
+          frames: The live frame iterator, readable on a worker thread.
+
+        """
         where = wire_session_relay.SESSION_LINES_PATH.format(session_id=session_id)
-        frames = pydantic.TypeAdapter(wire_session_relay.ViewerFrame)
         try:
             with self._http.stream(
                 "GET",  # pragma: no mutate[case-insensitive]
@@ -2613,12 +2627,9 @@ class Client:
                         f"{_truncate(response.text)}",
                         status_code=response.status_code,
                     )
-                for data in _sse_data(response.iter_lines()):
-                    yield frames.validate_json(data)
+                yield _line_frames(response, where=where)
         except httpx2.TransportError as err:
             raise ClientError(f"GET {where} failed: {err}") from err
-        except pydantic.ValidationError as err:
-            raise ClientError(f"{where} returned a malformed payload: {err}") from err
 
     def wait_session(
         self,
@@ -3434,6 +3445,17 @@ def _error_code(response: httpx2.Response) -> str:
         else None
     )
     return code if isinstance(code, str) else ""
+
+
+def _line_frames(response: httpx2.Response, *, where: str) -> Iterator[ViewerFrame]:
+    frames = pydantic.TypeAdapter(wire_session_relay.ViewerFrame)
+    try:
+        for data in _sse_data(response.iter_lines()):
+            yield frames.validate_json(data)
+    except httpx2.TransportError as error:
+        raise ClientError(f"GET {where} failed: {error}") from error
+    except pydantic.ValidationError as error:
+        raise ClientError(f"{where} returned a malformed payload: {error}") from error
 
 
 def _sse_data(lines: Iterator[str]) -> Iterator[str]:

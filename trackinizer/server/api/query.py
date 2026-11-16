@@ -37,6 +37,7 @@ from trackinizer.server.api.session_access import (
     require_row_write,
 )
 from trackinizer.server.api.session_identity import (
+    hidden_session,
     request_principal,
     session_reader,
 )
@@ -52,6 +53,7 @@ from trackinizer.types.columns import (
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
     KIND_TO_CLASS,
+    AgentSession,
     Inquiry,
 )
 from trackinizer.wire.bodies import ClaimNextIssue, FieldMutation
@@ -524,14 +526,17 @@ async def get_inquiry_route(
       inquiry: Full tagged row; a missing or denied row raises 404.
 
     """
-    return _require_found(
-        tag_kind(
-            await get_store(request).get_inquiry(
-                target_id,
-                principal=await request_principal(request, identity),
-            ),
-        ),
+    store = get_store(request)
+    row = await store.get_inquiry(
+        target_id,
+        principal=await request_principal(request, identity),
     )
+    if identity.process is not None and (
+        not isinstance(row, AgentSession)
+        or row.account.lower() != identity.email.lower()
+    ):
+        raise hidden_session(None)
+    return _require_found(tag_kind(row))
 
 
 # -- Inquiry delete ---------------------------------------------------------

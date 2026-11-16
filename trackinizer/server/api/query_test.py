@@ -48,10 +48,10 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.audience import SessionReader
-from trackinizer.server.auth import AuthIdentity, Role, current_user
+from trackinizer.server.auth import AuthIdentity, ProcessKey, Role, current_user
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Change, Snapshot
-from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
+from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry, Issue
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.seq_ranges import SeqRange
@@ -79,6 +79,49 @@ def _query_app() -> Iterator[None]:
 
 
 class TestRoutes:
+    @pytest.mark.parametrize(
+        ("kind", "account", "status"),
+        [
+            ("AgentSession", TEST_USER_EMAIL, 200),
+            ("AgentSession", TEST_USER_EMAIL.upper(), 200),
+            ("AgentSession", "foreign@example.com", 403),
+            ("Issue", TEST_USER_EMAIL, 403),
+            ("missing", TEST_USER_EMAIL, 403),
+        ],
+    )
+    def test_process_reads_only_session_rows_of_its_account(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        kind: str,
+        account: str,
+        status: int,
+    ) -> None:
+        client, store, _ = route_client
+        session = replace(conftest.live_session(), account=account)
+        row = (
+            session
+            if kind == "AgentSession"
+            else Issue(id=session.id, account=account)
+            if kind == "Issue"
+            else None
+        )
+        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=row))
+        install_identity(
+            replace(
+                make_test_identity(),
+                process=ProcessKey(
+                    process_id=uuid.UUID(int=2),
+                    session_id=uuid.UUID(int=3),
+                    host_id=uuid.UUID(int=4),
+                ),
+            ),
+        )
+
+        answer = client.get(f"/api/inquiries/{session.id}")
+
+        assert answer.status_code == status, answer.text
+
     def test_purge_route(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],

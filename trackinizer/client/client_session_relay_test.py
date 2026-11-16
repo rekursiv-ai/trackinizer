@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Final
 from urllib.parse import parse_qsl
 from uuid import UUID
 
+import contextlib
 import json
 import time
 
@@ -255,6 +256,41 @@ def test_open_lines_yields_each_frame_and_skips_what_is_not_one() -> None:
     )
     # A quiet session must not end the read, so the read outlasts a keep-alive.
     assert _read_timeout(recorder.requests[0]) == 2.5 * LINES_PING_SEC
+
+
+@pytest.mark.parametrize("fail", [False, True])
+def test_lines_stream_closes_response_after_partial_read_or_error(fail: bool) -> None:
+    response = httpx2.Response(200, content=iter([b'data: {"type":"opened"}\n\n']))
+    with (
+        _client(_Recorder(response)) as found,
+        pytest.raises(ValueError, match="caller failed")
+        if fail
+        else contextlib.nullcontext(),
+        found.lines_stream(_SESSION) as frames,
+    ):
+        assert next(frames) == Opened()
+        assert not response.is_closed
+        if fail:
+            raise ValueError("caller failed")
+    assert response.is_closed
+
+
+def _broken_lines() -> Iterator[bytes]:
+    yield b": open\n\n"
+    raise httpx2.ReadError("stream broke")
+
+
+def test_a_broken_lines_stream_wraps_the_transport_error() -> None:
+    response = httpx2.Response(200, content=_broken_lines())
+    with (
+        _client(_Recorder(response)) as found,
+        pytest.raises(
+            ClientError,
+            match="stream broke",
+        ),
+    ):
+        _ = list(found.open_lines(_SESSION))
+    assert response.is_closed
 
 
 def test_open_lines_reads_a_refusals_body_before_it_names_the_refusal() -> None:

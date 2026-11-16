@@ -31,6 +31,10 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
     ),
     "server/api/session_access.py": ("audience", "session authorization"),
     "server/audience.py": ("audience", "the audience test itself"),
+    "server/auth.py": (
+        "trusted",
+        "process-key authorization checks only the descendant session's account",
+    ),
     "server/authority_sweep.py": ("trusted", "background authority worker"),
     "server/primitives.py": (
         "policy",
