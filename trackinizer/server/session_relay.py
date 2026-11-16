@@ -558,6 +558,20 @@ class SessionRelay:
         live = self._sessions.get(session_id)
         return None if live is None else live.process
 
+    def state(self, session_id: UUID) -> AgentState | None:
+        """Return what the session's attached process last said its agents are doing.
+
+        Args:
+          session_id: The session.
+
+        Returns:
+          state: The last state it sent; ``None`` while no process is attached, or
+            before the attached one's first.
+
+        """
+        live = self._sessions.get(session_id)
+        return None if live is None else live.state
+
     def output(self, session_id: UUID) -> str:
         """Return the end of the output its daemon reported of the session's process.
 

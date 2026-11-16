@@ -13,6 +13,7 @@ from trackinizer.wire.wire_session_ir import RecordBody
 from trackinizer.wire.wire_session_relay import (
     AgentProcess,
     AgentState,
+    BackgroundJob,
     Command,
     EventLine,
     Hello,
@@ -37,6 +38,14 @@ _SESSION = UUID(int=1)
 _PROCESS = UUID(int=2)
 _SINCE = datetime(2026, 11, 10, 12, 0, tzinfo=UTC)
 _STATE = AgentState(line="[3s 1k↑ 20↓]", busy=True, since=_SINCE)
+_JOB = BackgroundJob(
+    call_id="w1",
+    tool="Bash",
+    title="make build",
+    agent="kid",
+    started=_SINCE,
+    state="running",
+)
 _MODEL = Setting(
     name=("model",),
     help_short="The model that answers.",
@@ -102,6 +111,34 @@ def test_a_process_may_not_send_what_only_the_relay_writes() -> None:
         pydantic.TypeAdapter(ProcessFrame).validate_json(relay_only)
 
 
+@pytest.mark.parametrize(
+    ("busy", "jobs", "agents", "working"),
+    [
+        (False, (), (), False),
+        (True, (), (), True),
+        (False, ("job",), (), True),
+        (False, (), ("kid",), True),
+    ],
+    ids=["idle", "busy", "a-job", "a-child"],
+)
+def test_a_state_works_while_the_root_a_job_or_a_child_does(
+    busy: bool,
+    jobs: tuple[str, ...],
+    agents: tuple[str, ...],
+    working: bool,
+) -> None:
+    state = AgentState(
+        line="",
+        busy=busy,
+        since=_SINCE,
+        jobs=tuple(_JOB for _ in jobs),
+        agents=agents,
+    )
+
+    assert state.working == working
+    assert AgentState.model_validate_json(state.model_dump_json()) == state
+
+
 def test_a_frame_reads_past_a_field_a_newer_peer_added() -> None:
     read = Hello.model_validate(
         {
@@ -140,7 +177,19 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
             "busy": True,
             "since": "2026-11-10T12:00:00Z",
             "pending": [],
+            "jobs": [],
+            "agents": [],
+            "turn_ended": None,
+            "working": True,
         },
+    }
+    assert _JOB.model_dump(mode="json") == {
+        "call_id": "w1",
+        "tool": "Bash",
+        "title": "make build",
+        "agent": "kid",
+        "started": "2026-11-10T12:00:00Z",
+        "state": "running",
     }
     assert SettingsLine(settings=(_MODEL,)).model_dump(mode="json") == {
         "type": "settings",

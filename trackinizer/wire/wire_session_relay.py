@@ -65,7 +65,7 @@ from __future__ import annotations
 from typing import Annotated, Final, Literal, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
 
 from trackinizer.wire.json_types import JSON, UtcDatetime
 from trackinizer.wire.wire_session_ir import RecordBody
@@ -93,6 +93,7 @@ __all__ = [
     "STALE_PART",
     "AgentProcess",
     "AgentState",
+    "BackgroundJob",
     "Command",
     "EventLine",
     "Hello",
@@ -193,8 +194,36 @@ class Hello(BaseModel):
     """The name of the host it runs on."""
 
 
+class BackgroundJob(BaseModel):
+    """A tool call an agent of the session runs apart from its turn.
+
+    One asked to run in the background or later, or detached from a turn that
+    stopped waiting for it.
+    """
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    call_id: str
+    tool: str
+    title: str
+    """The tool's own label for the call, as sagent's terminal shows it."""
+
+    agent: str = ""
+    """The label of the child agent that runs it; empty for the root's own."""
+
+    started: UtcDatetime
+    """When it was asked for."""
+
+    state: Literal["sleeping", "running"]
+    """``sleeping`` until a delayed call starts, then ``running``."""
+
+
 class AgentState(BaseModel):
-    """What the root agent is doing now: the whole source of a viewer's status line."""
+    """What the session's agents are doing now.
+
+    The source of a viewer's status line, its spinners, and its count of what runs
+    in the background.
+    """
 
     model_config = ConfigDict(extra="ignore", frozen=True)
 
@@ -202,13 +231,31 @@ class AgentState(BaseModel):
     """The status line as sagent's own terminal shows it, with no spinner."""
 
     busy: bool
-    """Whether a model call, a tool call or a compaction runs."""
+    """Whether the root agent's model call, its tool calls or a compaction runs."""
 
     since: UtcDatetime
     """When ``busy`` last changed; a viewer counts up from it while the agent is busy."""
 
     pending: tuple[JSON, ...] = ()
     """Each message sent mid-turn that waits for the model, in the events' codec."""
+
+    jobs: tuple[BackgroundJob, ...] = ()
+    """Each background job of every agent of the session, the root's first."""
+
+    agents: tuple[str, ...] = ()
+    """The label of each child agent at work now: its model call, its tool calls or a
+    compaction."""
+
+    turn_ended: UtcDatetime | None = None
+    """When the root agent last ended a turn: left with nothing to do, failed, or
+    halted; ``None`` before its first. One that leaves a background job running has
+    not ended: it ends once the turn the job's result starts does."""
+
+    @computed_field
+    @property
+    def working(self) -> bool:
+        """Whether anything of the session works: the root, a job, or a child agent."""
+        return self.busy or bool(self.jobs) or bool(self.agents)
 
 
 class AgentProcess(BaseModel):

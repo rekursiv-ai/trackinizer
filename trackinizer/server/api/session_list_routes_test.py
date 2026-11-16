@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, TypedDict, cast
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Final, TypedDict, cast
 
 from treekle import json_loads
 
@@ -20,6 +21,7 @@ from trackinizer.server.api.session_test_support import (
     seed_session,
 )
 from trackinizer.server.session_relay import SessionRelay
+from trackinizer.wire.wire_session_relay import AgentState
 
 
 if TYPE_CHECKING:
@@ -29,6 +31,9 @@ if TYPE_CHECKING:
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
+
+
+_SINCE: Final = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)
@@ -80,9 +85,40 @@ async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
     assert (listings[0]["issues"], listings[0]["more"]) == ([], False)
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("state", "working"),
+    [
+        (None, False),
+        (AgentState(line="", busy=False, since=_SINCE), False),
+        (AgentState(line="", busy=True, since=_SINCE), True),
+        (AgentState(line="", busy=False, since=_SINCE, agents=("kid",)), True),
+    ],
+    ids=["nothing-said", "idle", "busy", "a-child-works"],
+)
+async def test_a_session_works_while_its_process_says_its_agents_work(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+    state: AgentState | None,
+    working: bool,
+) -> None:
+    client, store = pglite_route_client
+    await seed_accounts(store)
+    mine = await seed_session(store, USER_AGENT, actor="Agent", polled=False)
+    relay = cast(SessionRelay, app.state.session_relay)
+    browser()
+
+    async with attached_process(relay, mine, state=state):
+        served = await client.get("/api/sessions")
+
+    [listed] = json_loads(served.content, _Listing)["sessions"]
+    assert (listed["live"], listed["working"]) == (True, working)
+
+
 class _Session(TypedDict):
     id: str
     live: bool
+    working: bool
     host: str | None
 
 

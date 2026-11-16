@@ -30,7 +30,13 @@ from trackinizer.server.config import Assistant, Config
 from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.values import canonical_strs
-from trackinizer.wire.wire_session_relay import AgentProcess, Hello, ProcessLine
+from trackinizer.wire.wire_session_relay import (
+    AgentProcess,
+    AgentState,
+    Hello,
+    ProcessLine,
+    StateLine,
+)
 
 
 if TYPE_CHECKING:
@@ -274,6 +280,7 @@ async def attached_process(
     *,
     host: str = "gx10",
     key: uuid.UUID | None = None,
+    state: AgentState | None = None,
 ) -> AsyncGenerator[AgentProcess]:
     """Hold an agent process attached to a session, through the relay's own socket.
 
@@ -285,14 +292,18 @@ async def attached_process(
       session_id: The session the process serves.
       host: The host the process names in its ``Hello``.
       key: The key it holds its socket with; ``None`` for none.
+      state: What the process says its agents are doing once attached; ``None``
+        for nothing said.
 
     Yields:
-      process: The process, ``attached``.
+      process: The process, ``attached``, and its state relayed.
 
     """
     lines = relay.lines(session_id, allowed=_always)
     _ = await anext(lines)
-    socket = _OpenSocket()
+    socket = _OpenSocket(
+        [] if state is None else [StateLine(state=state).model_dump_json()],
+    )
     served = asyncio.ensure_future(
         relay.serve_process(
             session_id,
@@ -305,6 +316,8 @@ async def attached_process(
     )
     attached = await anext(lines)
     assert isinstance(attached, ProcessLine)
+    if state is not None:
+        assert isinstance(await anext(lines), StateLine)
     try:
         yield attached.process
     finally:
@@ -342,12 +355,15 @@ async def _always() -> bool:
 
 
 class _OpenSocket:
-    """A process socket that sends nothing and stays open until it is closed."""
+    """A process socket that sends ``said``, then stays open until it is closed."""
 
-    def __init__(self) -> None:
+    def __init__(self, said: list[str]) -> None:
+        self._said = said
         self._closed: asyncio.Future[int] = asyncio.get_running_loop().create_future()
 
     async def receive(self) -> str | bytes | int:
+        if self._said:
+            return self._said.pop(0)
         return await asyncio.shield(self._closed)
 
     async def send_text(self, text: str) -> None:
