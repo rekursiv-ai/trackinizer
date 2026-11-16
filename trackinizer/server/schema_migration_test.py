@@ -3127,6 +3127,133 @@ async def _bar(conn: Conn) -> dict[str, list[str] | dict[str, str]]:
     )
 
 
+_CHAT_USER = uuid.UUID(int=0x7901)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_079_places_each_chat_in_its_canvas_workspace(
+    pglite_rollback_conn: Conn,
+) -> None:
+    """079, once or twice, places each unplaced chat as a start would place it.
+
+    A chat on a canvas in a workspace goes there, and one on a loose canvas to the
+    default; each is labelled with its canvas. A placed chat, a run that is no chat,
+    and another account's session under a chat's id stay as they were.
+    """
+    conn = pglite_rollback_conn
+    ids = await _seed_chats(conn)
+
+    await conn.execute(load_sql("schema.079"))
+    await conn.execute(load_sql("schema.079"))
+
+    assert await _placements(conn, ids) == {
+        "held": ([ids["home"]], ["science-chat", f"canvas:{ids['home_canvas']}"]),
+        "loose": (
+            [ids["default"]],
+            ["science-chat", f"canvas:{ids['loose_canvas']}"],
+        ),
+        "placed": (
+            [ids["home"]],
+            ["science-chat", f"canvas:{ids['placed_canvas']}"],
+        ),
+        "run": ([], []),
+        "foreign": ([], ["science-chat"]),
+    }
+
+
+async def _seed_chats(conn: Conn) -> dict[str, uuid.UUID]:
+    """Make one person's workspaces, canvases and chats as a 078 server left them."""
+    await conn.execute(
+        "INSERT INTO users (id, email, name, role, status) "
+        "VALUES ($1, 'ada@x.y', 'Ada', 'writer', 'active')",
+        _CHAT_USER,
+    )
+    ids = {
+        "home": await _workspace(
+            conn,
+            email="ada@x.y",
+            title="Home",
+            labels=["workspace"],
+        ),
+        "default": await _workspace(
+            conn,
+            email="ada@x.y",
+            title="Untitled workspace",
+            labels=["workspace", "scratch"],
+        ),
+    }
+    chats = {name: uuid.uuid4() for name in ("held", "loose", "placed")}
+    for name, chat, workspace in (
+        ("home", chats["held"], ids["home"]),
+        ("loose", chats["loose"], None),
+        ("placed", chats["placed"], None),
+    ):
+        ids[f"{name}_canvas"] = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO visual_canvases (id, user_id, metadata, state) "
+            "VALUES ($1, $2, $3, $4)",
+            ids[f"{name}_canvas"],
+            _CHAT_USER,
+            {"name": name, "conversation_id": str(chat)}
+            | ({} if workspace is None else {"workspace_id": str(workspace)}),
+            {"visuals": []},
+        )
+    for name, account, cli, labels in (
+        ("held", "ada@x.y", f"chat:{chats['held']}", ["science-chat"]),
+        ("loose", "ada@x.y", f"chat:{chats['loose']}", ["science-chat"]),
+        (
+            "placed",
+            "ada@x.y",
+            f"chat:{chats['placed']}",
+            ["science-chat", f"canvas:{ids['placed_canvas']}"],
+        ),
+        ("run", "ada@x.y", "codex-1", list[str]()),
+        ("foreign", "bea@x.y", f"chat:{chats['held']}", ["science-chat"]),
+    ):
+        ids[name] = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, labels, "
+            "agentsession_audience, agentsession_cli_session_id) VALUES ($1, "
+            "'AgentSession', nextval('seq_agentsession'), 'active', $2, "
+            "'Science chat', $3, 'open', $4)",
+            ids[name],
+            account,
+            labels,
+            cli,
+        )
+    await conn.execute(
+        "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind) "
+        "VALUES ($1, 'AgentSession', $2, 'Issue', 'produced_by')",
+        ids["placed"],
+        ids["home"],
+    )
+    return ids
+
+
+async def _placements(
+    conn: Conn,
+    ids: Mapping[str, uuid.UUID],
+) -> dict[str, tuple[list[uuid.UUID], list[str]]]:
+    """Read each seeded session's workspace edges and labels, by its seed name."""
+    placements: dict[str, tuple[list[uuid.UUID], list[str]]] = {}
+    for name in ("held", "loose", "placed", "run", "foreign"):
+        edges = await conn.fetch(
+            "SELECT to_id FROM edges WHERE from_id = $1 AND edge_kind = 'produced_by' "
+            "ORDER BY to_id",
+            ids[name],
+        )
+        labels = await conn.fetchval(
+            "SELECT coalesce(labels, ARRAY[]::text[]) FROM inquiries WHERE id = $1",
+            ids[name],
+        )
+        placements[name] = (
+            [from_plain(row["to_id"], uuid.UUID) for row in edges],
+            from_plain(labels, list[str]),
+        )
+    return placements
+
+
 async def _same_embedding(conn: Conn, first: uuid.UUID, second: uuid.UUID) -> bool:
     """Say whether two inquiries hold the same embedding, as equal titles do."""
     return from_plain(

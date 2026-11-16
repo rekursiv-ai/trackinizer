@@ -15,11 +15,13 @@ from trackinizer.wire.wire_sessions import (
     CanvasMark,
     FeedCursor,
     FeedEvent,
+    PlaceSession,
     SendMessage,
     SessionAgent,
     SessionEnd,
     SessionStart,
     campaign_asker_label,
+    checked_canvas_name,
     held_read_timeout,
     session_audience_path,
     session_end_path,
@@ -411,6 +413,28 @@ def test_a_placement_has_a_path_of_the_session() -> None:
     session = uuid.UUID(int=7)
 
     assert session_place_path(session) == f"/api/sessions/{session}/place"
+
+
+def test_a_canvas_name_is_trimmed_and_one_to_a_hundred_and_twenty_characters() -> None:
+    assert checked_canvas_name("  Lab notes ") == "Lab notes"
+    assert checked_canvas_name("x" * 120) == "x" * 120
+    for bad in ("", "   ", "x" * 121):
+        with pytest.raises(
+            ValueError,
+            match=r"^A canvas name is 1 to 120 characters\.$",
+        ):
+            _ = checked_canvas_name(bad)
+
+
+def test_a_placements_chat_name_is_trimmed_and_held_to_a_canvas_names_bounds() -> None:
+    """No name leaves the canvas be; a given one is 1 to 120 characters once trimmed."""
+    assert PlaceSession().name is None
+    assert PlaceSession(name=None).name is None
+    assert PlaceSession(name="  Lab notes ").name == "Lab notes"
+    assert PlaceSession(name=" " + "x" * 120 + " ").name == "x" * 120
+    for bad in ("", "   ", "x" * 121):
+        with pytest.raises(ValidationError, match="1 to 120 characters"):
+            _ = PlaceSession(name=bad)
 
 
 def test_a_campaigns_asker_label_joins_its_slug_and_lowercased_email() -> None:

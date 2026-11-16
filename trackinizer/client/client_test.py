@@ -2049,6 +2049,92 @@ def test_a_preferences_change_reads_no_revision_and_sends_the_keys() -> None:
     ]
 
 
+def test_the_chats_are_listed_by_canvas_and_by_workspace_hidden_ones_too() -> None:
+    canvas, workspace = {"id": "c", "name": "tab"}, {"id": "w", "title": "Group"}
+    seen: list[tuple[str, str, list[tuple[str, str]]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(
+            (request.method, request.url.path, list(request.url.params.multi_items())),
+        )
+        listed = canvas if request.url.path == "/api/canvases" else workspace
+        return httpx2.Response(200, json=[listed])
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        canvases = client.list_canvases()
+        workspaces = client.list_workspaces()
+
+    assert (canvases, workspaces) == ([canvas], [workspace])
+    assert seen == [
+        ("GET", "/api/canvases", []),
+        ("GET", "/api/workspaces", [("hidden", "True")]),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("answer", "said"),
+    [({"id": "c"}, "{'id': 'c'}"), (["c"], "'c'")],
+    ids=["no-list", "no-object-in-it"],
+)
+def test_a_list_of_chats_that_is_no_list_of_objects_is_refused(
+    answer: PlainTree,
+    said: str,
+) -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(200, json=answer)
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        for listed, where in (
+            (client.list_canvases, "/api/canvases"),
+            (client.list_workspaces, "/api/workspaces"),
+        ):
+            with pytest.raises(ClientError) as raised:
+                _ = listed()
+            assert str(raised.value) == f"{where} returned a malformed payload: {said}"
+
+
+def test_a_canvas_is_renamed_by_its_name_and_a_workspace_by_its_title() -> None:
+    canvas, workspace = uuid.uuid4(), uuid.uuid4()
+    seen: list[tuple[str, str, dict[str, object]]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        body = json_loads(request.content, dict[str, object])
+        seen.append((request.method, request.url.path, body))
+        return httpx2.Response(200, json=body)
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        tab = client.rename_canvas(canvas, name="paper review")
+        group = client.rename_workspace(workspace, title="Papers")
+
+    assert (tab, group) == ({"name": "paper review"}, {"title": "Papers"})
+    assert seen == [
+        ("PUT", f"/api/canvases/{canvas}/name", {"name": "paper review"}),
+        ("PATCH", f"/api/workspaces/{workspace}", {"title": "Papers"}),
+    ]
+
+
+def test_a_rename_answered_with_no_object_is_refused() -> None:
+    canvas, workspace = uuid.uuid4(), uuid.uuid4()
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        del request
+        return httpx2.Response(200, json=[])
+
+    with Client("https://server") as client:
+        _install_mock_transport(client, handler)
+        with pytest.raises(ClientError, match=r"malformed payload: \[\]$") as tab:
+            _ = client.rename_canvas(canvas, name="a")
+        with pytest.raises(ClientError, match=r"malformed payload: \[\]$") as group:
+            _ = client.rename_workspace(workspace, title="a")
+
+    assert str(tab.value).startswith(f"/api/canvases/{canvas}/name ")
+    assert str(group.value).startswith(f"/api/workspaces/{workspace} ")
+
+
 def _answering(payload: PlainTree) -> Client:
     """Return a client whose server answers every request with ``payload``."""
 

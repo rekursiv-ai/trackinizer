@@ -47,6 +47,13 @@ PROCESS_KEY_ROUTES: Final[frozenset[tuple[str, str]]] = frozenset(
         ("POST", "/api/canvases/{canvas_id}/operations"),
         ("POST", "/api/canvases/{canvas_id}/captures"),
         ("GET", "/api/inquiries/{kind}/{seq}"),
+        # Its agents' Canvas tool's ``chats`` and ``rename``: its account's workspaces
+        # and chats, by name, and their names alone (``canvas_routes``,
+        # ``workspace_routes``).
+        ("GET", "/api/workspaces"),
+        ("PATCH", "/api/workspaces/{workspace_id}"),
+        ("GET", "/api/canvases"),
+        ("PUT", "/api/canvases/{canvas_id}/name"),
         # Its agents' Canvas tool's ``set``: the settings it offers. It changes them
         # through the canvas's ``preferences`` operation, and only those
         # (``canvas_routes.refuse_process_settings``).

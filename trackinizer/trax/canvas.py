@@ -7,6 +7,7 @@ routes; the server alone answers each with a 404.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast, override
 
@@ -26,7 +27,7 @@ from trackinizer.trax.render import echo
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Sequence
 
     from trackinizer.client.client import Client
 
@@ -35,6 +36,7 @@ __all__ = [
     "Canvas",
     "canvas_from_env",
     "canvas_lines",
+    "chat_lines",
     "mark_operation",
     "show_operation",
 ]
@@ -124,8 +126,8 @@ class Canvas(Command):
 
     names = ("canvas",)
     help = HelpPage(
-        usage="trax canvas CANVAS_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT | mark X1,Y1 X2,Y2 | mark remove MARK_ID | mark clear | capture [PATH]]",
-        summary="Read a canvas, change its visible modules, move its page, mark records, or capture it.",
+        usage="trax canvas CANVAS_UUID [show TYPE | navigate ROUTE | highlight UUID[,UUID...] | hide UUID | focus UUID | place UUID PLACEMENT | mark X1,Y1 X2,Y2 | mark remove MARK_ID | mark clear | capture [PATH] | rename NAME] | trax canvas list [QUERY]",
+        summary="List chats by workspace; read a canvas, change its visible modules, move its page, mark records, capture or rename it.",
         options=(
             (
                 "--record UUID",
@@ -144,6 +146,9 @@ class Canvas(Command):
             ),
         ),
         examples=(
+            "trax canvas list",
+            "trax canvas list 'review'",
+            "trax canvas UUID rename 'paper review'",
             "trax canvas 11111111-1111-1111-1111-111111111111",
             "trax canvas UUID show trax.subgraph --record RECORD_UUID --placement side",
             "trax canvas UUID show trax.timeline --record RECORD_UUID --param direction_limit=5",
@@ -164,6 +169,15 @@ class Canvas(Command):
             "trax canvas UUID theme to null",
         ),
         notes=(
+            (
+                "list prints the account's workspaces in the bar's order, each with "
+                "its Issue number, and under each its canvases (a tab, holding at "
+                "most one chat) with the canvas UUID and the AgentSession its Chat "
+                "shows. QUERY, case ignored, keeps a workspace whose title holds it "
+                "whole, and of the others the canvases whose name holds it. Rename a "
+                "workspace as any Issue: trax issue N title to NAME."
+            ),
+            "rename gives the canvas, and so its tab and chat, a name no other canvas of the account has.",
             "Mutations fetch the current revision before applying one operation.",
             (
                 "mark draws a red box on the canvas, which people see and draw on too, "
@@ -218,9 +232,15 @@ class Canvas(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
+        if cast(_CanvasArgs, args).canvas_id == "list":
+            _list_chats(client_factory, args=cast(_CanvasArgs, args))
+            return
         flags = _with_default_canvas(cast(_CanvasArgs, args))
         canvas_id = _canvas_uuid(flags.canvas_id or "", "canvas")
         client = client_factory()
+        if flags.action == "rename":
+            _rename(client, canvas_id=canvas_id, args=flags)
+            return
         if flags.action is None:
             record = flags.record or ""
             if (
@@ -326,6 +346,69 @@ def canvas_lines(payload: object) -> list[str]:
     return lines + _mark_lines(state)
 
 
+def chat_lines(
+    canvases: Sequence[Mapping[str, PlainTree]],
+    workspaces: Sequence[Mapping[str, PlainTree]],
+    *,
+    query: str,
+) -> list[str]:
+    """Say the chats by workspace: this command's ``list``, and an agent tool's.
+
+    A workspace whose title holds ``query`` (case ignored) shows every canvas in it;
+    any other only the canvases whose name holds it. An empty query shows all. A
+    canvas in no workspace sits in the default one.
+
+    Args:
+      canvases: The account's canvases, as ``GET /api/canvases`` lists them.
+      workspaces: The account's workspaces, as ``GET /api/workspaces`` lists them.
+      query: What a workspace title or a canvas name must hold.
+
+    Returns:
+      lines: Each matching workspace as ``Issue#N title``, then its canvases a line
+        each: name, canvas id, and the session its Chat shows; a line saying none
+        matched when none did.
+
+    """
+    wanted = query.casefold()
+    default = next(
+        (each.get("id") for each in workspaces if each.get("scratch") is True),
+        None,
+    )
+    homes: dict[PlainTree, list[Mapping[str, PlainTree]]] = {}
+    for canvas in canvases:
+        homes.setdefault(canvas.get("workspace_id") or default, []).append(canvas)
+    lines: list[str] = []
+    for workspace in workspaces:
+        title = from_plain(workspace.get("title"), str)
+        held = homes.get(workspace.get("id"), [])
+        if wanted not in title.casefold():
+            held = [
+                each
+                for each in held
+                if wanted in from_plain(each.get("name"), str).casefold()
+            ]
+            if not held:
+                continue
+        marks = (" (default)" if workspace.get("scratch") is True else "") + (
+            " (hidden)" if workspace.get("hidden") is True else ""
+        )
+        lines.append(f"Issue#{workspace.get('seq')} {title}{marks}")
+        lines.extend(_chat_line(each) for each in held)
+    return lines or [f"no workspace or chat matches {query!r}"]
+
+
+def _chat_line(canvas: Mapping[str, PlainTree]) -> str:
+    """Say one canvas: its name, id, the session its Chat shows, and whether closed."""
+    session = canvas.get("session")
+    shown = (
+        f"AgentSession#{session.get('seq')}"
+        if isinstance(session, Mapping)
+        else "no chat"
+    )
+    closed = " (closed)" if canvas.get("hidden") is True else ""
+    return f"  {canvas.get('name')}  canvas {canvas.get('id')}  {shown}{closed}"
+
+
 def _mark_lines(state: Mapping[str, object]) -> list[str]:
     """Say every box with its id, page and what it covers, a line each."""
     labels = from_plain(
@@ -371,6 +454,7 @@ _CANVAS_ACTIONS: Final = (
     "place",
     "mark",
     "capture",
+    "rename",
 )
 """The operations a canvas takes by name; any other word starts ``KEY to VALUE``."""
 
@@ -512,6 +596,40 @@ def _mark(
             ],
         ),
     )
+
+
+def _list_chats(client_factory: Callable[[], Client], *, args: _CanvasArgs) -> None:
+    """Print the account's chats by workspace, those matching the words after list."""
+    if (
+        args.record is not None
+        or args.placement is not None
+        or args.param
+        or args.page is not None
+    ):
+        raise ClientError("list takes at most a QUERY and no option")
+    client = client_factory()
+    query = " ".join(word for word in (args.action, *args.subject) if word is not None)
+    for line in chat_lines(
+        client.list_canvases(),
+        client.list_workspaces(),
+        query=query,
+    ):
+        echo(line)
+
+
+def _rename(client: Client, *, canvas_id: uuid.UUID, args: _CanvasArgs) -> None:
+    """Rename the canvas to the words after rename, and say its new name."""
+    name = " ".join(args.subject).strip()
+    if (
+        not name
+        or args.record is not None
+        or args.placement is not None
+        or args.param
+        or args.page is not None
+    ):
+        raise ClientError("rename takes one NAME and no other argument")
+    renamed = client.rename_canvas(canvas_id, name=name)
+    echo(f"canvas {canvas_id} renamed to {renamed.get('name')}")
 
 
 def _capture(client: Client, *, canvas_id: uuid.UUID, args: _CanvasArgs) -> None:
