@@ -134,24 +134,36 @@
     "description": "What the session's agents are doing now.\n\nThe source of a viewer's status line, its spinners, and its count of what runs\nin the background.",
     "properties": {
      "agents": {
-      "default": [],
-      "items": {
-       "type": "string"
-      },
-      "title": "Agents",
-      "type": "array"
+      "anyOf": [
+       {
+        "items": {
+         "type": "string"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Agents"
      },
      "busy": {
       "title": "Busy",
       "type": "boolean"
      },
      "jobs": {
-      "default": [],
-      "items": {
-       "$ref": "#/components/schemas/BackgroundJob"
-      },
-      "title": "Jobs",
-      "type": "array"
+      "anyOf": [
+       {
+        "items": {
+         "$ref": "#/components/schemas/BackgroundJob"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Jobs"
      },
      "line": {
       "title": "Line",
@@ -183,7 +195,7 @@
       "title": "Turn Ended"
      },
      "working": {
-      "description": "Whether anything of the session works: the root, a job, or a child agent.",
+      "description": "Whether anything of the session works: the root, a job, or a child agent.\n\nA process too old to name its jobs and agents works while its root does.",
       "readOnly": true,
       "title": "Working",
       "type": "boolean"

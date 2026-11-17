@@ -239,12 +239,13 @@ class AgentState(BaseModel):
     pending: tuple[JSON, ...] = ()
     """Each message sent mid-turn that waits for the model, in the events' codec."""
 
-    jobs: tuple[BackgroundJob, ...] = ()
-    """Each background job of every agent of the session, the root's first."""
+    jobs: tuple[BackgroundJob, ...] | None = None
+    """Each background job of every agent of the session, the root's first; ``None``
+    from a process too old to say, whose jobs only its records tell."""
 
-    agents: tuple[str, ...] = ()
+    agents: tuple[str, ...] | None = None
     """The label of each child agent at work now: its model call, its tool calls or a
-    compaction."""
+    compaction; ``None`` from a process too old to say."""
 
     turn_ended: UtcDatetime | None = None
     """When the root agent last ended a turn: left with nothing to do, failed, or
@@ -254,7 +255,10 @@ class AgentState(BaseModel):
     @computed_field
     @property
     def working(self) -> bool:
-        """Whether anything of the session works: the root, a job, or a child agent."""
+        """Whether anything of the session works: the root, a job, or a child agent.
+
+        A process too old to name its jobs and agents works while its root does.
+        """
         return self.busy or bool(self.jobs) or bool(self.agents)
 
 
