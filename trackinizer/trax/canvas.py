@@ -302,7 +302,7 @@ def canvas_lines(payload: object) -> list[str]:
       payload: The canvas as the server answers it.
 
     Returns:
-      lines: Its id, revision and focused visual; its page and the owner's
+      lines: Its id, revision and focused visual; its name, page and the owner's
         preferences, where it has them; each visual by type, id, placement and
         record; then each red box with its id, page and what it covers.
 
@@ -312,6 +312,9 @@ def canvas_lines(payload: object) -> list[str]:
     revision = from_plain(state.get("revision"), int, default=0)
     focused = from_plain(state.get("focused_instance"), str, default="none")
     lines = [f"canvas {canvas_id} revision {revision} focused {focused}"]
+    name = from_plain(state.get("name"), str, default="")
+    if name != "":
+        lines.append(f"  name {name}")
     # The page a person's tab on the canvas is on, as their browser last saved it.
     page = from_plain(state.get("page"), str, default="")
     if page != "":
