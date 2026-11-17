@@ -98,8 +98,8 @@ class TestTheFieldSetIsDerived:
         (``TokenUsage``), and the one whose payload is untyped
         (``UncategorizedRecord``). Everything else carries prose.
         """
-        assert len(_BY_KIND) == 43
-        assert len(SESSION_RECORD_FIELDS) == 40
+        assert len(_BY_KIND) == 44
+        assert len(SESSION_RECORD_FIELDS) == 41
 
 
 # One populated instance per stored kind, spelled out rather than reflected: the
@@ -245,6 +245,12 @@ _SAMPLES: Final[dict[str, TraxRecord]] = {
         state="done",
         stdout=("probe",),
         result=types.PaperFetchResult(),
+    ),
+    "PlanResult": ToolResult(
+        call_id="c",
+        state="done",
+        stdout=("probe",),
+        result=types.PlanResult(),
     ),
     "RemoteToolResult": ToolResult(
         call_id="c",

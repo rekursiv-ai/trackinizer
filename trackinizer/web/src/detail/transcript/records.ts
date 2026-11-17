@@ -1207,6 +1207,7 @@ const TOOL_RESULTS: ReadonlyMap<string, ToolKind> = new Map([
   ["PaperDetailsResult", "call"],
   ["PaperAuthorResult", "call"],
   ["PaperFetchResult", "call"],
+  ["PlanResult", "call"],
   ["RemoteToolResult", "call"],
   ["McpResult", "call"],
   ["FunctionResult", "call"],
