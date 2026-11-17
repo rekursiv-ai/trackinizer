@@ -139,6 +139,18 @@ def test_a_state_works_while_the_root_a_job_or_a_child_does(
     assert AgentState.model_validate_json(state.model_dump_json()) == state
 
 
+def test_a_state_from_a_process_too_old_to_name_its_jobs_says_none_and_works_while_busy() -> (
+    None
+):
+    """Such a process sends neither field: unknown, not none at all."""
+    old = AgentState.model_validate(
+        {"line": "", "busy": False, "since": "2026-11-10T12:00:00Z"},
+    )
+
+    assert (old.jobs, old.agents, old.working) == (None, None, False)
+    assert old.model_copy(update={"busy": True}).working
+
+
 def test_a_frame_reads_past_a_field_a_newer_peer_added() -> None:
     read = Hello.model_validate(
         {
@@ -177,8 +189,8 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
             "busy": True,
             "since": "2026-11-10T12:00:00Z",
             "pending": [],
-            "jobs": [],
-            "agents": [],
+            "jobs": None,
+            "agents": None,
             "turn_ended": None,
             "working": True,
         },
