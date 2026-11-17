@@ -96,6 +96,7 @@ class _CanvasClient:
         self.visuals: list[object] = []
         self.focused: str | None = None
         self.page: str | None = None
+        self.name: str | None = None
         self.unlabeled = uuid.uuid4()
         self.canvas = uuid.uuid4()
         self.captures = 0
@@ -230,6 +231,7 @@ class _CanvasClient:
             "visuals": visuals,
             "focused_instance": self.focused,
             "page": self.page,
+            "name": self.name,
         }
 
     def _at(self, canvas_id: uuid.UUID) -> None:
@@ -931,6 +933,23 @@ def test_canvas_prints_the_page_it_is_on_after_its_revision(
     assert capsys.readouterr().out.splitlines() == [
         f"canvas {client.canvas} revision 8 focused none",
         "  page #/lookup/c5286865-67b6-4bd8-ab51-e06e10c326c5",
+        "  (no visuals)",
+    ]
+
+
+def test_canvas_prints_its_name_before_its_page(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    client.page = "#/pulls"
+    client.name = "unnamed-canvas#3"
+
+    _canvas(client)
+
+    assert capsys.readouterr().out.splitlines() == [
+        f"canvas {client.canvas} revision 8 focused none",
+        "  name unnamed-canvas#3",
+        "  page #/pulls",
         "  (no visuals)",
     ]
 
