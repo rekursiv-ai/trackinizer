@@ -184,7 +184,7 @@ def test_a_model_sagents_tables_do_not_know_leaves_the_cost_unknown() -> None:
 
 @pytest.mark.parametrize(
     ("cli", "model"),
-    [("claude", ""), ("gemini", "claude-opus-5-5")],
+    [("claude", ""), ("gemini", "claude-opus-5-5"), ("gemini", "gpt-5.6-sol")],
 )
 def test_a_call_with_no_model_or_no_priced_cli_leaves_the_cost_unknown(
     cli: str,
