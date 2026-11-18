@@ -330,8 +330,8 @@ All notable trackinizer changes are documented here. This project follows
 - **Breaking:** the inquiry embedder. `Store(engine, ...)` takes no embedder, and
   neither a write nor a boot computes a vector: `Store.embedders`,
   `primitives.upsert_embedding`, `config.build_embedder`, `Config.embedder`,
-  `--embedder` and `TRACKINIZER_EMBEDDER` go. `inquiry_embeddings` takes no new
-  rows; its rows stay.
+  `--embedder` and `TRACKINIZER_EMBEDDER` go, and migration `schema.081.sql` drops
+  `inquiry_embeddings` (below).
 - **Breaking:** Qwen3-Embedding-8B, Octen-Embedding-8B and
   jina-embeddings-v5-text nano and small, with their modules, registry entries and
   bucket plans.
@@ -345,8 +345,12 @@ All notable trackinizer changes are documented here. This project follows
   `server/prep_models.py`, and the follow process
   `server/tools/backfill_embedding.py` with its GPU plans
   (`server/tools/bucket_boundaries.py`, `server/tools/model_buckets.py`).
-  `session_embeddings`, `session_index_state`, `session_index_cursor` and
-  `inquiry_embeddings` are neither read nor written.
+  Migration `schema.081.sql` drops its tables, `session_embeddings`,
+  `session_index_state`, `session_index_cursor` and `inquiry_embeddings`, with
+  every row. A deployment that wants its old vectors archives them before it
+  upgrades, with `server/tools/archive_embeddings.py` from 0.1.13, which this
+  release removes; `server/assets/embedding_tables_down.sql` builds the tables
+  again, empty, to restore into.
 
 ## 0.1.13 - 2026-11-05
 

@@ -106,10 +106,8 @@ EXPORT_TABLES: Final = (
 
 Left out on purpose, and why:
 
-* ``inquiry_embeddings``, ``session_embeddings`` -- derived from each row's
-  text by the embedder, and specific to the model that produced them.
-* ``session_index_state`` -- embedding-progress bookkeeping, derived from
-  ``session_embeddings``.
+* The embedding add-on's ``embedding.vectors`` -- derived from each row's text by
+  its model, and specific to the settings that produced them.
 * ``session_ciphertext``, ``session_bodies`` -- encrypted / cold replay-only
   blobs, which retention exists to drop.
 * ``users``, ``api_keys``, ``allowlist`` -- credentials and access control, not

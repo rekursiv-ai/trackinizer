@@ -53,7 +53,6 @@ _TABLES: Final = (
     "session_records",
     "session_manifests",
     "session_slash_commands",
-    "session_embeddings",
     "session_ciphertext",
     "session_bodies",
     # The embedding addon's vectors of transcripts: their nearest units say what a
