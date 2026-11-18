@@ -2,16 +2,15 @@
 
 Owns CRUD against the three-table backend; emits changes; cascades. The
 concrete behavior is split across mixins (submit / read / edit / edge /
-session / cascade); this module keeps the lifecycle (construction, bootstrap,
-embedding) and composes them into the public :class:`Store`.
+session / cascade); this module keeps the lifecycle (construction, bootstrap)
+and composes them into the public :class:`Store`.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from contextlib import suppress
-from typing import TYPE_CHECKING, Final, cast
-from uuid import UUID
+from typing import TYPE_CHECKING, Final
 
 import asyncio
 import hashlib
@@ -19,6 +18,7 @@ import hashlib
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+    from uuid import UUID
 
     import asyncpg
 
@@ -31,7 +31,6 @@ else:
 from trackinizer.server import auth
 from trackinizer.server.auth import bootstrap_admin
 from trackinizer.server.notify import tx
-from trackinizer.server.primitives import upsert_embedding
 from trackinizer.server.schema_gen import (
     SEQ_FOR_KIND,
     substitute_schema_placeholders,
@@ -72,11 +71,11 @@ _TRANSIENT_FAULT_MARKERS: Final = (
 
 
 class _LifecycleMixin(_StoreShared):
-    """Bootstrap and embedding-backfill lifecycle for :class:`Store`.
+    """Bootstrap lifecycle for :class:`Store`.
 
-    Construction (``__init__``) and the :meth:`_embed_all` helper live on the
-    shared base :class:`_StoreShared`; this mixin adds the boot-time schema /
-    embedding reconciliation that runs against ``self.engine``.
+    Construction (``__init__``) lives on the shared base :class:`_StoreShared`;
+    this mixin adds the boot-time schema reconciliation that runs against
+    ``self.engine``.
     """
 
     def should_bump_api_key_last_used(self, key_id: UUID) -> bool:
@@ -231,32 +230,6 @@ class _LifecycleMixin(_StoreShared):
         ]:
             del self._verified_bearers[digest]
 
-    # A datadir rebuild or dump reload that copies ``inquiries`` but not
-    # ``inquiry_embeddings`` leaves semantic search blind to those rows. Idempotent via
-    # the ``(inquiry_id, model)`` PK: an inquiry already embedded by every embedder is
-    # skipped, and a freshly added embedder backfills only its own missing rows.
-    #
-    # Safe to run synchronously at boot only because every production embedder is the
-    # deterministic hash :class:`StubEmbedder` (no model, no network). A future
-    # network/model embedder must move this off the startup path -- N blocking ``embed``
-    # calls would stall boot.
-    async def _backfill_embeddings(self, conn: Conn) -> None:
-        """Embed any inquiry missing a row for a registered embedder."""
-        for embedder in self.embedders:
-            rows = await conn.fetch(
-                "SELECT id, title FROM inquiries i WHERE NOT EXISTS ("
-                "SELECT 1 FROM inquiry_embeddings e "
-                "WHERE e.inquiry_id = i.id AND e.model = $1)",
-                embedder.name,
-            )
-            for row in rows:
-                await upsert_embedding(
-                    conn,
-                    cast(UUID, row["id"]),
-                    embedder.name,
-                    await embedder.embed(cast(str, row["title"])),
-                )
-
     async def bootstrap(
         self,
         *,
@@ -344,13 +317,11 @@ class _LifecycleMixin(_StoreShared):
     # ``seq`` already present. A datadir rebuild or dump reload that bulk-loads rows
     # with literal ``seq`` values leaves the freshly created sequence at its start, so
     # the next ``nextval`` would re-mint a live ref; the reconcile closes that gap and
-    # is a monotonic no-op once aligned. The same rebuild can drop
-    # ``inquiry_embeddings`` rows, so every inquiry missing an embedding is re-embedded
-    # here as well.
+    # is a monotonic no-op once aligned.
     async def _bootstrap_once(
         self,
         addon_migrations: Sequence[tuple[str, str]],
-    ) -> None:
+    ) -> None:  # pragma: no mutate block
         """One idempotent bootstrap pass; see :meth:`bootstrap`."""
         async with self.engine.acquire() as conn:
             await conn.execute(
@@ -419,7 +390,6 @@ class _LifecycleMixin(_StoreShared):
                 # exists on first boot.
                 await bootstrap_admin(conn, policy=self.access_policy)
                 await _reconcile_sequences(conn)
-                await self._backfill_embeddings(conn)
             finally:
                 # If the body died because the connection dropped, the unlock
                 # raises the same family -- and that fresh exception would

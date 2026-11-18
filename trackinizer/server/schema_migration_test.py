@@ -23,11 +23,8 @@ Where a test once let a booting store apply its migrations, two of its claims mo
 to units of the runner in ``store/core_test.py``. That a boot applies an unrecorded
 migration and records it once (042's ``ledger == 1``, and the boot that applied 041,
 042, 046 to 051 and 059, and migrated again after the rollback) is
-``test_bootstrap_skips_baseline_for_existing_db``. That a boot embeds a row its
-migration left without an embedding (047's chat and 059's Scratch coming to share
-the embedding of a row so titled) is ``test_bootstrap_backfills_missing_embeddings``
-with ``TestStubEmbedder.test_embed_deterministic``; here each migration is shown to
-take that embedding away.
+``test_bootstrap_skips_baseline_for_existing_db``. 047 and 059 also delete the
+embedding of each row they re-title; here each is shown to take it away.
 """
 
 from __future__ import annotations
@@ -47,10 +44,10 @@ from trackinizer.conftest import restore, savepoint
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import tx
 from trackinizer.server.preferences import stored_preferences
-from trackinizer.server.primitives import insert_inquiry, upsert_embedding
+from trackinizer.server.primitives import insert_inquiry
 from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import load_sql, schema_migrations
-from trackinizer.server.values import vetted_sql
+from trackinizer.server.values import vec_to_text, vetted_sql
 from trackinizer.types.change_log import Change
 from trackinizer.wire.filters import NON_NULLABLE_COLUMNS
 
@@ -2149,11 +2146,10 @@ async def _make_audience_old(conn: Conn) -> None:
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.047.sql'")
 
 
-# Each is embedded by its title, as the boot after a 046 server's last writes left it.
+# Each is embedded by its title, as a 046 server's writes left it.
 async def _seed_chat_titles(conn: Conn) -> dict[str, uuid.UUID]:
     """Insert a chat titled by its line, another session, and one titled as chats are."""
     sessions = {name: uuid.uuid4() for name in ("chat", "other", "reference")}
-    embedder = StubEmbedder()
     for name, title, cli in (
         ("chat", "my secret line", f"chat:{uuid.uuid4()}"),
         ("other", "my run", "codex-1"),
@@ -2168,12 +2164,7 @@ async def _seed_chat_titles(conn: Conn) -> dict[str, uuid.UUID]:
             title,
             cli,
         )
-        await upsert_embedding(
-            conn,
-            sessions[name],
-            embedder.name,
-            await embedder.embed(title),
-        )
+        await _embed_title(conn, sessions[name], title)
     await conn.execute(
         "INSERT INTO change_log (id, actor, subject_id, subject_kind, kind, "
         "old_title, new_title) VALUES ($1, 'scout', $2, 'AgentSession', 'title', "
@@ -2191,8 +2182,7 @@ async def test_migration_047_retitles_chats(pglite_rollback_conn: Conn) -> None:
 
     Titles embedded as they stand, a chat's first line among them, in a 046 database.
     The chat comes out ``Science chat``: its row, the title change the log kept for it,
-    and its embedding, which 047 takes away so the boot makes it again from the new
-    title. No other row changes.
+    and its embedding, which 047 takes away. No other row changes.
     """
     conn = pglite_rollback_conn
     sessions = await _seed_chat_titles(conn)
@@ -2749,8 +2739,8 @@ async def test_migration_059_makes_scratch_the_default_and_promotes_a_renamed_on
 
     A Scratch someone renamed was named, so it is promoted as a rename now promotes:
     it keeps its title, loses the mark, and keeps its canvases in no workspace. Each
-    change is logged, the re-titled Scratch loses the embedding of its old title, which
-    the boot makes again from the new one, and a replay changes nothing.
+    change is logged, the re-titled Scratch loses the embedding of its old title, and a
+    replay changes nothing.
     """
     conn = pglite_rollback_conn
     ids = await _seed_scratches(conn)
@@ -2986,8 +2976,7 @@ async def _workspace(
             "subscribers": (),
         },
     )
-    embedder = StubEmbedder()
-    await upsert_embedding(conn, workspace, embedder.name, await embedder.embed(title))
+    await _embed_title(conn, workspace, title)
     return workspace
 
 
@@ -3252,6 +3241,18 @@ async def _placements(
             from_plain(labels, list[str]),
         )
     return placements
+
+
+async def _embed_title(conn: Conn, inquiry_id: uuid.UUID, title: str) -> None:
+    """Store ``title``'s stub vector as the inquiry's embedding."""
+    embedder = StubEmbedder()
+    await conn.execute(
+        "INSERT INTO inquiry_embeddings (inquiry_id, model, embedding) "
+        "VALUES ($1, $2, $3::vector)",
+        inquiry_id,
+        embedder.name,
+        vec_to_text(await embedder.embed(title)),
+    )
 
 
 async def _same_embedding(conn: Conn, first: uuid.UUID, second: uuid.UUID) -> bool:

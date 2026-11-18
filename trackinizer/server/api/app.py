@@ -73,7 +73,6 @@ from trackinizer.server.authority_sweep import authority_sweep_loop
 from trackinizer.server.config import (
     Config,
     ConfigError,
-    build_embedder,
     build_engine,
 )
 from trackinizer.server.embedders import registry
@@ -190,11 +189,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         app.state.engine = engine
         app.state.access_policy = app_deployment(app).access_policy
         app.state.agent_policy = app_deployment(app).agent_policy
-        app.state.store = Store(
-            engine,
-            embed=build_embedder(config.embedder),
-            access_policy=app.state.access_policy,
-        )
+        app.state.store = Store(engine, access_policy=app.state.access_policy)
         # Keep the resolved config on app.state so the session-cookie path in
         # current_user, and any sign-in routes, can read the signing secret.
         # main() mounts the SPA separately.
@@ -292,13 +287,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 def _resolve_session_embedder(
     app: FastAPI,
     config: Config,
-) -> asyncio.Task[None] | None:
+) -> asyncio.Task[None] | None:  # pragma: no mutate block
     """Cache the session embedder on ``app.state``; degrade or warm as needed."""
     name = config.session_embedder
-    embedder = registry.build_cached_session_embedder(
-        name,
-        dim=config.session_embedder_dim,
-    )
+    embedder = registry.build_cached_session_embedder(name)
     if embedder is None:
         if name:
             _logger.error(

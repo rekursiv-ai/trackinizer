@@ -2186,7 +2186,6 @@ class _FollowRecorder:
 def _clear_embedder_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Leave no server embedder setting, and restore what ``main`` sets after the test."""
     monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER", raising=False)
-    monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDERS", raising=False)
     # Recorded so teardown removes the cap and the hidden GPUs ``main`` sets for the
     # follow loop.
     monkeypatch.setenv("OMP_NUM_THREADS", "unset-by-test")
@@ -2204,7 +2203,7 @@ def _clear_embedder_env(monkeypatch: pytest.MonkeyPatch) -> None:
                 "TRACKINIZER_SESSION_EMBEDDER": "served@8",
                 "TRACKINIZER_SESSION_EMBEDDERS": "served@8,challenger@8",
             },
-            ["served@8", "challenger@8"],
+            ["served@8"],
         ),
     ],
 )
@@ -2214,7 +2213,7 @@ def test_main_follow_maintains_the_named_models_else_the_servers(
     env: dict[str, str],
     models: list[str],
 ) -> None:
-    """``--model`` wins; without it follow maintains what the server is set to."""
+    """``--model`` wins; without it follow maintains the model the server searches."""
     _clear_embedder_env(monkeypatch)
     for name, value in env.items():
         monkeypatch.setenv(name, value)

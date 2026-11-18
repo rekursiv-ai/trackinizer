@@ -15,7 +15,6 @@ import pytest_asyncio
 from trackinizer.conftest import FakeEngine
 from trackinizer.lib.postgres import PostgresEngine
 from trackinizer.lib.postgres.testing import postgres_database
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.server.store.core import Store
 from trackinizer.server.tools import archive_embeddings
@@ -159,7 +158,7 @@ async def schema_growth_store(
     """Isolate catalog changes from the shared engine's cached pgvector types."""
     with postgres_database(request, dbname="archive_schema_growth") as dsn:
         async with PostgresEngine(dsn=dsn, listen_channel=NOTIFY_CHANNEL) as engine:
-            store = Store(engine, embed=StubEmbedder())
+            store = Store(engine)
             await store.bootstrap()
             yield dsn, store
 

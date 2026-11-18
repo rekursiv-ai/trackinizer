@@ -22,10 +22,8 @@ planning contexts with no CUDA. The runner recomputes rows LIVE from the measure
 card and the chosen ``--dim`` via :func:`resolve_plan`, so a 24 GB or 80 GB card
 (or a Matryoshka dim below native) gets correct counts, not 5090/1024 constants.
 
-Jina models carry no plan (:data:`CONSERVATIVE`): their custom ``encode`` path
-does not route through ``bucket_queue``, so a precomputed table would be
-dead config. If a Jina model ever gains the bucketed method, adding a spec here
-is a one-liner (a ``TransformerSpec`` in ``bucket_boundaries`` + an entry below).
+A name with no plan gets the conservative fallback (:data:`CONSERVATIVE_EDGES`,
+:data:`CONSERVATIVE_MAX_ROWS`), never another model's tuning.
 """
 
 from __future__ import annotations
@@ -45,7 +43,6 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "CONSERVATIVE",
     "CONSERVATIVE_EDGES",
     "CONSERVATIVE_MAX_ROWS",
     "DEFAULT_MAX_BUCKETS",
@@ -89,21 +86,11 @@ class BucketPlan:
     reference_rows: Mapping[int, int]
 
 
-# The registry keys whose backfill path routes through the bucketed core, mapped
-# to the spec the generator derives from. DERIVED from the registry's ``_MODELS``
-# (via :func:`registry.bucket_specs`) so there is ONE source of model metadata --
-# no second spec table to drift. Jina keys are absent (fixed-dim, ``spec is
-# None``); they carry no bucket plan and resolve to CONSERVATIVE.
+# The registry keys, mapped to the spec the generator derives from. DERIVED from
+# the registry's ``_MODELS`` (via :func:`registry.bucket_specs`) so there is ONE
+# source of model metadata -- no second spec table to drift.
 SPEC_FOR_MODEL: Final[Mapping[str, TransformerSpec]] = registry.bucket_specs()
 
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class _Conservative:
-    """Marker: this model has no bucket plan; use the conservative fallback."""
-
-
-# The sentinel a registry key maps to when it deliberately has no plan.
-CONSERVATIVE: Final = _Conservative()
 
 # The fallback edges: the same corpus-driven set, so an unknown model still
 # routes sanely; only the rows are capped low.
@@ -114,10 +101,10 @@ CONSERVATIVE_EDGES: Final[tuple[int, ...]] = (160, 512, 1504, 8192)
 CONSERVATIVE_MAX_ROWS: Final = 8
 
 
-# Every registry key names a deliberate bucket decision: a precomputed plan, or
-# CONSERVATIVE. The plans below are LITERALS; ``model_buckets_test`` proves each
-# equals the generator's output from the shipped inputs (the drift gate).
-MODEL_BUCKETS: Final[Mapping[str, BucketPlan | _Conservative]] = {
+# Every registry key has a precomputed plan. The plans below are LITERALS;
+# ``model_buckets_test`` proves each equals the generator's output from the shipped
+# inputs (the drift gate).
+MODEL_BUCKETS: Final[Mapping[str, BucketPlan]] = {
     "qwen3-embedding-0.6b@1024": BucketPlan(
         edges=(64, 160, 288, 512, 704, 992, 1792, 3584, 5376, 8192),
         reference_dim=1024,
@@ -150,40 +137,6 @@ MODEL_BUCKETS: Final[Mapping[str, BucketPlan | _Conservative]] = {
             8192: 4,
         },
     ),
-    "qwen3-embedding-8b@1024": BucketPlan(
-        edges=(64, 160, 288, 512, 704, 992, 1760, 3584, 5376, 8192),
-        reference_dim=1024,
-        reference_rows={
-            64: 3215,
-            160: 1286,
-            288: 714,
-            512: 378,
-            704: 233,
-            992: 135,
-            1760: 51,
-            3584: 14,
-            5376: 6,
-            8192: 2,
-        },
-    ),
-    "octen-embedding-8b@1024": BucketPlan(
-        edges=(64, 160, 288, 512, 704, 992, 1760, 3584, 5376, 8192),
-        reference_dim=1024,
-        reference_rows={
-            64: 3215,
-            160: 1286,
-            288: 714,
-            512: 378,
-            704: 233,
-            992: 135,
-            1760: 51,
-            3584: 14,
-            5376: 6,
-            8192: 2,
-        },
-    ),
-    "jina-embeddings-v5-text-nano@768": CONSERVATIVE,
-    "jina-embeddings-v5-text-small@1024": CONSERVATIVE,
 }
 
 
@@ -198,9 +151,8 @@ def resolve_plan(
     A model with a precomputed plan gets its shipped edges and rows derived LIVE
     for ``vram_gb`` and ``dim`` (so a non-5090 card or a sub-native dim is
     correct). ``dim`` defaults to the plan's registered ``reference_dim``. A model
-    marked :data:`CONSERVATIVE`, or one absent from the map, gets the small
-    fallback and a WARNING naming the cause -- so an operator reads why buckets do
-    not apply, not just that they are missing.
+    absent from the map gets the small fallback and a WARNING naming the cause --
+    so an operator reads why buckets do not apply, not just that they are missing.
 
     Args:
       name: A registry key (a model's stored identity).
@@ -214,7 +166,7 @@ def resolve_plan(
 
     """
     plan = MODEL_BUCKETS.get(name)
-    if isinstance(plan, BucketPlan):
+    if plan is not None:
         spec = SPEC_FOR_MODEL[name]
         chosen_dim = plan.reference_dim if dim is None else dim
         rows = {
@@ -227,14 +179,15 @@ def resolve_plan(
             for edge in plan.edges
         }
         return plan.edges, rows
+    # pragma: no mutate[diagnostic-text] start
     _LOGGER.warning(
-        "Model %r has no bucket plan (its custom encode path exposes no "
-        "bucket_queue), so the backfill uses the conservative fallback "
-        "(<=%d rows/bucket), never another model's tuning. Add a TransformerSpec "
-        "and a MODEL_BUCKETS entry if it gains the bucketed method.",
+        "Model %r has no bucket plan, so the backfill uses the conservative "
+        "fallback (<=%d rows/bucket), never another model's tuning. Add a "
+        "TransformerSpec and a MODEL_BUCKETS entry to tune it.",
         name,
         CONSERVATIVE_MAX_ROWS,
     )
+    # pragma: no mutate end
     fallback_rows: dict[int, int] = dict.fromkeys(
         CONSERVATIVE_EDGES,
         CONSERVATIVE_MAX_ROWS,

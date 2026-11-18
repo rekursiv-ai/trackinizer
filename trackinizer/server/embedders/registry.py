@@ -27,31 +27,12 @@ from trackinizer.types.embedder import QueryEmbedder
 
 
 if TYPE_CHECKING:
-    from trackinizer.server.embedders import (
-        jina_v5_text_nano,
-        jina_v5_text_small,
-        octen_8b,
-        qwen3_0p6b,
-        qwen3_4b,
-        qwen3_8b,
-    )
-    from trackinizer.server.embedders.jina_v5_text_nano import (
-        weights_present as jina_v5_text_nano_weights_present,
-    )
-    from trackinizer.server.embedders.jina_v5_text_small import (
-        weights_present as jina_v5_text_small_weights_present,
-    )
-    from trackinizer.server.embedders.octen_8b import (
-        weights_present as octen_8b_weights_present,
-    )
+    from trackinizer.server.embedders import qwen3_0p6b, qwen3_4b
     from trackinizer.server.embedders.qwen3_0p6b import (
         weights_present as qwen3_0p6b_weights_present,
     )
     from trackinizer.server.embedders.qwen3_4b import (
         weights_present as qwen3_4b_weights_present,
-    )
-    from trackinizer.server.embedders.qwen3_8b import (
-        weights_present as qwen3_8b_weights_present,
     )
 else:
     from wrapt import lazy_import
@@ -61,36 +42,12 @@ else:
     # runs at config time) torch-free while staying top-level (no PLC0415).
     qwen3_0p6b = lazy_import("trackinizer.server.embedders.qwen3_0p6b")
     qwen3_4b = lazy_import("trackinizer.server.embedders.qwen3_4b")
-    qwen3_8b = lazy_import("trackinizer.server.embedders.qwen3_8b")
-    octen_8b = lazy_import("trackinizer.server.embedders.octen_8b")
-    jina_v5_text_nano = lazy_import(
-        "trackinizer.server.embedders.jina_v5_text_nano",
-    )
-    jina_v5_text_small = lazy_import(
-        "trackinizer.server.embedders.jina_v5_text_small",
-    )
     qwen3_0p6b_weights_present = lazy_import(
         "trackinizer.server.embedders.qwen3_0p6b",
         "weights_present",
     )
     qwen3_4b_weights_present = lazy_import(
         "trackinizer.server.embedders.qwen3_4b",
-        "weights_present",
-    )
-    qwen3_8b_weights_present = lazy_import(
-        "trackinizer.server.embedders.qwen3_8b",
-        "weights_present",
-    )
-    octen_8b_weights_present = lazy_import(
-        "trackinizer.server.embedders.octen_8b",
-        "weights_present",
-    )
-    jina_v5_text_nano_weights_present = lazy_import(
-        "trackinizer.server.embedders.jina_v5_text_nano",
-        "weights_present",
-    )
-    jina_v5_text_small_weights_present = lazy_import(
-        "trackinizer.server.embedders.jina_v5_text_small",
         "weights_present",
     )
 
@@ -113,55 +70,45 @@ class ModelEntry:
     """A registered real model family: how to build it and probe its weights.
 
     One entry per model SLUG (the bare stored-name prefix). It carries the dim
-    contract (:attr:`spec` for a Matryoshka range, or a fixed :attr:`default_dim`)
-    so ``(name, dim)`` resolution has a single source, plus dim-aware factories.
+    contract (:attr:`spec`, whose ``min_dim..max_dim`` is the Matryoshka range,
+    and :attr:`default_dim`) so ``(name, dim)`` resolution has a single source,
+    plus dim-aware factories.
 
     Attributes:
       slug: The bare stored-name prefix (``"qwen3-embedding-4b"``).
       default_dim: The dim a bare name resolves to (the shipped index width).
-      spec: The model's :class:`~bucket_boundaries.TransformerSpec` when it is a
-        Matryoshka model (its ``min_dim..max_dim`` is the valid ``--dim`` range),
-        or ``None`` for a fixed-dim model (only :attr:`default_dim` is valid).
+      spec: The model's :class:`~bucket_boundaries.TransformerSpec`; its
+        ``min_dim..max_dim`` is the valid ``--dim`` range.
       build: ``dim -> `` fresh CPU embedder at that dim (imports torch inside).
       backfill: ``(device, batch_size, dim) -> `` embedder for throughput (the GPU
-        pipeline, and the follow service on CPU), applying the model's compile
-        policy (Qwen-family compiles the forward -- measured 2.79x on a 5090, and
-        frozen on CPU 12.0 vs 3.6-6.7 vec/s on 32 Zen 5 threads; Jina does not,
-        its custom ``encode`` may not route through the forward we compile).
+        pipeline, and the follow service on CPU), with the forward compiled --
+        measured 2.79x on a 5090, and frozen on CPU 12.0 vs 3.6-6.7 vec/s on 32
+        Zen 5 threads.
       weights_present: No-network cache check for this model's weights.
 
     """
 
     slug: str
     default_dim: int
-    spec: TransformerSpec | None
+    spec: TransformerSpec
     build: Callable[[int], QueryEmbedder]
     backfill: Callable[[str, int, int], QueryEmbedder]
     weights_present: Callable[[], bool]
 
 
-def build_session_embedder(
-    name: str,
-    *,
-    dim: int | None = None,
-) -> QueryEmbedder | None:
+def build_session_embedder(name: str) -> QueryEmbedder | None:
     """Build the session-search embedder for ``name``, or ``None`` when disabled.
 
-    Separate from the Store's ``build_embedder`` because ``session_embeddings``
-    is a wide ``halfvec`` surface while ``inquiry_embeddings`` is ``vector(384)``
-    and the Store rejects a non-384 embedder. An empty name returns ``None`` so
-    the session-search route degrades to full-text only rather than 500, and each
-    real model is imported lazily so an unset knob never pulls in torch.
+    An empty name returns ``None`` so the session-search route degrades to
+    full-text only rather than 500, and each real model is imported lazily so an
+    unset knob never pulls in torch.
 
-    ``name`` may be a bare slug (``qwen3-embedding-4b``) or the full
-    ``slug@dim``; ``dim`` optionally overrides within the model's supported range.
-    See :func:`_resolve_model`.
+    ``name`` may be a bare slug (``qwen3-embedding-4b``), which resolves to the
+    model's default dim, or the full ``slug@dim``. See :func:`_resolve_model`.
 
     Args:
       name: ``""`` (disabled), ``"stub"``/``"stub-<dim>"`` (deterministic, for
         tests), a bare slug, or a full ``<slug>@<dim>`` identity.
-      dim: Optional output-dim override within the model's supported range;
-        ignored for stubs. Must agree with any ``@dim`` suffix in ``name``.
 
     Returns:
       embedder: The session embedder, or ``None`` when ``name`` is empty.
@@ -174,19 +121,15 @@ def build_session_embedder(
         return None
     if is_weightless(name):
         return _build_stub(name)
-    entry, resolved_dim = _resolve_model(name, dim)
+    entry, resolved_dim = _resolve_model(name, None)
     return entry.build(resolved_dim)
 
 
-def build_cached_session_embedder(
-    name: str,
-    *,
-    dim: int | None = None,
-) -> QueryEmbedder | None:
+def build_cached_session_embedder(name: str) -> QueryEmbedder | None:
     """Build only a locally cached session embedder; otherwise disable semantics."""
-    if not weights_present(name, dim=dim):
+    if not weights_present(name):
         return None
-    return build_session_embedder(name, dim=dim)
+    return build_session_embedder(name)
 
 
 def is_weightless(name: str) -> bool:
@@ -207,18 +150,17 @@ def is_weightless(name: str) -> bool:
     return not name or name == "stub" or name.startswith("stub-")
 
 
-def weights_present(name: str, *, dim: int | None = None) -> bool:
+def weights_present(name: str) -> bool:
     """Whether the named embedder's weights are cached (no network).
 
     A weightless embedder (unset, or a stub) is always "present". A real model
     delegates to its module's ``weights_present``. Used by the app lifespan to
     decide degrade-vs-warm without downloading. Weights are shared across a
-    model's dims (Matryoshka truncates one checkpoint), so ``dim`` only affects
-    which slug resolves, not the cache probe.
+    model's dims (Matryoshka truncates one checkpoint), so the ``@dim`` only
+    affects which slug resolves, not the cache probe.
 
     Args:
       name: A ``session_embedder`` config value (bare slug or ``slug@dim``).
-      dim: Optional dim override (see :func:`_resolve_model`).
 
     Returns:
       present: ``True`` when the model needs no download (or has no weights).
@@ -226,7 +168,7 @@ def weights_present(name: str, *, dim: int | None = None) -> bool:
     """
     if is_weightless(name):
         return True
-    entry, _resolved_dim = _resolve_model(name, dim)
+    entry, _resolved_dim = _resolve_model(name, None)
     return entry.weights_present()
 
 
@@ -240,10 +182,9 @@ def build_backfill_embedder(
     """Build ``name`` for throughput on ``device``: the GPU pipeline, the CPU follow.
 
     Unlike :func:`build_session_embedder` (the server's query embedder), this
-    passes the device and batch size and applies each model's compile policy
-    (see :class:`ModelEntry`).
-    Backfill requires a real model, so a disabled/stub name is a caller error.
-    ``name``/``dim`` resolve exactly as in :func:`build_session_embedder`.
+    passes the device and batch size and compiles the forward (see
+    :class:`ModelEntry`). Backfill requires a real model, so a disabled/stub name
+    is a caller error. ``name``/``dim`` resolve as in :func:`resolved_name`.
 
     Args:
       name: A real model (bare slug or ``slug@dim``).
@@ -284,16 +225,6 @@ def _qwen_backfill(
     )
 
 
-def _jina_backfill(
-    cls: Callable[..., QueryEmbedder],
-    device: str,
-    batch_size: int,
-    dim: int,
-) -> QueryEmbedder:
-    """Construct a Jina embedder at ``dim`` (no compile flag until measured)."""
-    return cls(device=device, batch_size=batch_size, dim=dim)
-
-
 def _qwen3_0p6b_entry() -> ModelEntry:
     """Build the Qwen3-Embedding-0.6B family entry (loads torch on first use)."""
     return ModelEntry(
@@ -328,74 +259,6 @@ def _qwen3_4b_entry() -> ModelEntry:
     )
 
 
-def _qwen3_8b_entry() -> ModelEntry:
-    """Build the Qwen3-Embedding-8B family entry (loads torch on first use)."""
-    return ModelEntry(
-        slug="qwen3-embedding-8b",
-        default_dim=1_024,
-        spec=bucket_boundaries.QWEN3_8B,
-        build=lambda dim: _qwen_build(qwen3_8b.Qwen8BEmbedder, dim),
-        backfill=lambda device, batch_size, dim: _qwen_backfill(
-            qwen3_8b.Qwen8BEmbedder,
-            device,
-            batch_size,
-            dim,
-        ),
-        weights_present=qwen3_8b_weights_present,
-    )
-
-
-def _octen_8b_entry() -> ModelEntry:
-    """Build the Octen-Embedding-8B family entry (loads torch on first use)."""
-    return ModelEntry(
-        slug="octen-embedding-8b",
-        default_dim=1_024,
-        spec=bucket_boundaries.OCTEN_8B,
-        build=lambda dim: _qwen_build(octen_8b.OctenEmbedder, dim),
-        backfill=lambda device, batch_size, dim: _qwen_backfill(
-            octen_8b.OctenEmbedder,
-            device,
-            batch_size,
-            dim,
-        ),
-        weights_present=octen_8b_weights_present,
-    )
-
-
-def _jina_v5_text_nano_entry() -> ModelEntry:
-    """Build the jina-embeddings-v5-text-nano entry (fixed dim; loads torch late)."""
-    return ModelEntry(
-        slug="jina-embeddings-v5-text-nano",
-        default_dim=768,
-        spec=None,  # Fixed-dim: only the native 768 validates.
-        build=lambda dim: jina_v5_text_nano.JinaV5NanoEmbedder(dim=dim),
-        backfill=lambda device, batch_size, dim: _jina_backfill(
-            jina_v5_text_nano.JinaV5NanoEmbedder,
-            device,
-            batch_size,
-            dim,
-        ),
-        weights_present=jina_v5_text_nano_weights_present,
-    )
-
-
-def _jina_v5_text_small_entry() -> ModelEntry:
-    """Build the jina-embeddings-v5-text-small entry (fixed dim; loads torch late)."""
-    return ModelEntry(
-        slug="jina-embeddings-v5-text-small",
-        default_dim=1_024,
-        spec=None,  # Fixed-dim: only the native 1024 validates.
-        build=lambda dim: jina_v5_text_small.JinaV5SmallEmbedder(dim=dim),
-        backfill=lambda device, batch_size, dim: _jina_backfill(
-            jina_v5_text_small.JinaV5SmallEmbedder,
-            device,
-            batch_size,
-            dim,
-        ),
-        weights_present=jina_v5_text_small_weights_present,
-    )
-
-
 # ``slug`` -> a thunk building that family's ``ModelEntry``. The entry thunks
 # defer model access until build/backfill/cache-check: binding weights_present
 # directly would load every lazy model while deriving EMBEDDERS below.
@@ -405,10 +268,6 @@ def _jina_v5_text_small_entry() -> ModelEntry:
 _MODELS: dict[str, Callable[[], ModelEntry]] = {
     "qwen3-embedding-0.6b": _qwen3_0p6b_entry,
     "qwen3-embedding-4b": _qwen3_4b_entry,
-    "qwen3-embedding-8b": _qwen3_8b_entry,
-    "octen-embedding-8b": _octen_8b_entry,
-    "jina-embeddings-v5-text-nano": _jina_v5_text_nano_entry,
-    "jina-embeddings-v5-text-small": _jina_v5_text_small_entry,
 }
 
 
@@ -423,22 +282,16 @@ EMBEDDERS: dict[str, Callable[[], ModelEntry]] = {
 
 
 def bucket_specs() -> dict[str, TransformerSpec]:
-    """Return ``stored-name -> spec`` for every model with a Matryoshka spec.
+    """Return ``stored-name -> spec`` for every registered model.
 
     The single source model_buckets derives its spec map from, so there is no
-    second spec table to drift. Fixed-dim models (Jina, ``spec is None``) are
-    absent -- they carry no bucket plan.
+    second spec table to drift.
 
     Returns:
-      specs: ``slug@default_dim -> TransformerSpec`` for spec-bearing models.
+      specs: ``slug@default_dim -> TransformerSpec`` for every model.
 
     """
-    out: dict[str, TransformerSpec] = {}
-    for slug, thunk in _MODELS.items():
-        entry = thunk()
-        if entry.spec is not None:
-            out[f"{slug}@{entry.default_dim}"] = entry.spec
-    return out
+    return {name: thunk().spec for name, thunk in EMBEDDERS.items()}
 
 
 def resolved_name(name: str, dim: int | None = None) -> str:
@@ -466,9 +319,9 @@ def resolved_name(name: str, dim: int | None = None) -> str:
 # ``name`` is a bare slug (``qwen3-embedding-4b``) or the full ``slug@dim``. A ``@dim``
 # suffix and the ``dim`` argument, if both present, must agree. The resolved dim
 # defaults to the model's ``default_dim``; an explicit dim is validated against the
-# model's supported range (its spec's ``min..max`` for a Matryoshka model, or exactly
-# ``default_dim`` for a fixed model) and a violation is a hard error naming the range.
-# The stored identity is always the full ``slug@dim`` (resolution is input sugar only).
+# model's Matryoshka range (its spec's ``min..max``) and a violation is a hard error
+# naming the range. The stored identity is always the full ``slug@dim`` (resolution
+# is input sugar only).
 def _resolve_model(name: str, dim: int | None) -> tuple[ModelEntry, int]:
     """Resolve ``(name, dim)`` to a model entry and its concrete output dim."""
     slug, suffix_dim = _split_name(name)
@@ -483,8 +336,11 @@ def _resolve_model(name: str, dim: int | None) -> tuple[ModelEntry, int]:
     chosen = dim if dim is not None else suffix_dim
     if chosen is None:
         return entry, entry.default_dim
-    if not _dim_supported(entry, chosen):
-        raise ConfigError(_dim_range_message(entry, chosen))
+    if not bucket_boundaries.dim_in_range(entry.spec, chosen):
+        raise ConfigError(
+            f"{entry.slug} supports dims {entry.spec.min_dim}..{entry.spec.max_dim}; "
+            f"dim {chosen} is out of range",
+        )
     return entry, chosen
 
 
@@ -497,26 +353,6 @@ def _split_name(name: str) -> tuple[str, int | None]:
         return slug, int(dim_text)
     except ValueError:
         raise ConfigError(f"malformed dim in {name!r}") from None
-
-
-def _dim_supported(entry: ModelEntry, dim: int) -> bool:
-    """Whether ``dim`` is valid for ``entry`` (spec range, or fixed native dim)."""
-    if entry.spec is None:
-        return dim == entry.default_dim
-    return bucket_boundaries.dim_in_range(entry.spec, dim)
-
-
-def _dim_range_message(entry: ModelEntry, dim: int) -> str:
-    """Return a config-error message naming the model's supported dim range."""
-    if entry.spec is None:
-        return (
-            f"{entry.slug} is fixed-dim; dim {dim} is unsupported "
-            f"(only {entry.default_dim})"
-        )
-    return (
-        f"{entry.slug} supports dims {entry.spec.min_dim}..{entry.spec.max_dim}; "
-        f"dim {dim} is out of range"
-    )
 
 
 # ``get_close_matches`` surfaces the intended slug for a typo. Candidates are the

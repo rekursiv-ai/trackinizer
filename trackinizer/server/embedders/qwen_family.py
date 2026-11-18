@@ -1,4 +1,4 @@
-r"""Shared recipe for the Qwen3-Embedding family (Qwen 0.6B/4B/8B, Octen).
+r"""Shared recipe for the Qwen3-Embedding family (Qwen 0.6B and 4B).
 
 Every model in this family embeds identically: ``AutoModel`` with
 ``padding_side="left"``, last-token pooling, Matryoshka-truncate the pooled
@@ -6,22 +6,20 @@ vector to :attr:`~QwenFamilyEmbedder.dim` and ONLY THEN L2-normalize (the slice
 must precede the normalize so the truncated vector stays unit-norm), with the
 corpus/query asymmetry the cards document: a QUERY is wrapped
 ``Instruct: <task>\nQuery:<text>`` while a DOCUMENT is embedded with an optional
-per-model document prefix (bare for stock Qwen; ``"- "`` for Octen, see
-:mod:`~trackinizer.server.embedders.octen_8b`).
+per-model document prefix (bare for stock Qwen).
 
-Per-model modules (``qwen3_4b``, ``qwen3_0p6b``, ``qwen3_8b``, ``octen_8b``)
-subclass :class:`QwenFamilyEmbedder`, wire the model's constants, and implement
+Per-model modules (``qwen3_4b``, ``qwen3_0p6b``) subclass
+:class:`QwenFamilyEmbedder`, wire the model's constants, and implement
 :meth:`~QwenFamilyEmbedder._load_model` to call their OWN module-level ``_load``
 seam -- so a fake-model test patches ``<module>._load`` and the subclass picks it
 up at call time. The heavy ``transformers`` / torch imports are deferred behind
 ``wrapt.lazy_import`` here, so importing any model module at config time costs
 nothing and the weights load lazily on first embed.
 
-NOT registered in ``build_embedder`` / ``Store.embedders``: the Store binds its
-embedders to ``inquiry_embeddings``'s ``vector(384)`` and rejects any other dim.
-These embedders serve
+The Store holds no embedder. These embedders serve
 :func:`~trackinizer.server.store.session_embed.sweep_session_embeddings`,
-which takes its 1024-dim embedder as an argument.
+which takes its 1024-dim embedder as an argument, and the search route's query
+side.
 """
 
 from __future__ import annotations
@@ -81,8 +79,7 @@ class QwenFamilyEmbedder:
       default_dim: The registered dimension a bare name resolves to (the width
         the shipped partial HNSW index casts to).
       doc_prefix: Prepended to every DOCUMENT before embedding (never to a
-        query). ``""`` for stock Qwen; ``"- "`` for Octen's documented
-        workaround.
+        query). ``""`` for stock Qwen.
 
     Args:
       device: Torch device string (``"cpu"``, ``"cuda:0"``). CPU for live

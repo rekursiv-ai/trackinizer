@@ -43,8 +43,8 @@ def test_index_name_is_deterministic_and_sanitized() -> None:
         == "idx_session_embeddings_hnsw_qwen3_embedding_4b_1024"
     )
     assert (
-        index_name("jina-embeddings-v5-text-nano@768")
-        == "idx_session_embeddings_hnsw_jina_embeddings_v5_text_nano_768"
+        index_name("qwen3-embedding-0.6b@1024")
+        == "idx_session_embeddings_hnsw_qwen3_embedding_0_6b_1024"
     )
 
 
@@ -136,7 +136,7 @@ async def test_ensure_model_index_is_idempotent(store: Store) -> None:
 @pytest.mark.asyncio(loop_scope="session")
 async def test_ensure_creates_a_new_models_index(store: Store) -> None:
     """A model not in the baseline gets its partial index created on demand."""
-    name = "qwen3-embedding-8b@1024"
+    name = "qwen3-embedding-0.6b@1024"
     async with store.engine.acquire() as conn:
         await conn.execute("DROP INDEX IF EXISTS " + index_name(name))
         await ensure_model_index(conn, name, 1024)

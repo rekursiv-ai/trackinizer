@@ -54,7 +54,6 @@ from trackinizer.server.api.session_identity import Asker
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, Role
 from trackinizer.server.config import Assistant, Config
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.errors import NotFoundError
 from trackinizer.types.inquiries import AgentSession
@@ -964,7 +963,6 @@ def _policed(
     conn.fetchval.return_value = account
     store = Store(
         cast("DatabaseEngine", FakeEngine(conn)),
-        embed=StubEmbedder(),
         access_policy=policy,
     )
     state = SimpleNamespace(store=store, config=Config())

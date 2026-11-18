@@ -275,6 +275,20 @@ All notable trackinizer changes are documented here. This project follows
     stored. `append_session_records` answers `(written, skipped)`. The
     `session_slash_commands` table takes no new rows; its rows stay readable and
     exported.
+- **Breaking:** the inquiry embedder. `Store(engine, ...)` takes no embedder, and
+  neither a write nor a boot computes a vector: `Store.embedders`,
+  `primitives.upsert_embedding`, `config.build_embedder`, `Config.embedder`,
+  `--embedder` and `TRACKINIZER_EMBEDDER` go. `inquiry_embeddings` takes no new
+  rows; its rows stay.
+- **Breaking:** Qwen3-Embedding-8B, Octen-Embedding-8B and
+  jina-embeddings-v5-text nano and small, with their modules, registry entries and
+  bucket plans. `--session-embedder` names Qwen3-Embedding 0.6B or 4B.
+- **Breaking:** the session-search model override: `?model=` and `?dim=` on `GET
+  /api/web/search_sessions`, `--session-embedder-dim`
+  (`TRACKINIZER_SESSION_EMBEDDER_DIM`), and `--session-embedders`
+  (`TRACKINIZER_SESSION_EMBEDDERS`, `Config.maintained_embedders`). A search uses
+  the server's `--session-embedder`, and `backfill_embedding.py --follow`
+  maintains it when `--model` is empty.
 
 ## 0.1.13 - 2026-11-05
 

@@ -85,7 +85,6 @@ from trackinizer.server.auth import (
     verify_secret,
 )
 from trackinizer.server.config import Config
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.route_iter import iter_route_leaves
 from trackinizer.server.session import (
     SESSION_COOKIE_NAME,
@@ -340,9 +339,7 @@ def _request_with(
         state=SimpleNamespace(
             engine=engine,
             config=Config() if config is None else config,
-            store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-            if store is None
-            else store,
+            store=Store(cast(DatabaseEngine, engine)) if store is None else store,
         ),
     )
     request.state = SimpleNamespace(request_id="")
@@ -468,7 +465,7 @@ class TestCurrentUser:
         )
 
         identity = await auth._resolve_identity(
-            Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+            Store(cast(DatabaseEngine, engine)),
             secret,
             staff=(),
             request_id="",
@@ -529,7 +526,7 @@ class TestCurrentUser:
         """Each read of the clock is a second later than the last."""
         secret, _ = generate_token()
         engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         if found == "cache":
             store.remember_bearer_identity(
                 secret,
@@ -766,7 +763,7 @@ class TestCurrentUser:
         engine.conn.fetch.return_value = [row]
         # One ``Store`` reused across calls so the throttle stays the
         # subject of the test rather than the fixture.
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
 
         clock: list[float] = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
@@ -806,8 +803,8 @@ class TestCurrentUser:
         row = _row(secret_hash=hash_secret(secret), key_id=key_id)
         engine = FakeEngine()
         engine.conn.fetch.return_value = [row]
-        store_a = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
-        store_b = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store_a = Store(cast(DatabaseEngine, engine))
+        store_b = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store_a))
@@ -836,7 +833,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
@@ -874,7 +871,7 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [
             _row(secret_hash=hash_secret(secret), key_id=key_id),
         ]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
         # TTL well past the bump interval so the entry is still cached when
@@ -903,7 +900,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         for _ in range(5):
@@ -927,7 +924,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -953,7 +950,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = [_row(secret_hash=hash_secret(secret))]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
 
@@ -983,7 +980,7 @@ class TestVerifiedBearerCache:
         secret, _ = generate_token()
         engine = FakeEngine()
         engine.conn.fetch.return_value = list[dict[str, object]]()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         verifies: list[str] = []
@@ -1014,7 +1011,7 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [
             _row(secret_hash=hash_secret(secret), user_id=user_id),
         ]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {secret}", store=store))
@@ -1033,7 +1030,7 @@ class TestVerifiedBearerCache:
         engine.conn.fetch.return_value = [
             _row(secret_hash=hash_secret(kept_secret), user_id=kept_user),
         ]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
 
         await current_user(_request_with(engine, f"Bearer {kept_secret}", store=store))
@@ -1188,7 +1185,7 @@ class TestBearerAudiences:
                 email="ada@example.com",
             ),
         ]
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         monkeypatch.setattr(auth, "monotonic_clock", lambda: 1_000.0)
         config = Config(staff=("ada@example.com",))
         request = _request_with(engine, f"Bearer {secret}", config=config, store=store)
@@ -1208,7 +1205,7 @@ class TestBearerAudiences:
         """Staff is recomputed from the owner's current email, not stored on the key."""
         secret, _ = generate_token()
         engine = FakeEngine()
-        store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, engine))
         clock = [1_000.0]
         monkeypatch.setattr(auth, "monotonic_clock", lambda: clock[0])
         request = _request_with(
@@ -1413,7 +1410,7 @@ async def _let_through(
         engine = FakeEngine()
         engine.conn.fetchrow = AsyncMock(return_value={"account": "ada@example.com"})
     engine.conn.fetchval.return_value = spawned_below
-    store = Store(cast(DatabaseEngine, engine), embed=StubEmbedder())
+    store = Store(cast(DatabaseEngine, engine))
     store.remember_bearer_identity(
         "trax_process",
         AuthIdentity(
@@ -1618,7 +1615,7 @@ class TestProcessKeyRoutes:
     async def test_a_person_s_key_is_let_through_wherever_its_route_lets_it(
         self,
     ) -> None:
-        store = Store(cast(DatabaseEngine, FakeEngine()), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, FakeEngine()))
         person = AuthIdentity(
             user_id=uuid.uuid4(),
             api_key_id=uuid.uuid4(),
@@ -2338,7 +2335,7 @@ class TestUserOf:
                     state=SimpleNamespace(
                         engine=engine,
                         config=Config(),
-                        store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+                        store=Store(cast(DatabaseEngine, engine)),
                     ),
                 ),
             },
@@ -2668,7 +2665,7 @@ class TestCurrentUserSession:
         # A test that skips the lifespan leaves the app without a config.
         cast("MagicMock", request).app = SimpleNamespace(
             state=SimpleNamespace(
-                store=Store(cast(DatabaseEngine, engine), embed=StubEmbedder()),
+                store=Store(cast(DatabaseEngine, engine)),
             ),
         )
         with pytest.raises(HTTPException) as exc_info:
@@ -3429,7 +3426,7 @@ class TestCredentialEdges:
 
     @pytest.mark.asyncio
     async def test_a_cache_hit_without_a_key_is_refused(self) -> None:
-        store = Store(cast(DatabaseEngine, FakeEngine()), embed=StubEmbedder())
+        store = Store(cast(DatabaseEngine, FakeEngine()))
         with pytest.raises(ValueError, match="key_id is not None"):
             await auth._bump_last_used(store, None)
 

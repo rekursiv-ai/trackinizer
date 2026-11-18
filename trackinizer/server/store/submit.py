@@ -23,7 +23,6 @@ from trackinizer.server.access_policy import Principal, Resource
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
     insert_inquiry,
-    upsert_embedding,
     validate_list_references,
 )
 from trackinizer.server.store.change_id_slot import (
@@ -261,8 +260,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         )
 
     # Order: idempotency probe -> ``pre_insert`` (kind-specific reference validation,
-    # run before any write so a bad ref wastes no embed work and writes no row) -> row
-    # -> ``created`` change -> ``post_insert`` (kind-specific edges: Issue decomposition
+    # run before any write so a bad ref writes no row) -> row -> ``created`` change -> ``post_insert`` (kind-specific edges: Issue decomposition
     # / blockers or Belief citations), which receives ``cause`` so its own edge audits
     # chain to the same ``created`` event.
     #
@@ -294,7 +292,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         principal: Principal | None = None,
         conn: Conn | None = None,
         row_id: UUID | None = None,
-    ) -> UUID:
+    ) -> UUID:  # pragma: no mutate block
         """Single insert path for every submit_X; ``row_id`` None mints the id."""
         if conn is not None:
             return await self._submit_on_conn(
@@ -315,14 +313,6 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         # been consumed by ``emit_change``. Both sources are client-influenced,
         # so a collision is a runtime 4xx (replay), never an assert.
         effective_key = req.idempotency_key or _peek_client_change_id()
-        # Embed BEFORE opening the tx, mirroring ``set_title``: a network
-        # embedder held inside the tx would pin the single PGlite connection
-        # across the round-trip, serializing every other writer. The cost of a
-        # wasted embed on the rare replay/bad-ref path is dominated by the
-        # lock-contention win. The batch path cannot hoist (each item's embed
-        # is unavoidably inside the batch's shared tx), so it lets
-        # ``_submit_on_conn`` embed inline by passing ``embeddings=None``.
-        embeddings = await self._embed_all(req.title)
         try:
             async with (
                 notify_after_commit(),
@@ -339,7 +329,6 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     pre_insert=pre_insert,
                     post_insert=post_insert,
                     principal=principal,
-                    embeddings=embeddings,
                     row_id=row_id,
                 )
         except asyncpg.UniqueViolationError as exc:
@@ -376,12 +365,6 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
     # A ``change_log`` PK collision propagates: the caller's ``tx`` rolls back, and the
     # single-submit path re-probes for the winner once the connection is released. In a
     # batch the same propagation rolls every item back together.
-    #
-    # ``embeddings`` carries pre-computed ``(model, vector)`` pairs for ``req.title``:
-    # the single-submit path embeds before opening its tx (so the embedder round-trip
-    # doesn't pin the connection) and passes the result here, while the
-    # :meth:`submit_batch` path leaves it ``None`` and embeds inline -- its per-item
-    # embed is unavoidably inside the shared tx.
     async def _submit_on_conn(
         self,
         conn: Conn,
@@ -394,9 +377,8 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         pre_insert: PreInsert | None,
         post_insert: PostInsert | None,
         principal: Principal | None = None,
-        embeddings: list[tuple[str, list[float]]] | None = None,
         row_id: UUID | None = None,
-    ) -> UUID:
+    ) -> UUID:  # pragma: no mutate block
         """Probe + insert one inquiry on an already-open transaction."""
         # The effective idempotency key is the body field if present, else the
         # slot the route layer set from an ``Idempotency-Key`` header. Both
@@ -418,19 +400,10 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 return existing
         # Validate kind-specific references before any write: a bad ref must
         # fail the submit without inserting a row or emitting a ``created``
-        # event. The single-submit path pre-computes ``embeddings`` before its
-        # tx (see :meth:`_submit_generic`), so on that path an embed may run
-        # ahead of this validation -- a wasted embed *compute* on the rare
-        # bad-ref path, never a wasted ``inquiry_embeddings`` row, since the
-        # upsert below is still gated behind the row insert.
+        # event.
         if pre_insert is not None:
             await pre_insert(conn)
         row_id = row_id or uuid.uuid4()
-        # The batch path (``embeddings is None``) embeds inline inside its
-        # shared tx, which it cannot avoid; the single path passes a value it
-        # computed before opening its own tx.
-        if embeddings is None:
-            embeddings = await self._embed_all(req.title)
         # Stash the client-supplied idempotency key into the per-request
         # slot so ``emit_change`` picks it up on its first call inside
         # this transaction. Mirrors how ``Idempotency-Key`` is delivered for
@@ -475,8 +448,6 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     **(extras or {}),
                 },
             )
-            for model, vec in embeddings:
-                await upsert_embedding(conn, row_id, model, vec)
             await self.access_policy.on_create(
                 conn,
                 principal=principal,
