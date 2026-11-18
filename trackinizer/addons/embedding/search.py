@@ -174,18 +174,20 @@ def _checked(settings: Settings) -> tuple[str, str]:
 
 # The distance casts BOTH the dimension-free column and the query to the key's width,
 # so it matches the key's partial index; without the matching cast the planner cannot
-# use it and scans every row.
+# use it and scans every row. The test reads the owner's row in a scalar subquery, run
+# once per candidate the index offers: as a join, the planner hashed every vector of
+# the key against the owners and sorted all of them (2.1 s on prod's 568k).
 # Audience: gated -- ``test`` is the reader's, in the WHERE before the LIMIT.
 def _sql(settings: Settings, test: str) -> str:
     """Return the arm's statement: ``$1`` the query vector, ``$2`` the limit."""
     key, dim = _checked(settings)
     return vetted_sql(
         "SELECT v.owner_id, v.part, v.idx, v.field, v.chunk "
-        "FROM embedding.vectors v JOIN inquiries i ON i.id = v.owner_id "
-        "WHERE v.settings = '",
+        "FROM embedding.vectors v WHERE v.settings = '",
         key,
-        "' AND ",
+        "' AND (SELECT ",
         test,
+        " FROM inquiries i WHERE i.id = v.owner_id)",
         " ORDER BY (v.embedding::halfvec(",
         dim,
         ")) <=> $1::halfvec(",

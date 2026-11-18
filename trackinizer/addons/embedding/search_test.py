@@ -45,8 +45,9 @@ _SETTINGS: Final = Settings(
 )
 _SQL: Final = (
     "SELECT v.owner_id, v.part, v.idx, v.field, v.chunk "
-    "FROM embedding.vectors v JOIN inquiries i ON i.id = v.owner_id "
-    "WHERE v.settings = '0123456789abcdef' AND v.idx = $3 "
+    "FROM embedding.vectors v "
+    "WHERE v.settings = '0123456789abcdef' "
+    "AND (SELECT v.idx = $3 FROM inquiries i WHERE i.id = v.owner_id) "
     "ORDER BY (v.embedding::halfvec(2)) <=> $1::halfvec(2) LIMIT $2"
 )
 _SET_WIDTH: Final = "SELECT set_config('hnsw.ef_search', $1, true)"
@@ -203,6 +204,8 @@ async def test_the_iterative_scan_is_set_for_one_transaction() -> None:
     hits = await _ask(_loaded(), _engine(conn), filtered=True, limit=3)
 
     assert executed_sql(conn) == ["BEGIN", _ITERATE, _SQL, "COMMIT"]
+    assert conn.fetch.await_args is not None
+    assert conn.fetch.await_args.args[1:] == (await _query_text(), 3, 0)
     assert len(hits or []) == 3
 
 
