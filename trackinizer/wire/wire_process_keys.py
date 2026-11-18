@@ -19,18 +19,59 @@ from typing import TYPE_CHECKING, Final, Literal
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Collection, Mapping, Sequence
 
 
-__all__ = ["PROCESS_KEY_ROUTES", "WEBSOCKET"]
+__all__ = ["PROCESS_KEY_ROUTES", "RECORDS_ROUTES", "WEBSOCKET", "listed_route"]
 
 
 WEBSOCKET: Final = "WEBSOCKET"
 """How :data:`PROCESS_KEY_ROUTES` names a socket's route, which has no HTTP method."""
 
-PROCESS_KEY_ROUTES: Final[
-    Mapping[tuple[str, str], Literal["account", "tree", "descendant"]]
-] = MappingProxyType(
+type Scope = Literal["account", "tree", "descendant"]
+"""How far a listed route reaches; see the module docstring."""
+
+RECORDS_ROUTES: Final[Mapping[tuple[str, str], Scope]] = MappingProxyType(
+    {
+        # Its agents' record reads, which run trax's read commands: every route those
+        # commands call, each a GET, and no write. A read trax sends as a POST (metrics
+        # query and rank) is not listed. Each applies the caller's read filter. Routes
+        # listed for other tools keep their scope here: a session's parts and records
+        # stay its own tree's.
+        ("GET", "/api/inquiries"): "account",
+        ("GET", "/api/inquiries/{kind}/{seq}"): "account",
+        ("GET", "/api/inquiries/next_issue"): "account",
+        ("GET", "/api/inquiries/{target_id}/cost"): "account",
+        ("GET", "/api/inquiries/{target_id}/confidence"): "account",
+        ("GET", "/api/inquiries/{target_id}/authority"): "account",
+        ("GET", "/api/web/lookup/{target_id}"): "account",
+        ("GET", "/api/web/get/{target_id}"): "account",
+        ("GET", "/api/web/recent_changes"): "account",
+        ("GET", "/api/web/search_sessions"): "account",
+        ("GET", "/api/version"): "account",
+        ("GET", "/api/sessions/{session_id}/parts"): "tree",
+        ("GET", "/api/sessions/{session_id}/records"): "tree",
+    },
+)
+"""The routes an agent's record reads call, by method and path, with their scopes."""
+
+
+def _route_union(
+    *tables: Mapping[tuple[str, str], Scope],
+) -> Mapping[tuple[str, str], Scope]:
+    """Return every table's routes as one; a route two tables scope apart raises."""
+    union: dict[tuple[str, str], Scope] = {}
+    for table in tables:
+        for route, scope in table.items():
+            if union.setdefault(route, scope) != scope:
+                method, template = route
+                raise ValueError(
+                    f"{method} {template} is listed as {union[route]} and as {scope}",
+                )
+    return MappingProxyType(union)
+
+
+PROCESS_KEY_ROUTES: Final[Mapping[tuple[str, str], Scope]] = _route_union(
     {
         # Its own session: the parts and records it restores its journal from, the
         # records it saves, and its socket.
@@ -81,7 +122,56 @@ PROCESS_KEY_ROUTES: Final[
         # (``canvas_routes.refuse_process_settings``).
         ("GET", "/api/me/preferences/agent"): "account",
     },
+    RECORDS_ROUTES,
 )
 """Every route an agent process calls with the key a start minted for it, by method
 and path, with its scope. A route nobody lists is refused to that key until someone
-does: an agent gets an ability by a tool, and the tool's routes are listed with it."""
+does: an agent gets an ability by a tool, and the tool's routes are listed with it.
+:data:`RECORDS_ROUTES` joins its own entries; a route both list keeps one scope, so
+joining a tool's list never widens what the key reaches."""
+
+
+def listed_route(
+    method: str,
+    path: str,
+    routes: Collection[tuple[str, str]],
+) -> tuple[str, str] | None:
+    """Return the listed route a concrete request matches, or ``None``.
+
+    A template matches segment by segment, each ``{param}`` one non-empty segment. Of
+    several matches the most specific wins, the one with the most literal segments and
+    so the fewest parameters, so ``/api/inquiries/next_issue`` is its own route, not
+    ``/api/inquiries/{x}``.
+
+    Args:
+      method: The request's method, or :data:`WEBSOCKET`.
+      path: The request's path from the server's root, without its query.
+      routes: The ``(method, template)`` pairs to match against.
+
+    Returns:
+      route: The matching ``(method, template)``, or ``None`` when none matches.
+
+    """
+    segments = path.split("/")
+    return max(
+        (
+            (listed, template)
+            for listed, template in routes
+            if listed == method and _template_matches(template, segments)
+        ),
+        # Every match has as many segments as the path, so fewest parameters is most
+        # literal segments.
+        key=lambda route: -route[1].count("{"),
+        default=None,
+    )
+
+
+def _template_matches(template: str, segments: Sequence[str]) -> bool:
+    """Return whether ``template`` names the path split into ``segments``."""
+    parts = template.split("/")
+    return len(parts) == len(segments) and all(map(_part_matches, parts, segments))
+
+
+def _part_matches(part: str, segment: str) -> bool:
+    """Return whether one template segment names one path segment."""
+    return part == segment or (part.startswith("{") and segment != "")

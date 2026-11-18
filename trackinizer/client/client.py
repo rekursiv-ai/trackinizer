@@ -63,13 +63,14 @@ from trackinizer.wire.routes import (
 )
 from trackinizer.wire.seq_ranges import SeqRange, format_interval
 from trackinizer.wire.wire_export import EXPORT_API_PATH, EXPORT_FILTER_PARAM
+from trackinizer.wire.wire_process_keys import listed_route
 
 
 logger = logging.getLogger(__name__)
 
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator
+    from collections.abc import Collection, Generator, Iterator
     from types import TracebackType
 
     import pydantic
@@ -285,11 +286,27 @@ class Client:
         api_key: str = "",
         timeout_sec: float = 30.0,
         transport: httpx2.BaseTransport | None = None,
+        routes: Collection[tuple[str, str]] | None = None,
     ) -> None:
+        """Open a client for the server at ``base_url``.
+
+        Args:
+          base_url: The server's URL.
+          author: The audit actor writes name when they name none.
+          api_key: The bearer key; ``""`` sends none.
+          timeout_sec: The per-read budget of one request.
+          transport: The HTTP transport; ``None`` for a pooled one that retries a
+            failed connect once.
+          routes: The only ``(method, template)`` routes this client may call
+            (``wire_process_keys.listed_route``); any other request raises
+            ``ClientError`` before it is sent. ``None`` calls any route.
+
+        """
         self.base_url = server_url(base_url, "base_url")
         self.author = author
         self.api_key = api_key
         self.timeout_sec = timeout_sec
+        self._routes = routes
         self._client_id = uuid.uuid4().hex[:12]
         self._created_at = time.monotonic()
         self._request_count = 0
@@ -697,6 +714,7 @@ class Client:
           line: One JSON object, without its trailing newline.
 
         """
+        self._check_route("GET", EXPORT_API_PATH)
         params = {
             EXPORT_FILTER_PARAM: [
                 json.dumps(
@@ -2612,6 +2630,7 @@ class Client:
 
         """
         where = wire_session_relay.SESSION_LINES_PATH.format(session_id=session_id)
+        self._check_route("GET", where)
         try:
             with self._http.stream(
                 "GET",  # pragma: no mutate[case-insensitive]
@@ -3263,6 +3282,7 @@ class Client:
         retry_attempts: int = 3,
         timeout: float | None = None,
     ) -> PlainTree:
+        self._check_route(method, path)
         # ``retry_attempts`` is how many tries a mutating request gets after a
         # 5xx or read timeout. Three bounds the worst-case wait (~1s) while
         # covering the common cases: one bad pool socket, one transient 502.
@@ -3354,6 +3374,17 @@ class Client:
             raise ClientError(
                 f"{method} {path}: malformed JSON in server response",
             ) from err
+
+    # Checked on the root-relative path each sender holds, not in an httpx event hook:
+    # a hook sees the full URL path, so a ``base_url`` mounted under a prefix would
+    # match no listed template and refuse every request.
+    def _check_route(self, method: str, path: str) -> None:
+        """Refuse a request ``routes`` does not list, before it is sent."""
+        if (
+            self._routes is not None
+            and listed_route(method, path, self._routes) is None
+        ):
+            raise ClientError(f"{method} {path} is not available to this client")
 
     def _log_transport_failure(
         self,

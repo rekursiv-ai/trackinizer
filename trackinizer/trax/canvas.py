@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol, cast, override
 
-import argparse
 import json
 import os
 import tempfile
@@ -21,13 +20,15 @@ from treekle import MutablePlainTree, PlainTree, from_plain, json_loads
 
 from trackinizer.client.errors import ClientError
 from trackinizer.lib.files.owner_only import write_private
-from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
 from trackinizer.trax.context import env
 from trackinizer.trax.render import echo
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
+
+    import argparse
 
     from trackinizer.client.client import Client
 
@@ -205,7 +206,7 @@ class Canvas(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax canvas", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax canvas", description=cls.__doc__)
         parser.add_argument("canvas_id", nargs="?")
         parser.add_argument(
             "action",

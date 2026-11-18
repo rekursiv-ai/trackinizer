@@ -96,3 +96,23 @@ a live session with `trax send @NAME TEXT`. The run model the server and other
 readers share stays in the package as `trackinizer.runs`; its adapters, in
 [`runs/adapters/`](../runs/adapters/), each know where a CLI writes its session
 JSONL and how to map a line to a record.
+
+## Running trax inside another program
+
+`trax.invoke.invoke` runs one command in the calling process and returns
+what it wrote and its exit code:
+
+```python
+invoke(argv, env=..., width=..., local_input=FOLDER, run=parse_and_run)
+```
+
+Each run binds its own output, environment, table width and folder in a
+fresh context, and writes nothing to the process's own streams, so
+concurrent runs stay apart. `local_input` is the folder a `-` (stdin) or
+`@path` value reads from; `None` reads no local input. The daemon serves
+every command through it with the caller's folder. An agent's record reads
+run the read commands through it with `local_input=None` and a `run` that
+binds `client_factory` and `allowed` to `parse_and_run`: `allowed` names
+the verbs that may run, and its client, built with `routes=`, sends no
+other request. trax's usage, help and argument errors go through the same
+output, without colour.

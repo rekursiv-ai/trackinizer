@@ -20,6 +20,8 @@ from typing import TextIO, cast
 import os
 import sys
 
+from trackinizer.client.errors import ClientError
+
 
 OUT_STREAM: ContextVar[TextIO | None] = ContextVar("trax_out_stream", default=None)
 """Where ``echo`` writes, or ``None`` for the process ``sys.stdout``."""
@@ -47,6 +49,13 @@ shell's profile -- writing to another server under another token."""
 CWD: ContextVar[str] = ContextVar("trax_cwd", default="")
 """Caller's working directory, or ``""`` for this process's own."""
 
+LOCAL_INPUT: ContextVar[bool] = ContextVar("trax_local_input", default=True)
+"""Whether a ``-`` value may read stdin and an ``@path`` value a file.
+
+An agent's tool runs trax inside the agent's own process, whose stdin may be the
+person's terminal and whose files are not the caller's to send; there it is
+``False``, and either value is refused before anything is read."""
+
 
 def out_stream() -> TextIO:
     """Return the stream ``echo`` should write to."""
@@ -61,6 +70,26 @@ def err_stream() -> TextIO:
     if (stream := ERR_STREAM.get()) is not None:
         return stream
     return cast(TextIO, sys.stderr)
+
+
+def check_local_input(source: str) -> None:
+    """Refuse a ``-`` or ``@path`` value where :data:`LOCAL_INPUT` is off.
+
+    Args:
+      source: The value as typed; anything else passes.
+
+    Raises:
+      ClientError: ``source`` would read stdin or a file, and this invocation
+        reads neither. The message names the form, never the path: a literal
+        secret may start with ``@``.
+
+    """
+    if LOCAL_INPUT.get():
+        return
+    if source == "-":
+        raise ClientError("- reads no local input here")
+    if source.startswith("@"):
+        raise ClientError("@FILE reads no local input here")
 
 
 def env(name: str) -> str | None:
