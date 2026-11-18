@@ -2984,93 +2984,8 @@ class _StartTags(HTMLParser):
         self.tags.append((tag, {name: value or "" for name, value in attrs}))
 
 
-class TestSearchEmbedder:
-    """Which embedder a session search uses: none, the A/B model, or the default."""
-
-    @classmethod
-    def _request(cls) -> Request:
-        return Request({"type": "http", "app": FastAPI()})
-
-    @classmethod
-    def _stub(
-        cls,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> tuple[object, object, list[tuple[object, ...]]]:
-        override, default = object(), object()
-        calls: list[tuple[object, ...]] = []
-
-        def fake_override(request: Request, name: str, dim: int | None) -> object:
-            calls.append(("override", request, name, dim))
-            return override
-
-        def fake_default(request: Request) -> object:
-            calls.append(("default", request))
-            return default
-
-        monkeypatch.setattr(web, "_override_embedder", fake_override)
-        monkeypatch.setattr(web, "_session_embedder", fake_default)
-        return override, default, calls
-
-    @pytest.mark.parametrize("semantic", [False, True])
-    def test_a_dimension_without_a_model_is_refused_with_its_reason(
-        self,
-        semantic: bool,
-    ) -> None:
-        with pytest.raises(HTTPException) as caught:
-            web._search_embedder(
-                self._request(),
-                semantic=semantic,
-                model="",
-                dim=256,
-            )
-        assert (caught.value.status_code, caught.value.detail) == (
-            400,
-            "dim requires model",
-        )
-
-    def test_a_search_that_is_not_semantic_uses_no_embedder(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        self._stub(monkeypatch)
-        for model in ("", "qwen3-embedding-4b"):
-            found = web._search_embedder(
-                self._request(),
-                semantic=False,
-                model=model,
-                dim=None,
-            )
-            assert found is None
-
-    def test_a_model_selects_the_override_with_its_dimension(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        override, _, calls = self._stub(monkeypatch)
-        request = self._request()
-        found = web._search_embedder(
-            request,
-            semantic=True,
-            model="m",
-            dim=512,
-        )
-        assert found is override
-        assert calls == [("override", request, "m", 512)]
-
-    def test_no_model_selects_the_default(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        _, default, calls = self._stub(monkeypatch)
-        request = self._request()
-        found = web._search_embedder(
-            request,
-            semantic=True,
-            model="",
-            dim=None,
-        )
-        assert found is default
-        assert calls == [("default", request)]
+class TestSessionEmbedder:
+    """The one embedder a session search uses: the server's, built once."""
 
     @pytest.mark.parametrize("cached", [StubEmbedder(dim=1024), None])
     def test_the_default_embedder_is_built_once_per_process(
@@ -3081,6 +2996,22 @@ class TestSearchEmbedder:
         app.state.session_embedder = cached
         request = Request({"type": "http", "app": app})
         assert web._session_embedder(request) is cached
+
+    def test_the_configured_embedder_is_built_and_kept(self) -> None:
+        app = FastAPI()
+        app.state.config = Config(session_embedder="stub-1024")
+        request = Request({"type": "http", "app": app})
+
+        built = web._session_embedder(request)
+
+        assert built is not None
+        assert built.name == "stub-1024"
+        assert web._session_embedder(request) is built
+
+    def test_an_app_without_a_config_searches_by_full_text(self) -> None:
+        assert (
+            web._session_embedder(Request({"type": "http", "app": FastAPI()})) is None
+        )
 
 
 class TestOptionalIdentity:
@@ -3276,24 +3207,6 @@ def test_session_search_hit_keeps_every_record_coordinate_and_display_field() ->
         "snippet": "Found text",
         "title": "Deploy",
     }
-
-
-@pytest.mark.parametrize(
-    ("name", "dim"),
-    [
-        ("unknown-embedder", None),
-        ("qwen3-embedding-4b", 99_999),
-    ],
-)
-def test_invalid_override_configuration_becomes_a_client_error(
-    name: str,
-    dim: int | None,
-) -> None:
-    request = Request({"type": "http", "app": FastAPI()})
-    with pytest.raises(HTTPException) as caught:
-        web._override_embedder(request, name, dim)
-    assert caught.value.status_code == 400
-    assert name in caught.value.detail or str(dim) in caught.value.detail
 
 
 def _neighbourhood_call(

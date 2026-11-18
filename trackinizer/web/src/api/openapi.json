@@ -20145,7 +20145,7 @@
   },
   "/api/web/search_sessions": {
    "get": {
-    "description": "Hybrid session search: embeddings + scoped tsvector, RRF-merged.\n\nRuns the full-text arm always, and the semantic arm only when ``semantic``\nis requested AND a session embedder is available. With no embedder the route\ndegrades to full-text-only rather than 500 -- a keyword search must never\ntrigger a model load -- and flags the degrade in the response\n(``degraded: true``, ``semantic: false``). The query embedding uses the\nembedder's query-side prefix; the corpus stayed prefix-free at ingest.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  semantic: Request the embedding arm (default true); ignored when no\n    session embedder is available.\n  limit: Maximum merged hits, 1-200.\n  model: Optional A/B override -- a bare slug or full ``slug@dim`` of an\n    embedder to query INSTEAD of the serving default (its rows must already\n    be swept). Unknown names are a 400. Empty uses the process default.\n  dim: Optional dim override paired with ``model`` (a Matryoshka model\n    accepts any dim in its range); must agree with any ``@dim`` in ``model``.\n  whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a\n    person searches their own, as the console opens on them, and the\n    configured assistant every one it reads, since it holds none of the\n    sessions it is asked about.\n  hidden: Search the ``private`` sessions the caller reads too.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose transcript the caller does not read has no hit.",
+    "description": "Hybrid session search: embeddings + scoped tsvector, RRF-merged.\n\nRuns the full-text arm always, and the semantic arm only when ``semantic``\nis requested AND a session embedder is available. With no embedder the route\ndegrades to full-text-only rather than 500 -- a keyword search must never\ntrigger a model load -- and flags the degrade in the response\n(``degraded: true``, ``semantic: false``). The query embedding uses the\nembedder's query-side prefix; the corpus stayed prefix-free at ingest.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  semantic: Request the embedding arm (default true); ignored when no\n    session embedder is available.\n  limit: Maximum merged hits, 1-200.\n  whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a\n    person searches their own, as the console opens on them, and the\n    configured assistant every one it reads, since it holds none of the\n    sessions it is asked about.\n  hidden: Search the ``private`` sessions the caller reads too.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose transcript the caller does not read has no hit.",
     "operationId": "web_search_sessions_api_web_search_sessions_get",
     "parameters": [
      {
@@ -20175,32 +20175,6 @@
        "default": 20,
        "title": "Limit",
        "type": "integer"
-      }
-     },
-     {
-      "in": "query",
-      "name": "model",
-      "required": false,
-      "schema": {
-       "default": "",
-       "title": "Model",
-       "type": "string"
-      }
-     },
-     {
-      "in": "query",
-      "name": "dim",
-      "required": false,
-      "schema": {
-       "anyOf": [
-        {
-         "type": "integer"
-        },
-        {
-         "type": "null"
-        }
-       ],
-       "title": "Dim"
       }
      },
      {

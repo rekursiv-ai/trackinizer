@@ -19,15 +19,12 @@ import pytest
 
 from trackinizer.server.config import ConfigError
 from trackinizer.server.embedders import registry
-from trackinizer.server.embedders.jina import JinaV5Embedder
 from trackinizer.server.embedders.qwen_family import QwenFamilyEmbedder
 
 
 _QWEN_FAMILY = (
-    "octen-embedding-8b@1024",
     "qwen3-embedding-0.6b@1024",
     "qwen3-embedding-4b@1024",
-    "qwen3-embedding-8b@1024",
 )
 
 
@@ -56,8 +53,7 @@ def test_importing_registry_pulls_no_torch() -> None:
             "assert 'asyncpg' not in sys.modules; "
             "assert 'pydantic' not in sys.modules; "
             "assert 'treekle' not in sys.modules; "
-            "assert not any(name.startswith(('PACKAGE.qwen', 'PACKAGE.jina', "
-            "'PACKAGE.octen')) for name in sys.modules)"
+            "assert not any(name.startswith('PACKAGE.qwen') for name in sys.modules)"
         )
         .replace("MODULE", module)
         .replace("PACKAGE", module.rpartition(".")[0])
@@ -70,6 +66,11 @@ def test_importing_registry_pulls_no_torch() -> None:
         text=True,
     )
     assert probe.returncode == 0, probe.stderr
+
+
+def test_the_registry_holds_the_two_qwen3_models() -> None:
+    """Qwen3 0.6B and 4B, the models a server may search with, and no other."""
+    assert sorted(registry.EMBEDDERS) == list(_QWEN_FAMILY)
 
 
 def test_every_registry_name_builds() -> None:
@@ -99,7 +100,7 @@ def test_every_entry_builds_its_own_model_both_ways(name: str) -> None:
     assert entry.slug == name.partition("@")[0]
     assert (built.name, throughput.name) == (f"{entry.slug}@{half}",) * 2
     assert type(throughput) is type(built)
-    assert isinstance(throughput, QwenFamilyEmbedder | JinaV5Embedder)
+    assert isinstance(throughput, QwenFamilyEmbedder)
     assert (throughput._device, throughput._batch_size) == ("cuda:1", 3)
     assert isinstance(entry.weights_present(), bool)
 
@@ -153,10 +154,6 @@ def test_registry_names_are_unique() -> None:
     [
         ("qwen3-embedding-0.6b@1024", 1024),
         ("qwen3-embedding-4b@1024", 1024),
-        ("qwen3-embedding-8b@1024", 1024),
-        ("octen-embedding-8b@1024", 1024),
-        ("jina-embeddings-v5-text-nano@768", 768),
-        ("jina-embeddings-v5-text-small@1024", 1024),
     ],
 )
 def test_registry_dim_matches_the_name_suffix(name: str, dim: int) -> None:
@@ -201,8 +198,8 @@ def test_resolved_name_returns_the_full_identity_torch_free() -> None:
 def test_at_suffix_names_the_dim_without_a_dim_argument() -> None:
     """``slug@dim`` alone resolves to that dim, not the model's default.
 
-    The server and the follow service read their models as ``slug@dim`` from
-    ``TRACKINIZER_SESSION_EMBEDDER(S)``, with no dim argument beside them.
+    The server and the follow service read their model as ``slug@dim`` from
+    ``TRACKINIZER_SESSION_EMBEDDER``, with no dim argument beside it.
     """
     assert registry.resolved_name("qwen3-embedding-4b@512") == "qwen3-embedding-4b@512"
 
@@ -216,9 +213,9 @@ def test_suffix_and_dim_argument_must_agree() -> None:
         registry.resolved_name("qwen3-embedding-4b@1024", 512)
 
 
-def test_bare_name_with_supported_dim_mints_that_identity() -> None:
-    """Name + an in-range Matryoshka dim resolves to ``<name>@<dim>``."""
-    embedder = registry.build_session_embedder("qwen3-embedding-4b", dim=512)
+def test_an_in_range_dim_suffix_mints_that_identity() -> None:
+    """``<name>@<dim>`` with an in-range Matryoshka dim builds at that dim."""
+    embedder = registry.build_session_embedder("qwen3-embedding-4b@512")
     assert embedder is not None
     assert embedder.name == "qwen3-embedding-4b@512"  # A legitimate new identity.
     assert embedder.dim == 512
@@ -234,13 +231,7 @@ def test_at_form_still_resolves_as_before() -> None:
 def test_unsupported_dim_errors_naming_the_range() -> None:
     """A dim the model does not support is a hard error naming the range."""
     with pytest.raises(ConfigError, match=r"32\.\.2560; dim 4096 is out of range"):
-        registry.build_session_embedder("qwen3-embedding-4b", dim=4_096)
-
-
-def test_fixed_model_rejects_a_non_native_dim() -> None:
-    """A fixed-dim (non-MRL) model accepts only its native dim."""
-    with pytest.raises(ConfigError, match=r"dim 512 is unsupported \(only 768\)"):
-        registry.build_session_embedder("jina-embeddings-v5-text-nano", dim=512)
+        registry.build_session_embedder("qwen3-embedding-4b@4096")
 
 
 def test_backfill_resolves_bare_name_and_dim() -> None:
@@ -267,10 +258,10 @@ def test_weights_present_resolves_bare_name(
     check = Mock(return_value=present)
     monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
 
-    assert registry.weights_present(name, dim=512) is present
+    assert registry.weights_present(name) is present
     check.assert_called_once_with()
     with pytest.raises(ConfigError, match="out of range"):
-        registry.weights_present(name.partition("@")[0], dim=4_096)
+        registry.weights_present("qwen3-embedding-4b@4096")
     assert check.call_count == 1
 
 
@@ -279,9 +270,9 @@ def test_weights_present_resolves_bare_name(
     [
         ("stub", "stub", 384),
         ("stub-1024", "stub-1024", 1024),
-        # The 384 stub's stored name is the literal "stub" (it keys existing
-        # inquiry_embeddings rows), so the knob ``stub-384`` and the stored name
-        # deliberately diverge -- a caller wanting the 384 stub writes ``stub``.
+        # The 384 stub's stored name is the literal "stub", so the knob
+        # ``stub-384`` and the stored name diverge -- a caller wanting the 384
+        # stub writes ``stub``.
         ("stub-384", "stub", 384),
     ],
 )
@@ -305,7 +296,6 @@ def test_is_weightless_only_for_stubs_and_empty() -> None:
     assert registry.is_weightless("stub")
     assert registry.is_weightless("stub-1024")
     assert not registry.is_weightless("qwen3-embedding-4b@1024")
-    assert not registry.is_weightless("jina-embeddings-v5-text-nano@768")
 
 
 def test_weights_present_is_true_for_weightless() -> None:
@@ -321,24 +311,28 @@ def test_cached_builder_never_constructs_uncached_weights(
     build = Mock(side_effect=AssertionError("Uncached model constructed"))
     monkeypatch.setattr(registry, "weights_present", check)
     monkeypatch.setattr(registry, "build_session_embedder", build)
-    assert registry.build_cached_session_embedder("qwen3-embedding-4b", dim=256) is None
-    check.assert_called_once_with("qwen3-embedding-4b", dim=256)
+    assert registry.build_cached_session_embedder("qwen3-embedding-4b@256") is None
+    check.assert_called_once_with("qwen3-embedding-4b@256")
     build.assert_not_called()
 
 
-@pytest.mark.parametrize("dim", [None, 256])
+@pytest.mark.parametrize(
+    ("name", "dim"),
+    [("qwen3-embedding-4b", 1_024), ("qwen3-embedding-4b@256", 256)],
+)
 def test_cached_builder_constructs_the_requested_cached_model(
     monkeypatch: pytest.MonkeyPatch,
-    dim: int | None,
+    name: str,
+    dim: int,
 ) -> None:
     check = Mock(return_value=True)
     monkeypatch.setattr(registry, "qwen3_4b_weights_present", check)
 
-    embedder = registry.build_cached_session_embedder("qwen3-embedding-4b", dim=dim)
+    embedder = registry.build_cached_session_embedder(name)
 
     assert embedder is not None
-    assert embedder.name == f"qwen3-embedding-4b@{dim or 1_024}"
-    assert embedder.dim == (dim or 1_024)
+    assert embedder.name == f"qwen3-embedding-4b@{dim}"
+    assert embedder.dim == dim
     check.assert_called_once_with()
 
 

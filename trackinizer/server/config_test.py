@@ -1,4 +1,4 @@
-"""Tests for engine/embedder construction helpers."""
+"""Tests for runtime config and engine construction."""
 
 from __future__ import annotations
 
@@ -25,7 +25,6 @@ from trackinizer.server.config import (
     ServiceKeys,
     _prune_stale_ephemeral_dirs,
     auth_disabled_from_env,
-    build_embedder,
     build_engine,
     parse_assistant,
     parse_chat_orgs,
@@ -38,23 +37,11 @@ from trackinizer.server.config import (
     parse_terminal_stun,
     session_secret_from_file,
 )
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
 from trackinizer.wire.wire_terminals import MAX_ICE_SERVERS
 
 
 class TestPureFunctions:
-    def testbuild_embedder_stub(self) -> None:
-        emb = build_embedder("stub")
-        assert isinstance(emb, StubEmbedder)
-
-    def testbuild_embedder_unknown(self) -> None:
-        # A bad config value raises ConfigError (a plain Exception), not
-        # SystemExit: these helpers run inside the app lifespan, where a
-        # BaseException would bypass normal error handling (API-18).
-        with pytest.raises(ConfigError):
-            build_embedder("nope")
-
     def testbuild_engine_pglite(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -217,31 +204,6 @@ class TestSessionMaxAge:
             Config.from_env()
 
 
-class TestSessionEmbedderDim:
-    """``session_embedder_dim`` is an optional int from env and CLI."""
-
-    def test_from_env_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "512")
-        assert Config.from_env().session_embedder_dim == 512
-
-    def test_from_env_absent_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
-        assert Config.from_env().session_embedder_dim is None
-
-    def test_from_env_non_integer_raises(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
-        with pytest.raises(ConfigError):
-            Config.from_env()
-
-    def test_from_args_reads_the_dim(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("TRACKINIZER_SESSION_EMBEDDER_DIM", raising=False)
-        config = Config.from_args(_server_args(session_embedder_dim=256))
-        assert config.session_embedder_dim == 256
-
-
 class TestFromEnv:
     """Every environment variable reaches its own field, and each has its default."""
 
@@ -251,10 +213,7 @@ class TestFromEnv:
         "TRACKINIZER_EPHEMERAL",
         "TRACKINIZER_PGLITE_TCP",
         "TRACKINIZER_DSN",
-        "TRACKINIZER_EMBEDDER",
         "TRACKINIZER_SESSION_EMBEDDER",
-        "TRACKINIZER_SESSION_EMBEDDER_DIM",
-        "TRACKINIZER_SESSION_EMBEDDERS",
         "TRACKINIZER_WEB",
         "TRACKINIZER_SESSION_SECRET",
         "TRACKINIZER_SESSION_MAX_AGE_SECONDS",
@@ -272,6 +231,18 @@ class TestFromEnv:
             monkeypatch.delenv(name, raising=False)
         assert Config.from_env() == Config()
 
+    def test_the_variables_of_no_setting_change_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An environment file still naming these boots as one that does not."""
+        for name in self._VARIABLES:
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("TRACKINIZER_EMBEDDER", "other")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDERS", "a@8,b@8")
+        assert Config.from_env() == Config()
+
     def test_every_variable_reaches_its_field(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -283,10 +254,7 @@ class TestFromEnv:
             "TRACKINIZER_EPHEMERAL": "1",
             "TRACKINIZER_PGLITE_TCP": "1",
             "TRACKINIZER_DSN": "postgresql://h/db",
-            "TRACKINIZER_EMBEDDER": "other",
             "TRACKINIZER_SESSION_EMBEDDER": "m@1024",
-            "TRACKINIZER_SESSION_EMBEDDER_DIM": "7",
-            "TRACKINIZER_SESSION_EMBEDDERS": "a, b ,,c",
             "TRACKINIZER_WEB": "1",
             "TRACKINIZER_SESSION_SECRET": "s3cret",
             "TRACKINIZER_SESSION_MAX_AGE_SECONDS": "99",
@@ -303,10 +271,7 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            embedder="other",
             session_embedder="m@1024",
-            session_embedder_dim=7,
-            session_embedders=("a", "b", "c"),
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
@@ -328,10 +293,7 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            embedder="other",
             session_embedder="m@1024",
-            session_embedder_dim=7,
-            session_embedders="a, b ,,c",
             web=True,
             session_max_age_seconds=99,
             auth=False,
@@ -346,10 +308,7 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            embedder="other",
             session_embedder="m@1024",
-            session_embedder_dim=7,
-            session_embedders=("a", "b", "c"),
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
@@ -364,26 +323,6 @@ class TestParsers:
         assert parse_engine("pg") == "pg"
         with pytest.raises(ConfigError, match="unknown engine 'mysql'"):
             parse_engine("mysql")
-
-    def test_blank_dim_is_none_and_padding_is_trimmed(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "   ")
-        assert Config.from_env().session_embedder_dim is None
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", " 5 ")
-        assert Config.from_env().session_embedder_dim == 5
-
-    def test_a_bad_dim_says_which_variable(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
-        with pytest.raises(
-            ConfigError,
-            match="TRACKINIZER_SESSION_EMBEDDER_DIM must be an integer, got 'big'",
-        ):
-            Config.from_env()
 
     def test_no_auth_is_read_from_its_own_variable(
         self,
@@ -447,18 +386,6 @@ class TestParsers:
         _prune_stale_ephemeral_dirs(tmp_path)
 
         assert owned.is_dir()
-
-
-class TestMaintainedEmbedders:
-    def test_an_explicit_list_wins_over_the_serving_embedder(self) -> None:
-        config = Config(session_embedder="a@1024", session_embedders=("b", "c"))
-        assert config.maintained_embedders() == ("b", "c")
-
-    def test_the_serving_embedder_alone_is_maintained_by_default(self) -> None:
-        assert Config(session_embedder="a@1024").maintained_embedders() == ("a@1024",)
-
-    def test_no_serving_embedder_maintains_nothing(self) -> None:
-        assert Config().maintained_embedders() == ()
 
 
 class TestChatOrgs:
@@ -666,10 +593,7 @@ def _server_args(**overrides: object) -> ConfigFlags:
         "ephemeral": False,
         "pglite_tcp": False,
         "dsn": "",
-        "embedder": "stub",
         "session_embedder": "",
-        "session_embedder_dim": None,
-        "session_embedders": "",
         "web": False,
         "auth": True,
         "session_max_age_seconds": 30 * 24 * 60 * 60,

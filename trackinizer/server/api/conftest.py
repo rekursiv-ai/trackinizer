@@ -47,7 +47,6 @@ from trackinizer.server.auth import (
     current_user,
 )
 from trackinizer.server.config import Assistant, Config
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.session import SESSION_COOKIE_NAME, set_session_cookie
 from trackinizer.server.session_reaper import STALE_AFTER, reap_silent_sessions
 from trackinizer.server.store.core import Store
@@ -221,7 +220,7 @@ async def pglite_route_client(
     ``pglite_engine``, so another package's conftest can import it alone.
     """
     await restore(pglite_engine)
-    store = Store(pglite_engine, embed=StubEmbedder())
+    store = Store(pglite_engine)
     # Not raising app exceptions, so a crash reads as the 500 a client gets.
     transport = httpx2.ASGITransport(app=app, raise_app_exceptions=False)
     # Keyless: ``change_log.api_key_id`` references ``api_keys``, empty here, so the

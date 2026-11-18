@@ -32,25 +32,17 @@ def _corpus() -> dict[int, int]:
     )
 
 
-def test_every_registry_key_has_a_plan_or_an_explicit_fallback() -> None:
+def test_every_registry_model_has_a_plan_and_nothing_else_does() -> None:
     """No registry model is silently missing from the bucket map.
 
-    A model absent here would fall through to unknown-model handling; the map
-    must name every key, either with a real plan or an explicit conservative
-    marker, so a new embedder cannot ship without a deliberate bucket decision.
+    A model absent here would fall through to the conservative fallback, so a
+    new embedder cannot ship without a deliberate bucket plan; a plan for no
+    registry model is dead config.
     """
-    for name in registry.EMBEDDERS:
-        assert name in model_buckets.MODEL_BUCKETS, name
+    assert model_buckets.MODEL_BUCKETS.keys() == registry.EMBEDDERS.keys()
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        name
-        for name, plan in model_buckets.MODEL_BUCKETS.items()
-        if isinstance(plan, model_buckets.BucketPlan)
-    ],
-)
+@pytest.mark.parametrize("name", sorted(model_buckets.MODEL_BUCKETS))
 def test_shipped_edges_equal_the_generator_output(
     name: str,
     cold_edges: None,
@@ -63,7 +55,6 @@ def test_shipped_edges_equal_the_generator_output(
     """
     del cold_edges
     plan = model_buckets.MODEL_BUCKETS[name]
-    assert isinstance(plan, model_buckets.BucketPlan)
     expected = bucket_boundaries.derive_edges(
         model_buckets.SPEC_FOR_MODEL[name],
         _corpus(),
@@ -76,8 +67,6 @@ def test_shipped_edges_equal_the_generator_output(
 def test_shipped_reference_rows_equal_the_generator_at_32gb() -> None:
     """The shipped reference rows EQUAL ``derive_rows`` at the reference VRAM/dim."""
     for name, plan in model_buckets.MODEL_BUCKETS.items():
-        if not isinstance(plan, model_buckets.BucketPlan):
-            continue
         spec = model_buckets.SPEC_FOR_MODEL[name]
         for edge in plan.edges:
             expected = bucket_boundaries.derive_rows(
@@ -87,15 +76,6 @@ def test_shipped_reference_rows_equal_the_generator_at_32gb() -> None:
                 dim=plan.reference_dim,
             )
             assert plan.reference_rows[edge] == expected, (name, edge)
-
-
-def test_the_jina_models_are_conservative_fallbacks() -> None:
-    """Jina models have no plan: their custom encode path can't use buckets."""
-    for name in (
-        "jina-embeddings-v5-text-nano@768",
-        "jina-embeddings-v5-text-small@1024",
-    ):
-        assert model_buckets.MODEL_BUCKETS[name] is model_buckets.CONSERVATIVE
 
 
 def test_resolve_plan_returns_edges_and_live_rows_for_a_known_model() -> None:
@@ -120,17 +100,17 @@ def test_resolve_plan_returns_edges_and_live_rows_for_a_known_model() -> None:
 def test_resolve_plan_scales_rows_with_vram() -> None:
     """More VRAM yields at least as many rows at every edge (monotone)."""
     _e, rows_24 = model_buckets.resolve_plan(
-        "qwen3-embedding-8b@1024",
+        "qwen3-embedding-4b@1024",
         vram_gb=24,
         dim=1_024,
     )
     _e, rows_32 = model_buckets.resolve_plan(
-        "qwen3-embedding-8b@1024",
+        "qwen3-embedding-4b@1024",
         vram_gb=32,
         dim=1_024,
     )
     _e, rows_80 = model_buckets.resolve_plan(
-        "qwen3-embedding-8b@1024",
+        "qwen3-embedding-4b@1024",
         vram_gb=80,
         dim=1_024,
     )
@@ -142,7 +122,6 @@ def test_resolve_plan_scales_rows_with_vram() -> None:
 def test_resolve_plan_at_reference_vram_matches_the_shipped_rows() -> None:
     """Resolving at 32 GB / reference dim reproduces the shipped reference table."""
     plan = model_buckets.MODEL_BUCKETS["qwen3-embedding-4b@1024"]
-    assert isinstance(plan, model_buckets.BucketPlan)
     _edges, rows = model_buckets.resolve_plan(
         "qwen3-embedding-4b@1024",
         vram_gb=model_buckets.REFERENCE_VRAM_GB,
@@ -184,21 +163,21 @@ def test_resolve_plan_uses_nondefault_output_dimensions() -> None:
 def test_resolve_plan_falls_back_conservatively_and_warns(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """An unknown / fallback model logs WHY and returns a conservative plan.
+    """A model with no plan logs WHY and returns a conservative plan.
 
-    Mutation guard: the warning must name the cause (no bucketed batch method)
-    so a future operator reads cause, not just absence.
+    Mutation guard: the warning must name the model and the cause (no bucket
+    plan) so a future operator reads cause, not just absence.
     """
     with caplog.at_level(logging.WARNING):
         edges, rows = model_buckets.resolve_plan(
-            "jina-embeddings-v5-text-nano@768",
+            "unplanned-model@768",
             vram_gb=32,
         )
     assert edges == model_buckets.CONSERVATIVE_EDGES
     assert all(rows[e] <= model_buckets.CONSERVATIVE_MAX_ROWS for e in edges)
     message = caplog.text
-    assert "jina-embeddings-v5-text-nano@768" in message
-    assert "bucketed" in message.lower()
+    assert "unplanned-model@768" in message
+    assert "no bucket plan" in message
 
 
 def test_conservative_fallback_rows_are_small() -> None:

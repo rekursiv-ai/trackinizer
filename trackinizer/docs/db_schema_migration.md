@@ -269,13 +269,6 @@ live ref. You do **not** need to replay `setval` after the load:
 each sequence to `MAX(seq)` (monotonic, idempotent, skips empty kinds).
 The next service start self-heals the counters.
 
-Likewise, a load that copies `inquiries` but not `inquiry_embeddings`
-leaves semantic search blind to those rows. You do not need to re-embed
-manually: `bootstrap` also runs `_backfill_embeddings`, which embeds any
-inquiry missing a row for a registered embedder. This is safe at boot
-only because the production embedder is the deterministic hash stub; a
-future network/model embedder must move backfill off the startup path.
-
 ---
 
 ## Roadmap B: squash consumed migrations

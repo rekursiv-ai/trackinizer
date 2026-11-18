@@ -124,7 +124,6 @@ class TestPureFunctions:
         assert flags.engine == "pglite"
         assert flags.host == "127.0.0.1"
         assert flags.port == 8765
-        assert flags.embedder == "stub"
         assert remaining == []
 
     def test_session_ttl_env_typo_exits_cleanly(
@@ -555,6 +554,29 @@ class TestMainAppliesEveryStartupInvariant:
             main()
 
         assert "--workers" in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["--embedder", "stub"],
+            ["--session-embedder-dim", "256"],
+            ["--session-embedders", "qwen3-embedding-4b@1024"],
+        ],
+    )
+    def test_rejects_an_embedder_flag_that_sets_nothing(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        argv: list[str],
+    ) -> None:
+        """The server embeds queries with ``--session-embedder`` alone."""
+        monkeypatch.setattr(uvicorn, "run", _ignore_run)
+        monkeypatch.setattr("sys.argv", ["trackinizer", *argv])
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert argv[0] in capsys.readouterr().err
 
     def test_applies_the_requested_log_level(
         self,

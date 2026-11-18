@@ -154,7 +154,7 @@ def _packaged_app(package: Path) -> Path | None:
 def _parse_args(
     parser: argparse.ArgumentParser,
     argv: list[str] | None = None,
-) -> tuple[_Flags, list[str]]:
+) -> tuple[_Flags, list[str]]:  # pragma: no mutate block
     """Register this layer's flags; return ``(parsed, leftover)``."""
     parser.add_argument(
         "--engine",
@@ -214,12 +214,6 @@ def _parse_args(
         ),
     )
     parser.add_argument(
-        "--embedder",
-        default="stub",
-        choices=["stub"],
-        help="Embedding backend (default: stub).",
-    )
-    parser.add_argument(
         "--session-embedder",
         dest="session_embedder",
         default="",
@@ -228,27 +222,6 @@ def _parse_args(
             "Session-search embedder that serves QUERIES, named by its full "
             "stored identity (e.g. qwen3-embedding-0.6b@1024); empty = "
             "full-text-only search (default)."
-        ),
-    )
-    parser.add_argument(
-        "--session-embedder-dim",
-        dest="session_embedder_dim",
-        type=int,
-        default=None,
-        help=(
-            "Optional output-dim override for --session-embedder when it is a bare "
-            "slug (a Matryoshka model accepts any dim in its range). Omit to use "
-            "the model's registered default; must agree with any @dim suffix."
-        ),
-    )
-    parser.add_argument(
-        "--session-embedders",
-        dest="session_embedders",
-        default="",
-        help=(
-            "Comma-separated embedders the sweep/backfill MAINTAINS (writes rows "
-            "for), a superset of --session-embedder for A/B backfill. Empty = "
-            "just the serving embedder."
         ),
     )
     parser.add_argument(
@@ -376,7 +349,7 @@ def _session_ttl_default() -> int:
 # Derived from the registry so a new model in ``EMBEDDERS`` becomes selectable without
 # editing this list. ``stub`` / ``stub-1024`` are the test embedders; then both the
 # full stored identities (``slug@dim``) and the bare slugs (a bare slug resolves to
-# the registered default dim, or pairs with ``--session-embedder-dim``).
+# the registered default dim).
 def _session_embedder_choices() -> list[str]:
     """Return the ``--session-embedder`` choices: empty, stubs, models, bare slugs."""
     slugs = {key.partition("@")[0] for key in EMBEDDERS}

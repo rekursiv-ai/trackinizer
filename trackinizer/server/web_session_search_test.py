@@ -242,124 +242,6 @@ async def test_semantic_false_skips_the_model_entirely(store: Store) -> None:
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_model_override_reuses_one_instance_across_requests(
-    store: Store,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Two ``?model=`` queries on one app build the override embedder ONCE.
-
-    A real model loads its weights on first use, so rebuilding per request would
-    reload them every A/B query. The override is cached per name on app.state;
-    this counts ``registry.build_session_embedder`` calls to prove reuse.
-    """
-    session_id = await _session(store)
-    await _record(store, session_id, idx=0, text="deploy the release to production")
-    await _seed(store)
-
-    builds: list[tuple[str, int | None]] = []
-    real_build = registry.build_session_embedder
-
-    def counting_build(name: str, *, dim: int | None = None) -> object:
-        builds.append((name, dim))
-        return real_build(name, dim=dim)
-
-    monkeypatch.setattr(registry, "build_session_embedder", counting_build)
-    request = _request(store, session_embedder="")  # No default; override drives it.
-    for _ in range(2):
-        body = from_plain(
-            await web.web_search_sessions(
-                request,
-                q="deploy the release to production",
-                identity=_VIEWER,
-                semantic=True,
-                model="stub-1024",
-            ),
-            dict[str, object],
-        )
-        assert body["semantic"] is True
-        assert body["degraded"] is False
-    assert builds == [("stub-1024", None)]  # Built once, reused on the second.
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_model_override_caches_two_dims_as_distinct_entries(
-    store: Store,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``?dim=`` distinguishes cache entries: two dims of one model build twice.
-
-    A Matryoshka model at 512 and at 256 is two different stored identities and
-    two different truncated vectors, so the per-request override cache must key on
-    ``(name, dim)`` -- not collapse them to one entry keyed by name alone.
-    """
-    session_id = await _session(store)
-    await _record(store, session_id, idx=0, text="deploy the release to production")
-    await _seed(store)
-
-    builds: list[tuple[str, int | None]] = []
-
-    def counting_build(name: str, *, dim: int | None = None) -> StubEmbedder:
-        builds.append((name, dim))
-        assert dim is not None
-        return StubEmbedder(dim=dim)
-
-    monkeypatch.setattr(registry, "weights_present", Mock(return_value=True))
-    monkeypatch.setattr(registry, "build_session_embedder", counting_build)
-    request = _request(store, session_embedder="")
-    for override_dim in (512, 256, 512):  # 512 repeats -> its second call is cached.
-        _ = from_plain(
-            await web.web_search_sessions(
-                request,
-                q="deploy the release to production",
-                identity=_VIEWER,
-                semantic=True,
-                model="qwen3-embedding-4b",
-                dim=override_dim,
-            ),
-            dict[str, object],
-        )
-    # 512 built once (reused on repeat), 256 built once -> two distinct entries.
-    assert builds == [("qwen3-embedding-4b", 512), ("qwen3-embedding-4b", 256)]
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_model_override_unknown_is_400(store: Store) -> None:
-    """An unknown ``?model=`` is a client error, with a did-you-mean hint."""
-    request = _request(store, session_embedder="")
-    with pytest.raises(HTTPException) as caught:
-        await web.web_search_sessions(
-            request,
-            q="anything",
-            identity=_VIEWER,
-            semantic=True,
-            model="qwen3-embeddings-4b",  # Typo'd slug -- no such model.
-        )
-    assert caught.value.status_code == 400
-    assert "did you mean" in caught.value.detail
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_model_override_unsupported_dim_is_400(store: Store) -> None:
-    """A ``?dim=`` outside the model's range is a client error naming the range."""
-    request = _request(store, session_embedder="")
-    with pytest.raises(HTTPException) as caught:
-        await web.web_search_sessions(
-            request,
-            q="anything",
-            identity=_VIEWER,
-            semantic=True,
-            model="qwen3-embedding-4b",
-            dim=99_999,  # Above the 2560 Matryoshka ceiling.
-        )
-    assert caught.value.status_code == 400
-    assert "2560" in caught.value.detail
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
 async def test_bad_limit_and_empty_query_are_400(store: Store) -> None:
     """Route validation mirrors the sibling search route: limit + non-empty q."""
     request = _request(store, session_embedder="")
@@ -372,48 +254,39 @@ async def test_bad_limit_and_empty_query_are_400(store: Store) -> None:
     assert caught.value.status_code == 400
 
 
-@pytest.mark.parametrize("override", [False, True])
-def test_uncached_model_degrades_without_construction(
+def test_a_server_without_its_models_weights_degrades_without_building_it(
     monkeypatch: pytest.MonkeyPatch,
-    override: bool,
 ) -> None:
+    check = Mock(return_value=False)
     build = Mock(side_effect=AssertionError("Uncached model constructed"))
-    monkeypatch.setattr(registry, "weights_present", Mock(return_value=False))
+    monkeypatch.setattr(registry, "weights_present", check)
     monkeypatch.setattr(registry, "build_session_embedder", build)
     app = FastAPI()
-    app.state.config = Config(session_embedder="qwen3-embedding-4b")
-    request = Request({"type": "http", "app": app})
-    assert (
-        web._search_embedder(
-            request,
-            semantic=True,
-            model="qwen3-embedding-4b" if override else "",
-            dim=None,
-        )
-        is None
-    )
+    app.state.config = Config(session_embedder="qwen3-embedding-4b@1024")
+    assert web._session_embedder(Request({"type": "http", "app": app})) is None
+    check.assert_called_once_with("qwen3-embedding-4b@1024")
     build.assert_not_called()
 
 
-def test_override_alias_uses_resolved_identity_cache(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    build = Mock(return_value=StubEmbedder(dim=512))
-    monkeypatch.setattr(registry, "weights_present", Mock(return_value=True))
-    monkeypatch.setattr(registry, "build_session_embedder", build)
-    request = Request({"type": "http", "app": FastAPI()})
-    first = web._override_embedder(request, "qwen3-embedding-4b", 512)
-    second = web._override_embedder(request, "qwen3-embedding-4b@512", None)
-    assert first is second
-    assert build.call_count == 1
-
-
-@pytest.mark.parametrize("semantic", [False, True])
-def test_dimension_without_model_is_rejected(semantic: bool) -> None:
-    request = Request({"type": "http", "app": FastAPI()})
-    with pytest.raises(HTTPException) as caught:
-        web._search_embedder(request, semantic=semantic, model="", dim=256)
-    assert caught.value.status_code == 400
+def test_a_search_names_no_model_of_its_own() -> None:
+    """The server's embedder answers every search; a request cannot pick another."""
+    app = FastAPI()
+    app.include_router(web.router, prefix="/api/web")
+    paths = from_plain(
+        cast(dict[str, object], app.openapi())["paths"],
+        dict[str, dict[str, dict[str, object]]],
+    )
+    parameters = from_plain(
+        paths["/api/web/search_sessions"]["get"]["parameters"],
+        list[dict[str, object]],
+    )
+    assert [each["name"] for each in parameters] == [
+        "q",
+        "semantic",
+        "limit",
+        "whose",
+        "hidden",
+    ]
 
 
 @pytest.mark.asyncio

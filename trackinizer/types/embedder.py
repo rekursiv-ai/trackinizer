@@ -26,10 +26,9 @@ class ModelOutput(Protocol):
 class Embedder(Protocol):
     """Maps text to a fixed-dimension unit vector.
 
-    ``name`` tags the rows an embedder writes to ``inquiry_embeddings``, so
-    several embedders can coexist for one inquiry. The Protocol is
-    ``@runtime_checkable`` so ``Store.__init__`` can ``isinstance``-narrow an
-    ``Embedder | Sequence[Embedder]`` argument.
+    ``name`` tags the rows an embedder writes to ``session_embeddings``, so
+    several embedders can coexist for one record. The Protocol is
+    ``@runtime_checkable`` so a caller can ``isinstance``-narrow it.
     """
 
     dim: int
@@ -65,8 +64,8 @@ class QueryEmbedder(Embedder, Protocol):
     The session-search path needs a query-side embedding; a model with a
     corpus/query asymmetry (an instruction prefix) applies it in
     :meth:`embed_query` and NOT in :meth:`embed`. This is narrower than
-    :class:`Embedder` on purpose: the inquiry-embedding path (``Store``) never
-    queries, so its embedders need not implement this, and the session path
+    :class:`Embedder` on purpose: the sweeps only embed documents, so their
+    embedders need not implement this, and the search path
     (``build_session_embedder``) returns this type.
     """
 

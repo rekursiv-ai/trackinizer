@@ -40,10 +40,8 @@ if TYPE_CHECKING:
 
 __all__ = [
     "CORPUS_HISTOGRAM_PATH",
-    "OCTEN_8B",
     "QWEN3_0P6B",
     "QWEN3_4B",
-    "QWEN3_8B",
     "SweepPoint",
     "TransformerSpec",
     "bucketed_cost",
@@ -138,41 +136,6 @@ QWEN3_4B = TransformerSpec(
 )
 """Qwen/Qwen3-Embedding-4B config.json (2026-09-20); MRL 32..2560 per the card
 ("user-defined output dimensions ranging from 32 to 2560")."""
-
-
-QWEN3_8B = TransformerSpec(
-    hidden_dim=4_096,
-    intermediate_dim=12_288,
-    num_layers=36,
-    num_heads=32,
-    num_kv_heads=8,
-    head_dim=128,
-    native_dim=4_096,
-    min_dim=32,
-    max_dim=4_096,
-    vocab_size=151_665,
-)
-"""Qwen/Qwen3-Embedding-8B config.json (2026-09-20); MRL 32..4096 per the card
-("user-defined output dimensions ranging from 32 to 4096")."""
-
-
-OCTEN_8B = TransformerSpec(
-    hidden_dim=4_096,
-    intermediate_dim=12_288,
-    num_layers=36,
-    num_heads=32,
-    num_kv_heads=8,
-    head_dim=128,
-    native_dim=4_096,
-    min_dim=32,
-    max_dim=4_096,
-    vocab_size=151_665,
-)
-"""Octen/Octen-Embedding-8B config.json (2026-09-20): a Qwen3-Embedding-8B
-fine-tune, identical dims (model_type ``qwen3``, architectures ``Qwen3Model``).
-MRL 32..4096 inherited from Qwen3-Embedding-8B; the Octen card does not restate
-the range, but the fine-tune preserves the nesting property and the repo already
-ships the @1024 truncation."""
 
 
 def dim_in_range(spec: TransformerSpec, dim: int) -> bool:

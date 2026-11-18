@@ -18,7 +18,6 @@ import logging
 import pytest
 
 from trackinizer.server import session_reaper
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.session_reaper import (
     REAPER_ACTOR,
     STALE_AFTER,
@@ -152,7 +151,7 @@ class TestReap:
         """Each close rechecks under lock, so the list a pass reads can go stale."""
         returning = await polled_session(store, at=_SEEN)
         dead = await polled_session(store, at=_SEEN + timedelta(seconds=1))
-        racing = _PollsMidPass(pglite_db, embed=StubEmbedder(), polls=returning)
+        racing = _PollsMidPass(pglite_db, polls=returning)
 
         later = _SILENT + timedelta(seconds=1)
         assert await reap_silent_sessions(racing, now=later) == 1
@@ -279,10 +278,9 @@ class _PollsMidPass(Store):
         self,
         engine: PGliteEngine,
         *,
-        embed: StubEmbedder,
         polls: UUID,
     ) -> None:
-        super().__init__(engine, embed=embed)
+        super().__init__(engine)
         self._polls = polls
 
     @override
@@ -361,7 +359,7 @@ async def _closed_once_silent(store: Store, session_id: UUID) -> int:
 
 async def _restart(engine: PGliteEngine) -> Store:
     """Return a store as a freshly started server builds it, on the same database."""
-    restarted = Store(engine, embed=StubEmbedder())
+    restarted = Store(engine)
     await restarted.bootstrap()
     return restarted
 

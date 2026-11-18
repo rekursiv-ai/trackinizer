@@ -18,17 +18,14 @@ class StubEmbedder:
     """Deterministic hash-based embedder for tests and offline bootstrap.
 
     Args:
-      dim: Vector length. Defaults to 384 (``inquiry_embeddings``'s
-        ``vector(384)``); pass 1024 for the ``session_embeddings``
-        ``halfvec(1024)`` surface, whose sweep takes its own embedder rather
-        than the Store's 384-dim one.
+      dim: Vector length. Defaults to 384; pass 1024 to stand in for the
+        1024-wide models the session sweep and search use.
 
     """
 
     dim = 384
-    """Default vector length, matching ``vector(384)`` on ``inquiry_embeddings``.
-    A class attribute so ``StubEmbedder.dim`` resolves without an instance;
-    ``__init__`` overrides it per-instance for the 1024-dim session surface."""
+    """Default vector length. A class attribute so ``StubEmbedder.dim`` resolves
+    without an instance; ``__init__`` overrides it per-instance."""
 
     def __init__(self, *, dim: int = 384) -> None:
         self.dim = dim
@@ -37,11 +34,10 @@ class StubEmbedder:
     def name(self) -> str:
         """Stored model identity: ``"stub"`` at 384, ``"stub-<dim>"`` otherwise.
 
-        The 384 default MUST stay the literal ``"stub"``: it keys existing
-        ``inquiry_embeddings`` rows (``model = 'stub'``), and a rename would
-        orphan them. A non-default dim carries its width so a 384 stub and a
-        1024 stub are distinguishable by name -- the config knob ``stub-1024``
-        and the DB identity then agree.
+        The 384 default is the knob's bare ``"stub"`` (``registry``). A
+        non-default dim carries its width so a 384 stub and a 1024 stub are
+        distinguishable by name -- the config knob ``stub-1024`` and the DB
+        identity then agree.
         """
         return "stub" if self.dim == 384 else f"stub-{self.dim}"
 

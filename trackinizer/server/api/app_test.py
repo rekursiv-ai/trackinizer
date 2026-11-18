@@ -471,8 +471,8 @@ class TestRequestLogging:
 class TestAuthDisabledWarning:
     """The lifespan loudly warns when auth is disabled (synthetic-admin mode)."""
 
-    # The warning fires inside ``lifespan``; the engine, store, and embedder are
-    # replaced so the body runs hermetically (no real DB).
+    # The warning fires inside ``lifespan``; the engine and store are replaced so
+    # the body runs hermetically (no real DB).
     @classmethod
     def _run_lifespan(
         cls,
@@ -480,17 +480,12 @@ class TestAuthDisabledWarning:
         *,
         auth_disabled: bool,
     ) -> None:
-        """Drive the real ``lifespan`` once with engine/store/embedder stubbed."""
+        """Drive the real ``lifespan`` once with engine and store stubbed."""
         store, engine = make_store()
         monkeypatch.setattr(
             app,
             "build_engine",
             Mock(return_value=engine),
-        )
-        monkeypatch.setattr(
-            app,
-            "build_embedder",
-            Mock(return_value=object()),
         )
         monkeypatch.setattr(
             app,
@@ -546,11 +541,6 @@ class TestAuthDisabledWarning:
         )
         monkeypatch.setattr(
             app,
-            "build_embedder",
-            Mock(return_value=object()),
-        )
-        monkeypatch.setattr(
-            app,
             "Store",
             Mock(return_value=store),
         )
@@ -586,7 +576,7 @@ class TestAuthDisabledWarning:
 class TestSessionEmbedderResolution:
     """``_resolve_session_embedder`` decides degrade-vs-warm without downloading."""
 
-    def test_startup_passes_dimension_to_gate_and_builder(
+    def test_startup_gates_and_builds_the_configured_name_alone(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
@@ -602,10 +592,10 @@ class TestSessionEmbedderResolution:
         monkeypatch.setattr(registry, "is_weightless", is_weightless)
         app._resolve_session_embedder(
             FastAPI(),
-            Config(session_embedder="qwen3-embedding-4b", session_embedder_dim=256),
+            Config(session_embedder="qwen3-embedding-4b@256"),
         )
-        check.assert_called_once_with("qwen3-embedding-4b", dim=256)
-        build.assert_called_once_with("qwen3-embedding-4b", dim=256)
+        check.assert_called_once_with("qwen3-embedding-4b@256")
+        build.assert_called_once_with("qwen3-embedding-4b@256")
 
     def test_unset_knob_leaves_embedder_none(self) -> None:
         fastapi_app = FastAPI()
@@ -689,7 +679,6 @@ async def test_lifespan_joins_tasks_after_startup_or_background_failure(
 ) -> None:
     store, engine = make_store()
     monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
     monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     monkeypatch.setattr(
@@ -723,7 +712,6 @@ async def test_lifespan_sweeps_the_terminals_tool_connections_and_live_sessions(
 ) -> None:
     store, engine = make_store()
     monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
     monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
     sweeping = AsyncMock()
@@ -1052,7 +1040,6 @@ def _lifespan_state(
     """Drive the real ``lifespan`` with a stubbed engine; return ``state.<name>``."""
     store, engine = make_store()
     monkeypatch.setattr(app, "build_engine", Mock(return_value=engine))
-    monkeypatch.setattr(app, "build_embedder", Mock(return_value=StubEmbedder()))
     monkeypatch.setattr(app, "Store", Mock(return_value=store))
     monkeypatch.setattr(store, "bootstrap", AsyncMock(return_value=None))
 

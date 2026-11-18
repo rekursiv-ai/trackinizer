@@ -1,25 +1,20 @@
 """:class:`_StoreShared` -- the concrete base every ``Store`` mixin inherits.
 
-Holds the shared instance state (``engine``, ``embedders``,
-``_last_used_bumped_at``) plus the construction and embedding primitives every
-mixin relies on. Cross-mixin *method* visibility is provided by the mixin
-inheritance chain (each mixin inherits the mixin whose methods it calls), so
-this base only needs to own the genuinely shared state and the leaf
-:meth:`_embed_all` helper -- no stubs, no ``Any``.
+Holds the shared instance state (``engine``, ``access_policy``,
+``_last_used_bumped_at``, ``_verified_bearers``). Cross-mixin *method* visibility is
+provided by the mixin inheritance chain (each mixin inherits the mixin whose methods
+it calls), so this base only needs to own the genuinely shared state -- no stubs, no
+``Any``.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import asyncio
-
 from trackinizer.server.access_policy import AccessPolicy, DefaultPolicy
-from trackinizer.types.embedder import Embedder
 
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from uuid import UUID
 
     from trackinizer.lib.postgres import DatabaseEngine
@@ -30,61 +25,26 @@ __all__ = ["_StoreShared"]
 
 
 class _StoreShared:
-    """Shared instance state + embedding helper for every ``Store`` mixin.
+    """Shared instance state for every ``Store`` mixin.
 
     The composed :class:`Store` is built from mixins split by concern; each
-    inherits this base so ``self.engine`` / ``self.embedders`` and the
-    :meth:`_embed_all` helper resolve uniformly. Cross-mixin method calls
-    resolve through the mixin inheritance chain, not through this base.
+    inherits this base so ``self.engine`` and ``self.access_policy`` resolve
+    uniformly. Cross-mixin method calls resolve through the mixin inheritance
+    chain, not through this base.
     """
 
     def __init__(
         self,
         engine: DatabaseEngine,
-        embed: Embedder | Sequence[Embedder],
         *,
-        embedding_dim: int = 384,
         access_policy: AccessPolicy | None = None,
     ) -> None:
-        """Construct a Store bound to ``engine`` with one or more embedders.
-
-        Multiple embedders populate ``inquiry_embeddings`` in parallel per
-        submit/edit; each needs a unique ``name`` and ``dim == embedding_dim``
-        (default 384, matching ``vector(384)`` on the embeddings table).
+        """Construct a Store bound to ``engine``.
 
         ``access_policy`` is the deployment's, today's rules when unset: the store
         asks it inside its own transactions, when a row is created and when a
         row's account moves.
-
-        Validating embedders here turns what would otherwise be opaque
-        mid-transaction failures (NOT NULL / UNIQUE / pgvector dim mismatch)
-        into a ``ValueError`` at construction time.
-
-        Raises:
-          ValueError: ``embed`` is empty, two embedders share a ``name``, or
-            any embedder's ``dim`` differs from ``embedding_dim``.
-
         """
-        # The runtime_checkable Protocol narrows a single Embedder; a str,
-        # bytes, or other Sequence-shaped non-Embedder falls through to
-        # ``tuple(embed)`` and is caught by the validation below.
-        self.embedders: tuple[Embedder, ...] = (
-            (embed,) if isinstance(embed, Embedder) else tuple(embed)
-        )
-        if not self.embedders:
-            raise ValueError("Store requires at least one embedder.")
-        names = [e.name for e in self.embedders]
-        duplicates = sorted({n for n in names if names.count(n) > 1})
-        if duplicates:
-            raise ValueError(
-                f"Embedder names must be unique; duplicates: {duplicates}.",
-            )
-        bad_dim = [(e.name, e.dim) for e in self.embedders if e.dim != embedding_dim]
-        if bad_dim:
-            raise ValueError(
-                f"All embedders must have dim={embedding_dim}; got"
-                f" mismatched (name, dim) pairs: {bad_dim}.",
-            )
         self.engine = engine
         self.access_policy: AccessPolicy = access_policy or DefaultPolicy()
         # Throttle for ``api_keys.last_used_at`` UPDATE coalescing; see
@@ -96,9 +56,3 @@ class _StoreShared:
         # sha256 of the presented secret so no plaintext token is held in
         # memory. Per-instance for the same reasons as the throttle above.
         self._verified_bearers: dict[bytes, tuple[AuthIdentity, float]] = {}
-
-    # Returns ``(embedder.name, vector)`` pairs in registration order.
-    async def _embed_all(self, text: str) -> list[tuple[str, list[float]]]:
-        """Embed ``text`` with every registered embedder in parallel."""
-        vecs = await asyncio.gather(*(e.embed(text) for e in self.embedders))
-        return [(e.name, v) for e, v in zip(self.embedders, vecs, strict=True)]

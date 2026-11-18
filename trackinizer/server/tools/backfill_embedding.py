@@ -26,8 +26,8 @@ holds the model's writer lock (``sole_writer``) from its first page until its
 workers exit, and refuses to start while another process writes that model.
 
 The models come from ``--model``, else from the server's own setting
-(``TRACKINIZER_SESSION_EMBEDDERS``, else ``TRACKINIZER_SESSION_EMBEDDER``), so
-the follow service maintains exactly what the server searches. ``--follow``
+(``TRACKINIZER_SESSION_EMBEDDER``), so the follow service maintains exactly what
+the server searches. ``--follow``
 with no model configured exits 0: semantic search is off.
 
 Examples:
@@ -107,22 +107,23 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=__doc__.split("\n", 2)[2] if __doc__ else None,
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,  # pragma: no mutate
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
     flags = cast("Flags", parser.parse_args())
-    models = [name.strip() for name in flags.model.split(",") if name.strip()] or list(
-        Config.from_env().maintained_embedders(),
+    served = Config.from_env().session_embedder
+    models = [name.strip() for name in flags.model.split(",") if name.strip()] or (
+        [served] if served else []
     )
     gpus = [gpu.strip() for gpu in flags.gpus.split(",") if gpu.strip()]
     if flags.follow:
         if not models:
             print(
-                "follow: no session embedder is configured "
-                "(TRACKINIZER_SESSION_EMBEDDER is blank), so semantic search is off "
-                "and there is nothing to maintain",
-                flush=True,
+                "follow: no session embedder is configured "  # pragma: no mutate[diagnostic-text]
+                "(TRACKINIZER_SESSION_EMBEDDER is blank), so semantic search is off "  # pragma: no mutate[diagnostic-text]
+                "and there is nothing to maintain",  # pragma: no mutate[diagnostic-text]
+                flush=True,  # pragma: no mutate
             )
             return 0
         if flags.gpu_backfill:
@@ -133,21 +134,28 @@ def main() -> int:
         # (2026-10-31), so the card read as busy to every idle check after it.
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
         _cap_cpu_threads(flags.cpu_threads)
-        print(f"follow: embedding on CPU with {flags.cpu_threads} threads", flush=True)
+        print(  # pragma: no mutate
+            f"follow: embedding on CPU with {flags.cpu_threads} threads",
+            flush=True,  # pragma: no mutate
+        )
         return asyncio.run(_run_follow(flags.dsn, models, flags.interval_sec))
     if not models:
-        parser.error("no --model and no TRACKINIZER_SESSION_EMBEDDER: name a model")
+        parser.error(
+            "no --model and no TRACKINIZER_SESSION_EMBEDDER: name a model",  # pragma: no mutate[diagnostic-text]
+        )
     # A CPU slot is the empty-string device: CUDA_VISIBLE_DEVICES="" hides
     # every GPU from that process and the worker falls back to CPU inference.
     slots = gpus * flags.workers_per_gpu + [""] * flags.cpu_workers
     if not slots:
-        parser.error("no worker slots: pass --gpus and/or --cpu-workers")
+        parser.error(
+            "no worker slots: pass --gpus and/or --cpu-workers",  # pragma: no mutate[diagnostic-text]
+        )
     # The GPU pipeline backfills ONE model per invocation (run it again per
     # model to bulk-backfill several); --follow above maintains all of them.
     resolved = registry.resolved_name(models[0], flags.dim)
     pending = asyncio.run(_pending_count(flags.dsn, model=resolved))
     if not pending:
-        print(f"nothing pending for {resolved}", flush=True)
+        print(f"nothing pending for {resolved}", flush=True)  # pragma: no mutate
         return 0
     try:
         done = _backfill_while_advancing(
@@ -158,7 +166,7 @@ def main() -> int:
             pending=pending,
         )
     except _WriterBusyError as error:
-        print(error, flush=True)
+        print(error, flush=True)  # pragma: no mutate
         return 1
     return 0 if done else 1
 
@@ -303,8 +311,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         default="",
         help="Session embedder(s) by stored name (comma-separated). The GPU "
         "pipeline backfills the FIRST; --follow maintains ALL. Empty takes the "
-        "server's setting: TRACKINIZER_SESSION_EMBEDDERS, else "
-        "TRACKINIZER_SESSION_EMBEDDER.",
+        "server's setting: TRACKINIZER_SESSION_EMBEDDER.",
     )
     parser.add_argument(
         "--dim",
@@ -646,9 +653,8 @@ async def _worker(
 ) -> None:
     """Run the 3-stage pipeline: read pages, embed pools, write vectors."""
     mapper = FootprintMapper()
-    # The registry applies each model's compile policy (Qwen family compiles the
-    # forward on cuda -- measured 2.79x on a 5090, dynamic shapes; CPU and Jina
-    # do not). ``build_backfill_embedder`` rejects a stub/disabled name and
+    # The registry compiles the forward (measured 2.79x on a 5090, dynamic
+    # shapes). ``build_backfill_embedder`` rejects a stub/disabled name and
     # resolves ``(model, dim)`` to the full stored identity.
     embedder = registry.build_backfill_embedder(
         config.model,
@@ -780,8 +786,8 @@ async def _read_stage(
 class _BucketEmbedder(Protocol):
     """An embedder offering the length-bucketed static-shape backfill path.
 
-    Only ``QwenFamilyEmbedder`` implements ``bucket_queue`` (Jina's custom
-    ``encode`` and ``StubEmbedder`` do not). This runner feature-detects it to
+    Only ``QwenFamilyEmbedder`` implements ``bucket_queue`` (``StubEmbedder``
+    does not). This runner feature-detects it to
     route through the fixed-shape core; every other embedder uses ``embed_batch``.
     Defined here (its only user) rather than in ``session_embed`` so it is not a
     private protocol unused in its own module.

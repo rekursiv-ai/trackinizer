@@ -14,10 +14,8 @@ import pytest
 from trackinizer.server.tools import bucket_boundaries
 from trackinizer.server.tools.bucket_boundaries import (
     CORPUS_HISTOGRAM_PATH,
-    OCTEN_8B,
     QWEN3_0P6B,
     QWEN3_4B,
-    QWEN3_8B,
     SweepPoint,
     TransformerSpec,
     bucketed_cost,
@@ -329,20 +327,17 @@ def test_param_count_matches_the_published_model_sizes() -> None:
     """Each spec's param count lands at its advertised size (name sanity)."""
     assert param_count(QWEN3_0P6B) == pytest.approx(0.6e9, rel=0.1)
     assert param_count(QWEN3_4B) == pytest.approx(4.0e9, rel=0.1)
-    assert param_count(QWEN3_8B) == pytest.approx(7.6e9, rel=0.1)
-    # Octen is a Qwen3-8B fine-tune with identical dims.
-    assert param_count(OCTEN_8B) == param_count(QWEN3_8B)
 
 
 def test_param_count_reads_each_specs_own_vocab_size() -> None:
     """Two specs with identical shapes but different vocabularies stay distinct.
 
-    The vocab table was a dict keyed by spec EQUALITY, so equal-shaped specs
-    (QWEN3_8B == OCTEN_8B) collided on one key and silently shared one entry.
+    A vocab table keyed by spec EQUALITY would collide equal-shaped specs (a
+    fine-tune of a base model) on one key and silently share one entry.
     """
-    small = dataclasses.replace(OCTEN_8B, vocab_size=1_000)
-    large = dataclasses.replace(OCTEN_8B, vocab_size=2_000)
-    assert param_count(large) - param_count(small) == 1_000 * OCTEN_8B.hidden_dim
+    small = dataclasses.replace(QWEN3_4B, vocab_size=1_000)
+    large = dataclasses.replace(QWEN3_4B, vocab_size=2_000)
+    assert param_count(large) - param_count(small) == 1_000 * QWEN3_4B.hidden_dim
 
 
 def test_sweep_and_optimal_boundaries_share_validation() -> None:
@@ -424,14 +419,6 @@ def test_derive_rows_is_monotone_non_increasing_in_edge() -> None:
     assert all(a >= b for a, b in itertools.pairwise(rows))
 
 
-def test_bigger_model_gets_strictly_fewer_rows_at_every_edge() -> None:
-    """8B weights leave less activation headroom, so 8B rows < 4B rows."""
-    for edge in (160, 512, 768, 1_120, 1_504, 8_192):
-        rows_4b = derive_rows(QWEN3_4B, edge, vram_gb=32, dim=1_024)
-        rows_8b = derive_rows(QWEN3_8B, edge, vram_gb=32, dim=1_024)
-        assert rows_8b < rows_4b, (edge, rows_8b, rows_4b)
-
-
 def test_smaller_model_gets_more_rows_than_4b() -> None:
     """0.6B is tiny, so it packs far more rows per bucket than 4B."""
     for edge in (160, 512, 1_504, 8_192):
@@ -454,15 +441,15 @@ def test_derive_rows_shrinks_on_a_smaller_card() -> None:
 def test_derive_rows_grows_with_vram() -> None:
     """More VRAM never yields fewer rows (monotone in the card size)."""
     for edge in (160, 512, 1_504, 8_192):
-        r24 = derive_rows(QWEN3_8B, edge, vram_gb=24, dim=1_024)
-        r32 = derive_rows(QWEN3_8B, edge, vram_gb=32, dim=1_024)
-        r80 = derive_rows(QWEN3_8B, edge, vram_gb=80, dim=1_024)
+        r24 = derive_rows(QWEN3_4B, edge, vram_gb=24, dim=1_024)
+        r32 = derive_rows(QWEN3_4B, edge, vram_gb=32, dim=1_024)
+        r80 = derive_rows(QWEN3_4B, edge, vram_gb=80, dim=1_024)
         assert r24 <= r32 <= r80, (edge, r24, r32, r80)
 
 
 def test_derive_rows_never_returns_below_one() -> None:
     """Even a huge edge on a small card yields at least a single row."""
-    assert derive_rows(QWEN3_8B, 8_192, vram_gb=16, dim=1_024) >= 1
+    assert derive_rows(QWEN3_4B, 8_192, vram_gb=16, dim=1_024) >= 1
 
 
 def test_derive_edges_share_a_prefix_and_diverge_in_the_tail() -> None:
@@ -473,22 +460,19 @@ def test_derive_edges_share_a_prefix_and_diverge_in_the_tail() -> None:
     the crossover) shift per model. The shipped plans therefore carry per-model
     edge tuples with a common prefix, not one shared set.
     """
-    corpus_items = list(_corpus().items())
-    hist = dict([*corpus_items[:32], *corpus_items[-32:]])
+    hist = _corpus()
     edges = {
         spec: derive_edges(spec, hist, min_buckets=10, max_buckets=20)
-        for spec in (QWEN3_0P6B, QWEN3_4B, QWEN3_8B, OCTEN_8B)
+        for spec in (QWEN3_0P6B, QWEN3_4B)
     }
     # The min-buckets clamp forces >= 10 edges even though the knee is far lower.
     for spec_edges in edges.values():
         assert len(spec_edges) >= 10
-    # 8B and Octen share dims exactly -> identical edges.
-    assert edges[QWEN3_8B] == edges[OCTEN_8B]
-    # The smallest and largest models differ somewhere in the tail (their
-    # attention/dense crossover, hence long-edge placement, differs).
-    assert edges[QWEN3_0P6B] != edges[QWEN3_8B]
+    # The two models differ somewhere in the tail (their attention/dense
+    # crossover, hence long-edge placement, differs).
+    assert edges[QWEN3_0P6B] != edges[QWEN3_4B]
     # ... but agree on the low-edge prefix (the short-mass buckets).
-    assert edges[QWEN3_0P6B][:6] == edges[QWEN3_8B][:6]
+    assert edges[QWEN3_0P6B][:6] == edges[QWEN3_4B][:6]
 
 
 @pytest.mark.parametrize("histogram", [{32: 5}, {32: 5, 8_192: 1}])
@@ -573,7 +557,7 @@ def test_derive_rows_accounts_for_weights_peak_activations_and_output(
 
 
 def test_derive_rows_floors_an_exhausted_weight_budget_at_one() -> None:
-    assert derive_rows(QWEN3_8B, 8_192, vram_gb=1, dim=1_024) == 1
+    assert derive_rows(QWEN3_4B, 8_192, vram_gb=1, dim=1_024) == 1
 
 
 @pytest.mark.parametrize(
