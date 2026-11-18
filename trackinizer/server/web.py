@@ -13,6 +13,8 @@ Adds:
   page, which returns them here.
 - ``GET /static/*`` -- files from ``--static-dir``, to anyone.
 - ``GET /api/web/search`` -- cross-kind ILIKE search over title/description.
+- ``GET /api/web/search_inquiries`` -- inquiry texts and edge notes, by keyword and
+  by vector.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
   with their snapshots flattened to JSON.
 - ``GET /api/web/lookup/{target_id}`` -- resolve a UUID to its kind.
@@ -64,7 +66,6 @@ from fastapi.responses import (
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from treekle import from_plain, json_loads
-from treekle.absent import ABSENT
 
 from trackinizer.server.access_policy import inquiry_read_filter
 from trackinizer.server.api._deps import (
@@ -84,20 +85,19 @@ from trackinizer.server.auth import (
     current_user,
     require_role,
 )
-from trackinizer.server.config import Config
-from trackinizer.server.embedders import registry
 from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
-from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.graph_focus import read_neighbourhood
+from trackinizer.server.store.search import (
+    InquirySearchHit,
+    SessionSearchHit,
+    search_inquiries,
+    search_sessions,
+)
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     CanvasAgents,
     FeedScope,
-)
-from trackinizer.server.store.session_search import (
-    SessionSearchHit,
-    search_session_records,
 )
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
@@ -111,6 +111,7 @@ from trackinizer.wire.wire_sessions import (
     FeedHistogramResponse,
     FeedResponse,
     FeedWhose,
+    SearchMode,
 )
 
 
@@ -122,7 +123,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.access_policy import AccessPolicy, Principal
     from trackinizer.server.store.core import Store
-    from trackinizer.types.embedder import QueryEmbedder
+    from trackinizer.server.store.search import VectorSearch
 
 
 _CWD: Final[Path] = Path(__file__).resolve().parent
@@ -137,7 +138,6 @@ router = APIRouter()
 
 
 _SESSION_SEARCH_MAX_LIMIT: Final = 200
-_SESSION_SEARCH_MAPPER: Final = FootprintMapper().name
 
 
 # See ``_AppRoute``: shared caches must never store a /trax/ response.
@@ -247,26 +247,24 @@ async def web_search_sessions(
     q: str,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
-    semantic: bool = True,
+    mode: SearchMode = "fused",
     limit: int = 20,
     whose: FeedWhose | None = None,
     hidden: bool = False,
 ) -> WebView:
-    """Hybrid session search: embeddings + scoped tsvector, RRF-merged.
+    """Hybrid session search: the deployment's vector arm + scoped tsvector, RRF-merged.
 
-    Runs the full-text arm always, and the semantic arm only when ``semantic``
-    is requested AND a session embedder is available. With no embedder the route
-    degrades to full-text-only rather than 500 -- a keyword search must never
-    trigger a model load -- and flags the degrade in the response
-    (``degraded: true``, ``semantic: false``). The query embedding uses the
-    embedder's query-side prefix; the corpus stayed prefix-free at ingest.
+    ``mode`` picks the arms: ``fused`` (the default) runs both, ``keyword`` the
+    full-text arm alone, ``vector`` the vector arm alone. The vector arm runs only
+    when the deployment has one whose model is loaded. Without it the route answers
+    with what is left rather than fail -- a search never loads a model -- and flags
+    the degrade in the response (``degraded: true``, ``semantic: false``).
 
     Args:
       request: FastAPI request object for middleware access.
       q: The search query. Full-text terms feed ``websearch_to_tsquery``.
       identity: Authenticated user, validated to have viewer role.
-      semantic: Request the embedding arm (default true); ignored when no
-        session embedder is available.
+      mode: The arms to run.
       limit: Maximum merged hits, 1-200.
       whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a
         person searches their own, as the console opens on them, and the
@@ -288,19 +286,11 @@ async def web_search_sessions(
         )
     if not q.strip():
         raise HTTPException(status_code=400, detail="q must be non-empty")
-    embedder = _session_embedder(request) if semantic else None
-    query_vector = await embedder.embed_query(q) if embedder is not None else None
-    degraded = semantic and embedder is None
-    hits = await search_session_records(
+    hits, searched = await search_sessions(
         get_store(request).engine,
-        query_vector=query_vector,
-        query_text=q,
-        mapper=_SESSION_SEARCH_MAPPER,
-        model=embedder.name if embedder is not None else "",
-        # The cast dim comes from the embedder, so the cosine arm hits that model's
-        # partial index. Unused when the arm is skipped; 1 is a valid placeholder the
-        # query never reaches.
-        dim=embedder.dim if embedder is not None else 1,
+        query=q,
+        vectors=_state(request).vector_search,
+        mode=mode,
         limit=limit,
         scope=feed_scope(
             request,
@@ -311,8 +301,60 @@ async def web_search_sessions(
     )
     return {
         "hits": [_session_hit_to_dict(hit) for hit in hits],
-        "semantic": query_vector is not None,
-        "degraded": degraded,
+        "semantic": searched,
+        "degraded": mode != "keyword" and not searched,
+    }
+
+
+@router.get("/search_inquiries")
+async def web_search_inquiries(
+    request: Request,
+    q: str,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
+    mode: SearchMode = "fused",
+    kind: Inquiry.InquiryKind | None = None,
+    limit: int = 20,
+) -> WebView:
+    """Hybrid inquiry search over inquiry texts and edge notes, RRF-merged.
+
+    ``mode`` picks the arms as on ``/search_sessions``, which degrades the same way.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      q: The search query. Keyword terms feed ``websearch_to_tsquery``.
+      identity: Authenticated user, validated to have viewer role.
+      mode: The arms to run; ``fused`` when unnamed.
+      kind: The one inquiry kind to search; unnamed, every kind.
+      limit: Maximum merged hits, 1-200.
+
+    Returns:
+      body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each hit
+        carries ``inquiry_id``, ``kind``, ``seq``, ``title``, ``field`` (``text``, or
+        ``edge:<edge_kind>:<to_id>`` for a note), ``score``, ``source`` and
+        ``snippet``. A hit the caller may not read, or a note with an end the
+        caller may not read, is not among them.
+
+    """
+    store = get_store(request)
+    try:
+        hits, searched = await search_inquiries(
+            store.engine,
+            query=q,
+            vectors=_state(request).vector_search,
+            policy=store.access_policy,
+            principal=await request_principal(request, identity),
+            sessions=session_reader(request, identity),
+            mode=mode,
+            kind=kind,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "hits": [_inquiry_hit_to_dict(hit) for hit in hits],
+        "semantic": searched,
+        "degraded": mode != "keyword" and not searched,
     }
 
 
@@ -1478,6 +1520,20 @@ def _session_hit_to_dict(hit: SessionSearchHit) -> WebView:
     }
 
 
+def _inquiry_hit_to_dict(hit: InquirySearchHit) -> WebView:
+    """Flatten one ``InquirySearchHit`` to JSON."""
+    return {
+        "inquiry_id": str(hit.inquiry_id),
+        "kind": hit.kind,
+        "seq": hit.seq,
+        "title": hit.title,
+        "field": hit.field,
+        "score": hit.score,
+        "source": hit.source,
+        "snippet": hit.snippet,
+    }
+
+
 # The one inquiry serializer, so ``/get`` and ``GET /api/inquiries/{id}`` agree field
 # for field, ``null`` for unset. The relation fields are dropped rather than served
 # empty: ``from_row`` reads no edges, and ``web_get`` sends them as ``edges`` /
@@ -1626,10 +1682,7 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
 class _AppState(Protocol):
     store: Store
     engine: DatabaseEngine
-    # Populated lazily by ``_session_embedder``; ``config`` is set by the app
-    # lifespan (absent in the duck-typed test apps, hence the getattr reads).
-    config: object
-    session_embedder: QueryEmbedder | None
+    vector_search: VectorSearch | None
 
 
 class _AppLike(Protocol):
@@ -1674,28 +1727,6 @@ def _record_uuid(row: asyncpg.Record, key: str) -> UUID:
 def _isoformat(value: object) -> str:
     """ISO-format a datetime; fall back to ``str()`` for non-datetimes."""
     return value.isoformat() if isinstance(value, datetime) else str(value)
-
-
-# Built once per process from ``config.session_embedder`` and cached on
-# ``app.state`` -- a real embedder still loads its weights lazily on the first
-# ``embed_query``, so caching the instance is cheap and only the first semantic
-# search pays the model load. ``None`` (unset knob or no config) means the
-# semantic arm is unavailable and the route degrades.
-def _session_embedder(request: Request) -> QueryEmbedder | None:
-    """Return the process's default session-search embedder, or ``None``."""
-    state = _state(request)
-    cached = getattr(state, "session_embedder", ABSENT)
-    if cached is not ABSENT:
-        return cast("QueryEmbedder | None", cached)
-    # ``isinstance`` narrowing, not ``getattr(config, ...)``: the lifespan
-    # stores a real ``Config`` (``api/app.py``), so a typed read means a field
-    # rename breaks type-checking here instead of silently disabling the
-    # semantic arm. Duck-typed test apps carry no config and read as None.
-    config: object = getattr(state, "config", None)
-    name = config.session_embedder if isinstance(config, Config) else ""
-    embedder = registry.build_cached_session_embedder(name)
-    state.session_embedder = embedder
-    return embedder
 
 
 def _searched_by_default(request: Request, identity: AuthIdentity) -> FeedWhose:

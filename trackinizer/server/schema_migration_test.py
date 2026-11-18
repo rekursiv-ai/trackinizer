@@ -40,8 +40,8 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
+from trackinizer.addons.embedding.fakes import HashEmbedder
 from trackinizer.conftest import restore, savepoint
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import tx
 from trackinizer.server.preferences import stored_preferences
 from trackinizer.server.primitives import insert_inquiry
@@ -3243,15 +3243,151 @@ async def _placements(
     return placements
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_080_matches_a_fresh_schema(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    """A 079 database migrated by 080, once or twice, has a fresh install's catalog.
+
+    The catalog holds no trigger or function, so their definitions are compared too.
+    """
+    conn = pglite_rollback_conn
+    stamps = await _stamps(conn)
+    assert len(stamps) == 6, "the baseline lacks a stamp trigger or function"
+    await conn.execute(
+        "DROP TRIGGER inquiries_stamp_change ON inquiries; "
+        "DROP TRIGGER edges_stamp_owner_insert ON edges; "
+        "DROP TRIGGER edges_stamp_owner_delete ON edges; "
+        "DROP TRIGGER edges_stamp_owner_update ON edges; "
+        "DROP FUNCTION inquiries_stamp_change(); DROP FUNCTION edges_stamp_owner(); "
+        "DROP INDEX idx_inquiries_search; DROP INDEX idx_edges_note_search; "
+        "ALTER TABLE inquiries DROP COLUMN changed_xid",
+    )
+    await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.080.sql'")
+    assert await _catalog_names_aside(conn) != fresh_install
+
+    await conn.execute(load_sql("schema.080"))
+    await conn.execute(load_sql("schema.080"))
+
+    assert await _catalog_names_aside(conn) == fresh_install
+    assert await _stamps(conn) == stamps
+
+
+async def _stamps(conn: Conn) -> set[str]:
+    """Return the definitions of 080's triggers and their functions."""
+    rows = await conn.fetch(
+        "SELECT pg_get_triggerdef(oid) AS def FROM pg_trigger "
+        "WHERE tgrelid IN ('inquiries'::regclass, 'edges'::regclass) "
+        "AND NOT tgisinternal UNION ALL SELECT pg_get_functiondef(oid) FROM pg_proc "
+        "WHERE proname IN ('inquiries_stamp_change', 'edges_stamp_owner')",
+    )
+    return {from_plain(row["def"], str) for row in rows}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_inquiry_is_stamped_by_its_text_columns_alone(
+    integ_store: Store,
+) -> None:
+    """An insert stamps; a change of status or of a text to itself keeps the stamp.
+
+    Each statement commits on its own, so each stamp is its writer's transaction.
+    """
+    async with integ_store.engine.acquire() as conn:
+        issue = await _stamped_issue(conn, "said")
+        inserted = await _stamp(conn, issue)
+        await conn.execute(
+            "UPDATE inquiries SET status = 'complete', title = title WHERE id = $1",
+            issue,
+        )
+        kept = await _stamp(conn, issue)
+        async with tx(conn):
+            await conn.execute(
+                "UPDATE inquiries SET description = 'said again' WHERE id = $1",
+                issue,
+            )
+            writer = await conn.fetchval("SELECT pg_current_xact_id()::text")
+            restamped = await _stamp(conn, issue)
+
+    assert inserted is not None
+    assert kept == inserted
+    assert restamped == writer != inserted
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_edge_write_without_a_note_stamps_nothing(integ_store: Store) -> None:
+    """Only an edge write that adds, changes or removes a note stamps its owner.
+
+    Each statement commits on its own, so each stamp is its writer's transaction.
+    """
+    update = "UPDATE edges SET priority = 1 WHERE from_id = $1 AND to_id = $2"
+    delete = "DELETE FROM edges WHERE from_id = $1 AND to_id = $2"
+    async with integ_store.engine.acquire() as conn:
+        owner = await _stamped_issue(conn, "owner")
+        target = await _stamped_issue(conn, "target")
+        inserted = await _stamp(conn, owner)
+        for statement in (
+            (
+                "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind) "
+                "VALUES ($1, 'Issue', $2, 'Issue', 'narrows')"
+            ),
+            update,
+            delete,
+        ):
+            await conn.execute(statement, owner, target)
+        unnoted = await _stamp(conn, owner)
+        noted: list[bool] = []
+        for statement in (
+            (
+                "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind, note) "
+                "VALUES ($1, 'Issue', $2, 'Issue', 'narrows', 'why')"
+            ),
+            update,
+            "UPDATE edges SET note = 'why not' WHERE from_id = $1 AND to_id = $2",
+            delete,
+        ):
+            async with tx(conn):
+                await conn.execute(statement, owner, target)
+                writer = await conn.fetchval("SELECT pg_current_xact_id()::text")
+                noted.append(await _stamp(conn, owner) == writer)
+
+    assert unnoted == inserted
+    assert noted == [True, False, True, True]
+
+
+async def _stamped_issue(conn: Conn, description: str) -> uuid.UUID:
+    """Insert an Issue with ``description``; return its id."""
+    return from_plain(
+        await conn.fetchval(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "description) VALUES (gen_random_uuid(), 'Issue', nextval('seq_issue'), "
+            "'active', 'tester@example.com', 't', $1) RETURNING id",
+            description,
+        ),
+        uuid.UUID,
+    )
+
+
+async def _stamp(conn: Conn, inquiry_id: uuid.UUID) -> object:
+    """Return the inquiry's change stamp as text."""
+    return await conn.fetchval(
+        "SELECT changed_xid::text FROM inquiries WHERE id = $1",
+        inquiry_id,
+    )
+
+
 async def _embed_title(conn: Conn, inquiry_id: uuid.UUID, title: str) -> None:
-    """Store ``title``'s stub vector as the inquiry's embedding."""
-    embedder = StubEmbedder()
+    """Store ``title``'s hash vector as the inquiry's embedding."""
+    embedder = HashEmbedder(dim=384)
     await conn.execute(
         "INSERT INTO inquiry_embeddings (inquiry_id, model, embedding) "
         "VALUES ($1, $2, $3::vector)",
         inquiry_id,
         embedder.name,
-        vec_to_text(await embedder.embed(title)),
+        vec_to_text(await embedder.embed_query(title)),
     )
 
 

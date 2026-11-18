@@ -35,25 +35,6 @@ conflicts = [[
 ]]
 
 [[package]]
-name = "accelerate"
-version = "1.15.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "huggingface-hub" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/f5/b5/1d3ed029ac71d3f2961346829a268da923698e9fd63f218f78841f216bfd/accelerate-1.15.0.tar.gz", hash = "sha256:5654f8c5eaa0d4fa68b33e287a97765da6849bf6d51dcac874e73fbbddfb6134", size = 422615, upload-time = "2026-09-09T13:04:49.078Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8a/4c/34f0450479d01195027260da68d8a3880683f1640c3ca5adf64acb3185f1/accelerate-1.15.0-py3-none-any.whl", hash = "sha256:97eacca0b73e45cb867dbf8c5d5d4dc32219544300e0c8992c7334dc2ef33cec", size = 394295, upload-time = "2026-09-09T13:04:47.331Z" },
-]
-
-[[package]]
 name = "annotated-doc"
 version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
@@ -1107,28 +1088,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/5a/82/42f767fc1c1143d6fd36efb827202a2d997a375e160a71eb2888a925aac1/pathspec-1.1.1.tar.gz", hash = "sha256:17db5ecd524104a120e173814c90367a96a98d07c45b2e10c2f3919fff91bf5a", size = 135180, upload-time = "2026-04-27T01:46:08.907Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f1/d9/7fb5aa316bc299258e68c73ba3bddbc499654a07f151cba08f6153988714/pathspec-1.1.1-py3-none-any.whl", hash = "sha256:a00ce642f577bf7f473932318056212bc4f8bfdf53128c78bbd5af0b9b20b189", size = 57328, upload-time = "2026-04-27T01:46:07.06Z" },
-]
-
-[[package]]
-name = "peft"
-version = "0.21.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "accelerate" },
-    { name = "huggingface-hub" },
-    { name = "numpy" },
-    { name = "packaging" },
-    { name = "psutil" },
-    { name = "pyyaml" },
-    { name = "safetensors" },
-    { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
-    { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
-    { name = "tqdm" },
-    { name = "transformers" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/80/af/2e08abf1cd3b8792a02f5116808f2398c2f77ecdff801ced2ce16007a6f9/peft-0.21.2.tar.gz", hash = "sha256:b803ccfb3f3f316004d850284306687833a2235ea278fb56abc856203456142e", size = 983614, upload-time = "2026-10-01T10:26:36.129Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/0b/59441cdbfdd342ed03c08af90a2fe16173f0cd48ab219f523b39ca059a79/peft-0.21.2-py3-none-any.whl", hash = "sha256:106ab6077ff72c54d21577f9af5970e34bac7582cb14209f7b2b511e322a4eae", size = 835427, upload-time = "2026-10-01T10:26:34.085Z" },
 ]
 
 [[package]]
@@ -2362,18 +2321,27 @@ cu134 = [
     { name = "torchao" },
     { name = "torchvision" },
 ]
-server = [
+embedding = [
     { name = "asyncpg" },
     { name = "configgle" },
     { name = "fastapi" },
     { name = "huggingface-hub" },
     { name = "itsdangerous" },
-    { name = "peft" },
     { name = "py-pglite", extra = ["asyncpg", "extensions"] },
     { name = "starlette" },
     { name = "torch", version = "2.15.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'linux'" },
     { name = "torch", version = "2.15.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'linux'" },
     { name = "transformers" },
+    { name = "uvicorn" },
+    { name = "zstandard" },
+]
+server = [
+    { name = "asyncpg" },
+    { name = "configgle" },
+    { name = "fastapi" },
+    { name = "itsdangerous" },
+    { name = "py-pglite", extra = ["asyncpg", "extensions"] },
+    { name = "starlette" },
     { name = "uvicorn" },
     { name = "zstandard" },
 ]
@@ -2410,7 +2378,7 @@ dev = [
     { name = "ruamel-yaml" },
     { name = "ruff" },
     { name = "tqdm" },
-    { name = "trackinizer", extra = ["server"] },
+    { name = "trackinizer", extra = ["embedding"] },
     { name = "ty" },
 ]
 lint = [
@@ -2436,7 +2404,7 @@ pre-commit = [
     { name = "rekursiv-ai-typings" },
     { name = "ruamel-yaml" },
     { name = "ruff" },
-    { name = "trackinizer", extra = ["server"] },
+    { name = "trackinizer", extra = ["embedding"] },
     { name = "ty" },
 ]
 test = [
@@ -2450,7 +2418,7 @@ test = [
     { name = "pytest-postgresql" },
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
-    { name = "trackinizer", extra = ["server"] },
+    { name = "trackinizer", extra = ["embedding"] },
 ]
 typecheck = [
     { name = "basedpyright" },
@@ -2467,10 +2435,9 @@ requires-dist = [
     { name = "configgle", marker = "extra == 'server'", specifier = ">=1.4.4" },
     { name = "fastapi", marker = "extra == 'server'", specifier = ">=0.162.0" },
     { name = "httpx2", specifier = ">=2.16.0" },
-    { name = "huggingface-hub", marker = "extra == 'server'", specifier = ">=2.4.0" },
+    { name = "huggingface-hub", marker = "extra == 'embedding'", specifier = ">=2.4.0" },
     { name = "itsdangerous", marker = "extra == 'server'", specifier = ">=2.2.0" },
     { name = "lark", specifier = ">=1.3.1" },
-    { name = "peft", marker = "extra == 'server'", specifier = ">=0.21.2" },
     { name = "py-pglite", extras = ["asyncpg", "extensions"], marker = "extra == 'server'", specifier = ">=0.5.3" },
     { name = "pydantic", specifier = ">=2.14.2" },
     { name = "pydantic-core", specifier = ">=2.50.2" },
@@ -2482,14 +2449,14 @@ requires-dist = [
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cu130'", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cu132'", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform == 'linux' and extra == 'cu134'", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "torch", marker = "sys_platform == 'linux' and extra == 'server'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'embedding'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cpu'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu126'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu128'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu130'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu132'" },
     { name = "torch", marker = "sys_platform != 'linux' and extra == 'cu134'" },
-    { name = "torch", marker = "sys_platform != 'linux' and extra == 'server'", specifier = ">=2.11.0" },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'embedding'", specifier = ">=2.11.0" },
     { name = "torchao", marker = "extra == 'cpu'" },
     { name = "torchao", marker = "extra == 'cu126'" },
     { name = "torchao", marker = "extra == 'cu128'" },
@@ -2502,7 +2469,8 @@ requires-dist = [
     { name = "torchvision", marker = "extra == 'cu130'" },
     { name = "torchvision", marker = "extra == 'cu132'" },
     { name = "torchvision", marker = "extra == 'cu134'" },
-    { name = "transformers", marker = "extra == 'server'", specifier = ">=5.22.1" },
+    { name = "trackinizer", extras = ["server"], marker = "extra == 'embedding'" },
+    { name = "transformers", marker = "extra == 'embedding'", specifier = ">=5.22.1" },
     { name = "treekle", specifier = ">=0.4.1" },
     { name = "typing-extensions", specifier = ">=4.16.0" },
     { name = "uvicorn", marker = "extra == 'server'", specifier = ">=0.54.0" },
@@ -2511,7 +2479,7 @@ requires-dist = [
     { name = "wrapt", specifier = ">=2.5.2" },
     { name = "zstandard", marker = "extra == 'server'", specifier = ">=0.25.0" },
 ]
-provides-extras = ["cpu", "cu126", "cu128", "cu130", "cu132", "cu134", "server"]
+provides-extras = ["cpu", "cu126", "cu128", "cu130", "cu132", "cu134", "server", "embedding"]
 
 [package.metadata.requires-dev]
 cuda = [
@@ -2545,7 +2513,7 @@ dev = [
     { name = "ruamel-yaml", specifier = ">=0.18.6" },
     { name = "ruff", specifier = ">=0.17.3" },
     { name = "tqdm", specifier = ">=4.70.1" },
-    { name = "trackinizer", extras = ["server"] },
+    { name = "trackinizer", extras = ["embedding"] },
     { name = "ty", specifier = ">=0.0.104" },
 ]
 lint = [
@@ -2571,7 +2539,7 @@ pre-commit = [
     { name = "rekursiv-ai-typings", git = "https://github.com/rekursiv-ai/typings?branch=main" },
     { name = "ruamel-yaml", specifier = ">=0.18.6" },
     { name = "ruff", specifier = ">=0.17.3" },
-    { name = "trackinizer", extras = ["server"] },
+    { name = "trackinizer", extras = ["embedding"] },
     { name = "ty", specifier = ">=0.0.104" },
 ]
 test = [
@@ -2585,7 +2553,7 @@ test = [
     { name = "pytest-postgresql", specifier = ">=9.1.1" },
     { name = "pytest-timeout", specifier = ">=2.4.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "trackinizer", extras = ["server"] },
+    { name = "trackinizer", extras = ["embedding"] },
 ]
 typecheck = [
     { name = "basedpyright", specifier = ">=1.40.2" },

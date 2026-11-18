@@ -26,12 +26,10 @@ from trackinizer.server.config import (
     ConfigError,
     build_engine,
 )
-from trackinizer.server.embedders.registry import EMBEDDERS
 from trackinizer.server.route_iter import registered_paths
 from trackinizer.server.server import (
     _configure_logging,
     _parse_args,
-    _session_embedder_choices,
     _SuppressZeroTaskCancel,
     logger,
     main,
@@ -61,27 +59,6 @@ def restore_global_log_levels() -> Iterator[None]:
     yield
     root.setLevel(root_level)
     logger.setLevel(package_level)
-
-
-class TestSessionEmbedderChoices:
-    def test_choices_are_empty_then_stubs_then_identities_then_bare_slugs(
-        self,
-    ) -> None:
-        choices = _session_embedder_choices()
-        identities = sorted(EMBEDDERS)
-        slugs = sorted({identity.partition("@")[0] for identity in identities})
-        assert choices[:3] == ["", "stub", "stub-1024"]
-        assert choices[3 : 3 + len(identities)] == identities
-        assert choices[3 + len(identities) :] == slugs
-        assert all("@" in identity for identity in identities)
-        assert all("@" not in slug for slug in slugs)
-
-    def test_the_bare_slug_is_cut_at_the_first_at_sign(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setattr(server, "EMBEDDERS", {"slug@1024@extra": object})
-        assert _session_embedder_choices()[-1] == "slug"
 
 
 class TestPureFunctions:
@@ -559,6 +536,7 @@ class TestMainAppliesEveryStartupInvariant:
         "argv",
         [
             ["--embedder", "stub"],
+            ["--session-embedder", "qwen3-embedding-0.6b@1024"],
             ["--session-embedder-dim", "256"],
             ["--session-embedders", "qwen3-embedding-4b@1024"],
         ],
@@ -569,7 +547,7 @@ class TestMainAppliesEveryStartupInvariant:
         capsys: pytest.CaptureFixture[str],
         argv: list[str],
     ) -> None:
-        """The server embeds queries with ``--session-embedder`` alone."""
+        """The embedding addon names its model; no server flag does."""
         monkeypatch.setattr(uvicorn, "run", _ignore_run)
         monkeypatch.setattr("sys.argv", ["trackinizer", *argv])
 

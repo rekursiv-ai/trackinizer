@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from trackinizer.addons.addon import ServerContext, StandaloneContext
     from trackinizer.lib.postgres import DatabaseEngine
     from trackinizer.server.agent_policy import AgentWork, Halt, Refusal
+    from trackinizer.server.store.search import Kept, VectorHit
     from trackinizer.wire.wire_session_ir import RecordBody
 
 
@@ -178,6 +179,59 @@ class Overdecided(Makes["Deployment"], Deployment.Config):
 
     rival: DecidingAddon.Config = field(default_factory=DecidingAddon.Config)
     """The second policy."""
+
+
+class _Nearest:
+    """A vector search that finds nothing."""
+
+    async def nearest(
+        self,
+        engine: DatabaseEngine,
+        *,
+        query: str,
+        kept: Kept,
+        filtered: bool,
+        limit: int,
+    ) -> list[VectorHit] | None:
+        del engine, query, kept, filtered, limit
+        return []
+
+
+class SearchingAddon:
+    """A test addon that sets the deployment's vector search."""
+
+    class Config(Fig["SearchingAddon"]):
+        pass
+
+    def __init__(self, config: Config) -> None:
+        del config
+
+    def manifest(self) -> AddonManifest:
+        return AddonManifest(
+            title="Searching",
+            description="Finds by meaning.",
+            vector_search=_Nearest(),
+        )
+
+
+class Searched(Makes["Deployment"], Deployment.Config):
+    """A deployment with one vector-search addon and one plain addon."""
+
+    vectors: SearchingAddon.Config = field(default_factory=SearchingAddon.Config)
+    """The addon whose search the server asks."""
+
+    plain: NamedAddon.Config = field(default_factory=NamedAddon.Config)
+    """An addon that sets no search."""
+
+
+class Oversearched(Makes["Deployment"], Deployment.Config):
+    """A deployment with two addons that each set a vector search."""
+
+    vectors: SearchingAddon.Config = field(default_factory=SearchingAddon.Config)
+    """The first search."""
+
+    rival: SearchingAddon.Config = field(default_factory=SearchingAddon.Config)
+    """The second search."""
 
 
 class Site(Makes["Deployment"], Deployment.Config):
@@ -394,6 +448,25 @@ def test_two_addons_that_each_set_an_agent_policy_are_refused() -> None:
         ),
     ):
         Overdecided().make()
+
+
+def test_the_one_vector_search_is_picked() -> None:
+    deployment = Searched().make()
+
+    assert deployment.vector_search is deployment.manifest("vectors").vector_search
+    assert isinstance(deployment.vector_search, _Nearest)
+    assert two_addons().make().vector_search is None
+
+
+def test_two_vector_searches_are_refused() -> None:
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"^Addons rival, vectors each set a vector search; a deployment takes at "
+            r"most one\.$"
+        ),
+    ):
+        Oversearched().make()
 
 
 def test_a_factory_path_resolves_and_takes_overrides() -> None:

@@ -95,7 +95,7 @@ from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
 )
-from trackinizer.wire.wire_sessions import SessionAgent
+from trackinizer.wire.wire_sessions import SearchMode, SessionAgent
 
 
 if TYPE_CHECKING:
@@ -2022,50 +2022,48 @@ class Recent(Command):
 
 
 class Search(Command):
-    """Search captured sessions: embeddings + full text, RRF-merged."""
+    """Search by meaning and by keyword: embeddings + full text, RRF-merged.
 
-    # NOT ``search``: that verb was retired (the filter grammar subsumed
-    # inquiry search; ``cli_test.test_search_verb_is_gone`` pins its removal).
-    # Session search is a distinct surface over ``session_records``, so it takes
-    # its own, previously-unused name rather than resurrecting the retired one.
-    names = ("search-sessions",)
+    Inquiry texts and edge notes, or with ``--kind agentsession`` session
+    transcripts. The filter grammar matches fields by pattern; this ranks by both
+    arms, which no filter spells.
+    """
+
+    names = ("search",)
     help = HelpPage(
-        usage='trax search-sessions "QUERY" [OPTIONS]',
-        summary="Search captured agent sessions by meaning and by keyword.",
+        usage='trax search "QUERY" [OPTIONS]',
+        summary="Search inquiries and edge notes, or session transcripts, by meaning "
+        "and by keyword.",
         arguments=(("QUERY", "The search text (quote multi-word queries)."),),
         options=(
-            ("--limit INT", "Maximum hits to return (default 20)."),
+            ("--kind KIND", "One kind; --kind agentsession searches transcripts."),
             (
-                "--no-semantic",
-                "Full-text only; skip the embedding arm even if available.",
+                "--mode TEXT",
+                "fused|keyword|vector: both arms (default), or one alone.",
             ),
+            ("--limit INT", "Maximum hits to return (default 20)."),
             ("--format TEXT", "text|json."),
         ),
         examples=(
-            'trax search-sessions "advisory lock deadlock"',
-            'trax search-sessions "retry backoff" --limit 5',
-            'trax search-sessions "postgres" --no-semantic',
-            'trax search-sessions "deploy" --format json',
+            'trax search "retry backoff"',
+            'trax search "lock order" --kind belief --mode vector',
+            'trax search "advisory lock deadlock" --kind agentsession',
+            'trax search "deploy" --kind agentsession --format json',
         ),
     )
 
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = TraxArgumentParser(
-            prog="trax search-sessions",
-            description=cls.__doc__,
-        )
+        parser = TraxArgumentParser(prog="trax search", description=cls.__doc__)
         parser.add_argument("query", metavar="QUERY", help="search text")
         parser.add_argument("--limit", type=_positive_int, default=20)
-        # Semantic on by default; the server degrades to full-text-only when no
-        # session embedder is configured, so this flag is a caller opt-OUT.
         parser.add_argument(
-            "--semantic",
-            dest="semantic",
-            default=True,
-            action=argparse.BooleanOptionalAction,
+            "--mode",
+            default="fused",
+            choices=get_args(cast(object, SearchMode.__value__)),
         )
+        parser.add_argument("--kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument(
             "--format",
             dest="format_",
@@ -2083,15 +2081,22 @@ class Search(Command):
         client_factory: Callable[[], Client],
     ) -> None:
         del verb
-        body = client_factory().search_sessions(
-            _arg_str(args, "query"),
-            semantic=bool(getattr(args, "semantic", True)),
-            limit=from_plain(_arg_values(args).get("limit"), int, default=0),
-        )
-        if _arg_str(args, "format_") == "json":
-            echo(render.format_json(body), nl=False)
+        query = _arg_str(args, "query")
+        mode = cast("SearchMode", _arg_str(args, "mode"))
+        limit = from_plain(_arg_values(args).get("limit"), int, default=0)
+        word = _arg_str(args, "kind")
+        kind = KIND_LOWER[word] if word else None
+        client = client_factory()
+        if kind == "AgentSession":
+            body = client.search_sessions(query, mode=mode, limit=limit)
+            text = render.format_session_hits(body)
         else:
-            echo(render.format_session_hits(body), nl=False)
+            body = client.search_inquiries(query, mode=mode, kind=kind, limit=limit)
+            text = render.format_inquiry_hits(body)
+        echo(
+            render.format_json(body) if _arg_str(args, "format_") == "json" else text,
+            nl=False,
+        )
 
 
 class Id(Command):

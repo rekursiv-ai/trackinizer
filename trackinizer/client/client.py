@@ -151,6 +151,7 @@ if TYPE_CHECKING:
         ViewerFrame,
     )
     from trackinizer.wire.wire_sessions import (
+        SearchMode,
         SessionEnd,
         SessionEndResponse,
         SessionStart,
@@ -812,15 +813,16 @@ class Client:
         self,
         query: str,
         *,
-        semantic: bool = True,
+        mode: SearchMode = "fused",
         limit: int = 20,
     ) -> dict[str, PlainTree]:
         """Search captured sessions: embeddings + full text, RRF-merged.
 
         Args:
           query: The search query text.
-          semantic: Request the embedding arm; the server degrades to
-            full-text-only when no session embedder is configured.
+          mode: ``fused`` runs both arms; ``keyword`` or ``vector`` one alone.
+            The server degrades to keyword hits when its vector arm is absent or
+            its model not loaded.
           limit: Maximum merged hits.
 
         Returns:
@@ -836,7 +838,46 @@ class Client:
                     where,
                     params={
                         "q": query,
-                        "semantic": "true" if semantic else "false",
+                        "mode": mode,
+                        "limit": limit,
+                    },
+                ),
+                where,
+            ),
+        )
+
+    def search_inquiries(
+        self,
+        query: str,
+        *,
+        mode: SearchMode = "fused",
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, PlainTree]:
+        """Search inquiry texts and edge notes: embeddings + full text, RRF-merged.
+
+        Args:
+          query: The search query text.
+          mode: ``fused`` runs both arms; ``keyword`` or ``vector`` one alone.
+          kind: The one inquiry kind to search; ``None`` searches every kind.
+          limit: Maximum merged hits.
+
+        Returns:
+          body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each
+            hit carries its ``inquiry_id``, ``kind``, ``seq``, ``title``, ``field``
+            (``text`` or a note's ``edge:<edge_kind>:<to_id>``), score, source and
+            snippet.
+
+        """
+        where = "/api/web/search_inquiries"
+        return dict(
+            _require_mapping(
+                self.get(
+                    where,
+                    params={
+                        "q": query,
+                        "mode": mode,
+                        **({} if kind is None else {"kind": kind}),
                         "limit": limit,
                     },
                 ),

@@ -93,8 +93,9 @@ test = [
     # Bundles libpq, so pytest-postgresql's autoloaded plugin imports everywhere.
     "psycopg[binary]>=3.3.6",
     "pytest-postgresql>=9.1.1",
-    # The server's tests import its packages; CI syncs groups, never extras.
-    "trackinizer[server]",
+    # The server's and the embedding add-on's tests import their packages; CI
+    # syncs groups, never extras.
+    "trackinizer[embedding]",
     # web/hatch_build_test.py imports the build hook, which subclasses hatchling's.
     "hatchling>=1.33.0",
 ]
@@ -171,18 +172,20 @@ server = [
     # session-body compression (the read path decompresses zstd blobs). The
     # stdlib `compression.zstd` is 3.14-only; the package validates on 3.12.
     "zstandard>=0.25.0",
-    # Semantic session search (TRACKINIZER_SESSION_EMBEDDER=<model>@<dim>, e.g.
-    # qwen3-embedding-0.6b@1024): the embedders run in-process transformers + torch,
-    # and the startup weight-presence check reads the HF cache. Every server
-    # install carries the model path -- semantic search is a first-class feature.
-    # The imports are still deferred at runtime (TYPE_CHECKING + wrapt
-    # lazy_import for torch/transformers, a function-local import for
-    # huggingface_hub) so `import trackinizer` costs nothing until something embeds.
-    #
+]
+# Semantic search: `pip install 'trackinizer[embedding]'` adds the model stack the
+# embedding add-on's models run in-process (transformers + torch, and the HF cache
+# for their weights). A server without it starts and searches by keyword; the
+# imports are deferred (TYPE_CHECKING + wrapt lazy_import for torch/transformers, a
+# function-local import for huggingface_hub), and the test in
+# `light_install_test.py` fails if the server or the add-on starts to need them at
+# import time.
+embedding = [
+    "trackinizer[server]",
     # torch: floor matches the version the monorepo pins and tests
     # (`torch==2.11.0`). The specifier here is deliberately index-free, so the
     # PUBLISHED wheel metadata carries a bare `torch>=2.11.0`: an end-user
-    # `pip install 'trackinizer[server]'` on linux resolves torch from PyPI = the
+    # `pip install 'trackinizer[embedding]'` on linux resolves torch from PyPI = the
     # CUDA build, and GPU backfill (`torch.compile`) works out of the box. The CPU
     # wheel is pinned ONLY for OUR lock/CI resolution, in `[tool.uv.sources]`
     # below (uv-only, stripped from the built wheel), so `uv sync --frozen` in
@@ -197,10 +200,6 @@ server = [
     # snapshot cache layout. Unfloored in the monorepo; a conservative floor
     # guaranteeing both across the current cache era.
     "huggingface-hub>=2.4.0",
-    # peft: the jina-embeddings-v5 models load task adapters as PEFT modules
-    # (their trust_remote_code `encode` requires it). Floor matches the monorepo
-    # (`peft>=0.21.0`); only the jina embedders reach it, lazily.
-    "peft>=0.21.2",
 ]
 
 [project.urls]
@@ -233,7 +232,7 @@ exclude = [
     "trackinizer/lib/posix/testing.py",
     "trackinizer/lib/postgres/testing.py",
     "trackinizer/server/api/session_test_support.py",
-    "trackinizer/server/embedders/qwen_fakes.py",
+    "trackinizer/addons/embedding/fakes.py",
 ]
 artifacts = ["trackinizer/web/dist/**", "trackinizer/py.typed"]
 

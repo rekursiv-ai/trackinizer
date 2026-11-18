@@ -4622,14 +4622,43 @@ def test_search_sessions_sends_the_query_arms_and_limit() -> None:
         sent,
         httpx2.Response(200, json=found),
         httpx2.Response(200, json=found),
+        httpx2.Response(200, json=[]),
     ) as client:
-        assert client.search_sessions("loss spike", semantic=False, limit=3) == found
+        assert client.search_sessions("loss spike", mode="keyword", limit=3) == found
         assert client.search_sessions("loss spike") == found
+        with pytest.raises(ClientError, match=r"^/api/web/search_sessions returned"):
+            _ = client.search_sessions("loss spike")
 
-    assert [r.url.path for r in sent] == ["/api/web/search_sessions"] * 2
+    assert [r.url.path for r in sent] == ["/api/web/search_sessions"] * 3
     assert [dict(r.url.params) for r in sent] == [
-        {"q": "loss spike", "semantic": "false", "limit": "3"},
-        {"q": "loss spike", "semantic": "true", "limit": "20"},
+        {"q": "loss spike", "mode": "keyword", "limit": "3"},
+        {"q": "loss spike", "mode": "fused", "limit": "20"},
+        {"q": "loss spike", "mode": "fused", "limit": "20"},
+    ]
+
+
+def test_search_inquiries_sends_the_query_arms_kind_and_limit() -> None:
+    sent: list[httpx2.Request] = []
+    found: dict[str, PlainTree] = {"hits": [], "semantic": True, "degraded": False}
+    with _recording(
+        sent,
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=found),
+        httpx2.Response(200, json=[]),
+    ) as client:
+        assert (
+            client.search_inquiries("lock", mode="vector", kind="Belief", limit=3)
+            == found
+        )
+        assert client.search_inquiries("lock") == found
+        with pytest.raises(ClientError, match=r"^/api/web/search_inquiries returned"):
+            _ = client.search_inquiries("lock")
+
+    assert [r.url.path for r in sent] == ["/api/web/search_inquiries"] * 3
+    assert [dict(r.url.params) for r in sent] == [
+        {"q": "lock", "mode": "vector", "kind": "Belief", "limit": "3"},
+        {"q": "lock", "mode": "fused", "limit": "20"},
+        {"q": "lock", "mode": "fused", "limit": "20"},
     ]
 
 

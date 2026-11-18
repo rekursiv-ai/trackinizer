@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, cast
 from uuid import UUID, uuid4
 
 import asyncio
-import hashlib
 import re
 
 from asyncpg import CheckViolationError, ForeignKeyViolationError
@@ -32,14 +31,12 @@ from trackinizer.sagent.session.types import (
 )
 from trackinizer.server.store import session_ir
 from trackinizer.server.store.session_bodies import STUB_PAYLOAD
-from trackinizer.server.store.session_embed import pending_where
 from trackinizer.server.store.session_ir import (
     AppendedPart,
     PartFile,
     SlashCommandRow,
     StalePartError,
 )
-from trackinizer.server.values import manifest_bound, vetted_sql
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.session_records import SessionRecordRow
 
@@ -980,11 +977,6 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
             source,
             target,
         )
-        indexed = await conn.fetchval(
-            "SELECT (SELECT count(*) FROM session_embeddings WHERE session_id = $1) "
-            "+ (SELECT count(*) FROM session_index_state WHERE session_id = $1)",
-            target,
-        )
 
     copied = await store.read_session_manifests(target)
     sources = await store.read_session_manifests(source)
@@ -1010,131 +1002,6 @@ async def test_a_copy_takes_each_parts_prefix_into_the_next_part_of_a_new_sessio
     # Each copy keeps the moment its original was recorded at.
     moments = [row["created"] for row in created]
     assert moments[::2] == moments[1::2]
-    # A source never embedded forks with nothing to index carried over.
-    assert indexed == 0
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_a_copy_takes_each_pairs_vectors_and_markers_so_nothing_is_pending(
-    store: Store,
-) -> None:
-    """Every ``(mapper, model)`` comes along under the copy's parts and prefix bound.
-
-    A fork that left them behind had the sweep re-embed every copied record, text
-    identical (#22012 recomputed 1,593 markers on CPU).
-    """
-    source, target = await _session(store), await _session(store)
-    pairs = [("footprint", "stub-1024"), ("challenger", "model-b@1024")]
-    parts: list[list[SessionRecord]] = [
-        [UserMessage(content=f"a{idx}") for idx in range(3)],
-        [UserMessage(content="b0")],
-        [UserMessage(content="c0"), UserMessage(content="c1")],
-    ]
-    for part, records in enumerate(parts):
-        _ = await store.append_session_records(
-            source,
-            await _bounded(store, source, records, part=part, name=f"{part}.jsonl"),
-        )
-    async with store.engine.acquire() as conn:
-        await _index(conn, source, pairs=pairs)
-        await store.copy_session_parts(
-            conn,
-            source=source,
-            target=target,
-            prefixes=[
-                session_ir.PartPrefix(part=0, records=2),
-                session_ir.PartPrefix(part=2, records=1),
-            ],
-            api_key_id=None,
-        )
-        vectors = await conn.fetch(
-            "SELECT part, idx, chunk, mapper, model, text_md5, "
-            "(embedding::real[])[1]::int AS v "
-            "FROM session_embeddings WHERE session_id = $1 "
-            "ORDER BY mapper, model, part, idx, chunk",
-            target,
-        )
-        markers = await conn.fetch(
-            "SELECT part, idx, mapper, model, text_md5 FROM session_index_state "
-            "WHERE session_id = $1 ORDER BY mapper, model, part, idx",
-            target,
-        )
-        pending = {
-            pair: await _pending(conn, target, pair=pair)
-            for pair in [*pairs, ("footprint", "never-swept")]
-        }
-
-    # Source part 0 idx 2, part 1 and part 2 idx 1 lie past the copied prefixes.
-    copied = [(0, 0, "a0"), (0, 1, "a1"), (1, 0, "c0")]
-    assert [tuple(row.values()) for row in markers] == [
-        (part, idx, mapper, model, _md5(text))
-        for mapper, model in sorted(pairs)
-        for part, idx, text in copied
-    ]
-    assert [tuple(row.values()) for row in vectors] == [
-        (part, idx, chunk, mapper, model, _md5(text), 10 * idx + chunk)
-        for mapper, model in sorted(pairs)
-        for part, idx, text in copied
-        for chunk in (0, 1)
-    ]
-    # The predicate does count the fork's records for a pair the source never had.
-    assert pending == {pairs[0]: 0, pairs[1]: 0, ("footprint", "never-swept"): 3}
-
-
-async def _index(
-    conn: Conn,
-    session_id: UUID,
-    *,
-    pairs: Sequence[tuple[str, str]],
-) -> None:
-    """Give every record of ``session_id`` a marker and two vectors for each pair."""
-    mappers, models = [mapper for mapper, _ in pairs], [model for _, model in pairs]
-    await conn.execute(
-        "INSERT INTO session_index_state (session_id, part, idx, mapper, model, "
-        "text_md5) SELECT r.session_id, r.part, r.idx, p.mapper, p.model, "
-        "md5(r.text) FROM session_records AS r "
-        "CROSS JOIN unnest($2::text[], $3::text[]) AS p(mapper, model) "
-        "WHERE r.session_id = $1",
-        session_id,
-        mappers,
-        models,
-    )
-    await conn.execute(
-        "INSERT INTO session_embeddings (session_id, part, idx, field, chunk, "
-        "mapper, model, embedding, text_md5) SELECT r.session_id, r.part, r.idx, "
-        "'text', c.chunk, p.mapper, p.model, "
-        "array_fill((10 * r.idx + c.chunk)::real, ARRAY[1024])::halfvec, "
-        "md5(r.text) FROM session_records AS r "
-        "CROSS JOIN unnest($2::text[], $3::text[]) AS p(mapper, model) "
-        "CROSS JOIN unnest(ARRAY[0, 1]) AS c(chunk) WHERE r.session_id = $1",
-        session_id,
-        mappers,
-        models,
-    )
-
-
-async def _pending(conn: Conn, session_id: UUID, *, pair: tuple[str, str]) -> int:
-    """Count ``session_id``'s records the embedding sweep would embed for ``pair``."""
-    join, predicate = manifest_bound("r")
-    count = await conn.fetchval(
-        vetted_sql(
-            "SELECT count(*) FROM session_records r ",
-            join,
-            "WHERE r.session_id = $4 AND ",
-            pending_where(predicate),
-        ),
-        *pair,
-        ["UserMessage"],
-        session_id,
-    )
-    assert isinstance(count, int)
-    return count
-
-
-def _md5(text: str) -> str:
-    """Return ``text``'s md5, as the freshness markers carry it."""
-    return hashlib.md5(text.encode(), usedforsecurity=False).hexdigest()
 
 
 @pytest.mark.db_pglite
@@ -1470,7 +1337,7 @@ async def test_copy_parts_remaps_each_table_with_the_same_prefix_bounds() -> Non
         api_key_id=key,
     )
     writes = [call.args for call in engine.conn.execute.await_args_list]
-    assert len(writes) == 6
+    assert len(writes) == 4
     assert writes[0][1:] == (source, target, [3], [2], [0], key)
     assert all(write[1:] == (source, target, [3], [2], [0]) for write in writes[1:])
     copies = [_copied_columns(str(write[0])) for write in writes]
@@ -1479,12 +1346,7 @@ async def test_copy_parts_remaps_each_table_with_the_same_prefix_bounds() -> Non
         ("session_records", True),
         ("session_ciphertext", True),
         ("session_bodies", True),
-        ("session_embeddings", True),
-        ("session_index_state", True),
     ]
-    # The fork-only columns stay; the vectors and markers bring their pair and digest.
-    assert {"mapper", "model", "embedding", "text_md5"} <= set(copies[4][1])
-    assert {"mapper", "model", "text_md5"} <= set(copies[5][1])
 
 
 _COPY = re.compile(

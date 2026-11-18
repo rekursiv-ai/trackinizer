@@ -24,6 +24,9 @@ contributes, and each part says where it runs:
   goes ahead, and what follows the records one stored
   (:mod:`trackinizer.server.agent_policy`). At most one addon of a deployment
   sets one; with none, a service serves its admits and nothing is refused or halted.
+- A **vector search** is the vector arm of search
+  (:mod:`trackinizer.server.store.search`). At most one addon of a deployment
+  sets one; with none, search is keyword-only.
 
 A deployment (:mod:`trackinizer.addons.deployment`) names the addons it
 runs; leaving an addon out switches it off everywhere at once.
@@ -44,6 +47,7 @@ from trackinizer.client.client import Client
 from trackinizer.server.access_policy import AccessPolicy
 from trackinizer.server.agent_policy import AgentPolicy
 from trackinizer.server.store.core import Store
+from trackinizer.server.store.search import VectorSearch
 
 
 __all__ = [
@@ -143,6 +147,8 @@ class AddonManifest:
         deployment refuses two addons that each set one.
       agent_policy: The policy the server asks about its remote agents' work; a
         deployment refuses two addons that each set one.
+      vector_search: The vector arm of search; with none, search is keyword-only.
+        A deployment refuses two addons that each set one.
 
     """
 
@@ -155,6 +161,7 @@ class AddonManifest:
     migrations: Sequence[tuple[str, str]] = ()
     access_policy: AccessPolicy | None = None
     agent_policy: AgentPolicy | None = None
+    vector_search: VectorSearch | None = None
 
     def describe(self, name: str) -> AddonDescription:
         """Project the manifest to its inert wire description.

@@ -85,6 +85,7 @@ __all__ = [
     "MessageKind",
     "MoveSession",
     "PlaceSession",
+    "SearchMode",
     "SendMessage",
     "SendMessageResponse",
     "SessionAgent",
@@ -115,6 +116,10 @@ caller."""
 type FeedWhose = Literal["mine", "campaigns", "everyone"]
 """Whose sessions a feed read keeps: the caller's own, those of the campaigns the
 caller launched, or every one the caller reads."""
+
+type SearchMode = Literal["fused", "keyword", "vector"]
+"""Which arms a session or inquiry search runs: both, RRF-merged; the keyword arm
+alone; or the vector arm alone, which a deployment without one answers with no hits."""
 
 
 def checked_canvas_name(name: str) -> str:
