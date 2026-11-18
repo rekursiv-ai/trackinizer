@@ -51,17 +51,16 @@ from trackinizer.server.api.query import get_inquiry_route
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
 )
+from trackinizer.server.store.search import SessionSearchHit
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     CanvasAgents,
     FeedScope,
 )
-from trackinizer.server.store.session_search import SessionSearchHit
 from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
@@ -2982,36 +2981,6 @@ class _StartTags(HTMLParser):
     @override
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.tags.append((tag, {name: value or "" for name, value in attrs}))
-
-
-class TestSessionEmbedder:
-    """The one embedder a session search uses: the server's, built once."""
-
-    @pytest.mark.parametrize("cached", [StubEmbedder(dim=1024), None])
-    def test_the_default_embedder_is_built_once_per_process(
-        self,
-        cached: StubEmbedder | None,
-    ) -> None:
-        app = FastAPI()
-        app.state.session_embedder = cached
-        request = Request({"type": "http", "app": app})
-        assert web._session_embedder(request) is cached
-
-    def test_the_configured_embedder_is_built_and_kept(self) -> None:
-        app = FastAPI()
-        app.state.config = Config(session_embedder="stub-1024")
-        request = Request({"type": "http", "app": app})
-
-        built = web._session_embedder(request)
-
-        assert built is not None
-        assert built.name == "stub-1024"
-        assert web._session_embedder(request) is built
-
-    def test_an_app_without_a_config_searches_by_full_text(self) -> None:
-        assert (
-            web._session_embedder(Request({"type": "http", "app": FastAPI()})) is None
-        )
 
 
 class TestOptionalIdentity:

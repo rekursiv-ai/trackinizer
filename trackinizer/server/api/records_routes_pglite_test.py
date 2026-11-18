@@ -102,10 +102,14 @@ class _World:
                 "/api/web/search_sessions",
                 {
                     "q": _MARKER,
-                    "semantic": "false",
+                    "mode": "keyword",
                     "whose": "everyone",
                     "hidden": "true",
                 },
+            ),
+            "/api/web/search_inquiries": (
+                "/api/web/search_inquiries",
+                {"q": _MARKER, "mode": "keyword"},
             ),
             "/api/version": ("/api/version", {}),
             "/api/sessions/{session_id}/parts": (
@@ -141,6 +145,7 @@ async def world(
     surface.state.store = store
     surface.state.engine = store.engine
     surface.state.config = config
+    surface.state.vector_search = None
     web.attach(surface)
     async with httpx2.AsyncClient(
         transport=httpx2.ASGITransport(app=surface),
@@ -179,6 +184,7 @@ async def test_its_key_finds_its_own_rows_in_every_listing(world: _World) -> Non
     assert str(world.ada.issue) in shown["/api/inquiries/next_issue"]
     assert str(world.ada.issue) in shown["/api/web/recent_changes"]
     assert str(world.ada.session) in shown["/api/web/search_sessions"]
+    assert str(world.ada.belief) in shown["/api/web/search_inquiries"]
 
 
 async def test_its_key_reads_nothing_of_a_row_its_person_may_not(
@@ -195,6 +201,7 @@ async def test_its_key_reads_nothing_of_a_row_its_person_may_not(
         "/api/inquiries/next_issue",
         "/api/web/recent_changes",
         "/api/web/search_sessions",
+        "/api/web/search_inquiries",
     )
     by_id = (
         "/api/inquiries/{kind}/{seq}",

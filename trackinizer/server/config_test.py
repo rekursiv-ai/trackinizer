@@ -213,7 +213,6 @@ class TestFromEnv:
         "TRACKINIZER_EPHEMERAL",
         "TRACKINIZER_PGLITE_TCP",
         "TRACKINIZER_DSN",
-        "TRACKINIZER_SESSION_EMBEDDER",
         "TRACKINIZER_WEB",
         "TRACKINIZER_SESSION_SECRET",
         "TRACKINIZER_SESSION_MAX_AGE_SECONDS",
@@ -239,6 +238,7 @@ class TestFromEnv:
         for name in self._VARIABLES:
             monkeypatch.delenv(name, raising=False)
         monkeypatch.setenv("TRACKINIZER_EMBEDDER", "other")
+        monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER", "m@1024")
         monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDER_DIM", "big")
         monkeypatch.setenv("TRACKINIZER_SESSION_EMBEDDERS", "a@8,b@8")
         assert Config.from_env() == Config()
@@ -254,7 +254,6 @@ class TestFromEnv:
             "TRACKINIZER_EPHEMERAL": "1",
             "TRACKINIZER_PGLITE_TCP": "1",
             "TRACKINIZER_DSN": "postgresql://h/db",
-            "TRACKINIZER_SESSION_EMBEDDER": "m@1024",
             "TRACKINIZER_WEB": "1",
             "TRACKINIZER_SESSION_SECRET": "s3cret",
             "TRACKINIZER_SESSION_MAX_AGE_SECONDS": "99",
@@ -271,7 +270,6 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            session_embedder="m@1024",
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
@@ -293,7 +291,6 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            session_embedder="m@1024",
             web=True,
             session_max_age_seconds=99,
             auth=False,
@@ -308,7 +305,6 @@ class TestFromEnv:
             ephemeral=True,
             pglite_tcp=True,
             dsn="postgresql://h/db",
-            session_embedder="m@1024",
             web=True,
             session_max_age_seconds=99,
             auth_disabled=True,
@@ -593,7 +589,6 @@ def _server_args(**overrides: object) -> ConfigFlags:
         "ephemeral": False,
         "pglite_tcp": False,
         "dsn": "",
-        "session_embedder": "",
         "web": False,
         "auth": True,
         "session_max_age_seconds": 30 * 24 * 60 * 60,

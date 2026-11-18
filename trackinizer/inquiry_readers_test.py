@@ -23,6 +23,14 @@ if TYPE_CHECKING:
 _CWD: Final[Path] = Path(__file__).resolve().parent
 
 _READERS: Final[dict[str, tuple[Class, str]]] = {
+    "addons/embedding/search.py": (
+        "audience",
+        "the vector arm: session and inquiry units, under the test core hands it",
+    ),
+    "addons/embedding/sweep.py": (
+        "trusted",
+        "background embedding worker: the texts it embeds reach no caller",
+    ),
     "server/access_policy.py": ("policy", "inquiry_read_filter: the filter itself"),
     "server/api/locks.py": ("trusted", "lock authorization lookups"),
     "server/api/host_runs_routes.py": (
@@ -78,7 +86,10 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
     "server/store/session.py": ("audience", "session lifecycle and listing"),
     "server/store/session_feed.py": ("audience", "the session record feed"),
     "server/store/session_ir.py": ("trusted", "write-path session locks and copies"),
-    "server/store/session_search.py": ("audience", "transcript search"),
+    "server/store/search.py": (
+        "audience",
+        "transcript search, and inquiry search under inquiry_read_filter",
+    ),
     "server/store/submit.py": ("trusted", "write path"),
     "server/tools/archive_embeddings.py": (
         "trusted",

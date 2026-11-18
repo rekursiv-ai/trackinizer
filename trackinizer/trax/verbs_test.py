@@ -2070,8 +2070,8 @@ def test_a_malformed_export_selector_is_refused_before_the_request(
 def test_kindless_filter_queries_every_kind(client: FakeClient) -> None:
     """A leading filter field lists across every kind.
 
-    Replaces the ``search`` verb: the query reaches the same rows through the
-    ordinary list path, one ``list_kind`` call per kind.
+    The query reaches every kind's rows through the ordinary list path, one
+    ``list_kind`` call per kind.
     """
     run(["title", "re", "row"], client)
 
@@ -2193,60 +2193,83 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
             assert from_plain(kwargs["limit"], int) <= MAX_LIST_LIMIT, verb
 
 
-def test_search_dispatches_semantic_by_default(client: FakeClient) -> None:
-    run(["search-sessions", "advisory lock"], client)
-    calls = [c for c in client.calls if c[0] == "search_sessions"]
-    assert calls
-    query, kwargs = calls[0][1][0], calls[0][2]
-    assert query == "advisory lock"
-    assert kwargs["semantic"] is True
-    assert kwargs["limit"] == 20
+def test_search_without_a_kind_searches_inquiries(client: FakeClient) -> None:
+    run(["search", "lock"], client)
+    run(
+        ["search", "lock", "--kind", "belief", "--mode", "vector", "--limit", "5"],
+        client,
+    )
+
+    assert [c[1:] for c in client.calls if c[0].startswith("search_")] == [
+        (("lock",), {"mode": "fused", "kind": None, "limit": 20}),
+        (("lock",), {"mode": "vector", "kind": "Belief", "limit": 5}),
+    ]
+    assert {c[0] for c in client.calls if c[0].startswith("search_")} == {
+        "search_inquiries",
+    }
 
 
-def test_search_no_semantic_flag_opts_out(client: FakeClient) -> None:
-    run(["search-sessions", "lock", "--no-semantic"], client)
-    calls = [c for c in client.calls if c[0] == "search_sessions"]
-    assert calls
-    assert calls[0][2]["semantic"] is False
+def test_search_of_agentsession_searches_transcripts(client: FakeClient) -> None:
+    run(["search", "lock", "--kind", "agentsession"], client)
+    run(["search", "lock", "--kind", "agentsession", "--mode", "vector"], client)
+    run(["search", "lock", "--kind", "agentsession", "--limit", "5"], client)
+
+    assert [c[1:] for c in client.calls if c[0].startswith("search_")] == [
+        (("lock",), {"mode": "fused", "limit": 20}),
+        (("lock",), {"mode": "vector", "limit": 20}),
+        (("lock",), {"mode": "fused", "limit": 5}),
+    ]
+    assert {c[0] for c in client.calls if c[0].startswith("search_")} == {
+        "search_sessions",
+    }
 
 
-def test_search_limit_is_passed_through(client: FakeClient) -> None:
-    run(["search-sessions", "lock", "--limit", "5"], client)
-    calls = [c for c in client.calls if c[0] == "search_sessions"]
-    assert calls
-    assert calls[0][2]["limit"] == 5
-
-
-def test_search_text_output_shows_hit_and_position(
+def test_search_prints_inquiry_hits_or_the_body(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run(["search-sessions", "advisory lock"], client)
-    out = capsys.readouterr().out
-    assert "deploy log" in out  # The hit's session title.
-    assert "#0/3" in out  # part/idx position the console opens at.
-    assert "advisory lock acquired" in out  # The snippet.
+    run(["search", "lock"], client)
+    text = capsys.readouterr().out
+    run(["search", "lock", "--format", "json"], client)
+
+    assert text == "0.0164  both      Issue#7 edge:narrows:x  lock bug\n  held lock\n"
+    assert json_loads(capsys.readouterr().out, dict[str, object]) == client.inquiry_hits
 
 
-def test_search_text_output_flags_degradation(
+def test_search_prints_transcript_hits_or_the_body(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    run(["search", "advisory lock", "--kind", "agentsession"], client)
+    text = capsys.readouterr().out
     client.session_hits = {"hits": [], "semantic": False, "degraded": True}
-    run(["search-sessions", "lock"], client)
-    out = capsys.readouterr().out
-    assert "semantic search unavailable" in out
+    run(["search", "lock", "--kind", "agentsession"], client)
+    degraded = capsys.readouterr().out
+    run(["search", "lock", "--kind", "agentsession", "--format", "json"], client)
+
+    assert "deploy log" in text  # The hit's session title.
+    assert "#0/3" in text  # The part/idx position the console opens at.
+    assert "advisory lock acquired" in text  # The snippet.
+    assert "semantic search unavailable" in degraded
+    assert json_loads(capsys.readouterr().out, dict[str, object]) == client.session_hits
 
 
-def test_search_json_output_is_the_raw_body(
+@pytest.mark.parametrize("verb", ["search-sessions", "search-inquiries"])
+def test_the_old_search_verbs_are_unknown(client: FakeClient, verb: str) -> None:
+    with pytest.raises(ClientError, match="unknown verb"):
+        run([verb, "lock"], client)
+
+
+def test_search_help_names_the_kind_that_searches_transcripts(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run(["search-sessions", "lock", "--format", "json"], client)
+    run(["help", "search"], client)
     out = capsys.readouterr().out
-    body = json_loads(out, dict[str, object])
-    assert "hits" in body
-    assert body["semantic"] is True
+
+    assert 'Usage: trax search "QUERY" [OPTIONS]' in out
+    assert "--kind agentsession" in out
+    assert not client.calls
 
 
 # Folded in from former crasher_test.py.

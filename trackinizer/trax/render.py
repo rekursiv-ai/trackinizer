@@ -451,27 +451,21 @@ def format_session_hits(body: Mapping[str, object]) -> str:
         requested but unavailable.
 
     """
-    raw_hits = body.get("hits")
-    hits = from_plain([] if raw_hits is None else raw_hits, list[dict[str, object]])
-    lines: list[str] = []
-    if body.get("degraded"):
-        lines.append("(semantic search unavailable; showing full-text results only)")
-    if not hits:
-        return ("\n".join([*lines, "(no matches)"])) + "\n"
-    for raw in hits:
-        hit = from_plain(raw, dict[str, object])
-        session = str(hit.get("session_id", ""))[:8]
-        part = from_plain(hit.get("part"), int, default=0)
-        idx = from_plain(hit.get("idx"), int, default=0)
-        score = from_plain(hit.get("score"), float, default=0.0)
-        lines.append(
-            f"{score:.4f}  {from_plain(hit.get('source'), str, default=''):8}  "
-            f"{session}#{part}/{idx}  {from_plain(hit.get('title'), str, default='')}",
-        )
-        snippet = from_plain(hit.get("snippet"), str, default="").strip()
-        if snippet:
-            lines.append(f"  {snippet}")
-    return "\n".join(lines) + "\n"
+    return _format_hits(body, place=_session_place)
+
+
+def format_inquiry_hits(body: Mapping[str, object]) -> str:
+    """Render inquiry-search hits as :func:`format_session_hits` renders sessions'.
+
+    Args:
+      body: The ``/api/web/search_inquiries`` response.
+
+    Returns:
+      result: Newline-terminated text; each hit is placed by its ``Kind#seq``, and a
+        note by its edge too.
+
+    """
+    return _format_hits(body, place=_inquiry_place)
 
 
 def table_width(width: int | None = None) -> int:
@@ -781,3 +775,44 @@ def _minimum_column_width(name: str) -> int:
         "description": 16,
         "validation": 16,
     }.get(name, len(name))
+
+
+def _format_hits(
+    body: Mapping[str, object],
+    *,
+    place: Callable[[Mapping[str, object]], str],
+) -> str:
+    """Render search hits, one per line placed by ``place``, with a degrade banner."""
+    raw_hits = body.get("hits")
+    hits = from_plain([] if raw_hits is None else raw_hits, list[dict[str, object]])
+    lines: list[str] = []
+    if body.get("degraded"):
+        lines.append("(semantic search unavailable; showing full-text results only)")
+    if not hits:
+        return ("\n".join([*lines, "(no matches)"])) + "\n"
+    for raw in hits:
+        hit = from_plain(raw, dict[str, object])
+        score = from_plain(hit.get("score"), float, default=0.0)
+        lines.append(
+            f"{score:.4f}  {from_plain(hit.get('source'), str, default=''):8}  "
+            f"{place(hit)}  {from_plain(hit.get('title'), str, default='')}",
+        )
+        snippet = from_plain(hit.get("snippet"), str, default="").strip()
+        if snippet:
+            lines.append(f"  {snippet}")
+    return "\n".join(lines) + "\n"
+
+
+def _session_place(hit: Mapping[str, object]) -> str:
+    """Return a session hit's ``session#part/idx``."""
+    part = from_plain(hit.get("part"), int, default=0)
+    idx = from_plain(hit.get("idx"), int, default=0)
+    return f"{str(hit.get('session_id', ''))[:8]}#{part}/{idx}"
+
+
+def _inquiry_place(hit: Mapping[str, object]) -> str:
+    """Return an inquiry hit's ``Kind#seq``, and a note's field after it."""
+    field = from_plain(hit.get("field"), str, default="text")
+    return f"{hit.get('kind')}#{hit.get('seq')}" + (
+        "" if field == "text" else f" {field}"
+    )

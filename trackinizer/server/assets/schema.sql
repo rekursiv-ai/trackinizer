@@ -68,6 +68,10 @@ CREATE TABLE IF NOT EXISTS inquiries (
     -- Mirrors ``Inquiry.filed_from_chat``. No FK: a deleted chat takes its sessions, and
     -- its rows stay hidden rather than open. Added in 077.
     filed_from_chat UUID,
+    -- The transaction that inserted the row or last changed a text the embedding
+    -- sweep reads: a text column (``inquiries_stamp_change``) or the note of an edge
+    -- the row starts from (``edges_stamp_owner``). NULL on rows older than 080.
+    changed_xid    xid8,
     marginal_cost_agent_usd    NUMERIC(14, 6) NOT NULL DEFAULT 0,
     marginal_cost_resource_usd NUMERIC(14, 6) NOT NULL DEFAULT 0,
     -- Derived load-bearing (PageRank) scores, one per citation-relation graph.
@@ -143,6 +147,38 @@ CREATE INDEX IF NOT EXISTS idx_inquiries_subscribers_gin
 -- Tie-breaker index for offset pagination over ``list_kind``.
 CREATE INDEX IF NOT EXISTS idx_inquiries_created_id
     ON inquiries (created DESC, id DESC);
+
+-- Only the columns an inquiry's text is made of stamp the row, so an update that
+-- names none of them (scores, labels, status, the lock) never calls this.
+CREATE OR REPLACE FUNCTION inquiries_stamp_change() RETURNS trigger
+LANGUAGE plpgsql AS $stamp$
+BEGIN
+    IF TG_OP = 'INSERT'
+        OR NEW.title IS DISTINCT FROM OLD.title
+        OR NEW.description IS DISTINCT FROM OLD.description
+        OR NEW.paper_abstract IS DISTINCT FROM OLD.paper_abstract
+    THEN
+        NEW.changed_xid := pg_current_xact_id();
+    END IF;
+    RETURN NEW;
+END
+$stamp$;
+
+CREATE OR REPLACE TRIGGER inquiries_stamp_change
+    BEFORE INSERT OR UPDATE OF title, description, paper_abstract ON inquiries
+    FOR EACH ROW EXECUTE FUNCTION inquiries_stamp_change();
+
+-- No index on ``changed_xid``, so an edge trigger's stamp is a HOT update; the
+-- sweep's owner delta scans inquiries instead.
+
+-- The keyword surface of every inquiry text that gets a vector, cut to 100,000
+-- characters: to_tsvector refuses a text whose tsvector passes 1 MB, and a refusing
+-- index expression would refuse the row's every write (schema.080.sql has the sizes).
+CREATE INDEX IF NOT EXISTS idx_inquiries_search ON inquiries USING GIN (
+    to_tsvector('simple', left(
+        coalesce(title, '') || ' ' || coalesce(description, '') || ' '
+        || coalesce(paper_abstract, ''), 100000))
+);
 
 -- Pre-refactor cleanup: the embedding column used to live on inquiries.
 -- It now lives in inquiry_embeddings (one row per (inquiry, model)).
@@ -390,6 +426,43 @@ CREATE TABLE IF NOT EXISTS edges (
 
 CREATE INDEX IF NOT EXISTS idx_edges_from ON edges (from_id, edge_kind);
 CREATE INDEX IF NOT EXISTS idx_edges_to   ON edges (to_id, edge_kind);
+
+-- An edge's note belongs to the inquiry it starts from. Only a write that adds,
+-- changes, moves or removes a note stamps that inquiry; a cascade from either end
+-- fires these as a DELETE.
+CREATE OR REPLACE FUNCTION edges_stamp_owner() RETURNS trigger
+LANGUAGE plpgsql AS $stamp$
+BEGIN
+    UPDATE inquiries SET changed_xid = pg_current_xact_id()
+     WHERE id IN (
+         CASE WHEN TG_OP <> 'INSERT' THEN OLD.from_id END,
+         CASE WHEN TG_OP <> 'DELETE' THEN NEW.from_id END
+     );
+    RETURN NULL;
+END
+$stamp$;
+
+CREATE OR REPLACE TRIGGER edges_stamp_owner_insert
+    AFTER INSERT ON edges
+    FOR EACH ROW WHEN (NEW.note IS NOT NULL)
+    EXECUTE FUNCTION edges_stamp_owner();
+
+CREATE OR REPLACE TRIGGER edges_stamp_owner_delete
+    AFTER DELETE ON edges
+    FOR EACH ROW WHEN (OLD.note IS NOT NULL)
+    EXECUTE FUNCTION edges_stamp_owner();
+
+CREATE OR REPLACE TRIGGER edges_stamp_owner_update
+    AFTER UPDATE ON edges
+    FOR EACH ROW WHEN (
+        OLD.note IS DISTINCT FROM NEW.note
+        OR (OLD.note IS NOT NULL AND (OLD.from_id, OLD.to_id, OLD.edge_kind)
+            IS DISTINCT FROM (NEW.from_id, NEW.to_id, NEW.edge_kind))
+    )
+    EXECUTE FUNCTION edges_stamp_owner();
+
+CREATE INDEX IF NOT EXISTS idx_edges_note_search
+    ON edges USING GIN (to_tsvector('simple', note)) WHERE note IS NOT NULL;
 
 
 -- Append-only audit log. Closed-set ``kind`` discriminates which per-column

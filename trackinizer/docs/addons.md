@@ -16,9 +16,14 @@ not load an embedding model simply does not list it.
 Durable state lives only in trackinizer, in the database. An addon keeps only
 caches: things it can rebuild from the graph and lose on a restart without
 losing anything. An addon that needs to remember something writes a row; it does
-not write a file, a table of its own, or a note in memory that matters after a
-crash. That is what lets any addon restart, move host, or run twice while
-another copy is down.
+not write a file or a note in memory that matters after a crash. That is what
+lets any addon restart, move host, or run twice while another copy is down.
+
+A table of an addon's own, built by its `migrations` in a Postgres schema of its
+own, holds only such a cache, indexed for a query the graph's rows cannot serve:
+the embedding addon's `embedding.vectors`, which its sweep rebuilds from the text
+it embeds. Each table needs a `Justification` in
+`server/private/new_tables_test.py`.
 
 ## The contract
 

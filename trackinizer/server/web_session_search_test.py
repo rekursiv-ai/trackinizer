@@ -1,18 +1,19 @@
-"""The ``/api/web/search_sessions`` handler against real Postgres (pglite).
+"""The ``/api/web/search_sessions`` handler against real Postgres.
 
-Boots a real store, seeds the session index through the production sweep with a
-1024-dim stub, and calls the handler directly with a duck-typed request (the
+Boots a real store and calls the handler directly with a duck-typed request (the
 session-scoped ``integ_engine`` lives on the session loop, so a starlette
 ``TestClient`` -- which spins its own loop -- cannot drive it; web_test.py calls
-handlers the same way). Proves the semantic and FTS arms, RRF surfacing, and --
-the load-bearing case -- graceful degradation to FTS-only when no session
-embedder is configured (a keyword search must never load an 8 GB model).
+handlers the same way). The vector arm is the app's ``vector_search`` slot, here a
+fake: an addon fills it in a real deployment. Proves the keyword arm, the vector
+arm's place in the answer, and -- the load-bearing case -- that a site without the
+arm searches by keyword and says so, never failing.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import Mock
 from uuid import UUID, uuid4
@@ -26,17 +27,19 @@ from trackinizer.server import web
 from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import Assistant, Config
-from trackinizer.server.embedders import registry
-from trackinizer.server.embedders.stub import StubEmbedder
-from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.core import Store
-from trackinizer.server.store.session_embed import sweep_session_embeddings
+from trackinizer.server.store.search import VectorHit
 from trackinizer.server.store.session_feed import FeedScope
 
 
 if TYPE_CHECKING:
-    from trackinizer.server.store.session_search import SessionSearchHit
-    from trackinizer.wire.wire_sessions import FeedWhose
+    from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.store.search import (
+        Kept,
+        SessionSearchHit,
+        VectorSearch,
+    )
+    from trackinizer.wire.wire_sessions import FeedWhose, SearchMode
 
 
 _VIEWER = AuthIdentity(
@@ -48,16 +51,13 @@ _VIEWER = AuthIdentity(
 
 
 class _State:
-    """Mutable app state: ``_session_embedder`` assigns its cache onto it."""
+    """The app state the route reads: the store, its config and the vector arm."""
 
-    def __init__(self, *, store: Store, session_embedder: str) -> None:
+    def __init__(self, *, store: Store, vector_search: VectorSearch | None) -> None:
         self.store = store
         self.engine = store.engine
-        # A REAL Config, not a duck-type: ``_session_embedder`` narrows with
-        # ``isinstance(config, Config)`` so a renamed field breaks type-checking
-        # instead of silently disabling the semantic arm -- a fake here would
-        # read as no-config and the route would degrade in every test.
-        self.config = Config(session_embedder=session_embedder)
+        self.config = Config()
+        self.vector_search = vector_search
 
 
 class _App:
@@ -68,12 +68,13 @@ class _App:
 class _Request:
     def __init__(self, app: _App) -> None:
         self.app = app
+        self.state = SimpleNamespace()
 
 
-def _request(store: Store, *, session_embedder: str) -> Request:
+def _request(store: Store, *, vector_search: VectorSearch | None = None) -> Request:
     return cast(
         Request,
-        _Request(_App(_State(store=store, session_embedder=session_embedder))),
+        _Request(_App(_State(store=store, vector_search=vector_search))),
     )
 
 
@@ -122,28 +123,19 @@ async def _record(store: Store, session_id: UUID, *, idx: int, text: str) -> Non
         )
 
 
-async def _seed(store: Store) -> None:
-    await sweep_session_embeddings(
-        store.engine,
-        mapper=FootprintMapper(),
-        embedder=StubEmbedder(dim=1024),
-    )
-
-
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_fts_arm_returns_hits_with_position_and_title(store: Store) -> None:
     """A keyword search returns hits carrying (session_id, part, idx) + title."""
     session_id = await _session(store, title="deploy log")
     await _record(store, session_id, idx=0, text="advisory lock acquired cleanly")
-    await _seed(store)
 
     body = from_plain(
         await web.web_search_sessions(
-            _request(store, session_embedder=""),
+            _request(store),
             q="advisory lock",
             identity=_VIEWER,
-            semantic=False,
+            mode="keyword",
         ),
         dict[str, object],
     )
@@ -159,92 +151,92 @@ async def test_fts_arm_returns_hits_with_position_and_title(store: Store) -> Non
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_semantic_requested_without_model_degrades_to_fts(store: Store) -> None:
-    """semantic=true but no embedder configured -> FTS-only, degraded flagged.
+@pytest.mark.parametrize("unloaded", [False, True], ids=["no addon", "not loaded"])
+async def test_a_site_without_the_addon_searches_by_keyword(
+    store: Store,
+    *,
+    unloaded: bool,
+) -> None:
+    """No vector arm, or one whose model is not loaded: keyword hits, degraded.
 
-    The load-bearing contract: a keyword search never 500s or loads a model
-    when the session embedder is unset. It falls back to full text and says so.
+    The load-bearing contract: a search never fails or loads a model for want of
+    vectors. It falls back to keywords and says so.
     """
     session_id = await _session(store)
     await _record(store, session_id, idx=0, text="postgres deadlock trace")
-    await _seed(store)
 
     body = from_plain(
         await web.web_search_sessions(
-            _request(store, session_embedder=""),
+            _request(store, vector_search=_Fixed(hits=None) if unloaded else None),
             q="deadlock",
             identity=_VIEWER,
-            semantic=True,
+            mode="fused",
         ),
         dict[str, object],
     )
-    assert body["degraded"] is True
-    assert body["semantic"] is False
+
+    assert (body["degraded"], body["semantic"]) == (True, False)
     hits = from_plain(body["hits"], list[dict[str, object]])
-    assert len(hits) == 1
-    assert from_plain(hits[0], dict[str, object])["source"] == "fts"
+    assert [from_plain(hit, dict[str, object])["source"] for hit in hits] == ["fts"]
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_semantic_arm_runs_with_a_configured_embedder(store: Store) -> None:
-    """With stub-1024 configured, the semantic arm runs and is not degraded."""
+async def test_the_vector_arm_runs_when_the_app_has_one(store: Store) -> None:
     session_id = await _session(store)
     await _record(store, session_id, idx=0, text="deploy the release to production")
     await _record(store, session_id, idx=1, text="unrelated chatter about lunch")
-    await _seed(store)
+    arm = _Fixed(
+        hits=[VectorHit(owner_id=session_id, part=0, idx=0, field="content", chunk=0)],
+    )
 
     body = from_plain(
         await web.web_search_sessions(
-            _request(store, session_embedder="stub-1024"),
-            q="deploy the release to production",
+            _request(store, vector_search=arm),
+            q="release",
             identity=_VIEWER,
-            semantic=True,
+            mode="fused",
         ),
         dict[str, object],
     )
-    assert body["degraded"] is False
-    assert body["semantic"] is True
+
+    assert (body["degraded"], body["semantic"]) == (False, True)
     hits = from_plain(body["hits"], list[dict[str, object]])
-    assert hits
     top = from_plain(hits[0], dict[str, object])
-    assert (top["session_id"], top["idx"]) == (str(session_id), 0)
-    assert top["source"] in ("semantic", "both")
+    assert (top["session_id"], top["idx"], top["source"]) == (
+        str(session_id),
+        0,
+        "both",
+    )
+    assert arm.asked == ["release"]
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_semantic_false_skips_the_model_entirely(store: Store) -> None:
-    """semantic=false never touches the embedder, even when one is configured."""
+async def test_keyword_mode_skips_the_vector_arm_entirely(store: Store) -> None:
     session_id = await _session(store)
     await _record(store, session_id, idx=0, text="advisory lock token here")
-    await _seed(store)
+    arm = _Fixed(hits=[])
 
     body = from_plain(
         await web.web_search_sessions(
-            _request(store, session_embedder="stub-1024"),
+            _request(store, vector_search=arm),
             q="advisory lock",
             identity=_VIEWER,
-            semantic=False,
+            mode="keyword",
         ),
         dict[str, object],
     )
-    assert body["semantic"] is False
-    assert body["degraded"] is False  # Not degraded: the caller opted out.
-    assert (
-        from_plain(
-            from_plain(body["hits"], list[dict[str, object]])[0],
-            dict[str, object],
-        )["source"]
-        == "fts"
-    )
+
+    assert (body["semantic"], body["degraded"]) == (False, False)
+    assert arm.asked == []
 
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_bad_limit_and_empty_query_are_400(store: Store) -> None:
     """Route validation mirrors the sibling search route: limit + non-empty q."""
-    request = _request(store, session_embedder="")
+    request = _request(store)
     for bad in (0, 5000):
         with pytest.raises(HTTPException) as caught:
             await web.web_search_sessions(request, q="x", identity=_VIEWER, limit=bad)
@@ -254,22 +246,8 @@ async def test_bad_limit_and_empty_query_are_400(store: Store) -> None:
     assert caught.value.status_code == 400
 
 
-def test_a_server_without_its_models_weights_degrades_without_building_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    check = Mock(return_value=False)
-    build = Mock(side_effect=AssertionError("Uncached model constructed"))
-    monkeypatch.setattr(registry, "weights_present", check)
-    monkeypatch.setattr(registry, "build_session_embedder", build)
-    app = FastAPI()
-    app.state.config = Config(session_embedder="qwen3-embedding-4b@1024")
-    assert web._session_embedder(Request({"type": "http", "app": app})) is None
-    check.assert_called_once_with("qwen3-embedding-4b@1024")
-    build.assert_not_called()
-
-
 def test_a_search_names_no_model_of_its_own() -> None:
-    """The server's embedder answers every search; a request cannot pick another."""
+    """The server's vector arm answers every search; a request cannot pick another."""
     app = FastAPI()
     app.include_router(web.router, prefix="/api/web")
     paths = from_plain(
@@ -282,11 +260,58 @@ def test_a_search_names_no_model_of_its_own() -> None:
     )
     assert [each["name"] for each in parameters] == [
         "q",
-        "semantic",
+        "mode",
         "limit",
         "whose",
         "hidden",
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "searched", "degraded"),
+    [
+        ("fused", False, True),
+        ("fused", True, False),
+        ("vector", False, True),
+        ("keyword", False, False),
+    ],
+)
+async def test_degraded_says_a_vector_arm_asked_for_did_not_run(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: SearchMode,
+    *,
+    searched: bool,
+    degraded: bool,
+) -> None:
+    search = _SearchSpy(searched=searched)
+    monkeypatch.setattr(web, "search_sessions", search)
+
+    body = await web.web_search_sessions(
+        _request(cast(Store, Mock())),
+        q="x",
+        identity=_VIEWER,
+        mode=mode,
+    )
+
+    assert (body["semantic"], body["degraded"]) == (searched, degraded)
+    assert search.modes == [mode]
+
+
+@pytest.mark.asyncio
+async def test_a_search_naming_no_mode_runs_both_arms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_sessions", search)
+
+    _ = await web.web_search_sessions(
+        _request(cast(Store, Mock())),
+        q="x",
+        identity=_VIEWER,
+    )
+
+    assert search.modes == ["fused"]
 
 
 @pytest.mark.asyncio
@@ -308,8 +333,8 @@ async def test_the_search_is_read_for_the_reader_its_caller_is_of_their_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     search = _SearchSpy()
-    monkeypatch.setattr(web, "search_session_records", search)
-    request = _request(cast(Store, Mock()), session_embedder="")
+    monkeypatch.setattr(web, "search_sessions", search)
+    request = _request(cast(Store, Mock()))
 
     held = (frozenset({"open", "private"}), frozenset({"open", "private", "staff"}))
     for audiences in held:
@@ -317,7 +342,7 @@ async def test_the_search_is_read_for_the_reader_its_caller_is_of_their_own(
             request,
             q="x",
             identity=replace(_VIEWER, read_audiences=audiences),
-            semantic=False,
+            mode="keyword",
         )
 
     assert search.asked == [
@@ -340,8 +365,8 @@ async def test_search_sessions_takes_whose_and_hidden(
 ) -> None:
     """Search widens to every session the caller reads, or narrows to their campaigns."""
     search = _SearchSpy()
-    monkeypatch.setattr(web, "search_session_records", search)
-    request = _request(cast(Store, Mock()), session_embedder="")
+    monkeypatch.setattr(web, "search_sessions", search)
+    request = _request(cast(Store, Mock()))
     caller = replace(_VIEWER, read_audiences=frozenset({"open", "private"}))
 
     cases: tuple[tuple[FeedWhose, bool], ...] = (
@@ -353,7 +378,7 @@ async def test_search_sessions_takes_whose_and_hidden(
             request,
             q="x",
             identity=caller,
-            semantic=False,
+            mode="keyword",
             whose=whose,
             hidden=hidden,
         )
@@ -372,8 +397,8 @@ async def test_the_assistant_searches_every_session_it_reads_unless_it_names_who
 ) -> None:
     """It holds none of the sessions it is asked about, where a person searches theirs."""
     search = _SearchSpy()
-    monkeypatch.setattr(web, "search_session_records", search)
-    state = _State(store=cast(Store, Mock()), session_embedder="")
+    monkeypatch.setattr(web, "search_sessions", search)
+    state = _State(store=cast(Store, Mock()), vector_search=None)
     state.config = Config(assistant=Assistant(actor="scout", email=_VIEWER.email))
     request = cast(Request, _Request(_App(state)))
 
@@ -382,30 +407,105 @@ async def test_the_assistant_searches_every_session_it_reads_unless_it_names_who
             request,
             q="x",
             identity=_VIEWER,
-            semantic=False,
+            mode="keyword",
             whose=whose,
         )
 
     assert [each.account for each in search.asked] == ["", _VIEWER.email]
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_inquiry_search_answers_both_arms_by_inquiry_and_field(
+    store: Store,
+) -> None:
+    async with store.engine.acquire() as conn:
+        issue = from_plain(
+            await conn.fetchval(
+                "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+                "description) VALUES (gen_random_uuid(), 'Issue', 7, 'active', $1, "
+                "'lock bug', 'advisory lock held') RETURNING id",
+                _VIEWER.email,
+            ),
+            UUID,
+        )
+    arm = _Fixed(hits=[VectorHit(owner_id=issue, part=0, idx=0, field="text", chunk=0)])
+
+    body = await web.web_search_inquiries(
+        _request(store, vector_search=arm),
+        q="advisory",
+        identity=_VIEWER,
+        kind="Issue",
+    )
+
+    [hit] = from_plain(body.pop("hits"), list[dict[str, object]])
+    assert body == {"semantic": True, "degraded": False}
+    assert from_plain(hit.pop("score"), float) == pytest.approx(2 / 61)
+    assert "<b>advisory</b>" in from_plain(hit.pop("snippet"), str)
+    assert hit == {
+        "inquiry_id": str(issue),
+        "kind": "Issue",
+        "seq": 7,
+        "title": "lock bug",
+        "field": "text",
+        "source": "both",
+    }
+    assert arm.asked == ["advisory"]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_malformed_inquiry_search_is_400(store: Store) -> None:
+    request = _request(store)
+    for q, limit in (("x", 0), ("x", 201), ("  ", 20)):
+        with pytest.raises(HTTPException) as caught:
+            await web.web_search_inquiries(request, q=q, identity=_VIEWER, limit=limit)
+        assert caught.value.status_code == 400
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Fixed:
+    """A vector arm that answers the same units for every query, recording each."""
+
+    hits: list[VectorHit] | None
+    asked: list[str] = field(default_factory=list[str])
+
+    async def nearest(
+        self,
+        engine: DatabaseEngine,
+        *,
+        query: str,
+        kept: Kept,
+        filtered: bool,
+        limit: int,
+    ) -> list[VectorHit] | None:
+        """Record ``query``; answer :attr:`hits`."""
+        del engine, kept, filtered, limit
+        self.asked.append(query)
+        return self.hits
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _SearchSpy:
-    """Stand in for the session search, keeping each scope it is asked for."""
+    """Stand in for the session search, keeping each scope and mode it is asked for."""
 
+    searched: bool = False
     asked: list[FeedScope] = field(default_factory=list[FeedScope])
+    modes: list[str] = field(default_factory=list[str])
 
     async def __call__(
         self,
         engine: object,
         *,
         scope: FeedScope,
+        mode: str,
         **rest: object,
-    ) -> list[SessionSearchHit]:
-        """Keep ``scope`` and find nothing."""
+    ) -> tuple[list[SessionSearchHit], bool]:
+        """Keep ``scope`` and ``mode``; find nothing, the vector arm run or not."""
         del engine, rest
         self.asked.append(scope)
-        return []
+        self.modes.append(mode)
+        return [], self.searched
 
 
 if __name__ == "__main__":

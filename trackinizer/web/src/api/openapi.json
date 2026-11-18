@@ -20143,9 +20143,90 @@
     "summary": "Web Search"
    }
   },
+  "/api/web/search_inquiries": {
+   "get": {
+    "description": "Hybrid inquiry search over inquiry texts and edge notes, RRF-merged.\n\n``mode`` picks the arms as on ``/search_sessions``, which degrades the same way.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Keyword terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  mode: The arms to run; ``fused`` when unnamed.\n  kind: The one inquiry kind to search; unnamed, every kind.\n  limit: Maximum merged hits, 1-200.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``inquiry_id``, ``kind``, ``seq``, ``title``, ``field`` (``text``, or\n    ``edge:<edge_kind>:<to_id>`` for a note), ``score``, ``source`` and\n    ``snippet``. A hit the caller may not read, or a note with an end the\n    caller may not read, is not among them.",
+    "operationId": "web_search_inquiries_api_web_search_inquiries_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "q",
+      "required": true,
+      "schema": {
+       "title": "Q",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "mode",
+      "required": false,
+      "schema": {
+       "default": "fused",
+       "enum": [
+        "fused",
+        "keyword",
+        "vector"
+       ],
+       "title": "Mode",
+       "type": "string"
+      }
+     },
+     {
+      "in": "query",
+      "name": "kind",
+      "required": false,
+      "schema": {
+       "anyOf": [
+        {
+         "$ref": "#/components/schemas/InquiryKind"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "title": "Kind"
+      }
+     },
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 20,
+       "title": "Limit",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/WebView"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Web Search Inquiries"
+   }
+  },
   "/api/web/search_sessions": {
    "get": {
-    "description": "Hybrid session search: embeddings + scoped tsvector, RRF-merged.\n\nRuns the full-text arm always, and the semantic arm only when ``semantic``\nis requested AND a session embedder is available. With no embedder the route\ndegrades to full-text-only rather than 500 -- a keyword search must never\ntrigger a model load -- and flags the degrade in the response\n(``degraded: true``, ``semantic: false``). The query embedding uses the\nembedder's query-side prefix; the corpus stayed prefix-free at ingest.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  semantic: Request the embedding arm (default true); ignored when no\n    session embedder is available.\n  limit: Maximum merged hits, 1-200.\n  whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a\n    person searches their own, as the console opens on them, and the\n    configured assistant every one it reads, since it holds none of the\n    sessions it is asked about.\n  hidden: Search the ``private`` sessions the caller reads too.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose transcript the caller does not read has no hit.",
+    "description": "Hybrid session search: the deployment's vector arm + scoped tsvector, RRF-merged.\n\n``mode`` picks the arms: ``fused`` (the default) runs both, ``keyword`` the\nfull-text arm alone, ``vector`` the vector arm alone. The vector arm runs only\nwhen the deployment has one whose model is loaded. Without it the route answers\nwith what is left rather than fail -- a search never loads a model -- and flags\nthe degrade in the response (``degraded: true``, ``semantic: false``).\n\nArgs:\n  request: FastAPI request object for middleware access.\n  q: The search query. Full-text terms feed ``websearch_to_tsquery``.\n  identity: Authenticated user, validated to have viewer role.\n  mode: The arms to run.\n  limit: Maximum merged hits, 1-200.\n  whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a\n    person searches their own, as the console opens on them, and the\n    configured assistant every one it reads, since it holds none of the\n    sessions it is asked about.\n  hidden: Search the ``private`` sessions the caller reads too.\n\nReturns:\n  body: ``{\"hits\": [...], \"semantic\": bool, \"degraded\": bool}`` -- each hit\n    carries ``session_id``/``part``/``idx`` (where the console opens),\n    ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session\n    whose transcript the caller does not read has no hit.",
     "operationId": "web_search_sessions_api_web_search_sessions_get",
     "parameters": [
      {
@@ -20159,12 +20240,17 @@
      },
      {
       "in": "query",
-      "name": "semantic",
+      "name": "mode",
       "required": false,
       "schema": {
-       "default": true,
-       "title": "Semantic",
-       "type": "boolean"
+       "default": "fused",
+       "enum": [
+        "fused",
+        "keyword",
+        "vector"
+       ],
+       "title": "Mode",
+       "type": "string"
       }
      },
      {

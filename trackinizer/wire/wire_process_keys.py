@@ -48,6 +48,7 @@ RECORDS_ROUTES: Final[Mapping[tuple[str, str], Scope]] = MappingProxyType(
         ("GET", "/api/web/get/{target_id}"): "account",
         ("GET", "/api/web/recent_changes"): "account",
         ("GET", "/api/web/search_sessions"): "account",
+        ("GET", "/api/web/search_inquiries"): "account",
         ("GET", "/api/version"): "account",
         ("GET", "/api/sessions/{session_id}/parts"): "tree",
         ("GET", "/api/sessions/{session_id}/records"): "tree",

@@ -230,25 +230,14 @@ def test_unknown_verb(client: FakeClient) -> None:
         run(["wtf"], client)
 
 
-def test_search_verb_is_gone(client: FakeClient) -> None:
-    """``trax search`` no longer dispatches.
-
-    The filter grammar subsumes it (``trax issue title re foo``), so the verb
-    was removed rather than extended. ``search`` is not a filter field either,
-    so the leading token no longer resolves to anything.
-    """
-    with pytest.raises(ClientError, match="unknown"):
-        run(["search", "retry"], client)
-
-
 def test_kindless_filter_lists_every_kind(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """A filter with no leading kind queries every kind.
 
-    This is what replaces ``trax search``: the leading token is a FIELD, so the
-    query widens to all kinds instead of naming one. ``row`` matches the Issue
+    The leading token is a FIELD, so the query widens to all kinds instead of
+    naming one. ``row`` matches the Issue
     fixture and ``experiment row`` matches the Experiment one, so a result from
     two different kinds proves the query was not narrowed to one.
     """

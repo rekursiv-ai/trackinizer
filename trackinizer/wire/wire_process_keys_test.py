@@ -81,6 +81,7 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("GET", "/api/web/get/{target_id}"),
         ("GET", "/api/web/recent_changes"),
         ("GET", "/api/web/search_sessions"),
+        ("GET", "/api/web/search_inquiries"),
         ("GET", "/api/version"),
     } == PROCESS_KEY_ROUTES.keys() - {
         (method, path) for method, path in PROCESS_KEY_ROUTES if "{session_id}" in path

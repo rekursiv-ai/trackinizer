@@ -152,7 +152,6 @@ class ConfigFlags(Protocol):
     ephemeral: bool
     pglite_tcp: bool
     dsn: str
-    session_embedder: str
     web: bool
     session_max_age_seconds: int
     auth: bool
@@ -174,8 +173,6 @@ class Config:
         the DB must be reached over a port -- a non-co-located client or a TCP
         healthcheck.
       dsn: Postgres DSN when ``engine == 'pg'``.
-      session_embedder: The session-search embedder, which embeds QUERIES and which
-        the follow service maintains; empty disables the semantic arm.
       web: Mount the web routes: ``/api/web``, the login page and, with
         ``--app-dir``, the web app.
       session_secret: HMAC key for the session and OAuth-state cookies.
@@ -243,13 +240,6 @@ class Config:
     ephemeral: bool = False
     pglite_tcp: bool = False
     dsn: str = ""
-    # The session-search embedder used to embed QUERIES. Its value is the
-    # embedder's full stored identity (``qwen3-embedding-4b@1024``, not a bare
-    # ``qwen3-embedding-4b``) -- one canonical spelling that is the config knob,
-    # the registry key, ``session_embeddings.model``, and the partial-index
-    # WHERE, all at once. Empty degrades the route to full-text only rather than
-    # loading a model on a keyword search. See ``embedders.registry``.
-    session_embedder: str = ""
     web: bool = False
     session_secret: str = ""
     secrets: str = "file"
@@ -292,7 +282,6 @@ class Config:
             ephemeral=os.environ.get("TRACKINIZER_EPHEMERAL") == "1",
             pglite_tcp=os.environ.get("TRACKINIZER_PGLITE_TCP") == "1",
             dsn=os.environ.get("TRACKINIZER_DSN", ""),
-            session_embedder=os.environ.get("TRACKINIZER_SESSION_EMBEDDER", ""),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
             session_secret=session_secret_from_env(),
             secrets=secrets_from_env(),
@@ -337,7 +326,6 @@ class Config:
             ephemeral=flags.ephemeral,
             pglite_tcp=flags.pglite_tcp,
             dsn=flags.dsn,
-            session_embedder=flags.session_embedder,
             web=flags.web,
             # Secrets come from the environment only, never CLI flags.
             session_secret=session_secret_from_env(),

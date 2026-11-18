@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator, Mapping
 
     from trackinizer.server.agent_policy import AgentPolicy
+    from trackinizer.server.store.search import VectorSearch
 
 
 __all__ = [
@@ -65,8 +66,8 @@ class Deployment:
         Raises:
           DeploymentError: A field is no addon config, or an addon's router holds a
             WebSocket route.
-          ValueError: Two addons each set an access policy, or an agent policy; a
-            server asks one.
+          ValueError: Two addons each set an access policy, an agent policy, or a
+            vector search; a server asks one.
 
         """
         self.visuals = config.visuals.make()
@@ -96,6 +97,10 @@ class Deployment:
         self.agent_policy: AgentPolicy | None = _one(
             "an agent policy",
             {name: manifest.agent_policy for name, manifest in self.manifests.items()},
+        )
+        self.vector_search: VectorSearch | None = _one(
+            "a vector search",
+            {name: manifest.vector_search for name, manifest in self.manifests.items()},
         )
 
     def catalog(self) -> AddonCatalogBody:

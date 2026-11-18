@@ -36,6 +36,7 @@ from trackinizer.wire.wire_session_ir import (
     RecordBody,
 )
 from trackinizer.wire.wire_sessions import (
+    SearchMode,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
@@ -264,6 +265,22 @@ class FakeClient:
                     "source": "both",
                     "snippet": "advisory lock acquired",
                     "title": "deploy log",
+                },
+            ],
+            "semantic": True,
+            "degraded": False,
+        }
+        self.inquiry_hits: dict[str, object] = {
+            "hits": [
+                {
+                    "inquiry_id": str(self.target_id),
+                    "kind": "Issue",
+                    "seq": 7,
+                    "title": "lock bug",
+                    "field": "edge:narrows:x",
+                    "score": 0.0164,
+                    "source": "both",
+                    "snippet": "held lock",
                 },
             ],
             "semantic": True,
@@ -645,14 +662,32 @@ class FakeClient:
         self,
         query: str,
         *,
-        semantic: bool = True,
+        mode: SearchMode = "fused",
         limit: int = 20,
     ) -> dict[str, PlainTree]:
         """Search sessions."""
         self.calls.append(
-            ("search_sessions", (query,), {"semantic": semantic, "limit": limit}),
+            ("search_sessions", (query,), {"mode": mode, "limit": limit}),
         )
         return cast("dict[str, PlainTree]", cast(object, dict(self.session_hits)))
+
+    def search_inquiries(
+        self,
+        query: str,
+        *,
+        mode: SearchMode = "fused",
+        kind: str | None = None,
+        limit: int = 20,
+    ) -> dict[str, PlainTree]:
+        """Search inquiries."""
+        self.calls.append(
+            (
+                "search_inquiries",
+                (query,),
+                {"mode": mode, "kind": kind, "limit": limit},
+            ),
+        )
+        return cast("dict[str, PlainTree]", cast(object, dict(self.inquiry_hits)))
 
     def inquiry_cost(
         self,

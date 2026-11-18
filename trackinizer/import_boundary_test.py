@@ -105,6 +105,60 @@ def test_core_imports_only_allowlisted_monorepo_packages(relative: str) -> None:
     )
 
 
+# A model file turns text into vectors and knows nothing of where they are kept: of
+# trackinizer it imports the model interface and the GPU bucketing alone.
+_MODEL_FILES: Final = ("model.py", "qwen3_0p6b.py", "bucket_embed.py")
+_PACKAGE: Final = __name__.rpartition(".")[0]
+_MODEL_FILE_MODULES: Final = (
+    f"{_PACKAGE}.addons.embedding.model",
+    f"{_PACKAGE}.addons.embedding.bucket_embed",
+)
+
+
+@pytest.mark.parametrize("name", _MODEL_FILES)
+def test_a_model_file_imports_nothing_of_storage(name: str) -> None:
+    path = _CWD / "addons" / "embedding" / name
+
+    assert _storage_imports(path) == []
+
+
+def test_a_model_file_that_reaches_for_storage_is_caught(tmp_path: Path) -> None:
+    (tmp_path / "model.py").write_text(
+        "import asyncpg\n"
+        "from trackinizer.lib.postgres import Conn\n"
+        "from trackinizer.server.values import vec_to_text\n"
+        "from trackinizer.addons.embedding import sweep, bucket_embed\n"
+        "from trackinizer.addons.embedding.model import Embedder\n",
+    )
+
+    assert _storage_imports(tmp_path / "model.py") == [
+        "asyncpg",
+        "trackinizer.lib.postgres.Conn",
+        "trackinizer.addons.embedding.sweep",
+        "trackinizer.server.values.vec_to_text",
+    ]
+
+
+def _storage_imports(path: Path) -> list[str]:
+    """Return what ``path`` imports beyond the model files: storage, sweep or search."""
+    return sorted(
+        module
+        for module in _imported_modules(
+            path,
+            package=(*_PACKAGE.split("."), "addons", "embedding"),
+        )
+        if module.split(".")[0] == "asyncpg"
+        or module.startswith("trackinizer.lib.postgres")
+        or (
+            module.startswith(f"{_PACKAGE}.")
+            and not any(
+                module == allowed or module.startswith(f"{allowed}.")
+                for allowed in _MODEL_FILE_MODULES
+            )
+        )
+    )
+
+
 def test_an_import_of_a_package_off_the_allowlist_is_caught(tmp_path: Path) -> None:
     private = "loop.paywall"
     (tmp_path / "module.py").write_text(

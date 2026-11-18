@@ -10,7 +10,8 @@ All notable trackinizer changes are documented here. This project follows
 - A key a start minted for an agent process reaches the read routes trax's read
   commands call (`wire_process_keys.RECORDS_ROUTES`, all GET): inquiry lists and
   rows, `next_issue`, cost, confidence and authority, `web/lookup`, `web/get`,
-  `recent_changes`, `search_sessions` and `version`, each with the caller's read
+  `recent_changes`, `search_sessions`, `search_inquiries` and `version`, each with
+  the caller's read
   filter. A session's parts and records stay its own tree's.
 - `trax.invoke.invoke` runs one trax command inside another program, with its own
   output, environment, folder and table width, and writes nothing process-wide;
@@ -44,6 +45,44 @@ All notable trackinizer changes are documented here. This project follows
 - `trax.canvas.show_operation` and `mark_operation` build the `show` and `mark`
   operations, and `canvas_lines` says what a canvas holds, a line each, for `trax
   canvas` and an agent's Canvas tool alike.
+- The embedding add-on, `trackinizer.addons.embedding`, with its model stack in the
+  `embedding` extra (`pip install 'trackinizer[embedding]'`). A deployment field
+  typed `EmbeddingAddon.Config` turns vector search on; a server without it
+  searches by keyword, with `degraded: true`.
+  - Its sweep runs inside the server and keeps one table current,
+    `embedding.vectors` (migration `embedding.0001.sql`), for the session record
+    kinds of `session_kinds` (user, assistant and agent-to-agent messages), the
+    inquiry columns of `inquiry_fields` (an issue's description; a belief's title
+    and description; a paper's title and abstract, each kind's joined as one text)
+    and, with `edge_notes`, each edge's note, owned by the inquiry it starts from.
+  - Each row carries the md5 of its text and a key of the settings that made it
+    (model, width, chunk size, overlap, `session_kinds`, `inquiry_fields`,
+    `edge_notes`). A settings change re-embeds every unit; meanwhile search reads
+    only the new key's rows. `inquiry_fields` naming a column other than `title`,
+    `description` or `paper_abstract` is refused, since no edit to it would
+    re-embed.
+  - `EmbeddingAddon.Config.model` takes any `Embedder`; the default is
+    Qwen3-Embedding-0.6B at 1024 dimensions.
+  - `python -m trackinizer.addons.embedding.reembed DSN --addons FACTORY` fills the
+    table in large calls, on a GPU with `--override embedding.model.device=cuda:0`.
+    Run it after the server restarts under new settings, with the server's factory
+    and overrides.
+- `trax search "QUERY" [--kind KIND] [--mode fused|keyword|vector] [--limit N]
+  [--format text|json]`: one search verb. It searches inquiries and edge notes, or
+  session transcripts with `--kind agentsession`.
+- Inquiry search: `GET /api/web/search_inquiries?q=&mode=&kind=&limit=` and
+  `Client.search_inquiries(query, mode=, kind=, limit=)`, which `trax search`
+  calls, with the modes of session search. The
+  keyword arm reads every inquiry's title, description and abstract but an
+  AgentSession's, and every edge note; the vector arm reads what the embedding
+  add-on embeds. A hit names the inquiry and its `field`: `text`, or
+  `edge:<edge_kind>:<to_id>` for a note. A hit the caller may not read is left
+  out, and a note's needs both its ends readable.
+- Migration `schema.080.sql`: `inquiries.changed_xid`, stamped when an inquiry's
+  title, description or abstract changes, or when a note on an edge it starts
+  from is added, changed, moved or removed; and two GIN indexes for keyword
+  search, over an inquiry's text (its first 100,000 characters) and over edge
+  notes.
 - Remote agents: a service that starts the agents of other accounts, each confined.
   `TRACKINIZER_REMOTE_AGENT_SERVICES` names each, `{"name", "account", "admits"}`,
   enrolled as a host under a service account and confirmed as it enrolls;
@@ -65,6 +104,19 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- **Breaking:** search takes `mode` (`wire_sessions.SearchMode`): `fused`, the
+  default, merges the keyword and vector results; `keyword` and `vector` return one
+  arm. `GET /api/web/search_sessions?mode=`, `Client.search_sessions(mode=)` and
+  `trax search --mode` replace `semantic` and `--semantic/--no-semantic`, which
+  are removed. The server ignores a `semantic` it is sent: a client 0.1.5 to
+  0.1.13 that sends `semantic=true` or `false` gets 200 and fused results, with
+  the same response keys, so its `--no-semantic` no longer limits it to keyword
+  results, and nothing reports an error.
+- **Breaking:** `trax search-sessions` is removed, with no alias; a call to it
+  answers `unknown verb`. `trax search "QUERY" --kind agentsession` searches
+  transcripts.
+- **Breaking:** the `server` extra no longer installs torch, transformers and
+  huggingface-hub; the `embedding` extra does. peft is gone.
 - trax's usage, help and argument errors go through its own output, so a program
   that runs trax inside itself gets them; their text is unchanged, without colour.
 - `ChangeIdMiddleware` is a plain ASGI middleware: Starlette's `BaseHTTPMiddleware`
@@ -282,13 +334,19 @@ All notable trackinizer changes are documented here. This project follows
   rows; its rows stay.
 - **Breaking:** Qwen3-Embedding-8B, Octen-Embedding-8B and
   jina-embeddings-v5-text nano and small, with their modules, registry entries and
-  bucket plans. `--session-embedder` names Qwen3-Embedding 0.6B or 4B.
+  bucket plans.
 - **Breaking:** the session-search model override: `?model=` and `?dim=` on `GET
   /api/web/search_sessions`, `--session-embedder-dim`
   (`TRACKINIZER_SESSION_EMBEDDER_DIM`), and `--session-embedders`
-  (`TRACKINIZER_SESSION_EMBEDDERS`, `Config.maintained_embedders`). A search uses
-  the server's `--session-embedder`, and `backfill_embedding.py --follow`
-  maintains it when `--model` is empty.
+  (`TRACKINIZER_SESSION_EMBEDDERS`, `Config.maintained_embedders`).
+- **Breaking:** the old embedding engine, which the embedding add-on replaces:
+  `--session-embedder` (`TRACKINIZER_SESSION_EMBEDDER`, `Config.session_embedder`),
+  the model registry and `server/embedders/`, Qwen3-Embedding-4B,
+  `server/prep_models.py`, and the follow process
+  `server/tools/backfill_embedding.py` with its GPU plans
+  (`server/tools/bucket_boundaries.py`, `server/tools/model_buckets.py`).
+  `session_embeddings`, `session_index_state`, `session_index_cursor` and
+  `inquiry_embeddings` are neither read nor written.
 
 ## 0.1.13 - 2026-11-05
 
