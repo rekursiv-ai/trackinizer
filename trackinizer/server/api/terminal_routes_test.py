@@ -53,6 +53,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.asyncio
 
 _HOST = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000001")
+_INSTANCE = uuid.UUID("9f1c2e3a-0000-4000-8000-000000000002")
 _IDENTITY = make_test_identity()
 
 
@@ -188,7 +189,12 @@ async def test_the_next_open_is_offered_to_the_host_with_all_it_was_opened_with(
         ),
     )
 
-    wait = await terminal_routes._next_terminal(relay, host_id=_HOST, wait_sec=0)
+    wait = await terminal_routes._next_terminal(
+        relay,
+        host_id=_HOST,
+        instance=_INSTANCE,
+        wait_sec=0,
+    )
 
     assert wait == TerminalWait(
         terminal_id=term.id,
@@ -207,7 +213,13 @@ async def test_a_host_that_waits_out_its_hold_is_offered_nothing() -> None:
     relay = TerminalRelay(alive=_alive)
 
     assert (
-        await terminal_routes._next_terminal(relay, host_id=_HOST, wait_sec=0) is None
+        await terminal_routes._next_terminal(
+            relay,
+            host_id=_HOST,
+            instance=_INSTANCE,
+            wait_sec=0,
+        )
+        is None
     )
 
 
@@ -314,7 +326,7 @@ async def test_open_route_queues_once_and_mints_fresh_replay_tickets(
     request.state.idempotency_key = uuid.uuid4()
     relay = TerminalRelay(alive=_alive, ice_servers=("stun:trax.test:3478",))
     patch_state(monkeypatch, "terminals", relay)
-    await relay.wait(_HOST, wait_sec=0)
+    await relay.wait(_HOST, instance=_INSTANCE, wait_sec=0)
     monkeypatch.setattr(
         terminal_routes,
         "_owned_host",
@@ -351,7 +363,7 @@ async def test_open_route_reports_readiness_and_rate_refusals(
     relay = TerminalRelay(alive=_alive)
     patch_state(monkeypatch, "terminals", relay)
     if failure != "offline":
-        await relay.wait(_HOST, wait_sec=0)
+        await relay.wait(_HOST, instance=_INSTANCE, wait_sec=0)
     if failure == "limit":
         for _ in range(wire_terminals.MAX_OPENS_PER_MIN_PER_USER):
             relay.open(_opening())
@@ -386,7 +398,7 @@ async def test_host_listing_filters_owner_sorts_and_includes_canvas_terminals(
     patch_state(monkeypatch, "store", store)
     relay = TerminalRelay(alive=_alive)
     patch_state(monkeypatch, "terminals", relay)
-    await relay.wait(_HOST, wait_sec=0)
+    await relay.wait(_HOST, instance=_INSTANCE, wait_sec=0)
     canvas = uuid.uuid4()
     term = relay.open(_opening(canvas=canvas))
     created = datetime.now(UTC)
@@ -524,7 +536,11 @@ async def test_host_wait_checks_authentication_and_clamps_the_hold(
         )
         current.assert_awaited_once_with(request, _HOST)
         instance.assert_awaited_once_with(request, _HOST, instance=daemon_instance)
-        wait.assert_awaited_once_with(_HOST, wait_sec=wire_terminals.WAIT_MAX_SEC)
+        wait.assert_awaited_once_with(
+            _HOST,
+            instance=daemon_instance,
+            wait_sec=wire_terminals.WAIT_MAX_SEC,
+        )
 
 
 @pytest.mark.parametrize("bad", ["key", "service", "origin", "disabled"])
@@ -735,14 +751,15 @@ async def test_host_socket_authenticates_claims_relays_and_releases(
         socket,
         _HOST,
         uuid.uuid4() if mode == "unknown" else term.id,
-        uuid.uuid4(),
+        _INSTANCE,
         ready=mode in {"ready", "bad_ack"},
     )
     assert peer.sent[0]["type"] == "websocket.accept"
     if mode in {"ok", "ready"}:
         assert term.ring.since(0)[0] == b"out"
-        assert term.ended == (mode == "ok")
-        assert term.daemon is None or term.ended
+        assert (term.ended, term.daemon, term.instance) == (False, None, _INSTANCE)
+        # Only a shell that started waits for its daemon to come back.
+        assert (term.daemon_lost_at is None) == (mode == "ready")
     elif mode == "taken":
         assert term.ring.since(0)[0] == b""
         assert term.ended is False
@@ -753,6 +770,72 @@ async def test_host_socket_authenticates_claims_relays_and_releases(
             else wire_terminals.CLOSE_REFUSED
         )
         assert term.daemon is None
+
+
+class _StaleDaemon:
+    """A daemon socket the relay still holds, as the relay's socket."""
+
+    def __init__(self) -> None:
+        self.closed: list[int] = []
+
+    async def send_bytes(self, data: bytes) -> None:
+        del data
+
+    async def close(self, code: int) -> None:
+        self.closed.append(code)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["resume", "unstarted", "unready", "unknown", "ended", "host"],
+)
+async def test_host_socket_resume_reclaims_a_started_terminal_or_closes(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    _browser_request(monkeypatch)
+    relay = TerminalRelay(alive=_alive)
+    patch_state(monkeypatch, "terminals", relay)
+    term = relay.open(_opening())
+    stale = _StaleDaemon()
+    if mode != "unstarted":
+        assert await relay.daemon_connected(term, stale, instance=uuid.uuid4())
+        await relay.from_daemon(term, Frame.OUTPUT, b"abc")
+    if mode == "ended":
+        await relay.end(term, code=wire_terminals.CLOSE_ENDED)
+    if mode == "host":
+        term.host_id = uuid.uuid4()
+    peer = _WebPeer(
+        encode_frame(Frame.ACK),
+        encode_frame(Frame.ACK),
+        encode_frame(Frame.OUTPUT, b"de"),
+    )
+    monkeypatch.setattr(terminal_routes, "request_host", AsyncMock())
+    monkeypatch.setattr(terminal_routes, "require_instance", AsyncMock())
+
+    await terminal_routes.terminal_daemon_socket(
+        peer.socket(),
+        _HOST,
+        uuid.uuid4() if mode == "unknown" else term.id,
+        _INSTANCE,
+        ready=mode != "unready",
+        resume=True,
+    )
+
+    sent = [each["bytes"] for each in peer.sent if each["type"] == "websocket.send"]
+    if mode == "resume":
+        assert sent == [encode_frame(Frame.ACK, (3).to_bytes(8))]
+        assert stale.closed == [wire_terminals.CLOSE_TAKEN_OVER]
+        assert term.ring.since(0)[0] == b"abcde"
+        assert (term.ended, term.daemon, term.instance) == (False, None, _INSTANCE)
+    else:
+        assert sent == []
+        assert peer.sent[-1]["code"] == (
+            wire_terminals.CLOSE_REFUSED
+            if mode in {"unstarted", "unready"}
+            else wire_terminals.CLOSE_ENDED
+        )
+        assert stale.closed == ([wire_terminals.CLOSE_ENDED] if mode == "ended" else [])
 
 
 @pytest.mark.parametrize(

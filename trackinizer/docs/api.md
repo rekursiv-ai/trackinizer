@@ -1301,7 +1301,7 @@ POST   /api/terminals/<uuid>/attach
 POST   /api/terminals/<uuid>/close
 WS     /api/terminals/<uuid>/ws
 GET    /api/hosts/<uuid>/terminals/wait?instance=<uuid>&wait_sec=25
-WS     /api/hosts/<uuid>/terminals/<uuid>/ws?instance=<uuid>
+WS     /api/hosts/<uuid>/terminals/<uuid>/ws?instance=<uuid>&ready=<bool>&resume=<bool>
 ```
 
 A shell on a connected host, shown in its owner's browser. A server running with
@@ -1356,11 +1356,11 @@ one frame: a kind byte, a four-byte big-endian length, and the payload. Browser
 frames are `ATTACH` (1), `INPUT` (2), `RESIZE` (3, u16 rows and cols, clamped to
 500 by 1000) and `STOP` (5). The server answers `ACK` (7, the offset the stream
 resumes at), `OUTPUT` (6) and `EXIT` (8, a u32 status). A browser that drops
-re-attaches within 60 seconds with a ticket from `attach` and its last offset; an
+re-attaches with a ticket from `attach` and its last offset, for as long as the
+terminal lives: neither a browser's absence, nor quiet, nor age ends one. An
 offset that fell out of the 256 KiB ring gets the whole ring after a
-`--- output lost ---` line. Close codes: 4000 ended, 4001 taken over, 4002 idle
-(60 minutes without input), 4003 lifetime (24 hours), 4004 host lost, 4403
-refused, 4410 host revoked.
+`--- output lost ---` line. Close codes: 4000 ended, 4001 taken over, 4004 host
+lost, 4403 refused, 4410 host revoked.
 
 A direct link (an optional speed-up for a slow server path). The open, `attach` and
 the host's `wait` also return `ice_servers`, the STUN URLs from the server's
@@ -1372,8 +1372,8 @@ a minute; the server forwards it without reading it. The channel carries the sam
 frames. The browser says which path output takes with `ROUTE` (10, a route byte and a
 u64 offset; the server forwards it to the host unread). While output goes direct the
 host sends `KEEPALIVE` (11, a u32 of milliseconds since it last saw input) every 10
-seconds, so the idle limit holds, and the server asks the host back to the relay
-when a browser attaches. A host without aiortc answers an offer with `abandon`, and
+seconds, so the server knows the host is in use, and the server asks the host back
+to the relay when a browser attaches. A host without aiortc answers an offer with `abandon`, and
 the terminal stays on the relay. The server learns neither the bytes nor the
 addresses on a direct link.
 
@@ -1382,7 +1382,19 @@ host WebSocket with its host credential and its current `instance`; a second
 claim of one terminal, a stale instance or an unknown credential closes 4403, a
 revoked one 4410. Revoking a host closes its terminals with 4410 on both sockets.
 
-Closing a terminal, an idle or lifetime limit and a revoke end the shell's process
+A started shell outlives its host's socket. When that socket drops, the browser stays
+attached and what it types is kept (up to 64 KiB, and the last size) until a daemon of
+the host re-claims the terminal with `ready=true&resume=true`: it sends an empty `ACK`,
+the server closes any socket it still holds for the terminal with 4001 and answers
+`ACK` with the u64 end of its ring, the daemon sends an empty `ACK` and receives what
+was kept, then, only if it resumes elsewhere, `ACK` with its own u64 offset, then
+`OUTPUT`. A resume of a terminal that is unknown or ended closes 4000, so the host
+ends that shell; of one whose shell never started, 4403. The server ends a shell no
+daemon holds with 4004 after 3 hours, or 60 seconds after a newer instance of its
+host started waiting (counted from the later of the drop and that wait) without
+re-claiming it. A restart of the server forgets every terminal.
+
+Closing a terminal, a lost host and a revoke end the shell's process
 group, as closing an ssh session does: a job the shell started with `nohup`, `setsid`
 or `tmux` (or an interactive shell's background job, which has a group of its own)
 keeps running on the host. The host reports the shell's exit within half a second

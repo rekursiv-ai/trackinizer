@@ -83,7 +83,7 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> _Server:
     app.state.store = store
     clock = _Clock()
     app.state.terminals = relay = TerminalRelay(alive=_alive, clock=clock)
-    asyncio.run(relay.wait(_HOST, wait_sec=0))
+    asyncio.run(relay.wait(_HOST, instance=_INSTANCE, wait_sec=0))
     return _Server(
         app=app,
         store=store,
@@ -166,10 +166,13 @@ def test_terminal_open_retry_creates_one_terminal_with_a_fresh_attach_ticket(
             user=_IDENTITY.email,
             terminal_id=again.terminal_id,
         )
-        offered = asyncio.run(server.relay.wait(_HOST, wait_sec=0))
+        offered = asyncio.run(server.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0))
         assert offered is not None
         assert offered.id == opened.terminal_id
-        assert asyncio.run(server.relay.wait(_HOST, wait_sec=0)) is None
+        assert (
+            asyncio.run(server.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0))
+            is None
+        )
         asyncio.run(server.relay.end(offered, code=wire_terminals.CLOSE_ENDED))
         ended = browser.post(
             "/api/terminals",
@@ -177,7 +180,10 @@ def test_terminal_open_retry_creates_one_terminal_with_a_fresh_attach_ticket(
             headers=headers,
         )
         assert ended.status_code == 410
-        assert asyncio.run(server.relay.wait(_HOST, wait_sec=0)) is None
+        assert (
+            asyncio.run(server.relay.wait(_HOST, instance=_INSTANCE, wait_sec=0))
+            is None
+        )
 
 
 def test_a_retried_open_replays_its_terminal_and_a_new_open_opens_another(
