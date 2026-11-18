@@ -24,10 +24,30 @@ over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`
 and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The daemon
 sends ``KEEPALIVE`` (u32 milliseconds since it last saw input, then u32 milliseconds
 since the shell last wrote output) every :data:`KEEPALIVE_SEC` while output goes
-direct, so the idle limit still holds and the server knows the host is in use. A
-daemon from before output idle time sends the first u32 alone. A
-daemon that returns to the relay answers with ``ACK`` (the offset it resumes at)
-then ``OUTPUT``; the server restarts its ring there.
+direct, so the server knows the host is in use. A daemon from before output idle
+time sends the first u32 alone. A daemon that returns to the relay answers with
+``ACK`` (the offset it resumes at) then ``OUTPUT``; the server restarts its ring there.
+
+A started terminal outlives both sockets; only its shell's exit, a stop, or its host
+going ends it. A browser that drops attaches again with a fresh ticket. A daemon
+that drops, or a newer instance of it, re-claims the terminal by dialling
+:data:`HOST_TERMINAL_WS_PATH` with ``?ready=true&resume=true``:
+
+1. The daemon sends an empty ``ACK``.
+2. The server closes any daemon socket it still holds for the terminal with
+   :data:`CLOSE_TAKEN_OVER` and answers ``ACK`` with the u64 end of its ring.
+3. The daemon sends an empty ``ACK``; the server hands it the input and size the
+   browser sent meanwhile.
+4. Only if the offset the daemon resumes at is not the ring's end, it sends ``ACK``
+   with that u64 offset, and the server restarts its ring there.
+5. ``OUTPUT`` follows as usual.
+
+A resume of a terminal that is unknown or ended is closed with :data:`CLOSE_ENDED`,
+so the daemon ends that shell; of a terminal whose shell never started, with
+:data:`CLOSE_REFUSED`. The server ends a started terminal no daemon holds with
+:data:`CLOSE_DAEMON_LOST` once its daemon has been gone :data:`DAEMON_GRACE_SEC`, or
+once another instance of its host has waited :data:`RECLAIM_SEC`, counted from the
+later of the loss and that instance's first wait, without re-claiming it.
 
 This package is part of the publishable client distribution, so it must
 not import ``server`` / ``trax`` / fastapi (see ``import_purity_test``).
@@ -48,11 +68,9 @@ __all__ = [
     "CLOSE_DAEMON_LOST",
     "CLOSE_ENDED",
     "CLOSE_HOST_REVOKED",
-    "CLOSE_IDLE",
-    "CLOSE_LIFETIME",
     "CLOSE_REFUSED",
     "CLOSE_TAKEN_OVER",
-    "DETACH_GRACE_SEC",
+    "DAEMON_GRACE_SEC",
     "DIRECT_FRAME_BYTES",
     "DIRECT_OPEN_TIMEOUT_SEC",
     "FINAL_CLOSE_CODES",
@@ -68,9 +86,7 @@ __all__ = [
     "FRAME_STOP",
     "HOST_TERMINAL_WAIT_PATH",
     "HOST_TERMINAL_WS_PATH",
-    "IDLE_SEC",
     "KEEPALIVE_SEC",
-    "LIFETIME_SEC",
     "MAX_COLS",
     "MAX_ICE_SERVERS",
     "MAX_INPUT_BYTES_PER_SEC",
@@ -81,8 +97,8 @@ __all__ = [
     "MAX_SIGNALS_PER_MIN",
     "MAX_SIGNAL_BYTES",
     "OPEN_TTL_SEC",
+    "RECLAIM_SEC",
     "RECONNECT_BACKOFF_SEC",
-    "RECONNECT_WINDOW_SEC",
     "RING_BYTES",
     "ROUTE_DIRECT",
     "ROUTE_RELAY",
@@ -147,7 +163,8 @@ HOST_TERMINAL_WAIT_PATH: Final = "/api/hosts/{host_id}/terminals/wait"
 or ``null`` when none came."""
 
 HOST_TERMINAL_WS_PATH: Final = "/api/hosts/{host_id}/terminals/{terminal_id}/ws"
-"""The daemon's WebSocket, authenticated by the host credential."""
+"""The daemon's WebSocket, authenticated by the host credential: ``?instance=ID``, and
+``ready=true`` to acknowledge startup, ``resume=true`` to re-claim a started shell."""
 
 FRAME_ATTACH: Final = 1
 FRAME_INPUT: Final = 2
@@ -184,14 +201,12 @@ TICKET_CHARS: Final = 43
 
 CLOSE_ENDED: Final = 4000
 CLOSE_TAKEN_OVER: Final = 4001
-CLOSE_IDLE: Final = 4002
-CLOSE_LIFETIME: Final = 4003
 CLOSE_DAEMON_LOST: Final = 4004
 CLOSE_REFUSED: Final = 4403
 CLOSE_HOST_REVOKED: Final = 4410
 
 FINAL_CLOSE_CODES: Final = frozenset(
-    {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_IDLE, CLOSE_LIFETIME, CLOSE_HOST_REVOKED},
+    {CLOSE_ENDED, CLOSE_TAKEN_OVER, CLOSE_HOST_REVOKED},
 )
 """Close codes after which the browser does not reconnect."""
 
@@ -211,15 +226,18 @@ WAIT_MAX_SEC: Final = 25
 WAIT_LEASE_SEC: Final = 45
 """A daemon that waited within this long can take an open."""
 
-DETACH_GRACE_SEC: Final = 60
-IDLE_SEC: Final = 3_600
-LIFETIME_SEC: Final = 86_400
 SWEEP_SEC: Final = 60
+
+DAEMON_GRACE_SEC: Final = 10_800
+"""How long a started terminal waits for its daemon to dial back."""
+
+RECLAIM_SEC: Final = 60
+"""How long a newer daemon instance of the host has to re-claim a terminal before it is
+taken to be gone."""
 
 MAX_OPENS_PER_MIN_PER_USER: Final = 10
 
 RECONNECT_BACKOFF_SEC: Final = (0.5, 1.0, 2.0, 4.0, 8.0)
-RECONNECT_WINDOW_SEC: Final = 60
 
 type IceServers = Annotated[
     list[Annotated[str, Field(pattern=r"^stun:\S{1,200}$")]],

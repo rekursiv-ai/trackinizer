@@ -39,15 +39,20 @@ def test_close_codes_are_distinct_and_final_ones_are_a_subset() -> None:
     codes = [
         wire_terminals.CLOSE_ENDED,
         wire_terminals.CLOSE_TAKEN_OVER,
-        wire_terminals.CLOSE_IDLE,
-        wire_terminals.CLOSE_LIFETIME,
         wire_terminals.CLOSE_DAEMON_LOST,
         wire_terminals.CLOSE_REFUSED,
         wire_terminals.CLOSE_HOST_REVOKED,
     ]
     assert len(set(codes)) == len(codes)
-    assert set(codes) > wire_terminals.FINAL_CLOSE_CODES
-    assert wire_terminals.CLOSE_DAEMON_LOST not in wire_terminals.FINAL_CLOSE_CODES
+    assert {
+        wire_terminals.CLOSE_ENDED,
+        wire_terminals.CLOSE_TAKEN_OVER,
+        wire_terminals.CLOSE_HOST_REVOKED,
+    } == wire_terminals.FINAL_CLOSE_CODES
+
+
+def test_a_new_instance_has_less_time_to_reclaim_than_a_lost_daemon_to_return() -> None:
+    assert wire_terminals.RECLAIM_SEC < wire_terminals.DAEMON_GRACE_SEC
 
 
 @pytest.mark.parametrize(

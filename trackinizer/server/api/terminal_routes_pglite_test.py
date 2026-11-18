@@ -274,7 +274,7 @@ async def _connected(
     return browser, daemon, tasks
 
 
-async def test_an_abrupt_host_drop_closes_the_browser_and_raises_nothing(
+async def test_an_abrupt_daemon_drop_keeps_the_terminal_for_the_daemon_that_resumes(
     world: TerminalWorld,
 ) -> None:
     ada = await world.person("ada@x.y")
@@ -287,12 +287,30 @@ async def test_an_abrupt_host_drop_closes_the_browser_and_raises_nothing(
     assert (await browser.frame())[0] is Frame.OUTPUT
 
     daemon.leave(code=1006)
-    closed = await browser.close_code()
+    await tasks[1]
+    browser.push(Frame.INPUT, b"ls\n")
+    resumed = _daemon_peer(world, terminal_id)
+    resuming = asyncio.create_task(
+        terminal_routes.terminal_daemon_socket(
+            resumed.websocket,
+            world.host_id,
+            terminal_id,
+            TERMINAL_INSTANCE,
+            ready=True,
+            resume=True,
+        ),
+    )
+    resumed.push(Frame.ACK)
+    assert await resumed.frame() == (Frame.ACK, len(b"last words").to_bytes(8))
+    resumed.push(Frame.ACK)
+    assert await resumed.frame() == (Frame.INPUT, b"ls\n")
+    resumed.push(Frame.OUTPUT, b"$ ")
+    assert await browser.frame() == (Frame.OUTPUT, b"$ ")
+    resumed.leave()
     browser.leave()
-    await asyncio.gather(*tasks)
+    await asyncio.gather(tasks[0], resuming)
 
-    assert closed == wire_terminals.CLOSE_DAEMON_LOST
-    assert terminal_relay(app).terminal(terminal_id) is None
+    assert terminal_relay(app).terminal(terminal_id) is not None
 
 
 async def test_startup_negotiation_retries_without_losing_browser_input(
@@ -1044,7 +1062,9 @@ async def test_the_host_socket_refuses_an_unknown_credential_a_stale_instance_an
     await task
 
     assert codes == [wire_terminals.CLOSE_REFUSED] * 3
-    assert terminal_relay(app).terminal(terminal_id) is None
+    term = terminal_relay(app).terminal(terminal_id)
+    assert term is not None
+    assert term.daemon is None
 
 
 async def test_a_revoke_closes_both_sockets_with_4410(

@@ -433,6 +433,7 @@ async def terminal_wait_route(
             _next_terminal,
             relay,
             host_id=host_id,
+            instance=instance,
             wait_sec=min(wait_sec, wire_terminals.WAIT_MAX_SEC),
         ),
     )
@@ -486,16 +487,22 @@ async def terminal_daemon_socket(
     host_id: UUID,
     terminal_id: UUID,
     instance: UUID,
+    *,
     ready: bool = False,
+    resume: bool = False,
 ) -> None:
     """Relay a terminal's shell: the daemon dials here with its host credential.
+
+    A resume of a terminal that is not live on this host closes with 4000, so the
+    daemon ends that shell; every other refusal closes with 4403 or 4410.
 
     Args:
       websocket: The daemon's socket; it carries the credential as a bearer.
       host_id: The host.
-      terminal_id: The terminal the daemon was asked to open.
+      terminal_id: The terminal the daemon was asked to open, or resumes.
       instance: The daemon's instance, which must be the host's current one.
       ready: Require an application acknowledgement before claiming the terminal.
+      resume: Re-claim a terminal whose shell started; needs ``ready``.
 
     """
     await websocket.accept()
@@ -516,14 +523,25 @@ async def terminal_daemon_socket(
     relay = get_terminal_relay(websocket)
     # A timed-out HTTP upgrade must leave the terminal pending: that daemon never
     # received the upgrade and cannot have started its CLI.
-    if ready and await _first_frame(socket) != (Frame.ACK, b""):
+    if (resume and not ready) or (
+        ready and await _first_frame(socket) != (Frame.ACK, b"")
+    ):
         await socket.close(wire_terminals.CLOSE_REFUSED)
         return
     term = relay.terminal(terminal_id)
-    if (
-        term is None
-        or term.host_id != host_id
-        or not await relay.daemon_connected(term, socket, ready=ready)
+    if term is None or term.host_id != host_id:
+        await socket.close(
+            wire_terminals.CLOSE_ENDED if resume else wire_terminals.CLOSE_REFUSED,
+        )
+        return
+    # A live terminal's refused claim is a first claim of a started shell, a resume of
+    # one that never started, or a socket that left: none may end the shell.
+    if not await relay.daemon_connected(
+        term,
+        socket,
+        instance=instance,
+        ready=ready,
+        resume=resume,
     ):
         await socket.close(wire_terminals.CLOSE_REFUSED)
         return
@@ -533,7 +551,7 @@ async def terminal_daemon_socket(
                 break
             await relay.from_daemon(term, *frame)
     finally:
-        await relay.daemon_lost(term, socket=socket)
+        relay.daemon_lost(term, socket)
 
 
 class StarletteSocket:
@@ -720,13 +738,11 @@ async def _next_terminal(
     relay: TerminalRelay,
     *,
     host_id: UUID,
+    instance: UUID,
     wait_sec: float,
 ) -> TerminalWait | None:
     """Take one open and freeze the offer before its response can be lost."""
-    term = await relay.wait(
-        host_id,
-        wait_sec=wait_sec,
-    )
+    term = await relay.wait(host_id, instance=instance, wait_sec=wait_sec)
     if term is None:
         return None
     return TerminalWait(
