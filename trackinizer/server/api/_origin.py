@@ -8,7 +8,7 @@ check; a same-host scheme mismatch is not a cross-site forgery.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 from urllib.parse import urlsplit
 
 
@@ -22,11 +22,16 @@ else:
 
 
 __all__ = [
+    "READ_METHODS",
     "is_own_page_write",
     "is_same_origin",
     "is_strictly_same_origin",
     "require_own_page_write",
 ]
+
+
+READ_METHODS: Final = frozenset({"GET", "HEAD", "OPTIONS"})
+"""The methods that change no state: no write check applies to them."""
 
 
 # A header ``urlsplit`` cannot parse (``https://[`` opens an IPv6 host it never closes)
@@ -104,7 +109,7 @@ def require_own_page_write(request: HTTPConnection) -> None:
 
     """
     method = cast("str", request.scope.get("method", "GET"))
-    if method in {"GET", "HEAD", "OPTIONS"} or is_own_page_write(request):
+    if method in READ_METHODS or is_own_page_write(request):
         return
     raise HTTPException(
         status_code=403,
