@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, NoReturn, override
 
 import argparse
+import io
 
 import pytest
 
 from trackinizer.client.errors import ClientError
-from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.cli import DISPATCHERS, parse_and_run
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
+from trackinizer.trax.context import ERR_STREAM, OUT_STREAM
+from trackinizer.trax.invoke import invoke
 from trackinizer.trax.render import echo
 
 
@@ -237,6 +242,97 @@ def test_command_dispatch_middle_help_remains_argparse_help(
     assert "positional arguments:" in captured.out
     assert "beta context" not in captured.out
     assert captured.err == ""
+
+
+def test_trax_parser_writes_usage_and_errors_through_echo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Argparse's own writes would reach the host program's streams."""
+    out, err = io.StringIO(), io.StringIO()
+    parser = TraxArgumentParser(prog="trax demo")
+    parser.add_argument("--limit", type=int)
+
+    def parsed(argv: list[str]) -> str | int | None:
+        with pytest.raises(SystemExit) as exited:
+            parser.parse_args(argv)
+        return exited.value.code
+
+    out_token, err_token = OUT_STREAM.set(out), ERR_STREAM.set(err)
+    try:
+        codes = (parsed(["--limit", "x"]), parsed(["--help"]))
+    finally:
+        OUT_STREAM.reset(out_token)
+        ERR_STREAM.reset(err_token)
+
+    assert codes == (2, 0)
+    assert "usage: trax demo" in err.getvalue()
+    assert "invalid int value: 'x'" in err.getvalue()
+    assert "usage: trax demo" in out.getvalue()
+    assert capsys.readouterr() == ("", "")
+
+
+def test_trax_parser_never_colours(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Python 3.14 colours usage on a TTY; escape codes would reach a non-terminal.
+
+    ``PYTHON_COLORS=1`` forces colour on whatever else the environment says, as a
+    person's own setting may.
+    """
+    monkeypatch.setenv("PYTHON_COLORS", "1")
+    parser = TraxArgumentParser(prog="trax demo")
+    parser.add_argument("--limit", type=int, help="most rows")
+
+    assert "\x1b" not in parser.format_help()
+    assert "\x1b" not in parser.format_usage()
+
+
+def test_every_trax_parser_writes_through_echo() -> None:
+    """One parser class for every command, so none writes to the process streams."""
+    plain = [
+        dispatcher.__name__
+        for dispatcher in DISPATCHERS
+        if not isinstance(dispatcher.make_parser(), TraxArgumentParser)
+    ]
+
+    assert plain == []
+
+
+def test_the_parsers_outside_a_dispatcher_write_through_echo(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The top-level flags' parser and ``records``' own flags reach the caller too."""
+    bad_flag = invoke(
+        ["--port", "x", "version"],
+        env={},
+        width=0,
+        local_input=None,
+        run=partial(parse_and_run, client_factory=_refuse_client),
+    )
+    records_help = invoke(
+        ["agentsession", "1", "records", "--help"],
+        env={},
+        width=0,
+        local_input=None,
+        run=partial(parse_and_run, client_factory=_refuse_client),
+    )
+
+    assert (bad_flag.exit_code, records_help.exit_code) == (2, 0)
+    assert "trax: error: argument --port: invalid int value: 'x'" in bad_flag.stderr
+    assert "usage: trax agentsession SEQ records" in records_help.stdout
+    assert capsys.readouterr() == ("", "")
+
+
+def test_trax_parser_writes_to_a_stream_it_is_given() -> None:
+    """Only argparse's own choice of a process stream is redirected through echo."""
+    given, out = io.StringIO(), io.StringIO()
+    parser = TraxArgumentParser(prog="trax demo")
+
+    token = OUT_STREAM.set(out)
+    try:
+        parser.print_usage(given)
+    finally:
+        OUT_STREAM.reset(token)
+
+    assert (given.getvalue(), out.getvalue()) == ("usage: trax demo [-h]\n", "")
 
 
 class _VerbCommand(Command):

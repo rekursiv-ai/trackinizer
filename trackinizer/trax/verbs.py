@@ -37,8 +37,8 @@ from trackinizer.sagent.session.types import (
     UserMessage,
 )
 from trackinizer.trax import render
-from trackinizer.trax.commands import Command, HelpPage
-from trackinizer.trax.context import cwd, env
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
+from trackinizer.trax.context import check_local_input, cwd, env
 from trackinizer.trax.forward import RUN_CLIS, moved
 from trackinizer.trax.grammar import (
     COST_FIELDS,
@@ -193,7 +193,7 @@ class Kind(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax <kind>",
             description=(
                 "List, show, edit, or add an outbound edge on an inquiry. "
@@ -1993,7 +1993,7 @@ class Recent(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax recent", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax recent", description=cls.__doc__)
         parser.add_argument("--limit", type=_positive_int, default=50)
         parser.add_argument(
             "--format",
@@ -2052,7 +2052,7 @@ class Search(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax search-sessions",
             description=cls.__doc__,
         )
@@ -2124,7 +2124,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax id", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax id", description=cls.__doc__)
         parser.add_argument("uuid", metavar="UUID", help="the row's global id")
         parser.add_argument(
             "--format",
@@ -2180,7 +2180,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax next", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax next", description=cls.__doc__)
         parser.add_argument(
             "--format",
             dest="format_",
@@ -2258,7 +2258,7 @@ Examples:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        return argparse.ArgumentParser(prog="trax blocked", description=cls.__doc__)
+        return TraxArgumentParser(prog="trax blocked", description=cls.__doc__)
 
     @classmethod
     @override
@@ -2347,7 +2347,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax graph", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax graph", description=cls.__doc__)
         parser.add_argument("--open-only", dest="open_only", action="store_true")
         return parser
 
@@ -2488,7 +2488,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax board", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax board", description=cls.__doc__)
         parser.add_argument("--width", type=int, default=None)
         return parser
 
@@ -2572,7 +2572,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax cost", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax cost", description=cls.__doc__)
         parser.add_argument("kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument("seq", type=int)
         parser.add_argument("--deep", action="store_true")
@@ -2638,7 +2638,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax confidence",
             description=cls.__doc__,
         )
@@ -2697,7 +2697,7 @@ Options:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax authority", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax authority", description=cls.__doc__)
         parser.add_argument("kind", choices=list(KIND_LOWER), type=str.lower)
         parser.add_argument("seq", type=int)
         parser.add_argument(
@@ -2762,7 +2762,7 @@ Notes:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax send", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax send", description=cls.__doc__)
         parser.add_argument("target", help="label#session, @actor or @actor:room")
         parser.add_argument("text", nargs="+", help="message body")
         return parser
@@ -2810,7 +2810,7 @@ Notes:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        return argparse.ArgumentParser(prog="trax version", description=cls.__doc__)
+        return TraxArgumentParser(prog="trax version", description=cls.__doc__)
 
     @classmethod
     @override
@@ -2855,7 +2855,7 @@ Notes:
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(
+        parser = TraxArgumentParser(
             prog="trax export",
             description=cls.__doc__,
         )
@@ -3025,6 +3025,7 @@ def _resolve_field_value(field: SetField, *, used_stdin: bool) -> tuple[SetField
     """Resolve one field value: ``-`` is stdin, ``@path`` a file, else verbatim."""
     if not isinstance(field.value, str):
         return field, False
+    check_local_input(field.value)
     if field.value == "-":
         if used_stdin:
             raise ClientError("stdin value can only be used once per command")
@@ -3227,18 +3228,13 @@ def _split_records_tail(
 
 def _records_parser() -> argparse.ArgumentParser:
     """Return the parser of the ``records`` action's own flags."""
-    parser = argparse.ArgumentParser(
+    parser = TraxArgumentParser(
         prog="trax agentsession SEQ records",
-        exit_on_error=False,
+        exit_on_error=False,  # pragma: no mutate[truthiness]
     )
-    parser.add_argument("--part", type=int, default=None)
-    parser.add_argument("--to", default="", metavar="PART:IDX")
-    parser.add_argument(
-        "--format",
-        dest="format_",
-        choices=("text", "json"),
-        default="text",
-    )
+    parser.add_argument("--part", type=int)
+    parser.add_argument("--to", metavar="PART:IDX")
+    parser.add_argument("--format", dest="format_", choices=("text", "json"))
     return parser
 
 

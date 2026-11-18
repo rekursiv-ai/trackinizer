@@ -6,10 +6,9 @@ profile, lives in ``connection``; this module re-exports it for its callers.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from typing import TYPE_CHECKING, Protocol, cast, override
 
-import argparse
 import atexit
 import functools
 import sys
@@ -17,7 +16,7 @@ import sys
 from trackinizer.client.errors import ClientError
 from trackinizer.trax.canvas import Canvas
 from trackinizer.trax.client_cache import close_clients
-from trackinizer.trax.commands import Command, HelpPage
+from trackinizer.trax.commands import Command, HelpPage, TraxArgumentParser
 from trackinizer.trax.connection import connect, connect_flags
 from trackinizer.trax.doctor import Doctor
 from trackinizer.trax.forward import MOVED_VERBS, moved
@@ -46,6 +45,8 @@ from trackinizer.trax.verbs import (
 
 
 if TYPE_CHECKING:
+    import argparse
+
     from trackinizer.client.client import Client
 
 
@@ -78,7 +79,7 @@ class Help(Command):
     @classmethod
     @override
     def make_parser(cls) -> argparse.ArgumentParser:
-        parser = argparse.ArgumentParser(prog="trax help", description=cls.__doc__)
+        parser = TraxArgumentParser(prog="trax help", description=cls.__doc__)
         parser.add_argument("topic", nargs="?", default="")
         return parser
 
@@ -132,6 +133,7 @@ def parse_and_run(
     argv: Sequence[str],
     *,
     client_factory: Callable[[], Client] | None = None,
+    allowed: Collection[type[Command]] = DISPATCHERS,
 ) -> None:
     """Parse ``argv`` per the grammar and execute the matching verb.
 
@@ -144,6 +146,12 @@ def parse_and_run(
     Args:
       argv: Command-line tokens to parse (verb and arguments).
       client_factory: Optional factory; uses profile if None.
+      allowed: The dispatchers that may run. A verb or kind another dispatcher
+        matches is refused by name before anything runs, never read as a filter
+        field. A kindless filter query runs through ``Kind``.
+
+    Raises:
+      ClientError: The verb matches a dispatcher not in ``allowed``.
 
     """
     top, leftover = _peel_top_flags(list(argv))
@@ -158,18 +166,19 @@ def parse_and_run(
         # the process, so every verb here -- and every later invocation, when
         # a daemon runs this function repeatedly -- reuses one httpx2 pool.
         client_factory = functools.partial(connect, top)
+    # A leading ``--help`` is ``help`` with no topic; what follows it is ignored.
     if leftover and leftover[0] in {"--help", "-h"}:
-        echo(Help.help_text(), nl=False)
-        return None
-    if not leftover:
-        return _run_kindless(leftover, client_factory)
-    verb = leftover[0].lower()
-    rest = leftover[1:]
+        leftover = ["help"]
+    verb = leftover[0].lower() if leftover else ""
     if verb in MOVED_VERBS:
         moved(verb)
-    for dispatcher in DISPATCHERS:
-        if dispatcher.matches(verb):
-            return dispatcher.dispatch(verb, rest, client_factory)
+    # Matched against every dispatcher, not only ``allowed``: a refused verb must be
+    # named as refused, never read as the filter field below.
+    dispatcher = next((d for d in DISPATCHERS if d.matches(verb)), None)
+    if (dispatcher or Kind) not in allowed:
+        raise ClientError(f"{verb or 'trax'} is not available here")
+    if dispatcher is not None:
+        return dispatcher.dispatch(verb, leftover[1:], client_factory)
     # Neither a verb nor a kind: the token is a FILTER FIELD, and the query
     # spans every kind (``trax title re retry``). Verbs and kinds are matched
     # first, so adding a field can never steal an existing command. A token
@@ -253,7 +262,7 @@ def _run_kindless(tokens: Sequence[str], client_factory: Callable[[], Client]) -
 # route to the ``help`` verb, keeping one help renderer in charge of output.
 def _peel_top_flags(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     """Split connection flags from the sub-command argv."""
-    parser = argparse.ArgumentParser(prog="trax", add_help=False)
+    parser = TraxArgumentParser(prog="trax", add_help=False)
     connect_flags(parser)
     parser.add_argument(
         "--show-ids",

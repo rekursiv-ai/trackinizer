@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, TypedDict, cast, override
+from typing import TYPE_CHECKING, TypedDict, TypeGuard, cast, override
 from urllib.parse import parse_qsl
 
 import argparse
+import ast
 import base64
 import inspect
 import json
@@ -4990,6 +4991,143 @@ def test_an_error_carries_only_a_string_code_the_body_names(
         client.get("/api/x")
 
     assert raised.value.code == code
+
+
+def test_a_client_with_routes_sends_no_other_request() -> None:
+    """Refused before the transport sees it, by every method that sends one."""
+    sent: list[tuple[str, str]] = []
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        sent.append((request.method, request.url.path))
+        return httpx2.Response(200, json={"sha": "abc123"})
+
+    with Client(
+        "https://given.test",
+        transport=httpx2.MockTransport(answer),
+        routes=[("GET", "/api/version")],
+    ) as client:
+        version = client.version()
+        with pytest.raises(
+            ClientError,
+            match=r"^POST /api/inquiries/batch is not available to this client$",
+        ):
+            client.submit_batch([("Issue", {"title": "x"})])
+        with pytest.raises(ClientError, match=r"^GET /api/export is not available"):
+            list(client.export())
+        with (
+            pytest.raises(ClientError, match=r"/lines is not available"),
+            client.lines_stream(uuid.UUID(int=1)),
+        ):
+            pass
+
+    assert version == "abc123"
+    assert sent == [("GET", "/api/version")]
+
+
+def test_every_request_the_client_sends_is_checked_against_its_routes() -> None:
+    """A method that reaches the HTTP client checks its route before it does.
+
+    Any use of ``self._http`` counts, a call or not, so a stored reference cannot
+    slip a request past the check. Only building it (assigning it) and closing it
+    (``self._http.close()``) are exempt, known by what the code does rather than by
+    the method's name, which a copy of the method under another name keeps.
+    """
+    tree = ast.parse(inspect.getsource(Client))
+    unchecked = [
+        method.name
+        for method in ast.walk(tree)
+        if isinstance(method, ast.FunctionDef)
+        and (uses := _http_lines(method))
+        and not any(line < min(uses) for line in _check_lines(method))
+    ]
+
+    assert unchecked == []
+
+
+def test_the_route_check_finds_a_use_only_building_or_closing_skips() -> None:
+    """A request or a stored reference counts; building or closing it never does."""
+    source = """
+class Client:
+    def __init__(self):
+        self._http: object = object()
+    def init_copy(self):
+        self._http = object()
+    def close(self):
+        self._http.close()
+    def kept(self):
+        held = self._http
+    def sent(self):
+        self._http.request("GET", "/")
+    def checked(self):
+        self._check_route("GET", "/")
+        self._http.request("GET", "/")
+"""
+    methods = {
+        node.name: _http_lines(node)
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.FunctionDef)
+    }
+
+    assert methods == {
+        "__init__": [],
+        "init_copy": [],
+        "close": [],
+        "kept": [10],
+        "sent": [12],
+        "checked": [15],
+    }
+
+
+def _http_lines(method: ast.FunctionDef) -> list[int]:
+    """Return the lines where ``method`` uses ``self._http``, but to build or close it."""
+    exempt = {
+        id(target) for node in ast.walk(method) for target in _built_or_closed(node)
+    }
+    return [
+        node.lineno
+        for node in ast.walk(method)
+        if _is_http(node) and id(node) not in exempt
+    ]
+
+
+def _built_or_closed(node: ast.AST) -> list[ast.expr]:
+    """Return the ``self._http`` that ``node`` builds or closes, if it does either."""
+    match node:
+        case ast.Assign(targets=targets):
+            return [target for target in targets if _is_http(target)]
+        case ast.AnnAssign(target=target) if _is_http(target):
+            return [target]
+        case ast.Call(
+            func=ast.Attribute(attr="close", value=closed),
+            args=[],
+            keywords=[],
+        ) if _is_http(closed):
+            return [closed]
+        case _:
+            return []
+
+
+def _is_http(node: ast.AST) -> TypeGuard[ast.Attribute]:
+    """Return whether ``node`` is ``self._http``."""
+    return (
+        isinstance(node, ast.Attribute)
+        and node.attr == "_http"
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "self"
+    )
+
+
+def _check_lines(method: ast.FunctionDef) -> list[int]:
+    """Return the lines where ``method`` calls ``self._check_route``."""
+    return [
+        node.lineno
+        for node in ast.walk(method)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_check_route"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+    ]
 
 
 if __name__ == "__main__":

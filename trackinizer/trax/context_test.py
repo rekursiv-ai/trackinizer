@@ -2,26 +2,26 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import sys
 
+import pytest
+
+from trackinizer.client.errors import ClientError
 from trackinizer.trax.context import (
     CWD,
     ENV,
     ERR_STREAM,
+    LOCAL_INPUT,
     OUT_STREAM,
     OVERLAID_NAMES,
+    check_local_input,
     cwd,
     env,
     err_stream,
     out_stream,
     trax_env,
 )
-
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_streams_default_to_the_process_streams() -> None:
@@ -92,6 +92,36 @@ def test_trax_env_prefers_the_plain_name_over_the_ssh_forwarded_one(
     assert trax_env("CANVAS") == "from-ssh"
     monkeypatch.setenv("TRAX_CANVAS", "plain")
     assert trax_env("CANVAS") == "plain"
+
+
+def test_local_input_passes_every_value_by_default() -> None:
+    for source in ("-", "@notes.md", "plain"):
+        check_local_input(source)
+
+
+def test_local_input_off_refuses_stdin_and_files_by_form() -> None:
+    """The message names the form, never the path: a literal secret may start ``@``."""
+    token = LOCAL_INPUT.set(False)
+    try:
+        refusals = [
+            _refusal(source)
+            for source in ("-", "@rel.md", "@/abs/hunter2", "@../up.md", "@")
+        ]
+        check_local_input("plain")
+    finally:
+        LOCAL_INPUT.reset(token)
+
+    assert refusals == [
+        "- reads no local input here",
+        *["@FILE reads no local input here"] * 4,
+    ]
+
+
+def _refusal(source: str) -> str:
+    """Return the message ``check_local_input`` refuses ``source`` with."""
+    with pytest.raises(ClientError) as refused:
+        check_local_input(source)
+    return str(refused.value)
 
 
 if __name__ == "__main__":

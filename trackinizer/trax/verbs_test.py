@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, override
 from unittest.mock import Mock
 
@@ -25,6 +26,7 @@ from trackinizer.sagent.session.types import (
 )
 from trackinizer.trax import verbs
 from trackinizer.trax.conftest import FakeClient, run
+from trackinizer.trax.context import CWD, LOCAL_INPUT
 from trackinizer.trax.grammar import (
     VALID_KINDS,
     WRITE_FIELDS_CLI,
@@ -55,7 +57,7 @@ from trackinizer.wire.wire_sessions import SessionAgent
 
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Generator, Iterator, Mapping, Sequence
     from pathlib import Path
 
     from trackinizer.types.inquiries import Inquiry
@@ -425,6 +427,44 @@ def test_kind_verb_field_edit_reads_stdin_value(
 
     edit_calls = [c for c in client.calls if c[0] == "edit"]
     assert edit_calls[0][1][1:] == ("description", "## Problem\nDetails.\n")
+
+
+def test_kind_verb_refuses_local_input_where_it_is_off(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """An agent's tool reads neither its process's stdin nor the files around it."""
+    stdin = io.StringIO("body")
+    monkeypatch.setattr("sys.stdin", stdin)
+    with _bound(_local_sources(tmp_path), local_input=False):
+        refusals: list[str] = []
+        for source in _sources(tmp_path):
+            with pytest.raises(ClientError) as refused:
+                run(["issue", "1", "description", "to", source], client)
+            refusals.append(str(refused.value))
+
+    assert refusals == [
+        "- reads no local input here",
+        *["@FILE reads no local input here"] * 3,
+    ]
+    assert stdin.tell() == 0
+    assert [c for c in client.calls if c[0] == "edit"] == []
+
+
+def test_kind_verb_reads_local_input_where_it_is_on(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr("sys.stdin", io.StringIO("body"))
+    with _bound(_local_sources(tmp_path), local_input=True):
+        for source in _sources(tmp_path):
+            run(["issue", "1", "description", "to", source], client)
+
+    assert [c[1][1:] for c in client.calls if c[0] == "edit"] == [
+        ("description", "body"),
+    ] * 4
 
 
 def test_kind_verb_mixes_read_write_left_to_right(
@@ -3891,6 +3931,29 @@ def test_records_refuses_a_flag_it_does_not_read(tail: list[str]) -> None:
         run(["agentsession", "7", "records", *tail], _StoredClient())
 
 
+def test_records_help_names_its_flags(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as exited:
+        run(["agentsession", "7", "records", "--help"], _StoredClient())
+
+    assert exited.value.code == 0
+    assert capsys.readouterr().out.startswith(
+        "usage: trax agentsession SEQ records [-h] [--part PART] [--to PART:IDX]\n"
+        "                                     [--format {text,json}]\n",
+    )
+
+
+def test_records_in_text_is_the_default(capsys: pytest.CaptureFixture[str]) -> None:
+    run(["agentsession", "7", "records", "--part", "0"], _StoredClient())
+    default = capsys.readouterr().out
+    run(
+        ["agentsession", "7", "records", "--part", "0", "--format", "text"],
+        _StoredClient(),
+    )
+
+    assert capsys.readouterr().out == default
+    assert default.startswith("p0#0 ")
+
+
 def test_noop_metadata_link_echoes_exists(
     client: FakeClient,
     capsys: pytest.CaptureFixture[str],
@@ -4528,6 +4591,31 @@ def test_a_relation_listing_takes_its_width(
     # The wide table is the natural one; the narrow one is cut to fit.
     assert "…" in "".join(narrow)
     assert "…" not in "".join(wide)
+
+
+def _local_sources(root: Path) -> Path:
+    """Write ``body`` to ``root/work/here.md`` and ``root/up.md``; return ``work``."""
+    folder = root / "work"
+    folder.mkdir()
+    (folder / "here.md").write_text("body")
+    (root / "up.md").write_text("body")
+    return folder
+
+
+def _sources(root: Path) -> list[str]:
+    """Return stdin, then a relative, an absolute and an upward ``@path``."""
+    return ["-", "@here.md", f"@{root / 'up.md'}", "@../up.md"]
+
+
+@contextmanager
+def _bound(folder: Path, *, local_input: bool) -> Generator[None]:
+    """Run the body as an invocation in ``folder``, with local input on or off."""
+    cwd_token, input_token = CWD.set(str(folder)), LOCAL_INPUT.set(local_input)
+    try:
+        yield
+    finally:
+        CWD.reset(cwd_token)
+        LOCAL_INPUT.reset(input_token)
 
 
 if __name__ == "__main__":

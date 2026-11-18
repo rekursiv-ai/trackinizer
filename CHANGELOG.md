@@ -7,6 +7,18 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Added
 
+- A key a start minted for an agent process reaches the read routes trax's read
+  commands call (`wire_process_keys.RECORDS_ROUTES`, all GET): inquiry lists and
+  rows, `next_issue`, cost, confidence and authority, `web/lookup`, `web/get`,
+  `recent_changes`, `search_sessions` and `version`, each with the caller's read
+  filter. A session's parts and records stay its own tree's.
+- `trax.invoke.invoke` runs one trax command inside another program, with its own
+  output, environment, folder and table width, and writes nothing process-wide;
+  the daemon runs every command through it. `parse_and_run(allowed=)` refuses a
+  verb outside `allowed` by name, and `context.LOCAL_INPUT` off refuses a `-` or
+  `@path` value before reading it.
+- `Client(routes=)` refuses, before sending, any request no listed route matches
+  (`wire_process_keys.listed_route`).
 - `POST /api/sessions/start` takes `spawned_by` and `note`: the session whose agent
   spawned this one, and what spawned it. The start links the session `produced_by`
   the spawner and opens it in the spawner's audience, or re-opens the one already
@@ -53,6 +65,8 @@ All notable trackinizer changes are documented here. This project follows
 
 ### Changed
 
+- trax's usage, help and argument errors go through its own output, so a program
+  that runs trax inside itself gets them; their text is unchanged, without colour.
 - `ChangeIdMiddleware` is a plain ASGI middleware: Starlette's `BaseHTTPMiddleware`
   hid a caller's going from `Request.is_disconnected`.
 - **Breaking:** the session readers and writers moved from

@@ -10,31 +10,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast, override
 
 import contextlib
-import contextvars
-import io
 import os
 import select
 import socket
 import socketserver
 import threading
 import time
-import traceback
 
-from trackinizer.client.errors import ClientError
 from trackinizer.lib.posix.sockets import socket_address
 from trackinizer.trax.cli import parse_and_run
-from trackinizer.trax.context import (
-    CWD,
-    ENV,
-    ERR_STREAM,
-    OUT_STREAM,
-    OVERLAID_NAMES,
-)
 from trackinizer.trax.daemon.client import STALE_EXIT_CODE
 from trackinizer.trax.daemon.protocol import (
     FORWARDED_ENV,
-    KEY_ENV,
-    KEY_FILE_ENV,
     ProtocolVersionError,
     Request,
     Response,
@@ -42,7 +29,7 @@ from trackinizer.trax.daemon.protocol import (
     socket_path,
     write_frame,
 )
-from trackinizer.trax.render import TERMINAL_WIDTH
+from trackinizer.trax.invoke import INTERNAL_ERROR_EXIT_CODE, invoke
 
 
 if TYPE_CHECKING:
@@ -53,14 +40,6 @@ _IDLE_TIMEOUT_SEC: Final = 30 * 60
 """Exit after this long with no requests. A daemon per login session that
 never exits is a leak; half an hour outlives a working session's gaps while
 keeping an abandoned one from lingering for days."""
-
-_CLIENT_ERROR_EXIT_CODE: Final = 2
-"""``cli.main`` exits 2 on ``ClientError``; scripts branch on it, so the
-daemon must reproduce it rather than inventing its own code."""
-
-_INTERNAL_ERROR_EXIT_CODE: Final = 70
-"""EX_SOFTWARE: an unexpected exception escaped a verb. Distinct from 2 so a
-daemon bug is not mistaken for a user-facing CLI error."""
 
 _SOCKET_DIR_MODE: Final = 0o700
 """Only the owner may reach the socket. The daemon executes writes under the
@@ -80,11 +59,11 @@ def handle(
 ) -> Response:
     """Execute one request under the caller's ambient state.
 
-    Streams, environment, and working directory are bound as ContextVars for
-    the duration of the call and discarded with the copied context when it
-    returns. Nothing process-global is written, so concurrent requests cannot
-    observe each other's identity -- which would silently stamp one agent's
-    audit rows with another's actor.
+    Streams, environment, and working directory are bound by :func:`invoke` in a
+    context of the request's own. Nothing process-global is written, so concurrent
+    requests cannot observe each other's identity -- which would silently stamp one
+    agent's audit rows with another's actor -- and a write past ``echo`` (a stray
+    ``print``) reaches the daemon's own stream, never a caller.
 
     Args:
       request: The invocation plus the caller's ambient state.
@@ -94,19 +73,20 @@ def handle(
       response: The captured stdout, stderr, and exit code.
 
     """
-    out, err = io.StringIO(), io.StringIO()
-    # A fresh Context per request: every per-invocation binding is a
-    # ContextVar, so concurrent requests would otherwise see each other's.
-    context = contextvars.copy_context()
-    try:
-        exit_code = context.run(_run_isolated, request, run, out, err)
-    except BaseException:  # noqa: BLE001 -- one bad verb must not kill the daemon.
-        return Response(
-            stdout=out.getvalue(),
-            stderr=err.getvalue() + traceback.format_exc(),
-            exit_code=_INTERNAL_ERROR_EXIT_CODE,
-        )
-    return Response(stdout=out.getvalue(), stderr=err.getvalue(), exit_code=exit_code)
+    ran = invoke(
+        request.argv,
+        # A request names only the variables the protocol forwards, so a client that
+        # sends ``TRACKINIZER_TOKEN`` anyway still reads it as absent.
+        env={
+            name: value for name, value in request.env.items() if name in FORWARDED_ENV
+        },
+        # The daemon's stdout is a socket, so ``isatty()`` there is always False and
+        # autodetection would size every table as if piped.
+        width=request.columns if request.isatty else 0,
+        local_input=request.cwd,
+        run=run,
+    )
+    return Response(stdout=ran.stdout, stderr=ran.stderr, exit_code=ran.exit_code)
 
 
 def serve(
@@ -169,7 +149,7 @@ class _Handler(socketserver.BaseRequestHandler):
                 Response(
                     stdout="",
                     stderr=f"trax: {mismatch}\n",
-                    exit_code=_INTERNAL_ERROR_EXIT_CODE,
+                    exit_code=INTERNAL_ERROR_EXIT_CODE,
                 ),
             )
             return
@@ -255,66 +235,6 @@ class _Server(socketserver.ThreadingUnixStreamServer):
         super().service_actions()
         if time.monotonic() - self._last_seen > _IDLE_TIMEOUT_SEC:
             self.begin_shutdown()
-
-
-# ``sys.exit`` accepts a string, which the interpreter prints to stderr and reports as
-# status 1. Coercing it with ``int()`` would raise instead, and the real message would
-# be replaced by an internal-error traceback.
-def _exit_status(exit_request: SystemExit, err: io.StringIO) -> int:
-    """Map a ``SystemExit`` payload to a process exit status."""
-    code = exit_request.code
-    if code is None:
-        return 0
-    if isinstance(code, int):
-        return code
-    err.write(f"{code}\n")
-    return 1
-
-
-# Every binding is a ContextVar, never a process global. ``os.environ``, ``os.chdir``,
-# and ``sys.stdout`` are shared by the whole process, so swapping them around a request
-# leaks into every other request in flight -- measured, not theorized: four concurrent
-# requests saw each other's ``$USER``, and one response came back carrying another's
-# output.
-#
-# ``sys.stdout``/``sys.stderr`` ARE redirected on top of that, for the one writer that
-# cannot be taught the ContextVars: ``argparse`` prints usage and errors to the real
-# streams before raising ``SystemExit``. Those are the daemon's ``/dev/null``, so
-# without this an invalid flag returns exit 2 with no message at all. The redirect is
-# process-wide, so a concurrent request could capture a stray write from another --
-# acceptable only because every trax writer goes through ``echo``; argparse is the
-# exception this exists for.
-def _run_isolated(
-    request: Request,
-    run: Callable[[Sequence[str]], None],
-    out: io.StringIO,
-    err: io.StringIO,
-) -> int:
-    """Run one verb bound to the caller's streams, environment, and directory."""
-    OUT_STREAM.set(out)
-    ERR_STREAM.set(err)
-    # A request names only the variables the protocol forwards, so a client that
-    # sends ``TRACKINIZER_TOKEN`` anyway still reads it as absent.
-    ENV.set(
-        {name: value for name, value in request.env.items() if name in FORWARDED_ENV},
-    )
-    # ``TRACKINIZER_TOKEN`` and its file are claimed but never forwarded: without the claim, a
-    # name the caller did not send falls through to the daemon's own environment
-    # and its key would authenticate this caller against the caller's server.
-    OVERLAID_NAMES.set(frozenset((*FORWARDED_ENV, KEY_ENV, KEY_FILE_ENV)))
-    CWD.set(request.cwd)
-    # The daemon's stdout is a socket, so ``isatty()`` there is always False
-    # and autodetection would size every table as if piped.
-    TERMINAL_WIDTH.set(request.columns if request.isatty else 0)
-    try:
-        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            run(request.argv)
-    except ClientError as error:
-        err.write(f"trax: {error}\n")
-        return _CLIENT_ERROR_EXIT_CODE
-    except SystemExit as exit_request:
-        return _exit_status(exit_request, err)
-    return 0
 
 
 # Returns ``None`` when another daemon owns the socket -- it won the race, and this
