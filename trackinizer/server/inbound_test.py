@@ -12,7 +12,8 @@ import uuid
 
 import pytest
 
-from trackinizer.server.inbound import Inbound, InboundQueue
+from trackinizer.server.inbound import Inbound, InboundQueue, PollerRun
+from trackinizer.wire.wire_sessions import WorkspaceMessageContext
 
 
 class TestInboundQueue:
@@ -96,6 +97,19 @@ class TestInboundQueue:
         q.enqueue(sid, Inbound(text="hi", source="alice@x", room="sear"))
         (msg,) = q.drain(sid)
         assert (msg.text, msg.source, msg.room) == ("hi", "alice@x", "sear")
+
+    def test_a_queue_is_full_exactly_at_its_cap_and_drains_to_room(self) -> None:
+        queue = InboundQueue(max_per_session=2)
+        session = uuid.uuid4()
+
+        assert not queue.is_full(session)
+        _ = queue.enqueue(session, Inbound(text="one"))
+        assert not queue.is_full(session)
+        _ = queue.enqueue(session, Inbound(text="two"))
+        assert queue.is_full(session)
+        assert not queue.is_full(uuid.uuid4())
+        _ = queue.drain(session)
+        assert not queue.is_full(session)
 
 
 class TestAwaitMessages:
@@ -244,6 +258,346 @@ class TestAwaitMessages:
         assert delivered == [["one message"]], f"message delivered twice: {results}"
 
 
+class TestRevokingTheLeaseEndsTheHold:
+    """A session's end releases the request its own poller is parked in.
+
+    The run ends its session as it exits, with its poller parked in a hold; a
+    hold that outlived the lease kept every exit waiting out its full length.
+    """
+
+    def test_the_hold_returns_when_the_lease_is_revoked(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        queue.mark_poller(session)
+
+        async def run() -> list[Inbound]:
+            hold = asyncio.create_task(queue.await_messages(session, timeout_sec=3_600))
+            await asyncio.sleep(0)
+            assert queue._waiters[session]
+            queue.forget_poller(session)
+            return await asyncio.wait_for(hold, timeout=5)
+
+        assert asyncio.run(run()) == []
+        assert not queue._waiters
+
+    def test_a_released_hold_takes_nothing(self) -> None:
+        """A message queued as the poller leaves stays queued, not handed to it.
+
+        The leaving run can no longer type what it receives, so a hold that
+        drained on release would consume the message and drop it.
+        """
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        queue.mark_poller(session)
+
+        async def run() -> list[Inbound]:
+            hold = asyncio.create_task(queue.await_messages(session, timeout_sec=3_600))
+            await asyncio.sleep(0)
+            assert queue._waiters[session]
+            _ = queue.enqueue(session, Inbound(text="sent as the run exits"))
+            queue.forget_poller(session)
+            return await asyncio.wait_for(hold, timeout=5)
+
+        assert asyncio.run(run()) == []
+        assert queue.pending(session) == 1
+
+
+class TestWhereAPollerRuns:
+    """A lease keeps where its run says it runs, and forgets it with the lease."""
+
+    def test_a_lease_answers_where_its_run_is_until_it_expires(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+
+        assert queue.poller_run(session) is None
+        _mark_at(queue, session)
+        assert queue.poller_run(session) == _AT
+        now[0] = 145.0
+        assert queue.poller_run(session) is None
+        # Renewed saying nothing, the lease says nothing of where it ran before.
+        queue.mark_poller(session)
+        assert queue.poller_run(session) == PollerRun()
+
+    def test_a_revoked_lease_forgets_where_its_run_was(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        _mark_at(queue, session)
+
+        queue.forget_poller(session)
+
+        assert queue.poller_run(session) is None
+        assert not queue.has_poller(session)
+
+    def test_the_sweep_of_expired_leases_takes_their_runs_with_them(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        expired, live = uuid.uuid4(), uuid.uuid4()
+        _mark_at(queue, expired)
+        now[0] = 120.0
+        _mark_at(queue, live)
+        now[0] = 150.0
+
+        assert queue.active_poller_ids() == [live]
+        assert queue.poller_run(live) == _AT
+        assert expired not in queue._leases
+
+
+class TestWhichCliPolls:
+    """A lease keeps the CLI and run instance its drain named, and nothing else says."""
+
+    def test_a_lease_answers_which_cli_and_run_polls_it(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        queue.mark_poller(session, cli="codex", instance="a" * 32)
+
+        assert queue.poller_run(session) == PollerRun(cli="codex", instance="a" * 32)
+        # A renewal that names neither leaves the lease nameless, as an older trax's.
+        queue.mark_poller(session)
+        assert queue.poller_run(session) == PollerRun()
+
+    def test_active_poller_ids_can_be_asked_for_one_clis_alone(self) -> None:
+        queue = InboundQueue()
+        claude, codex, nameless = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(claude, cli="claude")
+        queue.mark_poller(codex, cli="codex")
+        queue.mark_poller(nameless)
+
+        assert queue.active_poller_ids(cli="claude") == [claude]
+        assert queue.active_poller_ids(cli="codex") == [codex]
+        assert queue.active_poller_ids(cli="sagent") == []
+        assert queue.active_poller_ids() == [claude, codex, nameless]
+
+    def test_a_run_is_held_off_by_another_runs_live_lease_alone(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        first, second = "a" * 32, "b" * 32
+
+        assert not queue.held_by_another(session, cli="claude", instance=first)
+        queue.mark_poller(session, cli="claude", instance=first)
+        assert not queue.held_by_another(session, cli="claude", instance=first)
+        assert queue.held_by_another(session, cli="claude", instance=second)
+        # A lease of another CLI is a run the chat no longer takes lines from.
+        assert not queue.held_by_another(session, cli="codex", instance=second)
+        # A lease that names no run, as the assistant's, holds nobody off.
+        queue.mark_poller(session, cli="claude")
+        assert not queue.held_by_another(session, cli="claude", instance=second)
+        # Nor does one that lapsed, or one that was revoked.
+        queue.mark_poller(session, cli="claude", instance=first)
+        now[0] = 145.0
+        assert not queue.held_by_another(session, cli="claude", instance=second)
+        queue.mark_poller(session, cli="claude", instance=first)
+        queue.forget_poller(session)
+        assert not queue.held_by_another(session, cli="claude", instance=second)
+
+
+class TestWhatTheRunReportsOfItself:
+    """A run says idle, running, waiting for the person, or taken over in a terminal."""
+
+    def test_the_state_a_run_reports_stays_through_its_next_polls(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        run = "a" * 32
+        queue.mark_poller(session, cli="claude", instance=run)
+        assert queue.poller_run(session) == PollerRun(cli="claude", instance=run)
+
+        assert queue.report_state(session, instance=run, state="requires_action")
+        queue.mark_poller(session, cli="claude", instance=run)
+
+        held = queue.poller_run(session)
+        assert held is not None
+        assert held.state == "requires_action"
+
+    def test_a_report_of_another_run_or_of_no_lease_changes_nothing(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        run = "a" * 32
+
+        assert not queue.report_state(session, instance=run, state="running")
+        queue.mark_poller(session, cli="claude", instance=run)
+        assert not queue.report_state(session, instance="b" * 32, state="taken_over")
+        now[0] = 145.0
+        assert not queue.report_state(session, instance=run, state="running")
+
+        assert queue.poller_run(session) is None
+
+    def test_a_run_that_polls_as_another_starts_idle(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        queue.mark_poller(session, cli="claude", instance="a" * 32)
+        _ = queue.report_state(session, instance="a" * 32, state="taken_over")
+
+        queue.mark_poller(session, cli="claude", instance="b" * 32)
+        later = queue.poller_run(session)
+        queue.mark_poller(session, cli="claude")
+        nameless = queue.poller_run(session)
+
+        assert later is not None
+        assert later.state == "idle"
+        assert nameless == PollerRun(cli="claude")
+
+
+class TestRunsThatWentOffline:
+    """The server is told which runs stopped polling, to release what they asked."""
+
+    def test_a_lease_that_lapses_is_listed_once(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        lapsed, live = uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(lapsed, cli="claude")
+        now[0] = 120.0
+        queue.mark_poller(live, cli="claude")
+        now[0] = 150.0
+
+        assert queue.take_gone() == [lapsed]
+        assert queue.take_gone() == []
+        assert queue.has_poller(live)
+
+    def test_a_lease_read_after_it_lapsed_is_listed_too(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        queue.mark_poller(session, cli="claude")
+        now[0] = 200.0
+
+        assert not queue.has_poller(session)
+        assert queue.take_gone() == [session]
+
+    def test_a_revoked_lease_is_listed_and_a_renewed_one_is_not(self) -> None:
+        queue = InboundQueue()
+        revoked, renewed = uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(revoked, cli="claude")
+        queue.mark_poller(renewed, cli="claude")
+        queue.mark_poller(renewed, cli="claude")
+
+        queue.forget_poller(revoked)
+
+        assert queue.take_gone() == [revoked]
+
+    def test_a_session_that_never_polled_is_not_listed(self) -> None:
+        queue = InboundQueue()
+
+        queue.forget_poller(uuid.uuid4())
+
+        assert queue.take_gone() == []
+
+    def test_the_assistants_lease_is_not_a_run_that_went_offline(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        assistant, revoked = uuid.uuid4(), uuid.uuid4()
+        queue.mark_poller(assistant)
+        queue.mark_poller(revoked)
+        queue.forget_poller(revoked)
+        now[0] = 200.0
+
+        assert queue.take_gone() == []
+        assert not queue.has_poller(assistant)
+
+    def test_the_list_keeps_the_newest_sessions_when_nothing_takes_it(self) -> None:
+        queue = InboundQueue(max_gone=2)
+        first, second, third = (uuid.uuid4() for _ in range(3))
+        for session in (first, second, third):
+            queue.mark_poller(session, cli="claude")
+            queue.forget_poller(session)
+
+        assert queue.take_gone() == [second, third]
+
+
+class TestReplacingARun:
+    """A run the server replaces is turned away when it drains again."""
+
+    def test_the_replaced_run_is_held_off_though_no_lease_names_it(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        old, new = "a" * 32, "b" * 32
+        queue.mark_poller(session, cli="claude", instance=old)
+
+        queue.retire_run(session)
+
+        assert queue.poller_run(session) is None
+        assert queue.held_by_another(session, cli="claude", instance=old)
+        assert not queue.held_by_another(session, cli="claude", instance=new)
+        queue.mark_poller(session, cli="claude", instance=new)
+        assert queue.held_by_another(session, cli="claude", instance=old)
+
+    def test_a_run_whose_lease_lapsed_is_held_off_by_where_it_last_ran(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        old, new = "a" * 32, "b" * 32
+        queue.mark_poller(session, cli="claude", machine="box", instance=old)
+        now[0] = 200.0
+        assert queue.take_gone() == [session]
+
+        queue.retire_run(session)
+
+        assert queue.held_by_another(session, cli="claude", instance=old)
+        assert not queue.held_by_another(session, cli="claude", instance=new)
+
+    def test_a_session_with_no_run_retires_nobody(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+
+        queue.retire_run(session)
+
+        assert not queue.held_by_another(session, cli="claude", instance="a" * 32)
+
+    def test_the_server_keeps_the_newest_retired_runs_alone(self) -> None:
+        queue = InboundQueue(max_retired=1)
+        first, second = uuid.uuid4(), uuid.uuid4()
+        for session in (first, second):
+            queue.mark_poller(session, cli="claude", instance="a" * 32)
+            queue.retire_run(session)
+
+        assert not queue.held_by_another(first, cli="claude", instance="a" * 32)
+        assert queue.held_by_another(second, cli="claude", instance="a" * 32)
+
+
+class TestWhereARunWas:
+    """Where a run said it ran outlives its lease, for a run to start there again."""
+
+    def test_the_place_stays_after_the_lease_lapses(self) -> None:
+        now = [100.0]
+        queue = InboundQueue(poller_ttl_sec=45.0, _clock=lambda: now[0])
+        session = uuid.uuid4()
+        _mark_at(queue, session)
+        now[0] = 200.0
+
+        assert queue.poller_run(session) is None
+        assert queue.last_run(session) == _AT
+
+    def test_a_poll_that_names_no_place_leaves_the_last_one(self) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        assert queue.last_run(session) is None
+        _mark_at(queue, session)
+
+        queue.mark_poller(session, cli="claude")
+
+        assert queue.last_run(session) == _AT
+
+    def test_the_server_keeps_the_newest_places_alone(self) -> None:
+        queue = InboundQueue(max_places=1)
+        first, second = uuid.uuid4(), uuid.uuid4()
+        _mark_at(queue, first)
+        _mark_at(queue, second)
+
+        assert queue.last_run(first) is None
+        assert queue.last_run(second) == _AT
+
+
+_AT = PollerRun(run="chat-1a2b3c4d", machine="gx10", cwd="~/work")
+"""Where a detached run on gx10, working in ``~/work``, says it is."""
+
+
+def _mark_at(queue: InboundQueue, session_id: uuid.UUID) -> None:
+    """Renew ``session_id``'s lease as a poll from the run at :data:`_AT` does."""
+    queue.mark_poller(session_id, run=_AT.run, machine=_AT.machine, cwd=_AT.cwd)
+
+
 class TestSendIdempotency:
     """``send_once`` dedups a replayed key without re-enqueuing."""
 
@@ -280,6 +634,19 @@ class TestSendIdempotency:
         assert second == [sid]
         assert q.pending(sid) == 1
 
+    def test_a_key_remembers_who_first_sent_under_it(self) -> None:
+        q = InboundQueue(max_seen_keys=1)
+        key, other = uuid.uuid4(), uuid.uuid4()
+        sid = uuid.uuid4()
+        q.send_once(key, [(sid, Inbound(text="hi", source="ada@example.com"))])
+        q.send_once(key, [(sid, Inbound(text="hi", source="jan@other.org"))])
+
+        assert q.sender_of(key) == "ada@example.com"
+        assert q.sender_of(other) is None
+        # A key the bound pushed out is forgotten, as is one that had no sender.
+        q.send_once(other, [(sid, Inbound(text="anon"))])
+        assert (q.sender_of(key), q.sender_of(other)) == (None, None)
+
     def test_send_once_concurrent_same_key_enqueues_once(self) -> None:
         # Two concurrent same-key sends must not BOTH pass the dedup check and
         # double-enqueue: send_once holds the lock across check+enqueue+record,
@@ -307,7 +674,183 @@ class TestSendIdempotency:
         assert q.pending(sid) == 1
 
 
+class TestAChatsLinesOnTheirWay:
+    """What a delete counts as posted: lines queued for a chat, or taken and unrecorded."""
+
+    _CHAT = uuid.UUID(int=1)
+    _OTHER = uuid.UUID(int=2)
+
+    def _line(self, sender: str, *, chat: uuid.UUID = _CHAT) -> Inbound:
+        return Inbound(
+            text="q",
+            source=sender,
+            context=WorkspaceMessageContext(
+                workspace_id=uuid.UUID(int=9),
+                visible_visuals=[],
+                conversation_id=chat,
+            ),
+        )
+
+    def test_a_line_is_counted_queued_then_taken_until_its_chat_records_it(
+        self,
+    ) -> None:
+        queue = InboundQueue()
+        session = uuid.uuid4()
+        queue.enqueue(session, self._line("Bob@example.com"))
+        queue.enqueue(session, self._line("ada@example.com", chat=self._OTHER))
+        queue.enqueue(session, Inbound(text="no chat", source="kim@example.com"))
+
+        queued = queue.conversation_senders(self._CHAT)
+        queue.hand_out(queue.drain(session), taker=None)
+        taken = queue.conversation_senders(self._CHAT)
+        queue.recorded(self._CHAT, senders=["bob@example.com", "zed@example.com"])
+
+        assert queued == taken == ["Bob@example.com"]
+        assert queue.conversation_senders(self._CHAT) == []
+        assert queue.conversation_senders(self._OTHER) == ["ada@example.com"]
+
+    def test_recording_forgets_one_taken_line_per_sender(self) -> None:
+        queue = InboundQueue()
+        queue.hand_out([self._line("bob@example.com")] * 2, taker=None)
+
+        queue.recorded(self._CHAT, senders=["bob@example.com"])
+
+        assert queue.conversation_senders(self._CHAT) == ["bob@example.com"]
+
+    def test_a_chats_delete_drops_its_queued_lines_and_forgets_its_taken_ones(
+        self,
+    ) -> None:
+        queue = InboundQueue(max_per_session=2)
+        session = uuid.uuid4()
+        queue.hand_out([self._line(f"p{n}@example.com") for n in range(3)], taker=None)
+        queue.enqueue(session, self._line("bob@example.com"))
+        queue.enqueue(session, self._line("ada@example.com", chat=self._OTHER))
+
+        capped = queue.conversation_senders(self._CHAT)
+        dropped = queue.drop_conversation(self._CHAT)
+
+        assert capped == ["bob@example.com", "p1@example.com", "p2@example.com"]
+        assert dropped == 1
+        assert queue.conversation_senders(self._CHAT) == []
+        assert [line.source for line in queue.drain(session)] == ["ada@example.com"]
+
+    def test_a_taken_line_never_recorded_stops_counting_after_its_ttl(self) -> None:
+        now = [0.0]
+        queue = InboundQueue(handed_ttl_sec=600.0, _clock=lambda: now[0])
+        queue.hand_out([self._line("bob@example.com")], taker=None)
+
+        now[0] = 599.0
+        within = queue.conversation_senders(self._CHAT)
+        now[0] = 600.0
+
+        assert (within, queue.conversation_senders(self._CHAT)) == (
+            ["bob@example.com"],
+            [],
+        )
+
+    def test_over_the_cap_the_chat_handed_a_line_longest_ago_is_forgotten(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        queue = InboundQueue(max_handed_chats=2)
+        third = uuid.UUID(int=3)
+        queue.hand_out([self._line("ada@example.com")], taker=None)
+        queue.hand_out([self._line("bob@example.com", chat=self._OTHER)], taker=None)
+        queue.hand_out([self._line("kim@example.com")], taker=None)
+
+        with caplog.at_level("WARNING"):
+            queue.hand_out([self._line("zed@example.com", chat=third)], taker=None)
+
+        assert [
+            queue.conversation_senders(chat)
+            for chat in (self._CHAT, self._OTHER, third)
+        ] == [["ada@example.com", "kim@example.com"], [], ["zed@example.com"]]
+        assert f"forgot those of chat {self._OTHER}" in caplog.text
+
+
+class TestTheKeyThatTookALine:
+    """Whose chat line each key took, which lets that key act for the line's poster."""
+
+    _TAKER = uuid.UUID(int=7)
+    _CHAT = uuid.UUID(int=1)
+    _BOB = "bob@example.com"
+
+    def _line(self, sender: str, *, chat: uuid.UUID | None = _CHAT) -> Inbound:
+        context = WorkspaceMessageContext(
+            workspace_id=uuid.UUID(int=9),
+            visible_visuals=[],
+            conversation_id=chat,
+        )
+        return Inbound(text="q", source=sender, context=context)
+
+    def test_only_the_taker_holds_the_posters_turn(self) -> None:
+        queue = InboundQueue()
+
+        queue.hand_out([self._line("Bob@example.com")], taker=self._TAKER)
+
+        assert queue.took_line(self._TAKER, poster="BOB@example.com")
+        assert not queue.took_line(uuid.UUID(int=8), poster=self._BOB)
+        assert not queue.took_line(self._TAKER, poster="ada@example.com")
+
+    def test_a_line_outside_a_chat_or_from_no_one_holds_no_turn(self) -> None:
+        queue = InboundQueue()
+        anonymous = self._line(self._BOB)
+
+        queue.hand_out([self._line(self._BOB, chat=None)], taker=self._TAKER)
+        queue.hand_out([Inbound(text="q", source="kim@example.com")], taker=self._TAKER)
+        queue.hand_out(
+            [Inbound(text="q", context=anonymous.context)],
+            taker=self._TAKER,
+        )
+
+        assert not queue.took_line(self._TAKER, poster=self._BOB)
+        assert not queue.took_line(self._TAKER, poster="kim@example.com")
+
+    def test_a_browser_drain_holds_no_turn_and_evicts_none(self) -> None:
+        queue = InboundQueue(max_turns=1)
+        queue.hand_out([self._line(self._BOB)], taker=self._TAKER)
+
+        queue.hand_out([self._line("ada@example.com")], taker=None)
+
+        assert queue.took_line(self._TAKER, poster=self._BOB)
+
+    def test_a_turn_outlives_the_lines_record_and_ends_at_its_ttl(self) -> None:
+        now = [0.0]
+        queue = InboundQueue(turn_ttl_sec=3_600.0, _clock=lambda: now[0])
+        queue.hand_out([self._line(self._BOB)], taker=self._TAKER)
+        queue.recorded(self._CHAT, senders=[self._BOB])
+
+        now[0] = 3_599.0
+        within = queue.took_line(self._TAKER, poster=self._BOB)
+        now[0] = 3_600.0
+
+        assert (within, queue.took_line(self._TAKER, poster=self._BOB)) == (True, False)
+
+    def test_a_later_line_renews_the_turn(self) -> None:
+        now = [0.0]
+        queue = InboundQueue(turn_ttl_sec=10.0, _clock=lambda: now[0])
+        queue.hand_out([self._line(self._BOB)], taker=self._TAKER)
+        now[0] = 8.0
+        queue.hand_out([self._line(self._BOB)], taker=self._TAKER)
+
+        now[0] = 15.0
+
+        assert queue.took_line(self._TAKER, poster=self._BOB)
+
+    def test_over_the_cap_the_turn_taken_longest_ago_is_forgotten(self) -> None:
+        queue = InboundQueue(max_turns=2)
+        for sender in ("ada@example.com", self._BOB, "ada@example.com"):
+            queue.hand_out([self._line(sender)], taker=self._TAKER)
+
+        queue.hand_out([self._line("kim@example.com")], taker=self._TAKER)
+
+        assert [
+            queue.took_line(self._TAKER, poster=each)
+            for each in ("ada@example.com", self._BOB, "kim@example.com")
+        ] == [True, False, True]
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

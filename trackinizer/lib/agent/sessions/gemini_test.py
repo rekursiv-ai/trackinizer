@@ -10,11 +10,17 @@ would replay, and about a re-read yielding the same records the last one did.
 from __future__ import annotations
 
 from io import StringIO
+from typing import TypedDict
 
 import json
 
+from treekle import json_loads
+
+import pytest
+
 from trackinizer.lib.agent.sessions import gemini
 from trackinizer.lib.agent.sessions.convert import _dropped, detect_format
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ContextClear,
@@ -26,7 +32,11 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+
+
+class _Document(TypedDict):
+    sessionId: str
+    messages: list[dict[str, object]]
 
 
 def _content(record: SessionRecord) -> str:
@@ -35,7 +45,7 @@ def _content(record: SessionRecord) -> str:
     return record.content or ""
 
 
-def _document(*messages: dict[str, object], session_id: str = "s1") -> str:
+def _document(*messages: object, session_id: str = "s1") -> str:
     """Return a gemini session document holding ``messages``."""
     return json.dumps({"sessionId": session_id, "messages": list(messages)})
 
@@ -140,12 +150,12 @@ def test_a_call_after_a_user_turn_gets_its_own_assistant_turn() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
-    assert [DictCodec.coerce(message)["type"] for message in messages] == [
+    messages = json_loads(out.getvalue(), _Document)["messages"]
+    assert [message["type"] for message in messages] == [
         "user",
         "gemini",
     ]
-    assert "toolCalls" not in DictCodec.coerce(messages[0])
+    assert "toolCalls" not in messages[0]
 
 
 def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
@@ -160,7 +170,7 @@ def test_a_leading_tool_call_writes_a_turn_rather_than_crashing() -> None:
 
     gemini.denormalize([ToolCall(call_id="t1", name="read_file")], out)
 
-    assert DictCodec.coerce(loads(out.getvalue()))["messages"] == [
+    assert json_loads(out.getvalue(), _Document)["messages"] == [
         {
             "type": "gemini",
             "content": "",
@@ -186,8 +196,8 @@ def test_one_incomplete_record_does_not_discard_the_session() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
-    assert [DictCodec.coerce(m)["content"] for m in messages] == [
+    messages = json_loads(out.getvalue(), _Document)["messages"]
+    assert [m["content"] for m in messages] == [
         "real turn",
         "answer",
     ]
@@ -205,7 +215,7 @@ def test_a_crossed_session_declares_an_id_it_can_be_recognized_by() -> None:
     gemini.denormalize([UserMessage(content="hi")], out)
 
     assert detect_format(out.getvalue()) == "gemini"
-    assert DictCodec.coerce(loads(out.getvalue()))["sessionId"]
+    assert json_loads(out.getvalue(), _Document)["sessionId"]
 
 
 def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
@@ -223,7 +233,10 @@ def test_a_foreign_encoding_key_is_not_written_as_a_document_field() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    assert set(DictCodec.coerce(loads(out.getvalue()))) == {"sessionId", "messages"}
+    assert set(json_loads(out.getvalue(), dict[str, object])) == {
+        "sessionId",
+        "messages",
+    }
 
 
 def test_a_timestamp_survives_the_gemini_round_trip() -> None:
@@ -280,11 +293,177 @@ def test_a_record_gemini_cannot_express_is_dropped_not_written() -> None:
     out = StringIO()
     gemini.denormalize(records, out)
 
-    messages = ListCodec.coerce(DictCodec.coerce(loads(out.getvalue())).get("messages"))
+    messages = json_loads(out.getvalue(), _Document)["messages"]
     assert len(messages) == 1
 
 
+def test_only_incomplete_records_are_written_verbatim() -> None:
+    out = StringIO()
+
+    gemini.denormalize([IncompleteRecord(text="raw")], out)
+
+    assert out.getvalue() == "raw"
+
+
+def test_a_tool_call_after_a_user_turn_gets_a_timestamped_gemini_turn() -> None:
+    out = StringIO()
+
+    gemini.denormalize(
+        [UserMessage(content="go"), ToolCall(call_id="t", name="run", timestamp="t")],
+        out,
+    )
+
+    messages = json_loads(out.getvalue(), _Document)["messages"]
+    assert messages[1] == {
+        "type": "gemini",
+        "content": "",
+        "$timestamp": "t",
+        "toolCalls": [{"id": "t", "name": "run", "args": {}}],
+    }
+
+
+def test_an_uncategorized_record_is_written_as_its_payload() -> None:
+    out = StringIO()
+
+    gemini.denormalize(
+        [UncategorizedRecord(kind="future", payload={"type": "future", "x": 1})],
+        out,
+    )
+
+    assert json_loads(out.getvalue(), _Document)["messages"] == [
+        {"type": "future", "x": 1},
+    ]
+
+
+def test_nested_tool_arguments_round_trip() -> None:
+    # Frozen mappings were copied one level deep, and ``json.dump`` cannot
+    # encode the ``mappingproxy`` that remained inside.
+    message = json_loads(
+        '{"type": "gemini", "content": "", "meta": {"deep": {"k": 1}},'
+        ' "toolCalls": [{"id": "t", "name": "f", "args": {"n": {"x": [1]}},'
+        ' "x": {"y": {}}}]}',
+        dict[str, object],
+    )
+    text = _document(message)
+
+    out = StringIO()
+    gemini.denormalize(gemini.normalize(StringIO(text)), out)
+
+    assert out.getvalue() == text
+
+
+def test_different_foreign_streams_of_one_length_get_different_ids() -> None:
+    def session_id(content: str) -> str:
+        out = StringIO()
+        gemini.denormalize([UserMessage(content=content)], out)
+        return json_loads(out.getvalue(), _Document)["sessionId"]
+
+    assert session_id("a") != session_id("b")
+    assert session_id("a") == session_id("a")
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"type": 7, "content": "x"},
+        {"type": "user", "content": [1]},
+        {"type": "gemini", "content": {}},
+        {"type": "gemini", "content": "", "toolCalls": "x"},
+        {"type": "gemini", "content": "", "toolCalls": [7]},
+        7,
+    ],
+    ids=["type", "user-content", "gemini-content", "calls", "call", "scalar"],
+)
+def test_a_malformed_message_round_trips(message: object) -> None:
+    # One malformed field raised ``ReadError`` out of ``normalize`` and lost
+    # the whole document.
+    text = _document({"type": "user", "content": "before"}, message)
+
+    out = StringIO()
+    gemini.denormalize(gemini.normalize(StringIO(text)), out)
+
+    assert out.getvalue() == text
+
+
+def test_a_top_level_array_is_kept_verbatim() -> None:
+    records = _read("[1, 2]")
+
+    assert records[-1] == IncompleteRecord(text="[1, 2]")
+
+
+def test_empty_text_and_empty_object_are_incomplete_documents() -> None:
+    assert [type(record) for record in _read("   ")] == [TurnContext, ContextClear]
+    records = _read("{}")
+    assert [type(record) for record in records] == [
+        TurnContext,
+        ContextClear,
+        IncompleteRecord,
+    ]
+
+
+def _nested() -> str:
+    """Return a document whose turns nest objects, as the CLI's own do."""
+    return json.dumps(
+        {
+            "sessionId": "s1",
+            "projectHash": "p",
+            "messages": [
+                {"type": "user", "content": "list it", "id": "u1"},
+                {
+                    "type": "gemini",
+                    "content": "done",
+                    "thoughts": [{"subject": "plan", "description": "ls"}],
+                    "tokens": {"input": 3, "output": 4, "total": 7},
+                    "model": "gemini-3-pro",
+                    "toolCalls": [
+                        {
+                            "id": "c1",
+                            "name": "run_shell_command",
+                            "args": {"command": "ls", "env": {"A": "1"}},
+                            "result": [{"functionResponse": {"output": "a"}}],
+                            "status": "success",
+                        },
+                    ],
+                },
+            ],
+        },
+    )
+
+
+def test_a_document_with_nested_fields_round_trips_byte_exact() -> None:
+    """A nested object is written back as the object it was read as."""
+    text = _nested()
+
+    out = StringIO()
+    gemini.denormalize(gemini.normalize(StringIO(text)), out)
+
+    assert out.getvalue() == text
+
+
+def test_a_mistyped_field_aborts_neither_the_read_nor_the_write() -> None:
+    """A document field of the wrong type reads as absent, as a missing one does."""
+    document = json_loads(_nested(), dict[str, object])
+    failed: list[str] = []
+    for path, changed in mistyped(document):
+        records = list(gemini.normalize(StringIO(json.dumps(changed))))
+        missing = json.dumps(without(document, path))
+        try:
+            gemini.denormalize(records, StringIO())
+        except TypeError as error:
+            failed.append(f"{path}: {error}")
+        # Anything else in a message is kept verbatim with its message rather
+        # than read as absent: reading it so would lose the value when the
+        # document is written back.
+        kept_whole = path.startswith("messages") and not path.endswith(".type")
+        if not kept_whole and unread(records) > unread(
+            gemini.normalize(StringIO(missing)),
+        ):
+            failed.append(f"{path}: the document reads worse than without the field")
+
+    assert failed == [], "\n".join(failed)
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -77,10 +77,12 @@ a result is typed by what the tool DID).
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import TYPE_CHECKING, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Literal, NamedTuple, Protocol, cast
 
 import re
 import shlex
+
+from treekle import from_plain, immutable, mutable
 
 from trackinizer.lib.agent.sessions.udiff import parse_udiff
 from trackinizer.lib.agent.types.sessions import (
@@ -90,14 +92,11 @@ from trackinizer.lib.agent.types.sessions import (
     ShellCommandResult,
     Splice,
 )
-from trackinizer.lib.custom_json import (
-    MutableJSONValue,
-    json_freeze,
-    json_unfreeze,
-)
 
 
 if TYPE_CHECKING:
+    from treekle import MutablePlainTree
+
     import bashlex
 else:
     from wrapt import lazy_import
@@ -133,17 +132,37 @@ the last line, ``tail -5`` counts backwards from it.
 """
 type MatchedRow = tuple[Act, str, tuple[int, int], str | None, LineRanges]
 """One table row's match: act, path as written, its span, content, ranges."""
-type Operation = tuple[Act, str, tuple[int, int], str | None, LineRanges, str | None]
-"""What one command did: act, path, path span, content, line ranges, chdir.
 
-The span is the path's offset in the source, which is what lets a replay put
-an edited path back without re-rendering the command around it.
 
-``path`` is the file the command RESOLVED -- ``cd sub && cat a.txt`` names
-``sub/a.txt`` -- while the span still points at the operand as written. The
-chdir is carried alongside so a rewrite can strip it back off; without it a
-replay would splice the resolved path into a command that will chdir again.
-"""
+class Operation(NamedTuple):
+    """What one command did, with the source spans a rewrite splices into.
+
+    Every span is an offset into the ORIGINAL source, so a replay edits the
+    text the agent wrote rather than re-parsing a different rendering of it.
+
+    Attributes:
+      act: What the command did to its file.
+      path: The file the command RESOLVED -- ``cd sub && cat a.txt`` names
+        ``sub/a.txt`` -- while ``span`` still points at the operand as written.
+      span: The path operand's offset in the source.
+      content: The bytes a write or append states, if any.
+      ranges: Which lines a read returned.
+      chdir: The literal ``cd`` destination, so a rewrite can strip it back
+        off; without it a replay would resolve the destination twice.
+      command: The file-touching command's offset in the source, heredoc body
+        and terminator included.
+      redirect: The output operator a write used (``>``, ``>|``, ``>>``).
+
+    """
+
+    act: Act
+    path: str
+    span: tuple[int, int]
+    content: str | None
+    ranges: LineRanges
+    chdir: str | None
+    command: tuple[int, int]
+    redirect: str | None
 
 
 class _BashNode(Protocol):
@@ -190,12 +209,16 @@ def lift_shell_result(
     operation = _operation(script) if script is not None else None
     if operation is None:
         return None
-    kind, path, _, content, ranges, _ = operation
-    extra_value = json_unfreeze(result.extra)
-    extra = extra_value
-    replay: dict[str, MutableJSONValue] = {}
+    kind, path, content, ranges = (
+        operation.act,
+        operation.path,
+        operation.content,
+        operation.ranges,
+    )
+    extra = dict(mutable(result.extra))
+    replay: dict[str, MutablePlainTree] = {}
     if result.command is not None:
-        replay["command"] = json_unfreeze(result.command)
+        replay["command"] = list(result.command)
     if kind != "read" and result.stdout:
         replay["stdout"] = result.stdout
     if result.stderr:
@@ -203,7 +226,7 @@ def lift_shell_result(
     if result.exit_code is not None:
         replay["exit_code"] = result.exit_code
     extra["$shell"] = replay
-    extra_frozen = json_freeze(extra)
+    extra_frozen = immutable(extra)
     if kind == "read":
         return FileReadResult(
             context_id=result.context_id,
@@ -284,17 +307,17 @@ def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
       shell_result: Its source shell execution, or None when it was native.
 
     """
-    extra = dict(json_unfreeze(result.extra))
+    extra = dict(mutable(result.extra))
     replay_value = extra.pop("$shell", None)
     if not isinstance(replay_value, Mapping):
         return None
     replay = cast(Mapping[str, object], replay_value)
     command_value = replay.get("command")
-    command = None
-    if isinstance(command_value, list):
-        command_values = cast(list[object], command_value)
-        parts = tuple(part for part in command_values if isinstance(part, str))
-        command = parts if len(parts) == len(command_values) else None
+    command = (
+        tuple(from_plain(command_value, list[str]))
+        if command_value is not None
+        else None
+    )
     command = _stencil_command(command, result)
     stdout = (
         result.content or ""
@@ -311,7 +334,7 @@ def shell_result_for_replay(result: FileResult) -> ShellCommandResult | None:
         stdout=stdout if isinstance(stdout, str) else "",
         stderr=stderr if isinstance(stderr, str) else "",
         exit_code=exit_code if isinstance(exit_code, int) else None,
-        extra=json_freeze(extra),
+        extra=immutable(extra),
     )
 
 
@@ -329,36 +352,38 @@ def rewrite_shell_source(command: str, result: FileResult) -> str:
     operation = _operation(command)
     if operation is None:
         return command
-    kind, original_path, span, original_content, _, _ = operation
-    # The path is the one field EVERY row carries, and each row reported where
-    # it sits, so renaming is one splice regardless of which utility ran.
-    renamed = (
-        command
-        if result.path is None or result.path == original_path
-        else command[: span[0]]
-        + shlex.quote(_operand(command, result.path))
-        + command[span[1] :]
+    path = operation.path if result.path is None else result.path
+    # The command will chdir again on replay, so splicing the resolved path in
+    # would resolve the destination twice -- ``cd sub && cat sub/a.txt``.
+    operand = (
+        path
+        if operation.chdir is None
+        else path.removeprefix(f"{operation.chdir.rstrip('/')}/")
     )
-    if kind != "write" or not isinstance(result, FileWriteResult):
-        # Only a write states the file's whole contents. An append states what
-        # it added and a rewrite states nothing, so neither can be rebuilt into
-        # a different command without inventing the rest of the file.
-        return renamed
-    if result.content is None or result.content == original_content:
-        return renamed
-    # The content changed, so the command that produced it no longer describes
-    # the file. ``printf %s`` writes the new bytes literally, whatever utility
-    # the original used, and the redirect keeps the original's direction.
-    found = _simple_command(renamed)
-    if found is None:
-        raise ValueError("Expected found is not None.")
-    tree, _ = found
-    redirect = next(part for part in tree.parts if part.kind == "redirect")
-    rewritten = (
-        f"/usr/bin/printf %s {shlex.quote(result.content)} "
-        f"{redirect.type} {shlex.quote(_operand(command, result.path or original_path))}"
-    )
-    return renamed[: tree.pos[0]] + rewritten + renamed[tree.pos[1] :]
+    if (
+        operation.act == "write"
+        and isinstance(result, FileWriteResult)
+        and result.content is not None
+        and result.content != operation.content
+    ):
+        # The content changed, so the command that produced it no longer
+        # describes the file. ``printf %s`` writes the new bytes literally,
+        # whatever utility the original used, and the redirect keeps the
+        # original's direction. The whole command span is replaced -- a
+        # heredoc's body and terminator included -- in the ORIGINAL source.
+        start, end = operation.command
+        return (
+            f"{command[:start]}/usr/bin/printf %s {shlex.quote(result.content)} "
+            f"{operation.redirect} {shlex.quote(operand)}{command[end:]}"
+        )
+    # Only a write states the file's whole contents. An append states what it
+    # added and a rewrite states nothing, so neither can be rebuilt into a
+    # different command without inventing the rest of the file -- but the path
+    # is the one field EVERY row carries, so a rename is one splice.
+    if path == operation.path:
+        return command
+    start, end = operation.span
+    return command[:start] + shlex.quote(operand) + command[end:]
 
 
 def _script(command: tuple[str, ...] | None) -> str | None:
@@ -369,7 +394,7 @@ def _script(command: tuple[str, ...] | None) -> str | None:
 
 def _shell_source(command: tuple[str, ...] | None) -> tuple[str, int | None] | None:
     """Return shell source and its argv index, or direct argv as source."""
-    if not command:
+    if not (argv := command or ()):
         return None
     shells = {
         "bash",
@@ -388,16 +413,16 @@ def _shell_source(command: tuple[str, ...] | None) -> tuple[str, int | None] | N
         "/usr/bin/sh",
         "/usr/bin/zsh",
     }
-    if command[0] not in shells:
-        return (shlex.join(command), None)
-    for index, argument in enumerate(command[1:], 1):
+    if argv[0] not in shells:
+        return (shlex.join(argv), None)
+    for index, argument in enumerate(argv[1:], 1):
         is_command_flag = argument == "-c" or (
             argument.startswith("-")
             and not argument.startswith("--")
             and "c" in argument[1:]
         )
-        if is_command_flag and index + 2 == len(command):
-            return (command[index + 1], index + 1)
+        if is_command_flag and index + 2 == len(argv):
+            return (argv[index + 1], index + 1)
     return None
 
 
@@ -424,22 +449,32 @@ def _operation(script: str) -> Operation | None:
     resolved = (
         path if chdir is None or path.startswith("/") else f"{chdir.rstrip('/')}/{path}"
     )
-    return (act, resolved, span, content, ranges, chdir)
-
-
-# The command will chdir again on replay, so splicing the resolved path in would resolve
-# the destination twice -- ``cd sub && cat sub/a.txt``.
-def _operand(command: str, path: str) -> str:
-    """Return a resolved path back as the operand its command should carry."""
-    found = _operation(command)
-    chdir = found[5] if found is not None else None
-    return path if chdir is None else path.removeprefix(f"{chdir.rstrip('/')}/")
+    # Spans before the heredoc are the same in the bared text as in the
+    # original, which is all a path operand or the command's start can be; the
+    # command's END is the original terminator's, since baring moved it.
+    return Operation(
+        act=act,
+        path=resolved,
+        span=span,
+        content=content,
+        ranges=ranges,
+        chdir=chdir,
+        command=(tree.pos[0], quoted[2] if quoted is not None else tree.pos[1]),
+        redirect=next(
+            (
+                part.type
+                for part in tree.parts
+                if part.kind == "redirect" and part.type in {">", ">|", ">>"}
+            ),
+            None,
+        ),
+    )
 
 
 def _matched_row(
     parts: Sequence[_BashNode],
     *,
-    quoted: tuple[str, str] | None,
+    quoted: tuple[str, str, int] | None,
 ) -> MatchedRow | None:
     """Return the table row one parsed command matches, path as written."""
     if any(part.kind not in {"word", "redirect"} for part in parts):
@@ -514,8 +549,8 @@ def _matched_row(
 # is the one that suppresses expansion and so writes its body verbatim. Unquoting it for
 # the parser is safe because the delimiter itself is never content; the body is taken
 # from the original text.
-def _quoted_heredoc(script: str) -> tuple[str, str] | None:
-    """Return ``script`` with a QUOTED heredoc delimiter bared, and the body."""
+def _quoted_heredoc(script: str) -> tuple[str, str, int] | None:
+    """Return ``script`` with a QUOTED delimiter bared, the body, and its end."""
     match = re.search(r"(<<-?)\s*(['\"])(\w+)\2\s*?\n", script)
     if match is None:
         return None
@@ -541,7 +576,15 @@ def _quoted_heredoc(script: str) -> tuple[str, str] | None:
         # the file this classifier has not modelled.
         return None
     body = "".join(f"{line}\n" for line in lines[:at])
-    return (f"{script[: match.start()]}<< {delimiter}\n{body}{delimiter}\n", body)
+    # Where the terminator line ends in the ORIGINAL text. Counted from the
+    # raw lines: ``<<-`` stripped tabs from ``lines``, not from the source.
+    raw = script[match.end() :].split("\n")
+    end = match.end() + sum(len(line) + 1 for line in raw[:at]) + len(raw[at])
+    return (
+        f"{script[: match.start()]}<< {delimiter}\n{body}{delimiter}\n",
+        body,
+        end,
+    )
 
 
 # Agents author files this way constantly; 4.6% of 1351 captured claude commands carry a
@@ -841,11 +884,11 @@ def _line_reader_operation(
 ) -> MatchedRow | None:
     """Return the bounded read ``head`` or ``tail`` performed."""
     if len(argv) == 2:
-        # The default is 10 lines, but stating it would report a bound the
-        # command never gave; an unstated count is not a known one.
+        # Coreutils' default count is 10. Stating no range would claim the
+        # WHOLE file came back, which ``head f`` on a long file never prints.
         if argv[1].startswith("-"):
             return None
-        return ("read", argv[1], nodes[1].pos, None, ())
+        return ("read", argv[1], nodes[1].pos, None, (_line_range(utility, "10"),))
     if len(argv) == 4 and argv[1] in {"-n", "--lines"}:
         count, path_index = argv[2], 3
     elif len(argv) == 3 and (
@@ -964,23 +1007,17 @@ def _stencil_command(
     if source is None or operation is None:
         return command
     if source[1] is None:
-        if result.path is None or operation[1] == result.path:
+        if result.path is None or operation.path == result.path:
             return command
-        # By the word the operation NAMED, not the last one: an argv whose
-        # path is followed by a flag -- ``tee F -a`` -- had the flag replaced
-        # instead, turning an append into a truncate and leaving the path
-        # untouched. The same value-versus-position defect the matchers carry
-        # ``(word, index)`` pairs to avoid.
+        # By the operand's POSITION, never its value: ``sed -i s/a/b/ s/a/b/``
+        # names the script and the file with one text, and a lookup by value
+        # renamed the script. ``source`` is ``shlex.join(command)``, so each
+        # word starts one past the end of the quoted word before it.
+        starts = [0]
+        for word in command[:-1]:
+            starts.append(starts[-1] + len(shlex.quote(word)) + 1)
         rewritten = list(command)
-        at = next(
-            (
-                index
-                for index, word in enumerate(command)
-                if word == operation[1] and index > 0
-            ),
-            len(command) - 1,
-        )
-        rewritten[at] = result.path
+        rewritten[starts.index(operation.span[0])] = result.path
         return tuple(rewritten)
     rewritten = list(command)
     rewritten[source[1]] = rewrite_shell_source(source[0], result)

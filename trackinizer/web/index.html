@@ -4,10 +4,9 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="theme-color" content="#090a0b" />
-    <script>try{const t=localStorage.getItem("trackinizer.theme");if(t==="light"||(t==="system"&&!matchMedia("(prefers-color-scheme: dark)").matches)){document.documentElement.dataset.theme="light";document.querySelector('meta[name="theme-color"]').content="#edf1f5"}}catch{}</script>
     <meta
       name="description"
-      content="Trackinizer: issues, beliefs, papers, experiments and agent sessions as one graph, updated live."
+      content="%APP_NAME%: issues, beliefs, papers, experiments and agent sessions as one graph, updated live."
     />
     <link rel="icon" type="image/svg+xml" href="/src/favicon.svg" />
     <!-- The design's pairing, as the prototype loads it; offline the stacks fall
@@ -18,7 +17,8 @@
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap"
       rel="stylesheet"
     />
-    <title>Trackinizer</title>
+    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
+    <title>%APP_NAME%</title>
   </head>
   <body>
     <div id="root"></div>

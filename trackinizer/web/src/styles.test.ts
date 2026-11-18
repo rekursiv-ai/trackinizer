@@ -55,6 +55,32 @@ test("no text takes the tertiary ink, under WCAG AA's 4.5:1 on every surface; te
   expect(textIn("--ink-tertiary")).toEqual([]);
 });
 
+test("the machine ink is neutral in both themes, so a locating line carries no colour cast, and it meets WCAG AA's 4.5:1 on every surface", () => {
+  for (const theme of [":root", ':root[data-theme="light"]']) {
+    const tokens = declarations(theme);
+    const hex = tokens.get("--ink-machine")!;
+    const channel = (at: number) => Number.parseInt(hex.slice(at, at + 2), 16);
+    expect([channel(1), channel(3), channel(5)], `${theme} --ink-machine ${hex} is grey`).toEqual([channel(1)!, channel(1)!, channel(1)!]);
+    for (const surface of ["--bg", "--surface", "--surface-raised", "--surface-hover"]) {
+      expect(contrast(hex, tokens.get(surface)!), `${theme} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+    }
+  }
+});
+
+test("the fold never reaches for a tinted grey: its chrome is the neutral machine ink and its content is white", () => {
+  // What a live page computes is the proof — a shared `.modal-b p` outranks a bare
+  // class — but this catches the tinted step being authored back into the sheet.
+  const sheet = readFileSync(join(import.meta.dirname, "visuals/Knowledge.css"), "utf8");
+  expect([...sheet.matchAll(/var\(--(muted|ink-muted|ink-tertiary)\)/g)].map((found) => found[1])).toEqual([]);
+  // A wire's word shares the `.mono` class with the slot that precedes it, and the
+  // accent marks a level and never a wire. Measured live, a bare `.knowledge-into`
+  // lost that cascade and the clause turned purple.
+  const into = sheet.split("\n").filter((line) => line.includes(".knowledge-into"));
+  expect(into).toHaveLength(1);
+  expect(into[0]).toContain(".mono.knowledge-into");
+  expect(into[0]).toContain("var(--ink-machine)");
+});
+
 test("text that steps back meets WCAG AA's 4.5:1 on a selected row, the accent's tint over the view or a panel", () => {
   for (const theme of [":root", ':root[data-theme="light"]']) {
     const tokens = declarations(theme);
@@ -125,6 +151,28 @@ test("each code colour meets WCAG AA's 4.5:1 on every surface, and each theme se
   }
 });
 
+test("the code pane's syntax ramp meets WCAG AA's 4.5:1 on every surface, in both themes", () => {
+  // The pane reads a whole file at length, so its ramp is held to the same bar as the
+  // transcript's `--code-*`. These name the station bar's group hues rather than carrying
+  // their own hex, which is the point — one palette, used twice — so the reference is
+  // resolved here before the contrast is measured.
+  const dark = declarations(":root");
+  const light = new Map([...dark, ...declarations(':root[data-theme="light"]')]);
+  const names = [...dark.keys()].filter((name) => name.startsWith("--syn-"));
+  expect(names).toEqual(["--syn-keyword", "--syn-string", "--syn-number", "--syn-function", "--syn-property"]);
+  for (const [theme, tokens] of [["dark", dark], ["light", light]] as const) {
+    for (const name of names) {
+      const value = tokens.get(name)!;
+      const reference = /^var\((--[\w-]+)\)$/.exec(value);
+      const hex = reference ? tokens.get(reference[1]!) : value;
+      expect(hex, `${name} resolves in the ${theme} theme`).toMatch(/^#[0-9a-f]{6}$/i);
+      for (const surface of ["--bg", "--surface", "--surface-raised", "--surface-hover"]) {
+        expect(contrast(hex!, tokens.get(surface)!), `${theme} ${name} on ${surface}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  }
+});
+
 /** The colour a primary button's background is: a token, or a token mixed with black, as `color-mix` does in sRGB. */
 function background(value: string, tokens: Map<string, string>): string {
   const token = /^var\((--[\w-]+)\)$/.exec(value);
@@ -142,4 +190,39 @@ test("white text on a primary button meets WCAG AA's 4.5:1 in both themes, at re
       expect(contrast("#ffffff", fill), `${theme} ${rule} ${fill}`).toBeGreaterThanOrEqual(4.5);
     }
   }
+});
+
+/** Every file under `dir` whose name ends with one of `endings`, but test files. */
+function sources(dir: string, endings: readonly string[]): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory()) return entry.name === "generated" ? [] : sources(path, endings);
+    return endings.some((ending) => entry.name.endsWith(ending)) && !/\.test\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}
+
+test("every var(--token) a stylesheet or a component uses is a token some stylesheet defines, or one with a fallback", () => {
+  const files = sources(import.meta.dirname, [".css", ".tsx", ".ts"]);
+  const defined = new Set(
+    sources(import.meta.dirname, [".css"]).flatMap((file) => [...readFileSync(file, "utf8").matchAll(/(--[\w-]+)\s*:/g)].map((match) => match[1]!)),
+  );
+  // Custom properties a component sets inline, as `style={{ "--name": … }}`, count as defined.
+  for (const file of files.filter((name) => /\.tsx?$/.test(name))) {
+    for (const match of readFileSync(file, "utf8").matchAll(/["'](--[\w-]+)["']\s*:/g)) defined.add(match[1]!);
+  }
+  const undefinedUses = files.flatMap((file) =>
+    [...readFileSync(file, "utf8").matchAll(/var\((--[\w-]+)\s*([,)])/g)]
+      .filter(([, name, end]) => end === ")" && !defined.has(name!))
+      .map(([, name]) => `${file.slice(import.meta.dirname.length + 1)}: ${name}`),
+  );
+  expect([...new Set(undefinedUses)]).toEqual([]);
+});
+
+test("a danger button draws from the theme's tokens, and the light theme's own shade never reaches a fixed skin", () => {
+  const danger = declarations(".btn.danger");
+  expect(danger.get("color")).toBe("var(--error-text)");
+  for (const property of ["background", "border-color"]) expect(danger.get(property)).toMatch(/var\(--red\)/);
+  // The light theme's shade is for the default skin alone: a skin sets its own red, which the rule above takes.
+  expect(css).not.toContain(':root[data-theme="light"] .btn.danger');
+  expect(declarations(':root[data-theme="light"]:not([data-skin]) .btn.danger').get("color")).toBe("var(--red)");
 });

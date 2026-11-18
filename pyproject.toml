@@ -3,7 +3,7 @@
 
 [project]
 name = "trackinizer"
-version = "0.1.5"
+version = "0.1.7"
 description = "Centralized agent database for Inquiries (Issues + Artifacts)."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -23,6 +23,96 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
+    # Prefer https://awesome-python.com deps over alternatives.
+    #
+    # A bare install is the client side: `trax`, `Client`, and the wire and type
+    # models. Everything only the server, its web app or its addons import is in
+    # the `server` extra below, so installing `trax` downloads megabytes and no
+    # database driver, web framework or torch. The rule for what stays here:
+    # whatever `trax/`, `client/`, `wire/` or `types/` import at all, directly or
+    # through `lib/`, at import time or later.
+    "treekle>=0.3.0",
+    "websockets>=15",
+    # http client
+    "httpx2>=2.12",
+    # data models
+    "pydantic>=2.0",
+    # 4.10 adds PEP 728 `TypedDict(closed=True)`; `types/change_log.py` needs it.
+    "typing_extensions>=4.10",
+    # server/preferences.py serializes with pydantic's core directly.
+    "pydantic-core",
+    # trax grammar
+    "lark>=1.1",
+    # filesystem watching: `trax run` follows the agent's session files through
+    # `lib/posix/follow.py`, whose macOS backend lazy-imports watchdog's fsevents.
+    "watchdog>=6.0.0 ; sys_platform == 'darwin'",
+    # shell parsing: lifts a captured `cat`/`echo >` into a typed file result.
+    # Session capture (`trax run`) does this on the client, through
+    # `lib/agent/sessions/shell_results.py`; without it every such command is
+    # left unlifted, silently.
+    "bashlex>=0.18",
+    # lazy imports
+    "wrapt",
+]
+
+[project.scripts]
+trackinizer = "trackinizer.server.entry:main"
+trax = "trackinizer.trax.cli:main"
+
+[dependency-groups]
+# NEVER ADD MORE DEPENDENCIES!
+
+debug = [
+    "ipython",
+    "tqdm",
+]
+lint = [
+    "codespell>=2.2.4",
+    "ruff",
+]
+test = [
+    "pytest-timeout>=2.4.0",
+    "pytest-xdist>=3.8.0",
+    "pytest>=7.0",
+    "pytest-cov",
+    "nodejs-wheel-binaries>=24.16.0",
+    "hypothesis>=6.155.1",
+    "pytest-asyncio>=1.3.0",
+    "pytest-postgresql>=9.0",
+]
+typecheck = [
+    "basedpyright>=1.40.1",
+    "pyrefly>=1.4.0",
+    "ty>=0.0.84",
+    "rekursiv-ai-typings>=0.1.6",
+    "asyncpg-stubs>=0.31.2",
+]
+"pre-commit" = [
+    "pre-commit>=4.6",
+    {include-group = "lint"},
+    {include-group = "test"},
+    {include-group = "typecheck"},
+]
+dev = [
+    {include-group = "pre-commit"},
+    {include-group = "debug"},
+]
+
+# NEVER ADD MORE DEPENDENCY GROUPS!
+
+[project.urls]
+Homepage = "https://www.rekursiv.ai"
+Repository = "https://github.com/rekursiv-ai/trackinizer"
+Documentation = "https://github.com/rekursiv-ai/trackinizer/tree/main/docs"
+Source = "https://github.com/rekursiv-ai/trackinizer"
+Issues = "https://github.com/rekursiv-ai/trackinizer/issues"
+Changelog = "https://github.com/rekursiv-ai/trackinizer/releases"
+
+[project.optional-dependencies]
+# The server: `pip install 'trackinizer[server]'` provides the `trackinizer`
+# command. Nothing in `trax/`, `client/`, `wire/` or `types/` imports these; the
+# test in `light_install_test.py` fails if one starts to.
+server = [
     # database
     "asyncpg>=0.31.0",
     "py-pglite[asyncpg,extensions]>=0.5.3",
@@ -30,37 +120,26 @@ dependencies = [
     "fastapi>=0.123.9",
     "starlette>=0.40",
     "uvicorn>=0.30.0",
-    # http client
-    "httpx2>=2.12",
     # session signing
     "itsdangerous>=2.2.0",
     # data models
-    "configgle>=1.4.0",
-    "pydantic>=2.0",
-    # trax grammar
-    "lark>=1.1",
-    # shell parsing: lifts a captured `cat`/`echo >` into a typed file result
-    "bashlex>=0.18",
+    "configgle>=1.4.3",
     # session-body compression (the read path decompresses zstd blobs). The
     # stdlib `compression.zstd` is 3.14-only; the package validates on 3.12.
     "zstandard>=0.25.0",
-    # lazy imports
-    "wrapt",
-    # filesystem watching
-    "watchdog>=6.0.0 ; sys_platform == 'darwin'",
     # Semantic session search (TRACKINIZER_SESSION_EMBEDDER=<model>@<dim>, e.g.
     # qwen3-embedding-4b@1024): the embedders run in-process transformers + torch,
-    # and the startup weight-presence check reads the HF cache. Unconditional --
-    # semantic search is a first-class feature, so every install carries the model
-    # path. The imports are still deferred at runtime (TYPE_CHECKING + wrapt
+    # and the startup weight-presence check reads the HF cache. Every server
+    # install carries the model path -- semantic search is a first-class feature.
+    # The imports are still deferred at runtime (TYPE_CHECKING + wrapt
     # lazy_import for torch/transformers, a function-local import for
     # huggingface_hub) so `import trackinizer` costs nothing until something embeds.
     #
     # torch: floor matches the version the monorepo pins and tests
     # (`torch==2.11.0`). The specifier here is deliberately index-free, so the
     # PUBLISHED wheel metadata carries a bare `torch>=2.11.0`: an end-user
-    # `pip install trackinizer` on linux resolves torch from PyPI = the CUDA
-    # build, and GPU backfill (`torch.compile`) works out of the box. The CPU
+    # `pip install 'trackinizer[server]'` on linux resolves torch from PyPI = the
+    # CUDA build, and GPU backfill (`torch.compile`) works out of the box. The CPU
     # wheel is pinned ONLY for OUR lock/CI resolution, in `[tool.uv.sources]`
     # below (uv-only, stripped from the built wheel), so `uv sync --frozen` in
     # export/validation CI installs +cpu and never downloads the ~2.5 GB CUDA
@@ -79,57 +158,6 @@ dependencies = [
     # (`peft>=0.21.0`); only the jina embedders reach it, lazily.
     "peft>=0.21.0",
 ]
-
-[dependency-groups]
-# NEVER ADD MORE DEPENDENCIES!
-
-debug = [
-    "ipython",
-]
-lint = [
-    "codespell>=2.2.4",
-    "ruff",
-]
-test = [
-    "pytest-timeout>=2.4.0",
-    "pytest-xdist>=3.8.0",
-    "pytest>=7.0",
-    "nodejs-wheel-binaries>=24.16.0",
-    "hypothesis>=6.155.1",
-    "pytest-asyncio>=1.3.0",
-    "pytest-postgresql>=9.0",
-]
-typecheck = [
-    "basedpyright>=1.40.1",
-    "ty>=0.0.84",
-    "rekursiv-ai-typeshed",
-    "hatchling>=1.32.4",  # packages/rekursiv-ai-typeshed/rekursiv_ai_typeshed/hatch_build.py subscripts its one-parameter BuildHookInterface.
-    "asyncpg-stubs>=0.31.2",
-]
-"pre-commit" = [
-    "pre-commit>=4.6",
-    {include-group = "lint"},
-    {include-group = "test"},
-    {include-group = "typecheck"},
-]
-dev = [
-    {include-group = "pre-commit"},
-    {include-group = "debug"},
-]
-
-# NEVER ADD MORE DEPENDENCY GROUPS!
-
-[project.scripts]
-trackinizer = "trackinizer.server.server:main"
-trax = "trackinizer.trax.cli:main"
-
-[project.urls]
-Homepage = "https://www.rekursiv.ai"
-Repository = "https://github.com/rekursiv-ai/trackinizer"
-Documentation = "https://github.com/rekursiv-ai/trackinizer/tree/main/docs"
-Source = "https://github.com/rekursiv-ai/trackinizer"
-Issues = "https://github.com/rekursiv-ai/trackinizer/issues"
-Changelog = "https://github.com/rekursiv-ai/trackinizer/releases"
 
 [build-system]
 requires = ["hatchling"]
@@ -153,7 +181,20 @@ packages = ["trackinizer"]
 # not a force-include: hatch applies a force-include to the editable install too,
 # so `uv sync` would fail in every checkout that has not built the app yet.
 # Package validation checks that the wheel carries it.
-exclude = ["**/*_test.py", "**/conftest.py", "trackinizer/web/**"]
+exclude = [
+    "**/*_test.py",
+    "**/conftest.py",
+    "trackinizer/web/**",
+    # Test support no shipped module imports.
+    "trackinizer/lib/testing/**",
+    "trackinizer/lib/agent/sessions/testdata/**",
+    "trackinizer/lib/posix/testing.py",
+    "trackinizer/lib/postgres/testing.py",
+    "trackinizer/server/api/canvas_test_support.py",
+    "trackinizer/server/asks_test_support.py",
+    "trackinizer/server/embedders/qwen_fakes.py",
+    "trackinizer/trax/run/codex_app_fake.py",
+]
 artifacts = ["trackinizer/web/dist/**"]
 
 [tool.hatch.build.targets.sdist]
@@ -218,6 +259,7 @@ markers = [
     "gpu_triton: requires Triton kernels",
     "network_anthropic: reaches Anthropic over the network",
     "network_duckduckgo: reaches DuckDuckGo over the network",
+    "network_e2b: reaches E2B over the network",
     "network_gemini: reaches Gemini over the network",
     "network_google_search: reaches Google Search over the network",
     "network_github: reaches GitHub over the network",
@@ -229,7 +271,7 @@ markers = [
     "network_openreview: reaches OpenReview over the network",
     "network_pypi: reaches PyPI over the network",
     "network_searxng: reaches a SearXNG service over the network",
-    "network_shadeform: reaches Shadeform over the network",
+    "network_gpu_cloud: reaches a GPU cloud provider over the network",
     "network_slack: reaches Slack over the network",
     "network_together: reaches Together over the network",
     "network_wandb: reaches Weights & Biases over the network",
@@ -237,7 +279,7 @@ markers = [
 # `-p no:pytest_postgresql`: the plugin imports psycopg, which needs libpq, and an
 # autoloaded plugin that fails to import aborts collection. conftest.py loads it
 # only when psycopg can.
-addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=20 --dist=worksteal -p no:pytest_postgresql"
+addopts = "-m 'not ci_smoke and not cuda and not integration and not performance and not cluster and not slow' --durations=20 --dist=worksteal -p no:pytest_postgresql -p no:py_pglite"
 timeout = 60
 # "error" = treat all warnings as errors (same as -Werror).
 # Using filterwarnings instead of addopts so we can add exceptions.
@@ -279,13 +321,21 @@ do_not_mutate_patterns = [
 ]
 
 [tool.coverage.run]
+# sys.monitoring, the default from Python 3.14 on. 3.12's default, ctrace,
+# traces every line a test runs, Numba's pure-Python compiler included: a cold
+# compile of priml's Craftax kernels took 68 s under it, 49 s under sysmon and
+# 43 s untraced, past the 60 s test timeout. COVERAGE_CORE still overrides it,
+# as the testmon hooks' ctrace does.
+core = "sysmon"
 omit = [
     "*_test.py",
     "test_*.py",
     "*/tests/*",
     "*/.venv/*",
     "*/typings/*",
-    "*/tools/*",
+    "*/scripts/*",
+    "*/testdata/*",
+    "*/__main__.py",
 ]
 
 [tool.coverage.report]
@@ -294,11 +344,17 @@ exclude_lines = [
     "if TYPE_CHECKING:",
     "if __name__ == .__main__.:",
     "raise NotImplementedError",
+    "^\\s*\\.\\.\\.$",
     # Convention: a ``_triton``-suffixed def is a body ``triton.jit`` compiles
     # from its source text to PTX. The Python bytecode never runs, so the
     # tracer cannot see lines a GPU test executed; the kernel is tested by
     # its ``gpu_triton`` caller, not by line coverage.
     "^def \\w+_triton\\(",
+    # Convention: a ``_numba``-suffixed def is a body Numba compiles from
+    # its bytecode to machine code. The Python bytecode never runs, so the
+    # tracer cannot see lines a test executed; the kernel is tested by its
+    # callers' results, not by line coverage.
+    "^def \\w+_numba\\(",
 ]
 # fail_under = 90
 show_missing = true
@@ -325,24 +381,6 @@ extend-include = ["*.ipynb"]
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
 select = ["ALL"]
-
-extend-safe-fixes = [
-    "C4",     # Collection and comprehension rewrites.
-    "E711",   # Compare to None with identity.
-    "E712",   # Compare booleans by truthiness.
-    "F401",   # Remove unused imports.
-    "F601",   # Remove overwritten dictionary entries.
-    "F841",   # Remove unused local bindings.
-    "PT006",  # Use tuple for pytest.mark.parametrize names.
-    "PT007",  # Use tuple/list consistently for pytest values.
-    "PT018",  # Split composite assertions.
-    "PYI034", # Annotate __enter__/__new__/__iadd__ returns as Self.
-    "RET504", # Remove unnecessary local assignment directly before return.
-    "SIM102", # Collapse nested if statements.
-    "SIM105", # Use contextlib.suppress instead of try-except-pass.
-    "TC",     # Type-checking import and annotation rewrites.
-    "UP",     # Python syntax upgrades.
-]
 
 ignore = [
     # COM812 is deliberately ignored here and re-enabled only by the
@@ -401,6 +439,29 @@ ignore = [
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
 
+extend-safe-fixes = [
+    "C4",     # Collection and comprehension rewrites.
+    "D301",   # Use `r"""` if any backslashes in a docstring.
+    "E711",   # Compare to None with identity.
+    "E712",   # Compare booleans by truthiness.
+    "E731",   # Do not assign a `lambda` expression, use a `def`.
+    "F401",   # Remove unused imports.
+    "F601",   # Remove overwritten dictionary entries.
+    "F841",   # Remove unused local bindings.
+    "ISC004", # Unparenthesized implicit string concatenation in collection.
+    "PT006",  # Use tuple for pytest.mark.parametrize names.
+    "PT007",  # Use tuple/list consistently for pytest values.
+    "PT018",  # Split composite assertions.
+    "PYI034", # Annotate __enter__/__new__/__iadd__ returns as Self.
+    "RET504", # Remove unnecessary local assignment directly before return.
+    "RUF007", # Prefer `itertools.pairwise()` over `zip()` when iterating over successive pairs.
+    "RUF022", # `__all__` is not sorted.
+    "SIM102", # Collapse nested if statements.
+    "SIM105", # Use contextlib.suppress instead of try-except-pass.
+    "TC",     # Type-checking import and annotation rewrites.
+    "UP",     # Python syntax upgrades.
+]
+
 [tool.ruff.lint.per-file-ignores]
 # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 
@@ -422,6 +483,21 @@ ignore = [
     "S101",    # Use of `assert` detected.
     "S301",    # Pickle usage.
     "SLF001",  # Private member access.
+    # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
+]
+
+"*.ipynb" = [
+    "ARG001",  # Unused function argument (callbacks).
+    "BLE001",  # Blind exception (sandboxed exec).
+    "E402",    # Module level import not at top of file.
+    "F811",    # Redefinition across cells.
+    "F821",    # Undefined name (e.g., `display` from IPython).
+    "INP001",  # Implicit namespace package.
+    "PLC0415", # Import not at top level.
+    "RUF100",  # Preserve noqa for jupytext-synced .py files.
+    "S102",    # Use of exec.
+    "S301",    # Pickle usage.
+    "T201",    # Print found.
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
 
@@ -481,22 +557,6 @@ ignore = [
     "TID251",  # Banned API.
     # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
 ]
-
-"*.ipynb" = [
-    "ARG001",  # Unused function argument (callbacks).
-    "BLE001",  # Blind exception (sandboxed exec).
-    "E402",    # Module level import not at top of file.
-    "F811",    # Redefinition across cells.
-    "F821",    # Undefined name (e.g., `display` from IPython).
-    "INP001",  # Implicit namespace package.
-    "PLC0415", # Import not at top level.
-    "RUF100",  # Preserve noqa for jupytext-synced .py files.
-    "S102",    # Use of exec.
-    "S301",    # Pickle usage.
-    "T201",    # Print found.
-    # NEVER ADD MORE SUPPRESSIONS! SUPPRESS IN FILE!
-]
-
 "{**/docs/**,**/scripts/**}" = [
     "INP001",  # Standalone example scripts.
     "T201",    # Print found. (Eval scripts use print for output.)
@@ -517,7 +577,7 @@ ignore = [
 # runtime-evaluated-*: never move an import USED IN annotations of these.
 #   - pydantic.BaseModel: validates fields from annotations.
 #   - configgle Fig/Makes/Maker: resolves Config fields and owner __init__ hints.
-#   - dataclasses.dataclass: custom_json.to_json, cli_override, and
+#   - dataclasses.dataclass: codec.from_plain, cli_override, and
 #     tool_spec.coerce_kwargs call get_type_hints on any dataclass. This pins
 #     every dataclass field type eager; a heavy one (torch.Tensor) that the
 #     house `annotation-import` rule then flags takes an inline house-ignore.
@@ -585,18 +645,12 @@ useLibraryCodeForTypes = false
 # `stubPath` (not `extraPaths`) is the one root that resolves ahead of an
 # installed package's inline types.
 stubPath = "typings"
-# typings/ is ALSO a source root so a stub package can ship a placeholder .py:
-# triton is linux-only (uv.lock `sys_platform == 'linux'`), so without this
-# every `import triton` fails `reportMissingModuleSource` on macOS, and an inline
-# suppression would fail `reportUnnecessaryTypeIgnoreComment` on linux. Stubs
-# still win over source, so no type changes. Mirrors [tool.ty.environment].
-extraPaths = ["typings"]
-# `rekursiv-ai-typeshed` (a `typecheck` dependency): the checkers' bundled stdlib
-# with `int`/`float` `__pow__` returning `float` rather than typeshed's `Any`,
-# which would otherwise make every `x ** 0.5` a `reportAny` violation.
-# `uv sync` installs it as shared data at this path; the `basedpyright/` tree
-# also carries configgle's `Intersection` polyfill.
-typeshedPath = ".venv/share/rekursiv-ai-typeshed/basedpyright"
+# typings/ is ALSO a source root so a local stub can ship a placeholder .py.
+# `rekursiv-ai-typings` installs its own placeholder trees (triton is
+# linux-only, so without one every `import triton` fails
+# `reportMissingModuleSource` on macOS) under .venv/share. Stubs still win
+# over source, so no type changes.
+extraPaths = ["typings", ".venv/share/rekursiv-ai-typings"]
 # `exclude` and `ignore` are the SAME list on purpose. `exclude` stops a path
 # from being a checked source; `ignore` also silences diagnostics when an
 # included file imports it. Pyright has no single key for both, so keep them
@@ -611,8 +665,8 @@ exclude = [
     "build/",
     "dist/",
     "**/third_party/",
-    "**/typings/",
     # NEVER ADD MORE EXCLUSIONS! SUPPRESS IN FILE!
+    "**/typings/",
 ]
 ignore = [
     "**/.venv/",
@@ -624,8 +678,8 @@ ignore = [
     "build/",
     "dist/",
     "**/third_party/",
-    "**/typings/",
     # NEVER ADD MORE IGNORES! SUPPRESS IN FILE!
+    "**/typings/",
 ]
 pythonPlatform = "Linux"
 pythonVersion = "3.12"  # Intentional; test at 3.12 for exports.
@@ -646,8 +700,6 @@ reportUnknownMemberType = false
 
 [tool.ty.environment]
 python-version = "3.12"  # Intentional; test at 3.12 for exports.
-# Same patch as `[tool.basedpyright] typeshedPath`, with ty's real `ty_extensions`.
-typeshed = ".venv/share/rekursiv-ai-typeshed/ty"
 extra-paths = ["typings"]
 
 # Mirrors `[tool.basedpyright] exclude`, minus entries ty never walks anyway
@@ -662,21 +714,62 @@ exclude = [
     "build/",
     "dist/",
     "**/third_party/",
-    "**/typings/",
     # NEVER ADD MORE EXCLUSIONS! SUPPRESS IN FILE!
+    "**/typings/",
 ]
 
 [tool.ty.rules]
 all = "warn"
+# ty 0.0.86+ rejects nested-class overrides like `class Config(Parent.Config)`:
+# https://github.com/astral-sh/ty/issues/4711 (fix: astral-sh/ruff#29346).
+# Re-enable once a ty release includes the fix; pyrefly's bad-override still
+# checks overrides meanwhile.
+invalid-attribute-override = "ignore"
 
 [[tool.ty.overrides]]
 include = ["*_test.py"]
+
 [tool.ty.overrides.rules]
 invalid-key = "ignore"
 
 [tool.ty.terminal]
 error-on-warning = true
 output-format = "concise"   # Choices: full concise gitlab github junit
+
+[tool.pyrefly]
+# Explicit: the default also globs `**/*.ipynb`, which the excludes then drop
+# with a warning on every run.
+project-includes = ["**/*.py", "**/*.pyi"]
+project-excludes = [
+    "**/.venv/",
+    "**/.venv-ci312/",
+    "**/node_modules/",
+    "*.egg-info/",
+    "**/*.ipynb",
+    ".pytest_cache/",
+    "build/",
+    "dist/",
+    "**/third_party/",
+    "typings/",
+    "**/.export/typings/",
+    "website/rekursiv-ai.github.io/_site/",
+]
+search-path = ["typings"]
+# Pinned beside the config: an interpreter found through a symlinked home splits
+# site-packages from the typeshed, and `pathlib.Path` stops matching `PathLike`.
+python-interpreter-path = ".venv/bin/python"
+python-platform = "linux"
+python-version = "3.12.0"  # Intentional; test at 3.12 for exports.
+preset = "strict"
+infer-with-first-use = true  # Like ty: an empty `[]`/`{}` takes its first use's type.
+output-format = "min-text"
+min-severity = "warn"
+
+# Mirrors the `[tool.basedpyright]` rules turned off there.
+[tool.pyrefly.errors]
+no-access = "ignore"           # reportPrivateUsage
+missing-super-call = "ignore"  # reportMissingSuperCall
+unused-call-result = "ignore"  # reportUnusedCallResult
 
 [tool.codespell]
 # some_variable_with_typo = "connexion"  # codespell:ignore
@@ -690,6 +783,9 @@ skip = "htmlcov,.doctrees,*.pyc,*.ico,*.png,*.jpg,*.PNG,*.inv,*.dot,*.css,*.html
 # names, not prose; skipping them stops `-w` rewriting ``SimPy`` -> ``simply``.
 ignore-regex = '(?:https?://[^\s)>\]]+|`[^`\n]+`|\b\w*[a-z][A-Z]\w*\b)'
 ignore-multiline-regex = '(?m)^[ \t]*```.*?^[ \t]*```'
+
+[tool.jupytext]
+formats = "ipynb,py:percent"
 
 [tool.uv]
 package = true
@@ -706,12 +802,6 @@ required-environments = [
 [tool.uv.workspace]
 members = []
 
-[tool.uv.extra-build-dependencies]
-rekursiv-ai-typeshed = [
-    {requirement = "basedpyright", match-runtime = true},
-    {requirement = "ty", match-runtime = true},
-]
-
 [tool.uv.pip]
 compile-bytecode = true
 
@@ -726,9 +816,10 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [tool.uv.sources]
-rekursiv-ai-typeshed = { path = "packages/rekursiv-ai-typeshed" }
 # uv-only (stripped from the built wheel). Linux -> CPU wheel for lock/CI;
 # non-linux falls through to PyPI (macOS torch has no +cpu variant).
 torch = [
     { index = "pytorch-cpu", marker = "sys_platform == 'linux'" },
 ]
+treekle = { git = "https://github.com/rekursiv-ai/treekle", branch = "main" }
+rekursiv-ai-typings = { git = "https://github.com/rekursiv-ai/typings", branch = "main" }

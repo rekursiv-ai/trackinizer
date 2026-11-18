@@ -54,6 +54,15 @@ Top-level flags precede the verb or row-command:
   ``deleted:``) and the row-detail ``id:`` block. UUIDs are hidden
   by default; users reference rows by ``Kind#seq``.
 
+The server and key come from, highest first: `--profile NAME`; `$TRACKINIZER_URL`
+with `$TRACKINIZER_TOKEN` (the key); `$TRACKINIZER_URL` alone, which sends no
+key; `$TRACKINIZER_PROFILE`, the `current` profile, then `default`. A
+`$TRACKINIZER_TOKEN` is ignored under `--profile` and without
+`$TRACKINIZER_URL` (the profile's own key is used, and the token is sent
+nowhere); with a URL it must be printable ASCII with no whitespace. A command
+run with the token and `$TRACKINIZER_URL` both set never uses the daemon, so
+the key stays in the calling process.
+
 **Write flags** are accepted on any row write (create/edit/edge), parsed by
 argparse so they may appear anywhere in the command:
 
@@ -64,6 +73,9 @@ argparse so they may appear anywhere in the command:
   on a range/filter matching **more than one** row); without it the matches
   are previewed and nothing is written. A zero- or one-row match applies
   directly.
+
+Place the creation flag `--backfill TIMESTAMP` before the row arguments or
+at the end of the command. It requires at least one new row. See section 3.
 
 ## 3. Row command
 
@@ -103,6 +115,28 @@ kind, peek one token.
 
 A bare kind (`trax issue`) lists all rows of that kind. The list form
 (`list_query`) is described in section 6.
+
+### Historical creation
+
+`--backfill TIMESTAMP` sets `created` on every new row in the command,
+including inline-created rows. TIMESTAMP must be a timezone-aware ISO-8601
+timestamp in the past. The CLI sends it as the creation request's `created`
+field; it adds no SVO field or setter. Existing rows, including an anchor
+used to create an inline row, keep their creation dates.
+
+The flag requires at least one new row. Reads, edit-only commands, links
+between existing rows, deletes, and bulk edits reject it. To import rows
+with different dates, create them in separate commands.
+
+The server sets each new row's `modified` and the creation event's
+`change_log.created` to the current server time. Later edits preserve
+`created` and advance `modified`; a retry or deduplication that returns an
+existing row preserves its timestamps. Without the flag, normal creation
+uses the current server time.
+
+Historical session records keep their original CLI session IDs. Reserved
+science-chat identities (`chat:` IDs) keep server-owned creation timestamps
+because their order establishes chat ownership; they cannot be backfilled.
 
 ## 4. Tails on an existing row
 
@@ -432,7 +466,7 @@ These are the non-row top-level verbs. Each parses its own argv with
 flags documented here.
 
 ```
-verb_name   ::= "help" | "profile" | "next" | "recent"
+verb_name   ::= "help" | "profile" | "env" | "machine" | "job" | "next" | "recent"
              |  "cost" | "confidence" | "authority" | "blocked" | "board"
              |  "graph" | "id" | "version" | "export" | "send" | "run"
              |  "search-sessions"
@@ -446,6 +480,12 @@ kinds resolve first, so a field can never shadow a command.
   anywhere is **only** accepted as a leading or trailing token; never
   in a value position.
 - `trax profile [name] (action)` -- profile management; see section 8.
+- `trax env [secret] [NAME (action)]` -- the org's environment variables;
+  see section 8a.
+- `trax machine [NAME (action)]` -- the registry of machines campaigns may
+  run on, and hosting one; see section 8b.
+- `trax job (action)` -- run a command on a GPU node straight from this
+  computer, and read its logs and results; see section 8c.
 - `trax id <uuid> [--format table|json] [--changes]` -- show one row by its
   global id, with no leading kind (the UUID is unique, so the kind is
   redundant). Unlike `trax <kind> <uuid>` it applies no kind typo-guard.
@@ -476,15 +516,18 @@ kinds resolve first, so a field can never shadow a command.
 - `trax send @actor[:room] TEXT...` -- inject a message into a live agent
   session addressed by its routing name (its `run --as` owner).
 - `trax run claude|gemini|codex|sh [--out FILE] [--verbose] [--dry-run]
-  [--no-sync] [--as NAME] [--room ROOM]... [--detach] [--name NAME]` --
-  wrap an agent CLI, tail its session log, and sync turn events. `--as NAME`
-  is the session's owner / routing handle (others address it `@NAME`),
-  uniquified on collision. `--detach` runs it in a background host that
-  outlives the terminal, named by `--name` (else the `--as` name, else the
-  CLI).
-- `trax run ls | attach NAME | log NAME [-f] | send NAME TEXT... | stop NAME`
-  -- reach a detached host: list hosts, drive one from this terminal
-  (Ctrl-\ detaches), print its scrollback, type a message in, or stop it.
+  [--no-sync] [--as NAME] [--room ROOM]... [--private] [--detach]
+  [--name NAME]` -- wrap an agent CLI, tail its session log, and sync turn
+  events. `--as NAME` is the session's owner / routing handle (others address
+  it `@NAME`), uniquified on collision. `--private` starts the session hidden,
+  or hides the one a resume re-attaches: only its owner, staff and admins read
+  it; a server that will not hide it stops the run before the CLI starts.
+  `--detach` runs it in a background host that outlives the terminal, named
+  by `--name` (else the `--as` name, else the CLI).
+- `trax run ls [--all] | attach NAME | log NAME [-f] | send NAME TEXT... | stop NAME`
+  -- reach a detached host: list the live hosts (`--all`: every host, exited
+  and lost too), drive one from this terminal (Ctrl-\ detaches), print its
+  scrollback, type a message in, or stop it.
 
 ## 8. Profile command
 
@@ -494,6 +537,7 @@ profile_tail    ::= profile_name profile_action?
                  |  profile_action
 profile_action  ::= "del"
                  |  "current" profile_name
+                 |  "login" url
                  |  profile_field ( "to" value )?
 profile_field   ::= "url" | "actor" | "token"
 profile_name    ::= [a-zA-Z0-9_-]+
@@ -509,6 +553,162 @@ A profile field-set uses the same `field "to" value` action as a row
 scalar edit (§4): `profile [name] url to URL`. A bare `profile_field`
 (no `to`) projects the field's current value. One field per command --
 the read/set grammar matches rows exactly. Examples in section 10.
+
+`profile NAME login URL` logs in to the server at `URL` without a pasted key. It
+prints a code and a link, waits while a person signs in at the link and approves the
+code, then saves the key it gets as profile `NAME`. The profile becomes current only
+when trax had none: no `TRACKINIZER_PROFILE`, no `current` file and no `default`
+profile. It runs in the calling process, never in the daemon, and it fails when the
+person denies it or does not approve within ten minutes. Its example stays outside
+the runnable blocks, since it needs a server and a person.
+
+## 8a. Env command
+
+```
+env_command ::= "env" env_tail?
+env_tail    ::= "secret"? var_name "to" env_value
+             |  var_name "del"
+env_value   ::= "-" | "@" path | literal
+var_name    ::= [A-Za-z_][A-Za-z0-9_]{0,127}
+```
+
+Bare `trax env` **lists the org's variables**, one line per variable: the
+name, then the value. A secret shows `(secret)` and never its value; no
+route returns one. `env NAME to VALUE` sets a plain value and
+`env NAME del` deletes one; both need the admin role.
+
+A value is a literal, `-` (read stdin) or `@FILE` (read that file, relative
+to the caller's directory). From stdin or a file, exactly one trailing
+newline is stripped (`\r\n` counts as one); nothing else is. An empty value
+is refused, as is one over 65,536 bytes. A literal value of `help`, `-h` or
+`--help` as the last word shows help instead of setting anything, as it does
+for every verb; set such a value with `@FILE`. A file or stdin value must be
+valid UTF-8.
+
+`secret` stores the value write-only. Its value must come from stdin or a
+file, so it never appears on a command line, in shell history or in a
+process listing: `env secret NAME to VALUE` with a literal is refused
+before any request (E010). A name outside `var_name` is refused before any
+request (E011). `secret` is a keyword only in front of `NAME to VALUE`;
+`env secret to x` sets a variable named `secret`. Examples in section 10.
+
+## 8b. Machine command
+
+```
+machine_command ::= "machine" machine_tail?
+machine_tail    ::= machine_name machine_action? | "connect" "--sandbox"?
+machine_action  ::= "del" | "connect" "--sandbox"?
+                 |  machine_field ( "to" value )?
+                 |  "label" ( "add" | "del" ) label
+machine_field   ::= "role" | "how"
+machine_name    ::= [a-z0-9][a-z0-9-]{0,62}
+value           ::= "-" | "@" path | literal
+label           ::= literal
+```
+
+The registry records where campaigns may run: a name, a `role`, one `how`
+line telling an agent how to use the machine, and labels. It only records
+machines; nothing here reaches one, and `del` unregisters a machine without
+touching it.
+
+Bare `trax machine` **lists the machines**, one line each: name, role,
+labels, and `how` cut to one line (`-` stands for an empty field).
+`machine NAME` shows one machine in full, with its status; a bare `machine_field`
+(`machine NAME role`) prints that field's value as stored, for scripts.
+Listing and showing need the writer role; `connect` uses the machine's own
+credential; every other form needs the admin role.
+
+`machine NAME connect` runs on the machine's host with the machine's own
+credential, never the profile's key, so traxd never runs it. It joins once,
+reading the one-use enrollment token from stdin (never the command line), saves
+the machine credential for this user only, then heartbeats every 15 seconds
+until the machine is revoked, and exits 0. Lost contact never stops it; it
+retries, sooner at first.
+
+`connect --sandbox` declares this computer a disposable sandbox where agents
+may act freely. The declaration is about the computer, not one machine name:
+each connect records it for this user beside the machine credential, on with
+the flag and off without it, and says `sandbox: on` when it is on. Every
+`trax run` there then gives the agent CLI liberal permissions, unless the
+person passed that CLI's own permission flags. The flag follows `connect` and
+nothing else; `trax run` has none, since codex's own `--sandbox` is its.
+
+`machine NAME role to ROLE` sets one field and creates the machine when it
+is new; a field left out keeps its value, and `to ''` clears one. A `value`
+is a literal, `-` (read stdin) or `@FILE` (read that file, relative to the
+caller's directory), as in section 8a: one trailing newline is stripped
+from stdin and file values, and an empty one is refused rather than
+clearing the field. A role is `[a-z][a-z0-9-]{0,31}`, a `how` line is at
+most 2,000 characters, and a label is any non-blank text. `label add` and
+`label del` change one label and are no-ops when it is already so.
+
+A name outside `machine_name`, or one of `enroll join init import check
+connect leave top`, is refused before any request (E012, E013).
+Examples in section 10.
+
+## 8c. Job command
+
+```
+job_command ::= "job" job_action
+job_action  ::= "submit" submit_flag* "--" word+
+             |  "status" job_id?
+             |  "logs" job_id ( "-f" )?
+             |  "results" job_id ( "--to" dir )?
+             |  "cancel" job_id
+             |  "secrets"
+             |  "secret" secret_name ( "set" | "del" )
+submit_flag ::= "--gpus" int | "--minutes" int | "--label" text | "--follow"
+             |  "--include-untracked"
+job_id      ::= int
+secret_name ::= "HF_TOKEN" | "WANDB_API_KEY"
+```
+
+`job submit` runs a command on a GPU node. It snapshots the repository the
+caller is in (uncommitted and untracked files included, ignored files left
+out) without touching its index, `HEAD`, refs or objects, and asks the server
+for a job. The server checks credit and caps, picks a node, and signs a
+certificate for one throwaway key, valid for that one job on that one node.
+The caller then uploads the code, as a git bundle cut on top of the commits the
+node already holds, directly to the node over ssh, and the server queues the
+job. It prints the job id alone on its line of stdout and exits 0 once the job is
+queued; progress goes to stderr. `--gpus` is 1 to 8 (default 1) and `--minutes`
+is 1 to 360 (default 10). `--follow` then streams the log until the job ends.
+
+An untracked file the caller did not ignore is part of the snapshot, so `submit`
+says which ones it took (to stderr, ten names at most) and refuses to send one
+whose base name looks like a credential: `.env*`, `*.pem`, `id_*`,
+`*credentials*`, `.netrc` or `*.key`, in any case. A `.gitignore` entry leaves
+such a file out; `--include-untracked` sends it anyway. A tracked file is the
+caller's own choice and is not checked.
+
+Everything after the first `--` is the job's command, run without a shell in
+the root of the snapshot, even when it contains `--help`. A `--` with nothing
+after it, or a command given to any other action, is refused.
+
+`job logs JOB` prints the job's log, and `-f` keeps streaming it until the job
+ends. `job results JOB` downloads the job's `out/` directory straight from the
+node into `OUT/out/` and writes the job's record to `OUT/job.json`; `OUT` is a
+directory of the caller's data folder named by server and job, or `--to DIR`.
+A `DIR` inside the repository the caller is in is refused. Files already held
+with the same size and digest are skipped, so an interrupted download resumes
+by running it again. `submit` keeps the exact code that ran beside the results
+as `src.bundle`, which a later pull request can fetch.
+
+`job status` lists the caller's jobs, one line each: id, state, node and
+command; `job status JOB` shows one in full. `job cancel JOB` stops a job; the
+minutes that already ran are charged.
+
+`job secrets` lists the names of the caller's job secrets, and `job secret NAME
+set` stores one. The value is read from stdin, never from the command line, so
+it stays out of shell history and process listings; one trailing newline is
+stripped and an empty value is refused. A secret is write-only: the job never
+holds it, and the node adds it to the job's requests to Hugging Face
+(`HF_TOKEN`) and Weights & Biases (`WANDB_API_KEY`).
+
+The caller holds no long-lived key: each action makes a throwaway ssh key and
+deletes it when the action ends. `job` needs `ssh`, `ssh-keygen` and `git` on
+`PATH`, runs in the calling process and never in traxd, and no code or result
+bytes pass through the server. Examples in section 10.
 
 ## 9. Token tables
 
@@ -529,7 +729,7 @@ the same commit.
 ### Editable scalar fields (`EDITABLE_FIELDS`)
 
 `owner`, `account`, `title`, `description`, `status`, `validation`,
-`priority`, `judgement`, `confidence`, `outcome`, `config`, `source`,
+`priority`, `judgement`, `confidence`, `outcome`, `config`, `app`, `source`,
 `google_scholar_cluster_id`, `google_scholar_cites_id`,
 `abstract`, `publication_type`, `venue`, `subvenue`, `publish_date`, `query`,
 `provider`, `sha`, `url`,
@@ -670,6 +870,19 @@ trax issue title to "Retry bug" priority to high
 trax belief title to "PNT holds" confidence to 0.9 judgement to proven
 ```
 
+Import a historical issue with an explicit creation date:
+
+```trax
+trax issue --backfill 2025-02-14T08:30:00Z title to "Historical timeout"
+```
+
+Create a historical artifact under an existing issue. Only the new artifact
+gets the supplied creation date; Issue#7 keeps its date:
+
+```trax
+trax issue --backfill 2025-02-14T09:30:00+01:00 7 produced artifact title to "Historical result"
+```
+
 One field value may be `-`, which reads stdin at runtime. Any field value that
 starts with `@` reads the rest of the token as a file path, including shell
 process-substitution paths such as `@<(printf ...)`:
@@ -702,8 +915,16 @@ trax issue 7 status to complete
 trax experiment 12 config to '{"lr": 0.1, "epochs": 2}'
 ```
 
-`config` accepts one standard JSON object. It is readable and editable, but it
-is not a filter field: structural JSON filter semantics are not defined.
+```trax
+trax issue 7 app to '{"myapp": {"budget_usd": 20}}'
+```
+
+`config` and `app` each accept one standard JSON object. Each is readable and
+editable, but neither is a filter field: structural JSON filter semantics are
+not defined. `config` is an Experiment's input settings. `app` is on every kind:
+an application's own fields on the row, under one key named for the app. An app
+finds its rows by labels and edges, which are filterable; `app` only holds what
+it knows about each one.
 
 ```trax
 trax issue 7 label add backend
@@ -970,6 +1191,59 @@ trax profile staging url to https://staging.trackinizer.example
 trax profile staging del
 ```
 
+### Env
+
+Env commands read and write the server's variable store, so these examples
+are not run against the test fake:
+
+```
+trax env
+trax env REGION to eu-west
+trax env NOTES to @notes.txt
+printf '%s' "$TOKEN" | trax env secret API_TOKEN to -
+trax env secret API_TOKEN to @token.txt
+trax env REGION del
+```
+
+### Machine
+
+Machine commands read and write the server's machine registry, so these
+examples are not run against the test fake:
+
+```
+trax machine
+trax machine gpu-box
+trax machine gpu-box role
+trax machine gpu-box role to dev
+trax machine gpu-box how to "ssh gpu-box; cd /work"
+trax machine gpu-box how to @how.txt
+trax machine gpu-box label add gpu
+trax machine gpu-box label del gpu
+trax machine gpu-box del
+printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect
+printf '%s\n' "$ENROLLMENT_TOKEN" | trax machine gpu-box connect --sandbox
+trax machine connect --sandbox
+```
+
+### Job
+
+Job commands reach a server and a GPU node, so these examples are not run
+against the test fake:
+
+```
+trax job submit -- python train.py --steps 100
+trax job submit --gpus 2 --minutes 60 --label sweep --follow -- python train.py
+trax job status
+trax job status 7
+trax job logs 7 -f
+trax job results 7
+trax job results 7 --to ~/results/run7
+trax job cancel 7
+trax job secrets
+printf '%s' "$HF_TOKEN" | trax job secret HF_TOKEN set
+trax job secret HF_TOKEN del
+```
+
 ## 11. Counterexamples
 
 Every fenced `trax!` block must be rejected with the named error code.
@@ -1027,6 +1301,60 @@ Reason: `status` is a NOT-NULL column, so `isnull` / `notnull` is
 always-empty / always-all -- a silent wrong answer. A `null_op` is
 rejected on any NOT-NULL column.
 
+```trax! E010
+trax env secret API_TOKEN to hunter2
+```
+
+Reason: a secret's value comes from stdin (`-`) or a file (`@FILE`), never
+the command line, so it stays out of shell history and process listings.
+
+```trax! E011
+trax env 1bad to eu-west
+```
+
+Reason: a variable name is `[A-Za-z_][A-Za-z0-9_]{0,127}`, the form an
+environment accepts; the name is checked before any request.
+
+```trax! E012
+trax machine enroll role to dev
+```
+
+Reason: `enroll` and the other reserved words are, or will be, route segments
+and CLI words, so no machine may take one; the name is checked before any
+request.
+
+```trax! E013
+trax machine GPU_Box role to dev
+```
+
+Reason: a machine name is `[a-z0-9][a-z0-9-]{0,62}`, the form the server
+accepts as a path segment.
+
+```trax! E014
+trax machine gpu-box role dev
+```
+
+Reason: a machine field-set uses the `field "to" value` action, like a row
+edit. Bare adjacency is not a production.
+
+```trax! E015
+trax machine gpu-box colour to red
+```
+
+Reason: `role` and `how` are the only machine fields.
+
+```trax! E016
+trax machine gpu-box label set gpu
+```
+
+Reason: a label action is `add` or `del`, with exactly one label.
+
+```trax! E003
+trax machine gpu-box del now
+```
+
+Reason: `del` is terminal; nothing may follow it.
+
 ```trax! E007
 trax profile prod url https://trackinizer.example
 ```
@@ -1058,6 +1386,13 @@ write is rejected up front so `status` does not commit while
 | E007 | profile set without 'to'      | profile_action             |
 | E008 | field not valid on kind       | run_actions / run_create   |
 | E009 | null_op on a NOT-NULL column  | list_query / bulk_apply    |
+| E010 | literal secret value          | env_value                  |
+| E011 | invalid variable name         | var_name                   |
+| E012 | reserved machine name         | machine_name               |
+| E013 | invalid machine name          | machine_name               |
+| E014 | machine set without 'to'      | machine_action             |
+| E015 | unknown machine field         | machine_field              |
+| E016 | label action not add/del      | machine_action             |
 | ...  | (extend as needed)            |                            |
 
 These codes are documentation labels for the rejection, not distinct

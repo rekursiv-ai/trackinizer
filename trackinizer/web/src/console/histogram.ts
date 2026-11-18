@@ -46,23 +46,30 @@ export class HistogramLive {
   readonly #now: () => number;
   #read: HistogramRead | null = null;
   #lastAskAt = -Infinity;
+  #missed = false;
 
   constructor(client: QueryClient, now: () => number = Date.now) {
     this.#client = client;
     this.#now = now;
   }
 
-  /** Keep the band `read` reads current: the band at now, or null while it is scrolled back. */
-  follow(read: HistogramRead | null): void {
+  /** Follow `read`, or pause at null; returning true asks the hub to recover changes missed while paused. */
+  follow(read: HistogramRead | null): boolean {
+    const resumed = this.#read === null && read !== null && this.#missed;
     this.#read = read;
+    return resumed;
   }
 
   async update({ gap }: Batch): Promise<Later | null> {
     const read = this.#read;
-    if (!read) return null;
+    if (!read) {
+      this.#missed = true;
+      return null;
+    }
     const key = histogramQuery(read).queryKey;
-    if (gap) {
+    if (gap || this.#missed) {
       await refetchFresh(this.#client, { queryKey: key, exact: true });
+      this.#missed = false;
       return null;
     }
     const held = this.#client.getQueryState(key);

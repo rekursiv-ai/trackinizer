@@ -58,10 +58,13 @@ from trackinizer.trax.grammar import (
     VALID_KINDS,
     WRITE_FIELDS_CLI,
 )
+from trackinizer.trax.job import JOB_WORD, Job
+from trackinizer.trax.machines import MACHINE_WORD, Machines
 from trackinizer.trax.profile import Profiles
 from trackinizer.trax.run import detach
 from trackinizer.trax.run.materialize import RESUMABLE_TARGETS
 from trackinizer.trax.run.session import build_parser
+from trackinizer.trax.variables import ENV_WORD, Variables
 from trackinizer.types.inquiries import (
     Belief,
     Inquiry,
@@ -114,6 +117,8 @@ _STRUCTURE: Final = r"""// grammar.lark -- the complete trax CLI: read this one 
 //   --as ACTOR   --reason TEXT     audit attribution (on a write; `run --as` differs)
 //   --format table|json|ids   --limit N   --sort priority|seq|recent|oldest|valence
 //   --show-ids   --profile/--host/--port
+//   --backfill TIMESTAMP   timezone-aware past created time; new rows only
+//     existing rows keep created; modified and creation audit use server time
 // A field VALUE of `-` reads stdin; a value starting with `@` reads that file path.
 
 start: invocation
@@ -494,15 +499,16 @@ def _subcommands(parser: argparse.ArgumentParser) -> dict[str, argparse.Argument
 
 
 # Covers every non-kind dispatcher plus ``run`` (special-cased in the CLI) and
-# ``profile`` (whose ``rest`` hides a hand-parsed sub-grammar stated inline).
+# ``profile``, ``env``, ``machine`` and ``job`` (whose ``rest`` hides a hand-parsed
+# sub-grammar stated inline).
 def _verb_lines() -> list[str]:
     """Return a usage line per top-level verb, from its live argparse parser."""
     kinds = {k.lower() for k in VALID_KINDS}
     lines: list[str] = []
     for dispatcher in DISPATCHERS:
         verb = next((n for n in dispatcher.names if n not in kinds), None)
-        if verb is None or dispatcher is Profiles:
-            continue  # `kind` dispatcher, or profile (handled below)
+        if verb is None or dispatcher in {Profiles, Variables, Machines, Job}:
+            continue  # `kind` dispatcher, or a hand-parsed verb (handled below)
         lines.append(_verb_usage(verb, dispatcher.make_parser()))
     lines.append(_verb_usage("run", build_parser()))
     # ``run``'s host commands dispatch before its own parser does, so each one is a
@@ -512,7 +518,25 @@ def _verb_lines() -> list[str]:
         for name, subparser in _subcommands(detach.build_parser()).items()
     )
     # Profile parses ``rest`` by hand; its sub-grammar is fixed, stated directly.
-    lines.append("//   profile [NAME] [ url|actor|token [to V] | current NAME | del ]")
+    lines.append(
+        "//   profile [NAME] [ url|actor|token [to V] | current NAME | login URL | del ]",
+    )
+    # Env parses ``rest`` by hand too. Its V is a literal, ``-`` (stdin) or ``@FILE``;
+    # a secret's V is never a literal.
+    lines.append(f"//   {ENV_WORD} [ [secret] NAME to V | NAME del ]")
+    # Machine parses ``rest`` by hand as well; V is a literal, ``-`` or ``@FILE``.
+    lines.append(
+        f"//   {MACHINE_WORD} [ NAME [ role|how [to V] | label add|del L | del"
+        " | connect [--sandbox] ] | connect [--sandbox] ]",
+    )
+    # Job splits its argv at the first ``--`` before parsing: what follows is the
+    # job's command, verbatim.
+    lines.append(
+        f"//   {JOB_WORD} [ submit [--gpus N] [--minutes M] [--label TEXT] [--follow] "
+        "[--include-untracked] -- CMD... "
+        "| status [JOB] | logs JOB [-f] | results JOB [--to DIR] | cancel JOB "
+        "| secrets | secret NAME set|del ]",
+    )
     lines = sorted(lines)
     # ``argparse`` positionals/--as carry meaning the bare usage can't show; gloss the
     # non-obvious ones (sourced from the verbs' own help text).
@@ -567,7 +591,7 @@ def _semantics_block() -> str:
         f"//   issue_kind/kind: {issue_kind}   publication_type: {pub_type}",
         f"//   priority: an int, or {priority}",
         "//   confidence/valence: a float (valence in [-1,1], sign = for/against)",
-        "//   config: one standard JSON object; readable/editable, not filterable",
+        "//   config/app: one standard JSON object; readable/editable, not filterable",
         "// FIELD VALIDITY (a field is writable only on these kinds):",
         *_kind_field_lines(),
         "// EDGE DIRECTION (edges store child->parent; a reverse-voice alias writes the",
@@ -578,6 +602,9 @@ def _semantics_block() -> str:
         "//   next=next unblocked Issue; blocked/board/graph=Issue views;",
         "//   recent=audit feed; cost=cost rollup; id=show row by uuid;",
         "//   profile=manage server profiles; send=message a live agent session;",
+        f"//   {ENV_WORD}=the org's environment variables (a secret is write-only);",
+        f"//   {MACHINE_WORD}=the registry of machines campaigns may run on;",
+        f"//   {JOB_WORD}=run a command on a GPU node; its logs, results and secrets;",
         "//   run=wrap an agent CLI (claude/gemini/codex) and sync its session;",
         "//     --detach hosts it past this terminal, reached by run ls/attach/log/send/stop.",
         *_verb_lines(),

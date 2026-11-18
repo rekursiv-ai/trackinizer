@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from trackinizer.types.columns import (
+    ColumnSpec,
     column_specs,
     storage_column_specs,
     storage_name,
@@ -55,7 +56,17 @@ class TestStorageName:
         assert "status" in keys
 
 
+class TestColumnSpecAsMetadata:
+    def test_it_is_the_one_entry_of_its_own_mapping(self) -> None:
+        spec = ColumnSpec()
+        assert dict(spec) == {"colspec": spec}
+
+    def test_equal_specs_compare_and_hash_equal(self) -> None:
+        assert ColumnSpec() == ColumnSpec()
+        assert hash(ColumnSpec()) == hash(ColumnSpec())
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

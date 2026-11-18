@@ -11,6 +11,7 @@
     "body": {
       "id": "00000000-0000-4000-9000-000000000001",
       "name": "fixtures",
+      "open_into": null,
       "prefix": "<prefix>",
       "role": "viewer",
       "secret": "<secret>"

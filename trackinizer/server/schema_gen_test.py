@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import fields
 from typing import Literal
 
+import re
+
 import pytest
 
 from trackinizer.server.schema_gen import (
@@ -13,11 +15,15 @@ from trackinizer.server.schema_gen import (
     generate_edge_metadata_columns,
     generate_edge_metadata_mirror_new,
     generate_edge_metadata_mirror_old,
+    generate_inquiry_kind_columns,
     quote_literal,
     substitute_schema_placeholders,
 )
 from trackinizer.server.sql import load_sql, schema_migrations
 from trackinizer.types.change_log import Snapshot
+from trackinizer.types.columns import column_specs
+from trackinizer.types.inquiries import AgentSession
+from trackinizer.wire.audience import AUDIENCE_SHAPE
 
 
 # Snapshot fields generated OUTSIDE ``CHANGE_LOG_COLUMN_ORDER``: the edge-metadata
@@ -209,7 +215,46 @@ class TestSchema:
             "schema.030.sql",
             "schema.031.sql",
             "schema.032.sql",
+            "schema.033.sql",
+            "schema.034.sql",
+            "schema.035.sql",
+            "schema.036.sql",
+            "schema.037.sql",
+            "schema.038.sql",
+            "schema.039.sql",
+            "schema.040.sql",
+            "schema.041.sql",
+            "schema.042.sql",
+            "schema.043.sql",
+            "schema.044.sql",
+            "schema.045.sql",
+            "schema.046.sql",
+            "schema.047.sql",
+            "schema.048.sql",
+            "schema.049.sql",
+            "schema.050.sql",
+            "schema.051.sql",
+            "schema.052.sql",
+            "schema.053.sql",
+            "schema.054.sql",
+            "schema.055.sql",
+            "schema.056.sql",
         ]
+
+    def test_the_pin_check_spells_the_wire_shape(self) -> None:
+        """The baseline and 040 check the shape ``wire/audience.py`` accepts."""
+        for sql in (load_sql("schema"), load_sql("schema.040")):
+            assert f"CHECK (open_into ~ '{AUDIENCE_SHAPE}')" in sql
+
+    def test_the_session_audience_column_spells_the_wire_shape(self) -> None:
+        """``types`` cannot import ``wire``, so the two spellings are compared here."""
+        spec = column_specs(AgentSession)["audience"]
+        assert spec.sql_check == f"audience ~ '{AUDIENCE_SHAPE}'"
+        assert spec.required
+        assert f"~ '{AUDIENCE_SHAPE}'" in load_sql("schema.041")
+        assert f"agentsession_audience ~ '{AUDIENCE_SHAPE}'" in (
+            generate_inquiry_kind_columns()
+        )
 
     def test_canonical_schema_contains_artifact_audit_columns(self) -> None:
         sql = substitute_schema_placeholders(load_sql("schema"))
@@ -219,6 +264,28 @@ class TestSchema:
         assert "new_webresult_url TEXT" in sql
         assert "kind = 'codechange_sha' OR old_codechange_sha IS NULL" in sql
         assert "kind = 'webresult_url' OR new_webresult_url IS NULL" in sql
+
+    def test_the_app_column_holds_one_bounded_json_object_on_both_sides(self) -> None:
+        """``Inquiry.app`` is an object of at most 64 KiB, and so is its audit."""
+        sql = substitute_schema_placeholders(load_sql("schema"))
+        for column in ("app", "old_app", "new_app"):
+            assert re.search(rf"\b{column} +JSONB", sql)
+            assert (
+                f"jsonb_typeof({column}) = 'object' "
+                f"AND octet_length({column}::text) <= 65536"
+            ) in sql
+        # Every kind carries it, so no change kind ties it to one.
+        assert "kind <> 'app'" not in sql
+
+    def test_a_sessions_audience_move_is_audited_on_both_sides(self) -> None:
+        """Each side holds an audience of the wire shape, on a session's move alone."""
+        sql = substitute_schema_placeholders(load_sql("schema"))
+        for side in ("old", "new"):
+            column = f"{side}_agentsession_audience"
+            assert re.search(rf"\b{column} +TEXT", sql)
+            assert f"({column} IS NOT NULL) = (kind = 'agentsession_audience')" in sql
+            assert f"{column} IS NULL OR {column} ~ '{AUDIENCE_SHAPE}'" in sql
+        assert "kind <> 'agentsession_audience' OR subject_kind = 'AgentSession'" in sql
 
 
 class TestCLIHelpers:
@@ -231,6 +298,6 @@ class TestCLIHelpers:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

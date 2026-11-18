@@ -1,6 +1,5 @@
-import { readFileSync } from "node:fs";
 import type { Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, revealBar, setPreferences, test } from "./fixtures";
 
 // Your settings against the e2e server, where --no-auth makes every request the
 // synthetic admin no-auth@localhost. Tokens and aliases made here are this
@@ -8,9 +7,12 @@ import { expect, failedResource, test } from "./fixtures";
 
 const suffix = () => crypto.randomUUID().slice(0, 8);
 
+/** Settings, the sheet over the page. */
+const sheet = (page: Page) => page.getByRole("complementary", { name: "Your settings" });
+
 async function openSettings(page: Page): Promise<void> {
   await page.goto("/app/#/settings");
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
 }
 
 type Listed = { name: string; prefix: string; role: string; revoked_at: string | null };
@@ -82,39 +84,127 @@ test("a create whose answer is lost is not sent again, and the list shows the to
   expect((await request.post(`/api/me/tokens/${made.id}/revoke`)).ok()).toBe(true);
 });
 
-test("export this browser's state, then import it into a fresh browser", async ({ page, browser }) => {
+test("the user's own data follows them to a fresh browser: names, stars, saved views and an unsent draft", async ({ page, browser, request }) => {
   const alias = `e2e-alias-${suffix()}`;
+  const made = await request.post("/api/inquiries/issue", { data: { title: "Data follows me", description: "First words.", idempotency_key: crypto.randomUUID() } });
+  expect(made.ok(), await made.text()).toBe(true);
+  const { id } = (await made.json()) as { id: string };
+  // Stars and views have no screens yet; one of each is set as the agent would.
+  const view = { id: "e2e-view", name: "E2E view", request: { kinds: ["Issue"], filters: [] } };
+  await setPreferences(request, { stars: [id], views: [view] });
+
   await openSettings(page);
-  // Stars and views have no screens yet; one of each is stored as they will be.
-  await page.evaluate(() => {
-    const key = `trackinizer.v2.${location.origin}.no-auth@localhost`;
-    const view = { id: "e2e-view", name: "E2E view", request: { kinds: ["Issue"], filters: [] } };
-    const state = JSON.parse(localStorage.getItem(key) ?? '{"version":1}');
-    localStorage.setItem(key, JSON.stringify({ ...state, version: 1, stars: ["e2e-star"], views: [view] }));
-  });
-  await page.reload();
   const names = page.getByRole("region", { name: "Names that mean you" });
   await names.getByRole("textbox", { name: "Name" }).fill(alias);
   await names.getByRole("button", { name: "Add" }).click();
   await expect(names.getByRole("list", { name: "Your names" })).toContainText(alias);
 
-  const downloading = page.waitForEvent("download");
-  await page.getByRole("region", { name: "This browser" }).getByRole("button", { name: "Download JSON" }).click();
-  const exported = await (await downloading).path();
-  expect(JSON.parse(readFileSync(exported, "utf8"))).toMatchObject({ version: 1, stars: ["e2e-star"], aliases: [alias] });
+  const kept = page.waitForResponse((response) => response.request().method() === "PATCH" && response.url().endsWith("/api/me/preferences") && (response.request().postData() ?? "").includes("drafts"));
+  await page.goto(`/app/#/lookup/${id}`);
+  await page.getByText("First words.").click();
+  await page.getByRole("textbox", { name: "Description" }).pressSequentially(" My draft.");
+  expect((await kept).ok()).toBe(true);
 
   const fresh = await browser.newContext();
   const other = await fresh.newPage();
+  const preferences = ((await (await fresh.request.get("/api/me/profile")).json()) as { preferences: { stars: string[]; views: unknown[] } }).preferences;
+  expect([preferences.stars, preferences.views]).toEqual([[id], [view]]);
+  await other.goto(`/app/#/lookup/${id}`);
+  await expect(other.getByRole("textbox", { name: "Description" })).toHaveValue("First words. My draft.");
   await openSettings(other);
-  const here = other.getByRole("region", { name: "This browser" });
-  await expect(here.getByText("Stars").locator("xpath=..")).toContainText("0");
-  const choosing = other.waitForEvent("filechooser");
-  await here.getByRole("button", { name: "Import JSON…" }).click();
-  await (await choosing).setFiles(exported);
-  await expect(other.getByText("Imported 1 star, 1 saved view and 1 name.", { exact: true })).toBeVisible();
-  await expect(here.getByText("Stars").locator("xpath=..")).toContainText("1");
   await expect(other.getByRole("list", { name: "Your names" })).toContainText(alias);
   await fresh.close();
+});
+
+test("Settings opens as half a page over the page, from its left edge, and Close takes the tab back", async ({ page }) => {
+  await page.goto("/app/#/list/Issue");
+  const list = page.getByRole("heading", { level: 1, name: "Issues" });
+  await expect(list).toBeVisible();
+  await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
+  await page.getByRole("dialog", { name: "Account" }).getByRole("link", { name: "Your settings" }).click();
+  await expect(sheet(page).getByRole("heading", { level: 1 })).toHaveText("Your settings");
+  // The list stays under it, mounted, its other half in view.
+  await expect(list).toBeAttached();
+  const main = (await page.locator("main.main").boundingBox())!;
+  const half = (await sheet(page).boundingBox())!;
+  // Half the main area inside its 1 px border, and no narrower than 560 px.
+  const inner = main.width - 2;
+  expect(Math.round(half.width)).toBe(Math.round(Math.min(inner, Math.max(inner / 2, 560))));
+  // Against the main area's left edge.
+  expect(Math.round(half.x)).toBe(Math.round(main.x + 1));
+  // The sections take the sheet's width, so Close stands at their right edge.
+  const close = (await page.getByRole("link", { name: "Close settings" }).boundingBox())!;
+  const profile = (await page.getByRole("region", { name: "Profile" }).boundingBox())!;
+  expect(Math.round(close.x + close.width)).toBe(Math.round(profile.x + profile.width));
+  await page.getByRole("link", { name: "Close settings" }).click();
+  await expect(page).toHaveURL(/#\/list\/Issue$/);
+  await expect(sheet(page)).toHaveCount(0);
+});
+
+/** The suite's user's preferences, as the server holds them. */
+async function storedPreferences(page: Page): Promise<{ [key: string]: unknown }> {
+  return ((await (await page.request.get("/api/me/profile")).json()) as { preferences: { [key: string]: unknown } }).preferences;
+}
+
+test("a theme and terminal font size chosen in Settings follow the user to a fresh browser, which keeps neither", async ({ page, browser }) => {
+  await openSettings(page);
+  const appearance = page.getByRole("region", { name: "Appearance" });
+  await appearance.getByRole("combobox", { name: "Theme" }).selectOption("light");
+  await appearance.getByRole("combobox", { name: "Terminal font size" }).selectOption("16px");
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", terminal_font_size: "16px" });
+
+  const fresh = await browser.newContext();
+  const other = await fresh.newPage();
+  await other.goto("/app/#/graph");
+  await expect(other.locator("html")).toHaveAttribute("data-theme", "light");
+  expect(await other.evaluate(() => Object.keys(localStorage))).not.toContain("trackinizer.theme");
+  await fresh.close();
+});
+
+test("what a browser kept before preferences moved to the server is sent once, then forgotten", async ({ page }) => {
+  await page.goto("/app/#/graph");
+  await page.evaluate(() => {
+    localStorage.setItem("trackinizer.theme", "light");
+    localStorage.setItem("trackinizer.chat.side", "right");
+  });
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light", chat_side: "right" });
+  await expect.poll(() => page.evaluate(() => [localStorage.getItem("trackinizer.theme"), localStorage.getItem("trackinizer.chat.side")]))
+    .toEqual([null, null]);
+});
+
+test("the preferences document saves an edited setting, and the page takes it at once", async ({ page }) => {
+  await openSettings(page);
+  const doc = page.getByRole("textbox", { name: "Preferences document" });
+  await expect(doc).toHaveValue(/"theme": "dark"/);
+  await expect(doc).toHaveValue(/\/\/ The app's colours/);
+  await doc.fill((await doc.inputValue()).replace('"theme": "dark"', '"theme": "light"'));
+  await page.getByRole("region", { name: "Preferences document" }).getByRole("button", { name: "Save" }).click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect.poll(() => storedPreferences(page)).toMatchObject({ theme: "light" });
+});
+
+test("a browser's old stars, names and drafts are sent once, merged into the user's, and forgotten but for the tiles", async ({ page, request }) => {
+  await setPreferences(request, { stars: ["kept-on-server"] });
+  await page.goto("/app/#/graph");
+  await page.evaluate(() => {
+    const state = { version: 2, stars: ["old-star"], aliases: ["old-alias"], ui: { tiles: { chat: { collapsed: true, place: null } } } };
+    localStorage.setItem(`trackinizer.v2.${location.origin}.no-auth@localhost`, JSON.stringify(state));
+    localStorage.setItem("trackinizer.v2.drafts.no-auth@localhost", JSON.stringify({ "i1:title": { text: "Old words", base: "Title" } }));
+  });
+  await page.reload();
+  await expect.poll(() => storedPreferences(page)).toMatchObject({
+    stars: ["kept-on-server", "old-star"],
+    aliases: ["old-alias"],
+    drafts: { "i1:title": { text: "Old words", base: "Title" } },
+  });
+  await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter((key) => key.includes("no-auth@localhost")))).toHaveLength(1);
+  expect(await page.evaluate(() => JSON.parse(localStorage.getItem(`trackinizer.v2.${location.origin}.no-auth@localhost`)!))).toMatchObject({
+    stars: [],
+    aliases: [],
+    ui: { tiles: { chat: { collapsed: true, place: null } } },
+  });
 });
 
 // Sign out itself is the unit tests' (src/settings/index.test.tsx): this server

@@ -55,7 +55,8 @@ import threading
 import time
 import zlib
 
-from trackinizer.lib.custom_json import DictCodec, loads
+from treekle import json_loads
+
 from trackinizer.lib.posix.relay import ThreadedRelay
 
 
@@ -120,7 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -449,7 +450,7 @@ def _seed_onboarding(home: Path, work: Path, *, real_home: Path) -> None:
     source = Path.home() / ".claude.json"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
     if real_home.name != ".claude" or not source.is_file():
         return
-    real = DictCodec.coerce(loads(source.read_text(encoding="utf-8")))
+    real = json_loads(source.read_text(encoding="utf-8"), dict[str, object])
     seeded: dict[str, object] = {
         key: value for key, value in real.items() if key != "projects"
     }

@@ -1,0 +1,1113 @@
+/* A composed surface's only geometry: the column it reads down, and the row a
+   register's items lie along. Every other decision — ink, face, spacing inside an
+   item, the glyph, the hue — is the primitive's, which is what makes a surface the
+   agent composed as on-law as one the app has a template for. There is deliberately
+   no rule here that touches colour: a stylesheet for an arbitrary surface is exactly
+   where a literal hex would get in. */
+
+.ui-composed { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+
+/* The head carries the question, because a composed answer has no template whose name
+   would otherwise say what it is: the title is read, the prompt locates it. */
+.ui-composed-h {
+  display: flex;
+  flex-shrink: 0;
+  align-items: baseline;
+  gap: 14px;
+  margin: 0;
+  padding: 9px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.ui-composed-h b { flex-shrink: 0; font: 500 12.5px/1.4 var(--mono); color: var(--text); }
+/* The prompt as it was typed, in the machine register, clipped rather than wrapped so
+   the head stays one line tall whatever was asked. */
+.ui-composed-h em {
+  min-width: 0;
+  overflow: hidden;
+  font: 400 11px/1.4 var(--mono);
+  font-style: normal;
+  color: var(--ink-machine);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The body reads down one column against the left rule. 680px is the prose measure
+   plus the gutter a path needs — wider and the marks' words outrun the glyph they
+   belong to; the register inside it still takes the full width, because a strip's
+   whole point is the lane it scrolls in. */
+.ui-composed-b { flex: 1; min-height: 0; overflow: auto; padding: 20px 18px 26px; }
+.ui-composed-b > .ui-prose,
+.ui-composed-b > .ui-marks,
+.ui-composed-b > .ui-note { max-width: 680px; }
+/* A paragraph that spans takes the instrument's own width: it sits under full-width
+   chrome, not inside a column of long-form prose, and a cap there is the thing that
+   reads as broken rather than considered. */
+.ui-composed-b > .ui-prose.is-span { max-width: none; }
+
+/* VERTICAL RHYTHM. The agent orders the items and never spaces them, so the space
+   between two of them is decided here, by what they are. Without this a paragraph runs
+   straight into the rows it introduces and a verdict runs into the addresses under it:
+   the content is right and the page reads as a dump. The headings carry their own
+   margins (sections.css) because a heading binds to what it opens; everything else is
+   spaced by the pair it forms.
+   One rule, stated as the gap BELOW each kind, and a larger gap before a block that
+   starts a new thought than between two that continue one. */
+.ui-composed-b > * + * { margin-top: 26px; }
+/* A paragraph introducing a run of rows or a figure owns them, so the gap closes to
+   near the prose's own leading: they are one unit, not two. */
+.ui-composed-b > .ui-prose + .ui-reg,
+.ui-composed-b > .ui-prose + .ui-chart,
+.ui-composed-b > .ui-prose + .ui-series,
+.ui-composed-b > .ui-prose + .ui-eq,
+.ui-composed-b > .ui-prose + table { margin-top: 10px; }
+/* A figure or a run of rows is a block of its own weight, so what follows it stands
+   clear rather than touching it. */
+.ui-composed-b > .ui-reg + *,
+.ui-composed-b > .ui-chart + *,
+.ui-composed-b > .ui-series + *,
+.ui-composed-b > table + * { margin-top: 22px; }
+/* Addresses belong to the sentence or the verdict above them, so they sit close. */
+.ui-composed-b > .ui-marks + .ui-paths,
+.ui-composed-b > .ui-prose + .ui-paths { margin-top: 10px; }
+/* The ledger line is the last thing on the surface and is nobody's neighbour. */
+.ui-composed-b > .ui-note { margin-top: 26px; }
+/* A heading's own space is the one that wins: it was chosen against the rank, and the
+   rhythm above must not flatten a part break into an ordinary gap. Restated rather
+   than reverted, because there are no cascade layers here for revert-layer to find. */
+.ui-composed-b > .ui-h2 { margin-top: 32px; }
+.ui-composed-b > .ui-h3 { margin-top: 24px; }
+.ui-composed-b > .ui-h1 { margin-top: 0; }
+/* A figure or a run of rows directly before a part break needs the break to read as
+   one: the heading's 32px is measured from the figure's own edge, not from a gap the
+   rhythm already added. */
+.ui-composed-b > :is(.ui-reg, .ui-chart, .ui-series, table) + .ui-h2 { margin-top: 36px; }
+
+/* ── THE LAYOUT GRAMMAR ──────────────────────────────────────────────────────────
+   These carry geometry and nothing else: a row with three slots, a hairline, a chip,
+   a line to type in, and the three registers text can be set at. The agent composes
+   with them, so a head with its lenses on the right, a sampled row with a marker
+   gutter, and a paragraph under a rule are all compositions rather than components
+   somebody pre-built. What stays the app's: which ink each register takes, which face,
+   and the measure. There is no rule below that an answer can reach. */
+
+/* THE THREE REGISTERS. This is the whole typographic system, and the reason a surface
+   reads as an instrument: chrome labels, machine reads a value, and exactly one thing
+   per surface is set at reading size. */
+.ui-t { margin: 0; }
+/* Chrome locates: 10.5px uppercase mono in the neutral grey. Anything that is not
+   itself an answer is this. */
+/* No text-transform: the prototype sets a section label upper (`THE ANSWER`) and the
+   ask line lower (`@ gpu`, `8 marks`) in the same register, so the case belongs to
+   whoever writes the line. Forcing it here overrode the author and turned `@ bundle`
+   into `@ BUNDLE`. */
+.ui-t.is-chrome { font: 400 10.5px/1.7 var(--mono); letter-spacing: 0.055em; color: var(--ink-machine); }
+/* A value read off an instrument: white, machine face, at a size a figure is legible
+   at. White is what separates a reading from the chrome that labels it. */
+.ui-t.is-machine { font: 400 12.5px/1.6 var(--mono); color: var(--text); }
+/* The one paragraph a surface is read for. The only thing in the prose face at prose
+   size — which is what gives it rank without a heading. */
+.ui-t.is-read { max-width: 74ch; font: 400 15px/1.62 var(--sans); color: var(--text); }
+/* The measure is the app's figure; whether it applies is the composition's call. A
+   block that spans is one whose job is to cover what it describes — a summary under a
+   full-width run, a banner — and it drops the cap rather than choosing a new one. */
+.ui-t.is-span { max-width: none; }
+
+/* A hairline: structure, so the agent may place it; never decoration. */
+.ui-rule { height: 0; margin: 10px 0; border: 0; border-top: 1px solid var(--line); }
+
+/* A CHIP: a boxed mono control at the chrome's size — a lens onto another reading.
+   MONOCHROME, like all the chrome on this surface: the open lens is said with a step
+   of surface and the reading white, never with a hue. A tinted tab would be the only
+   coloured thing on a pane whose one coloured thing is supposed to be the verdict in
+   the gutter — which is how a pane starts looking generated. */
+/* The hosted page: the app's chrome around a document it cannot see inside. Ink and
+   radius come from the skin; the frame itself is the author's page, so it keeps no
+   border of its own once it is inside this box. */
+.ui-embed {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+}
+.ui-embed-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line-strong);
+  color: var(--ink-machine);
+  font: 400 10.5px/1.5 var(--mono);
+}
+.ui-embed-bar b { color: var(--text); font-weight: 600; }
+.ui-embed-bar span { flex: 1; min-width: 0; }
+.ui-embed-bar a { color: var(--text); text-decoration: none; white-space: nowrap; }
+.ui-embed-body { flex: 1; min-height: 0; }
+.ui-embed .artifact-html-frame { min-height: 0; height: 100%; margin: 0; border: 0; border-radius: 0; background: transparent; }
+
+/* The knowledge graph window. It is the canvas's own view, so the frame it wears here
+   is the frame every other hosted surface wears — the same hairline and radius as the
+   embedded page — and the lane is a floor rather than a fixed height: a force layout
+   needs room to place a neighbourhood, and 300px is the shortest window that reads the
+   wires instead of the dots. An item's own `height` overrides it. */
+.ui-graph {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 300px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+}
+
+/* The graph node borrows the fold's card (.knowledge-card), and the fold paints that
+   box in its own accent (--group-4). An answer is monochrome — white reads, grey
+   locates, and a hue is a verdict the answer has not earned — so inside the composed
+   lane the borrowed card takes the neutral hairline and its slot takes the reader's
+   ink. The fold keeps its accent on its own surface; this only answers the box here. */
+.ui-composed .knowledge-card { --block-slot-ink: var(--text); border-color: var(--line-strong); }
+.ui-composed .knowledge-card:hover { outline-color: var(--line-strong); }
+.ui-composed .knowledge-card[aria-pressed="true"] { outline-color: var(--text); }
+
+.ui-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--ink-machine);
+  font: 400 10.5px/1.5 var(--mono);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+/* The open lens is emphasis, so its border is --text, not --ink-machine: white is what
+   a reader's eye lands on, grey only locates. */
+.ui-chip.is-on { border-color: var(--text); background: var(--surface-hover); color: var(--text); }
+
+/* A FIELD: the line that makes a surface interrogable, so it ends in a question
+   rather than a full stop. The prompt character is the console's own. */
+.ui-field-box {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.ui-field-box:focus-within { border-color: var(--ink-machine); }
+/* The prompt character locates the line to type on; it is chrome, so it is grey. */
+.ui-field-box > span { flex: none; color: var(--ink-machine); font: 400 12.5px/1 var(--mono); }
+.ui-field-box input { flex: 1 1 auto; min-width: 0; border: none; background: none; color: var(--text); font: 400 12.5px/1.4 var(--mono); outline: none; }
+.ui-field-box input::placeholder { color: var(--ink-machine); }
+.ui-field .ui-t { margin-top: 8px; text-transform: none; }
+
+/* A ROW WITH SLOTS. `lead` keeps the width a column is scanned on, `fill` takes the
+   rest, `trail` is the gutter at the far right where every marker meets one edge.
+   Baseline-aligned, because a glyph in the gutter belongs to the line beside it. */
+.ui-arow { display: flex; align-items: baseline; gap: 18px; min-width: 0; }
+.ui-arow-lead { flex: none; width: var(--lead, auto); }
+.ui-arow-fill { flex: 1 1 auto; min-width: 0; }
+/* Right-aligned inside its own width: the glyph meets the same edge whatever its word,
+   which is what makes a column of markers read as a column. */
+.ui-arow-trail { flex: none; width: var(--trail, auto); text-align: right; }
+/* A slot's own items take no block margin — the row owns the pitch. */
+.ui-arow :is(.ui-t, .ui-mrow, .ui-marks, .ui-prose, .ui-note) { margin: 0; }
+/* Several chips in one slot sit along it. */
+.ui-arow-trail, .ui-arow-lead, .ui-arow-fill { display: flex; align-items: baseline; gap: 7px; }
+.ui-arow-trail { justify-content: flex-end; }
+/* With no `fill` between them, the lead and the trail would sit adjacent. The gutter
+   is defined by the edge it meets, so it pushes to it either way. */
+.ui-arow-lead:last-child ~ .ui-arow-trail,
+.ui-arow-lead + .ui-arow-trail { margin-left: auto; }
+/* PITCH. A scanned column is tight; a sampled run is read down and needs air, or the
+   rows run together into a block of digits. Measured on the prototype's own sampled
+   pane, where the row pitch is roughly twice its leading. */
+.ui-arow.is-tight { padding: 3px 0; }
+.ui-arow.is-open { padding: 9px 0; }
+/* Consecutive rows are a set: the rhythm between them is the pitch, not the gap the
+   surface gives unrelated blocks. */
+.ui-composed-b > .ui-arow + .ui-arow { margin-top: 0; }
+/* The same for a column of machine lines: five of them at the surface's 26 px between
+   unrelated blocks is a page of single lines, not the column a reader scans by its first
+   cell. Their rhythm is the row's own leading. Written on the wrapper because a composed
+   item is a bare `div` around its primitive, so `.ui-mrow` is never a child of the body. */
+.ui-composed-b > div:has(> .ui-mrow) + div:has(> .ui-mrow) { margin-top: 0; }
+
+/* A register's row: its items along the row, baseline-aligned so a figure beside a
+   line of prose sits on that line and not above it. A row's own items keep the gap
+   the marks use between a glyph and its words, so the two read as one system. */
+.ui-row { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+/* Inside a row an item takes no block margin: the register positions the row, and a
+   margin it did not measure is a row that sits short of its own box. */
+.ui-row > * { margin-top: 0; margin-bottom: 0; }
+/* A row's first item is its address or its time — the thing a reader scans the column
+   for — so it keeps its width and the prose beside it gives way. */
+.ui-row > :first-child { flex-shrink: 0; }
+
+/* A CARD: a bordered container holding a composition. The box is the law's own
+   elevation — one hairline and a step of surface, no shadow — and nothing in it is
+   decided here but that box: what a card holds is composed, which is why one node
+   serves a knowledge block, a commit in a replay and a quoted plate. */
+.ui-card {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding: 13px 15px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-hover);
+}
+/* The slot is the card's address as the flow numbers it, `K#1` — machine ink, because
+   it locates the card rather than saying what it claims. */
+.ui-card-slot { margin: 0; color: var(--ink-machine); font: 400 10.5px/1.4 var(--mono); letter-spacing: 0.055em; }
+/* A card's own items take the gap the card sets, not the surface's rhythm. */
+.ui-card > * + * { margin-top: 0; }
+
+/* A TIER: items across the lane, centred, wrapping when they exceed it. The gap is the
+   corridor a relation's word is read in, so it is wide enough to hold one. */
+.ui-tier { display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: center; gap: 30px 26px; }
+
+/* WIRES: an overlay over the whole composed body, so a run can cross a tier. It takes
+   no pointer events — a card under it stays clickable — and sits under the cards'
+   stacking so a run passes behind a claim rather than over it. */
+.ui-wires { position: absolute; inset: 0; pointer-events: none; z-index: 0; }
+.ui-wires svg { width: 100%; height: 100%; overflow: visible; }
+/* A wire is chrome, so it is the reading white and never a hue. 1.6px is the weight
+   that separates a run from the 1px hairline a card's border is drawn at — at the same
+   weight the two read as one line and the graph loses its wires. */
+.ui-wire { fill: none; stroke: var(--text); stroke-width: 1.6px; }
+/* A want, not an assertion: an open dependency reads as a promise at a glance. */
+.ui-wire.is-open { stroke-dasharray: 5 4; }
+.ui-wires marker path { fill: var(--text); }
+/* The word stands IN the line. The halo is painted under the glyphs and must bridge
+   the space between two words, or the run shows through that gap and `leaves open`
+   reads as `leaves_open`. 11px is what closes a 10px mono space. */
+.ui-wire-said {
+  fill: var(--text);
+  font: 600 10px/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-anchor: middle;
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 11px;
+  stroke-linejoin: round;
+}
+/* The body is the overlay's frame, and the cards stack above it. */
+.ui-composed-b { position: relative; }
+.ui-tier { position: relative; z-index: 1; }
+/* A tier's cards SHARE the lane rather than each taking a fixed width and wrapping:
+   three at a fixed 46ch overflowed and stranded the third on a row of its own, which
+   is the composition silently disagreeing with what was asked for. `lane` is a max,
+   not a width. */
+.ui-tier > .ui-card { flex: 1 1 0; min-width: 0; }
+
+/* Marks that judge a full-width section span with it: a 680px column of verdicts under
+   a 1111px rule reads as unfinished, the same way a measured lead paragraph does. */
+.ui-composed-b > .ui-marks.is-span { max-width: none; }
+
+/* ---- Code Context View (File in Context - Image 1) ---- */
+.cc-root {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  color: var(--text);
+  font-family: var(--sans);
+}
+
+.cc-subnav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-machine);
+  font-size: 12px;
+}
+.cc-subnav-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.cc-nav-btn {
+  background: none;
+  border: 0;
+  color: var(--ink-machine);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.cc-nav-btn:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+.cc-path-crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.cc-path-slash { color: var(--ink-machine); }
+.cc-path-file { color: var(--text); font-weight: 550; }
+.cc-btn.ghost {
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font: 500 11px var(--sans);
+  color: var(--ink-machine);
+  cursor: pointer;
+}
+.cc-btn.ghost:hover {
+  color: var(--text);
+  border-color: var(--ink-machine);
+}
+
+.cc-head-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.cc-super {
+  font: 500 10.5px/1.4 var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-machine);
+  margin: 0 0 4px;
+}
+.cc-title {
+  margin: 0;
+  font: 600 24px/1.2 var(--sans);
+  color: var(--text);
+  letter-spacing: -.02em;
+}
+.cc-commit {
+  margin: 4px 0 0;
+  font: 400 11.5px/1.4 var(--mono);
+  color: var(--ink-machine);
+}
+
+.cc-pill-toggle {
+  display: flex;
+  align-items: center;
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+.cc-pill-toggle button {
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  padding: 5px 12px;
+  font: 500 11.5px/1 var(--sans);
+  color: var(--ink-machine);
+  cursor: pointer;
+  transition: all .14s ease;
+}
+.cc-pill-toggle button.is-active {
+  background: var(--surface-raised);
+  color: var(--text);
+  font-weight: 550;
+}
+
+/* Feed Flow Section */
+.cc-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.cc-sec-label {
+  margin: 0;
+  font: 500 10.5px/1.4 var(--mono);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--ink-machine);
+}
+.cc-feed-flow {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  width: 100%;
+}
+.cc-feed-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.cc-feed-card.is-guard {
+  border-color: var(--text);
+  background: var(--surface-hover);
+}
+.cc-feed-card.is-missing {
+  border-style: dashed;
+  border-color: var(--line-strong);
+  background: transparent;
+}
+.cc-feed-title {
+  font: 550 12.5px var(--mono);
+  color: var(--text);
+}
+.cc-feed-note {
+  font: 400 11px var(--sans);
+  color: var(--ink-machine);
+}
+.cc-feed-wire {
+  flex: 0 0 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  position: relative;
+}
+.cc-feed-wire::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 12px;
+  height: 1px;
+  background: var(--line-strong);
+  z-index: 0;
+}
+.cc-feed-wire.is-dashed::before {
+  background: repeating-linear-gradient(to right, var(--line-strong) 0, var(--line-strong) 4px, transparent 4px, transparent 8px);
+}
+.cc-feed-wire-label {
+  position: relative;
+  z-index: 1;
+  background: var(--bg);
+  padding: 0 4px;
+  font: 400 9.5px var(--mono);
+  color: var(--ink-machine);
+  margin-bottom: 2px;
+}
+.cc-feed-wire-arrow {
+  position: absolute;
+  right: 4px;
+  top: calc(50% - 7px);
+  color: var(--ink-machine);
+  font-size: 11px;
+}
+
+/* Code split pane with pinned outcome cards */
+.cc-code-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.85fr);
+  gap: 16px;
+  align-items: flex-start;
+}
+.cc-code-pane {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.cc-code-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  font: 400 10.5px var(--mono);
+  color: var(--ink-machine);
+}
+.cc-code-body {
+  padding: 8px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.cc-code-line {
+  display: flex;
+  align-items: baseline;
+  padding: 1px 12px;
+  cursor: pointer;
+  transition: background .12s;
+}
+.cc-code-line:hover {
+  background: var(--surface-hover);
+}
+.cc-code-line.is-lit {
+  background: var(--surface-raised);
+  border-left: 2px solid var(--text);
+}
+.cc-line-num {
+  flex: 0 0 32px;
+  color: var(--ink-machine);
+  user-select: none;
+  font-size: 11px;
+}
+.cc-line-code {
+  flex: 1;
+  white-space: pre;
+  color: var(--ink-machine);
+}
+.tok-kw { color: var(--text); font-weight: 550; }
+.tok-comment { color: var(--ink-machine); font-style: italic; }
+.tok-num { color: var(--ink-machine); }
+
+.cc-pinned-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 26px;
+}
+.cc-run-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+  transition: all .14s ease;
+}
+.cc-run-card:hover {
+  border-color: var(--ink-machine);
+  background: var(--surface-hover);
+}
+.cc-run-card.is-active {
+  border-color: var(--text);
+  background: var(--surface-raised);
+}
+.cc-run-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.cc-run-label {
+  font: 600 12px var(--mono);
+  color: var(--text);
+}
+.cc-run-target {
+  font: 400 11px var(--mono);
+  color: var(--ink-machine);
+}
+.cc-run-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.cc-run-chip {
+  padding: 2px 6px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: 500 10.5px var(--mono);
+  color: var(--ink-machine);
+}
+.cc-run-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: 400 11px var(--sans);
+  color: var(--ink-machine);
+}
+.cc-run-tag {
+  font-family: var(--mono);
+  font-size: 10.5px;
+}
+
+.cc-callout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  font: 400 11.5px var(--sans);
+  color: var(--ink-machine);
+}
+.cc-callout-icon {
+  font-size: 13px;
+  color: var(--ink-machine);
+}
+
+/* Matrix schematic & finding */
+.cc-matrix-section {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) 1fr;
+  gap: 24px;
+  align-items: flex-start;
+  padding: 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.cc-matrix-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cc-matrix-label {
+  font: 500 11px var(--mono);
+  color: var(--ink-machine);
+}
+.cc-matrix-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cc-matrix-row {
+  display: flex;
+  gap: 4px;
+}
+.cc-matrix-cell {
+  flex: 1;
+  display: grid;
+  place-items: center;
+  height: 38px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: 500 11px var(--mono);
+  color: var(--ink-machine);
+}
+.cc-matrix-caption {
+  font: 400 10.5px var(--mono);
+  color: var(--ink-machine);
+}
+.cc-matrix-finding {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cc-finding-title {
+  margin: 0;
+  font: 600 17px/1.3 var(--sans);
+  color: var(--text);
+}
+.cc-finding-p {
+  margin: 0;
+  font: 400 13px/1.55 var(--sans);
+  color: var(--ink-machine);
+}
+
+/* Next Question Footer */
+.cc-next-question {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 18px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.cc-nq-label {
+  margin: 0 0 2px;
+  font: 500 10px var(--mono);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--ink-machine);
+}
+.cc-nq-text {
+  margin: 0;
+  font: 500 13.5px var(--sans);
+  color: var(--text);
+}
+.cc-nq-btn {
+  flex: none;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 7px 14px;
+  font: 500 12px var(--sans);
+  color: var(--text);
+  cursor: pointer;
+  transition: all .14s ease;
+}
+.cc-nq-btn:hover {
+  border-color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* ---- Review Accordion View (Code Review - Image 3) ---- */
+.ra-root {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  width: 100%;
+  color: var(--text);
+  font-family: var(--sans);
+}
+.ra-subnav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+  color: var(--ink-machine);
+  font-size: 12px;
+}
+.ra-subnav-path {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ra-path-crumb {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+.ra-btn-search {
+  background: none;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  padding: 3px 8px;
+  font: 400 11.5px var(--sans);
+  color: var(--ink-machine);
+  cursor: pointer;
+}
+.ra-btn-search:hover {
+  color: var(--text);
+  border-color: var(--ink-machine);
+}
+
+.ra-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.ra-super {
+  margin: 0;
+  font: 500 10.5px var(--mono);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--ink-machine);
+}
+.ra-title {
+  margin: 2px 0 0;
+  font: 600 25px/1.2 var(--sans);
+  color: var(--text);
+  letter-spacing: -.02em;
+}
+.ra-subtitle {
+  margin: 2px 0 6px;
+  font: 400 13.5px/1.55 var(--sans);
+  color: var(--ink-machine);
+}
+.ra-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font: 400 11px var(--mono);
+  color: var(--ink-machine);
+  padding: 4px 0;
+}
+
+/* Accordions */
+.ra-accordions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ra-item {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.ra-item-head {
+  display: flex;
+  align-items: center;
+  padding: 12px 14px;
+  gap: 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background .12s;
+}
+.ra-item-head:hover {
+  background: var(--surface-hover);
+}
+.ra-item-num {
+  font: 500 12px var(--mono);
+  color: var(--ink-machine);
+}
+.ra-item-title {
+  flex: 1;
+  font: 550 13.5px var(--sans);
+  color: var(--text);
+}
+.ra-item-badge {
+  flex: none;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: 500 10.5px var(--mono);
+  color: var(--ink-machine);
+}
+.ra-item.is-open .ra-item-badge {
+  border-color: var(--ink-machine);
+  color: var(--text);
+}
+
+.ra-item-body {
+  padding: 4px 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+}
+.ra-item-prose {
+  margin: 6px 0 0;
+  font: 400 13px/1.55 var(--sans);
+  color: var(--ink-machine);
+}
+
+/* Pipeline */
+.ra-pipeline-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ra-pipeline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+}
+.ra-pipe-stage {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+.ra-pipe-card {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.ra-pipe-name {
+  font: 550 12px var(--mono);
+  color: var(--text);
+}
+.ra-pipe-desc {
+  font: 400 10.5px var(--sans);
+  color: var(--ink-machine);
+}
+.ra-pipe-arrow {
+  color: var(--ink-machine);
+  font-size: 13px;
+}
+.ra-pipe-caption {
+  margin: 0;
+  font: 400 10.5px var(--mono);
+  color: var(--ink-machine);
+}
+
+/* Routing Table */
+.ra-table-wrap {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+}
+.ra-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.ra-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.ra-table tr:last-child td {
+  border-bottom: 0;
+}
+.ra-td-tokens {
+  color: var(--text);
+  font-weight: 500;
+  width: 25%;
+}
+.ra-td-before {
+  color: var(--ink-machine);
+  width: 25%;
+}
+.ra-td-arrow {
+  color: var(--ink-machine);
+  width: 30%;
+}
+.ra-after-val {
+  color: var(--text);
+}
+.ra-td-configs {
+  color: var(--ink-machine);
+  text-align: right;
+  width: 20%;
+}
+
+/* Diff toggle */
+.ra-diff-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ra-diff-btn {
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  font: 500 11.5px var(--mono);
+  color: var(--ink-machine);
+  cursor: pointer;
+  padding: 0;
+}
+.ra-diff-btn:hover {
+  color: var(--text);
+}
+.ra-diff-content pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text);
+}
+.ra-action-link {
+  margin: 0;
+  font: 500 11.5px var(--sans);
+  color: var(--ink-machine);
+  cursor: pointer;
+}
+.ra-action-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+/* Settlement Proposal */
+.ra-settlement-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 8px;
+}
+.ra-settlement-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.ra-settlement-title {
+  margin: 0;
+  font: 600 16px var(--sans);
+  color: var(--text);
+}
+.ra-settlement-status {
+  font: 400 11px var(--mono);
+  color: var(--ink-machine);
+}
+.ra-settlement-box {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.ra-settlement-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+.ra-branch {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--bg);
+}
+.ra-branch-badge {
+  padding: 1px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  font: 600 10.5px var(--mono);
+  color: var(--text);
+}
+.ra-branch-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.ra-branch-name {
+  font: 550 12.5px var(--sans);
+  color: var(--text);
+}
+.ra-branch-detail {
+  font: 400 11px var(--mono);
+  color: var(--ink-machine);
+}
+.ra-settlement-note {
+  margin: 0;
+  font: 400 11.5px/1.5 var(--sans);
+  color: var(--ink-machine);
+}
+.ra-settlement-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+.ra-settlement-caption {
+  margin: 0;
+  font: 400 12px/1.5 var(--sans);
+  color: var(--ink-machine);
+}
+.ra-settlement-btn {
+  flex: none;
+  background: var(--bg);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  padding: 8px 14px;
+  font: 500 12px var(--sans);
+  color: var(--text);
+  cursor: pointer;
+  transition: all .14s ease;
+}
+.ra-settlement-btn:hover {
+  border-color: var(--text);
+  background: var(--surface-hover);
+}
+
+/* Narrow panes stack the A/B branches and let wide figures scroll in their own lane. */
+@media (max-width: 760px) {
+  .ra-pipe-card { min-width: 180px; }
+  .ra-settlement-split { grid-template-columns: 1fr; }
+  .ra-settlement-foot { flex-direction: column; align-items: flex-start; }
+  .ra-branch-content { min-width: 0; }
+  .ra-branch-detail { overflow-wrap: anywhere; }
+  .ui-composed-b > [data-node="figure"] { overflow-x: auto; }
+  .ui-sec { flex-wrap: wrap; }
+  .ui-sec em { flex: 0 1 auto; min-width: 0; overflow-wrap: anywhere; }
+  .ui-embed-bar { flex-wrap: wrap; row-gap: 2px; }
+  .ui-embed-bar b { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .ui-embed-bar a { order: 2; }
+  .ui-embed-bar span { order: 3; flex-basis: 100%; }
+}

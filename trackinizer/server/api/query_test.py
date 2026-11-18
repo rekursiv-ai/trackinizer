@@ -7,12 +7,14 @@ Houses inquiry delete too: ``DELETE /api/inquiries/{id}`` is defined in
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, patch
 
 import json
 import logging
+import time
 import uuid
 
 from fastapi import FastAPI
@@ -22,6 +24,7 @@ from hypothesis import (
     settings,
     strategies as st,
 )
+from treekle import from_plain, json_loads
 
 import httpx2
 import pytest
@@ -33,26 +36,20 @@ from trackinizer.conftest import (
     queue_field_rows,
     set_field_row,
 )
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    loads,
-)
 from trackinizer.server import web
 from trackinizer.server.api import query
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
+    TEST_USER_EMAIL,
     answer_account_active,
     clear_identity_override,
     install_identity,
     make_test_identity,
 )
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.types.change_log import Change, Snapshot
-from trackinizer.types.inquiries import KIND_TO_CLASS
+from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
     SubmitAgentSession,
     SubmitArtifact,
@@ -76,7 +73,6 @@ if TYPE_CHECKING:
 
     from trackinizer.server.store.core import Store
     from trackinizer.types.edges import Edge
-    from trackinizer.types.inquiries import Inquiry
 
 
 class TestRoutes:
@@ -85,8 +81,8 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        set_field_row(engine.conn, {"kind": "Issue"})
-        engine.conn.fetch.return_value = []
+        set_field_row(engine.conn, {"kind": "Issue", "account": TEST_USER_EMAIL})
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         r = client.request(
             "DELETE",
             f"/api/inquiries/{new_uuid()}",
@@ -99,7 +95,10 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        set_field_row(engine.conn, {"kind": "Issue", "owner": "worker-1"})
+        set_field_row(
+            engine.conn,
+            {"kind": "Issue", "owner": "worker-1", "account": TEST_USER_EMAIL},
+        )
 
         response = client.request(
             "DELETE",
@@ -108,8 +107,8 @@ class TestRoutes:
         )
 
         assert response.status_code == 409
-        body = DictCodec.coerce(response.json())
-        assert "release its owner" in StrCodec.coerce(body["detail"])
+        body = from_plain(response.json(), dict[str, object])
+        assert "release its owner" in from_plain(body["detail"], str)
         assert not any(
             isinstance(call.args[0], str) and "DELETE FROM inquiries" in call.args[0]
             for call in engine.conn.execute.call_args_list
@@ -129,7 +128,7 @@ class TestRoutes:
             json={"actor": "user", "reason": ""},
         )
         assert r.status_code == 404
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert body["code"] == "not_found"
 
     def test_list_kind_route_rejects_bad_bounds(
@@ -164,7 +163,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             r = client.get(
                 "/api/inquiries",
                 params=[
@@ -198,7 +197,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             r = client.get(
                 "/api/inquiries",
                 params=[
@@ -229,6 +228,29 @@ class TestRoutes:
             ("issue_priority", "gt", "5"),
         ]
 
+    def test_list_kind_route_lists_for_the_reader_its_caller_is(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, store, _engine = route_client
+        asked: list[tuple[frozenset[str], str]] = []
+        with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
+            mock.return_value = list[Inquiry]()
+            for audiences in (frozenset({"open"}), frozenset({"open", "staff"})):
+                install_identity(
+                    replace(make_test_identity(), read_audiences=audiences),
+                )
+                assert client.get("/api/inquiries", params={"kind": "Issue"}).is_success
+                assert mock.await_args is not None
+                reader = mock.await_args.kwargs["reader"]
+                assert isinstance(reader, SessionReader)
+                asked.append((reader.audiences, reader.email))
+
+        assert asked == [
+            (frozenset({"open"}), TEST_USER_EMAIL),
+            (frozenset({"open", "staff"}), TEST_USER_EMAIL),
+        ]
+
     def test_list_kind_route_logs_correlated_query_stage(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -239,7 +261,7 @@ class TestRoutes:
             patch.object(store, "list_kind", new_callable=AsyncMock) as mock,
             caplog.at_level(logging.INFO),
         ):
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             response = client.get(
                 "/api/inquiries",
                 params=[
@@ -256,12 +278,12 @@ class TestRoutes:
             for record in caplog.records
             if getattr(record, "event", "") == "trackinizer_query_completed"
         )
-        fields = DictCodec.coerce(record.__dict__)
-        assert StrCodec.coerce(fields.get("request_id")) == request_id
-        assert StrCodec.coerce(fields.get("kind")) == "Experiment"
-        assert IntCodec.coerce(fields.get("filter_count"), 0) == 2
-        assert IntCodec.coerce(fields.get("returned_rows"), -1) == 0
-        assert FloatCodec.coerce(fields.get("duration_sec"), -1) >= 0
+        fields = from_plain(record.__dict__, dict[str, object])
+        assert from_plain(fields.get("request_id"), str) == request_id
+        assert from_plain(fields.get("kind"), str) == "Experiment"
+        assert from_plain(fields.get("filter_count"), int, default=0) == 2
+        assert from_plain(fields.get("returned_rows"), int, default=-1) == 0
+        assert from_plain(fields.get("duration_sec"), float, default=-1) >= 0
 
     def test_list_kind_route_rejects_isnull_on_not_null_column(
         self,
@@ -302,7 +324,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             ok = client.get(
                 "/api/inquiries",
                 params=[
@@ -432,7 +454,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             r = client.get(
                 "/api/inquiries",
                 params=[
@@ -488,7 +510,7 @@ class TestRoutes:
         """
         client, store, _engine = route_client
         with patch.object(store, "list_kind", new_callable=AsyncMock) as mock:
-            mock.return_value = []
+            mock.return_value = list[Inquiry]()
             bad = client.get(
                 "/api/inquiries",
                 params=[("kind", "Issue"), ("fields", "id"), ("fields", "bogus")],
@@ -536,6 +558,31 @@ class TestRoutes:
         )
         assert r.status_code == 400
 
+    @pytest.mark.parametrize(
+        "zone",
+        ["Pacific/Kiritimati", "America/Los_Angeles", "Europe/Berlin"],
+    )
+    def test_change_log_route_reads_a_naive_since_as_utc(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        zone: str,
+    ) -> None:
+        """Read a naive ``since`` as UTC whatever the server's local zone is."""
+        client, store, _engine = route_client
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        try:
+            with patch.object(store, "list_changes", new_callable=AsyncMock) as mock:
+                mock.return_value = list[Inquiry]()
+                client.get("/api/change_log", params={"since": "2024-12-10T00:00:00"})
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+        since = cast("datetime", mock.call_args.kwargs["since"])
+        assert since.tzinfo is not None
+        assert since == datetime(2024, 12, 10, tzinfo=UTC)
+
     def test_change_log_route_sends_brief_rows_only_when_asked(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
@@ -552,12 +599,16 @@ class TestRoutes:
         )
         with patch.object(store, "list_changes", new_callable=AsyncMock) as mock:
             mock.return_value = [change]
-            (whole,) = ListCodec.mappings(client.get("/api/change_log").json())
-            (brief,) = ListCodec.mappings(
-                client.get("/api/change_log", params={"brief": "true"}).json(),
+            (whole,) = from_plain(
+                client.get("/api/change_log").json(),
+                list[dict[str, object]],
             )
-        assert DictCodec.coerce(whole["new"])["description"] == "e" * 100
-        assert DictCodec.coerce(whole["new"])["title"] is None
+            (brief,) = from_plain(
+                client.get("/api/change_log", params={"brief": "true"}).json(),
+                list[dict[str, object]],
+            )
+        assert from_plain(whole["new"], dict[str, object])["description"] == "e" * 100
+        assert from_plain(whole["new"], dict[str, object])["title"] is None
         assert brief["old"] == {"description": "d" * 32}
         assert brief["new"] == {"description": "e" * 32}
         assert {k: v for k, v in brief.items() if k not in {"old", "new"}} == {
@@ -574,7 +625,7 @@ class TestRoutes:
         # against 46,742 bytes in 0.050s for one copy -- a 200x amplification
         # available to any viewer.
         client, _store, engine = route_client
-        engine.conn.fetch.return_value = []
+        engine.conn.fetch.return_value = list[dict[str, object]]()
         params = "&".join(["kind=Issue"] * 50)
         r = client.get(f"/api/inquiries?{params}")
         assert r.status_code == 200, r.text
@@ -643,7 +694,7 @@ class TestRoutes:
         )
         r = client.post("/api/inquiries/lookup", json=[str(good), str(bad)])
         assert r.status_code == 200
-        body = DictCodec.coerce(loads(r.content))
+        body = json_loads(r.content, dict[str, object])
         assert body["found"] == {str(good): "Issue"}
         assert body["missing"] == [str(bad)]
 
@@ -653,9 +704,8 @@ class TestRoutes:
     ) -> None:
         """SSE relays every NOTIFY payload as ``{"id": "<uuid>"}``.
 
-        Matches the Auth section of ``docs/design.md``: viewer-gated reads, no
-        per-subscriber filter; localhost-only deployment is the
-        access boundary.
+        Viewer-gated reads, and every change reaches every viewer; the one
+        exception, a ping about a session's transcript, is the next test's.
         """
         client, _store, engine = route_client
         first = new_uuid()
@@ -668,6 +718,34 @@ class TestRoutes:
             body = b"".join(r.iter_bytes())
         assert f'data: {{"id": "{first}"}}'.encode() in body
         assert f'data: {{"id": "{second}"}}'.encode() in body
+
+    def test_subscribe_holds_back_a_hidden_transcripts_ping_from_a_viewer(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        # The database says the viewer reads the session, once they hold its audience.
+        engine.conn.fetchval = AsyncMock(return_value=True)
+        hidden = new_uuid()
+        shown = new_uuid()
+        engine.listen_messages = [
+            json.dumps({"id": str(hidden), "audience": "staff"}),
+            json.dumps({"id": str(shown), "audience": "open"}),
+        ]
+
+        def streamed() -> str:
+            with client.stream("GET", "/api/change_log/stream") as r:
+                return b"".join(r.iter_bytes()).decode()
+
+        install_identity(make_test_identity())
+        opened = streamed()
+        install_identity(
+            replace(make_test_identity(), read_audiences=frozenset({"open", "staff"})),
+        )
+        staffed = streamed()
+
+        assert (str(hidden) in opened, str(shown) in opened) == (False, True)
+        assert (str(hidden) in staffed, str(shown) in staffed) == (True, True)
 
     def test_subscribe_routes_share_wire_shape(self) -> None:
         """``/api/change_log/stream`` and ``/api/web/subscribe`` emit identical bytes.
@@ -749,37 +827,42 @@ class TestCoverageRoutesAndCli:
         )
         engine.conn.fetch.side_effect = [
             # /api/inquiries/{id}: fetch_edges (outbound + inbound).
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # /api/inquiries/{kind}/{seq}: fetch_edges after inner get_inquiry.
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # /api/inquiries?kind=: list-select then fetch_edges_bulk.
             [self._row(target_id)],
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # /api/inquiries/next_issue: fetch_edges outbound + inbound.
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
         ]
         assert (
-            DictCodec.coerce(client.get(f"/api/inquiries/{target_id}").json())["kind"]
-            == "Issue"
-        )
-        assert DictCodec.coerce(client.get("/api/inquiries/Issue/1").json())[
-            "id"
-        ] == str(target_id)
-        assert (
-            DictCodec.coerce(
-                ListCodec.coerce(
-                    client.get("/api/inquiries", params={"kind": "Issue"}).json(),
-                    object,
-                )[0],
+            from_plain(
+                client.get(f"/api/inquiries/{target_id}").json(),
+                dict[str, object],
             )["kind"]
             == "Issue"
         )
+        assert from_plain(
+            client.get("/api/inquiries/Issue/1").json(),
+            dict[str, object],
+        )["id"] == str(target_id)
         assert (
-            DictCodec.coerce(client.get("/api/inquiries/next_issue").json())["kind"]
+            from_plain(
+                client.get("/api/inquiries", params={"kind": "Issue"}).json(),
+                list[dict[str, object]],
+            )[0]["kind"]
+            == "Issue"
+        )
+        assert (
+            from_plain(
+                client.get("/api/inquiries/next_issue").json(),
+                dict[str, object],
+            )["kind"]
             == "Issue"
         )
 
@@ -811,7 +894,7 @@ class TestCoverageRoutesAndCli:
             params=[("kind", "Issue"), *(("fields", name) for name in fields)],
         )
         assert r.status_code == 200, r.text
-        (row,) = ListCodec.mappings(r.json())
+        (row,) = from_plain(r.json(), list[dict[str, object]])
         # ``judgement`` is a Belief field, so an Issue row has no such key.
         assert set(row) == set(fields) - {"judgement"}
         assert engine.conn.fetch.await_count == reads
@@ -826,26 +909,25 @@ class TestCoverageRoutesAndCli:
         engine.conn.fetchval.return_value = 1
         set_field_row(engine.conn, {"agent_usd": 1.0, "resource_usd": 2.0})
         assert (
-            DictCodec.coerce(client.get(f"/api/inquiries/{target_id}/cost").json())[
-                "agent_usd"
-            ]
+            from_plain(
+                client.get(f"/api/inquiries/{target_id}/cost").json(),
+                dict[str, object],
+            )["agent_usd"]
             == 1.0
         )
         engine.conn.fetch.side_effect = [
             # proves_belief: main select + bulk outbound + bulk inbound.
             [self._row(target_id, kind="Experiment")],
-            [],
-            [],
+            list[dict[str, object]](),
+            list[dict[str, object]](),
             # change_log: list_changes rows.
-            [],
+            list[dict[str, object]](),
         ]
         assert (
-            DictCodec.coerce(
-                ListCodec.coerce(
-                    client.get(f"/api/inquiries/{target_id}/proves_belief").json(),
-                    object,
-                )[0],
-            )["kind"]
+            from_plain(
+                client.get(f"/api/inquiries/{target_id}/proves_belief").json(),
+                list[dict[str, object]],
+            )[0]["kind"]
             == "Experiment"
         )
         assert (
@@ -910,10 +992,10 @@ class TestMissingResourceIs404:
     ) -> None:
         client, _store, engine = route_client
         engine.conn.fetchval.return_value = "Belief"  # Claimable kind probe.
-        engine.conn.fetch.return_value = []  # No proving edges.
+        engine.conn.fetch.return_value = list[dict[str, object]]()  # No proving edges.
         r = client.get(f"/api/inquiries/{new_uuid()}/confidence")
         assert r.status_code == 200
-        assert DictCodec.coerce(r.json())["confidence"] == 0.5
+        assert from_plain(r.json(), dict[str, object])["confidence"] == 0.5
 
     def test_authority_unknown_id_is_404(
         self,
@@ -940,7 +1022,7 @@ class TestMissingResourceIs404:
         )
         r = client.get(f"/api/inquiries/{new_uuid()}/authority")
         assert r.status_code == 200
-        assert DictCodec.coerce(r.json()) == {"proves_authority": 0.42}
+        assert from_plain(r.json(), dict[str, object]) == {"proves_authority": 0.42}
 
 
 # -- Property: the list endpoint never 500s on malformed query params ----------
@@ -1045,6 +1127,7 @@ async def test_fields_keep_the_named_values_on_a_real_engine(
             SubmitWebSearch(account=account, title="query"),
             SubmitAgentSession(account=account, title="session"),
         ],
+        session_audience="open",
     )
     edges: tuple[tuple[uuid.UUID, Edge.Kind, uuid.UUID], ...] = (
         (child, "narrows", parent),
@@ -1058,30 +1141,95 @@ async def test_fields_keep_the_named_values_on_a_real_engine(
             actor="alice",
         )
     kinds = [("kind", kind) for kind in sorted(KIND_TO_CLASS)]
-    full = ListCodec.mappings((await http.get("/api/inquiries", params=kinds)).json())
+    full = from_plain(
+        (await http.get("/api/inquiries", params=kinds)).json(),
+        list[dict[str, object]],
+    )
     assert len(full) == 10
     for row in full:
         seq = f"{row['seq']}..{row['seq']}"
         named = await http.get(
             "/api/inquiries",
             params=[
-                ("kind", StrCodec.coerce(row["kind"])),
+                ("kind", from_plain(row["kind"], str)),
                 ("seq_range", seq),
                 *(("fields", key) for key in row),
             ],
         )
-        assert ListCodec.mappings(named.json()) == [row], row["kind"]
+        assert from_plain(named.json(), list[dict[str, object]]) == [row], row["kind"]
     subset = ("id", "title", "priority", "judgement", "proved_by", "narrows")
     named = await http.get(
         "/api/inquiries",
         params=[*kinds, *(("fields", name) for name in subset)],
     )
     assert named.status_code == 200, named.text
-    rows = ListCodec.mappings(named.json())
+    rows = from_plain(named.json(), list[dict[str, object]])
     assert rows == [{k: v for k, v in row.items() if k in subset} for row in full]
     # The relations are real when named: the edges were read.
     assert any(row.get("narrows") for row in rows)
     assert any(row.get("proved_by") for row in rows)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_row_is_purged_by_its_account_or_an_admin_and_no_other_writer(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    http, store = pglite_route_client
+    ada = "ada@example.com"
+    mine, by_admin, kept = await store.submit_batch(
+        [SubmitIssue(account=ada, title=title) for title in ("mine", "admin", "kept")],
+    )
+
+    install_identity(make_test_identity(api_key_id=None, email="bob@example.com"))
+    other = await http.request("DELETE", f"/api/inquiries/{kept}", json={})
+    install_identity(make_test_identity(api_key_id=None, email="Ada@Example.com"))
+    own = await http.request("DELETE", f"/api/inquiries/{mine}", json={})
+    install_identity(
+        make_test_identity(api_key_id=None, email="root@example.com", role="admin"),
+    )
+    admin = await http.request("DELETE", f"/api/inquiries/{by_admin}", json={})
+
+    assert (other.status_code, own.status_code, admin.status_code) == (403, 200, 200)
+    assert json_loads(other.content, dict[str, object])["detail"] == (
+        "A row is purged by its account or an admin"
+    )
+    assert await store.get_inquiry(kept) is not None
+    assert await store.get_inquiry(mine) is None
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_writer_cannot_take_a_row_by_its_account_and_then_purge_it(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    http, store = pglite_route_client
+    ada, bob = "ada@example.com", "bob@example.com"
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "SELECT gen_random_uuid(), email, 'Test', 'writer', 'active' "
+            "FROM unnest($1::text[]) AS email",
+            [ada, bob],
+        )
+    taken, given = await store.submit_batch(
+        [SubmitIssue(account=ada, title=title) for title in ("taken", "given")],
+    )
+
+    install_identity(make_test_identity(api_key_id=None, email=bob))
+    take = await http.put(f"/api/inquiries/{taken}/account", json={"value": bob})
+    purge = await http.request("DELETE", f"/api/inquiries/{taken}", json={})
+    install_identity(make_test_identity(api_key_id=None, email=ada))
+    give = await http.put(f"/api/inquiries/{given}/account", json={"value": bob})
+    install_identity(
+        make_test_identity(api_key_id=None, email="root@example.com", role="admin"),
+    )
+    moved = await http.put(f"/api/inquiries/{taken}/account", json={"value": bob})
+
+    assert (take.status_code, purge.status_code) == (403, 403)
+    assert (give.status_code, moved.status_code) == (200, 200)
+    held = [await store.get_inquiry(row) for row in (taken, given)]
+    assert [row.account for row in held if row is not None] == [bob, bob]
 
 
 @pytest.mark.db_pglite
@@ -1115,16 +1263,19 @@ async def test_brief_changes_drop_unset_keys_and_cut_text_on_a_real_engine(
         edge_kind="narrows",
         actor="alice",
     )
-    full = ListCodec.mappings((await http.get("/api/change_log")).json())
+    full = from_plain(
+        (await http.get("/api/change_log")).json(),
+        list[dict[str, object]],
+    )
     brief = await http.get("/api/change_log", params={"brief": "true"})
     assert brief.status_code == 200, brief.text
-    rows = ListCodec.mappings(brief.json())
+    rows = from_plain(brief.json(), list[dict[str, object]])
     assert rows == [_briefed(row) for row in full]
     (edit,) = (row for row in rows if row["kind"] == "description")
-    assert DictCodec.coerce(edit["old"])["description"] == first[:32]
-    assert DictCodec.coerce(edit["new"])["description"] == second[:32]
+    assert from_plain(edit["old"], dict[str, object])["description"] == first[:32]
+    assert from_plain(edit["new"], dict[str, object])["description"] == second[:32]
     peers = {
-        DictCodec.coerce(row["new"]).get("peer_id")
+        from_plain(row["new"], dict[str, object]).get("peer_id")
         for row in rows
         if row["kind"] == "edge_added"
     }
@@ -1154,7 +1305,7 @@ async def test_change_log_takes_several_kinds_before_its_limit_on_a_real_engine(
     async def kinds(*query: tuple[str, str]) -> list[object]:
         r = await http.get("/api/change_log", params=query)
         assert r.status_code == 200, r.text
-        return [row["kind"] for row in ListCodec.mappings(r.json())]
+        return [row["kind"] for row in from_plain(r.json(), list[dict[str, object]])]
 
     many = await kinds(("kind", "status"), ("kind", "title"), ("limit", "2"))
     assert many == ["title", "status"]
@@ -1292,7 +1443,10 @@ async def _check_ancestry(http: httpx2.AsyncClient, store: Store) -> None:
     assert "gp" not in {title for title, _ in capped}
     # Without the param, a row is as it was.
     plain = await http.get("/api/inquiries", params={"kind": "Issue", "limit": 5})
-    assert all("ancestors" not in row for row in ListCodec.mappings(plain.json()))
+    assert all(
+        "ancestors" not in row
+        for row in from_plain(plain.json(), list[dict[str, object]])
+    )
 
 
 def _briefed(row: Mapping[str, object]) -> dict[str, object]:
@@ -1303,7 +1457,7 @@ def _briefed(row: Mapping[str, object]) -> dict[str, object]:
             key: value[:32]
             if key in {"title", "description"} and isinstance(value, str)
             else value
-            for key, value in DictCodec.coerce(row[side]).items()
+            for key, value in from_plain(row[side], dict[str, object]).items()
             if value is not None
         }
     return out
@@ -1331,7 +1485,10 @@ async def _titles_where(
         params=[("kind", "Issue"), ("filter", json.dumps(clause))],
     )
     assert r.status_code == 200, r.text
-    return sorted(StrCodec.coerce(row["title"]) for row in ListCodec.mappings(r.json()))
+    return sorted(
+        from_plain(row["title"], str)
+        for row in from_plain(r.json(), list[dict[str, object]])
+    )
 
 
 async def _ancestry(
@@ -1351,15 +1508,15 @@ async def _ancestry(
         ],
     )
     assert r.status_code == 200, r.text
-    (row,) = ListCodec.mappings(r.json())
+    (row,) = from_plain(r.json(), list[dict[str, object]])
     names = {made: title for title, made in ids.items()}
     out: list[tuple[str, list[str]]] = []
-    for entry in ListCodec.mappings(row.get("ancestors")):
+    for entry in from_plain(row.get("ancestors"), list[dict[str, object]], default=[]):
         assert set(entry) == {"id", "kind", "seq", "title", "status", "child_ids"}
         assert entry["kind"] == "Issue"
-        title = names[uuid.UUID(StrCodec.coerce(entry["id"]))]
+        title = names[uuid.UUID(from_plain(entry["id"], str))]
         assert entry["title"] == title
-        children = ListCodec.coerce(entry["child_ids"], str)
+        children = from_plain(entry["child_ids"], list[str])
         out.append((title, [names[uuid.UUID(child)] for child in children]))
     return out
 
@@ -1385,6 +1542,6 @@ async def _viewer() -> AuthIdentity:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -4,14 +4,17 @@ import { render } from "@testing-library/react";
 import { Profiler } from "react";
 import type { Change, Detail, DetailRow, Peer } from "../api/detail";
 import type { Profile } from "../api/me";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
+import { HighlightContext, HighlightStore } from "../app/highlights";
 import { Session, SessionContext } from "../app/session";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { LiveContext } from "../live";
 import type { LiveHub } from "../live/hub";
 import { RouterProvider } from "../router/router";
 import { ToastProvider } from "../ui/toast";
+import { type ChatFeed, ChatFeedContext } from "../visuals/chatFeed";
+import { type WorkspaceActions, WorkspaceActionsProvider } from "../visuals/workspaceActions";
 import { DetailView, type DetailTarget } from ".";
 
 const ALL_KINDS = ["Issue", "Artifact", "Experiment", "Paper", "Belief", "CodeChange", "WebResult", "WebSearch", "AgentSession"];
@@ -68,7 +71,7 @@ export const META: Meta = {
 };
 
 /** The signed-in user the detail renders for: a writer, so its editors show. */
-export const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+export const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 /** A stable, distinct UUID for test number `n`. */
 export function uuid(n: number): string {
@@ -106,7 +109,7 @@ export function row(kind: string, seq: number, fields: { [field: string]: unknow
 const KIND_KEYS: { readonly [kind: string]: readonly string[] } = {
   Issue: ["issue_kind", "priority", "validation"],
   Artifact: [],
-  Experiment: ["codechanges", "config", "outcome"],
+  Experiment: ["app", "codechanges", "config", "outcome"],
   Paper: [
     "abstract",
     "authors",
@@ -175,8 +178,10 @@ export function serveDetails(details: readonly Detail[], confidence = 0.5): Sent
  * Render the detail for `target` with the app's providers, and its shortcuts
  * bound; `queryClient` is its cache, `profile` the signed-in user, `session`
  * the one a 401 would end, `commands` the registry the palette would list,
- * `hub` the live stream's, if it is to keep the detail current, and `onCommit`
- * is told of each commit of the detail's tree.
+ * `hub` the live stream's, if it is to keep the detail current, `onCommit` is
+ * told of each commit of the detail's tree, `highlights` is the canvas's marks,
+ * none by default, `workspace` is the canvas the detail shows inside, if any, and
+ * `chat` is the shell's Chat feed, if the page is to continue a chat in it.
  */
 export function renderDetail(
   target: DetailTarget,
@@ -187,7 +192,19 @@ export function renderDetail(
     commands = new CommandRegistry(),
     hub = null,
     onCommit = () => {},
-  }: { profile?: Profile; session?: Session; commands?: CommandRegistry; hub?: LiveHub | null; onCommit?: () => void } = {},
+    highlights = new HighlightStore(),
+    workspace = null,
+    chat = null,
+  }: {
+    profile?: Profile;
+    session?: Session;
+    commands?: CommandRegistry;
+    hub?: LiveHub | null;
+    onCommit?: () => void;
+    highlights?: HighlightStore;
+    workspace?: WorkspaceActions | null;
+    chat?: ChatFeed | null;
+  } = {},
 ) {
   return render(
     <QueryClientProvider client={queryClient}>
@@ -199,9 +216,15 @@ export function renderDetail(
                 <RouterProvider kinds={META.kinds}>
                   <LiveContext value={hub}>
                     <Shortcuts />
-                    <Profiler id="detail" onRender={onCommit}>
-                      <DetailView target={target} />
-                    </Profiler>
+                    <ChatFeedContext value={chat}>
+                      <WorkspaceActionsProvider value={workspace}>
+                        <Profiler id="detail" onRender={onCommit}>
+                          <HighlightContext value={highlights}>
+                            <DetailView target={target} />
+                          </HighlightContext>
+                        </Profiler>
+                      </WorkspaceActionsProvider>
+                    </ChatFeedContext>
                   </LiveContext>
                 </RouterProvider>
               </ProfileContext>

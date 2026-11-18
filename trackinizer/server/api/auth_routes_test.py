@@ -8,14 +8,18 @@ from unittest.mock import AsyncMock, _Call
 
 import uuid
 
+from treekle import from_plain
+
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity, current_user, generate_token
+from trackinizer.server.config import ChatOrgs, Config
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
@@ -34,7 +38,7 @@ def auth_identity() -> AuthIdentity:
 
 
 @pytest.fixture(autouse=True)
-def override_current_user(auth_identity: AuthIdentity) -> object:
+def override_current_user(auth_identity: AuthIdentity) -> Iterator[None]:
     """Replace :func:`current_user` with a static-identity stub for these tests.
 
     Bearer-header parsing has its own test coverage in ``auth_test.py``;
@@ -62,7 +66,7 @@ class TestCreateToken:
         r = client.post("/api/me/tokens", json={"name": "laptop"})
         assert r.status_code == 200, r.text
         raw: object = r.json()
-        body = DictCodec.coerce(raw)
+        body = from_plain(raw, dict[str, object])
         assert body["name"] == "laptop"
         # Defaults to caller's user role when ``role`` is omitted.
         assert body["role"] == "writer"
@@ -116,7 +120,7 @@ class TestCreateToken:
         engine.conn.fetchval = AsyncMock(return_value="writer")
         r = client.post("/api/me/tokens", json={"name": "ro", "role": "viewer"})
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert body["role"] == "viewer"
 
     def test_scoped_key_cannot_mint_above_its_ceiling(
@@ -151,6 +155,118 @@ class TestCreateToken:
         assert not any("INSERT INTO api_keys" in s for s in sqls)
 
 
+def _as_caller(
+    *,
+    read: set[str],
+    opening: set[str],
+    pinned: str | None = None,
+    key: bool = True,
+) -> None:
+    """Make the next requests come from a caller holding these audiences."""
+    caller = AuthIdentity(
+        user_id=uuid.uuid4(),
+        api_key_id=uuid.uuid4() if key else None,
+        email="caller@example.com",
+        role="writer",
+        read_audiences=frozenset(read),
+        open_audiences=frozenset(opening),
+        pinned_audience=pinned,
+    )
+
+    async def resolve() -> AuthIdentity:
+        return caller
+
+    app.dependency_overrides[current_user] = resolve
+
+
+def _insert_pin(engine: FakeEngine) -> object:
+    """Return the ``open_into`` the key was stored with."""
+    (insert,) = [
+        c
+        for c in engine.conn.execute.call_args_list
+        if "INSERT INTO api_keys" in _sql(c)
+    ]
+    return insert.args[7]
+
+
+class TestCreateTokenAudiences:
+    """A key opens at most what the caller does."""
+
+    def test_a_staff_session_mints_a_key_pinned_to_staff(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open", "staff"}, opening={"open", "staff"}, key=False)
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post(
+            "/api/me/tokens",
+            json={"name": "campaign", "open_into": "staff"},
+        )
+        assert r.status_code == 200, r.text
+        body = from_plain(r.json(), dict[str, object])
+        assert "read_audiences" not in body
+        assert body["open_into"] == "staff"
+        assert _insert_pin(engine) == "staff"
+
+    def test_a_key_minted_with_no_pin_by_a_session_stays_unpinned(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open", "staff"}, opening={"open", "staff"}, key=False)
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post("/api/me/tokens", json={"name": "laptop"})
+        assert r.status_code == 200, r.text
+        assert _insert_pin(engine) is None
+
+    def test_a_pin_beyond_the_callers_is_403_and_stores_nothing(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open"}, opening={"open"})
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post("/api/me/tokens", json={"name": "k", "open_into": "staff"})
+        assert r.status_code == 403, r.text
+        assert "staff" in from_plain(
+            from_plain(r.json(), dict[str, object])["detail"],
+            str,
+        )
+        sqls = [_sql(c) for c in engine.conn.execute.call_args_list]
+        assert not any("INSERT INTO api_keys" in s for s in sqls)
+
+    def test_a_pinned_key_cannot_shed_its_pin_by_minting_another(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _as_caller(read={"open"}, opening={"open"}, pinned="open")
+        engine.conn.fetchval = AsyncMock(return_value="writer")
+        r = client.post("/api/me/tokens", json={"name": "child"})
+        assert r.status_code == 200, r.text
+        body = from_plain(r.json(), dict[str, object])
+        assert body["open_into"] == "open"
+        assert _insert_pin(engine) == "open"
+
+    @pytest.mark.parametrize(
+        "limits",
+        [
+            {"open_into": "gold"},
+            {"open_into": ""},
+        ],
+    )
+    def test_a_name_that_is_no_audience_is_422(
+        self,
+        limits: dict[str, object],
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        _as_caller(read={"open", "staff"}, opening={"open", "staff"})
+        r = client.post("/api/me/tokens", json={"name": "k", **limits})
+        assert r.status_code == 422
+
+
 class TestListTokens:
     def test_returns_rows_without_hashes(
         self,
@@ -166,6 +282,7 @@ class TestListTokens:
                     "name": "laptop",
                     "prefix": "trax_aBcDeFgH",
                     "role": "viewer",
+                    "open_into": "open",
                     "created_at": datetime(2025, 1, 1, tzinfo=UTC),
                     "last_used_at": None,
                     "revoked_at": None,
@@ -175,15 +292,17 @@ class TestListTokens:
         r = client.get("/api/me/tokens")
         assert r.status_code == 200, r.text
         raw: object = r.json()
-        body = DictCodec.coerce(raw)
-        token_values = ListCodec.coerce(body["tokens"])
+        body = from_plain(raw, dict[str, object])
+        token_values = from_plain(body["tokens"], list[object])
         assert len(token_values) == 1
-        tok = DictCodec.coerce(token_values[0])
+        tok = from_plain(token_values[0], dict[str, object])
         assert tok["id"] == str(key_id)
         assert tok["prefix"] == "trax_aBcDeFgH"
         # The new ``role`` column lands in the wire shape so the UI can
         # render a per-row dropdown.
         assert tok["role"] == "viewer"
+        assert "read_audiences" not in tok
+        assert tok["open_into"] == "open"
         # The wire shape must not leak ``secret_hash`` or a recoverable
         # plaintext -- this is the central confidentiality invariant.
         assert "secret_hash" not in tok
@@ -390,6 +509,359 @@ class TestSetTokenRole:
         assert r.status_code == 422
 
 
+_WHEN = datetime(2026, 10, 9, 8, 0, tzinfo=UTC)
+_RULES_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
+
+
+async def _browser_identity() -> AuthIdentity:
+    """Return a signed-in browser's caller: a user with no API key."""
+    return AuthIdentity(
+        user_id=uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        api_key_id=None,
+        email="alice@example.com",
+        role="writer",
+    )
+
+
+def _browser_session() -> None:
+    """Serve the next requests as a signed-in browser."""
+    app.dependency_overrides[current_user] = _browser_identity
+
+
+class TestProfile:
+    def test_names_what_the_user_agreed_to_and_the_rules_in_force(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": None,
+                    "visual_workspace_enabled": True,
+                    "acknowledged_at": _WHEN,
+                    "acknowledged_rules_version": "old",
+                    "preferences": {"theme": "light", "retired": 1},
+                },
+                {"id": str(_RULES_ID), "version": _WHEN},
+            ],
+        )
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        # The stored choice, the defaults for the rest; a key no longer known is dropped.
+        assert body["preferences"] == {
+            "theme": "light",
+            "skin": "default",
+            "chat_side": "left",
+            "highlight_mentions": True,
+            "terminal_font_size": "13px",
+            "terminal_tab_chords": False,
+            "home": "graph",
+            "chat_provider": "assistant",
+            "chat_tool_calls": False,
+            **_EMPTY_USER_DATA,
+        }
+        assert body["acknowledged_at"] == _WHEN.isoformat()
+        assert body["acknowledged_rules_version"] == "old"
+        assert body["rules_issue_id"] == str(_RULES_ID)
+        assert body["rules_version"] == _WHEN.isoformat()
+        rules_read = _sql(engine.conn.fetchrow.call_args_list[1])
+        assert rules_read == (
+            "SELECT issue.id, coalesce((SELECT max(log.created) FROM change_log AS log "
+            "WHERE log.subject_id = issue.id "
+            "AND log.kind IN ('title', 'description')), "
+            "issue.created) AS version "
+            "FROM inquiries AS issue "
+            "WHERE issue.kind = 'Issue' AND issue.seq = 1 AND issue.locked"
+        )
+
+    def test_has_no_rules_version_without_a_locked_rules_issue(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(side_effect=[None, None])
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        assert body["rules_version"] is None
+        assert body["rules_issue_id"] is None
+        assert body["acknowledged_at"] is None
+        assert body["acknowledged_rules_version"] is None
+
+    @pytest.mark.parametrize("orgs", ["single", "domain", "individual"])
+    def test_profile_names_the_org_mode(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+        orgs: ChatOrgs,
+    ) -> None:
+        """The page says who reads what its user makes, as the server sets it."""
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(side_effect=[None, None])
+        monkeypatch.setattr(app.state, "config", Config(chat_orgs=orgs), raising=False)
+
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+
+        assert body["org_mode"] == orgs
+
+
+_EMPTY_USER_DATA: dict[str, object] = {
+    "stars": [],
+    "views": [],
+    "console_views": [],
+    "aliases": [],
+    "people": {},
+    "read": {"boundary": None, "marks": []},
+    "collapsed": [],
+    "lens": None,
+    "drafts": {},
+    "create_draft": None,
+    "workstreams": {"order": [], "pinned": [], "hidden": []},
+    "settings_artifact_id": None,
+}
+
+
+class TestPreferences:
+    def test_sets_and_resets_keys_in_one_statement(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"preferences": {"theme": "light"}},
+        )
+        r = client.patch(
+            "/api/me/preferences",
+            json={"theme": "light", "chat_side": None},
+        )
+        assert r.status_code == 200, r.text
+        assert from_plain(r.json(), dict[str, object]) == {
+            "theme": "light",
+            "skin": "default",
+            "chat_side": "left",
+            "highlight_mentions": True,
+            "terminal_font_size": "13px",
+            "terminal_tab_chords": False,
+            "home": "graph",
+            "chat_provider": "assistant",
+            "chat_tool_calls": False,
+            **_EMPTY_USER_DATA,
+        }
+        call = engine.conn.fetchrow.call_args
+        assert _sql(call) == (
+            "UPDATE users SET preferences = "
+            "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
+            "WHERE id = $3 RETURNING preferences"
+        )
+        assert call.args[1:] == (
+            {"theme": "light"},
+            ["chat_side", "chat_style"],
+            uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        )
+
+    def test_a_nested_value_is_stored_as_the_json_it_validates_to(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        read = {"boundary": None, "marks": ["c1"]}
+        engine.conn.fetchrow = AsyncMock(return_value={"preferences": {"read": read}})
+        r = client.patch("/api/me/preferences", json={"read": read, "lens": None})
+        assert r.status_code == 200, r.text
+        assert engine.conn.fetchrow.call_args.args[1:3] == (
+            {"read": read},
+            ["lens", "chat_style"],
+        )
+
+    @pytest.mark.parametrize(
+        ("body", "named"),
+        [
+            ({"stars": ["s"] * 2_001}, "stars"),
+            ({"read": {"boundary": None}}, "marks"),
+            ({"colour": "red", "theme": "light"}, "colour"),
+            ({"colour": None}, "colour"),
+            ({"theme": "blue"}, "theme"),
+            ({"highlight_mentions": "yes"}, "highlight_mentions"),
+        ],
+    )
+    def test_an_unknown_key_or_a_bad_value_is_refused_before_any_write(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        body: dict[str, object],
+        named: str,
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock()
+        r = client.patch("/api/me/preferences", json=body)
+        assert r.status_code == 422
+        assert named in r.text
+        assert not engine.conn.fetchrow.called
+
+    def test_a_user_who_is_gone_is_404(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(return_value=None)
+        r = client.patch("/api/me/preferences", json={"theme": "light"})
+        assert r.status_code == 404
+
+
+class TestAcknowledge:
+    def test_a_key_is_refused(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        r = client.put("/api/me/acknowledge", json={"rules_version": "v"})
+        assert r.status_code == 403
+        assert not engine.conn.execute.called
+        assert not engine.conn.fetchval.called
+
+    def test_a_browser_records_the_rules_version_in_force(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _browser_session()
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"id": _RULES_ID, "version": _WHEN},
+        )
+        engine.conn.fetchval = AsyncMock(return_value=_WHEN)
+        r = client.put(
+            "/api/me/acknowledge",
+            json={"rules_version": _WHEN.isoformat()},
+        )
+        assert r.status_code == 200, r.text
+        assert from_plain(r.json(), dict[str, object]) == {
+            "acknowledged_at": _WHEN.isoformat(),
+            "acknowledged_rules_version": _WHEN.isoformat(),
+        }
+        call = engine.conn.fetchval.call_args
+        assert "UPDATE users SET acknowledged_at" in _sql(call)
+        assert call.args[1:] == (
+            _WHEN.isoformat(),
+            uuid.UUID("11111111-1111-1111-1111-111111111111"),
+        )
+
+    def test_an_unknown_user_is_404(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _browser_session()
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"id": _RULES_ID, "version": _WHEN},
+        )
+        engine.conn.fetchval = AsyncMock(return_value=None)
+        r = client.put(
+            "/api/me/acknowledge",
+            json={"rules_version": _WHEN.isoformat()},
+        )
+        assert r.status_code == 404
+
+    def test_no_rules_in_force_is_409(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _browser_session()
+        engine.conn.fetchrow = AsyncMock(return_value=None)
+        engine.conn.fetchval = AsyncMock(return_value=_WHEN)
+        r = client.put("/api/me/acknowledge", json={"rules_version": "none"})
+        assert r.status_code == 409
+        assert "no rules in force" in r.text
+        assert not engine.conn.fetchval.called
+
+    def test_rules_that_changed_since_they_were_read_are_409(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _browser_session()
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"id": _RULES_ID, "version": _WHEN},
+        )
+        engine.conn.fetchval = AsyncMock(return_value=_WHEN)
+        r = client.put("/api/me/acknowledge", json={"rules_version": "older"})
+        assert r.status_code == 409
+        assert not engine.conn.fetchval.called
+
+
+def _service_account() -> AuthIdentity:
+    """Serve the next requests as a service account's writer key."""
+    service = AuthIdentity(
+        user_id=uuid.uuid4(),
+        api_key_id=uuid.uuid4(),
+        email="agent@service.invalid",
+        role="writer",
+    )
+
+    async def resolve() -> AuthIdentity:
+        return service
+
+    app.dependency_overrides[current_user] = resolve
+    return service
+
+
+class TestServiceAccountCannotManageTokens:
+    """A leaked service key cannot make more keys, re-role them or revoke them."""
+
+    def test_it_cannot_mint_a_token(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        _service_account()
+        r = client.post("/api/me/tokens", json={"name": "more"})
+        assert r.status_code == 403, r.text
+        assert "service account" in r.text
+        assert not engine.conn.execute.called
+        assert not engine.conn.fetchval.called
+
+    def test_it_is_refused_before_the_body_is_read(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        _service_account()
+        assert client.post("/api/me/tokens", json={"name": ""}).status_code == 403
+
+    def test_it_cannot_re_role_a_token(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        service = _service_account()
+        r = client.put(
+            f"/api/me/tokens/{service.api_key_id}/role",
+            json={"role": "viewer"},
+        )
+        assert r.status_code == 403, r.text
+        assert not engine.conn.execute.called
+        assert not engine.conn.fetchval.called
+
+    def test_it_cannot_revoke_a_token_not_even_its_own(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        service = _service_account()
+        r = client.post(f"/api/me/tokens/{service.api_key_id}/revoke")
+        assert r.status_code == 403, r.text
+        assert not engine.conn.execute.called
+
+    def test_it_still_lists_its_keys(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        service = _service_account()
+        engine.conn.fetch = AsyncMock(return_value=[])
+        r = client.get("/api/me/tokens")
+        assert r.status_code == 200, r.text
+        assert engine.conn.fetch.call_args.args[1] == service.user_id
+
+
 class TestRouteRequiresAuth:
     """Without an override, the routes must demand a bearer token."""
 
@@ -423,6 +895,6 @@ def _sql(call: _Call) -> str:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

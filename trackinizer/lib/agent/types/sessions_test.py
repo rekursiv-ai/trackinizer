@@ -66,6 +66,6 @@ def test_a_record_names_its_settings_by_index_rather_than_copying_them() -> None
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

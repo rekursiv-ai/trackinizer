@@ -8,14 +8,18 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, Self
 
 import os
+import re
 import shutil
 import time
 import uuid
+
+from treekle import json_loads
 
 from trackinizer.lib.postgres import DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.lib.userdirs import data_dir
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.notify import NOTIFY_CHANNEL
+from trackinizer.wire import wire_terminals
 
 
 if TYPE_CHECKING:
@@ -23,12 +27,21 @@ if TYPE_CHECKING:
 
 
 __all__ = [
+    "Assistant",
+    "ChatOrgs",
+    "ComputeNote",
     "Config",
     "ConfigError",
     "ConfigFlags",
     "build_embedder",
     "build_engine",
+    "parse_assistant",
+    "parse_chat_orgs",
+    "parse_chat_streaming",
+    "parse_compute",
     "parse_engine",
+    "parse_staff",
+    "parse_terminal_stun",
 ]
 
 
@@ -48,6 +61,39 @@ _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
 )  # house-ignore[globals] -- Shared default; threading would duplicate across the Config field default and the env-parse fallback.
 
 
+type ChatOrgs = Literal["single", "domain", "individual"]
+"""What an organisation is on this server, as a chat workspace has it: everyone
+(``single``), the people whose verified email has one domain (``domain``), or each
+person alone (``individual``). A person reads the open sessions and science chats of
+their organisation besides their own and the chats shared with them."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class Assistant:
+    """An account whose live sessions every signed-in user may talk to.
+
+    An actor handle is first come, first served, so a session is the assistant's
+    only when the API key that opened it also belongs to ``email``.
+    """
+
+    actor: str
+    email: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ComputeNote:
+    """One thing this server provides to run commands on, as its deployment says.
+
+    Attributes:
+      name: What it is called, a few words.
+      about: A sentence or two on what it is and how a person gets to use it.
+
+    """
+
+    name: str
+    about: str
+
+
 class ConfigFlags(Protocol):
     """The parsed CLI flags :meth:`Config.from_args` reads."""
 
@@ -63,6 +109,8 @@ class ConfigFlags(Protocol):
     web: bool
     session_max_age_seconds: int
     auth: bool
+    assistant: str
+    staff: str
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -85,11 +133,42 @@ class Config:
       web: Mount the web routes: ``/api/web``, the login page and, with
         ``--app-dir``, the web app.
       session_secret: HMAC key for the session and OAuth-state cookies.
-        ``None`` disables session login. Must be stable across processes
+        Empty disables session login. Must be stable across processes
         sharing the cookie -- rotating it logs everyone out.
+      secrets: Secret-variable backend: ``file`` (under the user data
+        directory), ``file:/abs/path``, or ``none`` to refuse secret
+        variables. Environment only (``TRACKINIZER_SECRETS``).
       session_max_age_seconds: Session cookie TTL; defaults to 30 days.
       auth_disabled: Bypass auth -- every request becomes a synthetic
         admin. Local demos only; never in production.
+      assistant: The Chat partner of every canvas; none when unset.
+      staff: Who holds the ``staff`` audience: patterns, each ``user@host`` or
+        ``*@domain``, lowercase. A domain pattern also needs Google's ``hd`` claim
+        to name the domain. Empty means nobody is staff and no staff session can
+        be opened. Deployment property: ``--staff`` or ``TRACKINIZER_STAFF``.
+      chat_orgs: The organisation mode: who reads an ``open`` session and an open
+        science chat besides its owner, a chat's starter and the people they shared
+        it with, and, for a session that is not a chat, the people who hold
+        ``staff`` or are admins. ``individual`` (the default) makes each person an
+        organisation of one, so nobody else reads what they do not share.
+        ``domain`` gives each email domain Google names a person a member of its
+        own organisation, and service accounts none, so a session or chat is read
+        by its organisation. ``single`` makes every user one organisation, so
+        every caller reads every open session and every person every open chat;
+        only a server whose users are all one organisation sets it. Environment
+        only (``TRACKINIZER_CHAT_ORGS``).
+      chat_streaming: Hold the answer a chat's assistant is writing, in memory, for
+        the chat's readers to read as it grows. Off refuses its routes with 404
+        ``chat_partials_off``, and the assistant stops sending it. Environment
+        only (``TRACKINIZER_CHAT_STREAMING``, ``on`` or ``off``).
+      terminal_stun: STUN servers the browser and a machine host use to reach each
+        other direct, as ``stun:HOST[:PORT]`` URLs. Empty (the default) means a
+        direct link forms on one network only. Environment only
+        (``TRACKINIZER_TERMINAL_STUN``, comma separated).
+      compute: What this server provides to run commands on, which the web app's
+        Machines menu shows beside the person's own machines. Empty (the default)
+        shows none. Environment only (``TRACKINIZER_COMPUTE``, a JSON list of
+        ``{"name", "about"}`` objects).
 
     """
 
@@ -122,9 +201,16 @@ class Config:
     # candidates. Env: comma-separated ``TRACKINIZER_SESSION_EMBEDDERS``.
     session_embedders: tuple[str, ...] = ()
     web: bool = False
-    session_secret: str | None = None
+    session_secret: str = ""
+    secrets: str = "file"
     session_max_age_seconds: int = _DEFAULT_SESSION_MAX_AGE_SECONDS
     auth_disabled: bool = False
+    assistant: Assistant | None = None
+    staff: tuple[str, ...] = ()
+    chat_orgs: ChatOrgs = "individual"
+    chat_streaming: bool = True
+    terminal_stun: tuple[str, ...] = ()
+    compute: tuple[ComputeNote, ...] = ()
 
     @classmethod
     def from_env(cls) -> Self:
@@ -137,7 +223,7 @@ class Config:
         return cls(
             engine=parse_engine(os.environ.get("TRACKINIZER_ENGINE", "pglite")),
             datadir=Path(env_datadir)
-            if (env_datadir := os.environ.get("TRACKINIZER_DATADIR"))
+            if (env_datadir := os.environ.get("TRACKINIZER_DATADIR", ""))
             else None,
             ephemeral=os.environ.get("TRACKINIZER_EPHEMERAL") == "1",
             pglite_tcp=os.environ.get("TRACKINIZER_PGLITE_TCP") == "1",
@@ -151,9 +237,20 @@ class Config:
                 os.environ.get("TRACKINIZER_SESSION_EMBEDDERS", ""),
             ),
             web=os.environ.get("TRACKINIZER_WEB") == "1",
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
+            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            secrets=secrets_from_env(),
             session_max_age_seconds=session_max_age_from_env(),
             auth_disabled=auth_disabled_from_env(),
+            assistant=parse_assistant(os.environ.get("TRACKINIZER_ASSISTANT", "")),
+            staff=parse_staff(os.environ.get("TRACKINIZER_STAFF", "")),
+            chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
+            chat_streaming=parse_chat_streaming(
+                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
+            ),
+            terminal_stun=parse_terminal_stun(
+                os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
+            ),
+            compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
         )
 
     @classmethod
@@ -180,9 +277,21 @@ class Config:
             session_embedders=_parse_session_embedders(flags.session_embedders),
             web=flags.web,
             # Secrets come from the environment only, never CLI flags.
-            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET") or None,
+            session_secret=os.environ.get("TRACKINIZER_SESSION_SECRET", ""),
+            secrets=secrets_from_env(),
             session_max_age_seconds=flags.session_max_age_seconds,
             auth_disabled=not flags.auth,
+            assistant=parse_assistant(flags.assistant),
+            staff=parse_staff(flags.staff),
+            # Like the secrets, deployment properties that no flag overrides.
+            chat_orgs=parse_chat_orgs(os.environ.get("TRACKINIZER_CHAT_ORGS", "")),
+            chat_streaming=parse_chat_streaming(
+                os.environ.get("TRACKINIZER_CHAT_STREAMING", ""),
+            ),
+            terminal_stun=parse_terminal_stun(
+                os.environ.get("TRACKINIZER_TERMINAL_STUN", ""),
+            ),
+            compute=parse_compute(os.environ.get("TRACKINIZER_COMPUTE", "")),
         )
 
     def maintained_embedders(self) -> tuple[str, ...]:
@@ -233,9 +342,175 @@ def session_max_age_from_env() -> int:
     return seconds
 
 
+def secrets_from_env() -> str:
+    """Read ``TRACKINIZER_SECRETS``; unset keeps the :class:`Config` default."""
+    return os.environ.get("TRACKINIZER_SECRETS", Config().secrets)
+
+
 def auth_disabled_from_env() -> bool:
     """Whether ``TRACKINIZER_NO_AUTH=1`` asks for single-user local mode."""
     return os.environ.get("TRACKINIZER_NO_AUTH") == "1"
+
+
+def parse_assistant(value: str) -> Assistant | None:
+    """Parse ``--assistant`` / ``$TRACKINIZER_ASSISTANT``, ``ACTOR=EMAIL``.
+
+    Args:
+      value: The flag or variable; blank means no assistant.
+
+    Returns:
+      assistant: The assistant, or None when blank.
+
+    Raises:
+      ConfigError: The value is not ``ACTOR=EMAIL``.
+
+    """
+    if not value.strip():
+        return None
+    actor, _, email = value.partition("=")
+    if not actor.strip() or not email.strip():
+        raise ConfigError(f"--assistant must be ACTOR=EMAIL, got {value!r}")
+    # users.email is stored lowercase, so only a lowercase one can match it.
+    return Assistant(actor=actor.strip(), email=email.strip().lower())
+
+
+def parse_staff(value: str) -> tuple[str, ...]:
+    """Parse ``--staff`` / ``$TRACKINIZER_STAFF``: comma-separated staff patterns.
+
+    Each pattern is ``user@host`` or ``*@domain``, the allowlist's grammar, so a bare
+    word or a lone ``*`` is a typo that would make everyone staff or no one.
+
+    Args:
+      value: The flag or variable; blank means nobody is staff.
+
+    Returns:
+      patterns: The patterns, lowercase and without repeats, in the order given.
+
+    Raises:
+      ConfigError: A pattern is not ``user@host`` or ``*@domain``.
+
+    """
+    patterns: dict[str, None] = {}
+    for raw in value.split(","):
+        pattern = raw.strip().lower()
+        if not pattern:
+            continue
+        if re.fullmatch(r"(?:[^@\s*]+|\*)@[^@\s*]+", pattern) is None:
+            raise ConfigError(
+                f"--staff takes user@host or *@domain patterns, got {raw.strip()!r}",
+            )
+        patterns[pattern] = None
+    return tuple(patterns)
+
+
+def parse_chat_orgs(value: str) -> ChatOrgs:
+    """Parse ``$TRACKINIZER_CHAT_ORGS``: ``single``, ``domain`` or ``individual``.
+
+    Blank is ``individual``, the mode that reads least: a server that never set the
+    variable lets no one read a session or a chat that is neither theirs nor shared
+    with them.
+
+    Args:
+      value: The variable.
+
+    Returns:
+      orgs: How science chats group their users.
+
+    Raises:
+      ConfigError: The value is neither.
+
+    """
+    match value.strip():
+        case "domain":
+            return "domain"
+        case "single":
+            return "single"
+        case "" | "individual":
+            return "individual"
+        case other:
+            raise ConfigError(
+                "TRACKINIZER_CHAT_ORGS must be single, domain or individual, "
+                f"got {other!r}",
+            )
+
+
+def parse_terminal_stun(value: str) -> tuple[str, ...]:
+    """Parse ``$TRACKINIZER_TERMINAL_STUN``: up to four ``stun:HOST[:PORT]`` URLs.
+
+    Args:
+      value: The variable, comma separated; blank means none.
+
+    Returns:
+      servers: The URLs, in order.
+
+    Raises:
+      ConfigError: An entry is not a ``stun:`` URL, or there are too many.
+
+    """
+    servers = tuple(each.strip() for each in value.split(",") if each.strip())
+    if len(servers) > wire_terminals.MAX_ICE_SERVERS or any(
+        re.fullmatch(r"stun:\S{1,200}", each) is None for each in servers
+    ):
+        raise ConfigError(
+            "TRACKINIZER_TERMINAL_STUN takes at most "
+            f"{wire_terminals.MAX_ICE_SERVERS} comma separated stun:HOST[:PORT] URLs, "
+            f"got {value!r}",
+        )
+    return servers
+
+
+def parse_compute(value: str) -> tuple[ComputeNote, ...]:
+    """Parse ``$TRACKINIZER_COMPUTE``: a JSON list of ``{"name", "about"}`` objects.
+
+    Args:
+      value: The variable; blank means none.
+
+    Returns:
+      notes: The notes, in order, each field trimmed.
+
+    Raises:
+      ConfigError: The value is not such a list, or a name or an about is blank.
+
+    """
+    if not value.strip():
+        return ()
+    shape = 'TRACKINIZER_COMPUTE must be a JSON list of {"name", "about"} objects'
+    try:
+        read = json_loads(value, tuple[ComputeNote, ...])
+    except ValueError as error:
+        raise ConfigError(f"{shape}: {error}") from None
+    notes = tuple(
+        ComputeNote(name=each.name.strip(), about=each.about.strip()) for each in read
+    )
+    if blank := [
+        index for index, each in enumerate(notes) if "" in (each.name, each.about)
+    ]:
+        raise ConfigError(f"{shape}, each with text in both: entry {blank[0]} has none")
+    return notes
+
+
+def parse_chat_streaming(value: str) -> bool:
+    """Parse ``$TRACKINIZER_CHAT_STREAMING``: ``on`` or ``off``; blank is ``on``.
+
+    Args:
+      value: The variable.
+
+    Returns:
+      streaming: Whether a chat's answer in writing is held for its readers.
+
+    Raises:
+      ConfigError: The value is neither.
+
+    """
+    match value.strip():
+        case "" | "on":
+            return True
+        case "off":
+            return False
+        case other:
+            raise ConfigError(
+                f"TRACKINIZER_CHAT_STREAMING must be on or off, got {other!r}",
+            )
 
 
 def parse_engine(value: str) -> Literal["pglite", "pg"]:

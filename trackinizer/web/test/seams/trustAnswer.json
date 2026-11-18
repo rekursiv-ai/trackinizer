@@ -1,0 +1,10 @@
+{
+  "kind": "answer",
+  "payload": {
+    "decision": "allow",
+    "message": "",
+    "prompt_id": "card-1",
+    "updated_input": null
+  },
+  "text": "Trust ~/proj"
+}

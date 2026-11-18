@@ -4,7 +4,6 @@ import {
   type MouseEvent,
   type RefObject,
   Suspense,
-  useContext,
   useEffect,
   useEffectEvent,
   useId,
@@ -16,7 +15,7 @@ import {
 } from "react";
 import type { Graph, GraphNode } from "../api/graph";
 import { type Meta, useMeta } from "../app/boot";
-import { SIDEBAR } from "../app/Sidebar";
+import { useHighlighted } from "../app/highlights";
 import { isStrings, useTabState } from "../app/tabState";
 import { useCommands } from "../commands/registry";
 import "../lists/lists.css";
@@ -24,13 +23,11 @@ import { LiveFailureBar } from "../live";
 import { type FocusRef, formatRoute, type Hops, parseHash, type Route } from "../router/route";
 import { useRouter } from "../router/router";
 import { ReadFailure } from "../ui/failure";
-import { StatusGlyph } from "../ui/glyphs";
 import { Icon } from "../ui/icons";
-import { KindIcon } from "../ui/kinds";
 import { panelCommand, usePanel } from "../ui/panel";
 import { PEEK, Peek } from "../ui/Peek";
-import { EmptyState, OpenDrawerContext } from "../ui/view";
-import { ASK_ABOVE, AskToDraw, FilterChips, FocusRow, type Hidden, Key, LimitMenu } from "./controls";
+import { EmptyState } from "../ui/view";
+import { ASK_ABOVE, AskToDraw, FilterChips, FocusRow, type Hidden, Key, LimitMenu, Tooltip } from "./controls";
 import "./graph.css";
 import { hopCounts, isWithin, reach } from "./hops";
 import { graphQuery, useLiveGraph } from "./live";
@@ -94,7 +91,6 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   const [view, setView] = useTabState(STATE_KEY, readViewState, initialState);
   const peek = usePanel(PEEK);
   const results = usePanel(RESULTS);
-  const sidebar = usePanel(SIDEBAR);
   const briefing = usePanel(BRIEFING);
   const graph = useQuery(graphQuery(view.limit));
   const failure = useLiveGraph(view.limit);
@@ -175,6 +171,23 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
     setArriving(false);
     if (focusNode) setSelectedId(focusNode.id);
   }
+  /**
+   * Opened on a focus the loaded graph does not hold, reach once for the next size up.
+   *
+   * A focus lights within the newest `limit` records, and on a store of thousands the
+   * record just read about is rarely among the newest thousand — so the link landed on
+   * "not among the nodes loaded" while the row was one size setting away. One step, once
+   * per focus, so a record that really is absent settles on the honest answer.
+   */
+  const widened = useRef<string | null>(null);
+  useEffect(() => {
+    if (!data || focus === null || focusNode) return;
+    const asked = refKey(focus.ref);
+    const wider = LIMIT_STEPS.find((size) => size > view.limit && size <= ASK_ABOVE);
+    if (wider === undefined || widened.current === asked) return;
+    widened.current = asked;
+    setView((state) => ({ ...state, limit: wider }));
+  }, [data, focus, focusNode, view.limit]);
   const reached = useMemo(
     () => (data && focusNode ? reach(data, focusNode.id, { skipEdges: shownBy.skipEdges, keep: shownBy.keep }) : null),
     [data, focusNode, shownBy],
@@ -195,6 +208,7 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
     [nodes, shownBy, only, lit],
   );
   const matches = useMemo(() => searchNodes(drawnNodes, query), [drawnNodes, query]);
+  const highlighted = useHighlighted();
   /** The graph's wires as the canvas holds them: the server's edges less each `produced_by`
       that only companions a `narrows` or a `requires` between the same two Issues. */
   const wiresDrawn = useMemo(() => (data === undefined ? [] : wires(data)), [data]);
@@ -236,11 +250,12 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
       skipEdges: focusNode ? shownBy.skipEdges : NO_STRINGS,
       only,
       strong: new Set([focusNode?.id, selected?.id, peer?.id].filter((id) => id !== undefined)),
+      highlighted,
       matches: new Set([...matches.map((row) => row.id), ...(signal?.ids ?? [])]),
       labelled: new Set([...(roots?.groups.flatMap((group) => (group.root ? [group.key] : [])) ?? []), ...litLabels, ...(peer ? [peer.id] : [])]),
       shown,
     }),
-    [shownBy, lit, focusNode, only, selected, peer, matches, roots, litLabels, signal, shown],
+    [shownBy, lit, focusNode, only, selected, peer, highlighted, matches, roots, litLabels, signal, shown],
   );
 
   const focusOn = (row: GraphNode) => go({ focus: { ref: { kind: row.kind, seq: row.seq }, hops: focus?.hops ?? 1 } });
@@ -302,9 +317,9 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
     if (focusKey !== null) frameFocus();
   }, [focusKey, renderer]);
   // Showing or hiding the key, or collapsing Peek, changes what covers the
-  // canvas, and the roots list, the search results, the briefing or the app's
-  // sidebar how wide it is: frame again once it has rendered.
-  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${briefing.collapsed} ${sidebar.collapsed}`;
+  // canvas, and the roots list, the search results or the briefing how wide it
+  // is: frame again once it has rendered.
+  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${briefing.collapsed}`;
   const panelsShown = useRef(panels);
   useLayoutEffect(() => {
     if (panelsShown.current === panels) return;
@@ -370,43 +385,29 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   // way: a pick here is the `show trax.record` an agent writes, and an agent's
   // `show` arrives as this view's own selection. `wrote` is what this tab last
   // sent, so the answer to its own write cannot move the view under the pointer.
+  // The selection is shared with the canvas: a pick here is the `show trax.record`
+  // an agent would write, so the record the reader is on and the record the canvas
+  // holds are the same one. `wrote` is what this tab last sent, so a repeat pick
+  // does not rewrite the canvas.
+  //
+  // One way only. Reading the canvas back -- an agent's `show` arriving as this
+  // view's selection, and its record taken away ending one -- wants the station's
+  // visuals, and a route is not a visual: the canvas hands its state to the panes
+  // inside it, not to the page behind them. Taking the pane down on a cleared
+  // selection wants the same thing, an instance id, so the pane keeps its last
+  // record rather than emptying.
   const canvas = useWorkspaceActions();
-  const recordPane = canvas?.workspace?.visuals.find((visual) => visual.type === "trax.record");
   const wrote = useRef<string | null | undefined>(undefined);
-  const sawRecord = useRef(false);
   useEffect(() => {
-    if (!canvas) return;
+    if (!canvas?.visualTypes.has(RECORD_VISUAL)) return;
     // Nothing selected and nothing sent yet: the graph has no claim on the canvas,
-    // and an agent's record already on it is the agent's to keep.
+    // and a record already on it is whoever put it there's to keep.
     if (selectedId === null && wrote.current === undefined) return;
     if (selectedId === wrote.current) return;
     wrote.current = selectedId;
-    if (selectedId === null) {
-      if (recordPane) canvas.hideVisual?.(recordPane.id);
-    } else {
-      // A selection moves the record, not the pane, which stays where it was put.
-      void canvas.showVisual("trax.record", selectedId);
-    }
-  }, [canvas, selectedId, recordPane]);
-  useEffect(() => {
-    if (!canvas) return;
-    if (recordPane === undefined) {
-      // No record on the canvas is the canvas holding its silence — until it had
-      // one, when an agent taking it away is the selection ending.
-      if (sawRecord.current) {
-        sawRecord.current = false;
-        wrote.current = null;
-        setSelectedId(null);
-      }
-      return;
-    }
-    sawRecord.current = true;
-    const shown = recordPane.record_id ?? null;
-    if (shown === wrote.current) return;
-    wrote.current = shown;
-    setSelectedId(shown);
-    if (shown) setCentring(shown);
-  }, [canvas, recordPane]);
+    // A selection moves the record, not the pane, which stays where it was put.
+    if (selectedId !== null) canvas.operate({ kind: "show", visual_type: RECORD_VISUAL, record_id: selectedId });
+  }, [canvas, selectedId]);
   /**
    * A root picked in the roots list or by its island's name: its briefing takes
    * the roots list's place, Peek opens on the root, and its island is framed
@@ -483,20 +484,15 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   /** The matches list, which the search box controls, shows. */
   const listed = searching && !results.collapsed;
   // The design's field has no header of its own: the canvas takes the viewport to
-  // its edges, and the shell's header is gone. What the header carried -- the
-  // wordmark and the way back to the navigation -- moves into the proto's own tool
-  // row, where the sidebar is a drawer at every width (styles.css, `.graph-bleed`).
-  const openDrawer = useContext(OpenDrawerContext);
+  // its edges (styles.css, `.graph-bleed`). The wordmark and the way back to the
+  // navigation are the shell's top bar and rail, which stand over every route, so
+  // the proto's tool row carries only what belongs to the graph.
   return (
     <div className="view graph">
       {/* Every view is named by a level-one heading; the design's top bar has no
           title to hang it on, so it names the page without showing it. */}
       <h1 className="sr-only">Graph</h1>
       <div className="view-tools proto-topbar">
-        <span className="proto-word">Trackinizer</span>
-        <button type="button" className="icon-btn" onClick={openDrawer} aria-label="Open navigation">
-          <Icon name="menu" />
-        </button>
         <SearchBox
           query={query}
           onQuery={(text) => {
@@ -635,7 +631,9 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
               }}
             />
           ) : null}
-          {hovered ? <Tooltip {...hovered} far={focus ? reached?.get(hovered.node.id) : undefined} /> : null}
+          {hovered ? (
+            <Tooltip {...hovered} far={focus ? reached?.get(hovered.node.id) : undefined} hint="Click opens Peek · double-click focuses here" />
+          ) : null}
           <AnimatePresence>
             {selected ? (
               // Its own box, so the capture sees Peek's links before they navigate; Peek places itself.
@@ -759,6 +757,14 @@ function findFocus(nodes: readonly GraphNode[], ref: FocusRef): GraphNode | unde
   return nodes.find((row) => ("id" in ref ? row.id === ref.id : row.kind === ref.kind && row.seq === ref.seq));
 }
 
+/** The sizes a focus that is not loaded yet may widen the view to, smallest first. */
+const LIMIT_STEPS: readonly number[] = [1_000, 5_000];
+
+/** One text per focus, so widening is tried once for each and not once per render. */
+function refKey(ref: FocusRef): string {
+  return "id" in ref ? ref.id : `${ref.kind}#${ref.seq}`;
+}
+
 /** The matches as the results list them: within a focus's reach, then elsewhere; without a focus, all together. */
 function matchGroups(
   matches: readonly GraphNode[],
@@ -833,26 +839,6 @@ function useReplay(onStart: () => void) {
       });
     },
   };
-}
-
-/**
- * What a hovered node is, by it, as text (COLD-12): its kind and status as the
- * app draws them, its ref and, under a focus, its hops from it; its title; and
- * what a click and a double-click do.
- */
-function Tooltip({ node, x, y, far }: { node: DrawNode; x: number; y: number; far: number | undefined }) {
-  return (
-    <div className="graph-tip" role="tooltip" style={{ left: x + TIP_OFFSET_PX, top: y + TIP_OFFSET_PX }}>
-      <div className="graph-tip-ref">
-        <KindIcon kind={node.kind} size={12} />
-        <StatusGlyph status={node.status} size={12} />
-        {node.kind}#{node.seq}
-        {far ? ` · ${hopsName(far)}` : null}
-      </div>
-      <div>{node.title || "(untitled)"}</div>
-      <div className="graph-tip-hint">Click opens Peek · double-click focuses here</div>
-    </div>
-  );
 }
 
 /**
@@ -942,8 +928,9 @@ function readViewState(saved: unknown): ViewState | null {
     : null;
 }
 
+/** The canvas visual that holds one record: what a selection here shows there. */
+const RECORD_VISUAL = "trax.record";
 const STATE_KEY = "trackinizer.v2.graph";
-const TIP_OFFSET_PX = 12;
 /** The most nodes of a lit neighbourhood that name themselves under it. */
 const LABELLED_MAX = 24;
 /** How many of the newest records a replay brings up rather than just turning on: the design's 24. */

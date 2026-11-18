@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, test, streamOpened } from "./fixtures";
 import { expectControlSeen, longTasks, watchLongTasks } from "./longTasks";
 
 // An Experiment's metrics and an AgentSession's transcript on the detail page,
@@ -164,7 +164,7 @@ test("a record appended to a live session shows with one read of what follows th
     const url = new URL(request.url());
     if (url.pathname === `/api/sessions/${id}/records`) reads.push(url.search);
   });
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`/app/#/ref/AgentSession/${seq}`);
   await expect(turns(page, 0)).toHaveCount(50);
   await subscribed;

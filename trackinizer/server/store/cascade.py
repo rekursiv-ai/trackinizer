@@ -16,9 +16,10 @@ from uuid import UUID
 import collections
 import uuid
 
+from treekle import from_plain
+
 import asyncpg
 
-from trackinizer.lib.custom_json import FloatCodec, ListCodec
 from trackinizer.server.notify import (
     NOTIFICATION_BUFFER,
     Notification,
@@ -59,7 +60,7 @@ _NO_COST: Cost = Cost()
 # field, in the single ``CHANGE_LOG_COLUMN_ORDER`` (the same list ``Snapshot``
 # and the schema mirror derive from). A list column (``TEXT[]`` / ``UUID[]``) is
 # coerced through ``list_or_none``; every other column binds raw. Deriving the
-# mirror (rather than hand-listing 64 ``old_X``/``new_X`` entries) makes it
+# mirror (rather than hand-listing every ``old_X``/``new_X`` entry) makes it
 # structurally impossible for a new audited field to be silently dropped from
 # the audit INSERT -- the GSI-01 bug class.
 _MIRROR_LIST_COLUMNS: frozenset[str] = frozenset(
@@ -92,11 +93,13 @@ _NON_PROPAGATING_CHANGE_KINDS: frozenset[Change.Kind] = frozenset(
     {
         "created",
         "dependency_changed",
+        # ``remove_edge`` drives its own cascade from the edges captured before
+        # the DELETE; the live SELECT here would miss the removed edge.
         "edge_removed",
         # An annotation edit (note / valence / labels / priority) leaves
         # the dependency structure intact, so it raises no ancestor
-        # re-assessment -- unlike the structural ``edge_added`` /
-        # ``edge_removed``, which do cascade.
+        # re-assessment -- unlike the structural ``edge_added``, which
+        # cascades here, and ``edge_removed``, which cascades explicitly.
         "edge_annotation_changed",
         "implicit_subs_opened",
         "implicit_subs_closed",
@@ -200,15 +203,20 @@ async def _apply_change(
         )
     else:
         old_cost = Cost(
-            agent_usd=FloatCodec.coerce(cost_row["old_agent"], None),
-            resource_usd=FloatCodec.coerce(cost_row["old_resource"], None),
+            agent_usd=from_plain(cost_row["old_agent"], float),
+            resource_usd=from_plain(cost_row["old_resource"], float),
         )
         new_cost = Cost(
-            agent_usd=FloatCodec.coerce(cost_row["new_agent"], None),
-            resource_usd=FloatCodec.coerce(cost_row["new_resource"], None),
+            agent_usd=from_plain(cost_row["new_agent"], float),
+            resource_usd=from_plain(cost_row["new_resource"], float),
         )
         # NULL when the row has never had a subscriber.
-        subs = tuple(ListCodec.coerce(cost_row["current_subscribers"], str))
+        default_subscribers: list[str] = []
+        subs = tuple(
+            default_subscribers
+            if (value := cost_row["current_subscribers"]) is None
+            else from_plain(value, list[str]),
+        )
     if extra_subscribers:
         # Update ``seen`` in-loop so duplicates *within*
         # ``extra_subscribers`` are also collapsed.
@@ -251,12 +259,6 @@ async def _apply_change(
         "caused_by": caused_by,
         "reason": reason,
         "subscribers_snapshot": list(subs),
-        "old_title": old.title,
-        "old_description": old.description,
-        "old_labels": list_or_none(old.labels),
-        "old_owner": old.owner,
-        "old_account": old.account,
-        "old_subscribers": list_or_none(old.subscribers),
         "old_peer_id": old.peer_id,
         "old_peer_kind": old.peer_kind,
         "old_peer_edge_kind": old.peer_edge_kind,
@@ -438,7 +440,7 @@ class _CascadeAuditMixin(_StoreShared):
                     and existing["subject_id"] == subject_id
                     and existing["kind"] == kind
                 ):
-                    snapshot = ListCodec.coerce(existing["subscribers_snapshot"], str)
+                    snapshot = from_plain(existing["subscribers_snapshot"], list[str])
                     return client_change_id, tuple(snapshot)
                 raise ConflictError(
                     f"idempotency_key {client_change_id} already used "
@@ -520,15 +522,7 @@ class _CascadeAuditMixin(_StoreShared):
                     subject_kind=parent_kind,
                     kind="dependency_changed",
                     caused_by=cur_cause,
-                    new=Snapshot(
-                        peer_id=cur_id,
-                        peer_kind=cur_kind,
-                        peer_edge_kind=cast(Edge.Kind, edge["edge_kind"]),
-                        edge_priority=cast(Issue.Priority | None, edge["priority"]),
-                        edge_note=_optional_str(edge["note"]),
-                        edge_valence=_optional_float(edge["valence"]),
-                        edge_labels=tuple(ListCodec.coerce(edge["labels"], str)),
-                    ),
+                    new=_peer_snapshot(edge, peer_id=cur_id, peer_kind=cur_kind),
                     cascade=False,
                 )
                 # Queue the parent's ancestors only once per parent,
@@ -586,12 +580,23 @@ class _CascadeAuditMixin(_StoreShared):
     # documented Store API always wrap in :func:`notify_after_commit`; tests and one-off
     # helpers that drive :meth:`emit_change` directly should not crash on a missing
     # buffer.
-    def _buffer_notification(self, subject_id: UUID) -> None:
+    #
+    # ``audience`` is set by a write to a session's transcript and names the session's
+    # audience: a live stream relays that ping only to a viewer who reads it, where a
+    # change to the row itself, which is open, reaches every viewer.
+    def _buffer_notification(
+        self,
+        subject_id: UUID,
+        *,
+        audience: str | None = None,
+    ) -> None:
         """Queue a notify payload for post-commit publish."""
         buffer = NOTIFICATION_BUFFER.get()
         if buffer is None:
             return
-        buffer.append(Notification(engine=self.engine, subject_id=subject_id))
+        buffer.append(
+            Notification(engine=self.engine, subject_id=subject_id, audience=audience),
+        )
 
     # Known gap: a keyed retry of a purge that landed is not replayed. It finds the
     # row gone and answers 404. A client can read that 404, after an unanswered
@@ -605,6 +610,22 @@ class _CascadeAuditMixin(_StoreShared):
         actor: Inquiry.Actor,
         reason: str = "",
     ) -> UUID | None:
+        """Delete an unowned inquiry, auditing it and every peer edge first.
+
+        Args:
+          target_id: Inquiry to delete.
+          api_key_id: API key that authorized the purge, if any.
+          actor: Identifier recorded as the purge's author.
+          reason: Optional explanation for the purge.
+
+        Returns:
+          change_id: The ``purged`` change_log row id.
+
+        Raises:
+          NotFoundError: No inquiry has ``target_id``.
+          ConflictError: The inquiry still has an owner.
+
+        """
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
@@ -621,44 +642,81 @@ class _CascadeAuditMixin(_StoreShared):
                 raise ConflictError(
                     f"inquiry is owned by {owner!r}; release its owner before purge",
                 )
-            kind = cast(Inquiry.InquiryKind, row["kind"])
-            parent_edges = await conn.fetch(
-                "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
-                "priority, note, valence, labels FROM edges "
-                "WHERE from_id = $1 OR to_id = $1",
-                target_id,
-            )
-            # Emit while the row still exists so ``subscribers_snapshot``
-            # captures who was watching right before the DELETE.
-            cause, _ = await self.emit_change(
+            return await self.purge_held(
                 conn,
+                target_id,
+                kind=cast(Inquiry.InquiryKind, row["kind"]),
                 api_key_id=api_key_id,
                 actor=actor,
-                subject_id=target_id,
-                subject_kind=kind,
-                kind="purged",
                 reason=reason,
-                cascade=False,
             )
-            await self._cascade_dependency_changed(
+
+    async def purge_held(
+        self,
+        conn: Conn,
+        target_id: UUID,
+        *,
+        kind: Inquiry.InquiryKind,
+        api_key_id: UUID | None,
+        actor: Inquiry.Actor,
+        reason: str,
+    ) -> UUID:
+        """Delete a row ``conn``'s transaction holds, auditing it and every edge first.
+
+        The caller has locked the row ``FOR UPDATE`` and decided it may go:
+        :meth:`purge` refuses an owned row, while a science chat's delete takes its
+        sessions, whose routing name is their owner. Wrap the transaction in
+        ``notify_after_commit``.
+
+        Args:
+          conn: The connection, inside the transaction that locked the row.
+          target_id: Inquiry to delete.
+          kind: Its kind.
+          api_key_id: API key that authorized the purge, if any.
+          actor: Identifier recorded as the purge's author.
+          reason: Explanation for the purge.
+
+        Returns:
+          change_id: The ``purged`` change_log row id.
+
+        """
+        parent_edges = await conn.fetch(
+            "SELECT from_id, from_kind, to_id, to_kind, edge_kind, "
+            "priority, note, valence, labels FROM edges "
+            "WHERE from_id = $1 OR to_id = $1",
+            target_id,
+        )
+        # Emit while the row still exists so ``subscribers_snapshot``
+        # captures who was watching right before the DELETE.
+        cause, _ = await self.emit_change(
+            conn,
+            api_key_id=api_key_id,
+            actor=actor,
+            subject_id=target_id,
+            subject_kind=kind,
+            kind="purged",
+            reason=reason,
+            cascade=False,
+        )
+        await self._cascade_dependency_changed(
+            conn,
+            child_id=target_id,
+            child_kind=kind,
+            caused_by=cause,
+            edge_rows=parent_edges,
+        )
+        for edge in parent_edges:
+            await self._emit_purge_edge_removed(
                 conn,
-                child_id=target_id,
-                child_kind=kind,
+                target_id=target_id,
+                target_kind=kind,
+                edge=edge,
                 caused_by=cause,
-                edge_rows=parent_edges,
+                api_key_id=api_key_id,
+                actor=actor,
             )
-            for edge in parent_edges:
-                await self._emit_purge_edge_removed(
-                    conn,
-                    target_id=target_id,
-                    target_kind=kind,
-                    edge=edge,
-                    caused_by=cause,
-                    api_key_id=api_key_id,
-                    actor=actor,
-                )
-            await conn.execute("DELETE FROM inquiries WHERE id = $1", target_id)
-            return cause
+        await conn.execute("DELETE FROM inquiries WHERE id = $1", target_id)
+        return cause
 
     async def _emit_purge_edge_removed(
         self,
@@ -689,16 +747,28 @@ class _CascadeAuditMixin(_StoreShared):
             kind="edge_removed",
             caused_by=caused_by,
             cascade=False,
-            old=Snapshot(
-                peer_id=target_id,
-                peer_kind=target_kind,
-                peer_edge_kind=cast(Edge.Kind, edge["edge_kind"]),
-                edge_priority=cast(Issue.Priority | None, edge["priority"]),
-                edge_note=cast(str | None, edge["note"]),
-                edge_valence=cast(float | None, edge["valence"]),
-                edge_labels=tuple(cast(Sequence[str], edge["labels"] or ())),
-            ),
+            old=_peer_snapshot(edge, peer_id=target_id, peer_kind=target_kind),
         )
+
+
+def _peer_snapshot(
+    edge: asyncpg.Record,
+    *,
+    peer_id: UUID,
+    peer_kind: Inquiry.InquiryKind,
+) -> Snapshot:
+    """Build the peer-side audit snapshot for one stored ``edges`` row."""
+    return Snapshot(
+        peer_id=peer_id,
+        peer_kind=peer_kind,
+        peer_edge_kind=cast(Edge.Kind, edge["edge_kind"]),
+        edge_priority=cast(Issue.Priority | None, edge["priority"]),
+        edge_note=_optional_str(edge["note"]),
+        edge_valence=_optional_float(edge["valence"]),
+        edge_labels=tuple(
+            [] if (labels := edge["labels"]) is None else from_plain(labels, list[str]),
+        ),
+    )
 
 
 def _optional_str(value: object) -> str | None:

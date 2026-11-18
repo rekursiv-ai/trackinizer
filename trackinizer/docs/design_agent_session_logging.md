@@ -578,6 +578,11 @@ scan. Establish the encoding against adversarial paths (dots, symlinks,
 resolved vs unresolved cwd, `--resume` from a different cwd) before
 relying on it.
 
+Measured since (claude 2.1.302): `--resume` from a different cwd appends to
+the session's file under the directory where it STARTED, not the cwd's. The
+runner therefore finds a resumed transcript by its id and exempts it from the
+scope; see `design_session_resume.md`.
+
 The filename within that directory is a session UUID the CLI mints at
 startup, so it cannot be predicted -- but the search space is one
 directory, not 999.

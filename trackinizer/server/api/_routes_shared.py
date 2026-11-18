@@ -14,8 +14,10 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from fastapi import HTTPException, Request
+    from starlette.requests import HTTPConnection
 
     from trackinizer.lib.postgres import DatabaseEngine
+    from trackinizer.server.auth import AuthIdentity
 else:
     from wrapt import lazy_import
 
@@ -29,7 +31,7 @@ class _State(Protocol):
     engine: DatabaseEngine
 
 
-def engine_of(request: Request) -> DatabaseEngine:
+def engine_of(request: HTTPConnection) -> DatabaseEngine:
     """Return the DatabaseEngine held on app state.
 
     Args:
@@ -118,6 +120,20 @@ def idempotency_key(request: Request) -> UUID | None:
     if key is not None and not isinstance(key, UUID):
         raise ValueError("Expected key is None or isinstance(key, UUID).")
     return key
+
+
+def require_browser(identity: AuthIdentity) -> None:
+    """Refuse an API key on a route that is the signed-in browser's alone.
+
+    Args:
+      identity: The authenticated principal.
+
+    Raises:
+      HTTPException: 403 when the principal is an API key.
+
+    """
+    if identity.api_key_id is not None:
+        raise HTTPException(status_code=403, detail="Browser session required")
 
 
 class _App(Protocol):

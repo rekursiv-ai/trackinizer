@@ -31,6 +31,8 @@ from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+import itertools
+
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -76,7 +78,8 @@ class TransformerSpec:
     the dim fields are the SINGLE source for ``--dim`` validation (there is no
     separate supported-dims declaration). A Matryoshka model accepts any dim in
     ``[min_dim, max_dim]``; a fixed model sets ``min_dim == max_dim ==
-    native_dim`` so only its native dim validates.
+    native_dim`` so only its native dim validates. ``vocab_size`` enters only
+    the weight-memory term of :func:`param_count`.
 
     Attributes:
       hidden_dim: Residual-stream width ``d``.
@@ -89,6 +92,7 @@ class TransformerSpec:
       min_dim: Smallest valid ``--dim`` (a Matryoshka floor; ``native_dim`` when
         fixed).
       max_dim: Largest valid ``--dim`` (``native_dim`` for both MRL and fixed).
+      vocab_size: Token-embedding rows (tied input/output, so counted once).
 
     """
 
@@ -101,6 +105,7 @@ class TransformerSpec:
     native_dim: int
     min_dim: int
     max_dim: int
+    vocab_size: int
 
 
 QWEN3_0P6B = TransformerSpec(
@@ -113,6 +118,7 @@ QWEN3_0P6B = TransformerSpec(
     native_dim=1_024,
     min_dim=32,
     max_dim=1_024,
+    vocab_size=151_669,
 )
 """Qwen/Qwen3-Embedding-0.6B config.json (2026-09-20); MRL 32..1024 per the card
 ("user-defined output dimensions ranging from 32 to 1024")."""
@@ -128,6 +134,7 @@ QWEN3_4B = TransformerSpec(
     native_dim=2_560,
     min_dim=32,
     max_dim=2_560,
+    vocab_size=151_669,
 )
 """Qwen/Qwen3-Embedding-4B config.json (2026-09-20); MRL 32..2560 per the card
 ("user-defined output dimensions ranging from 32 to 2560")."""
@@ -143,6 +150,7 @@ QWEN3_8B = TransformerSpec(
     native_dim=4_096,
     min_dim=32,
     max_dim=4_096,
+    vocab_size=151_665,
 )
 """Qwen/Qwen3-Embedding-8B config.json (2026-09-20); MRL 32..4096 per the card
 ("user-defined output dimensions ranging from 32 to 4096")."""
@@ -158,24 +166,13 @@ OCTEN_8B = TransformerSpec(
     native_dim=4_096,
     min_dim=32,
     max_dim=4_096,
+    vocab_size=151_665,
 )
 """Octen/Octen-Embedding-8B config.json (2026-09-20): a Qwen3-Embedding-8B
 fine-tune, identical dims (model_type ``qwen3``, architectures ``Qwen3Model``).
 MRL 32..4096 inherited from Qwen3-Embedding-8B; the Octen card does not restate
 the range, but the fine-tune preserves the nesting property and the repo already
 ships the @1024 truncation."""
-
-
-# The vocabulary size enters ONLY the weight-memory term (tied input/output
-# embeddings, so counted once), not the per-token FLOP shape. Kept off
-# ``TransformerSpec`` -- which is the FLOP-shape contract -- and carried here per
-# model, cited to the same config.json.
-_VOCAB_SIZE: Final = {
-    QWEN3_0P6B: 151_669,
-    QWEN3_4B: 151_669,
-    QWEN3_8B: 151_665,
-    OCTEN_8B: 151_665,
-}
 
 
 def dim_in_range(spec: TransformerSpec, dim: int) -> bool:
@@ -220,7 +217,7 @@ def param_count(spec: TransformerSpec) -> int:
         + attn_width * d  # O.
         + 3 * d * spec.intermediate_dim  # Gated MLP: gate, up, down.
     )
-    return spec.num_layers * per_layer + _VOCAB_SIZE[spec] * d
+    return spec.num_layers * per_layer + spec.vocab_size * d
 
 
 def transformer_cost(spec: TransformerSpec) -> Callable[[int], float]:
@@ -410,55 +407,9 @@ def optimal_boundaries(
       ValueError: ``freq`` is empty, or any length/count/k is non-positive.
 
     """
-    if not freq:
-        raise ValueError("freq is empty")
     if k < 1:
         raise ValueError(f"k must be positive, got {k}")
-    for length, count in freq.items():
-        if length < 1:
-            raise ValueError(f"length must be positive, got {length}")
-        if count < 1:
-            raise ValueError(f"count must be positive, got {count}")
-    lengths = sorted(freq)
-    counts = [freq[length] for length in lengths]
-    n = len(lengths)
-    k = min(k, n)
-    # prefix[i] = total count of the first i lengths.
-    prefix = [0] * (n + 1)
-    for i, count in enumerate(counts):
-        prefix[i + 1] = prefix[i] + count
-
-    def edge(j: int) -> int:
-        """Return the padded edge for a segment ending at sorted index ``j``."""
-        return -(-lengths[j] // pad_multiple) * pad_multiple
-
-    def segment_cost(i: int, j: int) -> float:
-        """Cost of lengths i..j (inclusive) padded to ``edge(j)``."""
-        return (prefix[j + 1] - prefix[i]) * cost(edge(j))
-
-    # dp[b][j] = min cost of covering the first j+1 lengths with b+1 buckets.
-    unset = float("inf")
-    dp = [[unset] * n for _ in range(k)]
-    cut = [[0] * n for _ in range(k)]
-    for j in range(n):
-        dp[0][j] = segment_cost(0, j)
-    for b in range(1, k):
-        for j in range(b, n):
-            for i in range(b - 1, j):
-                candidate = dp[b - 1][i] + segment_cost(i + 1, j)
-                if candidate < dp[b][j]:
-                    dp[b][j] = candidate
-                    cut[b][j] = i
-    # Fewer buckets can never help (a split is free at worst), so take the
-    # best over <= k buckets and reconstruct.
-    best_b = min(range(k), key=lambda b: dp[b][n - 1])
-    edges: list[int] = []
-    j = n - 1
-    for b in range(best_b, 0, -1):
-        edges.append(edge(j))
-        j = cut[b][j]
-    edges.append(edge(j))
-    return sorted(set(edges))
+    return _best_edges(_fill(freq, k, cost=cost, pad_multiple=pad_multiple), k)
 
 
 def bucketed_cost(
@@ -523,54 +474,13 @@ def sweep(
     """
     # One DP fill to ``max_k`` buckets, read off per k -- NOT ``max_k`` calls to
     # ``optimal_boundaries``, each of which refills the whole table from scratch
-    # (O(max_k) redundant work). ``dp[b][j]`` is the min cost of the first j+1
-    # lengths in b+1 buckets; the same table serves every k, so the sweep costs
-    # one fill. Output is identical to the per-call form (asserted in the test).
-    if not freq:
-        raise ValueError("freq is empty")
+    # (O(max_k) redundant work).
     if max_k < 1:
         raise ValueError(f"max_k must be positive, got {max_k}")
-    for length, count in freq.items():
-        if length < 1:
-            raise ValueError(f"length must be positive, got {length}")
-        if count < 1:
-            raise ValueError(f"count must be positive, got {count}")
-    lengths = sorted(freq)
-    counts = [freq[length] for length in lengths]
-    n = len(lengths)
-    top = min(max_k, n)
-    prefix = [0] * (n + 1)
-    for i, count in enumerate(counts):
-        prefix[i + 1] = prefix[i] + count
-
-    def edge(j: int) -> int:
-        return -(-lengths[j] // pad_multiple) * pad_multiple
-
-    def segment_cost(i: int, j: int) -> float:
-        return (prefix[j + 1] - prefix[i]) * cost(edge(j))
-
-    unset = float("inf")
-    dp = [[unset] * n for _ in range(top)]
-    cut = [[0] * n for _ in range(top)]
-    for j in range(n):
-        dp[0][j] = segment_cost(0, j)
-    for b in range(1, top):
-        for j in range(b, n):
-            for i in range(b - 1, j):
-                candidate = dp[b - 1][i] + segment_cost(i + 1, j)
-                if candidate < dp[b][j]:
-                    dp[b][j] = candidate
-                    cut[b][j] = i
-
-    edges_by_index = [edge(j) for j in range(n)]
+    table = _fill(freq, max_k, cost=cost, pad_multiple=pad_multiple)
     points: list[SweepPoint] = []
     for k in range(1, max_k + 1):
-        # Fewer buckets never cost more, so k's solution is the best over <= k
-        # (matching ``optimal_boundaries`` exactly). Beyond ``n`` distinct
-        # lengths, extra buckets add nothing: the row saturates at ``top``.
-        reach = min(k, top)
-        best_b = min(range(reach), key=lambda b: dp[b][n - 1])
-        edges = _reconstruct_edges(cut, edges_by_index, n, best_b)
+        edges = _best_edges(table, k)
         points.append(
             SweepPoint(k=k, edges=edges, cost=bucketed_cost(freq, edges, cost=cost)),
         )
@@ -640,19 +550,74 @@ def _bytes_per_row(spec: TransformerSpec, edge: int, dtype_bytes: int) -> int:
     return (resid_io + max(attn_tmp, mlp_tmp)) * dtype_bytes
 
 
-def _reconstruct_edges(
-    cut: list[list[int]],
-    edges_by_index: list[int],
-    n: int,
-    best_b: int,
-) -> list[int]:
-    """Walk the DP ``cut`` table back to the ascending edge set for ``best_b``."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _Table:
+    """A filled segmentation DP over sorted distinct lengths.
+
+    Attributes:
+      edges: Padded edge of a segment ending at each sorted index.
+      dp: ``dp[b][j]`` is the min cost of the first ``j+1`` lengths in ``b+1``
+        buckets (defined for ``j >= b`` only).
+      cut: ``cut[b][j]`` is the last index of the previous bucket in that
+        optimum (``cut[0]`` is empty: one bucket has no cut).
+
+    """
+
+    edges: list[int]
+    dp: list[dict[int, float]]
+    cut: list[dict[int, int]]
+
+
+def _fill(
+    freq: Mapping[int, int],
+    max_k: int,
+    *,
+    cost: Callable[[int], float],
+    pad_multiple: int,
+) -> _Table:
+    """Validate ``freq`` and fill the DP up to ``min(max_k, n)`` buckets."""
+    if not freq:
+        raise ValueError("freq is empty")
+    for length, count in freq.items():
+        if length < 1:
+            raise ValueError(f"length must be positive, got {length}")
+        if count < 1:
+            raise ValueError(f"count must be positive, got {count}")
+    lengths = sorted(freq)
+    n = len(lengths)
+    # through[j] = total count of lengths 0..j (inclusive).
+    through = list(itertools.accumulate(freq[length] for length in lengths))
+    edges = [-(-length // pad_multiple) * pad_multiple for length in lengths]
+    dp = [{j: through[j] * cost(edges[j]) for j in range(n)}]
+    cut: list[dict[int, int]] = [{}]
+    for b in range(1, min(max_k, n)):
+        prev = dp[-1]
+        row: dict[int, float] = {}
+        cut_row: dict[int, int] = {}
+        for j in range(b, n):
+            # Ties go to the earliest cut (the tuple's second key).
+            row[j], cut_row[j] = min(
+                (prev[i] + (through[j] - through[i]) * cost(edges[j]), i)
+                for i in range(b - 1, j)
+            )
+        dp.append(row)
+        cut.append(cut_row)
+    return _Table(edges=edges, dp=dp, cut=cut)
+
+
+def _best_edges(table: _Table, k: int) -> list[int]:
+    """Return the ascending optimal edges using at most ``k`` buckets."""
+    last = len(table.edges) - 1
+    # Fewer buckets never cost more (a split is free at worst), so take the best
+    # over <= k; beyond the filled rows (n distinct lengths) extra buckets add
+    # nothing.
+    best_b = min(range(min(k, len(table.dp))), key=lambda b: table.dp[b][last])
     edges: list[int] = []
-    j = n - 1
+    j = last
     for b in range(best_b, 0, -1):
-        edges.append(edges_by_index[j])
-        j = cut[b][j]
-    edges.append(edges_by_index[j])
+        edges.append(table.edges[j])
+        j = table.cut[b][j]
+    edges.append(table.edges[j])
     return sorted(set(edges))
 
 

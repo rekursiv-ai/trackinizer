@@ -12,14 +12,14 @@ cannot decide what its own transcript matches.
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Final
 from uuid import UUID
 
 from pydantic import BaseModel, Field, model_validator
+from treekle import immutable
 
-from trackinizer.lib.custom_json import JSON, json_freeze
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.json_types import JSON, UtcDatetime
 
 
 __all__ = [
@@ -67,11 +67,14 @@ class RecordBody(BaseModel):
     EQUAL ``idx``: a claude context is appended at its own index and names
     itself."""
 
-    timestamp: datetime | None = None
+    timestamp: UtcDatetime | None = None
     model: str | None = None
 
     payload: JSON = Field(default_factory=dict)
-    """The record as ``DataclassCodec`` JSON, with ciphertext removed."""
+    """The record as stored plain data, codec-tagged with JSON fields plain.
+
+    Ciphertext is removed.
+    """
 
     text: str = ""
     """The search projection, computed at ingest."""
@@ -125,7 +128,7 @@ class RecordBody(BaseModel):
             context_id=self.context_id,
             timestamp=self.timestamp,
             model=self.model,
-            payload=json_freeze(dict(self.payload)),
+            payload=immutable(dict(self.payload)),
             text=self.text,
             ciphertext=self.ciphertext,
         )
@@ -197,7 +200,7 @@ class SlashCommandBody(BaseModel):
     because a sink counter restarts at 0 on a resumed run and would collide.
     """
 
-    timestamp: datetime
+    timestamp: UtcDatetime
     """The submit-time clock the keystroke detector stamped. Required: a typed
     command has no CLI-recorded time, so this is the only one there is."""
 

@@ -9,19 +9,13 @@ from typing import TYPE_CHECKING
 
 import uuid
 
+from treekle import from_plain, json_loads
+
 import httpx2
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import (
-    DatetimeCodec,
-    DictCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    loads,
-)
 from trackinizer.trax.profile import Profile
 from trackinizer.web.scripts.mirror_local import (
     Activity,
@@ -104,6 +98,30 @@ def test_tally_counts_each_session_with_its_cli_and_rooms() -> None:
         Activity(session_id=a, cli="claude", rooms=("r1",), events=2),
         Activity(session_id=b, cli="codex", rooms=(), events=1),
     ]
+
+
+def test_tally_keeps_a_session_whose_cli_is_unknown() -> None:
+    """N1 sibling: ``FeedEvent.cli`` is optional; a null one is not a crash."""
+    a = uuid.uuid4()
+    assert tally([{"session_id": str(a), "cli": None, "rooms": []}]) == [
+        Activity(session_id=a, cli="", rooms=(), events=1),
+    ]
+
+
+def test_a_session_with_no_rooms_or_owner_is_copied() -> None:
+    """N1 sibling: ``AgentSession.rooms`` and ``owner`` are optional on the row."""
+    rows = {**_ROWS, _B: {**_ROWS[_B], "rooms": None, "owner": None}}
+    source, target = _Source(rows=rows), _Target()
+    with _Fake(source.handle) as source_http, _Fake(target.handle) as target_http:
+        report = mirror(
+            ReadOnlySource(source_http),
+            target_http,
+            now=_T0,
+            hours=24,
+            sessions=2,
+            records=10,
+        )
+    assert report.opened == 2
 
 
 def _activity(cli: str, events: int, *rooms: str) -> Activity:
@@ -226,14 +244,41 @@ def test_mirror_reads_with_get_only_interleaves_and_reruns_add_nothing() -> None
         beta,
         alpha,
     ]
-    ended = DatetimeCodec.coerce(target.rows[alpha]["ended"])
+    ended = from_plain(target.rows[alpha]["ended"], datetime)
     assert ended == _T0 + timedelta(hours=1)
-    assert target.rows[target.keys[mirror_key(_BELIEF)]]["judgement"] == "proven"
+    copied = {"title", "status", "labels", "description", "idempotency_key"}
+    issue = target.rows[target.keys[mirror_key(_ISSUE)]]
+    assert {key: issue[key] for key in copied - {"idempotency_key"}} == {
+        "title": "Issue 1",
+        "status": "active",
+        "labels": ["mirror"],
+        "description": "copied",
+    }
+    assert copied <= issue.keys()
+    assert "owner" not in issue
+    belief = target.rows[target.keys[mirror_key(_BELIEF)]]
+    assert (belief["judgement"], belief["confidence"], belief["owner"]) == (
+        "proven",
+        0.8,
+        "ada@example.com",
+    )
+    assert copied <= belief.keys()
     # The rerun finds every row, skips the ended session, re-sends the live one.
     assert (second.opened, second.written, second.skipped) == (0, 0, 3)
     assert (second.ended, second.edges) == (0, 0)
     assert len(target.rows) == first.nodes
     assert (first.unfilled, second.unfilled) == ((), ())
+
+
+def test_a_rerun_finds_edges_older_than_any_window_of_the_target_graph() -> None:
+    """N1-11: a target past the graph's window still has every copied edge."""
+    source, target = _Source(), _Target(windowed=True)
+    with _Fake(source.handle) as source_http, _Fake(target.handle) as target_http:
+        reader = ReadOnlySource(source_http)
+        first = mirror(reader, target_http, now=_T0, hours=24, sessions=2, records=10)
+        second = mirror(reader, target_http, now=_T0, hours=24, sessions=2, records=10)
+    assert (first.edges, second.edges) == (2, 0)
+    assert target.edge_posts == 1
 
 
 def test_rerun_names_a_picked_session_that_ended_here_without_records() -> None:
@@ -319,13 +364,14 @@ class _Source:
             }
             return _json(200, {"parts": [part]})
         after = int(params["after_idx"])
-        page = [r for r in records if IntCodec.coerce(r["idx"]) > after]
+        page = [r for r in records if from_plain(r["idx"], int) > after]
         page = page[: int(params["limit"])]
         return _json(200, {"part": 0, "records": page})
 
     def _event(self, session: uuid.UUID) -> dict[str, object]:
         row = self.rows[session]
-        return {"session_id": str(session), "cli": row["cli"], "rooms": row["rooms"]}
+        rooms = from_plain(row["rooms"], list[str], default=[])
+        return {"session_id": str(session), "cli": row["cli"], "rooms": rooms}
 
 
 def _row(
@@ -351,7 +397,14 @@ def _row(
 _ROWS: Mapping[uuid.UUID, dict[str, object]] = {
     _ISSUE: _row("Issue", 1, _ISSUE),
     _CHILD: _row("Issue", 2, _CHILD),
-    _BELIEF: _row("Belief", 1, _BELIEF, judgement="proven", confidence=0.8),
+    _BELIEF: _row(
+        "Belief",
+        1,
+        _BELIEF,
+        judgement="proven",
+        confidence=0.8,
+        owner="ada@example.com",
+    ),
     _A: _row(
         "AgentSession",
         7,
@@ -391,33 +444,41 @@ _EDGES: list[dict[str, object]] = [
 
 @dataclass(slots=True, kw_only=True)
 class _Target:
-    """The local server's ingest routes, as far as the mirror relies on them."""
+    """The local server's ingest routes, as far as the mirror relies on them.
 
+    ``windowed`` stands for a target with more nodes than its graph route
+    returns: the graph shows none of the mirror's edges.
+    """
+
+    windowed: bool = False
     keys: dict[uuid.UUID, uuid.UUID] = field(default_factory=dict)
     rows: dict[uuid.UUID, dict[str, object]] = field(default_factory=dict)
     records: set[tuple[uuid.UUID, str, int]] = field(default_factory=set)
     order: list[tuple[uuid.UUID, int]] = field(default_factory=list)
     edges: set[tuple[str, str, str]] = field(default_factory=set)
+    edge_posts: int = 0
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:
         path = request.url.path
-        body = DictCodec.coerce(loads(request.content or b"null"))
+        raw = json_loads(request.content or b"null")
+        body = {} if raw is None else from_plain(raw, dict[str, object])
         if request.method == "GET":
             return self._get(path)
         if path == "/api/sessions/start":
             local = self._create(body, kind="AgentSession", owner=body["actor"])
             return _json(201, {"id": str(local), "seq": 0, "actor": body["actor"]})
         if path == "/api/inquiries/batch":
-            items = ListCodec.mappings(body["items"])
+            items = from_plain(body["items"], list[dict[str, object]])
             ids = [
-                self._create(item, kind=StrCodec.coerce(item["kind"])) for item in items
+                self._create(item, kind=from_plain(item["kind"], str)) for item in items
             ]
             return _json(200, {"ids": [str(i) for i in ids]})
         if path == "/api/edges/batch":
-            items = ListCodec.mappings(body["items"])
+            self.edge_posts += 1
+            items = from_plain(body["items"], list[dict[str, object]])
             for item in items:
                 from_id, to_id, kind = (
-                    StrCodec.coerce(item[key])
+                    from_plain(item[key], str)
                     for key in ("from_id", "to_id", "edge_kind")
                 )
                 self.edges.add((from_id, to_id, kind))
@@ -434,9 +495,20 @@ class _Target:
     def _get(self, path: str) -> httpx2.Response:
         if path == "/api/web/graph":
             edges = [
-                {"from_id": f, "to_id": t, "edge_kind": k} for f, t, k in self.edges
+                {"from_id": f, "to_id": t, "edge_kind": k}
+                for f, t, k in self.edges
+                if not self.windowed
             ]
             return _json(200, {"nodes": [], "edges": edges})
+        if path.startswith("/api/web/get/"):
+            subject = path.removeprefix("/api/web/get/")
+            if uuid.UUID(subject) not in self.rows:
+                return _json(404, {"detail": "not found"})
+            outbound: dict[str, list[dict[str, object]]] = {}
+            for f, t, k in sorted(self.edges):
+                if f == subject:
+                    outbound.setdefault(k, []).append({"id": t})
+            return _json(200, {"self": {}, "edges": outbound, "backlinks": {}})
         if path.endswith("/parts"):
             session = uuid.UUID(path.split("/")[3])
             names = sorted({name for s, name, _ in self.records if s == session})
@@ -454,18 +526,18 @@ class _Target:
         return _json(200, self.rows[uuid.UUID(raw)])
 
     def _create(self, body: Mapping[str, object], **row: object) -> uuid.UUID:
-        key = uuid.UUID(StrCodec.coerce(body["idempotency_key"]))
+        key = uuid.UUID(from_plain(body["idempotency_key"], str))
         if key not in self.keys:
             self.keys[key] = uuid.uuid4()
             self.rows[self.keys[key]] = {**body, "ended": None, **row}
         return self.keys[key]
 
     def _append(self, session: uuid.UUID, body: Mapping[str, object]) -> object:
-        name = StrCodec.coerce(body["name"])
+        name = from_plain(body["name"], str)
         written = 0
-        records = ListCodec.mappings(body["records"])
+        records = from_plain(body["records"], list[dict[str, object]])
         for record in records:
-            idx = IntCodec.coerce(record["idx"])
+            idx = from_plain(record["idx"], int)
             if (session, name, idx) not in self.records:
                 self.records.add((session, name, idx))
                 self.order.append((session, idx))
@@ -474,6 +546,6 @@ class _Target:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -15,6 +15,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
+from treekle import immutable
+
 import pytest
 import pytest_asyncio
 
@@ -26,11 +28,12 @@ from trackinizer.lib.agent.types.sessions import (
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.custom_json import json_freeze
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.inquiries import AgentSession
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.filters import Filter
 
 
@@ -38,6 +41,10 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Sequence
 
     from trackinizer.lib.postgres import PostgresEngine
+
+
+# Reads every session's transcript: a filter here is of what it matches, not who reads.
+_ANYONE = SessionReader(audiences=AUDIENCES, every_session=True, oversight=True)
 
 
 @pytest_asyncio.fixture(loop_scope="session")
@@ -58,9 +65,10 @@ async def _session_with(
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', $2)",
+            "'tester@example.com', $2, 'open')",
             session_id,
             title,
         )
@@ -76,7 +84,7 @@ async def _session_with(
     _ = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=len(records),
@@ -91,6 +99,7 @@ async def _matching(store: Store, *filters: Filter, lowering: bool = True) -> se
         filters=list(filters),
         limit=500,
         lowering=lowering,
+        reader=_ANYONE,
     )
     return {row.id for row in rows if isinstance(row, AgentSession)}
 
@@ -155,6 +164,7 @@ async def test_a_session_with_two_matching_records_is_returned_once(
         "AgentSession",
         filters=[Filter(field="tool_call", op="re", value="grep")],
         limit=500,
+        reader=_ANYONE,
     )
 
     assert [row.id for row in rows].count(session_id) == 1
@@ -252,7 +262,7 @@ async def test_record_filters_ignore_stale_tail_after_compaction(store: Store) -
     _ = await store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -302,6 +312,6 @@ async def test_a_record_kind_scopes_the_match(store: Store) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

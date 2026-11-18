@@ -5,15 +5,14 @@ import type { ReactNode } from "react";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import type { InquiryRow } from "../api/inquiries";
 import type { Profile } from "../api/me";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
+import { DEFAULT_PREFERENCES, receivePreferences } from "../preferences";
 import { RouterProvider } from "../router/router";
 import { DetailView } from "../router/views";
 import { meFilter, meNames } from "../state/me";
-import { storageKey } from "../state/store";
-import { EMPTY_STATE } from "../state/value";
 import { KindIcon } from "../ui/kinds";
 import { ToastProvider } from "../ui/toast";
 import { InquiryList, ListView } from ".";
@@ -49,7 +48,7 @@ const META: Meta = {
   edges: {},
   kinds: KINDS,
 };
-const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 let nextSeq = 1;
 function row(fields: Partial<InquiryRow> = {}): InquiryRow {
@@ -162,16 +161,20 @@ test("the focused row scrolls into view in the next frame, not in the task that 
   const frames: FrameRequestCallback[] = [];
   vi.stubGlobal("requestAnimationFrame", (frame: FrameRequestCallback) => frames.push(frame));
   vi.stubGlobal("cancelAnimationFrame", () => {});
-  const nextFrame = () => act(() => frames.splice(0).forEach((frame) => frame(performance.now())));
+  // The effect that requests the frame may run after the rows show: wait for it.
+  const nextFrame = async () => {
+    await waitFor(() => expect(frames).not.toHaveLength(0));
+    act(() => frames.splice(0).forEach((frame) => frame(performance.now())));
+  };
   const scrolled = vi.spyOn(Element.prototype, "scrollIntoView");
   serve([row({ title: "First" }), row({ title: "Second" })]);
   show(<ListView kind="Issue" />);
   expect(await titles()).toEqual(["Second", "First"]);
   expect(scrolled).not.toHaveBeenCalled();
-  nextFrame();
+  await nextFrame();
   expect(scrolled.mock.contexts.map((element) => (element as Element).querySelector(".row-title")?.textContent)).toEqual(["Second"]);
   await userEvent.setup().keyboard("j");
-  nextFrame();
+  await nextFrame();
   expect(scrolled.mock.contexts.map((element) => (element as Element).querySelector(".row-title")?.textContent)).toEqual(["Second", "First"]);
 });
 
@@ -428,7 +431,7 @@ test("S8: a priority filter on Issues and Beliefs asks for Issues only, and says
 
 test("Me in the owner filter matches the email and every alias ticked in Settings (the plan's Who me is)", async () => {
   const aliases = ["ada", "Agent Ada"];
-  localStorage.setItem(storageKey(PROFILE.email), JSON.stringify({ ...EMPTY_STATE, aliases }));
+  receivePreferences({ ...DEFAULT_PREFERENCES, aliases });
   const sent = serve([row({ owner: "ada" })]);
   show(<ListView kind="Issue" />);
   await titles();
@@ -438,7 +441,7 @@ test("Me in the owner filter matches the email and every alias ticked in Setting
   expect(screen.getByTitle("The same query from the CLI").textContent).toBe(
     `trax issue status is active owner re '${me.value}'`,
   );
-  localStorage.clear();
+  receivePreferences(DEFAULT_PREFERENCES);
 });
 
 test.each([

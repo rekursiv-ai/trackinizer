@@ -305,7 +305,7 @@ VALUELESS_FILTER_OPS: Final[frozenset[FilterOp]] = frozenset({"isnull", "notnull
 # Identity/housekeeping columns the schema declares NOT NULL directly; they
 # carry no ColumnSpec, so they can't be derived from the spec metadata below.
 IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
-    {"id", "kind", "seq", "created", "modified"},
+    {"id", "kind", "seq", "locked", "created", "modified"},
 )
 
 
@@ -314,13 +314,18 @@ IDENTITY_COLUMNS: Final[frozenset[str]] = frozenset(
 # presence-op validation. A column is NOT NULL when its spec is ``required``
 # (``status``, ``title``) or ``flatten``-ed (the cost axes, ``NOT NULL DEFAULT 0`` in
 # ``schema.sql``); everything else is a ``| None`` field on the Inquiry dataclass.
+# A required column of one kind (``AgentSession.audience``) is NULL on every other
+# kind's rows, so it stays nullable here: the schema asks for it per kind.
 def _derive_non_nullable_columns() -> frozenset[str]:
     """Canonical columns that are NOT NULL in ``inquiries``."""
     columns = set(IDENTITY_COLUMNS)
     for source in INQUIRY_CLASSES:
         for name, flat in flat_column_specs(source).items():
-            if flat.spec.required or flat.spec.flatten is not None:
-                columns.add(storage_name(name, flat.spec))
+            spec = flat.spec
+            if (
+                spec.required and spec.applies_to_inquiry_kinds is None
+            ) or spec.flatten is not None:
+                columns.add(storage_name(name, spec))
     return frozenset(columns)
 
 
@@ -365,13 +370,15 @@ def validate_presence_op(field: str, op: FilterOp) -> str | None:
 # deliberately preferred over a hand-tuned exclusion, which would re-introduce the drift
 # the derivation kills.
 def _kind_specific_aliases() -> dict[str, str]:
-    """Bare field name -> flat storage column, for every kind-specific column."""
+    """Map bare field and singular list names to kind-specific storage columns."""
     out: dict[str, str] = {}
     for cls in KIND_TO_CLASS.values():
         for name, spec in column_specs(cls).items():
             storage = storage_name(name, spec)
             if storage != name:
                 out[name] = storage
+                if spec.list_verb_stem:
+                    out[spec.list_verb_stem] = storage
     return out
 
 

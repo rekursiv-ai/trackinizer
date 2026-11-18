@@ -13,7 +13,8 @@ import { META, PROFILE, renderDetail, row, uuid } from "../detail/testing";
 import { prop, propButton, serveRow, stubLayout } from "../editors/testing";
 import { ListView } from "../lists";
 import { RouterProvider } from "../router/router";
-import { storageKey } from "../state/store";
+import { preferences } from "../preferences";
+import { resetPreferences } from "../state/testing";
 import { ToastProvider } from "../ui/toast";
 
 const ADMIN: Profile = { ...PROFILE, role: "admin" };
@@ -25,9 +26,10 @@ beforeEach(() => {
   stubLayout();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   vi.restoreAllMocks();
+  await resetPreferences();
   vi.unstubAllGlobals();
 });
 
@@ -52,9 +54,9 @@ function fill(dialog: HTMLElement, fields: { [label: string]: string }) {
   }
 }
 
-/** The people this browser keeps for the signed-in user. */
+/** The people kept for the signed-in user. */
 function kept() {
-  return JSON.parse(localStorage.getItem(storageKey(PROFILE.email)) ?? "{}").people;
+  return preferences().people;
 }
 
 test("New person adds an owner: the email is written by compare-and-set, and the picker names them, after a reload too", { tags: ["manual"] }, async () => {
@@ -129,7 +131,7 @@ test("composing Enter adds nobody", async () => {
   fireEvent.keyDown(within(dialog).getByRole("textbox", { name: "Name" }), { key: "Enter", metaKey: true, isComposing: true });
   expect(screen.getByRole("dialog", { name: "New owner" })).toBeTruthy();
   expect(server.writes()).toEqual([]);
-  expect(kept()).toBeUndefined();
+  expect(kept()).toEqual({});
 });
 
 test("what the dialog cannot add says why and writes nothing; Escape closes it", async () => {
@@ -145,7 +147,7 @@ test("what the dialog cannot add says why and writes nothing; Escape closes it",
   fireEvent.keyDown(dialog, { key: "Escape" });
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(server.writes()).toEqual([]);
-  expect(kept()).toBeUndefined();
+  expect(kept()).toEqual({});
 });
 
 test("an owner added through the dialog is guarded against the owner shown when New person was picked", async () => {
@@ -242,7 +244,7 @@ test("a discarded invite adds nobody", async () => {
   await waitFor(() => expect(within(dialog).queryByRole("button", { name: "Retry" })).toBeNull());
   expect(screen.getByRole("dialog", { name: "New owner" })).toBeTruthy();
   expect(server.writes()).toEqual([]);
-  expect(kept()).toBeUndefined();
+  expect(kept()).toEqual({});
 });
 
 test("a writer is offered no invite, and nothing asks the admin routes", async () => {

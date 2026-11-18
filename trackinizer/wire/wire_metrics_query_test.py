@@ -8,12 +8,65 @@ from pydantic import ValidationError
 
 import pytest
 
+from trackinizer.wire import wire_metrics_query
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics_query import (
+    MetricAxis,
     MetricMaskClause,
     MetricQueryRequest,
     MetricRankRequest,
 )
+
+
+@pytest.mark.parametrize(
+    ("axis", "raw", "expected"),
+    [
+        ("key", "loss", "loss"),
+        ("key", " loss ", " loss "),
+        ("step", "0", 0),
+        ("step", " 003 ", 3),
+        ("step", str(2**63 - 1), 2**63 - 1),
+        ("value", "-0.5", -0.5),
+        ("value", "1e300", 1e300),
+    ],
+)
+def test_metric_operand_coercion_matches_the_cell_contract(
+    axis: MetricAxis,
+    raw: str,
+    expected: str | float,
+) -> None:
+    result = wire_metrics_query.coerce_metric_operand(
+        MetricMaskClause(axis=axis, op="is", value=raw),
+    )
+    assert (result, type(result)) == (expected, type(expected))
+
+
+@pytest.mark.parametrize(
+    ("axis", "raw"),
+    [
+        ("step", "abc"),
+        ("step", "-1"),
+        ("step", str(2**63)),
+        ("step", "3.0"),
+        pytest.param("step", "9" * 4301, id="step-overlong-decimal"),
+        ("value", "NaN"),
+        ("value", "inf"),
+        ("value", "-inf"),
+        ("value", "high"),
+        ("key", ""),
+        ("key", "\t"),
+        ("key", "lo\x00ss"),
+        pytest.param("key", "x" * 513, id="key-too-long"),
+    ],
+)
+def test_metric_operand_coercion_rejects_invalid_cells(
+    axis: MetricAxis,
+    raw: str,
+) -> None:
+    with pytest.raises(ValueError, match=f"not a valid metric {axis}"):
+        wire_metrics_query.coerce_metric_operand(
+            MetricMaskClause(axis=axis, op="is", value=raw),
+        )
 
 
 class TestMetricMaskClause:
@@ -90,13 +143,13 @@ class TestMetricQueryRequest:
 
     def test_rejects_zero_limit(self) -> None:
         with pytest.raises(ValidationError):
-            MetricQueryRequest(masks=[], limit=0)
+            MetricQueryRequest(masks=[], limit=0)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
 
     def test_rejects_limit_over_max(self) -> None:
         """An over-cap limit is refused, never silently clamped to the cap."""
         assert MetricQueryRequest(limit=MAX_LIST_LIMIT).limit == MAX_LIST_LIMIT
         with pytest.raises(ValidationError):
-            MetricQueryRequest(limit=MAX_LIST_LIMIT + 1)
+            MetricQueryRequest(limit=MAX_LIST_LIMIT + 1)  # pyrefly: ignore[bad-argument-type] -- The negative test passes the out-of-range value under test.
 
     @pytest.mark.parametrize(
         "read_control",
@@ -138,6 +191,6 @@ class TestMetricRankRequest:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

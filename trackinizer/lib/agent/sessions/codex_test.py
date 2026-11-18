@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from dataclasses import replace
 from io import StringIO
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
 
 import json
+
+from treekle import MutablePlainTree, from_plain, json_loads
 
 import pytest
 
 from trackinizer.lib.agent.sessions import codex
 from trackinizer.lib.agent.sessions.codex import _grouped
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
 from trackinizer.lib.agent.types.sessions import (
     AgentToAgentMessage,
@@ -26,6 +30,7 @@ from trackinizer.lib.agent.types.sessions import (
     IncompleteRecord,
     SessionRecord,
     ShellCommandResult,
+    Splice,
     SystemMessage,
     Thinking,
     TokenUsage,
@@ -36,19 +41,17 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedRecord,
     UncategorizedToolResult,
     UserMessage,
+    WebFetchResult,
     WebSearchResult,
     WebSearchResults,
-)
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    MutableJSONValue,
-    json_unfreeze,
-    loads,
 )
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+
+_CWD: Final = Path(__file__).resolve().parent
 
 
 META = '{"type":"session_meta","payload":{"session_id":"s1","cwd":"/workspace"}}\n'
@@ -57,6 +60,14 @@ CONTEXT = (
     '"model":"gpt-5.6-sol","effort":"medium","summary":"auto",'
     '"approval_policy":"never"}}\n'
 )
+
+FIXTURE: Final = (
+    (_CWD / "testdata" / "codex_main.jsonl").read_text().splitlines(keepends=True)
+)
+"""A real rollout, one line per element."""
+
+_KEPT_AS_TEXT: Final = frozenset({"payload.call_id", "payload.item.id"})
+"""Fields whose wrong value only the line's own text can write back."""
 
 
 def _item(payload: str) -> str:
@@ -84,7 +95,7 @@ def test_a_session_declares_its_context_and_identity() -> None:
     # follows. The per-turn settings then supersede it.
     launch = records[0]
     assert isinstance(launch, TurnContext)
-    declaration = DictCodec.coerce(launch.extra.get("payload"))
+    declaration = from_plain(launch.extra.get("payload"), dict[str, object])
     assert declaration["cwd"] == "/workspace"
     assert declaration["session_id"] == "s1"
     assert isinstance(records[1], ContextClear)
@@ -129,13 +140,58 @@ def test_provider_dollar_keys_round_trip(line: str) -> None:
     assert output.getvalue() == native
 
 
+@pytest.mark.parametrize(
+    "line",
+    [
+        '{"type":7,"payload":{}}\n',
+        '{"type":"session_meta","payload":{"session_id":7,"base_instructions":7}}\n',
+        '{"type":"turn_context","payload":{"effort":7,"summary":[1]}}\n',
+        '{"type":"response_item","payload":{"type":7}}\n',
+        '{"type":"response_item","payload":{"type":"function_call","call_id":7}}\n',
+        '{"type":"event_msg","payload":{"type":"item_completed","item":7}}\n',
+    ],
+    ids=["outer", "repeat-meta", "context", "item-type", "call-id", "event-item"],
+)
+def test_a_line_with_a_malformed_field_round_trips(line: str) -> None:
+    # One malformed field raised ``ReadError`` out of ``normalize`` and lost
+    # the whole rollout.
+    native = META + line
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+def test_a_malformed_launch_line_keeps_its_bytes() -> None:
+    native = '{"type":"session_meta","payload":{"session_id":"s"},"ordinal":"x"}\n'
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+def test_a_compacted_line_with_an_empty_history_round_trips() -> None:
+    # Presence was tested after the key was popped, so an empty history read as
+    # "not stated" and the line came back as ``{"message":null}``.
+    native = META + (
+        '{"type":"compacted","payload":{"message":"","replacement_history":[]}}\n'
+    )
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
 def test_order_table_does_not_create_a_stamp_module_global() -> None:
     assert "_STAMP" not in vars(codex)
 
 
 def test_template_precedence_does_not_consume_legacy_blocks() -> None:
-    legacy: list[MutableJSONValue] = [{"type": "future", "value": 1}]
-    extra: dict[str, MutableJSONValue] = {
+    legacy: list[MutablePlainTree] = [{"type": "future", "value": 1}]
+    extra: dict[str, MutablePlainTree] = {
         "$templates": [{"type": "input_text"}],
         "$blocks": legacy,
         "$order": ["text"],
@@ -186,6 +242,23 @@ def test_reasoning_normalizes_to_a_summary_beside_its_sealed_half() -> None:
     assert thinking.encrypted == "sealed"
 
 
+def test_a_record_before_any_turn_names_the_opening_context() -> None:
+    native = META + _item(
+        '{"type":"message","role":"user",'
+        '"content":[{"type":"input_text","text":"hi"}]}',
+    )
+
+    records = list(codex.normalize(StringIO(native)))
+
+    [message] = [record for record in records if isinstance(record, UserMessage)]
+    assert message.context_id is not None
+    assert isinstance(records[message.context_id], TurnContext)
+
+
+def test_an_empty_rollout_reads_as_no_records() -> None:
+    assert list(codex.normalize(StringIO(""))) == []
+
+
 def test_a_function_call_decodes_its_nested_arguments() -> None:
     native = META + _item(
         '{"type":"function_call","call_id":"c1","name":"Read",'
@@ -198,6 +271,19 @@ def test_a_function_call_decodes_its_nested_arguments() -> None:
     assert isinstance(call, ToolCall)
     assert call.name == "Read"
     assert call.arguments == {"path": "/a"}
+
+
+def test_a_call_whose_arguments_nest_objects_round_trips_byte_exact() -> None:
+    """The argument string is re-encoded from the call's own nested values."""
+    native = META + _item(
+        '{"type":"function_call","call_id":"c1","name":"update_plan",'
+        '"arguments":"{\\"plan\\":[{\\"step\\":\\"read\\",\\"status\\":\\"done\\"}]}"}',
+    )
+    output = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
 
 
 def test_a_malformed_argument_string_does_not_abort_the_file() -> None:
@@ -278,8 +364,8 @@ def test_a_foreign_subtype_is_not_written_as_a_codex_role() -> None:
 
     codex.denormalize([SystemMessage(content="", subtype="turn_duration")], out)
 
-    outer = DictCodec.coerce(loads(out.getvalue().splitlines()[0]))
-    payload = DictCodec.coerce(outer["payload"])
+    outer = json_loads(out.getvalue().splitlines()[0], dict[str, object])
+    payload = from_plain(outer["payload"], dict[str, object])
     assert payload["role"] == "system"
 
 
@@ -480,6 +566,140 @@ def test_native_bytes_round_trip(native: str) -> None:
     assert out.getvalue() == native
 
 
+def _event(payload: str) -> str:
+    """Return one event line carrying ``payload``."""
+    return '{"type":"event_msg","payload":' + payload + "}\n"
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        "\n" + META,
+        META.removesuffix("\n"),
+        META + "[1]\n",
+        META + '{"type":"compacted","payload":{"message":"summary"}}\n',
+        META + _item('{"type":"tool_search_output","call_id":"c","tools":[]}'),
+        META
+        + _item(
+            '{"type":"function_call","name":"f","arguments":"{\\"a\\": 1}",'
+            '"call_id":"c"}',
+        ),
+        META
+        + _item(
+            '{"type":"web_search_call","id":"w","status":"completed",'
+            '"action":{"type":"search","query":"q"}}',
+        ),
+        META + _event('{"type":"error","message":"boom"}'),
+        META + _event('{"type":"context_compacted"}'),
+        META + _event('{"type":"mcp_tool_call_end","call_id":"c","result":{}}'),
+        META
+        + _event(
+            '{"type":"exec_command_end","call_id":"c","command":["ls"],'
+            '"stdout":"a\\n","stderr":"","exit_code":0}',
+        ),
+        META + _event('{"type":"patch_apply_end","call_id":"c","success":true}'),
+        META
+        + _event(
+            '{"type":"item_completed","item":{"type":"WebSearch","id":"w",'
+            '"query":"q"}}',
+        ),
+    ],
+    ids=[
+        "launch-after-blank",
+        "no-final-newline",
+        "non-object-line",
+        "compacted-summary-only",
+        "tool-search-output",
+        "spaced-arguments",
+        "web-search-call",
+        "error-event",
+        "context-compacted",
+        "mcp-tool-call-end",
+        "exec-command-end",
+        "patch-without-changes",
+        "completed-web-search",
+    ],
+)
+def test_each_rollout_shape_rewrites_to_its_own_bytes(native: str) -> None:
+    records = list(codex.normalize(StringIO(native)))
+    out = StringIO()
+
+    codex.denormalize(records, out)
+
+    assert out.getvalue() == native
+
+
+def test_a_first_line_launch_after_a_release_is_refused() -> None:
+    """The first line's slot is overwritten only while nothing was handed over."""
+    reader = codex._Reader()
+    _ = list(reader.read(META))
+    reader._base = 1
+
+    with pytest.raises(ValueError, match="_base == 0"):
+        reader._launch(({}, None), {}, 0)
+
+
+def test_a_record_without_a_session_writes_nothing() -> None:
+    out = StringIO()
+
+    codex.denormalize([], out)
+
+    assert out.getvalue() == ""
+
+
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            WebSearchResults(
+                call_id="c",
+                content=(WebSearchResult(url="u"),),
+                extra={"$echoes": "web_search_end", "$rows": [], "$row_order": [7]},
+            ),
+            '"results":[{"url":"u"}]',
+        ),
+        (
+            WebSearchResults(
+                call_id="c",
+                content=(WebSearchResult(url="u"),),
+                extra={
+                    "$echoes": "web_search_end",
+                    "$rows": ["kept"],
+                    "$row_order": ["row"],
+                },
+            ),
+            '"results":["kept"]',
+        ),
+        (
+            UserMessage(content="hi", extra={"$parts": ["x"], "$order": [7]}),
+            '"content":[{"type":"input_text","text":"hi"}]',
+        ),
+    ],
+    ids=["malformed-row-order", "scalar-row-template", "malformed-parts-and-order"],
+)
+def test_a_malformed_replay_hint_falls_back_to_the_records_fields(
+    record: SessionRecord,
+    expected: str,
+) -> None:
+    """``denormalize`` takes any record, so a hint it cannot read is ignored."""
+    out = StringIO()
+
+    codex.denormalize([record], out)
+
+    assert expected in out.getvalue()
+
+
+def test_an_uncategorized_line_state_without_an_outer_line_stays_payload() -> None:
+    record = UncategorizedRecord(
+        kind="response_item/x",
+        payload={"type": "x", "$codex_line": {"outer": 7}},
+    )
+
+    state, restored = codex._pop_line_state(record)
+
+    assert (state, restored) == ({}, record)
+
+
 def test_content_without_native_order_is_not_dropped() -> None:
     records = (
         SystemMessage(content="instructions", subtype="developer"),
@@ -536,8 +756,8 @@ def test_non_user_message_images_survive_normalization(
 
     message = list(codex.normalize(StringIO(native)))[-1]
 
-    assert isinstance(message, expected)
     assert isinstance(message, AssistantMessage | SystemMessage)
+    assert type(message) is expected
     assert message.attachments == (Attachment(mime_descriptor="image/png", data=b"hi"),)
 
 
@@ -803,7 +1023,7 @@ def test_a_patch_diff_is_stored_once() -> None:
     assert isinstance(record, FileEditResult)
 
     assert render_udiff(record.edits) == diff
-    assert diff not in json.dumps(json_unfreeze(record.extra)), (
+    assert diff not in json.dumps(dict(record.extra)), (
         "the diff is on the record already"
     )
 
@@ -830,9 +1050,9 @@ def test_the_launch_payload_is_stored_once() -> None:
     records = list(codex.normalize(StringIO(native)))
     launch = records[0]
     assert isinstance(launch, TurnContext)
-    extra = json_unfreeze(launch.extra)
+    extra = dict(launch.extra)
 
-    assert "payload" not in DictCodec.coerce(extra.get("$outer"))
+    assert "payload" not in from_plain(extra.get("$outer"), dict[str, object])
     # The stamp the opening context's own field already carries.
     assert "$launch_timestamp_raw" not in extra
 
@@ -920,9 +1140,10 @@ def test_a_legacy_patch_diff_is_stored_once() -> None:
     # answer this: the needle holds a real newline and the haystack holds the
     # escaped ``\\n``, so the search misses a diff that is plainly there --
     # which is how this assertion passed against a 100%-duplicated corpus.
-    stored = DictCodec.coerce(json_unfreeze(record.extra).get("changes"))
+    stored = from_plain(dict(record.extra).get("changes"), dict[str, object])
     assert [
-        DictCodec.coerce(entry).get("unified_diff") for entry in stored.values()
+        from_plain(entry, dict[str, object]).get("unified_diff")
+        for entry in stored.values()
     ] == [None], "the diff is on the record already"
 
     output = StringIO()
@@ -1225,6 +1446,51 @@ def test_a_compaction_states_the_summary_the_next_turn_reads() -> None:
     assert window.summary == "sealed"
 
 
+@pytest.mark.parametrize(
+    "native",
+    [
+        '{"type":"compacted","payload":{"message":"said","replacement_history":[]}}\n',
+        (
+            '{"type":"compacted","payload":{"message":"said","replacement_history":'
+            '[{"type":"compaction","encrypted_content":"sealed"}]}}\n'
+        ),
+        '{"type":"compacted","payload":{"message":7,"replacement_history":[]}}\n',
+        '{"type":"compacted","payload":{"replacement_history":[],"message":""}}\n',
+    ],
+    ids=[
+        "message-and-empty-history",
+        "message-and-sealed",
+        "malformed-message",
+        "history-first",
+    ],
+)
+def test_a_compaction_message_beside_its_history_round_trips(native: str) -> None:
+    """A line stating both a summary and a history writes both back."""
+    out = StringIO()
+
+    codex.denormalize(codex.normalize(StringIO(META + native)), out)
+
+    assert out.getvalue() == META + native
+
+
+def test_a_synthesized_compaction_writes_its_history_in_codex_key_order() -> None:
+    """A clear built by hand states its history; its summary stays sealed."""
+    records = [
+        ContextCompaction(extra={"future": 1}),
+        ContextClear(summary="s", history=(UserMessage(content="kept"),)),
+    ]
+    out = StringIO()
+
+    codex.denormalize(records, out)
+
+    line = json_loads(out.getvalue(), dict[str, object])
+    payload = from_plain(line["payload"], dict[str, object])
+    assert list(payload) == ["message", "replacement_history", "future"]
+    assert payload["message"] == ""
+    (entry,) = from_plain(payload["replacement_history"], list[dict[str, object]])
+    assert entry["role"] == "user"
+
+
 def test_a_compaction_rewrites_to_the_bytes_it_was_read_from() -> None:
     """Harvesting must not cost byte-exactness."""
     out = StringIO()
@@ -1269,7 +1535,302 @@ def test_grouping_still_joins_a_patch_that_touched_several_paths() -> None:
     assert groups == [[lead, follower], [other]]
 
 
+def test_codex_small_helpers_preserve_edge_shapes() -> None:
+    assert codex._write_line("t", 3, "x", {}, template={}) == (
+        '{"timestamp":"t","ordinal":3,"type":"x","payload":{}}\n'
+    )
+    assert codex._canonical_order({"type": "Bash", "stdout": "x"}) == [
+        "type",
+        "stdout",
+    ]
+    assert codex._ordered("x", {"z": 1}) == {"z": 1}
+    assert codex._write_rows(WebSearchResults(call_id="c"), {}) is None
+    assert codex._write_content(
+        "",
+        (),
+        {"$order": ["text"]},
+        text_key="input_text",
+    ) == [
+        {"type": "input_text", "text": ""},
+    ]
+    assert codex._split("", [0]) == []
+    assert codex._is_command_shape("ls") is True
+    assert codex._is_command_shape(["ls"]) is True
+    assert codex._is_command_shape(["ls", 1]) is False
+    assert codex._command("") is None
+    assert codex._command("ls") == ("ls",)
+    assert codex._effort("ultra") == "max"
+    assert codex._effort("unknown") is None
+    assert codex._read_attachment({"type": "input_image", "image_url": "bad"}) is None
+
+
+def test_codex_writer_handles_unmapped_and_special_records() -> None:
+    assert codex._write_record(UncategorizedRecord(kind="foreign/type"))
+    assert codex._write_record(UncategorizedRecord(kind="foreign")) == []
+    assert codex._write_record(ContextClear()) == []
+    assert (
+        codex._write_record(AgentToAgentMessage(content="hi"))[0][0] == "response_item"
+    )
+    error = SystemMessage(content="oops", extra={"$event": True})
+    assert codex._write_record(error)[0][0] == "event_msg"
+    assert codex._write_record(SystemMessage(content="ok"))[0][0] == "response_item"
+    assert (
+        codex._write_result(
+            WebSearchResults(call_id="c", query="q"),
+        )
+        is not None
+    )
+    assert codex._write_result(WebFetchResult(call_id="c", content="x")) is not None
+    assert codex._write_completed(WebFetchResult(call_id="c"), {}) is None
+
+
+def test_codex_reader_handles_multiblock_and_malformed_shapes() -> None:
+    parts = codex._read_content(
+        [{"type": "input_text", "text": "a"}, {"type": "input_text", "text": "b"}],
+    )
+    assert parts[0] == ("a", "b")
+    thinking = codex._read_thinking(
+        {
+            "summary": [
+                {"type": "summary_text", "text": "a"},
+                {"type": "summary_text", "text": "b"},
+            ],
+        },
+        0,
+        None,
+    )
+    assert thinking.summary == "a\nb"
+    assert codex._declared_instructions({"base_instructions": "prompt"}) == "prompt"
+    assert (
+        codex._declared_instructions({"base_instructions": {"text": "prompt"}})
+        == "prompt"
+    )
+    assert codex._declared_instructions({"base_instructions": 7}) is None
+    assert codex._parse_arguments("{") is None
+
+
+def test_codex_patch_and_usage_helpers_report_exact_values() -> None:
+    assert (
+        codex._is_canonical_usage(
+            {"info": {}, "rate_limits": {}},
+            {},
+            ({}, {}),
+        )
+        is True
+    )
+    assert codex._is_canonical_usage({"other": 1}, {}, ({}, {})) is False
+    assert codex._stencil_changes({"changes": {"a": 7}})["changes"] == {"a": 7}
+    assert codex._shell_residual({"type": "x", "command": 7}, "x")["$present"] == [
+        "type",
+        "command",
+    ]
+
+
+def test_codex_completed_result_preserves_missing_edit_path() -> None:
+    result = FileEditResult(call_id="c", edits=(Splice(before="a", after="b"),))
+    assert codex._write_completed(result, {}) is None
+
+
+def test_codex_writer_handles_empty_and_legacy_shapes() -> None:
+    assert codex._with_instructions({"base_instructions": None}, []) == {
+        "base_instructions": None,
+    }
+    assert codex._write_context(TurnContext(effort="high"))["effort"] == "high"
+    assert codex._write_record(ContextCompaction(extra={"$echoes": "compact"})) == [
+        ("event_msg", {"type": "compact"}),
+    ]
+    assert codex._write_record(ContextClear()) == []
+    assert codex._write_record(IncompleteRecord(text="x")) == []
+    launch = StringIO()
+    codex.denormalize(
+        [
+            IncompleteRecord(text="first\n"),
+            TurnContext(extra={"payload": {}, "line": 2}),
+        ],
+        launch,
+    )
+    assert launch.getvalue() == (
+        'first\n{"timestamp":null,"type":"session_meta","payload":{}}\n'
+    )
+    assert codex._write_result(ToolResult(call_id="c")) is None
+    assert (
+        codex._write_output(
+            UncategorizedToolResult(call_id="c", extra={"$whole": True, "type": "x"}),
+            {"$whole": True, "type": "x", "other": 1},
+        )["type"]
+        == "x"
+    )
+    shell = ShellCommandResult(
+        call_id="c",
+        command=("echo", "ok"),
+        stdout="out",
+        stderr="",
+        exit_code=0,
+        extra={"$present": ["type", "call_id", "command", "stdout", "exit_code"]},
+    )
+    assert (
+        codex._write_legacy_end(
+            shell,
+            "shell_end",
+            {"$present": ["type", "call_id", "command", "stdout", "exit_code"]},
+            {},
+        )["stdout"]
+        == "out"
+    )
+    assert (
+        codex._write_changes(
+            {"a": FileWriteResult(call_id="c", path="a", content="x")},
+            {"a": {}},
+        )
+        is None
+    )
+    assert (
+        codex._write_rows(
+            WebSearchResults(
+                call_id="c",
+                content=(),
+                extra={"$rows": [{}], "$row_order": ["row"]},
+            ),
+            {"$rows": [{}], "$row_order": ["row"]},
+        )
+        == []
+    )
+    assert codex._write_content(
+        "x",
+        (),
+        {"$order": ["text", "text"]},
+        text_key="input_text",
+    ) == [
+        {"type": "input_text", "text": "x"},
+    ]
+    assert codex._write_content(
+        "x",
+        (),
+        {"$order": ["image"]},
+        text_key="input_text",
+    ) == [{"type": "input_text", "text": "x"}]
+    assert codex._write_content(
+        "x",
+        (Attachment(mime_descriptor="image/png", data=b"x"),),
+        {"$order": ["image"]},
+        text_key="input_text",
+    )
+
+
+def test_codex_reader_preserves_residual_and_multiline_shapes() -> None:
+    assert (
+        codex._read_thinking({"encrypted_content": "sealed"}, 0, None).extra[
+            "$summary_absent"
+        ]
+        is True
+    )
+    assert codex._read_thinking(
+        {
+            "summary": [
+                {"type": "summary_text", "text": "a"},
+                {"type": "summary_text", "text": "b"},
+            ],
+        },
+        0,
+        None,
+    ).extra["$parts"] == (1, 1)
+    parsed_call = codex._read_tool_call(
+        {
+            "type": "function_call",
+            "call_id": "c",
+            "name": "x",
+            "arguments": '{"a": 1, "a": 2}',
+        },
+        0,
+        None,
+    )
+    assert isinstance(parsed_call, ToolCall)
+    assert parsed_call.extra["$raw"] == '{"a": 1, "a": 2}'
+    assert codex._is_canonical_usage({"info": {}}, {"other": 1}, ({}, {})) is False
+    assert codex._stencil_changes({"changes": {"a": {"other": 1}}})["changes"] == {
+        "a": {"other": 1},
+    }
+    assert codex._shell_residual({"type": "x", "command": []}, "x")["$present"] == [
+        "type",
+        "command",
+    ]
+    assert (
+        codex._read_context({"effort": "ultra", "summary": "auto"}, None).effort
+        == "max"
+    )
+    message = codex._read_response_item(
+        "agent_message",
+        {
+            "author": "a",
+            "recipient": "b",
+            "content": [
+                {"type": "input_text", "text": "a"},
+                {"type": "input_text", "text": "b"},
+            ],
+        },
+        0,
+        None,
+    )
+    assert isinstance(message, AgentToAgentMessage)
+    assert message.extra["$parts"] == (1, 1)
+
+
+def test_codex_line_state_preserves_noncanonical_records() -> None:
+    item = UncategorizedRecord(
+        kind="response_item/x",
+        payload={"value": 1, "$codex_line": {"value": {"old": 1}}},
+    )
+    stored = codex._with_line_state(
+        item,
+        {"payload": {}, "type": "x", "timestamp": "t", "extra": 1},
+    )
+    assert isinstance(stored, UncategorizedRecord)
+    assert "$codex_line" in stored.payload
+    state, restored = codex._pop_line_state(stored)
+    assert state["payload_at"] == 0
+    assert isinstance(restored, UncategorizedRecord)
+    assert restored.payload["$codex_line"] == {"value": {"old": 1}}
+    assert codex._with_line_state(
+        IncompleteRecord(text="x"),
+        {"payload": {}},
+    ) == IncompleteRecord(text="x")
+
+
+@pytest.mark.parametrize("index", range(len(FIXTURE)))
+def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(index: int) -> None:
+    """A log field of the wrong type reads as absent, as a missing one does.
+
+    The rest of the rollout stays as written, so a line read in context -- a
+    result after its call, an item after its turn -- meets its wrong field there.
+    """
+    record = json_loads(FIXTURE[index], dict[str, object])
+    failed: list[str] = []
+    # Each path is mistyped several ways; its without-the-field read is one.
+    baselines: dict[object, int] = {}
+    for path, changed in mistyped(record):
+        records = list(codex.normalize(StringIO(_swapped(index, changed))))
+        try:
+            codex.denormalize(records, StringIO())
+        except TypeError as error:
+            failed.append(f"{path}: {error}")
+        if path in _KEPT_AS_TEXT:
+            continue
+        if path not in baselines:
+            missing = _swapped(index, without(record, path))
+            baselines[path] = unread(codex.normalize(StringIO(missing)))
+        if unread(records) > baselines[path]:
+            failed.append(f"{path}: the line reads worse than without the field")
+
+    assert failed == [], "\n".join(failed)
+
+
+def _swapped(index: int, record: object) -> str:
+    """Return the rollout with line ``index`` replaced by ``record``."""
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    return "".join([*FIXTURE[:index], line, *FIXTURE[index + 1 :]])
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

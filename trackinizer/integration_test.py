@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Final, Protocol, cast
 from unittest.mock import MagicMock
 from uuid import NAMESPACE_URL, UUID, uuid5
 
@@ -13,6 +14,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
+from treekle import from_plain, immutable
 
 import asyncpg
 import httpx2
@@ -20,14 +22,6 @@ import pytest
 
 from trackinizer.conftest import new_uuid
 from trackinizer.lib.agent.types.sessions import UserMessage
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    json_freeze,
-)
 from trackinizer.server import web
 from trackinizer.server.api import (
     edit,
@@ -40,6 +34,7 @@ from trackinizer.server.api.conftest import (
     make_test_identity,
 )
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import (
     BOOTSTRAP_ADMIN_ENV,
     BOOTSTRAP_TOKEN_FILE_ENV,
@@ -71,6 +66,7 @@ from trackinizer.types.inquiries import (
     Paper,
 )
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.bodies import (
     BatchEdge,
     Citation,
@@ -92,6 +88,12 @@ if TYPE_CHECKING:
 
     from trackinizer.server.store.core import Store
     from trackinizer.types.edges import Edge
+
+
+# Reads every session but a chat: the feed tests are of what it keeps, not who reads.
+_EVERY_SESSION: Final = FeedScope(
+    reader=SessionReader(audiences=AUDIENCES, every_session=True, oversight=True),
+)
 
 
 # The session-start route resolves the request's ``account`` from the authenticated
@@ -123,7 +125,7 @@ async def _record(store: Store, session_id: UUID, *, idx: int, text: str) -> Non
     _ = await store.upsert_session_manifest(
         session_id,
         name="part0.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid5(NAMESPACE_URL, f"{session_id}:0"),
         format="claude",
         records=idx + 1,
@@ -560,6 +562,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="abc123",
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert seq0 == 0
         await _record(integ_store, sid, idx=0, text="first")
@@ -575,6 +578,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="abc123",
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert rsid == sid
         assert rowner == owner
@@ -622,6 +626,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="alice",
             api_key_id=alice_key,
+            audience="open",
         )
         # Bob, knowing the cli_session_id, must NOT resume Alice's session.
         b_sid, _b_owner, _ = await integ_store.start_session(
@@ -633,6 +638,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="bob",
             api_key_id=bob_key,
+            audience="open",
         )
         assert b_sid != a_sid  # Bob got a fresh session, not Alice's.
 
@@ -646,6 +652,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="alice",
             api_key_id=alice_key,
+            audience="open",
         )
         assert a_resume == a_sid
 
@@ -669,6 +676,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="scientist",
             api_key_id=None,
+            audience="open",
         )
         resumed, _, _ = await integ_store.start_session(
             SubmitAgentSession(
@@ -679,6 +687,7 @@ class TestIntegrationEndToEnd:
             ),
             requested_actor="scientist",
             api_key_id=None,
+            audience="open",
         )
         assert resumed == sid  # re-attached, not a fresh session.
 
@@ -701,6 +710,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         # No end_session: the session is still live. Resume with a new room.
         resumed, _, _ = await integ_store.start_session(
@@ -712,6 +722,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a", "b"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert resumed == sid
         row = await integ_store.get_inquiry(sid)
@@ -733,6 +744,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor=owner)
         # Resume with a new room set.
@@ -745,6 +757,7 @@ class TestIntegrationEndToEnd:
                 rooms=["a", "b"],
             ),
             requested_actor="scientist",
+            audience="open",
         )
         assert rsid == sid
         row = await integ_store.get_inquiry(sid)
@@ -764,6 +777,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="audit-id",
             ),
             requested_actor="alice",
+            audience="open",
         )
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor=owner)
         # A different actor resumes; the re-open change must credit THEM.
@@ -775,6 +789,7 @@ class TestIntegrationEndToEnd:
                 cli_session_id="audit-id",
             ),
             requested_actor="bob",
+            audience="open",
         )
         async with integ_store.engine.acquire() as conn:
             actor = await _fetchval(
@@ -797,10 +812,12 @@ class TestIntegrationEndToEnd:
         sid_a, owner_a, _ = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="a", cli="claude"),
             requested_actor="scientist",
+            audience="open",
         )
         sid_b, owner_b, _ = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="b", cli="claude"),
             requested_actor="scientist",
+            audience="open",
         )
         assert sid_a != sid_b
         assert (owner_a, owner_b) == ("scientist", "scientist#2")
@@ -825,6 +842,7 @@ class TestIntegrationEndToEnd:
         sid, _owner, _seq = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
             requested_actor="alice",
+            audience="open",
         )
         # Replay the same start: K is on the slot, the probe peeks it, returns
         # the original (id, owner) -- and MUST drain the slot.
@@ -832,6 +850,7 @@ class TestIntegrationEndToEnd:
         replay_sid, _, _ = await integ_store.start_session(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
             requested_actor="alice",
+            audience="open",
         )
         assert replay_sid == sid
         # The leaked key must NOT survive into a subsequent keyless write.
@@ -853,6 +872,7 @@ class TestIntegrationEndToEnd:
         """An ``end_session`` replay must not leak the change-id into the next write."""
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
+            audience="open",
         )
         key = new_uuid()
         set_client_change_id(key)
@@ -883,6 +903,7 @@ class TestIntegrationEndToEnd:
         """
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="run", cli="codex"),
+            audience="open",
         )
         await integ_store.end_session(sid, ended=datetime.now(UTC), actor="u")
         async with integ_store.engine.acquire() as conn:
@@ -917,6 +938,7 @@ class TestIntegrationEndToEnd:
                 owner="scientist",
             ),
             actor="scientist",
+            audience="open",
         )
         assert await integ_store.reserve_session_actor("scientist") == "scientist#2"
 
@@ -929,6 +951,7 @@ class TestIntegrationEndToEnd:
                 owner="scientist#2",
             ),
             actor="scientist#2",
+            audience="open",
         )
         assert await integ_store.reserve_session_actor("scientist") == "scientist#3"
 
@@ -956,6 +979,7 @@ class TestIntegrationEndToEnd:
                     cli="codex",
                 ),
                 requested_actor="scientist",
+                audience="open",
             ),
             integ_store.start_session(
                 SubmitAgentSession(
@@ -964,6 +988,7 @@ class TestIntegrationEndToEnd:
                     cli="codex",
                 ),
                 requested_actor="scientist",
+                audience="open",
             ),
         )
         granted = sorted(name for _, name, _ in results)
@@ -994,6 +1019,7 @@ class TestIntegrationEndToEnd:
                 idempotency_key=key,
             ),
             requested_actor="alice",
+            audience="open",
         )
         retry_id, retry_owner, _ = await integ_store.start_session(
             SubmitAgentSession(
@@ -1003,6 +1029,7 @@ class TestIntegrationEndToEnd:
                 idempotency_key=key,
             ),
             requested_actor="alice",
+            audience="open",
         )
         assert retry_id == first_id
         assert first_owner == "alice"
@@ -1030,12 +1057,14 @@ class TestIntegrationEndToEnd:
                     values={
                         "title": "zombie",
                         "account": "tester@example.com",
+                        "agentsession_audience": "open",
                         "agentsession_ended": datetime.now(UTC),
                     },
                 )
 
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="live", cli="codex"),
+            audience="open",
         )
         # A2b: completing without stamping ended (set_status alone) -> 409.
         with pytest.raises(ConflictError, match="check constraint"):
@@ -1054,6 +1083,7 @@ class TestIntegrationEndToEnd:
                 title="aband",
                 cli="codex",
             ),
+            audience="open",
         )
         await integ_store.set_status(sid2, "abandoned", actor="u")
         abandoned = await integ_store.get_inquiry(sid2)
@@ -1091,16 +1121,16 @@ class TestIntegrationEndToEnd:
                     json={"cli": "claude", "actor": "scientist"},
                 )
                 assert first.status_code == 201, first.text
-                first_body = _json_object(first)
-                assert StrCodec.coerce(first_body["actor"]) == "scientist"
+                first_body = from_plain(first.json(), dict[str, object])
+                assert from_plain(first_body["actor"], str) == "scientist"
                 # A second concurrent start with the same name is suffixed.
                 second = await http.post(
                     "/api/sessions/start",
                     json={"cli": "claude", "actor": "scientist"},
                 )
                 assert second.status_code == 201, second.text
-                second_body = _json_object(second)
-                assert StrCodec.coerce(second_body["actor"]) == "scientist#2"
+                second_body = from_plain(second.json(), dict[str, object])
+                assert from_plain(second_body["actor"], str) == "scientist#2"
 
                 # ``rooms`` round-trips: start with membership, read it back
                 # off the stored AgentSession row.
@@ -1109,7 +1139,9 @@ class TestIntegrationEndToEnd:
                     json={"cli": "codex", "actor": "eng", "rooms": ["sear", "lab"]},
                 )
                 assert roomed.status_code == 201, roomed.text
-                sid = UUID(StrCodec.coerce(_json_object(roomed)["id"]))
+                sid = UUID(
+                    from_plain(from_plain(roomed.json(), dict[str, object])["id"], str),
+                )
         finally:
             app.dependency_overrides.pop(current_user, None)
         row = await integ_store.get_inquiry(sid)
@@ -1162,16 +1194,24 @@ class TestIntegrationEndToEnd:
                     },
                 )
                 assert logged.status_code == 200, logged.text
-                assert _json_object(logged) == {"logged": 3, "skipped": 0}
+                assert from_plain(logged.json(), dict[str, object]) == {
+                    "logged": 3,
+                    "skipped": 0,
+                }
 
-                read = await http.get(f"/api/experiments/{eid}/metrics")
-                assert read.status_code == 200, read.text
-                pts = ListCodec.coerce(_json_object(read)["points"])
+                metrics_response = await http.get(
+                    f"/api/experiments/{eid}/metrics",
+                )
+                assert metrics_response.status_code == 200, metrics_response.text
+                pts = from_plain(
+                    from_plain(metrics_response.json(), dict[str, object])["points"],
+                    list[object],
+                )
                 assert [
                     (
-                        StrCodec.coerce(DictCodec.coerce(p)["key"]),
-                        IntCodec.coerce(DictCodec.coerce(p)["step"]),
-                        FloatCodec.coerce(DictCodec.coerce(p)["value"]),
+                        from_plain(from_plain(p, dict[str, object])["key"], str),
+                        from_plain(from_plain(p, dict[str, object])["step"], int),
+                        from_plain(from_plain(p, dict[str, object])["value"], float),
                     )
                     for p in pts
                 ] == [
@@ -1183,8 +1223,10 @@ class TestIntegrationEndToEnd:
                 # ``config`` surfaces on the SPA detail view verbatim.
                 detail = await http.get(f"/api/web/get/{eid}")
                 assert detail.status_code == 200, detail.text
-                detail_body = _json_object(detail)
-                assert DictCodec.coerce(detail_body["self"])["config"] == cfg
+                detail_body = from_plain(detail.json(), dict[str, object])
+                assert (
+                    from_plain(detail_body["self"], dict[str, object])["config"] == cfg
+                )
 
                 # An over-cap batch is a clean 422 at the boundary (not a 500 or
                 # a memory-pinning mega-INSERT), and writes nothing.
@@ -1200,7 +1242,13 @@ class TestIntegrationEndToEnd:
                 assert over_resp.status_code == 422, over_resp.text
                 still = await http.get(f"/api/experiments/{eid}/metrics")
                 assert (
-                    len(ListCodec.coerce(_json_object(still)["points"])) == 3
+                    len(
+                        from_plain(
+                            from_plain(still.json(), dict[str, object])["points"],
+                            list[object],
+                        ),
+                    )
+                    == 3
                 )  # Unchanged.
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1243,7 +1291,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "router-eng", "rooms": ["sear"]},
                 )
-                sid = StrCodec.coerce(_json_object(start)["id"])
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
 
                 # PUT overwrites the whole membership.
                 put = await http.put(
@@ -1332,7 +1380,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "scientist", "rooms": ["sear"]},
                 )
-                sid = StrCodec.coerce(_json_object(start)["id"])
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1343,8 +1391,11 @@ class TestIntegrationEndToEnd:
                     json={"actor": "scientist", "room": "sear", "text": "go"},
                 )
                 assert hit.status_code == 200, hit.text
-                assert ListCodec.coerce(_json_object(hit)["delivered"], str) == [
-                    str(sid),
+                assert from_plain(
+                    from_plain(hit.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [
+                    sid,
                 ]
 
                 # Wrong room matches nothing (undelivered).
@@ -1352,19 +1403,31 @@ class TestIntegrationEndToEnd:
                     "/api/messages",
                     json={"actor": "scientist", "room": "other", "text": "go"},
                 )
-                assert ListCodec.coerce(_json_object(miss)["delivered"]) == []
+                assert (
+                    from_plain(
+                        from_plain(miss.json(), dict[str, object])["delivered"],
+                        list[object],
+                    )
+                    == []
+                )
 
                 # The reaching send landed in the session's inbound queue,
                 # carrying the attested sender and the routed room so the
                 # poller can render the ``[room] sender:`` injection context.
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
-                msgs = ListCodec.coerce(_json_object(drain)["messages"])
-                assert [StrCodec.coerce(DictCodec.coerce(m)["text"]) for m in msgs] == [
+                msgs = from_plain(
+                    from_plain(drain.json(), dict[str, object])["messages"],
+                    list[object],
+                )
+                assert [
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
+                    for m in msgs
+                ] == [
                     "go",
                 ]
-                first_msg = DictCodec.coerce(msgs[0])
-                assert StrCodec.coerce(first_msg["source"]) == "sender@test"
-                assert StrCodec.coerce(first_msg["room"]) == "sear"
+                first_msg = from_plain(msgs[0], dict[str, object])
+                assert from_plain(first_msg["source"], str) == "sender@test"
+                assert from_plain(first_msg["room"], str) == "sear"
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -1400,7 +1463,10 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "multi", "rooms": ["a", "b"]},
                 )
-                sid = StrCodec.coerce(_json_object(started)["id"])
+                sid = from_plain(
+                    from_plain(started.json(), dict[str, object])["id"],
+                    str,
+                )
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1410,8 +1476,9 @@ class TestIntegrationEndToEnd:
                     json={"actor": "multi", "text": "go"},
                 )
                 assert bare.status_code == 409, bare.text
-                assert "address one explicitly" in StrCodec.coerce(
-                    _json_object(bare)["detail"],
+                assert "address one explicitly" in from_plain(
+                    from_plain(bare.json(), dict[str, object])["detail"],
+                    str,
                 )
                 # Naming a room resolves it.
                 scoped = await http.post(
@@ -1419,7 +1486,15 @@ class TestIntegrationEndToEnd:
                     json={"actor": "multi", "room": "a", "text": "go"},
                 )
                 assert scoped.status_code == 200, scoped.text
-                assert len(ListCodec.coerce(_json_object(scoped)["delivered"])) == 1
+                assert (
+                    len(
+                        from_plain(
+                            from_plain(scoped.json(), dict[str, object])["delivered"],
+                            list[object],
+                        ),
+                    )
+                    == 1
+                )
         finally:
             app.dependency_overrides.pop(current_user, None)
 
@@ -1456,7 +1531,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "idem", "rooms": ["sear"]},
                 )
-                sid = StrCodec.coerce(_json_object(start)["id"])
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1472,13 +1547,22 @@ class TestIntegrationEndToEnd:
                     json=body,
                     headers={"Idempotency-Key": key},
                 )
-                assert ListCodec.coerce(_json_object(first)["delivered"], str) == [sid]
+                assert from_plain(
+                    from_plain(first.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
                 # Replay returns the same receipt, but does not enqueue again.
-                assert ListCodec.coerce(_json_object(replay)["delivered"], str) == [sid]
+                assert from_plain(
+                    from_plain(replay.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 assert [
-                    StrCodec.coerce(DictCodec.coerce(m)["text"])
-                    for m in ListCodec.coerce(_json_object(drain)["messages"])
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
+                    for m in from_plain(
+                        from_plain(drain.json(), dict[str, object])["messages"],
+                        list[object],
+                    )
                 ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1519,7 +1603,7 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "race", "rooms": ["sear"]},
                 )
-                sid = StrCodec.coerce(_json_object(start)["id"])
+                sid = from_plain(from_plain(start.json(), dict[str, object])["id"], str)
                 assert (
                     await http.get(f"/api/sessions/{sid}/inbound")
                 ).status_code == 200
@@ -1537,13 +1621,22 @@ class TestIntegrationEndToEnd:
                         headers={"Idempotency-Key": key},
                     ),
                 )
-                assert ListCodec.coerce(_json_object(first)["delivered"], str) == [sid]
-                assert ListCodec.coerce(_json_object(second)["delivered"], str) == [sid]
+                assert from_plain(
+                    from_plain(first.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
+                assert from_plain(
+                    from_plain(second.json(), dict[str, object])["delivered"],
+                    list[str],
+                ) == [sid]
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 # Exactly one copy despite two concurrent same-key sends.
                 assert [
-                    StrCodec.coerce(DictCodec.coerce(m)["text"])
-                    for m in ListCodec.coerce(_json_object(drain)["messages"])
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
+                    for m in from_plain(
+                        from_plain(drain.json(), dict[str, object])["messages"],
+                        list[object],
+                    )
                 ] == ["once"]
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1583,7 +1676,9 @@ class TestIntegrationEndToEnd:
                     "/api/sessions/start",
                     json={"cli": "codex", "actor": "ending", "rooms": ["sear"]},
                 )
-                sid = UUID(StrCodec.coerce(_json_object(start)["id"]))
+                sid = UUID(
+                    from_plain(from_plain(start.json(), dict[str, object])["id"], str),
+                )
                 # Close via ``end_session`` (ended + status=complete together)
                 # so the AgentSession lifecycle CHECK holds.
                 await integ_store.end_session(
@@ -1605,7 +1700,7 @@ class TestIntegrationEndToEnd:
                     "/api/messages",
                     json={"actor": "ending", "room": "sear", "text": "late"},
                 )
-                assert _json_object(resp)["delivered"] == []
+                assert from_plain(resp.json(), dict[str, object])["delivered"] == []
                 assert app.state.inbound.pending(sid) == 0
         finally:
             app.dependency_overrides.pop(current_user, None)
@@ -1663,6 +1758,7 @@ class TestIntegrationEndToEnd:
                 owner="scientist",
                 rooms=["sear"],
             ),
+            audience="open",
         )
         eng = await integ_store.submit_agentsession(
             SubmitAgentSession(
@@ -1672,13 +1768,14 @@ class TestIntegrationEndToEnd:
                 owner="eng",
                 rooms=["lab"],
             ),
+            audience="open",
         )
         # Interleave appends so created-order spans both sessions.
         await _record(integ_store, sci, idx=0, text="a")
         await _record(integ_store, eng, idx=0, text="b")
         await _record(integ_store, sci, idx=1, text="c")
 
-        feed = await integ_store.read_feed()
+        feed = await integ_store.read_feed(scope=_EVERY_SESSION)
         # All three turns, oldest first, each carrying its session context.
         assert len(feed) == 3
         assert [f.actor for f in feed] == ["scientist", "eng", "scientist"]
@@ -1689,15 +1786,20 @@ class TestIntegrationEndToEnd:
         assert [f.created for f in feed] == sorted(f.created for f in feed)
 
         # Room filter narrows to one session.
-        sear_only = await integ_store.read_feed(scope=FeedScope(rooms=("sear",)))
+        sear_only = await integ_store.read_feed(
+            scope=replace(_EVERY_SESSION, rooms=("sear",)),
+        )
         assert {f.actor for f in sear_only} == {"scientist"}
 
         # Actor filter likewise.
-        eng_only = await integ_store.read_feed(scope=FeedScope(actors=("eng",)))
+        eng_only = await integ_store.read_feed(
+            scope=replace(_EVERY_SESSION, actors=("eng",)),
+        )
         assert {f.actor for f in eng_only} == {"eng"}
 
         # The composite keyset cursor resumes strictly past the given event.
         after_first = await integ_store.read_feed(
+            scope=_EVERY_SESSION,
             after=(
                 feed[0].created,
                 feed[0].session_id,
@@ -1709,7 +1811,11 @@ class TestIntegrationEndToEnd:
 
         # ``tail`` returns the newest page (still oldest-first), so a backlog
         # does not force a replay from the beginning.
-        tail2 = await integ_store.read_feed(limit=2, tail=True)
+        tail2 = await integ_store.read_feed(
+            scope=_EVERY_SESSION,
+            limit=2,
+            tail=True,
+        )
         assert [f.actor for f in tail2] == ["eng", "scientist"]
 
     async def test_read_feed_composite_cursor_spans_created_ties(
@@ -1731,6 +1837,7 @@ class TestIntegrationEndToEnd:
                 cli="codex",
                 owner="a-actor",
             ),
+            audience="open",
         )
         b = await integ_store.submit_agentsession(
             SubmitAgentSession(
@@ -1739,6 +1846,7 @@ class TestIntegrationEndToEnd:
                 cli="codex",
                 owner="b-actor",
             ),
+            audience="open",
         )
         # Force an exact ``created`` tie across the two sessions (the column
         # defaults to clock_timestamp(); set it explicitly here).
@@ -1763,13 +1871,14 @@ class TestIntegrationEndToEnd:
                     sid,
                 )
 
-        page1 = await integ_store.read_feed(limit=1)
+        page1 = await integ_store.read_feed(scope=_EVERY_SESSION, limit=1)
         assert len(page1) == 1
         first = page1[0]
         assert first.created == tie
         # Resume past the first via the composite cursor; the tied second row
         # (same created, different session) must still be returned.
         page2 = await integ_store.read_feed(
+            scope=_EVERY_SESSION,
             after=(first.created, first.session_id, first.part, first.seq),
         )
         assert [f.session_id for f in page2] == [
@@ -1793,12 +1902,13 @@ class TestIntegrationEndToEnd:
                 title="inbox",
                 cli="claude",
             ),
+            audience="open",
         )
         app = FastAPI()
         app.state.engine = integ_store.engine
         app.state.store = integ_store
         app.state.inbound = InboundQueue()
-        app.state.config = Config()
+        app.state.config = Config(chat_orgs="single")
         app.include_router(sessions_routes.router)
 
         async def _identity() -> object:
@@ -1827,23 +1937,33 @@ class TestIntegrationEndToEnd:
                     json={"text": "check the logs"},
                 )
                 assert enq.status_code == 200, enq.text
-                assert IntCodec.coerce(_json_object(enq)["queued"]) == 1
+                assert (
+                    from_plain(from_plain(enq.json(), dict[str, object])["queued"], int)
+                    == 1
+                )
 
                 drain = await http.get(f"/api/sessions/{sid}/inbound")
                 assert drain.status_code == 200, drain.text
-                messages = ListCodec.coerce(_json_object(drain)["messages"])
+                messages = from_plain(
+                    from_plain(drain.json(), dict[str, object])["messages"],
+                    list[object],
+                )
                 assert [
-                    StrCodec.coerce(DictCodec.coerce(m)["text"]) for m in messages
+                    from_plain(from_plain(m, dict[str, object])["text"], str)
+                    for m in messages
                 ] == ["check the logs"]
                 # Source is the authenticated principal, attested by the route.
                 assert (
-                    StrCodec.coerce(DictCodec.coerce(messages[0])["source"])
+                    from_plain(
+                        from_plain(messages[0], dict[str, object])["source"],
+                        str,
+                    )
                     == "router@test"
                 )
 
                 # Drain emptied it: a second drain returns nothing.
                 again = await http.get(f"/api/sessions/{sid}/inbound")
-                assert _json_object(again)["messages"] == []
+                assert from_plain(again.json(), dict[str, object])["messages"] == []
 
                 # Unknown session -> 404 on both verbs.
                 missing = uuid.uuid4()
@@ -1858,7 +1978,7 @@ class TestIntegrationEndToEnd:
                 end = await http.post(f"/api/sessions/{sid}/end", json={})
                 assert end.status_code == 200, end.text
                 # REV-31: end with no ``ended`` body still stamps a real time.
-                assert _json_object(end)["ended"] is not None
+                assert from_plain(end.json(), dict[str, object])["ended"] is not None
                 rejected = await http.post(
                     f"/api/sessions/{sid}/inbound",
                     json={"text": "late"},
@@ -1885,6 +2005,7 @@ class TestIntegrationEndToEnd:
                 cli="claude",
                 cli_session_id="sess-9",
             ),
+            audience="open",
         )
 
         app = FastAPI()
@@ -1905,8 +2026,11 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.get(f"/api/web/get/{sid}")
                 assert r.status_code == 200, r.text
-                self_view = DictCodec.coerce(_json_object(r)["self"])
-                assert StrCodec.coerce(self_view["kind"]) == "AgentSession"
+                self_view = from_plain(
+                    from_plain(r.json(), dict[str, object])["self"],
+                    dict[str, object],
+                )
+                assert from_plain(self_view["kind"], str) == "AgentSession"
                 assert self_view["cli"] == "claude"
                 assert self_view["cli_session_id"] == "sess-9"
                 # A live session has not ended.
@@ -1920,6 +2044,7 @@ class TestIntegrationEndToEnd:
     ) -> None:
         sid = await integ_store.submit_agentsession(
             SubmitAgentSession(account="tester@example.com", title="run", cli="claude"),
+            audience="open",
         )
         await _record(integ_store, sid, idx=0, text="captured")
         await integ_store.purge(sid, actor="user")
@@ -1969,7 +2094,10 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = StrCodec.coerce(_json_object(r)["id"])
+                session_id = from_plain(
+                    from_plain(r.json(), dict[str, object])["id"],
+                    str,
+                )
 
                 key = str(uuid.uuid4())
                 # Empty body: the route stamps a fresh ``now()``. The replay
@@ -1992,7 +2120,10 @@ class TestIntegrationEndToEnd:
                 )
                 assert retry.status_code == 200, retry.text
                 assert retry.json() == first.json()
-                assert _json_object(retry)["ended"] == _json_object(first)["ended"]
+                assert (
+                    from_plain(retry.json(), dict[str, object])["ended"]
+                    == from_plain(first.json(), dict[str, object])["ended"]
+                )
 
                 # A different key on the already-ended session -> 409.
                 other = await http.post(
@@ -2047,7 +2178,10 @@ class TestIntegrationEndToEnd:
                 # real change (the cli emit then consumes K).
                 r = await http.post("/api/sessions/start", json={"cli": "codex"})
                 assert r.status_code == 201, r.text
-                session_id = StrCodec.coerce(_json_object(r)["id"])
+                session_id = from_plain(
+                    from_plain(r.json(), dict[str, object])["id"],
+                    str,
+                )
 
                 key = str(uuid.uuid4())
                 body = {"ended": "2026-05-31T16:00:00Z", "cli_session_id": "vendor-9"}
@@ -3174,7 +3308,7 @@ class TestIntegrationEndToEnd:
                 issue_id,
             )
         assert row is not None
-        snapshot = ListCodec.coerce(row["subscribers_snapshot"], str)
+        snapshot = from_plain(row["subscribers_snapshot"], list[str])
         assert "alice" in snapshot
         assert "bob" in snapshot
 
@@ -4134,7 +4268,7 @@ class TestIntegrationEndToEnd:
             # the normalize-to-empty path against the min_items CHECK.
             await integ_store.set_issue_kind(
                 rid,
-                ["", "  "],  # ty: ignore[invalid-argument-type] -- The integration fixture passes a dynamically-shaped request payload.  # pyright: ignore[reportArgumentType] -- The integration fixture passes a dynamically-shaped request payload.
+                ["", "  "],  # ty: ignore[invalid-argument-type] -- The integration fixture passes a dynamically-shaped request payload.  # pyright: ignore[reportArgumentType] -- The integration fixture passes a dynamically-shaped request payload.  # pyrefly: ignore[bad-argument-type] -- The integration fixture passes a dynamically-shaped request payload.
                 actor="u",
             )
 
@@ -4435,7 +4569,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ], r.json()
 
@@ -4451,7 +4585,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ]
 
@@ -4470,7 +4604,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ]
 
@@ -4489,7 +4623,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                assert [StrCodec.coerce(row["id"]) for row in _json_objects(r)] == [
+                assert [from_plain(row["id"], str) for row in _json_objects(r)] == [
                     str(needle_id),
                 ]
 
@@ -4502,7 +4636,7 @@ class TestIntegrationEndToEnd:
                     params={"kind": "Issue", "limit": "5"},
                 )
                 assert r.status_code == 200, r.text
-                ids = [StrCodec.coerce(row["id"]) for row in _json_objects(r)]
+                ids = [from_plain(row["id"], str) for row in _json_objects(r)]
                 assert str(needle_id) not in ids, ids
 
                 # 6. disjoint ``seq_range`` union: the needle is seq 1
@@ -4520,7 +4654,7 @@ class TestIntegrationEndToEnd:
                     ],
                 )
                 assert r.status_code == 200, r.text
-                seqs = sorted(IntCodec.coerce(row["seq"]) for row in _json_objects(r))
+                seqs = sorted(from_plain(row["seq"], int) for row in _json_objects(r))
                 assert seqs[0] == 1
                 assert all(s == 1 or s >= 40 for s in seqs)
                 assert 2 not in seqs
@@ -4608,19 +4742,29 @@ class TestIntegrationEndToEnd:
                 # the citing artifact, the from-side).
                 r = await http.get(f"/api/web/get/{paper_id}")
                 assert r.status_code == 200, r.text
-                paper_body = _json_object(r)
+                paper_body = from_plain(r.json(), dict[str, object])
                 assert (
-                    StrCodec.coerce(DictCodec.coerce(paper_body["self"])["source"])
+                    from_plain(
+                        from_plain(paper_body["self"], dict[str, object])["source"],
+                        str,
+                    )
                     == "arXiv:2501.00001"
                 )
-                proves = ListCodec.coerce(
-                    DictCodec.coerce(paper_body["edges"])["proves"],
+                proves = from_plain(
+                    from_plain(paper_body["edges"], dict[str, object])["proves"],
+                    list[object],
                 )
-                assert [StrCodec.coerce(DictCodec.coerce(p)["id"]) for p in proves] == [
+                assert [
+                    from_plain(from_plain(p, dict[str, object])["id"], str)
+                    for p in proves
+                ] == [
                     str(belief_id),
                 ]
                 assert (
-                    StrCodec.coerce(DictCodec.coerce(proves[0])["judgement"])
+                    from_plain(
+                        from_plain(proves[0], dict[str, object])["judgement"],
+                        str,
+                    )
                     == "proven"
                 )
 
@@ -4629,20 +4773,28 @@ class TestIntegrationEndToEnd:
                 # the to-side), projecting the Paper peer.
                 r = await http.get(f"/api/web/get/{belief_id}")
                 assert r.status_code == 200, r.text
-                body = _json_object(r)
+                body = from_plain(r.json(), dict[str, object])
                 assert (
-                    StrCodec.coerce(DictCodec.coerce(body["self"])["judgement"])
+                    from_plain(
+                        from_plain(body["self"], dict[str, object])["judgement"],
+                        str,
+                    )
                     == "proven"
                 )
                 assert (
-                    FloatCodec.coerce(DictCodec.coerce(body["self"])["confidence"])
+                    from_plain(
+                        from_plain(body["self"], dict[str, object])["confidence"],
+                        float,
+                    )
                     == 0.9
                 )
-                backlink = ListCodec.coerce(
-                    DictCodec.coerce(body["backlinks"])["proves"],
+                backlink = from_plain(
+                    from_plain(body["backlinks"], dict[str, object])["proves"],
+                    list[object],
                 )
                 assert [
-                    StrCodec.coerce(DictCodec.coerce(b)["id"]) for b in backlink
+                    from_plain(from_plain(b, dict[str, object])["id"], str)
+                    for b in backlink
                 ] == [str(paper_id)]
 
                 # /search: cross-kind ILIKE over title/description, the
@@ -4650,7 +4802,7 @@ class TestIntegrationEndToEnd:
                 r = await http.get("/api/web/search", params={"q": "overfits"})
                 assert r.status_code == 200, r.text
                 assert str(belief_id) in [
-                    StrCodec.coerce(row["id"]) for row in _json_objects(r)
+                    from_plain(row["id"], str) for row in _json_objects(r)
                 ]
 
                 # An edit so a kind-specific change row exists, then
@@ -4669,14 +4821,17 @@ class TestIntegrationEndToEnd:
                 judged = [
                     c
                     for c in changes
-                    if StrCodec.coerce(c["kind"]) == "belief_judgement"
+                    if from_plain(c["kind"], str) == "belief_judgement"
                 ]
                 assert judged, "judgement change should appear in recent"
                 # The cross-kind audit feed keys snapshot fields by their
                 # flat storage name, so it's belief_judgement, not bare.
                 assert (
-                    StrCodec.coerce(
-                        DictCodec.coerce(judged[0]["new"])["belief_judgement"],
+                    from_plain(
+                        from_plain(judged[0]["new"], dict[str, object])[
+                            "belief_judgement"
+                        ],
+                        str,
                     )
                     == "disproven"
                 )
@@ -4718,7 +4873,7 @@ class TestIntegrationEndToEnd:
             ) as http:
                 r = await http.get("/api/web/search", params={"q": "%"})
                 assert r.status_code == 200, r.text
-                ids = [StrCodec.coerce(row["id"]) for row in _json_objects(r)]
+                ids = [from_plain(row["id"], str) for row in _json_objects(r)]
                 # Only the literal-percent row matches; the wildcard does not
                 # leak into a match-all.
                 assert ids == [str(literal_id)]
@@ -5554,17 +5709,15 @@ class _FetchValConnection(Protocol):
     async def fetchval(self, query: str, *args: object) -> object: ...
 
 
-def _json_object(response: httpx2.Response) -> dict[str, object]:
-    """Narrow an HTTP JSON object at the response boundary."""
-    return DictCodec.coerce(response.json())
-
-
 def _json_objects(response: httpx2.Response) -> list[dict[str, object]]:
     """Narrow an HTTP JSON array of objects at the response boundary."""
-    return [DictCodec.coerce(item) for item in cast(list[object], response.json())]
+    return [
+        from_plain(item, dict[str, object])
+        for item in cast(list[object], response.json())
+    ]
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

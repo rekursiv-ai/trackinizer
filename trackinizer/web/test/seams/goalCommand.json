@@ -1,0 +1,30 @@
+{
+  "ciphertext": null,
+  "context_id": null,
+  "idx": 2,
+  "kind": "SystemMessage",
+  "model": null,
+  "payload": {
+    "attachments": {
+      "py/tuple": []
+    },
+    "content": "/goal ship it",
+    "context_id": null,
+    "extra": {
+      "$command": {
+        "args": "ship it",
+        "reason": null,
+        "room": null,
+        "source": "ada@example.com",
+        "state": "typed",
+        "text": "/goal ship it",
+        "verb": "goal"
+      }
+    },
+    "py/object": "trackinizer.lib.agent.types.sessions.SystemMessage",
+    "subtype": "command",
+    "timestamp": "2026-10-20T00:00:01+00:00"
+  },
+  "text": "/goal ship it",
+  "timestamp": "2026-10-20T00:00:01Z"
+}

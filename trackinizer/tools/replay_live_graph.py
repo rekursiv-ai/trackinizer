@@ -15,10 +15,10 @@ Reads are paginated per kind; edges are harvested from each node's
 ``/api/web/get`` projection (outbound ``edges`` only, to avoid double-counting)
 and deduplicated. Only the fields the graph view needs are copied.
 
-With ``--traverse`` the replay walks the graph breadth-first from its roots and
-inserts ONE node (plus its edges to already-inserted nodes) at a time, pausing
+With ``--traverse`` the replay inserts nodes oldest-first by creation time,
+one node (plus its edges to already-inserted nodes) at a time, pausing
 ``--delay`` seconds between inserts. The target's SSE stream then pushes each
-node to an open graph view, so the real graph visibly grows by traversal
+node to an open graph view, so the real graph visibly grows in authoring
 order instead of appearing all at once -- the live-growth demo on real data.
 
 Examples:
@@ -32,31 +32,29 @@ Examples:
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Final, Protocol, cast, get_args
+from typing import TYPE_CHECKING, Final, Protocol, cast, get_args
 
 import argparse
 import logging
 import time
 import uuid
 
+from treekle import from_plain
+
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    JSONValue,
-    ListCodec,
-    StrCodec,
-)
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import Inquiry
 
 
+if TYPE_CHECKING:
+    from treekle import PlainTree
+
+
 _log = logging.getLogger(__name__)
 
-# One ``web_get`` detail's ``edges``/``backlinks`` projection: edge-kind -> the
-# to this shape at the read boundary restores the peer-row types downstream.
+# A detail's edges/backlinks projection maps each edge kind to its peer rows.
 type _PeerMap = Mapping[str, Sequence[Mapping[str, object]]]
 
 
@@ -90,11 +88,13 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
     flags = cast(_Flags, parser.parse_args())
+    if flags.seed and (flags.traverse or flags.limit):
+        parser.error("--seed cannot be combined with --traverse or --limit")
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     # The httpx2 per-request INFO lines (one per node fetch) drown the replay's
     # own progress; quiet them to WARNING.
@@ -114,7 +114,7 @@ def main() -> int:
 
     nodes = _pull_nodes(source, limit=flags.limit)
     _log.info("[replay] pulled %d nodes from %s", len(nodes), source.base_url)
-    edges = _pull_edges(source, [StrCodec.coerce(n["id"]) for n in nodes])
+    edges = _pull_edges(source, [from_plain(n["id"], str) for n in nodes])
     _log.info("[replay] pulled %d edges", len(edges))
 
     if flags.traverse:
@@ -154,21 +154,21 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
         "repeatable. Pulls ONLY the connected subgraph reachable from the seeds "
         "(a BFS over the live edges), so the replay shows a chosen story -- a "
         "root issue with its sub-issues, beliefs, evidence, and citations -- "
-        "and grows until that component is exhausted. Pair with --traverse.",
+        "and grows until that component is exhausted. Incompatible with "
+        "--traverse and --limit.",
     )
     parser.add_argument(
         "--traverse",
         action="store_true",
-        help="Insert one node at a time in breadth-first order (live-growth "
+        help="Insert one node at a time in creation-time order (live-growth "
         "demo) instead of bulk batches.",
     )
     parser.add_argument(
         "--delay",
         type=float,
         default=0.01,
-        help="Rate-limit pause (seconds) between write batches in --seed mode, "
-        "so the embedded pglite target is not bursted (default 0.01; batching "
-        "already keeps writes to a handful of transactions).",
+        help="Pause (seconds) between write batches in --seed mode or node "
+        "inserts in --traverse mode (default 0.01).",
     )
 
 
@@ -197,7 +197,7 @@ def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, object]]:
     by_kind: dict[str, list[dict[str, object]]] = {}
     for kind in cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(cast(object, Inquiry.InquiryKind.__value__)),
+        get_args(Inquiry.InquiryKind.__value__),
     ):
         rows = source.list_kind_all(kind)
         by_kind[kind] = [_node_from_row(row, kind) for row in rows]
@@ -219,10 +219,10 @@ def _pull_nodes(source: Client, *, limit: int) -> list[dict[str, object]]:
 
 # ``created`` is carried for traversal ordering, not replayed (it is server-stamped on
 # insert); ``_node_body`` drops it.
-def _node_from_row(row: Mapping[str, JSONValue], kind: str) -> dict[str, object]:
+def _node_from_row(row: Mapping[str, PlainTree], kind: str) -> dict[str, object]:
     """Trim a live inquiry row to the graph-relevant fields."""
     node: dict[str, object] = {
-        "id": StrCodec.coerce(row["id"]),
+        "id": from_plain(row["id"], str),
         "kind": kind,
         "created": row.get("created"),
     }
@@ -241,18 +241,19 @@ def _pull_edges(
     node_ids: list[str],
 ) -> list[tuple[str, str, str, float | None]]:
     """Outbound edges for each node, as ``(from_id, to_id, kind, valence)``."""
-    valid_kinds = set(get_args(cast(object, Edge.Kind.__value__)))
+    valid_kinds = set(get_args(Edge.Kind.__value__))
     known = set(node_ids)
     out: list[tuple[str, str, str, float | None]] = []
     for index, node_id in enumerate(node_ids):
-        detail = DictCodec.coerce(source.get(f"/api/web/get/{node_id}"))
+        response = source.get(f"/api/web/get/{node_id}")
+        detail = from_plain(response, dict[str, object])
         for edge_kind, peers in _peer_map(detail, "edges").items():
             if edge_kind not in valid_kinds:
                 continue
             # A guarded, multi-value append inside two loops; a comprehension
             # (PERF401) would be less readable than the explicit filter here.
             out.extend(
-                (node_id, str(peer["id"]), edge_kind, _opt_float(peer.get("valence")))
+                (node_id, str(peer["id"]), edge_kind, _opt_float(peer.get("valence")))  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
                 for peer in peers
                 if peer["id"] in known
             )
@@ -261,17 +262,6 @@ def _pull_edges(
     return out
 
 
-# The crawl INTERLEAVES discovery and insertion: as the BFS from the seeds reaches each
-# node it is inserted right away (in small ``chunk`` batches), so the target -- and an
-# open graph view via SSE -- starts filling almost immediately instead of waiting
-# for the whole component to be read first. Each chunk is sorted by source ``created``
-# before insert, so the write order is locally deterministic. A node that arrives
-# before its peer is not stranded: the graph view reads the whole graph again on each
-# change, so an edge shows once its other endpoint lands.
-#
-# Small batches (not one row at a time) keep the embedded pglite target healthy -- per-
-# row writes burst it into 500s and orphaned sockets. ``delay`` rate-limits between
-# chunks. Returns the inserted node count.
 def _flush(
     pending: list[dict[str, object]],
     target: Client,
@@ -291,6 +281,8 @@ def _flush(
         time.sleep(delay)
 
 
+# Interleave discovery with insertion so the graph grows before the crawl finishes.
+# Small batches avoid per-row writes bursting the embedded pglite target into 500s.
 def _crawl_and_insert(
     source: Client,
     target: Client,
@@ -304,7 +296,7 @@ def _crawl_and_insert(
     chunk: int = 5,
 ) -> int:
     """Crawl the connected subgraph from ``seeds`` and stream it in, in order."""
-    valid_kinds = set(get_args(cast(object, Edge.Kind.__value__)))
+    valid_kinds = set(get_args(Edge.Kind.__value__))
     seen: dict[str, dict[str, object]] = {}
     id_map: dict[str, str] = {}
 
@@ -312,7 +304,8 @@ def _crawl_and_insert(
     for ref in seeds:
         seed_id = _resolve_seed(source, ref)
         if seed_id not in seen:
-            seen[seed_id] = DictCodec.coerce(source.get(f"/api/web/get/{seed_id}"))
+            response = source.get(f"/api/web/get/{seed_id}")
+            seen[seed_id] = from_plain(response, dict[str, object])
             frontier.append(seed_id)
 
     pending: list[dict[str, object]] = []
@@ -323,7 +316,8 @@ def _crawl_and_insert(
         pending.append(detail)
         for peer_id in _detail_peers(detail):
             if peer_id not in seen:
-                seen[peer_id] = DictCodec.coerce(source.get(f"/api/web/get/{peer_id}"))
+                response = source.get(f"/api/web/get/{peer_id}")
+                seen[peer_id] = from_plain(response, dict[str, object])
                 frontier.append(peer_id)
         if len(pending) >= chunk:
             _flush(pending, target, id_map, valid_kinds, delay=delay)
@@ -334,8 +328,8 @@ def _crawl_and_insert(
 
 def _detail_order_key(detail: dict[str, object]) -> tuple[str, str]:
     """Deterministic replay order: source creation time, then source id."""
-    self_view = DictCodec.coerce(detail["self"])
-    return (str(self_view.get("created") or ""), StrCodec.coerce(self_view["id"]))
+    self_view = from_plain(detail["self"], dict[str, object])
+    return (str(self_view.get("created") or ""), from_plain(self_view["id"], str))
 
 
 def _insert_chunk(
@@ -347,11 +341,11 @@ def _insert_chunk(
     """Batch-insert a chunk's nodes, then write their edges to present peers."""
     items: list[tuple[Inquiry.InquiryKind, Mapping[str, object]]] = [
         (
-            cast(Inquiry.InquiryKind, StrCodec.coerce(self_view["kind"])),
+            cast(Inquiry.InquiryKind, from_plain(self_view["kind"], str)),
             _node_from_detail(self_view),
         )
         for d in chunk
-        for self_view in (DictCodec.coerce(d["self"]),)
+        for self_view in (from_plain(d["self"], dict[str, object]),)
     ]
     try:
         new_ids = target.submit_batch(items)
@@ -367,11 +361,13 @@ def _insert_chunk(
         new_ids = _insert_one_by_one(target, chunk)
     for d, rid in zip(chunk, new_ids, strict=True):
         if rid is not None:
-            id_map[StrCodec.coerce(DictCodec.coerce(d["self"])["id"])] = str(rid)
+            id_map[from_plain(from_plain(d["self"], dict[str, object])["id"], str)] = (
+                str(rid)
+            )
     # Write each just-inserted node's edges to any already-present peer, so the
     # nodes are connected immediately rather than stranded.
     for d in chunk:
-        sid = StrCodec.coerce(DictCodec.coerce(d["self"])["id"])
+        sid = from_plain(from_plain(d["self"], dict[str, object])["id"], str)
         if sid not in id_map:
             continue
         for from_id, to_id, kind, valence in _detail_edges(sid, d, valid_kinds):
@@ -380,7 +376,7 @@ def _insert_chunk(
 
 def _detail_label(detail: dict[str, object]) -> str:
     """Human-readable node context for replay diagnostics."""
-    self_view = DictCodec.coerce(detail["self"])
+    self_view = from_plain(detail["self"], dict[str, object])
     return (
         f"{self_view['kind']}#{self_view.get('seq', '?')}"
         f" {self_view['id']} {self_view.get('title', '')!r}"
@@ -395,17 +391,17 @@ def _insert_one_by_one(
     out: list[object | None] = []
     for d in chunk:
         try:
-            self_view = DictCodec.coerce(d["self"])
+            self_view = from_plain(d["self"], dict[str, object])
             out.append(
                 target.submit(
-                    cast(Inquiry.InquiryKind, StrCodec.coerce(self_view["kind"])),
+                    cast(Inquiry.InquiryKind, from_plain(self_view["kind"], str)),
                     _node_from_detail(self_view),
                 ),
             )
         except ClientError as exc:
             _log.warning(
                 "[replay]   skipped %s node: %s",
-                DictCodec.coerce(d["self"]).get("kind"),
+                from_plain(d["self"], dict[str, object]).get("kind"),
                 exc,
             )
             out.append(None)
@@ -417,8 +413,9 @@ def _resolve_seed(source: Client, ref: str) -> str:
     text = ref.strip()
     if "#" in text:
         kind, _, seq = text.partition("#")
-        row = DictCodec.coerce(source.get(f"/api/inquiries/{kind}/{seq}"))
-        return StrCodec.coerce(row.get("id"))
+        response = source.get(f"/api/inquiries/{kind}/{seq}")
+        row = from_plain(response, dict[str, object])
+        return from_plain(row.get("id"), str, default="")
     return text
 
 
@@ -458,7 +455,7 @@ def _detail_peers(detail: dict[str, object]) -> list[str]:
 
 def _node_from_detail(self_view: dict[str, object]) -> dict[str, object]:
     """Return a submit body from a ``web_get`` ``self`` view: graph-relevant fields."""
-    kind = StrCodec.coerce(self_view["kind"])
+    kind = from_plain(self_view["kind"], str)
     body: dict[str, object] = {}
     for field in _KIND_FIELDS.get(kind, ("title", "status")):
         value = self_view.get(field)
@@ -482,12 +479,12 @@ def _replay(
     for start in range(0, len(nodes), batch):
         chunk = nodes[start : start + batch]
         items: list[tuple[Inquiry.InquiryKind, Mapping[str, object]]] = [
-            (cast(Inquiry.InquiryKind, StrCodec.coerce(n["kind"])), _node_body(n))
+            (cast(Inquiry.InquiryKind, from_plain(n["kind"], str)), _node_body(n))
             for n in chunk
         ]
         new_ids = target.submit_batch(items)
         for old, new in zip(chunk, new_ids, strict=True):
-            id_map[StrCodec.coerce(old["id"])] = str(new)
+            id_map[from_plain(old["id"], str)] = str(new)
         _log.info("[replay]   nodes %d/%d", start + len(chunk), len(nodes))
 
     written = 0
@@ -548,7 +545,7 @@ def _replay_traversal(
 ) -> None:
     """Insert nodes one at a time in creation-time order, pausing between each."""
     edges_from: dict[str, list[tuple[str, str, str, float | None]]] = {
-        StrCodec.coerce(n["id"]): [] for n in nodes
+        from_plain(n["id"], str): [] for n in nodes
     }
     for edge in edges:
         # Index each edge under BOTH endpoints; on insert we emit only the ones
@@ -559,9 +556,9 @@ def _replay_traversal(
     order = sorted(nodes, key=lambda n: (n.get("created") or "", n["id"]))
     id_map: dict[str, str] = {}
     for index, node in enumerate(order):
-        node_id = StrCodec.coerce(node["id"])
+        node_id = from_plain(node["id"], str)
         new_id = target.submit(
-            cast(Inquiry.InquiryKind, StrCodec.coerce(node["kind"])),
+            cast(Inquiry.InquiryKind, from_plain(node["kind"], str)),
             _node_body(node),
         )
         id_map[node_id] = str(new_id)
@@ -582,12 +579,11 @@ def _node_body(node: dict[str, object]) -> dict[str, object]:
 
 def _peer_map(detail: Mapping[str, object], key: str) -> _PeerMap:
     """Return one detail's ``edges``/``backlinks`` peer map (empty when absent)."""
-    raw = DictCodec.coerce(detail.get(key), ListCodec)
+    raw = from_plain(detail.get(key), dict[str, list[dict[str, object]]], default={})
     return {
         edge_kind: tuple(
-            DictCodec.coerce(peer)
-            for peer in ListCodec.coerce(peers, DictCodec)
-            if isinstance(peer, Mapping)
+            from_plain(peer, dict[str, object])
+            for peer in from_plain(peers, list[dict[str, object]])
         )
         for edge_kind, peers in raw.items()
     }
@@ -604,7 +600,7 @@ class _Flags(Protocol):
 
 def _opt_float(value: object) -> float | None:
     """Coerce a JSON edge ``valence`` to ``float`` (``None`` stays ``None``)."""
-    return None if value is None else FloatCodec.coerce(value)
+    return None if value is None else from_plain(value, float)
 
 
 if __name__ == "__main__":

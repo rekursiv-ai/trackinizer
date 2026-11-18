@@ -119,7 +119,10 @@ framing) belief can still read `proven`.
 
 The append-only `change_log` is the audit trail -- every submit, edit, edge,
 and cost adjustment, with old/new snapshots. `purged` rows leave tombstones.
-Nothing is quietly forgotten; the history of belief is itself first-class.
+Nothing is quietly forgotten; the history of belief is itself first-class. One
+edit is the exception: deleting a science chat blanks the titles and
+descriptions its sessions' change rows held, and keeps the rows, so a deleted
+chat's words do not outlive it in the log.
 
 `change_log` audits **knowledge mutations** only. Bulk capture logs are an
 adjacent universe: `session_records` (agent-session records; see
@@ -297,10 +300,11 @@ re-assessment cascade finite (the exempt kind is inert: it drives no cascade).
 
 ### `change_log`
 
-Append-only audit. A closed-set `Change.Kind` gates which `old_*`/`new_*`
-snapshot columns may be populated; generated CHECKs enforce the
-kind-to-column matrix. `subject_id` is FK-free so a `purged` tombstone
-outlives its target. Per-event USD spend is `new.marginal_cost -
+Append-only audit, save the one edit above: a science chat's delete blanks its
+sessions' title and description snapshots. A closed-set `Change.Kind` gates
+which `old_*`/`new_*` snapshot columns may be populated; generated CHECKs
+enforce the kind-to-column matrix. `subject_id` is FK-free so a `purged`
+tombstone outlives its target. Per-event USD spend is `new.marginal_cost -
 old.marginal_cost`.
 
 **Change kinds = field names.** A field edit's kind is the field's flat

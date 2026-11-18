@@ -6,7 +6,7 @@ import { ActivityView } from "../activity";
 import type { LoggedChange } from "../api/changes";
 import type { InquiryRow } from "../api/inquiries";
 import type { Profile } from "../api/me";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext } from "../commands/registry";
@@ -17,6 +17,7 @@ import { RouterProvider } from "../router/router";
 import { PausedBar } from "../ui/bars";
 import { ToastProvider } from "../ui/toast";
 import { LiveProvider, useLiveDetail } from ".";
+import { openEarlyStream } from "./earlyStream";
 import { answerRows, change, FakeEventSource, issue, listParams, serveChanges, serveRows, uuid } from "./testing";
 
 const KINDS = ["Issue"];
@@ -26,7 +27,7 @@ const META: Meta = {
   edges: {},
   kinds: KINDS,
 };
-const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 let server: InquiryRow[];
 let sent: Sent[];
@@ -285,6 +286,41 @@ test("a change from the stream joins the top of Activity, and lines already show
   expect(lookups()).toBe(before + 1);
 });
 
+/** Open the stream, show the one row, and change it on the server without the stream saying so. */
+async function listWithUnheardChange() {
+  server = [issue(1)];
+  show(<ListView kind="Issue" />);
+  await until(() => expect(rowTitle(1)).toBe("Issue 1"));
+  FakeEventSource.last.open();
+  server[0] = issue(1, { title: "Changed unheard" });
+}
+
+test("a stream that goes silent is reopened, and the new open re-reads what the list missed", async () => {
+  await listWithUnheardChange();
+  const dead = FakeEventSource.last;
+  await act(() => vi.advanceTimersByTimeAsync(62_500 + 1_000));
+  expect(dead.readyState).toBe(2);
+  expect(FakeEventSource.made).toHaveLength(2);
+  act(() => FakeEventSource.last.open());
+  await until(() => expect(rowTitle(1)).toBe("Changed unheard"));
+});
+
+test("the browser coming back online re-reads what the list missed", async () => {
+  await listWithUnheardChange();
+  act(() => void dispatchEvent(new Event("online")));
+  await until(() => expect(rowTitle(1)).toBe("Changed unheard"));
+});
+
+test("a tab shown again after more than 30 s hidden re-reads what the list missed", async () => {
+  await listWithUnheardChange();
+  vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+  act(() => void document.dispatchEvent(new Event("visibilitychange")));
+  await act(() => vi.advanceTimersByTimeAsync(31_000));
+  vi.spyOn(document, "hidden", "get").mockReturnValue(false);
+  act(() => void document.dispatchEvent(new Event("visibilitychange")));
+  await until(() => expect(rowTitle(1)).toBe("Changed unheard"));
+});
+
 test("a stream that never opens counts as down: the paused bar shows after 10 s (CR-LIVE-R4-A1)", async () => {
   show(<PausedBar />);
   vi.setTimerTickMode("manual");
@@ -400,4 +436,18 @@ test("Activity's live updates that keep failing say so with Retry (CR-R3-B4)", a
   // The retry asks as soon as the 2 s between asks allow.
   await act(() => vi.advanceTimersByTimeAsync(2_000));
   await until(() => expect(screen.queryByRole("status")).toBeNull());
+});
+
+test("with the canvas on, the live layer opens no /api/web/subscribe stream of its own, and closes the early one", () => {
+  const closed = vi.fn();
+  vi.spyOn(FakeEventSource.prototype, "close").mockImplementation(closed);
+  openEarlyStream();
+  expect(FakeEventSource.made).toHaveLength(1);
+  const client = createQueryClient(() => {});
+  render(<QueryClientProvider client={client}><LiveProvider canvas><p>app</p></LiveProvider></QueryClientProvider>);
+  expect(closed).toHaveBeenCalledOnce();
+  expect(FakeEventSource.made).toHaveLength(1);
+  cleanup();
+  render(<QueryClientProvider client={client}><LiveProvider><p>app</p></LiveProvider></QueryClientProvider>);
+  expect(FakeEventSource.made).toHaveLength(2);
 });

@@ -10,8 +10,8 @@ import json
 import uuid
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from treekle import from_plain
 
-from trackinizer.lib.custom_json import DictCodec, FloatCodec, IntCodec, StrCodec
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import set_client_change_id
 from trackinizer.wire.bodies import SubmitArtifact
@@ -171,7 +171,8 @@ class PublishArtifactContent(BaseModel):
           request: The validated publication request.
 
         """
-        if self.format == "html" and (not self.html or self.sections):
+        html = self.html or ""
+        if self.format == "html" and (not html or self.sections):
             raise ValueError("HTML Artifacts need HTML and no structured sections.")
         if self.format == "structured" and (self.html is not None or not self.sections):
             raise ValueError("Structured Artifacts need sections and no HTML.")
@@ -281,21 +282,23 @@ async def publish_artifact_content(
                 raise ValueError("Previous Artifact does not belong to this Issue.")
             report_id = uuid.UUID(str(report["id"]))
         content, content_bytes = await _snapshot_content(conn, body)
-        used_bytes = IntCodec.coerce(
+        used_bytes = from_plain(
             await conn.fetchval(
                 "SELECT coalesce(sum(content_bytes), 0)::bigint "
                 "FROM visual_report_revisions WHERE author_id = $1",
                 user_id,
             ),
+            int,
         )
         if used_bytes + content_bytes > 500_000_000:
             raise ValueError("Publisher Artifact storage exceeds 500 MB.")
-        revision = IntCodec.coerce(
+        revision = from_plain(
             await conn.fetchval(
                 "SELECT coalesce(max(revision), 0) + 1 "
                 "FROM visual_report_revisions WHERE report_id = $1",
                 report_id,
             ),
+            int,
         )
         artifact_id = await store.submit_artifact(
             SubmitArtifact(
@@ -381,15 +384,12 @@ async def read_artifact_content(
 async def read_artifact_content_on_conn(
     conn: Conn,
     artifact_id: uuid.UUID,
-    *,
-    include_html: bool = True,
 ) -> ArtifactContentRevision | None:
     """Resolve one published Artifact on the caller's transaction connection.
 
     Args:
       conn: Connection holding the caller's workspace transaction.
       artifact_id: Canonical Artifact identity for this revision.
-      include_html: Whether to transfer the potentially large HTML body.
 
     Returns:
       revision: The requested content, or None when absent.
@@ -397,23 +397,16 @@ async def read_artifact_content_on_conn(
     """
     row = await conn.fetchrow(
         "SELECT revisions.report_id, revisions.revision, revisions.artifact_id, "
-        "CASE WHEN $2 THEN revisions.content ELSE revisions.content - 'html' END "
-        "AS content, revisions.created_at, "
+        "revisions.content, revisions.created_at, "
         "revisions.author_email AS author, "
         "reports.issue_id FROM visual_report_revisions AS revisions "
         "JOIN visual_reports AS reports ON reports.id = revisions.report_id "
         "WHERE revisions.artifact_id = $1",
         artifact_id,
-        include_html,
     )
     if row is None:
         return None
-    if include_html:
-        return _revision_from_row(cast("Mapping[str, object]", row))
-    content = DictCodec.coerce(row["content"], default=None)
-    return _revision_from_row(
-        {**dict(row), "content": {**content, "html": None}},
-    )
+    return _revision_from_row(cast("Mapping[str, object]", row))
 
 
 async def _snapshot_content(
@@ -432,10 +425,8 @@ async def _snapshot_content(
         "sections": [section.model_dump(mode="json") for section in sections],
         "citations": [citation.model_dump(mode="json") for citation in citations],
     }
-    content_bytes = len(json.dumps(content, ensure_ascii=False).encode("utf-8"))
-    if body.format == "structured" and content_bytes > 30_000_000:
-        raise ValueError("Artifact file exceeds 30 MB.")
-    return content, content_bytes
+    # No size cap here: the draft's field limits bound structured JSON near 20 MB.
+    return content, len(json.dumps(content, ensure_ascii=False).encode())
 
 
 type CitationCache = dict[
@@ -496,11 +487,11 @@ async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCi
         raise ValueError("Cited record does not exist.")
     citation = ArtifactCitation(
         record_id=ref.record_id,
-        kind=StrCodec.coerce(record["kind"]),
-        seq=IntCodec.coerce(record["seq"]),
-        title=StrCodec.coerce(record["title"])[:2_000],
+        kind=from_plain(record["kind"], str),
+        seq=from_plain(record["seq"], int),
+        title=from_plain(record["title"], str)[:2_000],
     )
-    if ref.claim_id is None or ref.edge_kind is None:
+    if ref.claim_id is None:
         return citation
     claim = await conn.fetchrow(
         "SELECT kind, seq, title FROM inquiries WHERE id = $1",
@@ -524,11 +515,11 @@ async def _snapshot_citation(conn: Conn, ref: ArtifactCitationRef) -> ArtifactCi
         seq=citation.seq,
         title=citation.title,
         claim_id=ref.claim_id,
-        claim_kind=StrCodec.coerce(claim["kind"]),
-        claim_seq=IntCodec.coerce(claim["seq"]),
-        claim_title=StrCodec.coerce(claim["title"])[:2_000],
+        claim_kind=from_plain(claim["kind"], str),
+        claim_seq=from_plain(claim["seq"], int),
+        claim_title=from_plain(claim["title"], str)[:2_000],
         edge_kind=ref.edge_kind,
-        valence=FloatCodec.coerce(edge["valence"]),
+        valence=from_plain(edge["valence"], float),
         note=note,
     )
 
@@ -544,6 +535,5 @@ def _revision_from_row(row: Mapping[str, object]) -> ArtifactContentRevision:
             "issue_id": row["issue_id"],
             "author": row["author"],
             "created_at": row["created_at"],
-            "scope": "team",
         },
     )

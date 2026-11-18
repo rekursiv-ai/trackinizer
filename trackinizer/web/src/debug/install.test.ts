@@ -2,6 +2,7 @@ import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 import { keepRefused } from "./details";
 import { installDebug, logRenderError } from "./install";
 import { log, recentEvents } from "./log";
+import { recordFrame } from "./timings";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -59,6 +60,13 @@ test("the devtools console can dump the ring and the details", () => {
   // Details the clipboard refused are the ones the console gives.
   keepRefused("Trackinizer web app: Not saved.");
   expect(dump.details()).toBe("Trackinizer web app: Not saved.");
+});
+
+test("the devtools console gives the canvas's timing marks", () => {
+  install();
+  const dump = (window as unknown as { trackinizer: { timings: () => unknown[] } }).trackinizer;
+  recordFrame(3, 1_700_000_000_000);
+  expect(dump.timings().at(-1)).toMatchObject({ revision: 3, t: 1_700_000_000_000, marks: [] });
 });
 
 test("a render crash is logged once, with the component stack", () => {

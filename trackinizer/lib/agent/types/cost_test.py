@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 
+import operator
+
 import pytest
 
 from trackinizer.lib.agent.types.cost import (
@@ -12,6 +14,7 @@ from trackinizer.lib.agent.types.cost import (
     TokenCost,
     TokenCount,
     TokenPrice,
+    TokenStats,
 )
 
 
@@ -33,8 +36,30 @@ def _price(
     )
 
 
+def _as_stats(value: TokenStats[int]) -> TokenStats[int]:
+    return value
+
+
 def test_count_is_default_constructible() -> None:
     assert TokenCount().total == 0
+
+
+def test_non_matching_stats_defer_arithmetic() -> None:
+    count = TokenCount(request=1)
+    other = TokenStats[int](
+        request=1,
+        response=0,
+        cache_write=0,
+        cache_write_1h=0,
+        cache_read=0,
+    )
+    stats = _as_stats(count)
+    with pytest.raises(TypeError, match="unsupported operand"):
+        operator.add(stats, other)
+    with pytest.raises(TypeError, match="unsupported operand"):
+        operator.sub(stats, other)
+    assert TokenCount._floor(3) == 3
+    assert TokenStats[int]._floor(3) == 3
 
 
 def test_add_is_per_meter() -> None:
@@ -111,7 +136,7 @@ def test_multiplication_commutes() -> None:
 def test_a_price_must_state_every_rate() -> None:
     """An unstated rate would bill $0; construction refuses it."""
     with pytest.raises(TypeError):
-        _ = TokenPrice(request=5.0)  # ty: ignore[missing-argument] -- the missing rates are the point.  # pyright: ignore[reportCallIssue] -- same.
+        _ = TokenPrice(request=5.0)  # ty: ignore[missing-argument] -- the missing rates are the point.  # pyright: ignore[reportCallIssue] -- same.  # pyrefly: ignore[missing-argument] -- the missing rates are the point.
 
 
 def _catalog() -> PriceCatalog:
@@ -210,9 +235,10 @@ def test_indexing_is_exact() -> None:
         _ = catalog[PriceKey("auto", 199_999)]
     assert len(catalog) == 3
     assert list(catalog) == sorted(catalog)
+    assert repr(catalog).startswith("PriceCatalog({")
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

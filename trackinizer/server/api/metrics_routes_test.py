@@ -9,11 +9,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import json
 import uuid
+
+from treekle import from_plain, json_loads
 
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
 from trackinizer.wire.bodies import SubmitExperiment, SubmitIssue
 from trackinizer.wire.routes import MAX_LIST_LIMIT
 from trackinizer.wire.wire_metrics import MetricPoint, experiment_metrics_path
@@ -217,9 +219,225 @@ async def test_rank_returns_every_cell_up_to_the_cap_and_refuses_more(
         },
     )
     assert ranked.status_code == 200
-    rows = ListCodec.coerce(DictCodec.coerce(loads(ranked.content))["rows"], object)
+    rows = from_plain(
+        json_loads(ranked.content, dict[str, object])["rows"],
+        list[object],
+    )
     assert len(rows) == 60
     assert (over_limit.status_code, over_ids.status_code) == (422, 422)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rank_selects_runs_by_filter_and_pages_past_the_cap(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """A filter picks the runs, so a caller needs no list of ids, capped at 1,000.
+
+    Only Experiments match: an Issue carrying the label is not a run.
+    """
+    client, store = pglite_route_client
+    label = f"board:{uuid.uuid4().hex[:8]}"
+    runs = [
+        await _experiment(
+            store,
+            [MetricPoint(key="score", step=0, value=float(index))],
+            labels=[label],
+        )
+        for index in range(5)
+    ]
+    await _experiment(store, [MetricPoint(key="score", step=0, value=99.0)])
+    issue = await store.submit_issue(
+        SubmitIssue(account="tester@example.com", title="not a run", labels=[label]),
+    )
+    # The API refuses metrics on an Issue; a row written around it must still not rank.
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO experiment_metrics (experiment_id, key, step, value) "
+            "VALUES ($1, 'score', 0, 50.0)",
+            issue,
+        )
+    runs_with_label = [{"field": "labels", "op": "is", "value": label}]
+    pages = [
+        await _rank_rows(
+            client,
+            {
+                "filters": runs_with_label,
+                "query": {"sort": "desc", "limit": 2, "offset": offset},
+            },
+        )
+        for offset in (0, 2, 4, 6)
+    ]
+    assert [[value for _, value in page] for page in pages] == [
+        [4.0, 3.0],
+        [2.0, 1.0],
+        [0.0],
+        [],
+    ]
+    assert {run for page in pages for run, _ in page} == {str(run) for run in runs}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_rank_filter_selects_the_runs_the_list_filter_selects(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """The two routes lower a filter through one table, so they pick the same runs."""
+    client, store = pglite_route_client
+    tag = uuid.uuid4().hex[:8]
+    for index, (title, labels) in enumerate(
+        [
+            (f"alpha {tag}", [tag, "a"]),
+            (f"beta {tag}", [tag]),
+            (f"gamma {tag}", [tag, "a"]),
+            (f"other {tag}", None),
+        ],
+    ):
+        await _experiment(
+            store,
+            [MetricPoint(key="score", step=0, value=float(index))],
+            labels=labels,
+            title=title,
+        )
+    by_tag = {"field": "labels", "op": "is", "value": tag}
+    for clauses in (
+        [by_tag],
+        [by_tag, {"field": "labels", "op": "ne", "value": "a"}],
+        [{"field": "title", "op": "re", "value": f"^(alpha|other) {tag}$"}],
+        [
+            {"field": "title", "op": "re", "value": tag},
+            {"field": "labels", "op": "isnull"},
+        ],
+    ):
+        listed = await client.get(
+            "/api/inquiries",
+            params=[
+                ("kind", "Experiment"),
+                ("fields", "id"),
+                *(("filter", json.dumps(clause)) for clause in clauses),
+            ],
+        )
+        assert listed.status_code == 200, listed.text
+        ranked = await _rank_rows(client, {"filters": clauses, "query": {}})
+        assert ranked, clauses
+        assert {run for run, _ in ranked} == {
+            from_plain(row["id"], str)
+            for row in from_plain(listed.json(), list[dict[str, object]])
+        }, clauses
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rank_takes_ids_or_filters_and_refuses_filters_sql_cannot_run(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """Exactly one of the two selections, each filter checked as a list filter is."""
+    client, store = pglite_route_client
+    eid = await _experiment(store, [MetricPoint(key="score", step=0, value=1.0)])
+    label = [{"field": "labels", "op": "is", "value": "x"}]
+    bodies: tuple[dict[str, object], ...] = (
+        {"query": {}},
+        {"experiment_ids": [str(eid)], "filters": label, "query": {}},
+        {"filters": [{"field": "bogus", "op": "is", "value": "x"}], "query": {}},
+        {
+            "filters": [{"field": "judgement", "op": "is", "value": "x"}],
+            "query": {},
+        },
+        {"filters": [{"field": "title", "op": "re", "value": "["}], "query": {}},
+        {"experiment_ids": [str(eid)], "query": {"offset": -1}},
+    )
+    statuses = [
+        (await client.post(METRIC_RANK_PATH, json=body)).status_code for body in bodies
+    ]
+    assert statuses == [422, 422, 400, 400, 400, 422]
+    # ``offset`` is a read control, refused beside a write like ``sort``/``limit``.
+    written = await client.post(
+        experiment_metric_write_path(eid),
+        json={"masks": _cell("score", "0"), "write": 2.0, "offset": 1},
+    )
+    assert written.status_code == 422
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rank_filter_regex_postgres_rejects_is_a_400_as_on_the_list(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``[a-b-c]`` compiles in Python and fails in Postgres, a caller error either way."""
+    client, store = pglite_route_client
+    await _experiment(store, [MetricPoint(key="score", step=0, value=1.0)])
+    clause = {"field": "title", "op": "re", "value": "[a-b-c]"}
+    listed = await client.get(
+        "/api/inquiries",
+        params=[("kind", "Experiment"), ("filter", json.dumps(clause))],
+    )
+    ranked = await client.post(
+        METRIC_RANK_PATH,
+        json={"filters": [clause], "query": {}},
+    )
+    assert (listed.status_code, ranked.status_code) == (400, 400), ranked.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_query_pages_by_offset(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``offset`` skips selected cells on the one-experiment query, as on rank."""
+    client, store = pglite_route_client
+    eid = await _experiment(
+        store,
+        [MetricPoint(key="loss", step=step, value=float(step)) for step in range(3)],
+    )
+    queried = await client.post(
+        experiment_metric_query_path(eid),
+        json={"masks": [], "sort": "asc", "limit": 1, "offset": 1},
+    )
+    assert queried.status_code == 200, queried.text
+    points = from_plain(
+        json_loads(queried.content, dict[str, object])["points"],
+        list[dict[str, object]],
+    )
+    assert [point["value"] for point in points] == [1.0]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rank_filter_with_no_sql_form_is_a_bad_request(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``config is x`` names a real column but cannot select runs: 400, not 409."""
+    client, store = pglite_route_client
+    await _experiment(store, [MetricPoint(key="score", step=0, value=1.0)])
+    ranked = await client.post(
+        METRIC_RANK_PATH,
+        json={
+            "filters": [{"field": "config", "op": "is", "value": "x"}],
+            "query": {},
+        },
+    )
+    assert ranked.status_code == 400, ranked.text
+    assert "has no SQL form" in ranked.text
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_rank_filter_missing_its_value_is_refused_as_on_the_list(
+    pglite_route_client: tuple[httpx2.AsyncClient, Store],
+) -> None:
+    """``title is`` with no value matched every empty title on rank; the list 400s."""
+    client, store = pglite_route_client
+    await _experiment(store, [MetricPoint(key="score", step=0, value=1.0)])
+    clause = {"field": "title", "op": "is"}
+    listed = await client.get(
+        "/api/inquiries",
+        params=[("kind", "Experiment"), ("filter", json.dumps(clause))],
+    )
+    ranked = await client.post(
+        METRIC_RANK_PATH,
+        json={"filters": [clause], "query": {}},
+    )
+    assert (listed.status_code, ranked.status_code) == (400, 400), ranked.text
 
 
 @pytest.mark.db_pglite
@@ -237,14 +455,40 @@ async def test_read_refuses_ids_that_are_not_experiments(
     assert (missing.status_code, not_run.status_code) == (404, 409)
 
 
-async def _experiment(store: Store, points: list[MetricPoint]) -> uuid.UUID:
-    """Create an Experiment and log ``points`` against it."""
+async def _experiment(
+    store: Store,
+    points: list[MetricPoint],
+    *,
+    labels: list[str] | None = None,
+    title: str = "run",
+) -> uuid.UUID:
+    """Create an Experiment with ``labels`` and log ``points`` against it."""
     eid = await store.submit_experiment(
-        SubmitExperiment(account="tester@example.com", title="run"),
+        SubmitExperiment(account="tester@example.com", title=title, labels=labels),
     )
     if points:
         await store.log_metrics(eid, points)
     return eid
+
+
+async def _rank_rows(
+    client: httpx2.AsyncClient,
+    body: dict[str, object],
+) -> list[tuple[str, float]]:
+    """POST a rank request and return each row's run and value."""
+    response = await client.post(METRIC_RANK_PATH, json=body)
+    assert response.status_code == 200, response.text
+    rows = from_plain(
+        json_loads(response.content, dict[str, object])["rows"],
+        list[dict[str, object]],
+    )
+    return [
+        (
+            from_plain(row["experiment_id"], str),
+            from_plain(from_plain(row["point"], dict[str, object])["value"], float),
+        )
+        for row in rows
+    ]
 
 
 def _cell(key: str, step: str) -> list[dict[str, str]]:
@@ -261,6 +505,6 @@ def _reduce(op: str) -> dict[str, str]:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -150,6 +150,15 @@ test("an external link opens in a new tab; a written in-app link stays a plain l
   expect(inApp.getAttribute("target")).toBeNull();
 });
 
+test("a full URL to a route of this page's app is a link without a target", () => {
+  const app = `${location.origin}${location.pathname}`;
+  const root = renderMd(`[plan](${app}#/ref/Belief/2) [json](${app}api/web/get/1) [other](https://example.com/#/ref/Belief/2)`);
+  const [plan, json, other] = [...root.querySelectorAll("a")].map((a) => [a.getAttribute("href"), a.getAttribute("target")]);
+  expect(plan).toEqual(["#/ref/Belief/2", null]);
+  expect(json).toEqual([`${app}api/web/get/1`, "_blank"]);
+  expect(other).toEqual(["https://example.com/#/ref/Belief/2", "_blank"]);
+});
+
 test("a link whose text is a ref and whose target is that ref in the app, on any of its hosts, is the ref's chip", () => {
   const root = renderMd(
     [

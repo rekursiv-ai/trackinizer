@@ -22,16 +22,16 @@ import uuid
 
 from pytest_postgresql.config import get_config
 from pytest_postgresql.exceptions import ExecutableMissingException
+from treekle import from_plain
 
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib import postgres
-from trackinizer.lib.custom_json import FloatCodec
 from trackinizer.lib.postgres import DatabaseEngine
-from trackinizer.lib.testing.resource_markers import pytest_collection_modifyitems
-from trackinizer.lib.testing.userdirs_fixture import (
+from trackinizer.lib.testing.resources import (
     isolate_user_dirs,
+    pytest_collection_modifyitems,
     pytest_configure,
 )
 from trackinizer.server.embedders.stub import StubEmbedder
@@ -70,8 +70,8 @@ def make_conn() -> AsyncMock:
 
     async def fetchrow(sql: str, *args: object) -> object:
         if "marginal_cost_agent_usd" in sql and "RETURNING" in sql:
-            agent = FloatCodec.coerce(args[0]) if args else 0.0
-            resource = FloatCodec.coerce(args[1]) if len(args) > 1 else 0.0
+            agent = from_plain(args[0], float) if args else 0.0
+            resource = from_plain(args[1], float) if len(args) > 1 else 0.0
             old_agent = max(0.0, -agent)
             old_resource = max(0.0, -resource)
             subject_id = args[2] if len(args) > 2 else uuid.uuid4()
@@ -81,7 +81,7 @@ def make_conn() -> AsyncMock:
                 "old_resource": old_resource,
                 "new_agent": old_agent + agent,
                 "new_resource": old_resource + resource,
-                "current_subscribers": [],
+                "current_subscribers": list[str](),
             }
         if field_queue:
             return field_queue.pop(0)
@@ -284,11 +284,14 @@ def pg_dsn(request: pytest.FixtureRequest) -> Iterator[str]:
             dbname=postgresql_proc.dbname,
             password=postgresql_proc.password,
         ):
-            password = (
-                f":{postgresql_proc.password}" if postgresql_proc.password else ""
+            password = postgresql_proc.password or ""
+            userinfo = (
+                f"{postgresql_proc.user}:{password}"
+                if password
+                else postgresql_proc.user
             )
             yield (
-                f"postgresql://{postgresql_proc.user}{password}"
+                f"postgresql://{userinfo}"
                 f"@{postgresql_proc.host}:{postgresql_proc.port}/"
                 f"{postgresql_proc.dbname}"
             )

@@ -116,6 +116,8 @@ CHANGE_LOG_COLUMN_ORDER: Final[tuple[str, ...]] = (
     "agentsession_started",
     "agentsession_ended",
     "agentsession_rooms",
+    "app",
+    "agentsession_audience",
 )
 
 _EDGE_METADATA_COLUMN_ORDER: Final[tuple[str, ...]] = (

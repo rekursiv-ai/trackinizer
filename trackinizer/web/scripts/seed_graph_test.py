@@ -10,9 +10,10 @@ from typing import TYPE_CHECKING
 import itertools
 import uuid
 
+from treekle import from_plain, json_loads
+
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
 from trackinizer.types.edges import EDGE_POLICIES
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.web.scripts.graph_structure import (
@@ -25,6 +26,8 @@ from trackinizer.web.scripts.graph_structure import (
 from trackinizer.web.scripts.seed_graph import (
     GRAPH_CONTENTS,
     SeededGraph,
+    Showcase,
+    _titles,
     cascade_order,
     claims,
     cost_for,
@@ -52,10 +55,10 @@ def test_a_node_sits_by_its_nearest_root_and_the_newest_of_those_as_near() -> No
     structure = Structure(
         nodes=(*[Node(kind="Issue", status="active")] * 2, *_EXPERIMENTS),
         edges=(
-            _link(2, 0, "produced_by"),
-            _link(2, 1, "produced_by"),
-            _link(3, 0, "produced_by"),
-            _link(3, 2, "produced_by"),
+            Link(from_index=2, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=2, to_index=1, kind="produced_by", sign=0),
+            Link(from_index=3, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=3, to_index=2, kind="produced_by", sign=0),
         ),
     )
     assert islands(structure).home == {0: 0, 1: 1, 2: 1, 3: 0}
@@ -209,13 +212,19 @@ def test_every_person_is_an_example_address() -> None:
 
 def test_roots_take_written_titles_and_the_showcase_its_own_text() -> None:
     client, _ = _seeded()
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()))
-    written = ListCodec.coerce(contents.get("roots"), str)
-    shown = DictCodec.coerce(contents.get("showcase"))
+    contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
+    written = from_plain(contents.get("roots"), list[str], default=[])
+    shown = from_plain(contents.get("showcase"), dict[str, object], default={})
     titles = [body["title"] for _, body in client.items]
     assert titles[6] == written[0]
-    assert DictCodec.coerce(shown.get("root")).items() <= client.items[0][1].items()
-    assert DictCodec.coerce(shown.get("belief")).items() <= client.items[3][1].items()
+    assert (
+        from_plain(shown.get("root"), dict[str, object], default={}).items()
+        <= client.items[0][1].items()
+    )
+    assert (
+        from_plain(shown.get("belief"), dict[str, object], default={}).items()
+        <= client.items[3][1].items()
+    )
     assert all(titles)
 
 
@@ -249,16 +258,69 @@ def test_a_summary_says_the_record_says() -> None:
     assert "{owner}" not in summary_for("Paper", "Sparse warmup schedules for small-batch training")
 
 
+def test_a_beliefs_confidence_follows_its_verdict() -> None:
+    structure = Structure(
+        nodes=(*_STRUCTURE.nodes, *[Node(kind="Belief", status="active")] * 2),
+        edges=(
+            *_STRUCTURE.edges,
+            Link(from_index=2, to_index=10, kind="proves", sign=(-1)),
+            Link(from_index=4, to_index=11, kind="proves", sign=1),
+        ),
+    )
+    client = _FakeClient()
+    seed_graph(client, structure, actor="ada@example.com")
+    verdicts = {
+        n: (body["judgement"], body["confidence"])
+        for n, (kind, body) in enumerate(client.items)
+        if kind == "Belief" and n != 3
+    }
+    assert verdicts == {
+        9: ("unproven", 0.5),
+        10: ("disproven", 0.2),
+        11: ("proven", 0.9),
+    }
+
+
+def test_only_a_complete_session_is_created_active() -> None:
+    client, _ = _seeded()
+    assert [body["status"] for _, body in client.items] == [
+        *(node.status for node in _STRUCTURE.nodes[:7]),
+        "active",
+        "active",
+        "active",
+    ]
+
+
+def test_a_kind_takes_its_built_titles_in_order() -> None:
+    client, _ = _seeded()
+    kinds = from_plain(
+        json_loads(GRAPH_CONTENTS.read_text(), dict[str, object]).get(
+            "kinds",
+        ),
+        dict[str, object],
+    )
+    titles = _titles(from_plain(kinds.get("Experiment"), dict[str, object]))
+    experiments = [body["title"] for kind, body in client.items if kind == "Experiment"]
+    assert experiments == titles[:2]
+
+
 def test_no_kind_repeats_a_built_title_before_it_has_used_every_one() -> None:
     # Lists show the newest rows of a kind together: a title repeated among them
     # reads as a placeholder.
     client = _FakeClient()
     seed_graph(client, load(GRAPH_STRUCTURE.read_text()), actor="ada@example.com")
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()))
-    shown = DictCodec.coerce(contents.get("showcase"))
+    contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
+    shown = from_plain(contents.get("showcase"), dict[str, object], default={})
     written = {
-        *ListCodec.coerce(contents.get("roots"), str),
-        *(DictCodec.coerce(shown.get(part)).get("title") for part in shown),
+        *from_plain(contents.get("roots"), list[str], default=[]),
+        *(
+            from_plain(
+                from_plain(shown.get(part), dict[str, object], default={}).get("title"),
+                str,
+                default="",
+            )
+            for part in shown
+        ),
     }
     built: dict[str, list[str]] = {}
     for kind, body in client.items:
@@ -351,13 +413,90 @@ def test_in_cascade_order_the_committed_structure_walks_a_fifth_as_far() -> None
     assert steps < 300_000
 
 
+def test_edges_no_batch_can_carry_are_refused_before_anything_is_written() -> None:
+    """N1-09: 1001 edges into the newest node fit no batch; nothing is half-seeded."""
+    count = BATCH_MAX_ITEMS + 1
+    structure = Structure(
+        nodes=(
+            *_STRUCTURE.nodes,
+            *[Node(kind="Experiment", status="complete")] * count,
+            Node(kind="Belief", status="active"),
+        ),
+        edges=(
+            *_STRUCTURE.edges,
+            *(
+                Link(
+                    from_index=(len(_STRUCTURE.nodes) + k),
+                    to_index=(len(_STRUCTURE.nodes) + count),
+                    kind="proves",
+                    sign=0,
+                )
+                for k in range(count)
+            ),
+        ),
+    )
+    client = _FakeClient()
+    with pytest.raises(ValueError, match="no batch"):
+        seed_graph(client, structure, actor="ada@example.com")
+    assert client.calls == []
+
+
+def test_more_edges_than_nodes_can_carry_are_refused_before_anything_is_written() -> (
+    None
+):
+    """N1-09/S2: carriers never wrap to a negative node index."""
+    structure = Structure(
+        nodes=_STRUCTURE.nodes,
+        edges=(
+            *_STRUCTURE.edges,
+            *(Link(from_index=1, to_index=0, kind="narrows", sign=0),)
+            * (BATCH_MAX_ITEMS * len(_STRUCTURE.nodes)),
+        ),
+    )
+    client = _FakeClient()
+    with pytest.raises(ValueError, match="no batch"):
+        seed_graph(client, structure, actor="ada@example.com")
+    assert client.calls == []
+
+
+def test_the_showcase_counts_only_evidence_on_a_belief() -> None:
+    """N1-10: signed edges to an Experiment do not make an island the showcase."""
+    issue = Node(kind="Issue", status="active")
+    structure = Structure(
+        nodes=(
+            issue,
+            *_EXPERIMENTS,
+            Node(kind="Belief", status="active"),
+            issue,
+            *_EXPERIMENTS,
+            Node(kind="Experiment", status="complete"),
+        ),
+        edges=(
+            Link(from_index=1, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=2, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=3, to_index=0, kind="produced_by", sign=0),
+            Link(from_index=1, to_index=3, kind="proves", sign=1),
+            Link(from_index=2, to_index=3, kind="proves", sign=(-1)),
+            Link(from_index=5, to_index=4, kind="produced_by", sign=0),
+            Link(from_index=6, to_index=4, kind="produced_by", sign=0),
+            Link(from_index=7, to_index=4, kind="produced_by", sign=0),
+            Link(from_index=5, to_index=7, kind="proves", sign=1),
+            Link(from_index=6, to_index=7, kind="proves", sign=(-1)),
+            Link(from_index=5, to_index=6, kind="favors", sign=(-1)),
+        ),
+    )
+    assert showcase(structure, islands(structure)) == Showcase(root=0, belief=3)
+
+
 def test_the_committed_structure_has_a_showcase_and_a_title_for_every_root() -> None:
     structure = load(GRAPH_STRUCTURE.read_text())
     found = islands(structure)
     picked = showcase(structure, found)
     assert found.home[picked.belief] == picked.root
-    contents = DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()))
-    assert len(ListCodec.coerce(contents.get("roots"), str)) >= len(found.roots)
+    contents = json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
+    assert len(from_plain(contents.get("roots"), list[str], default=[])) >= len(
+        found.roots,
+    )
 
 
 _EXPERIMENTS = (
@@ -384,16 +523,16 @@ _STRUCTURE = Structure(
         Node(kind="Belief", status="active"),
     ),
     edges=(
-        _link(1, 0, "narrows"),
-        _link(2, 1, "produced_by"),
-        _link(3, 1, "produced_by"),
-        _link(4, 0, "produced_by"),
-        _link(4, 3, "proves", 1),
-        _link(2, 3, "proves", -1),
-        _link(5, 3, "favors", -1),
-        _link(5, 6, "produced_by"),
-        _link(7, 6, "produced_by"),
-        _link(9, 6, "produced_by"),
+        Link(from_index=1, to_index=0, kind="narrows", sign=0),
+        Link(from_index=2, to_index=1, kind="produced_by", sign=0),
+        Link(from_index=3, to_index=1, kind="produced_by", sign=0),
+        Link(from_index=4, to_index=0, kind="produced_by", sign=0),
+        Link(from_index=4, to_index=3, kind="proves", sign=1),
+        Link(from_index=2, to_index=3, kind="proves", sign=(-1)),
+        Link(from_index=5, to_index=3, kind="favors", sign=(-1)),
+        Link(from_index=5, to_index=6, kind="produced_by", sign=0),
+        Link(from_index=7, to_index=6, kind="produced_by", sign=0),
+        Link(from_index=9, to_index=6, kind="produced_by", sign=0),
     ),
 )
 
@@ -477,7 +616,7 @@ class _FakeClient:
         items: Sequence[tuple[Inquiry.InquiryKind, Mapping[str, object]]],
         *,
         edges: Sequence[Mapping[str, object]] = (),
-        actor: str | None = None,
+        actor: str,
     ) -> list[uuid.UUID]:
         assert actor
         assert 1 <= len(items) <= BATCH_MAX_ITEMS
@@ -489,7 +628,7 @@ class _FakeClient:
         self.edges.extend(
             (
                 self._end(edge, "from", ids),
-                StrCodec.coerce(edge["edge_kind"]),
+                from_plain(edge["edge_kind"], str),
                 self._end(edge, "to", ids),
                 edge.get("valence"),
             )
@@ -532,12 +671,12 @@ class _FakeClient:
         index = edge.get(f"{end}_index")
         if isinstance(index, int):
             return ids[index]
-        made = uuid.UUID(StrCodec.coerce(edge[f"{end}_id"]))
+        made = uuid.UUID(from_plain(edge[f"{end}_id"], str))
         assert made in self._made
         return made
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

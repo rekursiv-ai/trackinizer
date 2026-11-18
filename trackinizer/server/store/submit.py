@@ -9,12 +9,14 @@ through each item so a mixed-kind batch commits or rolls back atomically.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from functools import partial
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import uuid
 
-from trackinizer.lib.custom_json import IntCodec
+from treekle import from_plain
+
 from trackinizer.lib.postgres import Conn
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.primitives import (
@@ -26,6 +28,7 @@ from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
     set_client_change_id,
 )
+from trackinizer.server.store.deleted_chats import refuse_a_deleted_chat
 from trackinizer.server.store.edge import _EdgeMixin
 from trackinizer.server.store.edit import _EditMixin
 from trackinizer.server.values import canonical_strs
@@ -44,6 +47,7 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+from trackinizer.wire.wire_science_chat import chat_conversation_id
 
 
 if TYPE_CHECKING:
@@ -58,11 +62,9 @@ else:
 
 
 __all__ = [
-    "SUBMIT_METHOD",
     "PostInsert",
     "PreInsert",
     "_SubmitMixin",
-    "_SubmitOnConn",
 ]
 
 
@@ -70,48 +72,114 @@ type PostInsert = Callable[[Conn, UUID, UUID], Awaitable[None]]
 type PreInsert = Callable[[Conn], Awaitable[None]]
 
 
-T_Submit_contra = TypeVar("T_Submit_contra", contravariant=True)
+class _SubmitMixin(_EditMixin, _EdgeMixin):
+    """Per-kind inquiry creation for :class:`Store`."""
 
-
-class _SubmitOnConn(Protocol[T_Submit_contra]):
-    """A ``submit_X`` bound method that can join a caller's transaction.
-
-    ``req`` is typed ``Any`` deliberately: each ``submit_X`` accepts its own
-    concrete ``SubmitBase`` subtype (``SubmitIssue``, ``SubmitBelief``, ...). A
-    Protocol parameter is contravariant, so a narrower ``SubmitBase`` would make
-    every concrete method fail to satisfy this Protocol. The dispatch in
-    ``submit_batch`` always passes a real ``SubmitBase``, and ``SUBMIT_METHOD``
-    keys the right method by the body's concrete type, so runtime safety holds.
-    """
-
-    def __call__(
+    async def submit(
         self,
-        req: T_Submit_contra,
+        req: SubmitBase,
         *,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
-        conn: Conn | None,
-    ) -> Awaitable[UUID]: ...
+        session_audience: str | None = None,
+        conn: Conn | None = None,
+    ) -> UUID:
+        """Create ``req`` through its own kind's ``submit_X``.
 
+        The one dispatch both the single-submit route and ``submit_batch`` use.
 
-# Submit body type -> the ``Store`` method that creates that kind. Drives
-# ``submit_batch`` dispatch (one shared transaction over mixed kinds) and the
-# single-submit route's dispatch, so both read one source of truth.
-SUBMIT_METHOD: dict[type[SubmitBase], str] = {
-    SubmitIssue: "submit_issue",
-    SubmitArtifact: "submit_artifact",
-    SubmitExperiment: "submit_experiment",
-    SubmitPaper: "submit_paper",
-    SubmitBelief: "submit_belief",
-    SubmitCodeChange: "submit_codechange",
-    SubmitWebResult: "submit_webresult",
-    SubmitWebSearch: "submit_websearch",
-    SubmitAgentSession: "submit_agentsession",
-}
+        Args:
+          req: A concrete submit body.
+          api_key_id: API key that authorized the submit, if any.
+          actor: Audit actor recorded on the new row.
+          session_audience: Who may read the transcript of a session ``req`` opens.
+            No other kind has an audience, so it is ignored for them.
+          conn: Transaction to join; None opens one.
 
+        Returns:
+          inquiry_id: The server-minted id.
 
-class _SubmitMixin(_EditMixin, _EdgeMixin):
-    """Per-kind inquiry creation for :class:`Store`."""
+        Raises:
+          TypeError: ``req`` is not a concrete kind's body, or it is a session and
+            ``session_audience`` is unset.
+
+        """
+        match req:
+            case SubmitIssue():
+                created = self.submit_issue(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitArtifact():
+                created = self.submit_artifact(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitExperiment():
+                created = self.submit_experiment(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitPaper():
+                created = self.submit_paper(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitBelief():
+                created = self.submit_belief(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitCodeChange():
+                created = self.submit_codechange(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitWebResult():
+                created = self.submit_webresult(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitWebSearch():
+                created = self.submit_websearch(
+                    req,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case SubmitAgentSession():
+                # A session with no named audience is refused, never opened to
+                # everyone: a caller that forgot to resolve one would publish a
+                # transcript its key is pinned away from.
+                if session_audience is None:
+                    raise TypeError(
+                        "A session opens into an audience its caller was granted; "
+                        "pass session_audience.",
+                    )
+                created = self.submit_agentsession(
+                    req,
+                    audience=session_audience,
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    conn=conn,
+                )
+            case _:
+                raise TypeError(f"No submit path for {type(req).__name__}.")
+        return await created
 
     async def submit_issue(
         self,
@@ -158,7 +226,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             actor=actor,
             extras={
                 "issue_kind": canonical_strs(req.issue_kind)
-                if req.issue_kind
+                if req.issue_kind is not None
                 else None,
                 "issue_validation": req.validation,
                 "issue_priority": req.priority,
@@ -347,12 +415,12 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         # fallback -- an absent account is a programming error at a caller that
         # skipped resolution, not a state to paper over with the spoofable
         # audit ``actor``. ``owner`` may be unset; ``account`` may never be.
-        if not req.account:
+        account = req.account or ""
+        if not account:
             raise ValueError(
                 "submit requires a resolved account; the route resolves it from "
                 "the authenticated identity before calling the Store",
             )
-        account = req.account
         try:
             # The optional base columns are nullable: an unset field stores
             # NULL, the single encoding of "absent". An unspecified owner is
@@ -367,15 +435,20 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     "description": req.description,
                     "owner": req.owner,
                     "account": account,
-                    "labels": canonical_strs(req.labels) if req.labels else None,
-                    "subscribers": (
-                        canonical_strs(req.subscribers) if req.subscribers else None
-                    ),
+                    "labels": canonical_strs(req.labels or ()),
+                    "subscribers": canonical_strs(req.subscribers or ()),
+                    "app": req.app,
+                    "created": req.created,
                     **(extras or {}),
                 },
             )
             for model, vec in embeddings:
                 await upsert_embedding(conn, row_id, model, vec)
+            reason = ""
+            if req.created is not None:
+                reason = f"backfill: created={req.created.isoformat()}"
+                if req.reason:
+                    reason += "; " + req.reason
             cause, _ = await self.emit_change(
                 conn,
                 api_key_id=api_key_id,
@@ -383,6 +456,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 subject_id=row_id,
                 subject_kind=kind,
                 kind="created",
+                reason=reason,
                 marginal_cost=req.marginal_cost,
             )
             if post_insert is not None:
@@ -471,9 +545,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             api_key_id=api_key_id,
             actor=actor,
             extras={
-                "experiment_codechanges": (
-                    list(req.codechanges) if req.codechanges else None
-                ),
+                "experiment_codechanges": list(req.codechanges or ()),
                 "experiment_outcome": req.outcome,
                 "experiment_config": req.config,
             },
@@ -496,7 +568,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             actor=actor,
             extras={
                 "paper_abstract": req.abstract,
-                "paper_authors": list(req.authors) if req.authors else None,
+                "paper_authors": list(req.authors or ()),
                 "paper_publication_type": req.publication_type,
                 "paper_venue": req.venue,
                 "paper_subvenue": req.subvenue,
@@ -614,10 +686,12 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         self,
         req: SubmitAgentSession,
         *,
+        audience: str,
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
         conn: Conn | None = None,
     ) -> UUID:
+        conversation_id = chat_conversation_id(req.cli_session_id)
         return await self._submit_generic(
             req,
             kind="AgentSession",
@@ -629,14 +703,20 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                 "agentsession_started": req.started,
                 # No create-time ``ended``: born live. The lifecycle CHECK
                 # ties ``ended`` to ``status = 'complete'``, set only via /end.
-                "agentsession_rooms": (
-                    canonical_strs(req.rooms) if req.rooms else None
-                ),
+                "agentsession_rooms": canonical_strs(req.rooms or ()),
                 # Records who opened the session so the inbound-drain route can
                 # authorize by matching the credential (G1). NULL under
                 # --no-auth, which the drain check treats as a self-match.
                 "agentsession_opened_by_api_key_id": api_key_id,
+                # Required by the schema and never defaulted here: the caller names
+                # the audience it granted, so no path can open a session by omission.
+                "agentsession_audience": audience,
             },
+            # A science chat's session starts under its conversation's lock, so a
+            # delete either takes it or leaves the tombstone this start then finds.
+            pre_insert=None
+            if conversation_id is None
+            else partial(refuse_a_deleted_chat, conversation_id=conversation_id),
             conn=conn,
         )
 
@@ -647,6 +727,7 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
         edges: Sequence[BatchEdge] = (),
         api_key_id: UUID | None = None,
         actor: Inquiry.Actor = "system",
+        session_audience: str | None = None,
     ) -> list[UUID]:
         """Create many inquiries and their edges in one all-or-nothing tx.
 
@@ -667,9 +748,15 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
           edges: Edges linking the new rows, endpoints named by item index.
           api_key_id: Server-stamped credential id, applied to every item.
           actor: Audit actor applied to every item/edge lacking its own.
+          session_audience: Who may read the transcript of each session among
+            ``items``; required when one is, and ignored by the other kinds.
 
         Returns:
           ids: Server-minted inquiry ids, aligned to ``items`` order.
+
+        Raises:
+          TypeError: An item is a session and ``session_audience`` is unset; no
+            item of the batch is created.
 
         """
         async with (
@@ -677,22 +764,18 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
             self.engine.acquire() as conn,
             tx(conn),
         ):
-            ids: list[UUID] = []
-            for item in items:
-                method = cast(
-                    _SubmitOnConn[SubmitBase],
-                    getattr(self, SUBMIT_METHOD[type(item)]),
+            # Sequential on one connection: asyncpg runs one query at a time.
+            # Per-item actor override wins, mirroring the single-submit route.
+            ids = [
+                await self.submit(
+                    item,
+                    api_key_id=api_key_id,
+                    actor=item.actor or actor,
+                    session_audience=session_audience,
+                    conn=conn,
                 )
-                ids.append(
-                    await method(
-                        item,
-                        api_key_id=api_key_id,
-                        # Per-item actor override wins, mirroring the
-                        # single-submit route's ``req.actor or email``.
-                        actor=item.actor or actor,
-                        conn=conn,
-                    ),
-                )
+                for item in items
+            ]
             # Known gap: the items replay a keyed retry, but the edges carry no
             # key. A retry adds each again if it is absent, so an edge removed
             # since the first attempt comes back.
@@ -701,10 +784,10 @@ class _SubmitMixin(_EditMixin, _EdgeMixin):
                     conn,
                     from_id=edge.from_id
                     if edge.from_id is not None
-                    else ids[IntCodec.coerce(edge.from_index, 0)],
+                    else ids[from_plain(edge.from_index, int)],
                     to_id=edge.to_id
                     if edge.to_id is not None
-                    else ids[IntCodec.coerce(edge.to_index, 0)],
+                    else ids[from_plain(edge.to_index, int)],
                     edge_kind=edge.edge_kind,
                     priority=edge.priority,
                     note=edge.note,

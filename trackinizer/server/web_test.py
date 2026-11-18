@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
@@ -12,9 +12,13 @@ from urllib.parse import parse_qs, urlparse
 
 import json
 import os
+import struct
+import time
 import uuid
 
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.routing import APIRoute
+from fastapi.staticfiles import StaticFiles
 from fastapi.testclient import TestClient
 
 
@@ -29,32 +33,32 @@ else:
 
     asyncpg = lazy_import("asyncpg")
 
+from treekle import from_plain, json_loads
+
 import pytest
 import pytest_asyncio
 
 from trackinizer.conftest import FakeEngine, make_conn, make_store, new_uuid
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    loads,
-)
 from trackinizer.lib.postgres import Conn
 from trackinizer.lib.postgres.testing import reset_schema
 from trackinizer.server import web
 from trackinizer.server.api import auth_routes
 from trackinizer.server.api.query import get_inquiry_route
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.route_iter import (
     iter_routes,
     registered_paths,
 )
 from trackinizer.server.store.core import Store
-from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
+from trackinizer.server.store.session_feed import (
+    WHOLE_FEED,
+    FeedScope,
+    StationAgents,
+)
 from trackinizer.types.columns import column_specs, storage_name
 from trackinizer.types.inquiries import INQUIRY_CLASSES, KIND_TO_CLASS, Inquiry
 from trackinizer.wire.bodies import (
@@ -69,6 +73,7 @@ from trackinizer.wire.bodies import (
     SubmitWebSearch,
 )
 from trackinizer.wire.wire_sessions import (
+    FeedActorFacet,
     FeedBucket,
     FeedEvent,
     FeedFacetsResponse,
@@ -88,6 +93,13 @@ _TEST_IDENTITY = AuthIdentity(
     api_key_id=uuid.UUID("33333333-3333-3333-3333-333333333333"),
     email="webtest@example.com",
     role="viewer",
+)
+# How the transcript test reads ``_TEST_IDENTITY``'s listings on a server with no
+# configuration, where each person is an organisation of one.
+_TEST_READER = SessionReader(
+    audiences=frozenset({"open", "private"}),
+    email="webtest@example.com",
+    hidden=False,
 )
 
 # The relations ``GET /api/inquiries/{id}`` projects onto the row. The web detail
@@ -152,6 +164,7 @@ def _inquiry_row(**overrides: object) -> dict[str, object]:
         "subscribers": ["bob"],
         "marginal_cost_agent_usd": 1.5,
         "marginal_cost_resource_usd": 2.5,
+        "locked": False,
         "created": now,
         "modified": now,
         "belief_judgement": None,
@@ -188,6 +201,7 @@ def _null_row(kind: Inquiry.InquiryKind) -> dict[str, object]:
         "title": "title",
         "marginal_cost_agent_usd": 0.0,
         "marginal_cost_resource_usd": 0.0,
+        "locked": False,
         "created": now,
         "modified": now,
     }
@@ -376,6 +390,13 @@ class TestSerialization:
         # JSONB is decoded to a dict by the codec; surfaced verbatim, not
         # ISO-formatted or stringified.
         assert out["config"] == cfg
+
+    def test_row_to_dict_surfaces_any_rows_app(self) -> None:
+        app = {"tracker": {"budget_usd": 20}}
+        out = web._row_to_dict(
+            cast("asyncpg.Record", _inquiry_row(kind="Issue", app=app)),
+        )
+        assert out["app"] == app
 
     def test_row_to_dict_surfaces_agentsession_fields(self) -> None:
         started = datetime(2026, 5, 18, 9, tzinfo=UTC)
@@ -912,6 +933,37 @@ class TestRoutes:
             f': open\n\ndata: {{"id": "{subject_id}"}}\n\n'.encode()
         )
 
+    @pytest.mark.asyncio
+    async def test_subscribe_holds_back_a_hidden_transcripts_ping_from_a_viewer(
+        self,
+    ) -> None:
+        engine = FakeEngine()
+        # The database says the viewer reads the session, once they hold its audience.
+        engine.conn.fetchval = AsyncMock(return_value=True)
+        hidden, shown = new_uuid(), new_uuid()
+        engine.listen_messages = [
+            json.dumps({"id": str(hidden), "audience": "staff"}),
+            json.dumps({"id": str(shown)}),
+        ]
+        request = _request(object(), engine)
+
+        async def relayed(audiences: frozenset[str]) -> list[str | bytes | memoryview]:
+            response = await web.web_subscribe(
+                cast(Request, request),
+                identity=replace(_TEST_IDENTITY, read_audiences=audiences),
+            )
+            return [chunk async for chunk in response.body_iterator]
+
+        def frame(subject: uuid.UUID) -> bytes:
+            return f'data: {{"id": "{subject}"}}\n\n'.encode()
+
+        assert await relayed(frozenset({"open"})) == [b": open\n\n", frame(shown)]
+        assert await relayed(frozenset({"open", "staff"})) == [
+            b": open\n\n",
+            frame(hidden),
+            frame(shown),
+        ]
+
     def test_without_the_app_the_old_paths_serve_nothing(self, tmp_path: Path) -> None:
         # The old pages are gone. Without ``--app-dir`` there is no ``/app/`` to
         # send their paths to, so each answers 404, even where an old build's
@@ -944,6 +996,10 @@ class TestRoutes:
         response = client.get("/static/report.html")
         assert response.status_code == 200
         assert response.text == "<html>report</html>"
+        # The mount is named, so a template can ask for a static file by name.
+        assert (
+            str(app.url_path_for("static", path="report.html")) == "/static/report.html"
+        )
 
     def test_attach_is_idempotent(self, tmp_path: Path) -> None:
         # ``server.py`` calls ``attach`` on the module-global app; a second
@@ -1070,6 +1126,48 @@ class TestFeedRoute:
 class TestFeedReads:
     """The feed, its facets and its histogram take one set of repeatable filters."""
 
+    def test_backward_feed_cursor_reaches_the_store_whole(self) -> None:
+        store = AsyncMock()
+        store.read_feed = AsyncMock(return_value=[])
+        client = self._client(store)
+        session = new_uuid()
+        created = datetime(2026, 6, 1, tzinfo=UTC)
+        response = client.get(
+            "/api/web/feed",
+            params={
+                "tail": "true",
+                "before_created": created.isoformat(),
+                "before_session": str(session),
+                "before_part": 1,
+                "before_seq": 7,
+            },
+        )
+        assert response.status_code == 200
+        assert store.read_feed.call_args.kwargs.get("before") == (
+            created,
+            session,
+            1,
+            7,
+        )
+
+    def test_backward_feed_cursor_requires_every_component(self) -> None:
+        store = AsyncMock()
+        client = self._client(store)
+        cursor = {
+            "before_created": "2026-06-01T00:00:00Z",
+            "before_session": str(new_uuid()),
+            "before_part": "0",
+            "before_seq": "7",
+        }
+        for missing in cursor:
+            response = client.get(
+                "/api/web/feed",
+                params={key: value for key, value in cursor.items() if key != missing},
+            )
+            assert response.status_code == 400, missing
+            assert "before_" in response.text
+        store.read_feed.assert_not_called()
+
     @classmethod
     def _client(cls, store: AsyncMock) -> TestClient:
         app = FastAPI()
@@ -1101,22 +1199,151 @@ class TestFeedReads:
             rooms=("lab",),
             clis=("codex",),
             kinds=("ToolCall", "UserMessage"),
+            reader=_TEST_READER,
         )
         assert scope_of(("room", "lab"), ("actor", "eng")) == FeedScope(
             actors=("eng",),
             rooms=("lab",),
+            reader=_TEST_READER,
         )
-        assert scope_of() == WHOLE_FEED
+        assert scope_of() == replace(WHOLE_FEED, reader=_TEST_READER)
+
+    def test_each_read_is_scoped_to_the_reader_its_caller_is(self) -> None:
+        store = self._histogram_store()
+        store.read_feed = AsyncMock(return_value=[])
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        )
+        reads = {
+            "/api/web/feed": store.read_feed,
+            "/api/web/feed/facets": store.read_feed_facets,
+            "/api/web/feed/histogram": store.read_feed_histogram,
+        }
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        app.state.store = store
+        web.attach(app)
+        client = TestClient(app)
+
+        for audiences in (
+            frozenset({"open", "private"}),
+            frozenset({"open", "private", "staff"}),
+        ):
+            caller = replace(_TEST_IDENTITY, read_audiences=audiences)
+
+            async def identity(caller: AuthIdentity = caller) -> AuthIdentity:
+                return caller
+
+            app.dependency_overrides[current_user] = identity
+            for path, read in reads.items():
+                assert client.get(path).status_code == 200, path
+                scope = cast(FeedScope, read.call_args.kwargs["scope"])
+                assert scope.reader == SessionReader(
+                    audiences=audiences,
+                    email=_TEST_IDENTITY.email,
+                    oversight="staff" in audiences,
+                    hidden=False,
+                ), path
+
+    def test_feed_whose_mine_keeps_the_callers_sessions(self) -> None:
+        """Every read narrows to the caller's own account, whatever else is named."""
+        scopes = self._scopes({"whose": "mine", "cli": "codex"})
+
+        assert (
+            scopes
+            == [
+                FeedScope(
+                    clis=("codex",),
+                    account=_TEST_IDENTITY.email,
+                    reader=_TEST_READER,
+                ),
+            ]
+            * 3
+        )
+
+    def test_feed_whose_campaigns_keeps_sessions_of_briefs_labelled_with_the_asker(
+        self,
+    ) -> None:
+        scopes = self._scopes({"whose": "campaigns"})
+
+        assert (
+            scopes == [FeedScope(asker=_TEST_IDENTITY.email, reader=_TEST_READER)] * 3
+        )
+
+    def test_feed_whose_everyone_is_the_default(self) -> None:
+        """Everyone is every session the caller reads; ``hidden`` keeps private ones."""
+        named = self._scopes({"whose": "everyone"})
+        hidden = self._scopes({"hidden": "true"})
+
+        assert named == self._scopes({}) == [FeedScope(reader=_TEST_READER)] * 3
+        assert hidden == [FeedScope(reader=replace(_TEST_READER, hidden=True))] * 3
+        assert (
+            self._client(AsyncMock())
+            .get(
+                "/api/web/feed",
+                params={"whose": "theirs"},
+            )
+            .status_code
+            == 422
+        )
+
+    def _scopes(self, params: dict[str, str]) -> list[FeedScope]:
+        """Return the scope each of the feed, its facets and histogram was read with."""
+        store = self._histogram_store()
+        store.read_feed = AsyncMock(return_value=[])
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        )
+        client = self._client(store)
+        scopes: list[FeedScope] = []
+        for path, read in (
+            ("/api/web/feed", store.read_feed),
+            ("/api/web/feed/facets", store.read_feed_facets),
+            ("/api/web/feed/histogram", store.read_feed_histogram),
+        ):
+            assert client.get(path, params=params).status_code == 200, path
+            scopes.append(cast(FeedScope, read.call_args.kwargs["scope"]))
+        return scopes
 
     def test_the_feed_keeps_only_conversation_when_asked(self) -> None:
         store = AsyncMock()
         store.read_feed = AsyncMock(return_value=[])
         client = self._client(store)
 
-        for params, conversation in (({}, False), ({"conversation": "true"}, True)):
+        for params, conversation in (
+            (dict[str, str](), False),
+            ({"conversation": "true"}, True),
+        ):
             response = client.get("/api/web/feed", params=params)
             assert response.status_code == 200, response.text
             assert store.read_feed.call_args.kwargs["conversation"] is conversation
+
+    def test_a_station_filters_all_three_reads_to_its_callers_agents(self) -> None:
+        store = self._histogram_store()
+        store.read_feed = AsyncMock(return_value=[])
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(actors=[], rooms=[], kinds=[]),
+        )
+        client = self._client(store)
+        station = uuid.uuid4()
+        wanted = FeedScope(
+            station=StationAgents(workspace_id=station, user_id=_TEST_IDENTITY.user_id),
+            kinds=("ToolCall",),
+            reader=_TEST_READER,
+        )
+
+        for path, read in (
+            ("/api/web/feed", store.read_feed),
+            ("/api/web/feed/facets", store.read_feed_facets),
+            ("/api/web/feed/histogram", store.read_feed_histogram),
+        ):
+            response = client.get(
+                path,
+                params={"station": str(station), "kind": "ToolCall"},
+            )
+            assert response.status_code == 200, response.text
+            assert read.call_args.kwargs["scope"] == wanted
+        assert client.get("/api/web/feed", params={"station": "x"}).status_code == 422
 
     def test_facets_count_a_window_under_the_filters(self) -> None:
         store = AsyncMock()
@@ -1136,10 +1363,70 @@ class TestFeedReads:
         assert store.read_feed_facets.call_args.kwargs == {
             "since": datetime(2026, 10, 1, tzinfo=UTC),
             "until": datetime(2026, 10, 2, tzinfo=UTC),
-            "scope": FeedScope(clis=("codex",)),
+            "scope": FeedScope(clis=("codex",), reader=_TEST_READER),
         }
         backwards = (("since", window[1][1]), ("until", window[0][1]))
         assert client.get("/api/web/feed/facets", params=backwards).status_code == 400
+
+    def test_an_agent_with_a_live_run_says_what_the_run_is_doing(self) -> None:
+        """The console's Reattach button is for the agent whose run was taken over."""
+        taken, waiting, quiet, ended = (new_uuid() for _ in range(4))
+        run = "a" * 32
+        inbound = InboundQueue()
+        for session in (taken, waiting, ended):
+            inbound.mark_poller(session, cli="claude", instance=run)
+        assert inbound.report_state(taken, instance=run, state="taken_over")
+        store = AsyncMock()
+        store.engine = FakeEngine()
+        store.engine.conn.fetch.return_value = [
+            {"session_id": waiting, "opened": "a1", "closed": None},
+        ]
+        last = datetime(2026, 10, 1, tzinfo=UTC)
+        store.read_feed_facets = AsyncMock(
+            return_value=FeedFacetsResponse(
+                actors=[
+                    FeedActorFacet(
+                        actor=name,
+                        session_id=session,
+                        cli="claude",
+                        rooms=[],
+                        count=1,
+                        conversation=1,
+                        last=last,
+                        ended=last if session == ended else None,
+                    )
+                    for name, session in (
+                        ("taken", taken),
+                        ("waiting", waiting),
+                        ("quiet", quiet),
+                        ("ended", ended),
+                    )
+                ],
+                rooms=[],
+                kinds=[],
+            ),
+        )
+        client = self._client(store)
+        cast("FastAPI", client.app).state.inbound = inbound
+
+        response = client.get("/api/web/feed/facets")
+
+        assert response.status_code == 200, response.text
+        actors = from_plain(response.json(), dict[str, object])["actors"]
+        assert {
+            each["actor"]: each["state"]
+            for each in from_plain(actors, list[dict[str, object]])
+        } == {
+            "taken": "taken_over",
+            "waiting": "requires_action",
+            "quiet": "idle",
+            "ended": "idle",
+        }
+        asked = from_plain(
+            store.engine.conn.fetch.call_args.args[1],
+            list[uuid.UUID],
+        )
+        assert set(asked) == {taken, waiting}
 
     def test_a_histogram_has_2_to_1000_buckets_and_120_unless_asked(self) -> None:
         store = self._histogram_store()
@@ -1148,7 +1435,7 @@ class TestFeedReads:
         response = client.get("/api/web/feed/histogram", params={"kind": "ToolCall"})
 
         assert response.status_code == 200, response.text
-        assert DictCodec.coerce(response.json())["counts"] == [
+        assert from_plain(response.json(), dict[str, object])["counts"] == [
             {"start": "2026-10-01T00:00:00Z", "count": 3},
         ]
         kwargs = store.read_feed_histogram.call_args.kwargs
@@ -1156,7 +1443,7 @@ class TestFeedReads:
             "since": None,
             "until": None,
             "buckets": 120,
-            "scope": FeedScope(kinds=("ToolCall",)),
+            "scope": FeedScope(kinds=("ToolCall",), reader=_TEST_READER),
         }
         for buckets, status in ((1, 400), (2, 200), (1_000, 200), (1_001, 400)):
             response = client.get(
@@ -1245,6 +1532,40 @@ class TestRouteBounds:
         r = c.get("/api/web/recent_changes", params={"limit": 5000})
         assert r.status_code == 400
 
+    @pytest.mark.parametrize(
+        "zone",
+        ["Pacific/Kiritimati", "America/Los_Angeles", "Europe/Berlin"],
+    )
+    def test_feed_reads_a_naive_window_as_utc(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        zone: str,
+    ) -> None:
+        """Read a naive ``since`` and ``until`` as UTC whatever the zone is."""
+        store = AsyncMock()
+        read_feed = AsyncMock(return_value=[])
+        store.read_feed = read_feed
+        app = FastAPI()
+        app.state.engine = FakeEngine()
+        app.state.store = store
+        app.include_router(web.router, prefix="/api/web")
+        c = self._client(app)
+        monkeypatch.setenv("TZ", zone)
+        time.tzset()
+        try:
+            c.get(
+                "/api/web/feed",
+                params={"since": "2024-12-10T00:00:00", "until": "2024-12-11T00:00:00"},
+            )
+        finally:
+            monkeypatch.undo()
+            time.tzset()
+        kwargs = cast("dict[str, datetime]", read_feed.call_args.kwargs)
+        assert kwargs["since"].tzinfo is not None
+        assert kwargs["until"].tzinfo is not None
+        assert kwargs["since"] == datetime(2024, 12, 10, tzinfo=UTC)
+        assert kwargs["until"] == datetime(2024, 12, 11, tzinfo=UTC)
+
     def test_search_rejects_invalid_regex(self) -> None:
         engine = FakeEngine()
         store = AsyncMock()
@@ -1271,7 +1592,7 @@ class TestRouteBounds:
         # return wrong matches.
         r = c.get("/api/web/search", params={"q": 'title:"unclosed'})
         assert r.status_code == 400
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "quot" in detail
@@ -1288,7 +1609,7 @@ class TestRouteBounds:
         # token search for ``%title:%``; now it is a 400.
         r = c.get("/api/web/search", params={"q": "title:"})
         assert r.status_code == 400
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "empty" in detail
@@ -1315,7 +1636,9 @@ class TestRouteBounds:
             ],
         )
         assert r.status_code == 200, r.text
-        assert [set(hit) for hit in ListCodec.mappings(r.json())] == [{"id", "title"}]
+        assert [set(hit) for hit in from_plain(r.json(), list[dict[str, object]])] == [
+            {"id", "title"},
+        ]
         r = c.get("/api/web/search", params=[*query, ("fields", "bogus")])
         assert r.status_code == 400, r.text
         assert "'bogus'" in r.text
@@ -1369,6 +1692,74 @@ class TestLoginPage:
         assert r.status_code == 200
         assert r.text == "LOGIN-PAGE"
 
+    def _sign_in_page(
+        self,
+        tmp_path: Path,
+        *,
+        manifest: str | None,
+        with_app: bool = True,
+    ) -> tuple[TestClient, Path]:
+        pages = tmp_path / "pages"
+        pages.mkdir()
+        (pages / "login.html").write_text(
+            "<title>Sign in - {{app_name}}</title>{{app_name}}",
+        )
+        build = _write_build(tmp_path / "b", marker="a")
+        if manifest is not None:
+            (build / "manifest.webmanifest").write_text(manifest)
+        app = FastAPI()
+        web.attach(app, assets_dir=pages, app_dir=build if with_app else None)
+        return TestClient(app), build
+
+    def test_the_page_names_the_app_from_the_served_builds_manifest(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, _ = self._sign_in_page(tmp_path, manifest='{"name": "Acme"}')
+        assert client.get("/auth/login_page").text == (
+            "<title>Sign in - Acme</title>Acme"
+        )
+
+    @pytest.mark.parametrize(
+        "manifest",
+        [None, "not json", "[]", "{}", '{"name": 3}', '{"name": ""}', '{"name": "  "}'],
+    )
+    def test_the_page_says_trackinizer_when_the_build_names_nothing(
+        self,
+        tmp_path: Path,
+        manifest: str | None,
+    ) -> None:
+        client, _ = self._sign_in_page(tmp_path, manifest=manifest)
+        assert client.get("/auth/login_page").text == (
+            "<title>Sign in - Trackinizer</title>Trackinizer"
+        )
+
+    def test_the_page_says_trackinizer_without_an_app_directory(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, _ = self._sign_in_page(tmp_path, manifest=None, with_app=False)
+        assert (
+            "Sign in - Trackinizer</title>Trackinizer"
+            in client.get(
+                "/auth/login_page",
+            ).text
+        )
+
+    def test_the_name_is_read_on_every_request_and_escaped(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        client, build = self._sign_in_page(tmp_path, manifest='{"name": "one"}')
+        assert "</title>one" in client.get("/auth/login_page").text
+        (build / "manifest.webmanifest").write_text('{"name": "<b>two&"}')
+        assert "</title>&lt;b&gt;two&amp;" in client.get("/auth/login_page").text
+
+    def test_the_shipped_page_has_no_name_of_its_own(self) -> None:
+        page = (Path(web.__file__).parent / "assets" / "login.html").read_text()
+        assert page.count("{{app_name}}") == 2
+        assert "Trackinizer" not in page
+
     def test_google_sign_in_waits_for_the_server_to_offer_it(self) -> None:
         # Without OAuth the button leads to a 503, or a 404 where OAuth is not
         # mounted. So it starts hidden, and the page shows it only when
@@ -1376,7 +1767,7 @@ class TestLoginPage:
         (google,) = (
             attrs
             for tag, attrs in _login_page_tags()
-            if tag == "a" and (attrs.get("href") or "").startswith("/auth/login")
+            if tag == "a" and attrs.get("href", "").startswith("/auth/login")
         )
         assert "hidden" in google
 
@@ -1424,6 +1815,132 @@ def _build_app_dir_app(tmp_path: Path, app_dir: Path) -> FastAPI:
     return app
 
 
+class TestAttachedRoutes:
+    def test_every_route_is_get_only_and_off_the_schema(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # The UI's pages and redirects are not API; a stray method or schema entry
+        # would publish them as endpoints.
+        assets = tmp_path / "pages"
+        assets.mkdir()
+        (assets / "login.html").write_text("LOGIN")
+        app = FastAPI()
+        web.attach(app, assets_dir=assets, app_dir=tmp_path / "missing")
+        routes = {
+            r.path: r
+            for r in app.routes
+            if isinstance(r, APIRoute) and not r.path.startswith("/api/web")
+        }
+        assert set(routes) == {
+            "/app/{path:path}",
+            "/",
+            "/me",
+            "/admin",
+            "/graph",
+            "/console",
+            "/auth/login_page",
+        }
+        for route in routes.values():
+            assert route.methods == {"GET"}
+            assert route.include_in_schema is False
+
+    def test_app_files_skip_the_directory_check(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Starlette ignores a falsy ``check_dir`` of any spelling, so only the
+        # argument itself shows the server may start before a build exists.
+        seen: list[bool] = []
+
+        class Spy(StaticFiles):
+            def __init__(self, *, directory: Path, check_dir: bool) -> None:
+                seen.append(check_dir)
+                super().__init__(directory=directory, check_dir=check_dir)
+
+        monkeypatch.setattr(web, "StaticFiles", Spy)
+        web._app_files(tmp_path / "missing")
+        assert seen == [False]
+
+
+class TestDevicePage:
+    """The page where a signed-in person approves a program's device login."""
+
+    def _page_app(self, tmp_path: Path, *, manifest: str | None = None) -> FastAPI:
+        pages = tmp_path / "pages"
+        pages.mkdir()
+        (pages / "device.html").write_text("<title>{{app_name}}</title>DEVICE")
+        build = _write_build(tmp_path / "b", marker="a")
+        if manifest is not None:
+            (build / "manifest.webmanifest").write_text(manifest)
+        app = FastAPI()
+        web.attach(app, assets_dir=pages, app_dir=build)
+        return app
+
+    def test_a_signed_out_visitor_is_sent_to_sign_in_and_back_with_the_code(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        app = self._page_app(tmp_path)
+        _install_identity(app, None)
+
+        r = TestClient(app, follow_redirects=False).get(
+            "/auth/device",
+            params={"user_code": "BCDF-GHJK"},
+        )
+
+        assert r.status_code == 302
+        location = urlparse(r.headers["location"])
+        assert location.path == "/auth/login_page"
+        assert parse_qs(location.query)["next"] == ["/auth/device?user_code=BCDF-GHJK"]
+        assert "DEVICE" not in r.text
+
+    def test_a_signed_in_visitor_gets_the_page_named_for_the_app(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        app = self._page_app(tmp_path, manifest='{"name": "<b>Acme&"}')
+        _install_identity(app, _TEST_IDENTITY)
+
+        r = TestClient(app, follow_redirects=False).get("/auth/device")
+
+        assert r.status_code == 200
+        assert r.text == "<title>&lt;b&gt;Acme&amp;</title>DEVICE"
+        assert r.headers["cache-control"] == "private, no-cache"
+
+    def test_the_route_is_get_only_and_off_the_schema(self, tmp_path: Path) -> None:
+        app = self._page_app(tmp_path)
+
+        (route,) = (
+            r
+            for r in app.routes
+            if isinstance(r, APIRoute) and r.path == "/auth/device"
+        )
+
+        assert route.methods == {"GET"}
+        assert route.include_in_schema is False
+
+    def test_without_the_asset_no_route_is_mounted(self, tmp_path: Path) -> None:
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+
+        assert TestClient(app).get("/auth/device").status_code == 404
+
+    def test_the_shipped_page_has_no_name_of_its_own_and_sets_only_text(self) -> None:
+        page = (Path(web.__file__).parent / "assets" / "device.html").read_text()
+        assert page.count("{{app_name}}") == 2
+        assert "Trackinizer" not in page
+        # What the page shows came from a stranger's request, so it is never markup.
+        assert "innerHTML" not in page
+        assert "insertAdjacentHTML" not in page
+        # A code in the link only fills the field: a stranger's link must not reach the
+        # review step before the person has checked the code against their terminal.
+        assert "look(given)" not in page
+        assert page.count("look(") == 2  # The definition, and the form's submit.
+        for path in ("lookup", "approve", "deny"):
+            assert f'"/auth/device/{path}"' in page
+
+
 class TestAppDir:
     def test_signed_out_page_redirects_to_login_with_next(
         self,
@@ -1440,6 +1957,18 @@ class TestAppDir:
             location = urlparse(r.headers["location"])
             assert location.path == "/auth/login_page"
             assert parse_qs(location.query)["next"] == [path]
+
+    def test_the_app_and_its_redirects_stay_out_of_the_api_schema(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        app = _build_app_dir_app(tmp_path, _write_build(tmp_path / "b", marker="a"))
+        schema = from_plain(app.openapi(), dict[str, object])
+        paths = set(from_plain(schema["paths"], dict[str, object]))
+        assert paths.isdisjoint(
+            {"/", "/me", "/admin", "/graph", "/console", "/app/{path}"},
+        )
+        assert "/api/web/get/{target_id}" in paths
 
     def test_signed_out_asset_is_401(self, tmp_path: Path) -> None:
         # A script or stylesheet cannot follow a redirect to the login page,
@@ -1645,6 +2174,40 @@ class TestAppDir:
         assert r.status_code == 304
         assert r.headers.get("cache-control") == immutable
 
+    def test_the_install_files_serve_without_a_session_and_nothing_else_does(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # Chrome fetches the manifest and its icons without the session cookie, so a
+        # signed-in user would otherwise never be offered Install.
+        build = _write_build(tmp_path / "b", marker="a")
+        (build / "manifest.webmanifest").write_text("{}")
+        (build / "icon-192.png").write_bytes(b"png")
+        (build / "icon-512.png").write_bytes(b"png")
+        (build / "favicon.svg").write_text("<svg/>")
+        app = _build_app_dir_app(tmp_path, build)
+        _install_identity(app, None)
+        client = TestClient(app, follow_redirects=False)
+        paths = (
+            "/app/manifest.webmanifest",
+            "/app/icon-192.png",
+            "/app/icon-512.png",
+            "/app/favicon.svg",
+            "/app/assets/app.js",
+        )
+        answers = [client.get(path) for path in paths]
+        served = {
+            path: (r.status_code, r.headers.get("content-type"))
+            for path, r in zip(paths, answers, strict=True)
+        }
+        assert served == {
+            "/app/manifest.webmanifest": (200, "application/manifest+json"),
+            "/app/icon-192.png": (200, "image/png"),
+            "/app/icon-512.png": (200, "image/png"),
+            "/app/favicon.svg": (401, "application/json"),
+            "/app/assets/app.js": (401, "application/json"),
+        }
+
     def test_app_is_off_unless_a_directory_is_given(self, tmp_path: Path) -> None:
         app = FastAPI()
         web.attach(app, assets_dir=tmp_path)
@@ -1771,6 +2334,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
                 title="filled",
                 outcome="ok",
                 config={"lr": 0.1, "nested": {"warmup": 100}},
+                app={"tracker": {"verdict": "works"}},
             ),
             SubmitPaper(
                 account=account,
@@ -1787,6 +2351,7 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
                 rooms=["lab"],
             ),
         ],
+        session_audience="open",
     )
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     for target_id in ids:
@@ -1799,6 +2364,10 @@ async def test_self_is_the_inquiry_route_on_a_real_engine(pglite_store: Store) -
         assert detail["self"] == {
             key: value for key, value in canonical.items() if key not in _EDGE_RELATIONS
         }
+    filled = await web.web_get(ids[10], request, identity=_TEST_IDENTITY)
+    assert from_plain(filled["self"], dict[str, object])["app"] == {
+        "tracker": {"verdict": "works"},
+    }
 
 
 @pytest.mark.db_pglite
@@ -1826,16 +2395,27 @@ async def test_peers_carry_their_own_created_and_priority_on_a_real_engine(
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     parent_view = await web.web_get(parent, request, identity=_TEST_IDENTITY)
     child_view = await web.web_get(child, request, identity=_TEST_IDENTITY)
-    (child_ref,) = ListCodec.coerce(
-        DictCodec.coerce(parent_view["backlinks"])["narrows"],
+    (child_ref,) = from_plain(
+        from_plain(parent_view["backlinks"], dict[str, object])["narrows"],
+        list[object],
     )
-    (parent_ref,) = ListCodec.coerce(DictCodec.coerce(child_view["edges"])["narrows"])
-    child_ref, parent_ref = DictCodec.coerce(child_ref), DictCodec.coerce(parent_ref)
+    (parent_ref,) = from_plain(
+        from_plain(child_view["edges"], dict[str, object])["narrows"],
+        list[object],
+    )
+    child_ref, parent_ref = (
+        from_plain(child_ref, dict[str, object]),
+        from_plain(parent_ref, dict[str, object]),
+    )
     assert (
-        parent_ref["peer_created"] == DictCodec.coerce(parent_view["self"])["created"]
+        parent_ref["peer_created"]
+        == from_plain(parent_view["self"], dict[str, object])["created"]
     )
     assert parent_ref["peer_priority"] == 10
-    assert child_ref["peer_created"] == DictCodec.coerce(child_view["self"])["created"]
+    assert (
+        child_ref["peer_created"]
+        == from_plain(child_view["self"], dict[str, object])["created"]
+    )
     # Neither the child nor the edge has a priority, so the ref carries neither.
     assert "peer_priority" not in child_ref
     assert "priority" not in child_ref
@@ -1861,11 +2441,52 @@ async def test_web_get_breaks_change_time_ties_by_id_on_a_real_engine(
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     detail = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
     change_ids = [
-        StrCodec.coerce(DictCodec.coerce(change)["id"])
-        for change in ListCodec.coerce(detail["changes"])
+        from_plain(from_plain(change, dict[str, object])["id"], str)
+        for change in from_plain(detail["changes"], list[object])
     ]
     assert len(change_ids) == 5
     assert change_ids == sorted(change_ids, reverse=True)
+
+
+def test_graph_node_keeps_an_empty_title_empty_and_a_belief_verdict() -> None:
+    row = {
+        **_inquiry_row(title=None),
+        "belief_judgement": "proven",
+        "belief_confidence": 0.5,
+    }
+    node = web._graph_node(cast("asyncpg.Record", row))
+    assert node["title"] == ""
+    assert (node["judgement"], node["confidence"]) == ("proven", 0.5)
+    plain = web._graph_node(
+        cast(
+            "asyncpg.Record",
+            {**_inquiry_row(), "belief_judgement": None, "belief_confidence": None},
+        ),
+    )
+    assert plain["title"] == "title"
+    assert "judgement" not in plain
+    assert "confidence" not in plain
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_get_reports_whether_the_row_is_locked(
+    pglite_store: Store,
+) -> None:
+    """The detail view carries ``locked`` beside ``self``, true only once set."""
+    target_id = await pglite_store.submit_issue(
+        SubmitIssue(account="alice@example.com", title="rules"),
+    )
+    request = cast(Request, _request(pglite_store, pglite_store.engine))
+    before = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+    async with pglite_store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET locked = TRUE WHERE id = $1",
+            target_id,
+        )
+    after = await web.web_get(target_id, request, identity=_TEST_IDENTITY)
+
+    assert (before["locked"], after["locked"]) == (False, True)
 
 
 @pytest.mark.db_pglite
@@ -1938,7 +2559,10 @@ async def test_web_graph_returns_at_most_limit_nodes_on_a_real_engine(
         (5_000, ids),
     ):
         graph = await web.web_graph(request, identity=_TEST_IDENTITY, limit=limit)
-        nodes = [DictCodec.coerce(n)["id"] for n in ListCodec.coerce(graph["nodes"])]
+        nodes = [
+            from_plain(n, dict[str, object])["id"]
+            for n in from_plain(graph["nodes"], list[object])
+        ]
         assert nodes == [str(n) for n in kept], limit
         assert _edge_ids(graph) == {
             (a, b) for a, b in whole if a in nodes and b in nodes
@@ -2047,7 +2671,10 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
             focus=focus,
             hops=hops,
         )
-        nodes = [DictCodec.coerce(n) for n in ListCodec.coerce(graph["nodes"])]
+        nodes = [
+            from_plain(n, dict[str, object])
+            for n in from_plain(graph["nodes"], list[object])
+        ]
         # Oldest first, as without a focus.
         assert [(n["id"], n["hops"]) for n in nodes] == [
             (str(node), distance) for node, distance in kept.items()
@@ -2093,9 +2720,10 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
         )
     request = cast(Request, _request(pglite_store, pglite_store.engine))
     around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=hub)
-    assert len(ListCodec.coerce(around["nodes"])) == 60
-    whole = ListCodec.mappings(
+    assert len(from_plain(around["nodes"], list[object])) == 60
+    whole = from_plain(
         (await web.web_graph(request, identity=_TEST_IDENTITY))["nodes"],
+        list[dict[str, object]],
     )
     assert len(whole) == 71
     # Without a focus there is no distance to give.
@@ -2126,7 +2754,7 @@ class TestSubscribeProbe:
         if status != 200:
             return status, headers, []
         frames = [
-            DictCodec.coerce(loads(frame.removeprefix(b"data: ")))
+            json_loads(frame.removeprefix(b"data: "), dict[str, object])
             for frame in body.split(b"\n\n")[:-1]
         ]
         return status, headers, frames
@@ -2141,8 +2769,8 @@ class TestSubscribeProbe:
         assert headers["content-type"].startswith("text/event-stream")
         assert "no-transform" not in headers.get("cache-control", "")
         # Frames at 0.02, 0.04, 0.06 and 0.08 s; none at or after for_sec.
-        assert [IntCodec.coerce(f["seq"]) for f in frames] == [0, 1, 2, 3]
-        elapsed = [FloatCodec.coerce(f["t"]) for f in frames]
+        assert [from_plain(f["seq"], int) for f in frames] == [0, 1, 2, 3]
+        elapsed = [from_plain(f["t"], float) for f in frames]
         assert elapsed[0] >= 0.02
         assert elapsed == sorted(elapsed)
         assert elapsed[-1] < 0.09
@@ -2150,7 +2778,7 @@ class TestSubscribeProbe:
     def test_one_frame_without_an_interval(self) -> None:
         # One byte, then silence until for_sec: the idle-cut experiment.
         _, _, frames = self._get(first_after_sec=0, for_sec=0.05)
-        assert [IntCodec.coerce(f["seq"]) for f in frames] == [0]
+        assert [from_plain(f["seq"], int) for f in frames] == [0]
 
     def test_no_bytes_when_the_first_is_due_after_the_end(self) -> None:
         # Headers only: the experiment for a proxy that holds them.
@@ -2188,11 +2816,14 @@ def _edge_ids(graph: web.WebView) -> set[tuple[object, object]]:
     """Return the ``(from_id, to_id)`` of every edge in a ``/graph`` response."""
     return {
         (edge["from_id"], edge["to_id"])
-        for edge in (DictCodec.coerce(e) for e in ListCodec.coerce(graph["edges"]))
+        for edge in (
+            from_plain(e, dict[str, object])
+            for e in from_plain(graph["edges"], list[object])
+        )
     }
 
 
-def _login_page_tags() -> list[tuple[str, dict[str, str | None]]]:
+def _login_page_tags() -> list[tuple[str, dict[str, str]]]:
     """Fetch the shipped login page; return its start tags and their attributes."""
     app = FastAPI()
     web.attach(app)
@@ -2208,14 +2839,126 @@ class _StartTags(HTMLParser):
 
     def __init__(self) -> None:
         super().__init__()
-        self.tags: list[tuple[str, dict[str, str | None]]] = []
+        self.tags: list[tuple[str, dict[str, str]]] = []
 
     @override
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.tags.append((tag, dict(attrs)))
+        self.tags.append((tag, {name: value or "" for name, value in attrs}))
+
+
+class TestSearchEmbedder:
+    """Which embedder a session search uses: none, the A/B model, or the default."""
+
+    @classmethod
+    def _request(cls) -> Request:
+        return Request({"type": "http", "app": FastAPI()})
+
+    @classmethod
+    def _stub(
+        cls,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[object, object, list[tuple[object, ...]]]:
+        override, default = object(), object()
+        calls: list[tuple[object, ...]] = []
+
+        def fake_override(request: Request, name: str, dim: int | None) -> object:
+            calls.append(("override", request, name, dim))
+            return override
+
+        def fake_default(request: Request) -> object:
+            calls.append(("default", request))
+            return default
+
+        monkeypatch.setattr(web, "_override_embedder", fake_override)
+        monkeypatch.setattr(web, "_session_embedder", fake_default)
+        return override, default, calls
+
+    @pytest.mark.parametrize("semantic", [False, True])
+    def test_a_dimension_without_a_model_is_refused_with_its_reason(
+        self,
+        semantic: bool,
+    ) -> None:
+        with pytest.raises(HTTPException) as caught:
+            web._search_embedder(
+                self._request(),
+                semantic=semantic,
+                model="",
+                dim=256,
+            )
+        assert (caught.value.status_code, caught.value.detail) == (
+            400,
+            "dim requires model",
+        )
+
+    def test_a_search_that_is_not_semantic_uses_no_embedder(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        self._stub(monkeypatch)
+        for model in ("", "qwen3-embedding-4b"):
+            found = web._search_embedder(
+                self._request(),
+                semantic=False,
+                model=model,
+                dim=None,
+            )
+            assert found is None
+
+    def test_a_model_selects_the_override_with_its_dimension(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        override, _, calls = self._stub(monkeypatch)
+        request = self._request()
+        found = web._search_embedder(
+            request,
+            semantic=True,
+            model="m",
+            dim=512,
+        )
+        assert found is override
+        assert calls == [("override", request, "m", 512)]
+
+    def test_no_model_selects_the_default(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        _, default, calls = self._stub(monkeypatch)
+        request = self._request()
+        found = web._search_embedder(
+            request,
+            semantic=True,
+            model="",
+            dim=None,
+        )
+        assert found is default
+        assert calls == [("default", request)]
+
+
+def test_the_install_icons_served_signed_out_are_192_and_512_pixel_pngs() -> None:
+    # The identity table (web/src/identity.ts) names them; the build copies public/.
+    public = _CWD.parent / "web" / "public"
+    assert _png_size(public / "icon-192.png") == (192, 192)
+    assert _png_size(public / "icon-512.png") == (512, 512)
+
+
+def test_the_entry_page_links_the_built_manifest_and_takes_its_name_from_it() -> None:
+    page = (_CWD.parent / "web" / "index.html").read_text()
+    assert '<link rel="manifest" href="%BASE_URL%manifest.webmanifest" />' in page
+    assert "<title>%APP_NAME%</title>" in page
+    assert "Trackinizer" not in page
+    assert not (_CWD.parent / "web" / "public" / "manifest.webmanifest").exists()
+
+
+def _png_size(path: Path) -> tuple[int, int]:
+    """Return the width and height a PNG's header names."""
+    data = path.read_bytes()
+    assert data[:8] == b"\x89PNG\r\n\x1a\n", path
+    width, height = struct.unpack(">II", data[16:24])
+    return width, height
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

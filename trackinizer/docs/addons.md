@@ -122,7 +122,7 @@ switches an optional addon off:
 python -m trackinizer.addons run mysite.deployments.production \
     --addon chat --override chat.model=small
 python -m trackinizer.server --addons mysite.deployments.production \
-    --addon-override visuals.default_visual=trax.chat
+    --addon-override visuals.default_visual=mysite.board
 ```
 
 A bad factory path, a bad override, or an unknown `--addon` exits with a

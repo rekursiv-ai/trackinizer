@@ -14,16 +14,13 @@ from uuid import UUID, uuid4
 
 import json
 
+from treekle import from_plain, immutable, mutable
+
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.types.sessions import UncategorizedRecord
-from trackinizer.lib.custom_json import (
-    DataclassCodec,
-    DictCodec,
-    json_freeze,
-    json_unfreeze,
-)
+from trackinizer.lib.agent.types.stored import to_stored
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
 from trackinizer.types.session_records import SessionRecordRow
@@ -79,9 +76,10 @@ async def _legacy_session(store: Store) -> UUID:
         # Building the pre-migration state is the only way to exercise it.
         await conn.execute(_LEGACY_TABLE)
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'legacy')",
+            "'tester@example.com', 'legacy', 'open')",
             session_id,
         )
         await conn.execute(
@@ -170,7 +168,7 @@ def test_the_dotted_tag_matches_what_the_codec_emits() -> None:
     No database: the claim is about the MIGRATION TEXT agreeing with what the
     codec emits, which is decidable by reading both.
     """
-    emitted = DataclassCodec.to_json(UncategorizedRecord(kind="x"))
+    emitted = from_plain(to_stored(UncategorizedRecord(kind="x")), dict[str, object])
     assert (
         emitted["py/object"]
         == "trackinizer.lib.agent.types.sessions.UncategorizedRecord"
@@ -193,7 +191,7 @@ async def test_the_original_kind_survives_as_provenance(store: Store) -> None:
     await _run_backfill(store)
 
     rows = await store.read_session_records(session_id, part=-1, limit=500)
-    kinds = [DictCodec.coerce(row.payload).get("kind") for row in rows]
+    kinds = [from_plain(row.payload, dict[str, object]).get("kind") for row in rows]
     assert kinds == [
         "legacy/UserMessage",
         "legacy/AssistantMessage",
@@ -238,7 +236,7 @@ async def test_no_payload_retains_ciphertext(store: Store) -> None:
     for row in rows:
         # ``json_unfreeze`` first: the stored payload is frozen (mappingproxy
         # / tuple), which ``json.dumps`` refuses.
-        rendered = json.dumps(json_unfreeze(row.payload))
+        rendered = json.dumps(mutable(row.payload))
         assert _ENCRYPTED not in rendered
         assert _SIGNATURE not in rendered
 
@@ -256,7 +254,7 @@ async def test_the_ciphertext_moves_to_its_own_table(store: Store) -> None:
     await _run_backfill(store)
 
     rows = await store.read_session_records(session_id, part=-1, limit=500)
-    sealed = [row.ciphertext for row in rows if row.ciphertext]
+    sealed = [blob for row in rows if (blob := row.ciphertext or "")]
     assert sealed == [_ENCRYPTED + _SIGNATURE]
 
 
@@ -313,7 +311,7 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
     await store.upsert_session_manifest(
         session_id,
         name="native.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid4(),
         format="claude",
         records=1,
@@ -326,7 +324,7 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
                 part=0,
                 idx=0,
                 kind="UserMessage",
-                payload=json_freeze({"py/object": "x"}),
+                payload=immutable({"py/object": "x"}),
                 text="native turn",
             ),
         ],
@@ -341,6 +339,6 @@ async def test_a_mixed_session_keeps_its_parts_separate(store: Store) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

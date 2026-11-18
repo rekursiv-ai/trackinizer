@@ -2,7 +2,10 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, test, streamOpened } from "./fixtures";
+
+// The default path: the canvas is on, so the tab's stream is the canvas's.
+test.use({ canvas: true });
 
 // Live updates against the e2e server: a second client, the Python one, writes
 // while the page watches. Each test filters a list to a label of its own, so
@@ -41,12 +44,12 @@ async function createIssue(request: APIRequestContext, title: string, label: str
 
 /** Open the Issue list filtered to `label`, once the live stream is connected. */
 async function openList(page: Page, label: string) {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto("/app/#/list/Issue");
   await subscribed;
   await page.getByRole("button", { name: /^Filter$/ }).click();
   await page.getByRole("option", { name: "Label", exact: true }).click();
-  await page.getByRole("combobox").fill(label);
+  await page.getByRole("combobox", { name: /^Label/ }).fill(label);
   await page.keyboard.press("Enter");
   await page.keyboard.press("Escape");
   await expect(page.getByTitle("The same query from the CLI")).toContainText(`labels is ${label}`);

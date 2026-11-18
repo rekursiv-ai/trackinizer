@@ -57,8 +57,8 @@ test("+ Calls adds tool calls, + Output their results and thinking, and All the 
   }
   // A message with nothing in it is bookkeeping, as the transcript folds it.
   expect(levelOf(record("AssistantMessage", { content: "  " }))).toBe(4);
-  const image = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: { "py/b64": "AA==" } };
-  expect(levelOf(record("UserMessage", { content: "", attachments: { "py/tuple": [image] } }))).toBe(1);
+  const image = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: "AA==" };
+  expect(levelOf(record("UserMessage", { content: "", attachments: [image] }))).toBe(1);
 });
 
 test("the server reads only a low level's kinds; + Output and All read every kind", () => {
@@ -84,4 +84,13 @@ test("each level counts what it shows: the agents' conversation, then each kind 
   };
   // 82 of the 110 records of conversation kinds are conversation; the other 28 count with the bookkeeping.
   expect(levelCounts({ conversation: 82, count: 1000, kinds })).toEqual([82, 282, 532, 1000]);
+});
+
+test("a message's attachments count whether plain or a tagged tuple", () => {
+  const plain = { "py/object": "trackinizer.lib.agent.types.sessions.Attachment", mime_descriptor: "image/png", data: "AA==" };
+  const tagged = { ...plain, data: { "py/b64": "AA==" } };
+  expect(levelOf(record("UserMessage", { content: "", attachments: [plain] }))).toBe(1);
+  expect(levelOf(record("UserMessage", { content: "", attachments: { "py/tuple": [tagged] } }))).toBe(1);
+  expect(levelOf(record("UserMessage", { content: "", attachments: [] }))).toBe(4);
+  expect(levelOf(record("UserMessage", { content: "", attachments: { "py/tuple": [] } }))).toBe(4);
 });

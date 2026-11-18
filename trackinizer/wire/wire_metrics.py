@@ -20,10 +20,11 @@ status is its lifecycle).
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import TYPE_CHECKING, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from trackinizer.wire.json_types import UtcDatetime
 
 
 if TYPE_CHECKING:
@@ -113,7 +114,7 @@ class MetricPoint(BaseModel):
     payloads land -- until then a non-``scalar`` kind is a 422, not silent
     mis-rendered data."""
 
-    timestamp: datetime | None = None
+    timestamp: UtcDatetime | None = None
     """When the producer logged the point, on its own clock."""
 
     _validate_key = field_validator("key", mode="after")(staticmethod(_validate_key))

@@ -6,6 +6,10 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+import json
+
+from treekle import from_plain
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, fuse
@@ -17,7 +21,6 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UserMessage,
 )
-from trackinizer.lib.custom_json import DictCodec, StrCodec
 
 
 if TYPE_CHECKING:
@@ -211,14 +214,90 @@ def test_chain_orders_parts_by_the_thread_each_forked_from() -> None:
     assert [_declared_id(part) for part in ordered] == ["a", "b", "c"]
 
 
+def test_unfuse_drains_an_abandoned_part_before_yielding_the_next() -> None:
+    first = _part("a", UserMessage(content="Hi."))
+    second = _part("b", UserMessage(content="Again."))
+    parts = fuse.unfuse(fuse.fuse([first, second]))
+
+    abandoned = next(parts)
+    assert next(abandoned) == first[0]
+    assert list(next(parts)) == second
+
+
+def test_names_of_a_stream_starting_at_a_seam_names_an_empty_root() -> None:
+    record = ContextClear(extra={"$seam": "second"})
+
+    assert fuse.names_of([record]) == ["", "second"]
+
+
+def test_chain_deduplicates_a_cycle_and_keeps_the_cycle_component() -> None:
+    first = [TurnContext(extra={"payload": {"id": "a", "forked_from_id": "b"}})]
+    second = [TurnContext(extra={"payload": {"id": "b", "forked_from_id": "a"}})]
+
+    assert fuse.chain([first, second]) == [first, second]
+
+
+def test_chain_deduplicates_a_successor_list_repeating_one_part() -> None:
+    root = _part("root", UserMessage(content="root"))
+    child = [TurnContext(extra={"payload": {"id": "child", "forked_from_id": "root"}})]
+
+    assert fuse.chain([root, child, child]) == [root, child]
+
+
+def _rollout(own: str, parent: str = "", *, lead: str = "") -> list[SessionRecord]:
+    """Return a codex rollout's records, optionally forked and lead-blanked."""
+    payload = {"id": own, **({"forked_from_id": parent} if parent else {})}
+    native = (
+        lead
+        + '{"type":"session_meta","payload":'
+        + json.dumps(payload)
+        + "}\n"
+        + '{"type":"response_item","payload":{"type":"message","role":"user",'
+        + '"content":[{"type":"input_text","text":"from '
+        + own
+        + '"}]}}\n'
+    )
+    return list(codex.normalize(StringIO(native)))
+
+
+def test_a_fork_opening_with_a_blank_line_still_chains() -> None:
+    # The blank line's opening context holds only an encoding, so taking the
+    # FIRST context as the declaration read no id and no parent at all.
+    root = _rollout("a")
+    fork = _rollout("b", "a", lead="\n")
+
+    assert fuse.chain([fork, root]) == [root, fork]
+
+
+def test_a_codex_fork_s_seam_states_what_crossed_it() -> None:
+    # Codex names the parent on its launch settings, never on a user turn.
+    joined = list(fuse.fuse(fuse.chain([_rollout("a"), _rollout("b", "a")])))
+
+    seams = [r for r in joined if isinstance(r, ContextClear) and "$seam" in r.extra]
+    assert [seam.summary for seam in seams] == ["from b"]
+
+
+@pytest.mark.parametrize("name", ["../x.jsonl", "/abs.jsonl", "a/b.jsonl", ".."])
+def test_a_seam_naming_a_path_is_refused(name: str) -> None:
+    with pytest.raises(ValueError, match="seam names a path"):
+        fuse.names_of([ContextClear(extra={"$seam": name})])
+
+
+def test_chain_treats_a_part_without_context_as_a_root() -> None:
+    part = [UserMessage(content="orphan")]
+
+    assert fuse.chain([part]) == [part]
+
+
 def _declared_id(part: Sequence[SessionRecord]) -> str:
     """Return the thread id a part's launch settings name."""
     opening = part[0]
     assert isinstance(opening, TurnContext)
-    return StrCodec.coerce(DictCodec.coerce(opening.extra.get("payload")).get("id"))
+    payload = from_plain(opening.extra["payload"], dict[str, object])
+    return from_plain(payload["id"], str)
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

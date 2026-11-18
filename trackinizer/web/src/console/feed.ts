@@ -71,6 +71,8 @@ export class ConsoleFeed {
   #state: FeedState = { held: [], loading: true, error: null, more: false };
   #cursor: FeedCursor | null = null;
   readonly #listeners = new Set<() => void>();
+  /** The keys of the reads under way, which `dispose` cancels. */
+  readonly #reading = new Set<readonly unknown[]>();
 
   constructor(client: QueryClient, range: Range, filter: FeedFilters, level: Level) {
     this.#client = client;
@@ -87,6 +89,15 @@ export class ConsoleFeed {
   };
 
   readonly getSnapshot = (): FeedState => this.#state;
+
+  /**
+   * Stop the reads under way: a read the query cache retries goes on after the
+   * view that wanted it has gone, and a load or update waiting on it reads its
+   * next page. Cancelled, they end with an error nobody is left to show.
+   */
+  dispose(): void {
+    for (const queryKey of this.#reading) void this.#client.cancelQueries({ queryKey, exact: true });
+  }
 
   /** Read the first page: the newest, live (`#tail`); the window's oldest, history. A failure is kept for the view to show. */
   async load(): Promise<void> {
@@ -116,13 +127,14 @@ export class ConsoleFeed {
    * being read, wait for it, since it may predate the change; after it failed,
    * there is nothing to read past until the view's Retry loads it again.
    */
-  async update({ gap }: Batch): Promise<Later | null> {
+  async update({ gap }: Batch, open: () => boolean = () => true): Promise<Later | null> {
     if (this.#state.loading) return { afterMs: 1000 };
     if (this.#state.error && !this.#state.held.length) return null;
     let page: FeedPage;
     do {
       page = await this.#read(this.#window(), false);
       this.#take(page);
+      if (!open()) return null;
     } while (page.events.length >= PAGE);
     if (gap) {
       const newest = await this.#read({ tail: true, limit: PAGE }, false);
@@ -142,15 +154,15 @@ export class ConsoleFeed {
     const newest = await this.#read({ tail: true, limit: PAGE }, true);
     let [page, events] = [newest, newest.events];
     for (let pages = 1; pages < FILL_PAGES && page.events.length >= PAGE && this.#shown(events) < FILL; pages++) {
-      // `until` holds its own instant, so a page cut inside a same-instant group loses none of it.
-      page = await this.#read({ tail: true, until: events[0]!.created, limit: PAGE }, true);
+      const oldest = page.events[0]!;
+      page = await this.#read({ tail: true, before: { created: oldest.created, session_id: oldest.session_id, part: oldest.part, seq: oldest.seq }, limit: PAGE }, true);
       events = [...page.events, ...events];
     }
     return { ...newest, events };
   }
 
   #shown(events: readonly FeedEvent[]): number {
-    return events.filter((event) => levelOf(event) <= this.#level).length;
+    return new Set(events.filter((event) => levelOf(event) <= this.#level).map(keyOf)).size;
   }
 
   /** The next read past the cursor, within the window when there is one. */
@@ -173,13 +185,17 @@ export class ConsoleFeed {
    */
   #read(read: FeedRead, retry: boolean): Promise<FeedPage> {
     const filtered = { ...read, ...this.#filter, ...(this.#level === 1 ? { kind: [], conversation: true } : {}) };
-    return this.#client.fetchQuery({
-      queryKey: ["console", "feed", filtered],
-      queryFn: ({ signal }) => readFeed(filtered, { signal }),
-      staleTime: 0,
-      gcTime: 0,
-      ...(retry ? {} : { retry: false }),
-    });
+    const queryKey = ["console", "feed", filtered] as const;
+    this.#reading.add(queryKey);
+    return this.#client
+      .fetchQuery({
+        queryKey,
+        queryFn: ({ signal }) => readFeed(filtered, { signal }),
+        staleTime: 0,
+        gcTime: 0,
+        ...(retry ? {} : { retry: false }),
+      })
+      .finally(() => this.#reading.delete(queryKey));
   }
 
   #take(page: FeedPage): void {

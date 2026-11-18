@@ -47,10 +47,11 @@ test("a node two or more hops out fades to 0.7 of its look; a retired one keeps 
   expect(nodeLook(shape({ status: "invalid" }), PALETTE)).toMatchObject({ fillAlpha: 0.25, ringAlpha: 0.25 });
 });
 
-test("a node gets no halo, the strong one as the focus or the selection, or the match one as a search match", () => {
+test("a node gets no halo, the strong one as the focus or the selection, the match one as a search match, or the highlight one as pointed at", () => {
   expect(nodeLook(shape(), PALETTE).halo).toBeNull();
   expect(nodeLook(shape(), PALETTE, { halo: "strong" }).halo).toBe("halo");
   expect(nodeLook(shape(), PALETTE, { halo: "match", dimmed: true }).halo).toBe("match");
+  expect(nodeLook(shape(), PALETTE, { halo: "highlight" }).halo).toBe("highlight");
 });
 
 test("a Belief shows its confidence as fill and its judgement as the glyph", () => {
@@ -105,6 +106,7 @@ test("the palette is the theme's tokens for every kind, edge kind and status, or
     ["--accent-hover", "#aaaaaa"],
     ["--g-duo-record", "#bbbbbb"],
     ["--g-duo-belief", "#cccccc"],
+    ["--amber", "#dddddd"],
   ]) {
     root.style.setProperty(name!, ` ${value}`);
   }
@@ -121,6 +123,7 @@ test("the palette is the theme's tokens for every kind, edge kind and status, or
     match: "#aaaaaa",
     duoRecord: "#bbbbbb",
     duoBelief: "#cccccc",
+    highlight: "#dddddd",
   });
 });
 

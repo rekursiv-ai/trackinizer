@@ -16,12 +16,12 @@ Streams on BOTH sides, never sequences (axiom 11): a part is an iterable and
 both functions yield, so joining a 273 MB conversation holds the seam records
 rather than a copy of the files.
 
-What a boundary states is decided from a bounded PREFIX of the part it
-introduces, because the grammar bounds it: a summary that crossed the seam is
-written as that file's FIRST user turn, so once the model has spoken no summary
-is coming. The prefix is buffered, the boundary emitted, and the rest of the
-part streams straight through behind it. Measured on the captured fixtures, the
-deepest that prefix ran was 11 records of a 137-record file.
+What a boundary states is decided from the PREFIX of the part it introduces,
+up to its first user turn: a summary that crossed the seam is written as that
+turn, so once it arrives the question is settled. The prefix is buffered, the
+boundary emitted, and the rest of the part streams straight through behind it.
+Measured on the captured fixtures, the deepest that prefix ran was 11 records
+of a 137-record file -- but a part with NO user turn is buffered whole.
 
 Unfusing yields one ITERATOR per part, consumed in order: a part is the records
 between two seams, so the third file cannot be handed back before the first two
@@ -35,19 +35,17 @@ settings, claude marks the carried-over summary with ``isCompactSummary``.
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import PurePath
 from typing import TYPE_CHECKING
+
+from treekle import from_plain, immutable
 
 from trackinizer.lib.agent.types.sessions import (
     ContextClear,
     SessionRecord,
     TurnContext,
     UserMessage,
-)
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    StrCodec,
-    json_freeze,
-    json_unfreeze,
 )
 
 
@@ -158,15 +156,20 @@ def names_of(records: Iterable[SessionRecord], *, seam: str = "$seam") -> list[s
     Returns:
       names: One file name per part, in the order they were written.
 
+    Raises:
+      ValueError: A name is not a bare file name. It came from the stream, and
+        a caller joins it to a directory, so ``../x`` or ``/x`` would write
+        outside it.
+
     """
     out: list[str] = []
     for record in records:
         if isinstance(record, TurnContext) and seam in record.extra and not out:
-            out.append(StrCodec.coerce(dict(json_unfreeze(record.extra)).get(seam)))
+            out.append(_bare(record.extra[seam]))
         elif isinstance(record, ContextClear) and seam in record.extra:
             if not out:
                 out.append("")
-            out.append(StrCodec.coerce(dict(json_unfreeze(record.extra)).get(seam)))
+            out.append(_bare(record.extra[seam]))
     return out
 
 
@@ -192,7 +195,7 @@ def chain(
     found = list(parts)
     by_id: dict[str, Sequence[SessionRecord]] = {}
     for part in found:
-        own = StrCodec.coerce(_declared(part).get("id"))
+        own = _declared(part).get("id", "")
         if own:
             by_id[own] = part
     # A LIST per parent: a thread may be resumed more than once, and keeping
@@ -201,8 +204,8 @@ def chain(
     successors: dict[str, list[Sequence[SessionRecord]]] = {}
     roots: list[Sequence[SessionRecord]] = []
     for part in found:
-        parent = StrCodec.coerce(_declared(part).get(forked_from))
-        if parent and parent in by_id:
+        parent = _declared(part).get(forked_from, "")
+        if parent in by_id:
             successors.setdefault(parent, []).append(part)
         else:
             roots.append(part)
@@ -220,7 +223,7 @@ def chain(
                 continue
             seen.add(id(part))
             ordered.append(part)
-            own = StrCodec.coerce(_declared(part).get("id"))
+            own = _declared(part).get("id", "")
             stack.extend(reversed(successors.get(own, [])))
     # A component whose links form a CYCLE has no root, so the walk above never
     # started on it -- the ``seen`` guard only stops a re-visit, it cannot reach
@@ -232,11 +235,23 @@ def chain(
     return ordered
 
 
-def _declared(part: Sequence[SessionRecord]) -> dict[str, object]:
-    """Return the launch settings a part declared, by its wire key names."""
+def _bare(value: object) -> str:
+    """Return a seam's file name, refusing one that names another directory."""
+    name = from_plain(value, str)
+    if name != PurePath(name).name or name in {".", ".."}:
+        raise ValueError(f"seam names a path, not a file: {name!r}")
+    return name
+
+
+# The first context CARRYING a payload, not merely the first context: a rollout whose
+# first line is blank states its encoding before it declares itself, and that opening
+# context holds no launch settings -- the rule ``codex.denormalize`` applies too.
+def _declared(part: Sequence[SessionRecord]) -> dict[str, str]:
+    """Return the launch settings' string fields a part declared, by wire key."""
     for record in part:
-        if isinstance(record, TurnContext):
-            return DictCodec.coerce(dict(json_unfreeze(record.extra)).get("payload"))
+        if isinstance(record, TurnContext) and "payload" in record.extra:
+            payload = from_plain(record.extra["payload"], dict[str, object], default={})
+            return {k: v for k, v in payload.items() if isinstance(v, str)}
     return {}
 
 
@@ -251,7 +266,7 @@ def _named(
         if index or not isinstance(record, TurnContext):
             yield record
             continue
-        extra = dict(json_unfreeze(record.extra))
+        extra = dict(record.extra)
         extra[seam] = name
         yield _restated(record, extra)
 
@@ -279,36 +294,22 @@ def _unnamed(record: SessionRecord, *, seam: str) -> SessionRecord:
         return record
     return _restated(
         record,
-        {
-            key: value
-            for key, value in dict(json_unfreeze(record.extra)).items()
-            if key != seam
-        },
+        {key: value for key, value in dict(record.extra).items() if key != seam},
     )
 
 
 def _restated(record: TurnContext, extra: Mapping[str, object]) -> TurnContext:
     """Return one context with a different residual and nothing else moved."""
-    return TurnContext(
-        context_id=record.context_id,
-        timestamp=record.timestamp,
-        permission=record.permission,
-        model=record.model,
-        effort=record.effort,
-        summary_kind=record.summary_kind,
-        encoding=record.encoding,
-        extra=json_freeze(dict(extra)),
-    )
+    return replace(record, extra=immutable(extra))
 
 
 # A window opens either way, so the boundary IS a clear -- carrying the summary when one
 # crossed the seam. It stores nothing else: the part keeps its OWN opening records, so
 # unfusing drops the boundary and the file reassembles from what it already had.
 #
-# BOUNDED, though it reads ahead: claude compacts by writing the earlier conversation's
-# summary as the file's FIRST user turn, flagged as such, so the first turn settles the
-# question and everything before it is the state the file opens with. Measured on the
-# captured fixtures, the deepest that ran was 11 records of a 137-record file. The
+# Reads ahead to the first user turn: claude compacts by writing the earlier
+# conversation's summary as the file's FIRST user turn, flagged as such, so that turn
+# settles the question and everything before it is the state the file opens with. The
 # prefix comes back rather than being re-read, so the part is walked once.
 def _boundary(
     part: Iterator[SessionRecord],
@@ -322,16 +323,20 @@ def _boundary(
     prefix: list[SessionRecord] = []
     opened: str | None = None
     carried: str | None = None
+    forked = False
     for record in part:
         prefix.append(record)
         if isinstance(record, TurnContext) and opened is None:
             opened = record.timestamp or ""
+        # Codex names the thread it continued on its LAUNCH settings, never on
+        # a turn, so a fork's first user turn is what crossed its seam.
+        forked = forked or forked_from in _declared([record])
         if isinstance(record, UserMessage):
-            if forked_from in record.extra or summary in record.extra:
+            if forked or summary in record.extra:
                 carried = record.content
             break
     return prefix, ContextClear(
         timestamp=opened or None,
         summary=carried,
-        extra=json_freeze({seam: name}),
+        extra={seam: name},
     )

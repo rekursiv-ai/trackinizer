@@ -23,6 +23,7 @@ import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.server.api.query import parse_filter
 from trackinizer.trax import cli, grammar
 from trackinizer.trax.conftest import FakeClient
 from trackinizer.trax.grammar import (
@@ -37,6 +38,7 @@ from trackinizer.trax.grammar import (
     is_issue_kind,
     validate_writable_fields,
 )
+from trackinizer.trax.parser import parse_list_query
 from trackinizer.types.columns import flat_column_specs
 from trackinizer.types.edges import Edge
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
@@ -291,39 +293,46 @@ def test_field_value_wraps_coerce_value_error_as_client_error() -> None:
         field_value("status", "flummoxed")
 
 
-def test_field_value_config_parses_json_object() -> None:
-    assert field_value("config", '{"lr": 0.1}') == {"lr": 0.1}
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_field_value_json_object_parses_json_object(field: str) -> None:
+    assert field_value(field, '{"lr": 0.1}') == {"lr": 0.1}
 
 
-def test_field_value_config_rejects_invalid_json() -> None:
-    with pytest.raises(ClientError, match="config must be valid JSON"):
-        field_value("config", "not json")
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_field_value_json_object_rejects_invalid_json(field: str) -> None:
+    with pytest.raises(ClientError, match=f"{field} must be valid JSON"):
+        field_value(field, "not json")
 
 
-def test_field_value_config_rejects_non_object_json() -> None:
-    """A JSON array/scalar is valid JSON but not a config object."""
-    with pytest.raises(ClientError, match="config must be a JSON object"):
-        field_value("config", "[1, 2]")
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_field_value_json_object_rejects_non_object_json(field: str) -> None:
+    """A JSON array/scalar is valid JSON but not a JSON object."""
+    with pytest.raises(ClientError, match=f"{field} must be a JSON object"):
+        field_value(field, "[1, 2]")
 
 
+@pytest.mark.parametrize("field", ["config", "app"])
 @pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
-def test_field_value_config_rejects_nonstandard_numeric_constant(
+def test_field_value_json_object_rejects_nonstandard_numeric_constant(
+    field: str,
     constant: str,
 ) -> None:
-    """Config accepts portable JSON, not Python's non-standard constants."""
-    with pytest.raises(ClientError, match="config must be valid JSON"):
-        field_value("config", f'{{"value": {constant}}}')
+    """Both fields accept portable JSON, not Python's non-standard constants."""
+    with pytest.raises(ClientError, match=f"{field} must be valid JSON"):
+        field_value(field, f'{{"value": {constant}}}')
 
 
-def test_field_value_config_rejects_overflowed_number() -> None:
-    with pytest.raises(ClientError, match="config numbers must be finite"):
-        field_value("config", '{"value": 1e999}')
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_field_value_json_object_rejects_overflowed_number(field: str) -> None:
+    with pytest.raises(ClientError, match=f"{field} numbers must be finite"):
+        field_value(field, '{"value": 1e999}')
 
 
-def test_config_is_writable_but_not_filterable() -> None:
+@pytest.mark.parametrize("field", ["config", "app"])
+def test_json_object_is_writable_but_not_filterable(field: str) -> None:
     """Structural JSON filtering is not part of the scalar filter grammar."""
-    assert "config" in WRITE_FIELDS_CLI["Experiment"]
-    assert "config" not in grammar.FILTER_FIELDS_CLI["Experiment"]
+    assert field in WRITE_FIELDS_CLI["Experiment"]
+    assert field not in grammar.FILTER_FIELDS_CLI["Experiment"]
 
 
 def test_write_fields_cli_matches_server_kind_gate() -> None:
@@ -349,6 +358,19 @@ def test_write_fields_cli_matches_server_kind_gate() -> None:
             if applies is None or kind in applies:
                 expected.add(spec.cli_name)
         assert set(WRITE_FIELDS_CLI[kind]) == expected, kind
+
+
+@pytest.mark.parametrize("kind", list(KIND_TO_CLASS))
+def test_advertised_filter_fields_survive_server_validation(
+    kind: Inquiry.InquiryKind,
+) -> None:
+    for field in grammar.FILTER_FIELDS_CLI[kind]:
+        query = parse_list_query(kind, [field, "is", "value"])
+        assert query is not None, (kind, field)
+        assert query.kinds == (kind,), field
+        assert query.filters == (
+            parse_filter({"field": field, "op": "is", "value": "value"}, kind),
+        )
 
 
 def test_validate_writable_fields_rejects_cross_kind_field() -> None:
@@ -380,7 +402,7 @@ def _table_sources() -> dict[str, set[str]]:
         "Cost fields (`COST_FIELDS`)": set(grammar.COST_FIELDS),
         "Edge keywords (`EDGE_ALIASES`)": set(grammar.EDGE_ALIASES),
         "Statuses (`Inquiry.Status`)": set(
-            get_args(cast(object, Inquiry.Status.__value__)),
+            get_args(Inquiry.Status.__value__),
         ),
         "Sort choices (`SORT_CHOICES`)": set(grammar.SORT_CHOICES),
         "Filter ops (`FILTER_OPS`)": set(FILTER_OPS),
@@ -414,7 +436,7 @@ def test_every_edge_kind_has_both_writable_directions() -> None:
     """
     forward = {e.name for e in grammar.EDGE_ALIASES.values() if not e.reverse}
     reverse = {e.name for e in grammar.EDGE_ALIASES.values() if e.reverse}
-    kinds = set(get_args(cast(object, Edge.Kind.__value__)))
+    kinds = set(get_args(Edge.Kind.__value__))
     assert kinds <= forward, f"no forward writable alias for {sorted(kinds - forward)}"
     assert kinds <= reverse, f"no reverse writable alias for {sorted(kinds - reverse)}"
 
@@ -464,6 +486,6 @@ def test_taxonomy_edge_has_all_four_verb_forms() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

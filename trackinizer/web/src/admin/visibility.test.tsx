@@ -6,12 +6,18 @@ import { App } from "../app/App";
 import { FakeEventSource } from "../live/testing";
 import { AdminView } from "../router/views";
 
-/** Serve boot for a user of `role`; every other read answers empty. */
+/**
+ * Serve boot for a user of `role`; every other read answers empty.
+ *
+ * The canvas is off here. `getProfile` reads an absent `visual_workspace_enabled` as on, so a
+ * profile that leaves it out mounts Chat's column and the canvas around every page — which is
+ * not what these tests are of, and which buries Admin inside a surface they never serve.
+ */
 function boot(role: string) {
   return stubFetch((request) => {
     const path = new URL(request.url).pathname;
     if (path === "/api/meta/enums") return Response.json({ inquiry_kind_all: ["Issue"], status: ["active"] });
-    if (path === "/api/me/profile") return Response.json({ user_id: "u1", email: "ada@example.com", name: "Ada", role, last_login: null });
+    if (path === "/api/me/profile") return Response.json({ user_id: "u1", email: "ada@example.com", name: "Ada", role, last_login: null, visual_workspace_enabled: false });
     if (path === "/api/admin/users") return Response.json({ users: [] });
     if (path === "/api/admin/allowlist") return Response.json({ entries: [] });
     if (path === "/api/me/tokens") return Response.json({ tokens: [] });
@@ -51,10 +57,11 @@ test("a non-admin has Your settings but no Admin entry or command", async () => 
   boot("writer");
   const user = userEvent.setup();
   render(<App assign={vi.fn()} />);
-  await screen.findByLabelText("Signed in");
-  const sidebar = within(screen.getByRole("navigation", { name: "Sidebar" }));
-  expect(sidebar.getByRole("link", { name: "Your settings" }).getAttribute("href")).toBe("#/settings");
-  expect(sidebar.queryByRole("link", { name: "Admin" })).toBeNull();
+  await screen.findByRole("button", { name: /^Account:/ });
+  fireEvent.click(screen.getByRole("button", { name: /^Account:/ }));
+  const account = within(screen.getByRole("dialog", { name: "Account" }));
+  expect(account.getByRole("link", { name: "Your settings" }).getAttribute("href")).toBe("#/settings");
+  expect(account.queryByRole("link", { name: "Admin" })).toBeNull();
   const titles = await commandTitles(user);
   expect(titles).toContain("Go to Your settings");
   expect(titles.some((title) => title?.includes("Admin"))).toBe(false);
@@ -63,7 +70,7 @@ test("a non-admin has Your settings but no Admin entry or command", async () => 
 test("a non-admin's link to Admin is refused, and asks nothing of the admin routes", async () => {
   const sent = boot("writer");
   render(<App assign={vi.fn()} />);
-  await screen.findByLabelText("Signed in");
+  await screen.findByRole("button", { name: /^Account:/ });
   history.pushState(null, "", "#/admin");
   dispatchEvent(new HashChangeEvent("hashchange"));
   expect(await screen.findByRole("heading", { name: "Admins only" })).toBeTruthy();
@@ -78,13 +85,13 @@ test("an admin demoted since boot opens Admin: it waits for the profile it refet
     const path = new URL(request.url).pathname;
     if (path === "/api/me/profile") {
       if (role !== "admin") await held;
-      return Response.json({ user_id: "u1", email: "ada@example.com", name: "Ada", role, last_login: null });
+      return Response.json({ user_id: "u1", email: "ada@example.com", name: "Ada", role, last_login: null, visual_workspace_enabled: false });
     }
     if (path === "/api/meta/enums") return Response.json({ inquiry_kind_all: ["Issue"], status: ["active"] });
     return Response.json(path === "/api/inquiries" ? [] : { users: [], entries: [] });
   });
   render(<App assign={vi.fn()} />);
-  await screen.findByLabelText("Signed in");
+  await screen.findByRole("button", { name: /^Account:/ });
   role = "viewer";
   history.pushState(null, "", "#/admin");
   dispatchEvent(new HashChangeEvent("hashchange"));
@@ -100,7 +107,7 @@ test("an admin has the Admin command", async () => {
   boot("admin");
   const user = userEvent.setup();
   render(<App assign={vi.fn()} />);
-  await screen.findByLabelText("Signed in");
+  await screen.findByRole("button", { name: /^Account:/ });
   expect(await commandTitles(user)).toContain("Go to Admin");
 });
 
@@ -108,11 +115,11 @@ test("an admin has the Admin entry, and the link opens users and the allowlist",
   boot("admin");
   const user = userEvent.setup();
   render(<App assign={vi.fn()} />);
-  await screen.findByLabelText("Signed in");
-  const sidebar = within(screen.getByRole("navigation", { name: "Sidebar" }));
-  await user.click(sidebar.getByRole("link", { name: "Admin" }));
+  await screen.findByRole("button", { name: /^Account:/ });
+  await user.click(screen.getByRole("button", { name: /^Account:/ }));
+  await user.click(within(screen.getByRole("dialog", { name: "Account" })).getByRole("link", { name: "Admin" }));
   await waitFor(() => expect(location.hash).toBe("#/admin"));
-  expect(sidebar.getByRole("link", { name: "Admin" }).getAttribute("aria-current")).toBe("page");
+  expect(screen.queryByRole("dialog", { name: "Account" })).toBeNull();
   expect(await screen.findByRole("region", { name: "Users" })).toBeTruthy();
   expect(screen.getByRole("region", { name: "Allowlist" })).toBeTruthy();
 });

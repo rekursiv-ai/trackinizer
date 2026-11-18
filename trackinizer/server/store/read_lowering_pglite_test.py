@@ -526,6 +526,6 @@ async def test_paging_agrees_between_the_two_paths(store: Store, offset: int) ->
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

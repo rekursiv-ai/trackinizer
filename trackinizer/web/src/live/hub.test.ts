@@ -4,6 +4,7 @@ import { bootQueries } from "../app/boot";
 import { LiveHub } from "./hub";
 import type { Batch, Later } from "./serial";
 import { testClient } from "./testing";
+import { AGREED } from "../api/testing";
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -187,7 +188,7 @@ test("live updates count as paused once the stream has been down for 10 s, and r
 
 test("a refused stream refetches the profile, whose 401 would end the session", async () => {
   const { client, hub } = hubWithQuery();
-  const profile = vi.fn(async () => ({ user_id: "u", email: "a@b", name: "A", role: "viewer", last_login: null, visual_workspace_enabled: false }));
+  const profile = vi.fn(async () => ({ user_id: "u", email: "a@b", name: "A", role: "viewer", last_login: null, visual_workspace_enabled: false, ...AGREED }));
   client.setQueryData(bootQueries.profile.queryKey, await profile());
   new QueryObserver(client, { ...bootQueries.profile, queryFn: profile, staleTime: Infinity }).subscribe(() => {});
   hub.refuse();
@@ -244,4 +245,25 @@ test("a hidden tab holds at most 100 ids; past that it recovers the gap on retur
   expect(batches).toHaveLength(1);
   expect(batches[0]!.gap).toBe(true);
   expect(batches[0]!.ids.length).toBeLessThanOrEqual(100);
+});
+
+test("the browser coming back online recovers the gap", async () => {
+  const { hub, batches } = hubWithQuery();
+  hub.open();
+  await vi.advanceTimersByTimeAsync(0);
+  batches.length = 0;
+  hub.online();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(batches).toEqual([{ ids: [], gap: true }]);
+});
+
+test("coming online while hidden waits for the tab to come back", async () => {
+  const { hub, batches } = hubWithQuery();
+  hub.hide();
+  hub.online();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(batches).toEqual([]);
+  hub.show();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(batches).toEqual([{ ids: [], gap: true }]);
 });

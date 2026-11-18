@@ -129,6 +129,10 @@ _REAL_TEXT: Final = (
 # One session's LIVE records of one kind. A compaction may shrink the manifest
 # while old tail rows remain stored, so every record read must bind idx to that
 # part's manifest. Correlated on ``inquiries.id``; ``{col}`` is the record KIND.
+#
+# Audience: gated -- a clause built from this reads a transcript and names no audience,
+# so the store's ``list_kind`` applies it only to the sessions its caller reads. An
+# ``isnull`` over a hidden session would otherwise answer from what it holds.
 _RECORDS_WHERE: Final = (
     "SELECT 1 FROM session_records r "
     "JOIN session_manifests m "

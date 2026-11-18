@@ -37,3 +37,8 @@ test("a Kind#seq of a kind this build does not know fails before any request (R2
   await expect(findRef("Ticket", 9)).rejects.toThrow("This build does not know the inquiry kind Ticket");
   expect(sent).toEqual([]);
 });
+
+test("a row that comes back without an id is an error, not an undefined id", async () => {
+  stubFetch(() => Response.json({ kind: "Issue", seq: 7 }));
+  await expect(findRef("Issue", 7)).rejects.toThrow("Issue#7 came back with no id");
+});

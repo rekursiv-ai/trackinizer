@@ -35,6 +35,15 @@ export function openEarlyStream(): void {
 }
 
 /**
+ * Close the stream main.tsx opened, for a user whose live layer takes its ids
+ * from the canvas's stream instead (`CanvasStream`).
+ */
+export function closeEarlyStream(): void {
+  early?.close();
+  early = null;
+}
+
+/**
  * Hand the live stream to `listener`: the one main.tsx opened, the first time;
  * otherwise a stream of its own, as in a remount. Returns the function that
  * closes it.

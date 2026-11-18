@@ -278,6 +278,6 @@ def test_an_unrecognized_completed_item_is_named_by_its_inner_type() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

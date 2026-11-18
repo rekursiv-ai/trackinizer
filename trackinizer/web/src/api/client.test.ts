@@ -59,6 +59,17 @@ test("a domain error carries the server's detail and code", async () => {
   expect(await failure(profile())).toMatchObject({ status: 409, detail: "status is complete, expected active", code: "cas" });
 });
 
+test("a code inside the detail object is the error's code, and its detail is the status line", async () => {
+  vi.stubGlobal("fetch", async () => Response.json({ detail: { code: "chat_not_starter" } }, { status: 403, statusText: "Forbidden" }));
+  expect(await failure(profile())).toMatchObject({ status: 403, detail: "403 Forbidden", code: "chat_not_starter" });
+});
+
+test("a detail object's message is the error's text, with its code", async () => {
+  vi.stubGlobal("fetch", async () => Response.json(
+    { detail: { code: "chat_not_shared", message: "This chat is not shared with you; fork it to continue" } }, { status: 403, statusText: "Forbidden" }));
+  expect(await failure(profile())).toMatchObject({ status: 403, detail: "This chat is not shared with you; fork it to continue", code: "chat_not_shared" });
+});
+
 test("a 422 lists one line per field", async () => {
   const detail = [
     { loc: ["body", "value"], msg: "Input should be a valid string", type: "string_type" },

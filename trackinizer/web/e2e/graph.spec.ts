@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, test, streamOpened, allowStreamErrors, STREAM_ROUTES } from "./fixtures";
 import { expectControlSeen, longTasks, watchLongTasks } from "./longTasks";
 
 // The graph view, `#/graph`. Its canvas cannot be read, so checks read what it
@@ -27,7 +27,7 @@ function drawn(page: Page): Promise<Drawn> {
  * test of grouping turns it on itself.
  */
 async function openGraph(page: Page, hash = "#/graph?group=none") {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   const read = page.waitForResponse((response) => response.url().includes("/api/web/graph"));
   await page.goto(`/app/${hash}`);
   await Promise.all([subscribed, read]);
@@ -171,11 +171,13 @@ test("a change made while the stream was down shows once it reconnects (FR-02)",
   // The stream is this test's own. Each connect opens and ends at once, so the
   // browser connects again every few seconds, and each open recovers what the
   // stream may have missed; while it is down, each connect fails.
-  allowErrors(failedResource("/api/web/subscribe", "ERR_FAILED"));
+  allowStreamErrors(allowErrors);
   let down = false;
-  await page.route("**/api/web/subscribe", (route) =>
-    down ? route.abort() : route.fulfill({ contentType: "text/event-stream", body: ": open\n\n" }),
-  );
+  for (const stream of STREAM_ROUTES) {
+    await page.route(stream, (route) =>
+      down ? route.abort() : route.fulfill({ contentType: "text/event-stream", body: ": open\n\n" }),
+    );
+  }
   const [id] = await create(request, [["Issue", `Dropped issue ${TAG}`]]);
   await page.goto("/app/#/graph");
   await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);

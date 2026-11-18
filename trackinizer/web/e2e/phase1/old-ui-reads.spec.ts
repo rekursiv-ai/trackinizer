@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test } from "../fixtures";
+import { expect, openProperties, test } from "../fixtures";
 
 // Phase 1 is done when every read of the old UI (the deleted
 // server/assets/index.html) has a place in v2. This file makes one inquiry of
@@ -100,6 +100,7 @@ const field = (page: Page, name: string) => page.locator(`[data-field="${name}"]
 async function open(page: Page, id: string, title: string) {
   await page.goto(`/app/#/lookup/${id}`);
   await expect(heading(page)).toHaveText(title);
+  await openProperties(page);
 }
 
 /** The common fields the old detail shows on every kind: identity, people, labels, cost, times. */

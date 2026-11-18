@@ -9,17 +9,22 @@ unobservable without the database.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID, uuid4
 
+import asyncio
 import json
+import re
+
+from treekle import ReadError, from_plain, mutable
 
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import DictCodec, json_unfreeze
 from trackinizer.server.embedders.stub import StubEmbedder
+from trackinizer.server.store import legacy_retype_runner
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.legacy_retype_runner import (
     retype_all,
@@ -30,7 +35,7 @@ from trackinizer.server.store.legacy_retype_runner import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-    from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.lib.postgres import Conn, PostgresEngine
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -66,9 +71,10 @@ async def _legacy_session(store: Store) -> UUID:
     async with store.engine.acquire() as conn:
         await conn.execute(_LEGACY_TABLE)
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'legacy')",
+            "'tester@example.com', 'legacy', 'open')",
             session_id,
         )
         await conn.execute(
@@ -156,7 +162,7 @@ async def test_ciphertext_rekeys_to_the_thinking_record(store: Store) -> None:
         await retype_session(conn, session_id)
 
     rows = await store.read_session_records(session_id, part=-1, limit=500)
-    sealed = {row.kind: row.ciphertext for row in rows if row.ciphertext}
+    sealed = {row.kind: row.ciphertext for row in rows if row.ciphertext is not None}
     assert sealed == {"Thinking": _ENCRYPTED + _SIGNATURE}
 
 
@@ -182,7 +188,8 @@ async def test_unknown_message_survives_byte_for_byte(store: Store) -> None:
     unknown_before = next(
         row
         for row in before
-        if DictCodec.coerce(row.payload).get("kind") == "legacy/UnknownMessage"
+        if from_plain(row.payload, dict[str, object]).get("kind")
+        == "legacy/UnknownMessage"
     )
 
     async with store.engine.acquire() as conn:
@@ -190,8 +197,8 @@ async def test_unknown_message_survives_byte_for_byte(store: Store) -> None:
 
     after = await store.read_session_records(session_id, part=-1, limit=500)
     unknown_after = next(row for row in after if row.kind == "UncategorizedRecord")
-    assert json.dumps(json_unfreeze(unknown_after.payload)) == json.dumps(
-        json_unfreeze(unknown_before.payload),
+    assert json.dumps(mutable(unknown_after.payload)) == json.dumps(
+        mutable(unknown_before.payload),
     )
     assert unknown_after.text == unknown_before.text
 
@@ -276,7 +283,156 @@ async def test_retype_all_processes_every_shard_disjointly(store: Store) -> None
     assert second_pass == 0
 
 
+class _Rows:
+    """A connection whose every fetch returns the same stored rows."""
+
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        self.rows = rows
+        self.args: tuple[object, ...] = ()
+
+    async def fetch(self, query: str, *args: object) -> list[dict[str, object]]:
+        del query
+        self.args = args
+        return self.rows
+
+
+_CREATED: Final = datetime(2026, 9, 1, tzinfo=UTC)
+
+
+def _row(kind: str, payload: str, **fields: object) -> dict[str, object]:
+    return {
+        "kind": kind,
+        "context_id": None,
+        "timestamp": None,
+        "model": None,
+        "created": _CREATED,
+        "payload": payload,
+        "text": "",
+        "bytes": None,
+    } | fields
+
+
+def _read(rows: _Rows, session_id: UUID) -> list[legacy_retype_runner._Source]:
+    return asyncio.run(
+        legacy_retype_runner._read_sources(cast("Conn", rows), session_id),
+    )
+
+
+def test_each_row_reads_as_a_source_naming_its_legacy_kind() -> None:
+    """A retyped row has no ``kind`` key, which reads as no legacy kind."""
+    stamp = datetime(2026, 9, 2, tzinfo=UTC)
+    typed = '{"content": "hi", "attachments": []}'
+    old = '{"kind": "user", "payload": {"a": {"py/tuple": []}}}'
+    rows = _Rows(
+        [
+            _row(
+                "UserMessage",
+                typed,
+                context_id=3,
+                timestamp=stamp,
+                model="m",
+                text="hi",
+            ),
+            _row("UncategorizedRecord", old, bytes=b"c2VhbGVk"),
+        ],
+    )
+    session_id = uuid4()
+
+    sources = _read(rows, session_id)
+
+    assert rows.args == (session_id, -1)
+    assert sources == [
+        legacy_retype_runner._Source(
+            kind="UserMessage",
+            context_id=3,
+            timestamp=stamp,
+            model="m",
+            created=_CREATED,
+            payload_text=typed,
+            text="hi",
+            legacy_kind="",
+            ciphertext="",
+        ),
+        legacy_retype_runner._Source(
+            kind="UncategorizedRecord",
+            context_id=None,
+            timestamp=None,
+            model=None,
+            created=_CREATED,
+            payload_text=old,
+            text="",
+            legacy_kind="user",
+            ciphertext="c2VhbGVk",
+        ),
+    ]
+
+
+def test_a_payload_that_is_not_an_object_is_refused_by_type() -> None:
+    """Only an object carries ``kind``; a list is a typed read error, not a crash."""
+    rows = _Rows([_row("UncategorizedRecord", '["kind"]')])
+
+    with pytest.raises(ReadError):
+        _read(rows, uuid4())
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "context_id",
+            "3",
+            "Expected context_id is None or isinstance(context_id, int).",
+        ),
+        (
+            "timestamp",
+            "now",
+            "Expected timestamp is None or isinstance(timestamp, datetime).",
+        ),
+        ("model", 7, "Expected model is None or isinstance(model, str)."),
+        ("bytes", "raw", "Expected raw_bytes is None or isinstance(raw_bytes, bytes)."),
+    ],
+)
+def test_a_malformed_row_names_the_field(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    rows = _Rows([_row("UserMessage", "{}", **{field: value})])
+    with pytest.raises(ValueError, match=f"^{re.escape(message)}$"):
+        _read(rows, uuid4())
+
+
+def test_a_payload_that_is_not_an_object_is_a_read_error() -> None:
+    """The payload parses as an object, so a list fails at the read, not later."""
+    rows = _Rows([_row("UserMessage", "[1]")])
+    with pytest.raises(ReadError):
+        _read(rows, uuid4())
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_slash_command_without_timestamp_uses_capture_time(store: Store) -> None:
+    session_id = await _legacy_session(store)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE session_records SET timestamp = NULL WHERE session_id = $1 "
+            "AND payload::jsonb ->> 'kind' = 'legacy/SlashCommand'",
+            session_id,
+        )
+        created = await conn.fetchval(
+            "SELECT created FROM session_records WHERE session_id = $1 "
+            "AND payload::jsonb ->> 'kind' = 'legacy/SlashCommand'",
+            session_id,
+        )
+        await retype_session(conn, session_id)
+        timestamp = await conn.fetchval(
+            "SELECT timestamp FROM session_slash_commands WHERE session_id = $1",
+            session_id,
+        )
+    assert timestamp == created
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

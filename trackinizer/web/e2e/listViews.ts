@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect } from "./fixtures";
+import { expect, streamOpened } from "./fixtures";
 
 // Helpers for the specs of the Issue list's views (Outline, Streams). Each test
 // seeds its own Issues under a label of its own and filters the list to it,
@@ -28,7 +28,7 @@ export async function seed(request: APIRequestContext, label: string, titles: st
 export async function openView(page: Page, label: string, view: "List" | "Streams" | "Outline" | "Columns") {
   const state = { tab: "active", choices: [{ field: "labels", values: [label] }], grouping: "none", ordering: "created", pages: {}, collapsed: [], focus: null };
   await page.addInitScript((saved) => sessionStorage.setItem("trackinizer.v2.list.Issue", saved), JSON.stringify(state));
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto("/app/#/list/Issue");
   await subscribed;
   await page.getByRole("group", { name: "View" }).getByRole("button", { name: view }).click();

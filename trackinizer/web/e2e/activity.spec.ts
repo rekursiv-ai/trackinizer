@@ -1,5 +1,5 @@
 import type { APIRequestContext, Locator, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, test, streamOpened } from "./fixtures";
 
 // The feed is every change on the server, which other spec files write to in
 // parallel: one run put over 1,000 of theirs ahead of a line this file wrote in
@@ -10,7 +10,7 @@ const TAG = crypto.randomUUID().slice(0, 8);
 
 /** Open Activity and wait for the live stream, so changes written next join the feed. */
 async function openActivity(page: Page) {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto("/app/#/activity");
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Activity");
   await subscribed;

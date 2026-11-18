@@ -41,9 +41,10 @@ import argparse
 import json
 import time
 
+from treekle import from_plain, json_loads
+
 import httpx2
 
-from trackinizer.lib.custom_json import DictCodec, FloatCodec, IntCodec, loads
 from trackinizer.trax.profile import Profile, load_profile
 
 
@@ -62,7 +63,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -100,16 +101,16 @@ class Event:
 
 def client_settings(
     *,
-    via: str | None,
-    url: str | None,
+    via: str,
+    url: str,
     accept_encoding: str,
     profile: Profile,
 ) -> tuple[str, dict[str, str]]:
     """Return the base URL and headers for the server the flags name.
 
     Args:
-      via: Another address for the profile's server, or None.
-      url: Another server, which gets no token, or None.
+      via: Another address for the profile's server, or ``""``.
+      url: Another server, which gets no token, or ``""``.
       accept_encoding: The ``Accept-Encoding`` to send.
       profile: The active trax profile.
 
@@ -181,8 +182,8 @@ def probe(
 class _Flags(Protocol):
     """Parsed command-line flags."""
 
-    via: str | None
-    url: str | None
+    via: str
+    url: str
     first_after: float
     every: float
     for_sec: float
@@ -195,10 +196,12 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     where = parser.add_mutually_exclusive_group()
     where.add_argument(
         "--via",
+        default="",
         help="Another address for the profile's server (a hop), with its token.",
     )
     where.add_argument(
         "--url",
+        default="",
         help="Another server, such as the local preview; no token.",
     )
     parser.add_argument(
@@ -251,13 +254,13 @@ def _frames(frames: list[bytes], *, at_sec: float) -> str:
     parts: list[str] = []
     for frame in frames:
         try:
-            data = DictCodec.coerce(loads(frame.removeprefix(b"data: ")))
+            data = json_loads(frame.removeprefix(b"data: "), dict[str, object])
         except (json.JSONDecodeError, TypeError):
             parts.append(f"not a probe frame: {frame[:40]!r}")
             continue
-        sent_sec = FloatCodec.coerce(data["t"])
+        sent_sec = from_plain(data["t"], float)
         parts.append(
-            f"seq {IntCodec.coerce(data['seq'])} sent at +{sent_sec:.3f}s, "
+            f"seq {from_plain(data['seq'], int)} sent at +{sent_sec:.3f}s, "
             f"held {at_sec - sent_sec:.3f}s",
         )
     return "; ".join(parts) or "frames: none complete"

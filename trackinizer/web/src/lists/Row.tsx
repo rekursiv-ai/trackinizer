@@ -1,5 +1,6 @@
 import { memo, type ReactNode } from "react";
 import type { InquiryRow } from "../api/inquiries";
+import { useIsHighlighted } from "../app/highlights";
 import { Selectable } from "../bulk/Selectable";
 import { usd } from "../detail/fields";
 import { dateTime } from "../detail/time";
@@ -41,9 +42,10 @@ export const Row = memo(function Row({
   /** What the view says of the row besides its fields, before them: an outline's "also under". */
   note?: ReactNode;
 }) {
+  const highlighted = useIsHighlighted(row.id);
   const link = (
     <a
-      className={focused ? "row is-focused" : "row"}
+      className={["row", focused ? "is-focused" : "", highlighted ? "is-highlighted" : ""].filter(Boolean).join(" ")}
       href={formatRoute({ name: "ref", kind: row.kind, seq: row.seq })}
       data-row={row.id}
       aria-current={focused ? "true" : undefined}
@@ -56,6 +58,7 @@ export const Row = memo(function Row({
         }
       }}
     >
+      {highlighted && <span className="row-mark" role="img" aria-label="Pointed out" />}
       {"priority" in row && <PriorityGlyph priority={row.priority ?? null} />}
       {row.priority != null && <span className="row-pri">{row.priority}</span>}
       <span className={mixed ? "row-ref wide" : "row-ref"}>

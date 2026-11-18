@@ -28,10 +28,13 @@ Two fields of the record do not ride in ``payload``:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Final, Self
 from uuid import UUID
+
+from treekle import PlainTree, immutable, mutable
 
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
@@ -56,7 +59,7 @@ from trackinizer.lib.agent.types.sessions import (
     WebFetchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import JSON, DataclassCodec, json_freeze, json_unfreeze
+from trackinizer.lib.agent.types.stored import from_stored, to_stored
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
 
@@ -135,8 +138,8 @@ class SessionRecordRow:
     """Denormalized from the applying ``TurnContext`` so the console feed need
     not self-join per row. A projection, never read back into a record."""
 
-    payload: JSON
-    """The record as ``DataclassCodec`` JSON, with ciphertext removed."""
+    payload: Mapping[str, PlainTree]
+    """Frozen :func:`to_stored` data, tagged by record type, without ciphertext."""
 
     text: str = ""
     """The search projection; see :func:`search_text`."""
@@ -185,7 +188,7 @@ class SessionRecordRow:
             context_id=getattr(record, "context_id", None),
             timestamp=_parsed(raw if isinstance(raw, str) else None),
             model=model,
-            payload=json_freeze(DataclassCodec.to_json(stored)),
+            payload=immutable(to_stored(stored)),
             text=search_text(record),
             ciphertext=encrypted if isinstance(encrypted, str) and encrypted else None,
         )
@@ -193,15 +196,9 @@ class SessionRecordRow:
     def record(self) -> TraxRecord:
         """Rebuild the record this row stores.
 
-        UNFROZEN before decoding, which is not a formality. ``json_freeze``
-        maps ``list`` to ``tuple`` (``custom_json.py::json_freeze``), while
-        ``DataclassCodec.to_json`` emits lists -- so decoding the frozen form
-        hands ``from_json`` a shape it never produced. For a typed field that
-        is harmless, but ``extra`` is untyped ``JSON``, and an untyped
-        tuple-of-mappings is read as a tagged value rather than an array: a
-        codex ``SystemMessage`` carrying ``$templates`` then fails to decode
-        outright. Round-tripping through the shape ``to_json`` wrote keeps the
-        two halves symmetric.
+        Read by :func:`from_stored`, which takes both the tagged shape and the
+        plain one rows were written in before, and freezes each ``JSON`` field
+        as the provider readers build it.
 
         Ciphertext is NOT spliced here: this type holds one row, and the bytes
         live in another table. A reader that fetched them calls
@@ -211,10 +208,7 @@ class SessionRecordRow:
           record: Decoded TraxRecord of the appropriate subtype.
 
         """
-        return DataclassCodec.from_json(
-            _class_for(self.kind),
-            json_unfreeze(self.payload),
-        )
+        return from_stored(mutable(self.payload), _class_for(self.kind))
 
 
 def _parts(record: object) -> tuple[str, ...]:

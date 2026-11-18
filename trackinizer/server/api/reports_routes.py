@@ -10,6 +10,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.artifact_capture import with_capture_script
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.visuals.reports import (
     ArtifactContentConflictError,
@@ -18,6 +20,7 @@ from trackinizer.server.visuals.reports import (
     publish_artifact_content,
     read_artifact_content,
 )
+from trackinizer.wire.artifact_html import CONTENT_SECURITY_POLICY
 
 
 router = APIRouter()
@@ -46,6 +49,12 @@ async def publish_artifact_content_route(
       revision: Immutable Artifact content shared with signed-in teammates.
 
     """
+    # The publication adds a ``produced_by`` edge into the Issue and a ``supersedes``
+    # edge into the previous Artifact, so a lock on either refuses it.
+    linked = [body.issue_id]
+    if body.previous_artifact_id is not None:
+        linked.append(body.previous_artifact_id)
+    await require_unlocked(request, identity, linked)
     try:
         return await publish_artifact_content(
             get_store(request),
@@ -110,46 +119,25 @@ async def read_artifact_html_route(
       identity: Authenticated teammate.
 
     Returns:
-      page: The stored HTML under the sandbox Content Security Policy.
+      page: The stored HTML, with the script that answers the canvas's request for
+        a picture, under the sandbox Content Security Policy.
 
     """
     del identity
     artifact = await read_artifact_content(get_store(request), artifact_id)
     if artifact is None or artifact.html is None:
         raise HTTPException(status_code=404, detail="HTML Artifact not found.")
-    # The script and font allowlist matches Claude Sites, so a page built for
-    # Claude Sites works here. ``connect-src 'none'`` keeps ``fetch`` from
-    # reaching anything, and ``frame-ancestors 'self'`` lets only Trackinizer
-    # embed it. ``private``: no shared cache may keep team content.
+    # ``private``: no shared cache may keep team content. ``no-transform``:
+    # without it Cloudflare rewrites email-shaped text such as
+    # ``user:%s@github.com`` into "[email protected]" and injects decoder and
+    # bot-detection scripts this policy blocks, so viewers see and copy broken
+    # text. Compression survives: caddy compresses before Cloudflare.
     return HTMLResponse(
-        artifact.html,
+        with_capture_script(artifact.html),
         headers={
-            "Content-Security-Policy": "; ".join(
-                [
-                    "sandbox allow-scripts allow-popups",
-                    "default-src 'none'",
-                    "base-uri 'none'",
-                    "connect-src 'none'",
-                    "font-src data: https://fonts.gstatic.com",
-                    "form-action 'none'",
-                    "frame-ancestors 'self'",
-                    "frame-src 'none'",
-                    "img-src data: blob:",
-                    "manifest-src 'none'",
-                    "media-src data: blob:",
-                    "object-src 'none'",
-                    (
-                        "script-src 'unsafe-inline' 'unsafe-eval' "
-                        "https://cdnjs.cloudflare.com "
-                        "https://cdn.jsdelivr.net/npm/ https://unpkg.com "
-                        "https://cdn.tailwindcss.com https://code.jquery.com"
-                    ),
-                    "style-src 'unsafe-inline' https://fonts.googleapis.com",
-                    "worker-src 'none'",
-                ],
-            ),
+            "Content-Security-Policy": CONTENT_SECURITY_POLICY,
             "X-Content-Type-Options": "nosniff",
             "Referrer-Policy": "no-referrer",
-            "Cache-Control": "private",
+            "Cache-Control": "private, no-transform",
         },
     )

@@ -45,7 +45,10 @@ def test_nothing_but_the_shape_is_written() -> None:
 
 
 def test_a_word_outside_the_vocabulary_is_refused() -> None:
-    graph = {"nodes": [{**_NODES[0], "kind": "Secret plan"}], "edges": []}
+    graph: dict[str, object] = {
+        "nodes": [{**_NODES[0], "kind": "Secret plan"}],
+        "edges": [],
+    }
     with pytest.raises(ValueError, match="is not one of"):
         scrub(graph)
 
@@ -61,9 +64,38 @@ def test_load_refuses_an_edge_to_no_node() -> None:
         load(text)
 
 
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ('"nodes": [[0,0]', '"nodes": [[-1,0]'),
+        ('"nodes": [[0,0]', '"nodes": [[99,0]'),
+        ('"nodes": [[0,0]', '"nodes": [[0,-1]'),
+        ('"nodes": [[0,0]', '"nodes": [[0,99]'),
+        ("[1,2,3,-1]", "[1,2,-1,-1]"),
+        ("[1,2,3,-1]", "[1,2,99,-1]"),
+        ("[1,2,3,-1]", "[-1,2,3,-1]"),
+    ],
+)
+def test_load_refuses_every_index_outside_its_list(before: str, after: str) -> None:
+    """N1-07: a negative index never wraps to a word, nor a large one IndexErrors."""
+    text = dump(scrub(_GRAPH))
+    assert before in text
+    with pytest.raises(ValueError, match="is not one of"):
+        load(text.replace(before, after))
+
+
+def test_a_zero_valence_has_no_sign() -> None:
+    """N1-08: a neutral valence is neither for nor against."""
+    graph = {
+        "nodes": _NODES,
+        "edges": [{**_GRAPH["edges"][0], "valence": 0.0}],
+    }
+    assert [link.sign for link in scrub(graph).edges] == [0]
+
+
 def test_nodes_made_at_the_same_moment_keep_the_servers_order() -> None:
     made = "2026-07-01T00:00:00+00:00"
-    graph = {
+    graph: dict[str, object] = {
         "nodes": [
             {**_NODES[0], "created": made},
             {**_NODES[1], "created": made},
@@ -129,6 +161,6 @@ _GRAPH = {
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -19,7 +19,7 @@ from trackinizer.trax.daemon.client import (
     delegate,
     should_delegate,
 )
-from trackinizer.trax.daemon.protocol import package_root, source_version
+from trackinizer.trax.daemon.protocol import daemon_source_version
 
 
 if TYPE_CHECKING:
@@ -51,11 +51,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             serve,
         )
 
-        serve()
+        # The spawning caller's fingerprint, taken before this process imported
+        # anything. Fingerprinting here, after the import above loads the CLI,
+        # would vouch for an edit made during it: the daemon would serve the
+        # code from before the edit under the version from after it.
+        serve(version=args[args.index(SERVE_FLAG) + 1])
         return 0
     if _daemon_enabled() and should_delegate(args):
         try:
-            response = delegate(args, source_version=source_version(package_root()))
+            response = delegate(args, source_version=daemon_source_version())
         except DaemonRequestLostError as lost:
             # Deliberately NOT retried in-process: the daemon may have
             # applied the command already, and a second run would mint a new

@@ -112,6 +112,13 @@ def test_the_meet_passes_context_and_prices_through() -> None:
     assert met.prices == _row().prices
 
 
+def test_the_meet_keeps_the_rows_effort_spelling() -> None:
+    """A model fact: the transport can neither grant nor revoke it."""
+    level_row = ModelCapability(effort_as_level=True)
+    assert (level_row & ModelCapability()).effort_as_level is True
+    assert (_row() & ModelCapability(effort_as_level=True)).effort_as_level is False
+
+
 def test_the_transport_declares_retries_and_auth() -> None:
     """Not intersected: a catalog row cannot know who bills or retries it.
 
@@ -364,7 +371,41 @@ def test_limits_are_derived_not_cached() -> None:
     )
 
 
+def test_settings_over_an_empty_axis_cannot_be_constructed() -> None:
+    """So ``take`` never meets a capability whose ``narrowest`` raises."""
+    with pytest.raises(ValueError, match=r"cache_ttl_sec=0\.0 is not offered"):
+        ModelSettings(capability=ModelCapability(cache_ttl_sec=frozenset()))
+
+
+def test_take_rejects_capability_as_a_non_axis() -> None:
+    with pytest.raises(ValueError, match="not settings axes: capability"):
+        ModelSettings().take(capability=ModelCapability())
+
+
+def test_capability_assignment_renarrows_context_and_all_axes() -> None:
+    settings = ModelSettings.narrowest(_row(), context="+1m")
+    settings.thinking_effort = "high"
+    settings.capability = _OFF
+    assert settings.context == ""
+    assert settings.limits == ModelLimits()
+    assert settings.thinking_effort == "none"
+    assert settings.cache_ttl_sec == 0.0
+
+
+def test_invalid_capability_assignment_leaves_settings_unchanged() -> None:
+    settings = ModelSettings.narrowest(_row(), context="+1m")
+    with pytest.raises(ValueError, match="cache_ttl_sec offers nothing"):
+        settings.capability = ModelCapability(cache_ttl_sec=frozenset())
+    assert settings.capability == _row()
+    assert settings.context == "+1m"
+
+
+def test_equal_capabilities_are_hashable_independent_of_mapping_order() -> None:
+    assert hash(ModelCapability()) == hash(ModelCapability())
+    assert hash(_row()) == hash(_row())
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

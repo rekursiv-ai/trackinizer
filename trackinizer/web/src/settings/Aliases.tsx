@@ -1,7 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { type FormEvent, useState } from "react";
 import { useMeta, useProfile } from "../app/boot";
-import { CopyDetails } from "../debug/CopyDetails";
 import { useBrowserState } from "../state/store";
 import { Icon } from "../ui/icons";
 import { ReadError, Section } from "./account";
@@ -28,23 +27,15 @@ export function AliasesSection() {
   const query = typed.trim().toLowerCase();
   const matches = (suggested.data ?? []).filter(({ name }) => name.toLowerCase().includes(query));
   const shown = all || query ? matches : matches.slice(0, SHOWN);
-  const [failure, setFailure] = useState<{ readonly message: string; readonly error: unknown } | null>(null);
-  const change = (next: (aliases: readonly string[]) => readonly string[]) => {
-    try {
-      update((state) => ({ ...state, aliases: next(state.aliases) }));
-      setFailure(null);
-      return true;
-    } catch (error) {
-      setFailure({ message: `Not saved: ${error instanceof Error ? error.message : String(error)}`, error });
-      return false;
-    }
-  };
+  const change = (next: (aliases: string[]) => string[]) => update((state) => ({ ...state, aliases: next(state.aliases) }));
   const add = (name: string) => change((names) => (names.includes(name) || name === email ? names : [...names, name]));
   const remove = (name: string) => change((names) => names.filter((alias) => alias !== name));
   const submit = (event: FormEvent) => {
     event.preventDefault();
     const name = typed.trim();
-    if (name && add(name)) setTyped("");
+    if (!name) return;
+    add(name);
+    setTyped("");
   };
   return (
     <Section title="Names that mean you">
@@ -76,12 +67,6 @@ export function AliasesSection() {
           Add
         </button>
       </form>
-      {failure ? (
-        <p className="form-err" role="alert">
-          {failure.message}
-          <CopyDetails message={failure.message} error={failure.error} />
-        </p>
-      ) : null}
       <h4 className="st-sub">Owner names on rows under your account</h4>
       <ReadError read={suggested} />
       {suggested.data === undefined ? (

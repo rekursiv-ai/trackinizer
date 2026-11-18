@@ -20,13 +20,16 @@ from typing import TYPE_CHECKING, Final
 import os
 import re
 
+from treekle import from_plain
+
 from trackinizer.lib.agent.sessions import codex
-from trackinizer.lib.custom_json import StrCodec
-from trackinizer.trax.run.adapters.tail import Tail
+from trackinizer.lib.agent.sessions.tail import Tail
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from trackinizer.types.streams import TraxRecord
 
 
 _ROLLOUT_NAME: Final = re.compile(
@@ -34,6 +37,19 @@ _ROLLOUT_NAME: Final = re.compile(
     r"(?P<session_id>[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})",
 )
 """A rollout's name: ``rollout-<ISO>-<uuid>``, the uuid being codex's own id."""
+
+_SESSION_ID: Final = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}")
+"""A session id as codex prints and names rollouts after: lowercase and dashed."""
+
+_VALUED_OPTIONS: Final = frozenset(
+    {
+        *("-c", "--config", "-m", "--model", "-p", "--profile", "-s", "--sandbox"),
+        *("-a", "--ask-for-approval", "-C", "--cd", "-i", "--image", "--add-dir"),
+        *("--enable", "--disable", "--remote", "--remote-auth-token-env"),
+        "--local-provider",
+    },
+)
+"""Codex 0.163.0's options that take a separate value (``codex --help``)."""
 
 
 class CodexAdapter:
@@ -48,14 +64,21 @@ class CodexAdapter:
     cli_binary: str = "codex"
     whole_file: bool = False
     parent_session_env: frozenset[str] = frozenset[str]()
+    # Measured on 0.163.0: ``/new`` (and ``/clear``) start a new rollout,
+    # ``/resume`` switches to another, and ``/fork`` continues in a new one.
+    session_switch_commands: frozenset[str] = frozenset(
+        {"new", "clear", "resume", "fork"},
+    )
 
     @property
     def _sessions_dir(self) -> Path:
         # Resolve per call, not at import (see ClaudeAdapter). ``$CODEX_HOME``
         # is where codex itself keeps its config root -- hermetic launchers
         # point it at a throwaway dir -- so honor it, else ``~/.codex``.
-        home = os.environ.get("CODEX_HOME")
-        return (Path(home) if home else Path.home() / ".codex") / "sessions"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
+        home = os.environ.get("CODEX_HOME", "")
+        if home:
+            return Path(home) / "sessions"
+        return Path.home() / ".codex" / "sessions"  # noqa: TID251 -- vendor fixed path, not ours (AGENTS.md rule 3)  # house-ignore[xdg-literal] -- Vendor CLI's fixed home path, not ours (AGENTS.md rule 3).
 
     def session_dirs(self) -> Iterable[Path]:
         """Return the directories this CLI writes sessions under."""
@@ -104,8 +127,46 @@ class CodexAdapter:
         # Typeshed types a match group ``str | Any`` -- a group may be optional
         # in general. This one is not: it is unconditional in the pattern, so
         # the match cannot succeed without it.
-        return StrCodec.coerce(found["session_id"])
+        return from_plain(found["session_id"], str)
 
-    def reader(self) -> Tail:
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return the session ``cli_args`` continue; see ``Adapter.resumed_session``.
+
+        ``codex [exec] resume <SESSION_ID>`` names it; ``--last``, the picker
+        and a session NAME leave codex to choose. ``fork`` starts a new rollout.
+
+        Args:
+          cli_args: The arguments codex is spawned with.
+
+        Returns:
+          session_id: The id resumed, ``""`` when codex picks the session, or
+            ``None`` for a new one.
+
+        """
+        words = _positionals(cli_args)
+        if words[:1] == ("exec",):
+            words = words[1:]
+        if words[:1] != ("resume",):
+            return None
+        named = words[1] if len(words) > 1 and "--last" not in cli_args else ""
+        return named if _SESSION_ID.fullmatch(named) else ""
+
+    def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one codex rollout file."""
         return Tail(codex.normalize)
+
+
+# A subcommand is the first word that is neither a flag nor a flag's value, so a value
+# that happens to read ``resume`` (``-m resume``) is not mistaken for one.
+def _positionals(cli_args: tuple[str, ...]) -> tuple[str, ...]:
+    """Return the words of ``cli_args`` that are not options or option values."""
+    words: list[str] = []
+    consumed = False
+    for arg in cli_args:
+        if consumed:
+            consumed = False
+        elif arg.startswith("-"):
+            consumed = arg in _VALUED_OPTIONS
+        else:
+            words.append(arg)
+    return tuple(words)

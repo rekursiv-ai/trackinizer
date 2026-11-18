@@ -1,28 +1,41 @@
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import { useProfile } from "../app/boot";
-import { type BrowserState, EMPTY_STATE, parseState } from "./value";
+import { choosePreferences, type Preferences, preferences, usePreferences } from "../preferences";
+import { type BrowserState, EMPTY_STATE, parseState, sameJson, stateOf, storageKey } from "./value";
 
-/** A change to the state: the new state, given the one stored now. */
+/** A change to the state: the new state, given the one shown now. */
 export type StateChange = (state: BrowserState) => BrowserState;
 
 /**
- * The signed-in user's state in this browser, and `update`, which stores a
- * change to it. Every hook showing it, in this tab or another, updates at once.
+ * The signed-in user's state, and `update`, which stores a change to it. Every
+ * hook showing it updates at once.
  *
- * `update` applies the change to what is stored when it runs, not to what this
- * render shows, so a change made in another tab meanwhile is kept. It throws
- * when the browser refuses to store (storage off or full), and when the stored
- * value is one this build cannot read, rather than overwrite it.
+ * All of it is the user's preferences, kept on the server (`src/preferences.ts`)
+ * so it follows the user to any browser, except `ui.tiles`, which this browser
+ * keeps in `localStorage`. `update` applies the change to what is shown when it
+ * runs, and sends the keys it changed. It throws when it changes `ui.tiles` and
+ * the browser refuses to store (storage off or full), or the stored value is one
+ * this build cannot read, rather than overwrite it.
  */
 export function useBrowserState(): readonly [BrowserState, (change: StateChange) => void] {
   const { email } = useProfile();
   const key = storageKey(email);
   const stored = useSyncExternalStore(subscribe, () => readStored(key));
-  const state = useMemo(() => readable(stored), [stored]);
+  const tiles = useMemo(() => readable(stored).ui.tiles, [stored]);
+  const kept = usePreferences();
+  const state = useMemo(() => stateOf(kept, tiles), [kept, tiles]);
   const update = useCallback(
     (change: StateChange) => {
       const now = localStorage.getItem(key);
-      localStorage.setItem(key, JSON.stringify(change(now === null ? EMPTY_STATE : parseState(JSON.parse(now)))));
+      // Unreadable local text blocks a change to the tiles only, below.
+      const local = attempt(() => (now === null ? EMPTY_STATE : parseState(JSON.parse(now))));
+      const before = stateOf(preferences(), local instanceof Error ? {} : local.ui.tiles);
+      const after = change(before);
+      const moved = changedPreferences(before, after);
+      if (Object.keys(moved).length > 0) void choosePreferences(moved);
+      if (after.ui.tiles === before.ui.tiles) return;
+      if (local instanceof Error) throw local;
+      localStorage.setItem(key, JSON.stringify({ ...local, ui: { ...local.ui, tiles: after.ui.tiles } }));
       // A `storage` event reaches other tabs only; this tells this one's hooks.
       dispatchEvent(new Event(CHANGED));
     },
@@ -31,16 +44,28 @@ export function useBrowserState(): readonly [BrowserState, (change: StateChange)
   return [state, update] as const;
 }
 
-/**
- * The `localStorage` key of `email`'s state. Each origin has its own storage
- * already; the origin is in the key too, as the plan names it, so an export
- * read by hand says where it came from.
- */
-export function storageKey(email: string): string {
-  return `trackinizer.v2.${location.origin}.${email}`;
+/** The preferences `after` changes from `before`; a value rebuilt equal to the old one is no change. */
+function changedPreferences(before: BrowserState, after: BrowserState): Partial<Preferences> {
+  return {
+    ...(sameJson(after.stars, before.stars) ? {} : { stars: after.stars }),
+    ...(sameJson(after.views, before.views) ? {} : { views: after.views }),
+    ...(sameJson(after.aliases, before.aliases) ? {} : { aliases: after.aliases }),
+    ...(sameJson(after.people, before.people) ? {} : { people: after.people }),
+    ...(sameJson(after.read, before.read) ? {} : { read: after.read }),
+    ...(sameJson(after.ui.collapsed, before.ui.collapsed) ? {} : { collapsed: after.ui.collapsed }),
+    ...(after.ui.lens === before.ui.lens ? {} : { lens: after.ui.lens }),
+  };
 }
 
-/** Fired on `window` when this tab stores a new state. */
+function attempt<Value>(read: () => Value): Value | Error {
+  try {
+    return read();
+  } catch (error) {
+    return error instanceof Error ? error : new Error(String(error));
+  }
+}
+
+/** Fired on `window` when this tab stores new tiles. */
 const CHANGED = "trackinizer-state";
 
 function subscribe(onChange: () => void): () => void {

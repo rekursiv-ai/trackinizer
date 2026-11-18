@@ -1,9 +1,9 @@
 """Row-vs-filter predicate for callers holding rows rather than a query.
 
 Postgres evaluates almost everything: of the clauses the list route accepts,
-242 lower into SQL and 164 are refused, leaving 4 (``experiment_config``
-equality and presence, whose ``str(dict)`` no SQL reproduces) for the store to
-answer here after the fetch.
+each lowers into SQL or is refused, except equality and presence on the two
+JSONB columns (``experiment_config`` and ``app``), whose
+``str(dict)`` no SQL reproduces. The store answers those here after the fetch.
 
 This predicate exists for the callers with no database to lean on -- the trax
 CLI test fake filtering in-memory dicts, and downstream orchestrators
@@ -346,12 +346,12 @@ def _matches_order(value: object, op: str, expected: str) -> bool:
     """Compare in the arithmetic the row's own SQL type selects."""
     parsed = as_numeric(expected)
     if parsed is None:
-        return _ordered(str(value), op, str(expected))
+        return _ordered(str(value), op, expected)
     if isinstance(value, float):
         return _ordered(value, op, float(parsed))
     if isinstance(value, int | Decimal):
         return _ordered(Decimal(value), op, parsed)
-    return _ordered(str(value), op, str(expected))
+    return _ordered(str(value), op, expected)
 
 
 # An assert rather than a trailing ``return left >= right``: that fallthrough would make

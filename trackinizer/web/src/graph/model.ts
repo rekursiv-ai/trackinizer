@@ -65,6 +65,8 @@ export type Lens = {
   readonly only: boolean;
   /** The focus and the selection. */
   readonly strong: ReadonlySet<string>;
+  /** What an agent pointed at: its halo shows under the focus's and over a match's, and nothing dims or hides for it. */
+  readonly highlighted: ReadonlySet<string>;
   /** Search matches. */
   readonly matches: ReadonlySet<string>;
   /** Nodes whose titles show under them: the roots, while grouped. */
@@ -87,6 +89,7 @@ export const PLAIN_LENS: Lens = {
   only: false,
   strong: new Set(),
   matches: new Set(),
+  highlighted: new Set(),
   labelled: new Set(),
   shown: null,
 };
@@ -207,11 +210,12 @@ export class GraphModel {
   }
 
   #restyle(): void {
-    const { hiddenKinds, hiddenStatuses, hiddenOwners, lit, skipEdges, only, strong, matches, labelled, shown } = this.#lens;
+    const { hiddenKinds, hiddenStatuses, hiddenOwners, lit, skipEdges, only, strong, highlighted, matches, labelled, shown } =
+      this.#lens;
     for (const drawn of this.nodes) {
       const far = lit?.get(drawn.id);
       const dimmed = lit !== null && far === undefined;
-      const halo = strong.has(drawn.id) ? "strong" : matches.has(drawn.id) ? "match" : null;
+      const halo = strong.has(drawn.id) ? "strong" : highlighted.has(drawn.id) ? "highlight" : matches.has(drawn.id) ? "match" : null;
       const label = labelled.has(drawn.id) ? drawn.title || "(untitled)" : null;
       // A replay grows the graph by showing more of it, not by re-sending it: a
       // record before the timeline's place is not drawn at all, and the few

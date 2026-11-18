@@ -1,14 +1,18 @@
 import { StrictMode } from "react";
+import { APP } from "./appName";
 import { prefetch } from "./app/prefetch";
 import { restoreReturnHash } from "./app/session";
 import { installDebug, logRenderError } from "./debug/install";
 import { openEarlyStream } from "./live/earlyStream";
 import { chunk, reloadOnChunkError } from "./router/lazy";
+import { startTrail } from "./router/trail";
 import { installTheme } from "./theme";
 
 installDebug();
 installTheme();
 restoreReturnHash();
+// After the return hash is restored, so that the first page it records is the one shown.
+startTrail();
 reloadOnChunkError();
 // Before the first reads, so that it is open by the time the views mount and
 // read: their reads then miss no change, and none has to read again.
@@ -36,6 +40,6 @@ Promise.all([chunk(import("react-dom/client")), chunk(import("./start"))])
   .catch((error: unknown) => {
     // Without React there is no crash screen: say so rather than leave the page
     // blank. Thrown on, the error is logged as unhandled (installDebug).
-    document.getElementById("root")!.textContent = `Trackinizer could not load: ${String(error)}. Reload to try again.`;
+    document.getElementById("root")!.textContent = `${APP.name} could not load: ${String(error)}. Reload to try again.`;
     throw error;
   });

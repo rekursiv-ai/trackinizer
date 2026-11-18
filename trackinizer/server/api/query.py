@@ -9,7 +9,6 @@ web-facing SSE (``/api/web/subscribe``) and the search routes live in
 from __future__ import annotations
 
 from dataclasses import fields
-from datetime import datetime
 from functools import cache
 from typing import TYPE_CHECKING, Annotated, Literal, cast, get_args, get_type_hints
 
@@ -22,8 +21,8 @@ import uuid
 from fastapi import APIRouter, Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import TypeAdapter
+from treekle import from_plain, json_loads
 
-from trackinizer.lib.custom_json import DictCodec, MutableJSON, MutableJSONValue, loads
 from trackinizer.lib.postgres import DatabaseEngine
 from trackinizer.server.api._deps import get_store, tag_kind, tag_row
 from trackinizer.server.api._regex_guard import regex_failures_as_400
@@ -32,6 +31,12 @@ from trackinizer.server.api._routes_shared import (
     parse_fields,
     parse_seq_ranges,
 )
+from trackinizer.server.api.locks import require_unlocked
+from trackinizer.server.api.session_access import (
+    require_row_purge,
+    session_reader,
+)
+from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.server.notify import iter_sse_events
 from trackinizer.server.primitives import lookup_kinds
@@ -54,6 +59,11 @@ from trackinizer.wire.filters import (
     FilterOp,
     canonical_filter_field,
 )
+from trackinizer.wire.json_types import (
+    MutableJSON,
+    MutableJSONValue,
+    UtcDatetime,
+)
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
@@ -63,6 +73,8 @@ from trackinizer.wire.session_record_fields import SESSION_RECORD_FIELDS
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from trackinizer.server.store.read import Ancestor
 
 
@@ -232,6 +244,11 @@ async def list_inquiries_route(
     parents keeps them all. The walk stops 8 levels up and at 200 ancestors
     for the whole response, nearest first.
 
+    A ``filter`` on a record of an ``AgentSession`` (``user_message``, ``tool_call``,
+    ...) is answered from its transcript, so it meets only the sessions whose
+    transcript the caller reads (its audience, and for a science chat its members); a
+    session the caller does not read is neither found by it nor ruled out by it.
+
     Args:
       request: FastAPI request object for middleware access.
       identity: Authenticated user identity, viewer-role-gated.
@@ -248,7 +265,6 @@ async def list_inquiries_route(
       out: One JSON object per distinct kind, with inquiries for that kind.
 
     """
-    del identity
     if limit < 1 or limit > MAX_LIST_LIMIT:
         raise HTTPException(
             status_code=400,
@@ -294,6 +310,7 @@ async def list_inquiries_route(
                     seq_ranges=seq_ranges,
                     filters=filters,
                     edges=edges,
+                    reader=session_reader(request, identity),
                 )
         except asyncio.CancelledError:
             outcome = "cancelled"
@@ -330,12 +347,7 @@ async def list_inquiries_route(
                 },
             )
         listed.extend(rows)
-    out = [
-        tag_row(r)
-        if names is None
-        else {k: v for k, v in tag_row(r).items() if k in names}
-        for r in listed
-    ]
+    out = [tag_row(r, names) for r in listed]
     if ancestors is not None:
         ancestry = await store.narrows_ancestors([r.id for r in listed])
         for row, payload in zip(listed, out, strict=True):
@@ -452,9 +464,12 @@ async def delete_inquiry_route(
 ) -> MutableJSON:
     """Purge an inquiry row and its edges.
 
-    Writer-gated like every other mutation; inquiries (including AgentSessions)
-    are a shared workspace, so any writer may purge an unowned row. A claimed
-    row must first release its owner through the compare-and-set owner route.
+    Writer-gated like every other mutation, and one rule for every row: you delete
+    what you made, admins delete anything, so a row is purged by its ``account`` or
+    an admin. A claimed row must first release its owner through the
+    compare-and-set owner route. A science chat's session is the exception: its
+    lines are its posters', so only the key that opened it, or an admin, purges it;
+    ``DELETE /api/chats/<id>`` deletes a whole chat.
 
     Args:
       target_id: UUID of the inquiry to delete.
@@ -466,6 +481,8 @@ async def delete_inquiry_route(
       result: Mapping with "id" (inquiry UUID) and "change_id" (purge operation).
 
     """
+    await require_unlocked(request, identity, [target_id], include_peers=True)
+    await require_row_purge(request, identity, target_id)
     store = get_store(request)
     change_id = await store.purge(
         target_id,
@@ -490,7 +507,9 @@ async def change_log_stream_route(
     """Stream change ids over SSE.
 
     Shares ``iter_sse_events`` with ``/api/web/subscribe`` so both emit
-    one wire shape; offline catch-up uses ``GET /api/change_log``.
+    one wire shape; offline catch-up uses ``GET /api/change_log``. A record
+    written to a session's transcript is streamed only to a caller who reads
+    that session.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -500,14 +519,22 @@ async def change_log_stream_route(
       result: Server-sent events stream emitting change ids.
 
     """
-    del identity
     app_obj = cast(FastAPI, request.app)
     state_data = cast(
         dict[str, object],
         object.__getattribute__(app_obj.state, "_state"),
     )
     engine = cast(DatabaseEngine, state_data["engine"])
-    return StreamingResponse(iter_sse_events(engine), media_type="text/event-stream")
+    return StreamingResponse(
+        iter_sse_events(
+            engine,
+            hears=TranscriptPings(
+                engine=engine,
+                reader=session_reader(request, identity),
+            ).hears,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 @router.get("/api/change_log/{change_id}")
@@ -529,7 +556,7 @@ async def list_change_log_route(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
-    since: datetime | None = None,
+    since: UtcDatetime | None = None,
     after_id: uuid.UUID | None = None,
     actor: Inquiry.Actor | None = None,
     subject_id: uuid.UUID | None = None,
@@ -588,50 +615,20 @@ async def list_change_log_route(
     return JSONResponse([_brief_change(change) for change in changes])
 
 
-# Derived from ``flat_column_specs`` so the whitelist tracks the Inquiry hierarchy
-# automatically, including the flattened ``marginal_cost_*`` axes. Each flat column maps
-# through :func:`storage_name`, since ``canonical_filter_field`` resolves a filter to
-# its storage column (``priority`` -> ``issue_priority``) and the whitelist validates
-# the canonical name.
-def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
-    """Return the canonical SQL column names a ``Filter`` may target for ``kind``."""
-    cls = KIND_TO_CLASS[kind]
-    declared = {
-        storage_name(name, flat.spec)
-        for source in (Inquiry, cls)
-        for name, flat in flat_column_specs(source).items()
-    }
-    # IR record kinds are filterable on the one kind that HAS records. They
-    # carry no ColumnSpec (their values live in ``session_records``), so the
-    # spec walk cannot see them.
-    records = SESSION_RECORD_FIELDS if kind == "AgentSession" else ()
-    # Parents answered from ``edges`` (``narrows``), on the kinds whose rows have
-    # that relation. No ColumnSpec either.
-    own = {f.name for f in fields(cls)}
-    parents = {
-        column
-        for column, shape in COLUMN_SHAPES.items()
-        if shape is ColumnShape.PARENT and column in own
-    }
-    return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records) | parents
+def parse_filter(obj: Mapping[str, object], kind: Inquiry.InquiryKind) -> Filter:
+    """Check one ``{field, op, value}`` clause on ``kind``'s rows, raising 400.
 
+    The one gate every filter a route takes passes: the list's ``filter``
+    params and the metric rank's ``filters`` body alike.
 
-# ``field`` may arrive as a CLI-friendly alias (``kind``, ``agent-cost``, ``result``,
-# ...) or the canonical SQL column name. Both resolve through
-# ``canonical_filter_field``, so the returned ``Filter`` always carries the canonical
-# column, which is what the whitelist validates against.
-def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
-    """Decode one ``filter=<json>`` query param, raising 400 on bad input."""
-    try:
-        payload = loads(raw)
-    except json.JSONDecodeError as err:
-        raise HTTPException(
-            status_code=400,
-            detail=f"filter is not valid JSON: {err}",
-        ) from err
-    if not isinstance(payload, dict):
-        raise HTTPException(status_code=400, detail="filter must be a JSON object")
-    obj = DictCodec.coerce(payload)
+    Args:
+      obj: The clause's ``field``, ``op``, and ``value`` (absent for a presence op).
+      kind: The kind whose columns the field must name.
+
+    Returns:
+      filt: The clause, its field canonical.
+
+    """
     field = obj.get("field")
     op = obj.get("op")
     # The presence ops carry no operand; default a missing value to "". Gate on
@@ -688,14 +685,14 @@ def _ancestor_json(ancestor: Ancestor) -> MutableJSON:
 
 def _brief_change(change: Change) -> dict[str, object]:
     """Serialize ``change`` with unset snapshot keys dropped and snapshot text cut."""
-    row = DictCodec.coerce(
-        cast(object, _change_adapter().dump_python(change, mode="json")),
-    )
+    # Pydantic's JSON dump is Any; convert narrows the runtime shape below.
+    dumped = cast(object, _change_adapter().dump_python(change, mode="json"))
+    row = from_plain(dumped, dict[str, object])
     text = _snapshot_text_fields()
     for side in ("old", "new"):
         row[side] = {
             key: value[:32] if key in text and isinstance(value, str) else value
-            for key, value in DictCodec.coerce(row[side]).items()
+            for key, value in from_plain(row[side], dict[str, object]).items()
             if value is not None
         }
     return row
@@ -724,3 +721,49 @@ def _require_found[T](value: T | None) -> T:
     if value is None:
         raise HTTPException(status_code=404, detail="not found")
     return value
+
+
+# Derived from ``flat_column_specs`` so the whitelist tracks the Inquiry hierarchy
+# automatically, including the flattened ``marginal_cost_*`` axes. Each flat column maps
+# through :func:`storage_name`, since ``canonical_filter_field`` resolves a filter to
+# its storage column (``priority`` -> ``issue_priority``) and the whitelist validates
+# the canonical name.
+def _filter_columns_for(kind: Inquiry.InquiryKind) -> frozenset[str]:
+    """Return the canonical SQL column names a ``Filter`` may target for ``kind``."""
+    cls = KIND_TO_CLASS[kind]
+    declared = {
+        storage_name(name, flat.spec)
+        for source in (Inquiry, cls)
+        for name, flat in flat_column_specs(source).items()
+    }
+    # IR record kinds are filterable on the one kind that HAS records. They
+    # carry no ColumnSpec (their values live in ``session_records``), so the
+    # spec walk cannot see them.
+    records = SESSION_RECORD_FIELDS if kind == "AgentSession" else ()
+    # Parents answered from ``edges`` (``narrows``), on the kinds whose rows have
+    # that relation. No ColumnSpec either.
+    own = {f.name for f in fields(cls)}
+    parents = {
+        column
+        for column, shape in COLUMN_SHAPES.items()
+        if shape is ColumnShape.PARENT and column in own
+    }
+    return IDENTITY_COLUMNS | frozenset(declared) | frozenset(records) | parents
+
+
+# ``field`` may arrive as a CLI-friendly alias (``kind``, ``agent-cost``, ``result``,
+# ...) or the canonical SQL column name. Both resolve through
+# ``canonical_filter_field``, so the returned ``Filter`` always carries the canonical
+# column, which is what the whitelist validates against.
+def _parse_filter_param(raw: str, kind: Inquiry.InquiryKind) -> Filter:
+    """Decode one ``filter=<json>`` query param, raising 400 on bad input."""
+    try:
+        payload = json_loads(raw)
+    except json.JSONDecodeError as err:
+        raise HTTPException(
+            status_code=400,
+            detail=f"filter is not valid JSON: {err}",
+        ) from err
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="filter must be a JSON object")
+    return parse_filter(from_plain(payload, dict[str, object]), kind)

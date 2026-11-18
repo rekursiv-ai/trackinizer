@@ -6,8 +6,9 @@ import type { SessionPart, SessionRecord } from "../../api/sessions";
  * search's results, text folded under a summary, a tool's output, or a one-line
  * note. `meta` is what the record's header adds after its source.
  *
- * The payload is the record as the server's dataclass codec wrote it, so tuples
- * arrive as `{"py/tuple": [...]}` (`plain`). A kind with no case here, or a
+ * The payload is the record as the server's dataclass codec wrote it, so each
+ * object names its class as `py/object`, and a tuple or set is a plain array or a
+ * tagged `{"py/tuple": [...]}` (`plain`), both read. A kind with no case here, or a
  * payload without the fields its case reads, shows its text, the server's own
  * search projection, or what Claude's model read, so nothing new is dropped; so
  * does an offloaded body, whose payload is only a stub.
@@ -81,8 +82,8 @@ type Shape =
 export type SearchResult = { readonly url: string; readonly title: string; readonly snippet: string };
 
 /**
- * What the canvas appends to a message it sends (`_render_inbound` in
- * `trax/run/session.py`), and the record it names, when it names one.
+ * What the canvas appends to a message it sends (`render_inbound` in
+ * `trax/run/inbound.py`), and the record it names, when it names one.
  */
 export type CanvasContext = { readonly text: string; readonly recordId: string; readonly title: string };
 
@@ -729,7 +730,8 @@ function attachmentsChip(attachments: unknown): string {
   const each = plain(attachments);
   if (!Array.isArray(each) || each.length === 0) return "";
   const named = each.filter(isFields).map((attachment) => {
-    const data = isFields(attachment.data) ? stringField(attachment.data, "py/b64") : "";
+    // Plain rows hold the base64 string; tagged rows hold `{"py/b64": ...}`.
+    const data = isFields(attachment.data) ? stringField(attachment.data, "py/b64") : stringField(attachment, "data");
     const size = Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
     return `${stringField(attachment, "mime_descriptor") || "file"}, ${bytes(size)}`;
   });
@@ -822,12 +824,12 @@ function shellWord(word: string): string {
   return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll("'", `'"'"'`)}'`;
 }
 
-/** `value` without the codec's tags: a tuple or set as a list, an object without its class name. */
+/** `value` without the codec's tags: a tagged tuple or set as a list, an object without its class name. Plain rows have no tags. */
 function plain(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(plain);
   if (!isFields(value)) return value;
   const items = value["py/tuple"] ?? value["py/set"];
-  if (Array.isArray(items)) return items.map(plain);
+  if (Object.keys(value).length === 1 && Array.isArray(items)) return items.map(plain);
   return Object.fromEntries(
     Object.entries(value)
       .filter(([key]) => key !== "py/object")

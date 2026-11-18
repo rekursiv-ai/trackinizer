@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final, cast, override
+from unittest import mock
 
 import asyncio
 import contextlib
 import fcntl
 import os
 import pty
+import select
 import signal
 import struct
 import subprocess
@@ -24,6 +26,8 @@ import pytest
 from trackinizer.lib.posix.relay import (
     Relay,
     ThreadedRelay,
+    _readable,
+    _wait_readable,
     real_fd,
     terminal_size,
 )
@@ -31,7 +35,7 @@ from trackinizer.lib.posix.terminal import PASTE_START, Terminal
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import AsyncIterator, Callable, Sequence
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -562,6 +566,38 @@ class TestThreadedRelay:
         relay.submit("nobody is listening")
         assert relay.submitted == 0
 
+    def test_write_sends_raw_bytes_to_the_terminal(self) -> None:
+        """Escape reaches the child as one raw byte: no paste bracket, no Enter."""
+        relay = ThreadedRelay(["cat"])
+        written: list[bytes] = []
+
+        async def write(data: bytes) -> bool:
+            written.append(data)
+            return True
+
+        loop = asyncio.new_event_loop()
+        serving = threading.Thread(target=loop.run_forever, daemon=True)
+        serving.start()
+        try:
+            with mock.patch.object(relay._terminal, "write", write):
+                relay._loop = loop
+                relay._running.set()
+                relay.write(b"\x1b")
+        finally:
+            _ = loop.call_soon_threadsafe(loop.stop)
+            serving.join(timeout=5.0)
+            loop.close()
+
+        assert written == [b"\x1b"]
+        assert relay.submitted == 0
+
+    def test_write_before_the_child_is_up_is_dropped(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        ThreadedRelay(["cat"]).write(b"\x1b")
+        assert "write dropped: child not running" in caplog.text
+
     def test_terminate_before_run_is_a_noop(self) -> None:
         ThreadedRelay(["cat"]).terminate()
 
@@ -621,6 +657,253 @@ class TestRelayWithoutRealStreams:
 
         assert asyncio.run(run()) == 0
         assert marker.read_text() == "ran"
+
+
+class TestRelayBranchEdges:
+    """Exercise relay lifecycle branches with deterministic fakes."""
+
+    def test_started_callback_requires_pid(self) -> None:
+        child = _FakeChild()
+
+        async def run() -> None:
+            with pytest.raises(RuntimeError, match="child PID"):
+                await Relay(child, on_started=lambda _pid: None).serve()
+
+        asyncio.run(run())
+        assert child.calls == ["start", "terminate", "wait", "close"]
+
+    def test_pump_stops_when_mirror_write_fails(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        child = _FakeChild(chunks=[b"output", b"never mirrored"])
+        relay = Relay(child)
+        mirrored: list[bytes] = []
+
+        def write_all(fd: int, data: bytes) -> bool:
+            del fd
+            mirrored.append(data)
+            return False
+
+        monkeypatch.setattr("trackinizer.lib.posix.relay.write_all", write_all)
+        asyncio.run(relay._pump(-1, 3))
+        assert mirrored == [b"output"]
+
+    def test_forward_input_returns_when_not_readable(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        child = _FakeChild()
+        relay = Relay(child)
+        monkeypatch.setattr("trackinizer.lib.posix.relay._readable", _false_async)
+        asyncio.run(relay._forward_input(3))
+        assert child.written == []
+
+    @pytest.mark.parametrize("failure", [BlockingIOError(), OSError("closed")])
+    def test_forward_input_stops_on_read_failure(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        failure: OSError,
+    ) -> None:
+        child = _FakeChild()
+        relay = Relay(child)
+        ready = iter([True, False])
+
+        async def readable(fd: int) -> bool:
+            del fd
+            return next(ready)
+
+        def read(fd: int, size: int) -> bytes:
+            del fd, size
+            raise failure
+
+        monkeypatch.setattr("trackinizer.lib.posix.relay._readable", readable)
+        monkeypatch.setattr(os, "read", read)
+        asyncio.run(relay._forward_input(3))
+        assert child.written == []
+
+    def test_forward_input_stops_on_empty_read(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        child = _FakeChild()
+        relay = Relay(child)
+
+        def read(fd: int, size: int) -> bytes:
+            del fd, size
+            return b""
+
+        monkeypatch.setattr("trackinizer.lib.posix.relay._readable", _true_async)
+        monkeypatch.setattr(os, "read", read)
+        asyncio.run(relay._forward_input(3))
+        assert child.written == []
+
+    def test_forward_input_stops_when_the_child_refuses_keystrokes(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        child = _RefusingChild()
+        observed: list[bytes] = []
+        relay = Relay(child, on_input=observed.append)
+        reads = iter([b"keys", b""])
+
+        def read(fd: int, size: int) -> bytes:
+            del fd, size
+            return next(reads)
+
+        monkeypatch.setattr("trackinizer.lib.posix.relay._readable", _true_async)
+        monkeypatch.setattr(os, "read", read)
+        asyncio.run(relay._forward_input(3))
+        assert child.written == [b"keys"]
+        assert observed == []
+
+    def test_threaded_submit_logs_master_death(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        relay = ThreadedRelay(["true"])
+        relay._running.set()
+        with mock.patch.object(relay, "_on_loop"):
+            relay.submit("lost")
+        assert "master died" in caplog.text
+
+    def test_on_loop_swallows_scheduler_race(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        relay = ThreadedRelay(["true"])
+
+        async def work() -> None:
+            return
+
+        async def run() -> None:
+            relay._loop = asyncio.get_running_loop()
+            monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", _raise_runtime)
+            relay._on_loop(work(), timeout_sec=1.0)
+
+        asyncio.run(run())
+
+    def test_wait_readable_treats_register_error_as_ready(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class Poller:
+            def register(self, fd: int, event: int) -> None:
+                del fd, event
+                raise OSError("not pollable")
+
+        monkeypatch.setattr(select, "poll", Poller)
+
+        assert _wait_readable(3)
+
+    def test_wait_readable_returns_poll_result(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        class Poller:
+            def register(self, fd: int, event: int) -> None:
+                del fd, event
+
+            def poll(self) -> list[object]:
+                return []
+
+        monkeypatch.setattr(select, "poll", Poller)
+
+        assert not _wait_readable(3)
+
+    def test_readable_falls_back_to_thread(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        async def run() -> bool:
+            loop = asyncio.get_running_loop()
+            monkeypatch.setattr(loop, "add_reader", _raise_oserror)
+            monkeypatch.setattr(asyncio, "to_thread", _return_false)
+
+            return await _readable(3)
+
+        assert asyncio.run(run()) is False
+
+    def test_wait_readable_treats_poll_error_as_ready(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(select, "poll", _raise_oserror)
+
+        assert _wait_readable(3)
+
+
+class _FakeChild:
+    """A :class:`Child` with no process behind it; records what it is asked."""
+
+    def __init__(self, *, chunks: Sequence[bytes] = ()) -> None:
+        self._chunks = tuple(chunks)
+        self.calls: list[str] = []
+        self.written: list[bytes] = []
+
+    @property
+    def pid(self) -> int | None:
+        return None
+
+    async def start(self) -> None:
+        self.calls.append("start")
+
+    def set_winsize(self, rows: int, cols: int) -> None:
+        del rows, cols
+        self.calls.append("set_winsize")
+
+    async def output(self) -> AsyncIterator[bytes]:
+        for chunk in self._chunks:
+            yield chunk
+
+    async def write(self, data: bytes) -> bool:
+        self.written.append(data)
+        return True
+
+    async def terminate(self) -> None:
+        self.calls.append("terminate")
+
+    async def wait(self) -> int:
+        self.calls.append("wait")
+        return 0
+
+    async def close(self) -> None:
+        self.calls.append("close")
+
+
+class _RefusingChild(_FakeChild):
+    """A :class:`Child` whose pty has closed: it accepts no more keystrokes."""
+
+    @override
+    async def write(self, data: bytes) -> bool:
+        self.written.append(data)
+        return False
+
+
+async def _false_async(*_args: object) -> bool:
+    return False
+
+
+async def _true_async(*_args: object) -> bool:
+    return True
+
+
+class _FailedFuture:
+    def result(self, timeout: float) -> None:
+        del timeout
+        raise RuntimeError("loop stopped")
+
+
+def _raise_runtime(*_args: object) -> _FailedFuture:
+    return _FailedFuture()
+
+
+def _raise_oserror(*_args: object, **_kwargs: object) -> None:
+    raise OSError("unreadable")
+
+
+async def _return_false(*_args: object) -> bool:
+    return False
 
 
 def _drive(argv: list[str], *, typed: bytes, needle: bytes) -> tuple[bytes, int]:
@@ -711,6 +994,6 @@ async def _wait_for(predicate: Callable[[], bool], timeout_sec: float) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

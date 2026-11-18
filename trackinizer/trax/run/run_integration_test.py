@@ -44,6 +44,7 @@ import uuid
 
 from fastapi import FastAPI
 from starlette.responses import Response
+from treekle import from_plain
 
 import httpx2
 import pytest
@@ -51,8 +52,8 @@ import uvicorn
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import SessionRecord, UserMessage
-from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec
 from trackinizer.lib.posix.relay import ThreadedRelay
 from trackinizer.lib.postgres import PGliteEngine
 from trackinizer.lib.userdirs import state_dir
@@ -61,7 +62,6 @@ from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.inbound import InboundQueue
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.session import (
     RunConfig,
     _drain_filesystem_loop,
@@ -71,17 +71,23 @@ from trackinizer.trax.run.session import (
 )
 from trackinizer.trax.run.sink import ResilientSink, Sink, TrackinizerSink
 from trackinizer.types.session_records import _BY_KIND
-from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
+from trackinizer.wire.wire_sessions import (
+    InboundDrainItem,
+    SessionStart,
+    SessionStartResponse,
+)
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterator
+    from collections.abc import Awaitable, Callable, Iterator, Sequence
     from datetime import datetime
 
     from starlette.requests import Request
 
+    from trackinizer.lib.agent.types.sessions import FileEditResult
     from trackinizer.trax.run.custom_types import Event
     from trackinizer.trax.run.slash import SlashCommand
+    from trackinizer.types.streams import TraxRecord
     from trackinizer.wire.wire_session_ir import RecordBody
 
 
@@ -304,7 +310,7 @@ class _StateApp:
     """Minimal app stub exposing ``.state`` for ``_ServerThread`` cause lookup."""
 
     class _State:
-        startup_error = None
+        startup_error: None = None
 
     state = _State()
 
@@ -344,7 +350,7 @@ def _latest_session_row(
             params={"kind": "AgentSession", "limit": 50},
         )
         listing.raise_for_status()
-        rows = ListCodec.mappings(listing.json())
+        rows = from_plain(listing.json(), list[dict[str, object]])
         if cli is not None:
             rows = [r for r in rows if r.get("cli") == cli]
         return rows[0] if rows else None
@@ -372,20 +378,20 @@ def _latest_session_records(
     with httpx2.Client(base_url=base_url, timeout=30.0) as http:
         parts = http.get(f"/api/sessions/{session_id}/parts")
         parts.raise_for_status()
-        listing = DictCodec.coerce(parts.json())
-        for part in ListCodec.mappings(listing["parts"]):
+        listing = from_plain(parts.json(), dict[str, object])
+        for part in from_plain(listing["parts"], list[dict[str, object]]):
             page = http.get(
                 f"/api/sessions/{session_id}/records",
-                params={"part": IntCodec.coerce(part["part"]), "limit": 1000},
+                params={"part": from_plain(part["part"], int), "limit": 1000},
             )
             page.raise_for_status()
-            body = DictCodec.coerce(page.json())
+            body = from_plain(page.json(), dict[str, object])
             # ``RecordBody`` carries no ``part`` -- the route resolves one and
             # returns it alongside -- so stamp it here, or a caller checking
             # positions cannot tell two parts apart.
             found.extend(
                 {**record, "part": body["part"]}
-                for record in ListCodec.mappings(body["records"])
+                for record in from_plain(body["records"], list[dict[str, object]])
             )
     return found
 
@@ -443,13 +449,13 @@ def _assert_transcript_synced(base_url: str, *, cli: str) -> None:
     # position derived from its place in the file's normalized stream.
     for record in records:
         assert isinstance(record["payload"], dict)
-        assert IntCodec.coerce(record["idx"]) >= 0
+        assert from_plain(record["idx"], int) >= 0
     # Each part numbers its records from 0 with no gaps: the key is derived
     # from stream position, so a hole means a record was dropped in ingest.
     by_part: dict[int, list[int]] = {}
     for record in records:
-        part = IntCodec.coerce(record["part"])
-        by_part.setdefault(part, []).append(IntCodec.coerce(record["idx"]))
+        part = from_plain(record["part"], int)
+        by_part.setdefault(part, []).append(from_plain(record["idx"], int))
     for part, idxs in by_part.items():
         assert sorted(idxs) == list(range(len(idxs))), (
             f"gap in part {part}'s positions: {sorted(idxs)}"
@@ -547,6 +553,7 @@ class _LineAdapter:
     cli_binary: str = "fakeline"
     whole_file: bool = False
     parent_session_env: frozenset[str] = frozenset[str]()
+    session_switch_commands: frozenset[str] = frozenset[str]()
 
     def __init__(self, root: Path) -> None:
         self._root = root
@@ -564,7 +571,11 @@ class _LineAdapter:
         del path
         return None
 
-    def reader(self) -> Tail:
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        del cli_args
+        return None
+
+    def reader(self) -> Tail[TraxRecord]:
         return Tail(_line_records)
 
 
@@ -831,6 +842,60 @@ def test_inbound_injection_reaches_child_end_to_end(server: str) -> None:
 
 
 @pytest.mark.cli_python_subprocess
+def test_a_chat_command_reaches_the_child_bare(server: str, tmp_path: Path) -> None:
+    """A ``command`` reaches the CLI as a paste of itself and Enter, nothing more.
+
+    With a sender before it, the CLI reads ``/goal`` as a prompt. The child reads its
+    terminal raw, so the bytes it records are exactly what a TUI would get.
+    """
+    ready, seen = tmp_path / "ready", tmp_path / "seen"
+    child = (
+        "import os, tty\n"
+        "tty.setraw(0)\n"
+        f"open({str(ready)!r}, 'w').close()\n"
+        "got = b''\n"
+        "while not got.endswith(b'\\r'):\n"
+        "    got += os.read(0, 1024)\n"
+        f"open({str(seen)!r} + '.part', 'wb').write(got)\n"
+        f"os.replace({str(seen)!r} + '.part', {str(seen)!r})\n"
+    )
+    client = Client(base_url=server)
+    session_id = client.session_start(
+        SessionStart(cli="claude-command", actor="tester"),
+    ).id
+    relay = ThreadedRelay([sys.executable, "-u", "-c", child])
+    stop = threading.Event()
+    poller = threading.Thread(
+        target=lambda: _inbound_poll_loop(
+            client,
+            _StubSessionSink(session_id),
+            relay,
+            stop,
+            poll_interval=0.2,
+            wait_sec=0.1,
+            cli="claude",
+        ),
+        daemon=True,
+    )
+    relay_thread = threading.Thread(target=relay.run, daemon=True)
+    relay_thread.start()
+    poller.start()
+    try:
+        _wait_for(ready.exists, timeout_sec=10.0)
+        assert client.enqueue_inbound(session_id, "/goal ship it", kind="command") >= 1
+        _wait_for(seen.exists, timeout_sec=10.0)
+    finally:
+        stop.set()
+        relay.terminate()
+        relay_thread.join(timeout=5.0)
+        poller.join(timeout=2.0)
+        client.close()
+    assert not relay_thread.is_alive(), "relay did not stop"
+    assert not poller.is_alive(), "inbound poller did not stop"
+    assert seen.read_bytes() == b"\x1b[200~/goal ship it\x1b[201~\r"
+
+
+@pytest.mark.cli_python_subprocess
 def test_detached_run_syncs_and_receives_inbound(server: str) -> None:
     """A ``--detach`` host is a whole ``trax run``, not a lesser one.
 
@@ -1043,7 +1108,7 @@ def test_injection_closes_resources_on_every_exit(
     """Release pipe endpoints and workers, including partially completed setup."""
     client = Mock(spec=Client)
     client.session_start.return_value = SessionStartResponse(id=uuid.uuid4(), seq=0)
-    client.drain_inbound.return_value = []
+    client.drain_inbound.return_value = list[InboundDrainItem]()
     if failure:
         method = (
             client.session_start
@@ -1254,6 +1319,10 @@ class _StubSessionSink(Sink):
         del command, at
 
     @override
+    def emit_worktree_diff(self, records: Sequence[FileEditResult]) -> None:
+        del records
+
+    @override
     def flush(self) -> None:
         pass
 
@@ -1281,6 +1350,6 @@ def test_server_fixture_boots(server: str) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

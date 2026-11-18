@@ -20,11 +20,13 @@ from typing import TYPE_CHECKING
 import hashlib
 
 from trackinizer.lib.agent.sessions import gemini
-from trackinizer.trax.run.adapters.tail import Tail
+from trackinizer.lib.agent.sessions.tail import Tail
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+
+    from trackinizer.types.streams import TraxRecord
 
 
 class GeminiAdapter:
@@ -39,6 +41,9 @@ class GeminiAdapter:
     cli_binary: str = "gemini"
     whole_file: bool = True
     parent_session_env: frozenset[str] = frozenset[str]()
+    # Not measured: gemini is not a resume target, and how its ``/chat`` commands
+    # move a session has not been checked against a live CLI.
+    session_switch_commands: frozenset[str] = frozenset[str]()
 
     @property
     def _tmp_dir(self) -> Path:
@@ -99,7 +104,12 @@ class GeminiAdapter:
         del path
         return None
 
-    def reader(self) -> Tail:
+    def resumed_session(self, cli_args: tuple[str, ...]) -> str | None:
+        """Return ``None``: no gemini resume is recognized, so every run is new."""
+        del cli_args
+        return None
+
+    def reader(self) -> Tail[TraxRecord]:
         """Return a fresh IR reader for one gemini session document.
 
         Whole-file: gemini rewrites in place, so each chunk is the entire

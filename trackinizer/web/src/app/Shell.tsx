@@ -1,4 +1,5 @@
-import { Suspense, useCallback, useState } from "react";
+import { Suspense, useState } from "react";
+import { APP } from "../appName";
 import { createCommands } from "../commands/create";
 import { PaletteContext, usePaletteState } from "../commands/palette";
 import { useCommands } from "../commands/registry";
@@ -9,30 +10,47 @@ import { PaletteView } from "../palette";
 import { lazyView, useLoaded } from "../router/lazy";
 import { formatRoute, type Route } from "../router/route";
 import { useRouter } from "../router/router";
-import { ActivityView, AdminView, ConsoleView, CreateView, DetailView, GraphView, SearchView, SettingsView } from "../router/views";
+import { ActivityView, AdminView, BlocksView, ConsoleView, CreateView, DetailView, GraphView, SearchView, SettingsView } from "../router/views";
 import { BarStack, OfflineBar, PausedBar } from "../ui/bars";
 import { Icon } from "../ui/icons";
 import { kindLook } from "../ui/kinds";
-import { panelCommand, usePanel } from "../ui/panel";
-import { EmptyState, OpenDrawerContext, ViewHeader } from "../ui/view";
+import { EmptyState, ViewHeader } from "../ui/view";
 import { useMeta, useProfile, useWriteMode } from "./boot";
-import { SIDEBAR, Sidebar } from "./Sidebar";
+import { Rail } from "./Rail";
+import { StatusBar } from "./StatusBar";
+import { TopBar } from "../topbar/TopBar";
 
 /**
- * The agent canvas around lists and details, for users who opted in
- * (`visual_workspace_enabled`, off by default): a chunk of its own, so that a
- * first load without it does not carry it.
+ * The agent canvas around the views, for users who have not opted out
+ * (`visual_workspace_enabled`, on by default): a chunk of its own, so that a
+ * first load without it does not carry it, loaded only for a user who has it on,
+ * with Chat's column and the registry of the renderers it shows.
  */
-const Canvas = lazyView(() => import("../visuals/Canvas"), (module) => module.Canvas);
+const Canvas = lazyView(
+  async () => {
+    // Chat's column loads in parallel with the canvas chunk and with it, so the
+    // column's first render suspends on nothing.
+    const [module] = await Promise.all([import("../visuals/Canvas"), import("../visuals/registry"), ChatColumn.preload()]);
+    return module;
+  },
+  (module) => module.Canvas,
+);
 
-/** A route that shows a view; a new inquiry shows its form over one. */
-type ViewRoute = Exclude<Route, { name: "new" }>;
+/** Chat, a column beside the canvas rather than a visual in it. */
+const ChatColumn = lazyView(() => import("../visuals/ChatColumn"), (module) => module.ChatColumn);
+
+/** A route that shows a page; a new inquiry's form, Settings and Admin show over one. */
+type ViewRoute = Exclude<Route, { name: "new" | "settings" | "admin" }>;
+
+/** Settings and Admin: a sheet over the page, half its width, from its left edge. */
+type SheetRoute = Extract<Route, { name: "settings" | "admin" }>;
 
 /**
- * The signed-in app: the sidebar, the bars, the current route's view, and the
- * palette and the create form, with the shell's own commands. Collapsed, the
- * sidebar is a rail of its icons; narrow, it is a drawer whether collapsed or
- * not.
+ * The signed-in app: the top bar, the bars, the current route's view, and the
+ * palette and the create form, with the shell's own commands. The top bar
+ * stands over everything; under it, the rail down the left, then Chat's column
+ * and the canvas around the page, or the page alone with no canvas; the status
+ * line closes the window.
  */
 export function Shell() {
   const { route, navigate } = useRouter();
@@ -40,18 +58,15 @@ export function Shell() {
   const { role, visual_workspace_enabled: visualWorkspaceEnabled } = useProfile();
   const writable = useWriteMode() === "enabled";
   const creatable = creatableKinds(kinds);
-  // The view under a `#/new/<Kind>` route: the one before it, or home, the graph,
-  // when the app opened on that link.
-  const view = route.name === "new" ? null : route;
+  // The page under a `#/new/<Kind>` route or a sheet: the one before it, or home,
+  // the graph, when the app opened on that link.
+  const sheet = isSheet(route) ? route : null;
+  const view = route.name === "new" || isSheet(route) ? null : route;
   const [background, setBackground] = useState<ViewRoute>(view ?? HOME);
   if (view && view !== background) setBackground(view);
   // No route opens the palette: a search link opens the search page.
   const palette = usePaletteState(null, () => {});
   const canvasLoaded = useLoaded(Canvas, visualWorkspaceEnabled);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const openDrawer = useCallback(() => setDrawerOpen(true), []);
-  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
-  const sidebar = usePanel(SIDEBAR);
 
   useCommands([
     {
@@ -92,37 +107,50 @@ export function Shell() {
     ...(writable
       ? createCommands(creatable, createKindFor(background, creatable), (kind) => navigate({ name: "new", kind }))
       : []),
-    panelCommand(sidebar),
   ]);
+
+  const withCanvas = visualWorkspaceEnabled && canvasLoaded;
+  // With the canvas, the sheet opens over the canvas's page (ChatColumn); without it, over the main area.
+  const sheetView = sheet ? (
+    <aside className="sheet" aria-label={sheet.name === "settings" ? "Your settings" : "Admin"}>
+      <Suspense fallback={<div className="view" aria-busy="true" />}>
+        {sheet.name === "settings" ? <SettingsView /> : <AdminView />}
+      </Suspense>
+    </aside>
+  ) : null;
 
   return (
     <PaletteContext value={palette}>
-      <OpenDrawerContext value={openDrawer}>
-        <div
-          className={`app${drawerOpen ? " drawer-open" : ""}${sidebar.collapsed ? " sidebar-collapsed" : ""}${
-            (view ?? background).name === "graph" ? " graph-bleed" : ""
-          }`}
-        >
-          <Sidebar onNavigate={closeDrawer} panel={sidebar} />
-          <div className="drawer-scrim" onClick={closeDrawer} />
-          <main className="main">
-            <BarStack>
-              <OfflineBar />
-              <PausedBar />
-              {/* A view whose chunk is still loading (src/router/views.ts) holds an empty, busy frame. */}
-              <Suspense fallback={<div className="view" aria-busy="true" />}>
-                {isCanvasRoute(view ?? background) && visualWorkspaceEnabled ? (
-                  canvasLoaded ? (
-                    <Canvas><RouteView route={view ?? background} /></Canvas>
+        {/* The graph draws to the frame's edges, so it loses the main area's padding. */}
+        <div className={`app${withCanvas ? " with-canvas" : ""}${(view ?? background).name === "graph" ? " graph-bleed" : ""}`}>
+          <TopBar stations={withCanvas} />
+          <div className="app-body">
+            <Rail />
+            <main className="main">
+              <BarStack>
+                <OfflineBar />
+                <PausedBar />
+                {/* A view whose chunk is still loading (src/router/views.ts) holds an empty, busy frame. */}
+                <Suspense fallback={<div className="view" aria-busy="true" />}>
+                  {/* The canvas holds the shell's busy frame until its chunk is in, then mounts the page once, inside it. */}
+                  {visualWorkspaceEnabled ? (
+                    canvasLoaded ? (
+                      <ChatColumn sheet={sheetView}><Canvas><RouteView route={view ?? background} /></Canvas></ChatColumn>
+                    ) : (
+                      <div className="view" aria-busy="true" />
+                    )
                   ) : (
-                    <div className="view" aria-busy="true" />
-                  )
-                ) : (
-                  <RouteView route={view ?? background} />
-                )}
-              </Suspense>
-            </BarStack>
-          </main>
+                    <RouteView route={view ?? background} />
+                  )}
+                </Suspense>
+                {visualWorkspaceEnabled ? null : sheetView}
+              </BarStack>
+            </main>
+          </div>
+          {/* The status line is about the chat's station and its run, so it stands only where
+              there is one. Mounted on a build with no canvas it read the workspace on every
+              route and said nothing with it. */}
+          {visualWorkspaceEnabled && <StatusBar />}
         </div>
         {route.name === "new" ? (
           <Suspense>
@@ -130,13 +158,13 @@ export function Shell() {
           </Suspense>
         ) : null}
         <PaletteView />
-      </OpenDrawerContext>
     </PaletteContext>
   );
 }
 
-function isCanvasRoute(route: ViewRoute): boolean {
-  return route.name === "list" || route.name === "ref" || route.name === "lookup";
+/** Whether `route` opens a sheet over the page rather than a page. */
+function isSheet(route: Route): route is SheetRoute {
+  return route.name === "settings" || route.name === "admin";
 }
 
 function RouteView({ route }: { route: ViewRoute }) {
@@ -151,21 +179,19 @@ function RouteView({ route }: { route: ViewRoute }) {
       return <ActivityView />;
     case "console":
       return <ConsoleView />;
-    case "settings":
-      return <SettingsView />;
-    case "admin":
-      return <AdminView />;
     case "search":
       return <SearchView q={route.q} />;
     case "graph":
       return <GraphView />;
+    case "blocks":
+      return <BlocksView />;
     case "notFound":
       return (
         <div className="view">
           <ViewHeader icon={<Icon name="x" />} title="Not found" />
           <EmptyState icon={<Icon name="x" size={24} />} title="Nothing lives at this address">
             <p>
-              <code className="mono">{route.hash}</code> is not a Trackinizer link.
+              <code className="mono">{route.hash}</code> is not a {APP.name} link.
             </p>
             <a className="btn" href={formatRoute(HOME)}>
               Go to the graph

@@ -21,6 +21,7 @@ import {
   type Written,
   Writer,
 } from "./harness";
+import { abortStream, STREAM_ROUTES, STREAM_URL, streamOpened } from "../fixtures";
 
 // The live and responsiveness suite (the plan's testing layer 7): a writer
 // drives the suite's own server through the Python client while the page
@@ -33,6 +34,12 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
+// The canvas is on by default, and its Chat pane (360 px), its toolbar and a pane
+// header (70 px) take room from the page. This screen leaves the page the 1035 x
+// 650 it had on the default 1280 x 720, so what the suite measures (the width rows
+// wrap at, the height they scroll in) is the page's, not the screen's.
+test.use({ viewport: { width: 1640, height: 790 } });
+
 let server: LiveServer;
 let writer: Writer;
 /** Every test's measurements, logged as one JSON line when the suite ends. */
@@ -41,11 +48,13 @@ const measured: { [test: string]: unknown } = {};
 let whenPaused: Probed | undefined;
 
 /** The stream's route, as `page.route` matches it. */
-const SUBSCRIBE = "**/api/web/subscribe";
+// The page's live stream, whichever it uses: the canvas's events stream (the default) or /api/web/subscribe (opted out).
+const SUBSCRIBE = STREAM_ROUTES;
 
 test.beforeAll(async () => {
   test.setTimeout(180_000);
   server = await LiveServer.start();
+  // No Issue is locked on this server, so no rules are in force and the welcome flow never stands over a page.
   writer = new Writer(server.url);
 });
 
@@ -293,7 +302,7 @@ test("Activity: a change joins the top of the feed within 3 s, at most one ask p
   test.setTimeout(90_000);
   const label = fresh("activity");
   const ids = await seed(request, label, 6);
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`${server.url}/app/#/activity`);
   await subscribed;
   await expect(page.locator(".feed-row").first()).toBeVisible();
@@ -448,7 +457,7 @@ test("a short drop: the paused bar never shows, and gap recovery shows what the 
     );
   });
   const reconnected = page.waitForResponse(
-    (response) => response.url().includes("/api/web/subscribe") && response.status() === 200,
+    (response) => STREAM_URL.test(response.url()) && response.status() === 200,
     { timeout: 60_000 },
   );
   const downAt = Date.now();
@@ -463,7 +472,7 @@ test("a short drop: the paused bar never shows, and gap recovery shows what the 
     [id!, title],
     async () => {
       const written = await writer.edit(id!, "title", title);
-      await page.unroute(SUBSCRIBE);
+      for (const route of SUBSCRIBE) await page.unroute(route);
       return written;
     },
   );
@@ -504,7 +513,7 @@ test("a long drop shows the paused bar after 10 s, and the restart clears it and
     [id!, title],
     async () => {
       const written = await writer.edit(id!, "title", title);
-      await page.unroute(SUBSCRIBE);
+      for (const route of SUBSCRIBE) await page.unroute(route);
       return written;
     },
   );
@@ -661,7 +670,7 @@ test("with the CPU slowed 4x: first load, live batches, and a busy hub's detail"
       await context.addInitScript(installProbes);
       const page = await context.newPage();
       await (await context.newCDPSession(page)).send("Emulation.setCPUThrottlingRate", { rate });
-      const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+      const subscribed = streamOpened(page);
       await page.goto(`${server.url}/app/${path}`);
       return { context, page, subscribed };
     };
@@ -735,9 +744,9 @@ async function seedHub(request: APIRequestContext, children: number): Promise<st
   return (await response.json()).ids[0];
 }
 
-/** Refuse the page's stream connections until `page.unroute(SUBSCRIBE)`, so the stream stays down whatever the server does. */
+/** Refuse the page's stream connections until the `SUBSCRIBE` routes are unrouted, so the stream stays down whatever the server does. */
 async function holdOffStream(page: Page): Promise<void> {
-  await page.route(SUBSCRIBE, (route) => route.abort());
+  await abortStream(page);
 }
 
 /** A label no other test uses. */
@@ -774,7 +783,8 @@ async function holdThings(page: Page): Promise<{ peeked: string; pointer: { x: n
   for (const key of ["j", "j", "j", "x", "j", "x", "k"]) await page.keyboard.press(key);
   await expect(page.locator(".row-line.is-selected")).toHaveCount(2);
   const box = (await page.locator(".view .scroll").boundingBox())!;
-  const pointer = { x: box.x + box.width / 3, y: box.y + box.height / 2 };
+  // Left of where the peek opens, in a page a Chat pane has narrowed: the peek takes up to 45% of the page, from the right.
+  const pointer = { x: box.x + Math.min(box.width / 3, 120), y: box.y + box.height / 2 };
   await page.mouse.move(pointer.x, pointer.y);
   await page.mouse.wheel(0, 80);
   await expect.poll(() => page.locator(".view .scroll").evaluate((scroller) => scroller.scrollTop)).toBeGreaterThan(0);

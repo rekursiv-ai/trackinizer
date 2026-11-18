@@ -20,14 +20,16 @@ from dataclasses import (
     dataclass,
     field as dataclass_field,
 )
+from functools import partial
 from typing import TYPE_CHECKING, Final, Literal, TypeGuard, cast, get_args
 
 import json
 import re
 import uuid
 
+from treekle import from_plain
+
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import DictCodec
 from trackinizer.types.columns import flat_column_specs
 from trackinizer.types.inquiries import (
     CITATION_VALENCE_DEFAULT,
@@ -92,7 +94,7 @@ __all__ = [
 
 VALID_KINDS: tuple[Inquiry.InquiryKind, ...] = cast(
     tuple[Inquiry.InquiryKind, ...],
-    get_args(cast(object, Inquiry.InquiryKind.__value__)),
+    get_args(Inquiry.InquiryKind.__value__),
 )
 KIND_LOWER: Mapping[str, Inquiry.InquiryKind] = {k.lower(): k for k in VALID_KINDS}
 
@@ -252,6 +254,10 @@ class EdgeAction:
     metadata: Mapping[str, object]
     remove: bool = False
     annotate: bool = False
+    valence_injected: bool = False
+    """The metadata valence is this spelling's polarity default, not a
+    user-supplied value: it must reach a fresh edge, but it must never
+    overwrite the stored valence of an edge that already exists."""
 
 
 @dataclass(frozen=True, kw_only=True, slots=True)
@@ -420,7 +426,7 @@ EDGE_ALIASES: Mapping[str, Edge] = {
 }
 ISSUE_KINDS: tuple[Issue.Kind, ...] = cast(
     tuple[Issue.Kind, ...],
-    get_args(cast(object, Issue.Kind.__value__)),
+    get_args(Issue.Kind.__value__),
 )
 PRIORITY_ALIASES: Final[Mapping[str, int]] = {
     "critical": 0,
@@ -530,7 +536,8 @@ class Field:
           result: The object.
 
         """
-        return _COERCE.get(self.cli_name, lambda value: value)(value)
+        coerce = _COERCE.get(self.cli_name)
+        return value if coerce is None else coerce(value)
 
 
 def _coerce_priority(value: str) -> int:
@@ -554,20 +561,20 @@ def _coerce_confidence(value: str) -> float:
 
 
 def _coerce_status(value: str) -> str:
-    if value not in get_args(cast(object, Inquiry.Status.__value__)):
+    if value not in get_args(Inquiry.Status.__value__):
         raise ValueError(f"unknown status {value!r}")
     return value
 
 
 def _coerce_judgement(value: str) -> str:
-    judgements = get_args(cast(object, Belief.Judgement.__value__))
+    judgements = get_args(Belief.Judgement.__value__)
     if value not in judgements:
         raise ValueError(f"unknown judgement {value!r}")
     return value
 
 
 def _coerce_publication_type(value: str) -> str:
-    publication_types = get_args(cast(object, Paper.PublicationType.__value__))
+    publication_types = get_args(Paper.PublicationType.__value__)
     if value not in publication_types:
         raise ValueError(f"unknown publication_type {value!r}")
     return value
@@ -576,8 +583,8 @@ def _coerce_publication_type(value: str) -> str:
 # The ``-`` (stdin) and ``@path`` (file) sentinels pass through untouched: they are
 # resolved at the verb layer, which re-coerces the read text through
 # :func:`field_value`.
-def _coerce_config(value: str) -> object:
-    """Parse a ``config`` token to its JSON-object wire value."""
+def _coerce_json_object(value: str, *, field: str) -> object:
+    """Parse a ``config`` or ``app`` token to its JSON-object wire value."""
     if value == "-" or value.startswith("@"):
         return value
     # ``json.loads`` directly, not :func:`loads`: the stdlib parser accepts
@@ -589,16 +596,16 @@ def _coerce_config(value: str) -> object:
             json.loads(value, parse_constant=_reject_nonstandard_json_constant),
         )
     except ValueError as err:
-        raise ValueError(f"config must be valid JSON: {err}") from err
+        raise ValueError(f"{field} must be valid JSON: {err}") from err
     try:
-        config = DictCodec.coerce(parsed, default=None)
+        obj = from_plain(parsed, dict[str, object])
     except TypeError as err:
-        raise ValueError("config must be a JSON object") from err
+        raise ValueError(f"{field} must be a JSON object") from err
     try:
-        json.dumps(config, allow_nan=False)
+        json.dumps(obj, allow_nan=False)
     except ValueError as err:
-        raise ValueError("config numbers must be finite") from err
-    return config
+        raise ValueError(f"{field} numbers must be finite") from err
+    return obj
 
 
 def _reject_nonstandard_json_constant(value: str) -> object:
@@ -612,7 +619,8 @@ _COERCE: Mapping[str, Callable[[str], object]] = {
     "status": _coerce_status,
     "judgement": _coerce_judgement,
     "publication_type": _coerce_publication_type,
-    "config": _coerce_config,
+    "config": partial(_coerce_json_object, field="config"),
+    "app": partial(_coerce_json_object, field="app"),
 }
 
 
@@ -678,6 +686,13 @@ _FIELDS: tuple[Field, ...] = (
         payload_key="config",
         shape="scalar",
         help="run settings as one JSON object (inline or @file.json)",
+        filterable=False,
+    ),
+    Field(
+        cli_name="app",
+        payload_key="app",
+        shape="scalar",
+        help="app-layer fields as one JSON object keyed by app name",
         filterable=False,
     ),
     Field(

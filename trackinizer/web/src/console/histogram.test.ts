@@ -1,6 +1,6 @@
 import { type QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { Histogram, HistogramRead } from "../api/histogram";
+import { type Histogram, type HistogramRead, readHistogram } from "../api/histogram";
 import { type Sent, stubFetch } from "../api/testing";
 import { testClient } from "../live/testing";
 import { HistogramLive, histogramQuery, iso, spanRead } from "./histogram";
@@ -99,11 +99,13 @@ test("scrolled back, a batch reads nothing; a gap reads the whole band again at 
   live.follow(null);
   expect(await live.update(batch)).toBeNull();
   expect(reads()).toEqual([]);
-  live.follow(READ);
+  counts.set(T0, 6);
+  expect(live.follow(READ)).toBe(true);
   await live.update(batch);
+  expect(held()).toEqual([6, 2, 3, 4, 0]);
   counts.set(T0, 7);
   expect(await live.update({ ids: new Set(), gap: true })).toBeNull();
-  expect(reads().map(({ buckets }) => buckets)).toEqual(["3", "5"]);
+  expect(reads().map(({ buckets }) => buckets)).toEqual(["5", "5"]);
   expect(held()).toEqual([7, 2, 3, 4, 0]);
 });
 
@@ -115,4 +117,15 @@ test("a batch while the band's first read is under way waits for it, since that 
   live.follow(READ);
   expect(await live.update(batch)).toEqual({ afterMs: 500 });
   answer(Response.json({ start: iso(T0), end: iso(T0), bucket_seconds: 30, counts: [] }));
+});
+
+test("the band's read carries the station when the console is scoped to one, and none when it is widened", async () => {
+  const bucketing = { since: T0, until: T0 + 4 * BUCKET, seconds: 30, count: 4 };
+  const stationOf = async (filters: { actor: string[]; station?: string }) => {
+    sent.length = 0;
+    await readHistogram(spanRead(filters, bucketing, T0));
+    return new URLSearchParams(sent.at(-1)!.query).get("station");
+  };
+  expect(await stationOf({ actor: ["a"], station: "w1" })).toBe("w1");
+  expect(await stationOf({ actor: ["a"] })).toBeNull();
 });

@@ -1,5 +1,8 @@
 import { type MouseEvent, type ReactNode, startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { type Meta, useMeta } from "../app/boot";
+import { type Meta, useMeta, useProfile } from "../app/boot";
+import { CodePane } from "../code/CodePane";
+import { codeScope } from "../code/scope";
+import { useStation } from "../stations/useStation";
 import { isPageCounts, isStrings, useTabState } from "../app/tabState";
 import { BulkBar } from "../bulk/BulkBar";
 import { ColumnsView } from "../columns";
@@ -89,6 +92,10 @@ export function InquiryList({
   const { navigate, route } = useRouter();
   const [state, update] = useTabState(`trackinizer.v2.list.${id}`, readListState, () => initialState(kinds, meta));
   const views = offeredViews(kinds);
+  // Code files a tree against the chat session, so it needs the station that names it.
+  // Asked for only on the list that offers Code, so no other list makes the request.
+  const station = useStation({ enabled: views.includes("code") });
+  const profile = useProfile();
   // Columns lives in the hash, with the Issues selected column by column.
   const path = route.name === "list" && views.includes("columns") ? (route.columns ?? null) : null;
   const view: View = path ? "columns" : views.includes(state.view) ? state.view : "list";
@@ -226,9 +233,31 @@ export function InquiryList({
     if (shown) return whenIdle(() => void DetailView.preload().catch(() => {}));
   }, [shown]);
 
+  // Code shows no rows, so none of the row tools apply to it: it keeps the header and the
+  // switch that leads back to the list, and nothing else. Every hook above has already run,
+  // so this return changes no hook order.
+  if (view === "code") {
+    return (
+      <div className="view">
+        {/* The switch rides in the header's own slot rather than a tools row of its own:
+            with no tabs, filters or sort to carry, that row held one control and a gap. */}
+        <ViewHeader icon={icon} title={title} beside={<ViewSwitch offered={views} view={view} onChange={pickView} />} />
+        <CodePane scope={codeScope(station.data)} owner={profile.email} />
+      </div>
+    );
+  }
+
+  // Where the switch sits. On the Code list it rides in the header, because the Code view
+  // has no tools row to put it in — and a control that jumped between rows as you toggled
+  // would be worse than either place.
+  const switchInHeader = views.includes("code");
   return (
     <div className="view">
-      <ViewHeader icon={icon} title={title} />
+      <ViewHeader
+        icon={icon}
+        title={title}
+        beside={switchInHeader ? <ViewSwitch offered={views} view={view} onChange={pickView} /> : undefined}
+      />
       <div className="view-tools" onMouseDown={keepFocus}>
         <Tabs tab={state.tab} onChange={(tab) => setQuery(withTab(query, tab))} />
         <div className="spacer" />
@@ -261,7 +290,7 @@ export function InquiryList({
             onPick={(value) => update((s) => ({ ...s, ordering: offeredOrderings.find((o) => o === value) ?? ordering }))}
           />
         )}
-        <ViewSwitch offered={views} view={view} onChange={pickView} />
+        {switchInHeader ? null : <ViewSwitch offered={views} view={view} onChange={pickView} />}
       </div>
       <FilterChips
         query={query}

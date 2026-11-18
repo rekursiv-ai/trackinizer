@@ -13,7 +13,8 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Final, Literal, Self, cast, get_args
 from uuid import UUID
 
-from trackinizer.lib.custom_json import ListCodec
+from treekle import from_plain
+
 from trackinizer.types.columns import ColumnSpec, Row, column_specs
 from trackinizer.types.inquiries import Artifact, Inquiry, Issue
 
@@ -244,7 +245,7 @@ class Edge:
             priority=priority,
             note=note,
             valence=valence,
-            labels=None if labels is None else tuple(ListCodec.coerce(labels, str)),
+            labels=None if labels is None else tuple(from_plain(labels, list[str])),
         )
 
 
@@ -292,11 +293,11 @@ def kind_group_members(group: KindGroup) -> tuple[Inquiry.InquiryKind, ...]:
     """
     inquiry: tuple[Inquiry.InquiryKind, ...] = cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(cast(object, Inquiry.InquiryKind.__value__)),
+        get_args(Inquiry.InquiryKind.__value__),
     )
     artifact: tuple[Inquiry.InquiryKind, ...] = cast(
         tuple[Inquiry.InquiryKind, ...],
-        get_args(cast(object, Artifact.Kind.__value__)),
+        get_args(Artifact.Kind.__value__),
     )
     match group:
         case "issue":
@@ -331,7 +332,7 @@ class EdgeKindPolicy:
 
     forward_label: str
     """The relation verb read from the stored FROM-side (child) vertex: the
-    outbound view, e.g. ``narrows`` / ``proves`` / ``cites``. The single source
+    outbound view, e.g. ``narrows`` / ``supports`` / ``cites``. The single source
     of the human relation name for the CLI (``trax.render._relation_title``) and
     the SPA edge picker (served via ``/api/meta/edges``)."""
 
@@ -422,8 +423,8 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
                 "from-side. Backs the first-edge younger-produced_by-older rule "
                 "(see Inquiry.produced_by)."
             ),
-            forward_label="produced_by",
-            inverse_label="produces",
+            forward_label="came_from",
+            inverse_label="led_to",
             from_kinds="inquiry",
             to_kinds="inquiry",
         ),
@@ -436,8 +437,8 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
                 "re-assessed when the evidence moves. For-vs-against is the sign "
                 "of Edge.valence, not a separate edge kind. proves is load-bearing."
             ),
-            forward_label="proves",
-            inverse_label="proved_by",
+            forward_label="supports",
+            inverse_label="supported_by",
             from_kinds="artifact",
             to_kinds="claimable",
             cascade_dependent="to",
@@ -449,8 +450,8 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
                 "cited claim on the to-side is the dependent, re-assessed when the "
                 "favoring evidence moves."
             ),
-            forward_label="favors",
-            inverse_label="favored_by",
+            forward_label="suggests",
+            inverse_label="suggested_by",
             from_kinds="artifact",
             to_kinds="claimable",
             cascade_dependent="to",
@@ -461,8 +462,8 @@ EDGE_POLICIES: Mapping[Edge.Kind, EdgeKindPolicy] = MappingProxyType(
                 "New (from) supersedes old (to), so the old predecessor drops out "
                 "of the scheduler and out of 'currently true' evidence."
             ),
-            forward_label="supersedes",
-            inverse_label="superseded_by",
+            forward_label="replaces",
+            inverse_label="replaced_by",
             from_kinds="inquiry",
             to_kinds="inquiry",
             skips_scheduler_on="to",
@@ -618,7 +619,7 @@ def edge_annotations() -> dict[str, list[str]]:
     }
 
 
-_MISSING_POLICY = set(get_args(cast(object, Edge.Kind.__value__))) - set(EDGE_POLICIES)
+_MISSING_POLICY = set(get_args(Edge.Kind.__value__)) - set(EDGE_POLICIES)
 if _MISSING_POLICY:
     raise RuntimeError(
         f"EDGE_POLICIES missing an entry for {sorted(_MISSING_POLICY)}; every "

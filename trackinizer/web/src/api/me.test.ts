@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { createToken, getProfile, listTokens, revokeToken, setTokenRole, signOut, type Token } from "./me";
+import { acknowledgeRules, createToken, getProfile, listTokens, revokeToken, setTokenRole, signOut, type Token } from "./me";
 import { stubFetch } from "./testing";
 
 const KEY = "5d3c2b1a-0f9e-4d8c-8b7a-6e5d4c3b2a19";
@@ -16,12 +16,20 @@ test("the profile is a GET of /api/me/profile with no body", async () => {
     name: "Ada",
     role: "viewer",
     last_login: null,
+    visual_workspace_enabled: true,
   };
   const sent = stubFetch(() => Response.json(ada));
   expect(await getProfile()).toEqual(ada);
   expect(sent).toEqual([
     { method: "GET", path: "/api/me/profile", query: "", headers: {}, body: undefined },
   ]);
+});
+
+test("a profile from a server older than the canvas opt-in reads as on, and an off stays off", async () => {
+  stubFetch(() => Response.json({ name: "Ada" }));
+  expect((await getProfile()).visual_workspace_enabled).toBe(true);
+  stubFetch(() => Response.json({ name: "Ada", visual_workspace_enabled: false }));
+  expect((await getProfile()).visual_workspace_enabled).toBe(false);
 });
 
 test("the token list is a GET of /api/me/tokens, read from its tokens field", async () => {
@@ -90,3 +98,18 @@ export async function rejected(): Promise<void> {
   // @ts-expect-error
   await setTokenRole(KEY, "root");
 }
+
+test("agreeing to the rules is a PUT of /api/me/acknowledge naming the version read, answered with when and to what", async () => {
+  const agreed = { acknowledged_at: "2026-10-09T08:00:00+00:00", acknowledged_rules_version: "2026-10-08T12:00:00+00:00" };
+  const sent = stubFetch(() => Response.json(agreed));
+  expect(await acknowledgeRules("2026-10-08T12:00:00+00:00")).toEqual(agreed);
+  expect(sent).toEqual([
+    {
+      method: "PUT",
+      path: "/api/me/acknowledge",
+      query: "",
+      headers: { "content-type": "application/json" },
+      body: { rules_version: "2026-10-08T12:00:00+00:00" },
+    },
+  ]);
+});

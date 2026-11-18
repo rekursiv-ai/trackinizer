@@ -22,6 +22,11 @@ export class Session {
     this.#assign = assign;
   }
 
+  /** Load `url` in place of the app, as a sign-out does. */
+  assign(url: string): void {
+    this.#assign(url);
+  }
+
   /** Run `save` before leaving for the login page; the returned function stops that. */
   addDraftSaver(save: () => void): () => void {
     this.#draftSavers.add(save);

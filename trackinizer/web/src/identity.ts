@@ -1,0 +1,55 @@
+// What the app calls itself. A build picks one identity (TRACKINIZER_WEB_APP, read by vite.config.ts) and
+// everything a person sees of the name comes from it: the install manifest, the page title, the strings in the UI.
+// Pure data, so the build (Node) and the page (browser) read the same table.
+/** One identity: the name and look an installed app has. */
+export type AppIdentity = {
+  readonly name: string;
+  readonly short_name: string;
+  readonly theme_color: string;
+  readonly background_color: string;
+  readonly icons: readonly { readonly src: string; readonly sizes: string; readonly type: string; readonly purpose: string }[];
+};
+
+/** What a build without a choice is. */
+export const DEFAULT_APP = "trackinizer";
+
+export const IDENTITIES: Readonly<Record<string, AppIdentity>> = {
+  [DEFAULT_APP]: {
+    name: "Trackinizer",
+    short_name: "Trackinizer",
+    theme_color: "#090a0b",
+    background_color: "#090a0b",
+    icons: [
+      { src: "/app/icon-192.png", sizes: "192x192", type: "image/png", purpose: "any maskable" },
+      { src: "/app/icon-512.png", sizes: "512x512", type: "image/png", purpose: "any maskable" },
+    ],
+  },
+};
+
+/** The identity a build names by key; none is the default, and a key that is not one is refused so a typo cannot ship. */
+export function identityOf(key: string | undefined): AppIdentity {
+  const found = IDENTITIES[key || DEFAULT_APP];
+  if (!found) throw new Error(`Unknown app identity ${key}; one of ${Object.keys(IDENTITIES).join(", ")}.`);
+  return found;
+}
+
+/** The web app manifest of an identity: installs as its own window over `/app/`. */
+export function manifestOf(identity: AppIdentity) {
+  return {
+    name: identity.name,
+    short_name: identity.short_name,
+    description: "Issues, beliefs, papers, experiments and agent sessions as one graph, updated live.",
+    id: "/app/",
+    start_url: "/app/",
+    scope: "/app/",
+    display: "standalone",
+    theme_color: identity.theme_color,
+    background_color: identity.background_color,
+    icons: identity.icons,
+  };
+}
+
+/** `html` with every `%APP_NAME%` placeholder replaced by the identity's name. */
+export function fillName(html: string, identity: AppIdentity): string {
+  return html.replaceAll("%APP_NAME%", identity.name);
+}

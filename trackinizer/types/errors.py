@@ -41,3 +41,13 @@ class ValidationError(Exception):
     """
 
     code = "validation"
+
+
+class ChatDeletedError(Exception):
+    """A request named a science chat that was deleted, whose id starts no chat again.
+
+    The API's ``chat_deleted_handler`` turns it into an HTTP 410 whose detail carries
+    ``code`` ``chat_deleted``, the shape the chat routes give their other refusals.
+    """
+
+    code = "chat_deleted"

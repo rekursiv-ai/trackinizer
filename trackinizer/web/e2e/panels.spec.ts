@@ -1,9 +1,9 @@
 import AxeBuilder from "@axe-core/playwright";
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, test } from "./fixtures";
+import { expect, revealBar, setPreferences, streamOpened, test } from "./fixtures";
 import { post } from "./listViews";
 
-// The panels that collapse (src/ui/panel.tsx): the app's sidebar, Peek, the
+// The panels that collapse (src/ui/panel.tsx): Peek, the
 // graph's search results, the detail's rail and the console's rail. Each
 // collapses by its button and comes back by its key, is kept collapsed for the
 // tab across a reload, and gives its view the room; axe finds nothing wrong
@@ -21,7 +21,7 @@ async function seed(request: APIRequestContext): Promise<{ root: number; child: 
 
 /** Open `hash` once the live stream is connected. */
 async function open(page: Page, hash: string) {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto(`/app/${hash}`);
   await subscribed;
 }
@@ -100,80 +100,9 @@ test("the console: the rail's button collapses the rail and the feed takes its w
   await expect(rail).toBeVisible();
 });
 
-test("the app's sidebar: its button collapses it to a rail of its entries' icons and the graph takes the width; a reload keeps it so, and ⌘B or Ctrl+B expands it", async ({ page }) => {
-  await open(page, "#/graph");
-  await expect(page.locator(".graph-count")).toHaveText(/\d nodes?$/);
-  const sidebar = page.getByRole("navigation", { name: "Sidebar" });
-  const entries = sidebar.locator("a.nav-item");
-  const names = (await entries.allTextContents()).map((name) => name.trim());
-  const wide = (await sidebar.boundingBox())!.width;
-  const canvas = page.locator(".graph-canvas");
-  const narrow = (await canvas.boundingBox())!.width;
-  await sidebar.getByRole("button", { name: "Collapse sidebar" }).click();
-  const expand = sidebar.getByRole("button", { name: "Expand sidebar" });
-  await expect(expand).toBeFocused();
-  const rail = (await sidebar.boundingBox())!;
-  expect(rail.width).toBeGreaterThanOrEqual(48);
-  expect(rail.width).toBeLessThanOrEqual(56);
-  // The graph takes the width the rail gave, and draws in all of it.
-  expect((await canvas.boundingBox())!.width).toBeCloseTo(narrow + wide - rail.width, 0);
-  await expect.poll(async () => (await canvas.locator("canvas").first().boundingBox())!.width).toBeCloseTo((await canvas.boundingBox())!.width, 0);
-  // Every entry in its order: its icon alone, inside the rail, named and titled as its label was.
-  await expect(entries).toHaveCount(names.length);
-  for (const [n, name] of names.entries()) {
-    const entry = entries.nth(n);
-    await expect(entry).toHaveAccessibleName(name);
-    await expect(entry).toHaveAttribute("title", name);
-    await expect(entry.locator(".ic")).toBeVisible();
-    await expect(entry.locator(".label")).toBeHidden();
-    const box = (await entry.boundingBox())!;
-    expect(box.x + box.width, name).toBeLessThanOrEqual(rail.x + rail.width);
-  }
-  await expect(sidebar.getByRole("link", { name: "Graph" })).toHaveAttribute("aria-current", "page");
-  for (const heading of await sidebar.locator(".nav-section-h").all()) await expect(heading).toBeHidden();
-  // The signed-in user as their avatar, the email in its tooltip.
-  const me = sidebar.getByRole("group", { name: "Signed in" });
-  await expect(me.locator(".avatar")).toBeVisible();
-  await expect(me).toHaveAttribute("title", /@/);
-  expect((await me.boundingBox())!.width).toBeLessThanOrEqual(rail.width);
-  // The keyboard walks the rail top to bottom, each stop's focus showing.
-  const stops = [sidebar.getByRole("button", { name: "Search" }), sidebar.getByRole("button", { name: /^New / }), ...names.map((_, n) => entries.nth(n))];
-  for (const stop of stops) {
-    await page.keyboard.press("Tab");
-    await expect(stop).toBeFocused();
-    await expect(stop).toHaveCSS("outline-style", "solid");
-  }
-  await page.reload();
-  await expect(entries.first()).toHaveAttribute("title", names[0]!);
-  expect((await sidebar.boundingBox())!.width).toBe(rail.width);
-  await page.keyboard.press("ControlOrMeta+b");
-  await expect(sidebar.getByRole("link", { name: "Graph" }).locator(".label")).toBeVisible();
-  expect((await sidebar.boundingBox())!.width).toBe(wide);
-});
-
-test("on a phone, a collapsed sidebar is still the drawer, whole, with no collapse button", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await page.addInitScript(() => sessionStorage.setItem("trackinizer.v2.panel.app.sidebar", "true"));
-  await open(page, "#/graph");
-  const sidebar = page.getByRole("navigation", { name: "Sidebar" });
-  await expect(sidebar).toBeHidden();
-  expect((await page.locator(".main").boundingBox())!.width).toBe(390);
-  await page.getByRole("button", { name: "Open navigation" }).first().click();
-  await expect(sidebar.getByRole("link", { name: "Console" }).locator(".label")).toBeVisible();
-  await expect(sidebar.getByRole("group", { name: "Signed in" }).locator(".me-email")).toBeVisible();
-  expect((await sidebar.boundingBox())!.width).toBeGreaterThan(200);
-  await expect(sidebar.getByRole("button", { name: /sidebar$/ })).toHaveCount(0);
-});
-
 for (const theme of ["dark", "light"] as const) {
   test(`axe finds nothing wrong with collapsed panels, ${theme} theme`, async ({ page, request }) => {
-    await page.addInitScript((choice) => {
-      try {
-        localStorage.setItem("trackinizer.theme", choice);
-      } catch {
-        // about:blank has no storage.
-      }
-    }, theme);
+    await setPreferences(page.request, { theme });
     await page.emulateMedia({ reducedMotion: "reduce" });
     const { root, child, tag } = await seed(request);
     await open(page, `#/graph?focus=Issue/${child}&hops=1`);
@@ -191,15 +120,22 @@ for (const theme of ["dark", "light"] as const) {
     await page.goto("/app/#/console");
     await page.getByRole("button", { name: "Collapse views and filters" }).click();
     await expect(page.getByRole("complementary", { name: "Views and filters" })).toBeHidden();
-    await page.getByRole("button", { name: "Collapse sidebar" }).click();
-    await expect(page.getByRole("navigation", { name: "Sidebar" }).getByRole("link", { name: "Console" })).toHaveAttribute("title", "Console");
-    await audit(page, theme, "console, its rail and the sidebar collapsed");
+    await audit(page, theme, "console, its rail collapsed", { feed: false });
+    // The top bar's account menu, open over the page: its skins, accounts and Sign out.
+    await (await revealBar(page)).getByRole("button", { name: /^Account: / }).click();
+    await expect(page.getByRole("dialog", { name: "Account" })).toBeVisible();
+    await audit(page, theme, "console, the account menu open", { feed: false });
   });
 }
 
-async function audit(page: Page, theme: "dark" | "light", view: string) {
+/**
+ * `feed: false` leaves the console's feed out: it draws every session other specs left on this server, which makes
+ * axe's pass take longer than the test has, and its lines are audited by a11y.spec.ts's console test, with its own.
+ */
+async function audit(page: Page, theme: "dark" | "light", view: string, { feed = true }: { feed?: boolean } = {}) {
   await expect(page.locator("html"), "the theme applied").toHaveCSS("color-scheme", theme);
-  const { violations } = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
+  const axe = new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]);
+  const { violations } = await (feed ? axe : axe.exclude(".console-feed")).analyze();
   const found = violations.flatMap((violation) => violation.nodes.map((node) => `${violation.id} at ${node.target.join(" ")}: ${node.failureSummary}`));
   expect.soft(found, `axe violations on ${view}, ${theme} theme`).toEqual([]);
 }

@@ -77,7 +77,7 @@ UNCATEGORIZED = {
         "permission-mode",
         "queue-operation",
     ],
-    "claude_sidechain": [],
+    "claude_sidechain": list[str](),
     "codex_main": [
         "event_msg/item_completed/AgentMessage",
         "event_msg/item_completed/Reasoning",
@@ -160,6 +160,6 @@ def test_filler_repeats_to_the_exact_length_it_replaces(length: int) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -17,11 +17,20 @@ from uuid import UUID
 
 import itertools
 
-from trackinizer.lib.custom_json import DatetimeCodec, IntCodec, ListCodec, StrCodec
+from treekle import from_plain
+
+from trackinizer.server.audience import (
+    NOBODY,
+    SessionReader,
+    hidden_exists_sql,
+    may_hide,
+)
 from trackinizer.server.notify import tx
 from trackinizer.server.store.shared import _StoreShared
 from trackinizer.server.values import manifest_bound, vetted_sql
+from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 from trackinizer.wire.wire_sessions import (
+    CAMPAIGN_ASKER_INFIX,
     FeedActorFacet,
     FeedBucket,
     FeedFacetsResponse,
@@ -45,8 +54,32 @@ __all__ = [
     "WHOLE_FEED",
     "BucketGrid",
     "FeedScope",
+    "StationAgents",
     "_SessionFeedMixin",
 ]
+
+
+_STATION_DEPTH: Final = 4
+"""How many ``produced_by`` edges below its chat's session a station's agents reach:
+the lead, then what it launched, and so on."""
+
+_STATION_AGENTS: Final = 500
+"""The most sessions a station's agents are read from."""
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class StationAgents:
+    """The agents of one station: the sessions its chat's session produced.
+
+    A campaign launched from a chat makes its lead's session ``produced_by`` the
+    chat's, and the lead's workers ``produced_by`` the lead's. The chat is found
+    by ``chat:<conversation id>`` of the station's conversation, read in the same
+    query, and only for the station's ``user_id``: another user's station, and one
+    with no chat, keep nothing.
+    """
+
+    workspace_id: UUID
+    user_id: UUID
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -55,26 +88,44 @@ class FeedScope:
 
     An empty field does not filter. ``actors`` names sessions by routing name
     (``owner``), ``rooms`` by a room they joined, ``clis`` by the CLI they wrap;
-    ``kinds`` names record kinds.
+    ``kinds`` names record kinds; ``station`` keeps the agents of one station,
+    never its chat's own session. ``account`` keeps the sessions held under one
+    account, and ``asker`` those of the campaigns one person launched: a session
+    labelled with, or in a room named for, a slug that a brief Issue labels
+    ``<slug>:asker:<email>``. Neither grants a read; each narrows what ``reader``
+    reads. ``reader`` is who reads: a record of a session whose transcript they may
+    not read is on no page and in no count, whatever else is named.
     """
 
     actors: tuple[str, ...] = ()
     rooms: tuple[str, ...] = ()
     clis: tuple[str, ...] = ()
     kinds: tuple[str, ...] = ()
+    station: StationAgents | None = None
+    account: str = ""
+    asker: str = ""
+    reader: SessionReader = NOBODY
 
     @property
     def names_sessions(self) -> bool:
         """Whether the scope picks sessions, which takes their ``inquiries`` row."""
-        return bool(self.actors or self.rooms or self.clis)
+        return bool(
+            self.actors
+            or self.rooms
+            or self.clis
+            or self.station
+            or self.account
+            or self.asker,
+        )
 
     def clauses(self, params: list[object], *, kind: str) -> list[str]:
         """Return the SQL that keeps this scope, binding its values onto ``params``.
 
         Args:
-          params: The query's bound values so far; each named field appends one.
+          params: The query's bound values so far; each named field appends one,
+            and a station five.
           kind: The record-kind column. ``i`` must name the session's
-            ``inquiries`` row.
+            ``inquiries`` row, and nothing else in the query may be named ``brief``.
 
         Returns:
           clauses: One clause per named field, to AND together.
@@ -90,11 +141,30 @@ class FeedScope:
             if values:
                 params.append(list(values))
                 out.append(f"{test}(${len(params)}::text[])")
+        if self.station is not None:
+            first = len(params)
+            params.extend(
+                (
+                    self.station.workspace_id,
+                    self.station.user_id,
+                    CHAT_SESSION_PREFIX,
+                    _STATION_DEPTH,
+                    _STATION_AGENTS,
+                ),
+            )
+            out.append(_station_clause(first))
+        if self.account:
+            params.append(self.account.lower())
+            out.append(f"lower(i.account) = ${len(params)}")
+        if self.asker:
+            params.append(CAMPAIGN_ASKER_INFIX + self.asker.lower())
+            out.append(_asker_clause(len(params)))
         return out
 
 
 WHOLE_FEED: Final = FeedScope()
-"""The scope that keeps every record."""
+"""The scope that names no session and no kind. Its reader reads nothing: a route
+names who reads."""
 
 # The formatting audit's "messages only": what a person or agent said, as the
 # transcript shows it. The transcript hides a message with no text and no attachment,
@@ -109,12 +179,19 @@ WHOLE_FEED: Final = FeedScope()
 # (``peerPayload`` in the web app). ``payload`` is ``json``, which each ``->``
 # parses again, so the kind tests come first and only messages and context state
 # are parsed.
+_ATTACHMENT_COUNT: Final = (
+    "coalesce(json_array_length(CASE"
+    " WHEN json_typeof(e.payload -> 'attachments') = 'array'"
+    " THEN e.payload -> 'attachments'"
+    " ELSE e.payload -> 'attachments' -> 'py/tuple' END), 0)"
+)
+
 CONVERSATION: Final = (
     "((e.kind IN ('UserMessage', 'AssistantMessage', 'AgentToAgentMessage')"
     " AND (e.payload ->> 'content' ~ '[^[:space:]]'"
     " AND (e.kind <> 'AgentToAgentMessage' OR e.payload ->> 'content' !~"
     " '^Message Type: [A-Z_]+\\nTask name: [^\\n]*\\nSender: [^\\n]*\\nPayload:\\s*$')"
-    " OR json_array_length(e.payload -> 'attachments' -> 'py/tuple') > 0)"
+    f" OR {_ATTACHMENT_COUNT} > 0)"
     " AND (e.kind <> 'UserMessage'"
     " OR (e.payload -> 'extra' ->> 'isMeta') IS DISTINCT FROM 'true'"
     " AND coalesce(e.payload ->> 'content', '') !~ '^\\s*<(codex_internal_context( [a-z_]+=\"[^\"]*\")*"
@@ -132,7 +209,7 @@ UNREADABLE: Final = (
     " AND coalesce(e.payload ->> 'summary', '') = '')"
     " OR (e.kind = 'AgentToAgentMessage' AND e.payload ->> 'content' ~"
     " '^Message Type: [A-Z_]+\\nTask name: [^\\n]*\\nSender: [^\\n]*\\nPayload:\\s*$'"
-    " AND coalesce(json_array_length(e.payload -> 'attachments' -> 'py/tuple'), 0) = 0))"
+    f" AND {_ATTACHMENT_COUNT} = 0))"
 )
 """SQL true of a record, aliased ``e``, that has nothing to read."""
 
@@ -218,7 +295,7 @@ class _SessionFeedMixin(_StoreShared):
         Args:
           since: Inclusive lower bound on ``created``; unset reads from the start.
           until: Inclusive upper bound on ``created``; unset reads to the end.
-          scope: Which sessions and record kinds to count.
+          scope: Which sessions and record kinds to count, and who reads them.
 
         Returns:
           facets: The window by session, newest first, and by room and kind,
@@ -234,6 +311,15 @@ class _SessionFeedMixin(_StoreShared):
             params.append(until)
             clauses.append(f"e.created <= ${len(params)}")
         clauses.extend(FeedScope(kinds=scope.kinds).clauses(params, kind="e.kind"))
+        # Audience: gated -- the records of a session ``scope.reader`` may not read are
+        # in no count, so the sessions, rooms and kinds below name none of them.
+        clauses.append(
+            hidden_exists_sql(
+                "e.session_id",
+                params=params,
+                reader=scope.reader,
+            ),
+        )
         if scope.names_sessions:
             picked = replace(scope, kinds=()).clauses(params, kind="")
             clauses.append(
@@ -273,8 +359,14 @@ class _SessionFeedMixin(_StoreShared):
             sessions = {
                 row["id"]: row
                 for row in await conn.fetch(
-                    "SELECT id, owner, agentsession_cli, agentsession_rooms, "
-                    "agentsession_ended FROM inquiries WHERE id = ANY($1::uuid[])",
+                    "SELECT sess.id, sess.owner, sess.account, sess.agentsession_cli, "
+                    "sess.agentsession_rooms, sess.agentsession_ended, "
+                    "sess.agentsession_audience, sess.agentsession_cli_session_id, "
+                    "opener.email AS opener FROM inquiries AS sess "
+                    "LEFT JOIN api_keys AS credential "
+                    "ON credential.id = sess.agentsession_opened_by_api_key_id "
+                    "LEFT JOIN users AS opener ON opener.id = credential.user_id "
+                    "WHERE sess.id = ANY($1::uuid[])",
                     [
                         row["session_id"]
                         for row in rows
@@ -284,7 +376,11 @@ class _SessionFeedMixin(_StoreShared):
             }
         actors = sorted(
             (
-                _actor_facet(row, sessions[row["session_id"]])
+                _actor_facet(
+                    row,
+                    sessions[row["session_id"]],
+                    caller=scope.reader.email,
+                )
                 for row in rows
                 if row["session_id"] is not None
             ),
@@ -294,8 +390,8 @@ class _SessionFeedMixin(_StoreShared):
         kinds = sorted(
             (
                 FeedKindFacet(
-                    kind=StrCodec.coerce(row["kind"], None),
-                    count=IntCodec.coerce(row["records"], None),
+                    kind=from_plain(row["kind"], str),
+                    count=from_plain(row["records"], int),
                 )
                 for row in rows
                 if row["session_id"] is None
@@ -333,27 +429,40 @@ class _SessionFeedMixin(_StoreShared):
           earliest: The earliest the span may start; an earlier ``since`` starts
             here instead.
           buckets: The most buckets to return, at least 2.
-          scope: Which sessions and record kinds to count.
+          scope: Which sessions and record kinds to count, and who reads them.
 
         Returns:
           histogram: Each bucket's start and record count, oldest first.
 
         """
         end = until.astimezone(UTC) if until is not None else datetime.now(UTC)
+        params: list[object] = [earliest, end]
+        clauses = ["r.created >= $1", "r.created <= $2"]
+        clauses.extend(scope.clauses(params, kind="r.kind"))
+        # Audience: gated -- the first record is the first one the reader may count, so
+        # the grid never starts at the time a hidden session began.
+        clauses.append(
+            hidden_exists_sql("r.session_id", params=params, reader=scope.reader),
+        )
+        joined = (
+            "JOIN inquiries i ON i.id = r.session_id " if scope.names_sessions else ""
+        )
+        first_sql = vetted_sql(
+            "SELECT min(r.created) FROM session_records r ",
+            joined,
+            "WHERE ",
+            " AND ".join(clauses),
+        )
         async with self.engine.acquire() as conn:
             first = (
                 since
                 if since is not None
-                else DatetimeCodec.coerce(
-                    await conn.fetchval(
-                        "SELECT min(created) FROM session_records WHERE created >= $1",
-                        earliest,
-                    ),
-                    end,
+                else (
+                    end
+                    if (value := await conn.fetchval(first_sql, *params)) is None
+                    else from_plain(value, datetime)
                 )
             )
-            if first is None:
-                raise ValueError("Expected first is not None.")
             earliest = earliest.astimezone(UTC)
             start = min(max(first.astimezone(UTC), earliest), end)
             grid = BucketGrid.covering(start, end, buckets=buckets)
@@ -399,6 +508,15 @@ async def _count_buckets(
         grid.end,
     ]
     spanned = ["created >= $2", "created < $3"]
+    # Audience: gated -- a bucket counts only the records of sessions the reader may
+    # read, so a count never shows when a hidden session was active.
+    spanned.append(
+        hidden_exists_sql(
+            "session_records.session_id",
+            params=params,
+            reader=scope.reader,
+        ),
+    )
     if scope.names_sessions:
         # Records attach only to AgentSessions (``append_session_records`` refuses
         # any other kind), so the session row is read only to pick sessions.
@@ -434,23 +552,47 @@ async def _count_buckets(
         " GROUP BY 1",
     )
     rows = await conn.fetch(sql, *params)
-    return {row["bucket"]: IntCodec.coerce(row["records"], None) for row in rows}
+    return {row["bucket"]: from_plain(row["records"], int) for row in rows}
 
 
-def _actor_facet(counted: asyncpg.Record, session: asyncpg.Record) -> FeedActorFacet:
+def _actor_facet(
+    counted: asyncpg.Record,
+    session: asyncpg.Record,
+    *,
+    caller: str,
+) -> FeedActorFacet:
     """Build one session's facet from its counts and its ``inquiries`` row."""
     session_id, last = counted["session_id"], counted["last"]
     assert isinstance(session_id, UUID)
     assert isinstance(last, datetime)
+    account = from_plain(session.get("account"), str, default="")
+    audience = from_plain(session.get("agentsession_audience"), str, default=None)
+    chat = from_plain(
+        session.get("agentsession_cli_session_id"),
+        str,
+        default="",
+    ).startswith(CHAT_SESSION_PREFIX)
     return FeedActorFacet(
-        actor=StrCodec.coerce(session["owner"]),
+        actor=from_plain(session.get("owner"), str, default=""),
         session_id=session_id,
-        cli=StrCodec.coerce(session["agentsession_cli"]) or None,
-        rooms=ListCodec.coerce(session["agentsession_rooms"], str),
-        count=IntCodec.coerce(counted["records"], None),
-        conversation=IntCodec.coerce(counted["conversation"], None),
+        cli=from_plain(session.get("agentsession_cli"), str, default="") or None,
+        rooms=from_plain(session.get("agentsession_rooms"), list[str], default=[]),
+        count=from_plain(counted["records"], int),
+        conversation=from_plain(counted["conversation"], int),
         last=last,
-        ended=DatetimeCodec.coerce(session["agentsession_ended"]),
+        ended=(
+            None
+            if session["agentsession_ended"] is None
+            else from_plain(session["agentsession_ended"], datetime)
+        ),
+        account=account,
+        audience=audience,
+        hideable=not chat
+        and may_hide(
+            caller,
+            owners=(account, from_plain(session.get("opener"), str, default="")),
+            audience=audience,
+        ),
     )
 
 
@@ -466,3 +608,55 @@ def _room_facets(actors: Sequence[FeedActorFacet]) -> list[FeedRoomFacet]:
         FeedRoomFacet(room=room, count=counts[room], actors=sorted(names[room]))
         for room in sorted(counts, key=lambda room: (-counts[room], room))
     ]
+
+
+# ``$slot`` is ``:asker:<email>``. The slugs are read off every Issue's labels once for
+# the query, since the subquery names no outer row.
+def _asker_clause(slot: int) -> str:
+    """Return the test that ``i`` is a session of a campaign whose brief names ``$slot``."""
+    key = f"${slot}::text"
+    slugs = vetted_sql(
+        "ARRAY(SELECT left(tag, length(tag) - length(",
+        key,
+        ")) FROM inquiries AS brief, unnest(brief.labels) AS tag "
+        "WHERE brief.kind = 'Issue' AND right(tag, length(",
+        key,
+        ")) = ",
+        key,
+        ")",
+    )
+    return vetted_sql(
+        "(i.labels && ",
+        slugs,
+        " OR i.agentsession_rooms && ",
+        slugs,
+        ")",
+    )
+
+
+def _station_clause(first: int) -> str:
+    """Return the test that ``i`` is an agent of a station, its values at ``first``+1..."""
+    workspace, owner, prefix, depth, limit = (f"${first + n}" for n in range(1, 6))
+    # The chat's session is found by the conversation the owner's station holds, so
+    # one that is not theirs, or holds no chat, gives a NULL id and no root. UNION
+    # drops a repeated (session, depth) so a cycle ends at the depth bound, and a
+    # session met at two depths counts once, at its shallowest. The chat is depth 0
+    # and never one of its own agents.
+    return vetted_sql(
+        "i.id IN (WITH RECURSIVE walk(id, depth) AS (SELECT c.id, 0 FROM inquiries c "
+        "WHERE c.kind = 'AgentSession' AND c.agentsession_cli_session_id = ",
+        prefix,
+        "::text || (SELECT w.station->>'conversation_id' FROM visual_workspaces w "
+        "WHERE w.id = ",
+        workspace,
+        " AND w.user_id = ",
+        owner,
+        ") UNION SELECT e.from_id, walk.depth + 1 FROM walk JOIN edges e "
+        "ON e.to_id = walk.id AND e.edge_kind = 'produced_by' "
+        "AND e.from_kind = 'AgentSession' WHERE walk.depth < ",
+        depth,
+        ") SELECT id FROM walk GROUP BY id HAVING min(depth) > 0 "
+        "ORDER BY min(depth), id LIMIT ",
+        limit,
+        ")",
+    )

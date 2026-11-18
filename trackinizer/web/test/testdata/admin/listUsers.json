@@ -13,6 +13,7 @@
           "last_login": null,
           "name": "fixtures-admin",
           "role": "admin",
+          "staff": false,
           "status": "active"
         },
         {
@@ -22,6 +23,7 @@
           "last_login": null,
           "name": "no-auth",
           "role": "admin",
+          "staff": false,
           "status": "active"
         }
       ]

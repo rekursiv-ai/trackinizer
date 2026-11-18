@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Never, Self
 
 import functools
 import json
@@ -12,13 +12,23 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 import tracemalloc
+
+from treekle import from_plain, json_loads
 
 import psutil
 import pytest
 
-from trackinizer.lib.agent.sessions import claude, normalized
+from trackinizer.lib.agent.sessions import (
+    claude,
+    codex,
+    convert,
+    fuse,
+    gemini,
+    normalized,
+)
 from trackinizer.lib.agent.sessions.convert import (
     FileResult,
     _diff,
@@ -32,7 +42,6 @@ from trackinizer.lib.agent.sessions.convert import (
     detect_format,
     main,
 )
-from trackinizer.lib.custom_json import DictCodec, IntCodec, ListCodec, StrCodec, loads
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -61,14 +70,15 @@ def _first_turn(rollout: str) -> str:
     kept = [rollout.splitlines(keepends=True)[0]]
     started = False
     for line in rollout.splitlines(keepends=True)[1:]:
-        record = DictCodec.coerce(loads(line))
+        record = json_loads(line, dict[str, object])
         started = started or record.get("type") == "turn_context"
         if not started:
             continue
         kept.append(line)
-        if StrCodec.coerce(
-            DictCodec.coerce(record.get("payload")).get("type"),
-        ).endswith("tool_call_output"):
+        payload = from_plain(record.get("payload"), dict[str, object], default={})
+        if from_plain(payload.get("type"), str, default="").endswith(
+            "tool_call_output",
+        ):
             return "".join(kept)
     raise AssertionError("the capture has no tool output to slice at")
 
@@ -102,8 +112,10 @@ def test_convert_writes_stdout_and_out_dir(
     assert main(["convert", str(path), "--to", "json"]) == 0
     # A bare ARRAY of tagged records: a session IS its records, so nothing
     # wraps them and no metadata sits beside them.
-    document = ListCodec.mappings(loads(capsys.readouterr().out))
-    assert StrCodec.coerce(document[0].get("py/object")).endswith("TurnContext")
+    document = json_loads(capsys.readouterr().out, list[dict[str, object]])
+    assert from_plain(document[0].get("py/object"), str, default="").endswith(
+        "TurnContext",
+    )
 
     assert main(["convert", str(path), "--to", "json", "--out-dir", str(out_dir)]) == 0
     assert (out_dir / "session.json").exists()
@@ -132,7 +144,7 @@ def test_verify_reports_exactness(
 
 
 def test_verify_does_not_truncate_the_file_named_by_output(tmp_path: Path) -> None:
-    """``verify`` writes no conversion, so ``-o`` must leave its target alone.
+    """``verify`` writes no conversion, so ``-o`` is refused and left alone.
 
     Verifying keeps no text -- it asks whether the bytes agree, not for a copy
     of them -- but the destination was written unconditionally, so the empty
@@ -144,9 +156,75 @@ def test_verify_does_not_truncate_the_file_named_by_output(tmp_path: Path) -> No
     output = tmp_path / "out.txt"
     output.write_text("PREEXISTING")
 
-    assert main(["verify", str(path), "-o", str(output)]) == 0
+    with pytest.raises(SystemExit) as excinfo:
+        main(["verify", str(path), "-o", str(output)])
 
+    assert excinfo.value.code == 2
     assert output.read_text() == "PREEXISTING"
+
+
+def test_verify_refuses_an_output_destination(tmp_path: Path) -> None:
+    # Verify keeps no text, so ``--out-dir`` wrote every part as 0 bytes -- and
+    # pointed at the source's own directory, it truncated the source.
+    path = tmp_path / "s.jsonl"
+    native = _claude_session()
+    path.write_text(native)
+
+    with pytest.raises(SystemExit) as excinfo:
+        main(["verify", str(path), "--out-dir", str(tmp_path)])
+
+    assert excinfo.value.code == 2
+    assert path.read_text() == native
+
+
+def test_a_seam_name_cannot_escape_the_output_directory(tmp_path: Path) -> None:
+    # ``$seam`` comes from a normalized document, which is untrusted input.
+    victim = tmp_path / "victim.jsonl"
+    victim.write_text("KEEP")
+    records = list(claude.normalize(StringIO(_claude_session())))
+    fused = list(fuse.fuse([records, records], ["a.jsonl", "../victim.jsonl"]))
+    source = tmp_path / "in" / "s.json"
+    source.parent.mkdir()
+    out_dir = tmp_path / "out"
+    with source.open("w", encoding="utf-8") as handle:
+        normalized.denormalize(fused, handle)
+
+    assert main(["convert", str(source), "--to", "claude", "--out-dir", str(out_dir)])
+
+    assert victim.read_text() == "KEEP"
+
+
+def test_a_crlf_transcript_does_not_verify_as_byte_exact(tmp_path: Path) -> None:
+    path = tmp_path / "s.jsonl"
+    path.write_bytes(_claude_session().replace("\n", "\r\n").encode("utf-8"))
+
+    assert not convert_file(path, "auto", None, False, destination=False).byte_exact
+    assert not convert_file(path, "auto", None, False).byte_exact
+
+
+def test_a_native_out_dir_does_not_overwrite_a_same_named_part(tmp_path: Path) -> None:
+    # Two sessions whose parts share one file name both land in ``out_dir``.
+    first = _session(tmp_path / "a" / "s.jsonl", _claude_session())
+    second = _session(tmp_path / "b" / "s.jsonl", _claude_session())
+    out_dir = tmp_path / "out"
+
+    assert (
+        main(
+            [
+                "convert",
+                str(first),
+                str(second),
+                "--to",
+                "codex",
+                "--lossy",
+                "--out-dir",
+                str(out_dir),
+            ],
+        )
+        == 0
+    )
+
+    assert len(list(out_dir.iterdir())) == 2
 
 
 @pytest.mark.cli_python_subprocess
@@ -176,7 +254,7 @@ def test_workers_run_in_separate_processes(
         _ = _session(tmp_path / name / "s.jsonl", _claude_session())
 
     assert main(["verify", str(tmp_path), "--workers", "4", "--format", "json"]) == 0
-    report = DictCodec.coerce(loads(capsys.readouterr().err))
+    report = json_loads(capsys.readouterr().err, dict[str, object])
 
     assert report["files"] == 4
     assert report["ok"] == 4
@@ -193,10 +271,12 @@ def test_verify_reports_the_wire_size_against_the_source(
     path.write_text(_claude_session())
 
     assert main(["verify", str(path), "--format", "json"]) == 0
-    report = DictCodec.coerce(
-        ListCodec.coerce(
-            DictCodec.coerce(loads(capsys.readouterr().err))["results"],
+    report = from_plain(
+        from_plain(
+            json_loads(capsys.readouterr().err, dict[str, object])["results"],
+            list[object],
         )[0],
+        dict[str, object],
     )
 
     assert report["source_bytes"] == path.stat().st_size
@@ -216,18 +296,20 @@ def test_verify_reports_a_size_gap_on_a_shortened_rewrite(
     )
 
     assert main(["verify", str(path), "--format", "json"]) == 1
-    report = DictCodec.coerce(
-        ListCodec.coerce(
-            DictCodec.coerce(loads(capsys.readouterr().err))["results"],
+    report = from_plain(
+        from_plain(
+            json_loads(capsys.readouterr().err, dict[str, object])["results"],
+            list[object],
         )[0],
+        dict[str, object],
     )
 
     assert report["byte_exact"] is False
     assert report["source_bytes"] == path.stat().st_size
     assert (
         0
-        < IntCodec.coerce(report["output_bytes"])
-        < IntCodec.coerce(report["source_bytes"])
+        < from_plain(report["output_bytes"], int)
+        < from_plain(report["source_bytes"], int)
     )
 
 
@@ -247,7 +329,8 @@ def test_convert_reports_unreadable_and_unknown_inputs(tmp_path: Path) -> None:
     unknown = tmp_path / "unknown.jsonl"
     unknown.write_text('{"kind":"other"}\n')
 
-    assert convert_file(tmp_path / "absent.jsonl", "auto", "json", False).error
+    absent = convert_file(tmp_path / "absent.jsonl", "auto", "json", False).error or ""
+    assert absent
     assert (
         convert_file(unknown, "auto", "json", False).error
         == "unrecognized session format"
@@ -263,7 +346,8 @@ def test_convert_reports_a_malformed_normalized_payload(tmp_path: Path) -> None:
         '"context_id":"seven"}]',
     )
 
-    assert convert_file(path, "json", "claude", False).error
+    malformed = convert_file(path, "json", "claude", False).error or ""
+    assert malformed
 
 
 def test_json_report_and_usage_errors(
@@ -443,26 +527,62 @@ def test_a_multi_file_session_is_joined_then_split_back_byte_for_byte(
     # fused into ONE session, so a seam that lost or reordered a record shows
     # up only when the fused object is split back into the files it came from.
     project = tmp_path / "project"
-    before = _session(project / "before-clear.jsonl", _claude_session())
-    after = _session(project / "after-clear.jsonl", _claude_session())
-    # Parts join in write order. Linux stamps mtimes from a coarse clock, so two
-    # back-to-back writes often share one, and the tie then sorts by name, which
-    # puts "after" first. Date `before` a second earlier to state the order.
-    written = after.stat().st_mtime_ns - 1_000_000_000
-    os.utime(before, ns=(written, written))
+    before_text = _claude_session()
+    after_text = before_text.replace("Your entire job", "This resumed session", 1)
+    assert after_text != before_text
+    before = _session(project / "before-clear.jsonl", before_text)
+    after = _session(project / "after-clear.jsonl", after_text)
+    # Both parts carry the fixture's record stamps, so the files' write order
+    # decides here. Linux stamps mtimes from a coarse clock, so two back-to-back
+    # writes often share one, and the tie then sorts by name, which puts "after"
+    # first. Date `before` ten seconds earlier to state the order.
+    after_mtime_ns = time.time_ns()
+    before_mtime_ns = after_mtime_ns - 10 * 1_000_000_000
+    os.utime(before, ns=(before_mtime_ns, before_mtime_ns))
+    os.utime(after, ns=(after_mtime_ns, after_mtime_ns))
 
     result = convert_file(project, "auto", None, False)
 
     assert result.byte_exact
     # ONE session, whose parts are the two files -- not two sessions.
-    assert [name for name, _ in result.parts] == [before.name, after.name]
+    assert result.parts == (
+        (before.name, before_text),
+        (after.name, after_text),
+    )
     assert result.source_bytes == before.stat().st_size + after.stat().st_size
     assert result.output_bytes == result.source_bytes
 
     assert main(["verify", str(project), "--format", "json"]) == 0
-    report = DictCodec.coerce(loads(capsys.readouterr().err))
+    report = json_loads(capsys.readouterr().err, dict[str, object])
     assert report["files"] == 1
     assert report["ok"] == 1
+
+
+def test_parts_written_in_one_tick_join_in_the_order_their_records_were_stamped(
+    tmp_path: Path,
+) -> None:
+    # A coarse filesystem clock gives two back-to-back parts one mtime, and
+    # file names cannot break that tie: claude names a transcript with a fresh
+    # id, so "after" sorting before "before" is as likely as not. The records
+    # carry the provider's own clock, which here says "after" came a minute
+    # later.
+    project = tmp_path / "project"
+    before_text = _claude_session()
+    after_text = before_text.replace("2026-08-24T20:30:", "2026-08-24T20:31:")
+    assert after_text != before_text
+    before = _session(project / "before-clear.jsonl", before_text)
+    after = _session(project / "after-clear.jsonl", after_text)
+    tick_ns = time.time_ns()
+    for part in (before, after):
+        os.utime(part, ns=(tick_ns, tick_ns))
+
+    result = convert_file(project, "auto", None, False)
+
+    assert result.byte_exact
+    assert result.parts == (
+        (before.name, before_text),
+        (after.name, after_text),
+    )
 
 
 def test_a_session_keeps_the_subagents_nested_under_it(tmp_path: Path) -> None:
@@ -482,14 +602,22 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
     # the obvious pattern left 11 orphans holding 14 GB. The kernel has to be
     # the one that reaps them.
     for index in range(6):
-        _ = _session(tmp_path / f"s{index}" / "s.jsonl", _claude_session() * 40)
+        _ = _session(tmp_path / "in" / f"s{index}" / "s.jsonl", _claude_session() * 40)
+    # A session no one ever writes: the worker that opens it blocks, so the run
+    # is still alive when it is killed. Without it the run could END before the
+    # loop below saw it: measured, the pool converted all six in 0.36 s and
+    # exited 90 ms after its first output, and a poll whose /proc scan took
+    # 62 ms on a host holding 4,000 pids missed that window 10 times in 10.
+    held = tmp_path / "held.jsonl"
+    os.mkfifo(held)
     started = subprocess.Popen(  # noqa: S603 -- fixed argv, tmp_path input.
         [
             sys.executable,
             "-m",
             "trackinizer.lib.agent.sessions",
             "convert",
-            str(tmp_path),
+            str(tmp_path / "in"),
+            str(held),
             "--to",
             "json",
             "--out-dir",
@@ -502,11 +630,8 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
     )
     children: list[psutil.Process] = []
     deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        children = cast(  # pyright: ignore[reportUnnecessaryCast] -- ty needs it; pyright resolves the stub.
-            "list[psutil.Process]",
-            psutil.Process(started.pid).children(recursive=True),
-        )
+    while time.monotonic() < deadline and started.poll() is None:
+        children = psutil.Process(started.pid).children(recursive=True)
         # Output on disk, not just live pids: a worker whose INITIALIZER raised
         # leaves nothing behind either, so a pid check alone passes on a pool
         # that never converted anything -- which is how a missing import in
@@ -514,6 +639,7 @@ def test_killing_the_run_takes_its_workers_with_it(tmp_path: Path) -> None:
         if len(children) >= 2 and list((tmp_path / "out").glob("*.json")):
             break
         time.sleep(0.1)
+    assert started.poll() is None, "the run ended before it could be killed"
     assert children, "the pool never started"
     assert list((tmp_path / "out").glob("*.json")), "the pool never did any work"
 
@@ -593,7 +719,214 @@ def test_workers_scale_with_the_session_count() -> None:
     assert _workers(paths=1, workers=5) == 1
 
 
+def test_empty_directory_reports_no_session_files(tmp_path: Path) -> None:
+    assert (
+        convert_file(tmp_path, "auto", "json", False).error == "no session files found"
+    )
+
+
+def test_convert_all_uses_a_process_pool_when_multiple_workers_are_requested(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _session(tmp_path / "s.jsonl", _claude_session())
+    calls: list[int] = []
+
+    class Pool:
+        def __init__(self, max_workers: int, **_: object) -> None:
+            calls.append(max_workers)
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def map(
+            self,
+            function: object,
+            paths: object,
+            *_args: object,
+        ) -> list[FileResult]:
+            del paths
+            assert function is convert.convert_file
+            return [convert.convert_file(path, "auto", "json", False)]
+
+    monkeypatch.setattr(convert, "ProcessPoolExecutor", Pool)
+
+    second = _session(tmp_path / "second.jsonl", _claude_session())
+    results = convert._convert_all(
+        (path, second),
+        workers=2,
+        source="auto",
+        target="json",
+        want_diff=False,
+        fail_fast=False,
+    )
+
+    assert calls == [2]
+    assert results[0].ok
+
+
+def _no_sleep(seconds: float) -> None:
+    del seconds
+
+
+def _gone_kill(pid: int, signal: int) -> None:
+    del pid, signal
+    raise OSError("gone")
+
+
+def _gone_exit(code: int) -> Never:
+    del code
+    raise RuntimeError("gone")
+
+
+def test_parent_watcher_exits_when_launcher_disappears(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(time, "sleep", _no_sleep)
+    monkeypatch.setattr(os, "kill", _gone_kill)
+    monkeypatch.setattr(os, "_exit", _gone_exit)
+
+    with pytest.raises(RuntimeError, match=r"gone"):
+        convert._watch_launcher(123, 0.0)
+
+
+def test_die_with_parent_starts_a_daemon_watcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started: list[tuple[object, tuple[object, ...], bool]] = []
+
+    class Thread:
+        def __init__(
+            self,
+            *,
+            target: object,
+            args: tuple[object, ...],
+            daemon: bool,
+        ) -> None:
+            started.append((target, args, daemon))
+
+        def start(self) -> None:
+            return None
+
+    monkeypatch.setattr(threading, "Thread", Thread)
+    convert._die_with_parent(7, 0.5)
+
+    assert started == [(convert._watch_launcher, (7, 0.5), True)]
+
+
+def test_detect_format_recognizes_sagent_records() -> None:
+    assert convert.detect_format('{"kind":"meta"}\n') == "sagent"
+
+
+def test_a_known_but_unconvertible_format_is_refused_by_name(tmp_path: Path) -> None:
+    path = tmp_path / "session.jsonl"
+    path.write_text('{"kind":"meta"}\n')
+
+    assert convert_file(path, "auto", "json", False).error == (
+        "unsupported session format: sagent"
+    )
+
+
+def test_each_format_names_its_own_adapter() -> None:
+    assert convert._adapter("claude") is claude
+    assert convert._adapter("codex") is codex
+    assert convert._adapter("gemini") is gemini
+    assert convert._adapter("json") is normalized
+
+
+def test_an_empty_normalized_document_is_readable(tmp_path: Path) -> None:
+    # ``normalized.denormalize([])`` writes ``[]``, and detection raised on it.
+    path = tmp_path / "empty.json"
+    with path.open("w", encoding="utf-8") as handle:
+        normalized.denormalize([], handle)
+
+    assert detect_format(path.read_text()) == "json"
+    assert convert_file(path, "auto", None, False).ok
+
+
+def test_a_line_that_is_not_an_object_names_no_format() -> None:
+    assert detect_format("[1]\n") == ""
+    assert detect_format("3\n") == ""
+
+
+def test_a_long_pretty_printed_gemini_document_is_sniffed(tmp_path: Path) -> None:
+    path = tmp_path / "g.json"
+    messages = [{"type": "user", "content": f"m{i}"} for i in range(80)]
+    path.write_text(json.dumps({"sessionId": "s", "messages": messages}, indent=2))
+
+    assert convert._sniff(path) == "gemini"
+
+
+def test_convert_file_reports_conversion_type_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _session(tmp_path / "s.jsonl", _claude_session())
+
+    def raise_type_error(*_args: object, **_kwargs: object) -> FileResult:
+        raise TypeError("bad")
+
+    monkeypatch.setattr(convert, "_compared", raise_type_error)
+
+    result = convert.convert_file(path, "auto", "json", False)
+
+    assert result.error == "TypeError: bad"
+
+
+def test_destination_uses_a_hash_when_all_parent_names_collide(tmp_path: Path) -> None:
+    path = Path("session.jsonl")
+    destination = tmp_path / "out"
+    destination.mkdir()
+    (destination / "session.json").write_text("")
+
+    assert convert._destination(destination, path, ".json").name.startswith("session-")
+
+
+def test_write_out_dir_writes_named_parts(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    result = FileResult(
+        path=tmp_path / "source.json",
+        target="claude",
+        parts=(("part.jsonl", "native"),),
+    )
+
+    convert._write([result], output=None, out_dir=out, stream=StringIO())
+
+    assert (out / "part.jsonl").read_text() == "native"
+
+
+def test_matches_rejects_same_sized_different_text(tmp_path: Path) -> None:
+    path = tmp_path / "x"
+    path.write_text("abc")
+
+    assert convert._matches(path, "and") is False
+
+
+@pytest.mark.parametrize("edit", [False, True], ids=["same", "same-size-edit"])
+def test_a_streamed_json_rewrite_is_exact_by_content(
+    tmp_path: Path,
+    *,
+    edit: bool,
+) -> None:
+    # Equal sizes are not equal bytes: a respelling that kept the length -- one
+    # separator moved -- still reported byte-exact.
+    source = tmp_path / "in" / "s.json"
+    source.parent.mkdir()
+    with source.open("w", encoding="utf-8") as handle:
+        normalized.denormalize(claude.normalize(StringIO(_claude_session())), handle)
+    if edit:
+        text = source.read_text()
+        source.write_text("[ " + text[1:].replace(',"', ',"', 1).replace("]\n", "]", 1))
+
+    result = convert_file(source, "auto", "json", False, destination=tmp_path / "out")
+
+    assert result.byte_exact is not edit
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

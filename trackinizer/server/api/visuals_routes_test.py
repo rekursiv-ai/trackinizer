@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from treekle import from_plain, json_loads
+
 import pytest
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, StrCodec, loads
 from trackinizer.server.api.app import app
 from trackinizer.server.visuals.catalog import StaticVisual, Workspace
 
@@ -25,27 +26,34 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
     client, _, _ = route_client
     response = client.get("/api/visuals")
     assert response.status_code == 200
-    body = DictCodec.coerce(loads(response.content))
-    assert StrCodec.coerce(body["default_visual"]) == "trax.browse"
-    visuals = [DictCodec.coerce(item) for item in ListCodec.coerce(body["visuals"])]
-    by_type = {StrCodec.coerce(visual["type"]): visual for visual in visuals}
+    body = json_loads(response.content, dict[str, object])
+    assert from_plain(body["default_visual"], str) == "trax.browse"
+    visuals = [
+        from_plain(item, dict[str, object])
+        for item in from_plain(body["visuals"], list[object])
+    ]
+    by_type = {from_plain(visual["type"], str): visual for visual in visuals}
     assert set(by_type) == {
         "trax.browse",
-        "trax.chat",
         "trax.artifact",
         "trax.subgraph",
         "trax.timeline",
+        "trax.summary",
+        "trax.files",
+        "trax.terminal",
+        "trax.knowledge",
+        "trax.blocks",
     }
     assert by_type["trax.browse"]["version"] == 1
-    assert by_type["trax.chat"]["requires"] == ["session"]
     assert by_type["trax.artifact"]["requires"] == ["record"]
     assert by_type["trax.artifact"]["parameter_schema"] == {}
     assert by_type["trax.subgraph"]["requires"] == ["record"]
     assert by_type["trax.timeline"]["requires"] == ["record"]
-    direction_schema = DictCodec.coerce(
-        DictCodec.coerce(by_type["trax.timeline"]["parameter_schema"])[
+    direction_schema = from_plain(
+        from_plain(by_type["trax.timeline"]["parameter_schema"], dict[str, object])[
             "direction_limit"
         ],
+        dict[str, object],
     )
     assert direction_schema == {
         "type": "integer",
@@ -55,6 +63,26 @@ def test_visual_catalog_has_default_browse_chat_and_context_graph(
         "max_length": None,
     }
     assert by_type["trax.browse"]["parameter_schema"] == {}
+    assert by_type["trax.browse"]["record_kinds"] == []
+    assert by_type["trax.timeline"]["record_kinds"] is None
+    assert by_type["trax.artifact"]["record_kinds"] == ["Artifact"]
+    assert by_type["trax.subgraph"]["record_kinds"] is None
+    assert by_type["trax.summary"]["requires"] == ["record"]
+    assert by_type["trax.summary"]["record_kinds"] == ["Issue", "AgentSession"]
+    files = by_type["trax.files"]
+    assert (files["requires"], files["record_kinds"]) == (["record"], None)
+    string = {"type": "string", "default": "", "minimum": None, "maximum": None}
+    assert files["parameter_schema"] == {
+        "path": {**string, "max_length": 512},
+        "changed": {
+            "type": "boolean",
+            "default": False,
+            "minimum": None,
+            "maximum": None,
+            "max_length": None,
+        },
+        "file": {**string, "max_length": 512},
+    }
 
 
 def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
@@ -62,7 +90,7 @@ def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
     configured = Workspace.Config(
         visuals=[
             StaticVisual.Config(type="trax.browse", title="Explore"),
-            StaticVisual.Config(type="trax.chat", title="Chat"),
+            StaticVisual.Config(type="x.notes", title="Notes"),
         ],
         default_visual="trax.browse",
     ).make()
@@ -77,7 +105,7 @@ def test_visual_config_composes_titles_and_rejects_invalid_identity() -> None:
         ).make()
     with pytest.raises(ValueError, match="registered"):
         Workspace.Config(
-            visuals=[StaticVisual.Config(type="trax.chat", title="Chat")],
+            visuals=[StaticVisual.Config(type="x.notes", title="Notes")],
         ).make()
 
 
@@ -92,14 +120,15 @@ def test_visuals_route_serves_the_deployments_configured_catalog(
         default_visual="x.notes",
     ).make()
     monkeypatch.setattr(app.state, "visual_catalog", configured, raising=False)
-    body = DictCodec.coerce(loads(client.get("/api/visuals").content))
-    assert StrCodec.coerce(body["default_visual"]) == "x.notes"
+    body = json_loads(client.get("/api/visuals").content, dict[str, object])
+    assert from_plain(body["default_visual"], str) == "x.notes"
     assert [
-        DictCodec.coerce(item)["title"] for item in ListCodec.coerce(body["visuals"])
+        from_plain(item, dict[str, object])["title"]
+        for item in from_plain(body["visuals"], list[object])
     ] == ["Notes"]
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -1,0 +1,10 @@
+.record-lineage { padding: 16px; min-width: 0; }
+.record-lineage h2 { margin: 6px 0 12px; font-size: 16px; }
+.record-lineage h3 { margin: 20px 0 8px; font-size: 13px; }
+.record-lineage ol { list-style: none; margin: 0; padding: 0; }
+.record-lineage li { display: flex; flex-direction: column; gap: 5px; padding: 10px; margin: 8px 0; border: 1px solid var(--line); border-radius: var(--radius); }
+.record-lineage a { color: var(--text); overflow-wrap: anywhere; }
+.record-lineage .rl-edge { font-size: 12px; margin: 0; overflow-wrap: anywhere; }
+.record-lineage .rl-summary { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
+.record-lineage [data-sign="for"] { color: var(--green); }
+.record-lineage [data-sign="against"] { color: var(--red); }

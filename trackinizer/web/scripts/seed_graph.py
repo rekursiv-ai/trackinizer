@@ -38,7 +38,8 @@ import math
 import string
 import uuid
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from treekle import from_plain, json_loads
+
 from trackinizer.web.scripts.graph_structure import Link, Node, Structure
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
 
@@ -59,7 +60,7 @@ GRAPH_CONTENTS: Final = _CWD / "graph_contents.json"
 @functools.lru_cache(maxsize=1)
 def _contents() -> Mapping[str, object]:
     """``GRAPH_CONTENTS``, read once: a seed gives every node its summary."""
-    return DictCodec.coerce(loads(GRAPH_CONTENTS.read_text()), default=None)
+    return json_loads(GRAPH_CONTENTS.read_text(), dict[str, object])
 
 
 class GraphClient(Protocol):
@@ -70,7 +71,7 @@ class GraphClient(Protocol):
         items: Sequence[tuple[Inquiry.InquiryKind, Mapping[str, object]]],
         *,
         edges: Sequence[Mapping[str, object]] = (),
-        actor: str | None = None,
+        actor: str,
     ) -> list[uuid.UUID]:
         """Create ``items`` and ``edges`` in one batch; return their ids."""
         ...
@@ -193,7 +194,12 @@ def showcase(structure: Structure, found: Islands) -> Showcase:
     against: set[int] = set()
     for link in structure.edges:
         home = found.home.get(link.to_index)
-        if link.sign and home is not None and home == found.home.get(link.from_index):
+        if (
+            link.sign
+            and structure.nodes[link.to_index].kind == "Belief"
+            and home is not None
+            and home == found.home.get(link.from_index)
+        ):
             cited[home, link.to_index] += 1
             if link.sign < 0:
                 against.add(home)
@@ -516,11 +522,9 @@ _AGENTS: Final = (
 )
 
 
-# Each node's id.
-#
-# The batch route adds edges only beside a node it creates, and a transaction a batch
-# keeps a PGlite server quick (a transaction an edge took 0.2 s each), so the newest
-# nodes are held back to carry the edges, a batch each.
+# The batch route adds edges only beside a node it creates. One transaction per batch
+# keeps a PGlite server quick, where one per edge took 0.2 s each, so the newest nodes
+# are held back to carry the edges, a batch each.
 def _write(
     client: GraphClient,
     structure: Structure,
@@ -530,7 +534,7 @@ def _write(
 ) -> list[uuid.UUID]:
     """Create the nodes oldest first and the edges in ``cascade_order``."""
     pending = cascade_order(structure)
-    first = len(structure.nodes) - math.ceil(len(pending) / BATCH_MAX_ITEMS)
+    first = _first_carrier(len(structure.nodes), pending)
     ids: list[uuid.UUID] = []
     for chunk in itertools.batched(range(first), BATCH_MAX_ITEMS):
         ids.extend(
@@ -559,6 +563,25 @@ def _write(
     return ids
 
 
+# A carrier takes up to ``BATCH_MAX_ITEMS`` edges whose ends are no newer than it.
+# Filling carriers oldest first with any edges they can take then lands every edge
+# exactly when, for each node, the edges whose newer end is that node or newer fit the
+# carriers from there on.
+def _first_carrier(nodes: int, edges: Sequence[Link]) -> int:
+    """Return the oldest of the fewest newest nodes that can carry ``edges``."""
+    first = nodes - math.ceil(len(edges) / BATCH_MAX_ITEMS)
+    newest = Counter(max(link.from_index, link.to_index) for link in edges)
+    later = 0
+    for n in reversed(range(nodes)):
+        later += newest[n]
+        if later > BATCH_MAX_ITEMS * (nodes - n):
+            raise ValueError(
+                f"{len(edges)} edges found no batch: {later} end at node {n} or "
+                f"newer, past what {nodes - n} carriers of {BATCH_MAX_ITEMS} hold",
+            )
+    return first
+
+
 # A complete session is created live, as every session is, and its end completes it.
 # Ended before its edges are added, its end alerts nothing.
 def _end_sessions(
@@ -582,15 +605,15 @@ def _bodies(
 ) -> list[dict[str, object]]:
     """Each node's submit body: title, status and owner, a Belief's verdict, the showcase's text."""
     contents = _contents()
-    written = ListCodec.coerce(contents.get("roots"), str)
+    written = from_plain(contents["roots"], list[str])
     named = {root: written[k % len(written)] for k, root in enumerate(found.roots)}
-    kinds = DictCodec.coerce(contents.get("kinds"), default=None)
+    kinds = from_plain(contents.get("kinds"), dict[str, object])
     built = {
-        kind: _titles(DictCodec.coerce(kinds.get(kind), default=None))
+        kind: _titles(from_plain(kinds.get(kind), dict[str, object]))
         for kind in {node.kind for node in structure.nodes}
     }
     made = Counter[str]()
-    shown = DictCodec.coerce(contents.get("showcase"), default=None)
+    shown = from_plain(contents.get("showcase"), dict[str, object])
     verdicts = _verdicts(structure)
     bodies: list[dict[str, object]] = []
     for n, node in enumerate(structure.nodes):
@@ -633,9 +656,9 @@ def _bodies(
             confidence=float(stated) if isinstance(stated, float) else None,
         )
         if n in {picked.root, picked.belief}:
-            body |= DictCodec.coerce(
+            body |= from_plain(
                 shown.get("root" if n == picked.root else "belief"),
-                default=None,
+                dict[str, object],
             )
         bodies.append(body)
     return bodies
@@ -671,8 +694,8 @@ def summary_for(
 
     """
     contents = _contents()
-    prose = DictCodec.coerce(contents.get("prose"), default=None)
-    variants = ListCodec.coerce(prose.get(kind), str)
+    prose = from_plain(contents.get("prose"), dict[str, object])
+    variants = from_plain(prose.get(kind), list[str])
     if not variants:
         raise ValueError(f"No prose written for kind {kind!r}.")
     # A variant that names what the record lacks would read as a hole where the
@@ -694,15 +717,13 @@ def summary_for(
     ]
     if not usable:
         return ""
-    vocabulary = DictCodec.coerce(
-        DictCodec.coerce(contents.get("kinds"), default=None).get(kind),
-        default=None,
+    vocabulary = from_plain(
+        from_plain(contents.get("kinds"), dict[str, object]).get(kind),
+        dict[str, object],
     )
     words = [
-        ListCodec.coerce(row, str)
-        for row in ListCodec.coerce(
-            DictCodec.coerce(vocabulary, default=None).get("words"),
-        )
+        from_plain(row, list[str])
+        for row in from_plain(vocabulary.get("words"), list[object], default=[])
     ]
     found: dict[str, str] = {}
     for slot, pool in enumerate(words):
@@ -754,14 +775,14 @@ def cost_for(kind: str, title: str) -> dict[str, float]:
         kind spends nothing.
 
     """
-    block = DictCodec.coerce(_contents().get("cost"), default=None)
+    block = from_plain(_contents().get("cost"), dict[str, object])
     spans = block.get(kind)
     if not isinstance(spans, Mapping):
         # A kind absent from the block -- a Belief, an Issue -- spends nothing.
         return {}
     charged: dict[str, float] = {}
     for axis, field in (("agent", _AGENT_AXIS), ("resource", _RESOURCE_AXIS)):
-        row = ListCodec.coerce(spans.get(axis), float)
+        row = from_plain(spans.get(axis), list[float])
         if len(row) != 2:
             continue
         low, high = row
@@ -845,12 +866,19 @@ def _edge(
 def _titles(vocabulary: Mapping[str, object]) -> list[str]:
     """Every title a kind's templates and word lists make, in the order of their hashes."""
     words = [
-        ListCodec.coerce(row, str) for row in ListCodec.coerce(vocabulary.get("words"))
+        from_plain(row, list[str])
+        for row in from_plain(vocabulary.get("words"), list[object], default=[])
     ]
     titles: set[str] = set()
-    for template in ListCodec.coerce(vocabulary.get("templates"), str):
+    for template in from_plain(vocabulary.get("templates"), list[str], default=[]):
         slots = sorted(
-            {int(f) for _, f, _, _ in string.Formatter().parse(template) if f},
+            {
+                int(f)
+                for f in (
+                    field or "" for _, field, _, _ in string.Formatter().parse(template)
+                )
+                if f
+            },
         )
         for picked in itertools.product(*(words[slot] for slot in slots)):
             parts = dict(zip(slots, picked, strict=True))

@@ -317,8 +317,8 @@ class TestDetailFormats:
             "owner:       alice",
             "labels:      math",
             "subscribers: bob",
-            "judgement  : proven",
-            "confidence : 0.9",
+            "judgement:   proven",
+            "confidence:  0.9",
             "codechanges: 1 entries",
             "    - c1",
             "agent-cost:  $1.0000",
@@ -415,7 +415,7 @@ class TestDetailFormats:
         """
         for kind in cast(
             tuple[Edge.Kind, ...],
-            get_args(cast(object, Edge.Kind.__value__)),
+            get_args(Edge.Kind.__value__),
         ):
             for inbound in (False, True):
                 title = _relation_title(kind, inbound=inbound)
@@ -440,17 +440,18 @@ class TestDetailFormats:
                     "title": "finding",
                 },
                 # proves/favors store Artifact -> claim, so on the cited Belief
-                # they are INBOUND (backlinks) and read proved_by / favored_by.
+                # they are INBOUND (backlinks) and read the inverse labels:
+                # supported_by / suggested_by.
                 "backlinks": {
                     "proves": [{"kind": "Experiment", "seq": 4, "title": "evidence"}],
                     "favors": [{"kind": "Paper", "seq": 1, "title": "context"}],
                 },
             },
         )
-        assert "proved_by:" in text
-        assert "favored_by:" in text
-        assert "proves:" not in text
-        assert "favors:" not in text
+        assert "supported_by:" in text
+        assert "suggested_by:" in text
+        assert "supports:" not in text
+        assert "suggests:" not in text
 
     def test_format_show_uses_artifact_facing_citation_names(self) -> None:
         text = render.format_show(
@@ -462,11 +463,12 @@ class TestDetailFormats:
                     "status": "active",
                     "title": "evidence",
                 },
-                # On the citing Artifact the proves edge is OUTBOUND, read proves.
+                # On the citing Artifact the proves edge is OUTBOUND, read supports.
                 "edges": {"proves": [{"kind": "Belief", "seq": 5, "title": "finding"}]},
             },
         )
-        assert "proves:" in text
+        assert "supports:" in text
+        assert "supported_by:" not in text
         assert "proved_by:" not in text
 
     def test_format_show_defaults_owner(self) -> None:
@@ -518,7 +520,7 @@ class TestDetailFormats:
                 },
             },
         )
-        assert "kind       : task,bug" in text
+        assert "kind:        task,bug" in text
         assert "issue_kind" not in text
         assert "['task'" not in text
 
@@ -674,7 +676,7 @@ def test_print_rows_json(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_format_edge_includes_changes_section() -> None:
-    view = {
+    view: dict[str, object] = {
         "title": "blocked_by",
         "endpoints": (
             {"label": "blocker", "kind": "Issue", "seq": 1, "title": "a"},
@@ -707,7 +709,70 @@ def test_row_value_depth_cap() -> None:
     assert "..." in _row_value(deep)
 
 
+def test_show_extra_labels_share_the_fixed_value_column() -> None:
+    text = render.format_show({"self": {"title": "VALUE", "judgement": "VALUE"}})
+    rows = [line for line in text.splitlines() if "VALUE" in line]
+    assert len(rows) == 2
+    assert rows[0].index("VALUE") == rows[1].index("VALUE")
+    assert "judgement:" in rows[1]
+
+
+def test_session_hit_rendering_all_branches() -> None:
+    assert render.format_session_hits({}) == "(no matches)\n"
+    assert render.format_session_hits({"hits": None}) == "(no matches)\n"
+    assert render.format_session_hits({"hits": []}) == "(no matches)\n"
+    assert (
+        render.format_session_hits({"degraded": True})
+        == "(semantic search unavailable; showing full-text results only)\n(no matches)\n"
+    )
+    assert (
+        render.format_session_hits(
+            {
+                "hits": [
+                    {
+                        "session_id": "123456789",
+                        "part": 2,
+                        "idx": 3,
+                        "score": 0.125,
+                        "source": "fts",
+                        "title": "title",
+                        "snippet": "  excerpt  ",
+                    },
+                ],
+            },
+        )
+        == "0.1250  fts       12345678#2/3  title\n  excerpt\n"
+    )
+    empty_hit: dict[str, object] = {}
+    assert (
+        render.format_session_hits({"hits": [empty_hit]})
+        == "0.0000            #0/0  \n"
+    )
+    assert (
+        render.format_session_hits({"hits": [{"snippet": "   "}]})
+        == "0.0000            #0/0  \n"
+    )
+
+
+def test_label_resolution_splits_and_trims() -> None:
+    assert render.resolve_labels(None) == []
+    empty: list[str] = []
+    assert render.resolve_labels(empty) == []
+    assert render.resolve_labels([" a, b ,,", "c", " "]) == ["a", "b", "c"]
+
+
+def test_actor_display_uses_system_and_omits_redundant_principal() -> None:
+    assert render._format_actor({}) == "actor=system"
+    assert (
+        render._format_actor({"actor": "alice", "principal": "alice"}) == "actor=alice"
+    )
+    assert (
+        render._format_actor({"actor": "alice", "principal": "bob"})
+        == "actor=alice principal=bob"
+    )
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -7,19 +7,22 @@ dispatch over many items in one all-or-nothing transaction.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated, Protocol, cast
+from typing import TYPE_CHECKING, Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
-from trackinizer.lib.custom_json import MutableJSON, StrCodec
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.locks import referenced_ids, require_unlocked
+from trackinizer.server.api.session_access import (
+    granted_audience,
+    require_attributable,
+)
 from trackinizer.server.auth import (
     AuthIdentity,
     assert_account_active,
     require_role,
 )
-from trackinizer.server.store.submit import SUBMIT_METHOD
 from trackinizer.wire.bodies import (
     SubmitAgentSession,
     SubmitArtifact,
@@ -34,10 +37,10 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+from trackinizer.wire.json_types import MutableJSON
 
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
     from uuid import UUID
 
     from trackinizer.server.store.core import Store
@@ -45,9 +48,10 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 
-# Each body class keyed by its PascalCase kind discriminator.
+# Each body class keyed by its PascalCase kind discriminator, read off an
+# unvalidated instance: the ``kind`` literal is the one declaration of it.
 _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
-    StrCodec.coerce(cast(str, body.model_fields["kind"].default), default=None): body
+    body.model_construct().kind: body
     for body in (
         SubmitIssue,
         SubmitArtifact,
@@ -60,6 +64,9 @@ _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
         SubmitAgentSession,
     )
 }
+
+# Lowercase URL kind token -> the PascalCase discriminator it names.
+_KIND_BY_TOKEN: dict[str, str] = {kind.lower(): kind for kind in _BODY_BY_KIND}
 
 # Lowercase URL kind token (the {kind} path segment) -> submit body. The
 # token is just ``kind.lower()`` -- one canonical spelling per kind.
@@ -93,7 +100,9 @@ async def submit_batch_route(
       body: JSON object with "ids" key mapping to list of minted server IDs.
 
     """
+    await require_unlocked(request, identity, referenced_ids(req))
     store = get_store(request)
+    session_audience = _opening_audience(identity, *req.items)
     # Resolve each item's account, then validate the DISTINCT set before the
     # all-or-nothing transaction: a single inactive account fails the whole
     # batch (matching the single-submit contract) without writing a partial
@@ -103,6 +112,7 @@ async def submit_batch_route(
         for item in req.items
     ]
     for account in {str(item.account) for item in items}:
+        require_attributable(identity, account)
         await assert_account_active(store.engine, account)
     # Gate every edge endpoint that names an EXISTING row by UUID on.
     ids = await store.submit_batch(
@@ -114,6 +124,7 @@ async def submit_batch_route(
         # item override it. Without this a CLI ``--as`` reached edits but not
         # creates, which recorded the wrong author on every batch-created row.
         actor=req.actor or identity.email,
+        session_audience=session_audience,
     )
     body: MutableJSON = {"ids": [str(row_id) for row_id in ids]}
     return body
@@ -146,10 +157,7 @@ async def submit_route(
     body_cls = SUBMIT_BODY.get(kind)
     if body_cls is None:
         raise HTTPException(status_code=404, detail=f"unknown inquiry kind {kind!r}")
-    discriminator = StrCodec.coerce(
-        cast(str, body_cls.model_fields["kind"].default),
-        default=None,
-    )
+    discriminator = _KIND_BY_TOKEN[kind]
     try:
         req = body_cls.model_validate({**payload, "kind": discriminator})
     except ValidationError as err:
@@ -162,17 +170,8 @@ async def submit_route(
             status_code=422,
             detail=err.errors(include_context=False),
         ) from err
+    await require_unlocked(request, identity, referenced_ids(req))
     return {"id": str(await _submit_one(get_store(request), req, identity))}
-
-
-class _SubmitMethod(Protocol):
-    def __call__(
-        self,
-        req: SubmitBase,
-        *,
-        api_key_id: UUID | None,
-        actor: str,
-    ) -> Awaitable[UUID]: ...
 
 
 # The default is the authenticated ``identity.email`` -- never the spoofable ``actor``
@@ -187,11 +186,22 @@ async def _submit_one(
     req: SubmitBase,
     identity: AuthIdentity,
 ) -> UUID:
+    session_audience = _opening_audience(identity, req)
     account = _resolve_account(req, identity)
+    require_attributable(identity, account)
     await assert_account_active(store.engine, account)
-    method = cast(_SubmitMethod, getattr(store, SUBMIT_METHOD[type(req)]))
-    return await method(
+    return await store.submit(
         req.model_copy(update={"account": account}),
         api_key_id=identity.api_key_id,
         actor=req.actor or identity.email,
+        session_audience=session_audience,
     )
+
+
+# Resolved only when a session is being opened: the pin says where a session goes, and a
+# key whose pin its owner lost still files an Issue or an Artifact.
+def _opening_audience(identity: AuthIdentity, *bodies: SubmitBase) -> str | None:
+    """Return the audience the sessions among ``bodies`` open into, else ``None``."""
+    if any(isinstance(body, SubmitAgentSession) for body in bodies):
+        return granted_audience(identity)
+    return None

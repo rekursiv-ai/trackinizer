@@ -39,15 +39,15 @@ import json
 import math
 import uuid
 
+from treekle import from_plain
+
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
-    SessionRecord,
     ShellCommandResult,
     ToolCall,
     UserMessage,
 )
-from trackinizer.lib.custom_json import DictCodec, StrCodec
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.web.scripts.graph_structure import GRAPH_STRUCTURE, load
 from trackinizer.web.scripts.seed_graph import seed_graph
@@ -59,7 +59,8 @@ from trackinizer.wire.wire_sessions import SessionStart
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
-    from trackinizer.lib.custom_json import JSONValue
+    from treekle import PlainTree
+
     from trackinizer.types.inquiries import Inquiry
     from trackinizer.web.scripts.graph_structure import Structure
     from trackinizer.wire.wire_sessions import SessionEnd, SessionStartResponse
@@ -75,7 +76,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -163,7 +164,7 @@ class SeedClient(Protocol):
         """End the session ``session_id``."""
         ...
 
-    def post(self, path: str, *, body: object = None) -> JSONValue:
+    def post(self, path: str, *, body: object = None) -> PlainTree:
         """Send one POST request."""
         ...
 
@@ -251,6 +252,9 @@ def _add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8812")
 
 
+type _Turn = UserMessage | AssistantMessage | ToolCall | ShellCommandResult
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _Session:
     """One agent's session: who, where, the Issue it works on, and its turns."""
@@ -259,7 +263,7 @@ class _Session:
     room: str
     title: str
     produced_by: str
-    turns: tuple[SessionRecord, ...]
+    turns: tuple[_Turn, ...]
 
 
 # The console orders turns by when the server stored them, so turns appended session by
@@ -319,7 +323,7 @@ def _converse(
 
 def _publish(client: SeedClient, *, issue: uuid.UUID, cites: uuid.UUID) -> uuid.UUID:
     """Publish the cache benchmark's HTML report, produced by ``issue``; its Artifact's id."""
-    published = DictCodec.coerce(
+    published = from_plain(
         client.post(
             "/api/artifacts/content",
             body={
@@ -375,9 +379,9 @@ aria-label="Throughput in million tokens a second, main against the cache">
                 "citations": [{"record_id": str(cites)}],
             },
         ),
-        default=None,
+        dict[str, object],
     )
-    return uuid.UUID(StrCodec.coerce(published.get("artifact_id"), default=None))
+    return uuid.UUID(from_plain(published.get("artifact_id"), str))
 
 
 def _ending_at(sessions: Sequence[_Session], end: datetime) -> list[_Session]:
@@ -405,10 +409,10 @@ def _start(session: _Session) -> SessionStart:
     )
 
 
-def _stamp(turn: SessionRecord) -> datetime:
-    stamp = getattr(turn, "timestamp", None)
-    assert isinstance(stamp, str), f"every seeded turn is stamped: {turn}"
-    return datetime.fromisoformat(stamp)
+def _stamp(turn: _Turn) -> datetime:
+    if turn.timestamp is None:
+        raise ValueError(f"every seeded turn is stamped: {turn}")
+    return datetime.fromisoformat(turn.timestamp)
 
 
 def _nodes() -> list[_Node]:
@@ -872,15 +876,13 @@ def _sessions() -> list[_Session]:
             title="Benchmark the merge-rank cache",
             produced_by="tok-cache",
             turns=(
-                _user(
-                    "14:31:05",
-                    "ada@example.com: Benchmark the merge-rank cache against main "
-                    "on shard-01. The token ids must match exactly.",
+                UserMessage(
+                    timestamp=_when("14:31:05"),
+                    content="ada@example.com: Benchmark the merge-rank cache against main on shard-01. The token ids must match exactly.",
                 ),
-                _assistant(
-                    "14:31:12",
-                    "Running both builds over shard-01, three passes each, and "
-                    "comparing the token ids.",
+                AssistantMessage(
+                    timestamp=_when("14:31:12"),
+                    content="Running both builds over shard-01, three passes each, and comparing the token ids.",
                 ),
                 *_shell(
                     "14:31:14",
@@ -890,17 +892,17 @@ def _sessions() -> list[_Session]:
                     "build  pass  tokens/s\nmain   3     1.04 M\ncache  3     1.98 M\n"
                     "token ids identical: yes\n",
                 ),
-                _assistant(
-                    "14:38:52",
-                    "The cache gives **1.9x**: 1.98 M tokens/s against 1.04 M on "
-                    "main, with identical token ids. The passes are logged to the "
-                    "benchmark experiment.",
+                AssistantMessage(
+                    timestamp=_when("14:38:52"),
+                    content="The cache gives **1.9x**: 1.98 M tokens/s against 1.04 M on main, with identical token ids. The passes are logged to the benchmark experiment.",
                 ),
-                _user("14:47:30", "ada@example.com: Does it hold on the small shards?"),
-                _assistant(
-                    "14:47:41",
-                    "Mostly: 1.7x on shard-07 (100 MB), where the cache has less "
-                    "time to warm.",
+                UserMessage(
+                    timestamp=_when("14:47:30"),
+                    content="ada@example.com: Does it hold on the small shards?",
+                ),
+                AssistantMessage(
+                    timestamp=_when("14:47:41"),
+                    content="Mostly: 1.7x on shard-07 (100 MB), where the cache has less time to warm.",
                 ),
             ),
         ),
@@ -910,9 +912,9 @@ def _sessions() -> list[_Session]:
             title="Review the merge-rank cache",
             produced_by="tok-cache",
             turns=(
-                _user(
-                    "14:35:02",
-                    "ben@example.com: Review the cache change before it merges.",
+                UserMessage(
+                    timestamp=_when("14:35:02"),
+                    content="ben@example.com: Review the cache change before it merges.",
                 ),
                 *_shell(
                     "14:35:20",
@@ -923,20 +925,17 @@ def _sessions() -> list[_Session]:
                     "+    if rank is None:\n"
                     "+        rank = self._ranks[pair] = self._lookup(pair)\n",
                 ),
-                _assistant(
-                    "14:36:44",
-                    "One problem: the cache is keyed by byte pair alone, so a "
-                    "vocabulary swap would serve stale ranks.",
+                AssistantMessage(
+                    timestamp=_when("14:36:44"),
+                    content="One problem: the cache is keyed by byte pair alone, so a vocabulary swap would serve stale ranks.",
                 ),
-                _user(
-                    "14:41:10",
-                    "ben@example.com: Fix it here, with a test that swaps "
-                    "vocabularies mid-stream.",
+                UserMessage(
+                    timestamp=_when("14:41:10"),
+                    content="ben@example.com: Fix it here, with a test that swaps vocabularies mid-stream.",
                 ),
-                _assistant(
-                    "14:44:58",
-                    "Done: the cache now clears when the vocabulary changes, and "
-                    "the new test passes.",
+                AssistantMessage(
+                    timestamp=_when("14:44:58"),
+                    content="Done: the cache now clears when the vocabulary changes, and the new test passes.",
                 ),
             ),
         ),
@@ -946,15 +945,13 @@ def _sessions() -> list[_Session]:
             title="Rerun the eval with fixed seeds",
             produced_by="drift-seed",
             turns=(
-                _user(
-                    "14:33:15",
-                    "cleo@example.com: Rerun the eval ten times with every sampler "
-                    "seeded.",
+                UserMessage(
+                    timestamp=_when("14:33:15"),
+                    content="cleo@example.com: Rerun the eval ten times with every sampler seeded.",
                 ),
-                _assistant(
-                    "14:33:24",
-                    "Starting ten reruns of step-40000 with data order, dropout and "
-                    "sampling all seeded.",
+                AssistantMessage(
+                    timestamp=_when("14:33:24"),
+                    content="Starting ten reruns of step-40000 with data order, dropout and sampling all seeded.",
                 ),
                 *_shell(
                     "14:33:25",
@@ -963,30 +960,21 @@ def _sessions() -> list[_Session]:
                     "python eval.py --checkpoint step-40000 --seed 7 --runs 10",
                     "runs  mean  min   max\n10    71.4  71.3  71.5\n",
                 ),
-                _assistant(
-                    "14:52:16",
-                    "The spread fell from 1.8 to 0.2 points (71.3 to 71.5), so "
-                    "unseeded sampling explains the drift.",
+                AssistantMessage(
+                    timestamp=_when("14:52:16"),
+                    content="The spread fell from 1.8 to 0.2 points (71.3 to 71.5), so unseeded sampling explains the drift.",
                 ),
-                _user(
-                    "14:55:40",
-                    "cleo@example.com: Good. Next, the same ten runs on one GPU type.",
+                UserMessage(
+                    timestamp=_when("14:55:40"),
+                    content="cleo@example.com: Good. Next, the same ten runs on one GPU type.",
                 ),
-                _assistant(
-                    "14:55:48",
-                    "Queued. I will post the spread when they finish.",
+                AssistantMessage(
+                    timestamp=_when("14:55:48"),
+                    content="Queued. I will post the spread when they finish.",
                 ),
             ),
         ),
     ]
-
-
-def _user(clock: str, content: str) -> UserMessage:
-    return UserMessage(timestamp=_when(clock), content=content)
-
-
-def _assistant(clock: str, content: str) -> AssistantMessage:
-    return AssistantMessage(timestamp=_when(clock), content=content)
 
 
 def _shell(

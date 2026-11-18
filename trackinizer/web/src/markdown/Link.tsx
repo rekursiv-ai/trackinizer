@@ -1,10 +1,11 @@
 import type { ComponentProps } from "react";
 import type { ExtraProps } from "react-markdown";
 import { Icon } from "../ui/icons";
+import { linkProps } from "../router/appLink";
 import { KindIcon } from "../ui/kinds";
 
 /**
- * One link. A ref gets its kind's icon; an external link opens in a new tab.
+ * One link. A ref gets its kind's icon; a link to another page opens in a new tab, one to this app moves this tab.
  *
  * A target `safeUrl` refused arrives as `""`, and renders as its text: an
  * `<a href="">` would load the app's own page and drop the current route.
@@ -20,15 +21,8 @@ export function Link({ href, className, title, children }: ComponentProps<"a"> &
       </a>
     );
   }
-  if (href.startsWith("#/")) {
-    return (
-      <a href={href} title={title}>
-        {children}
-      </a>
-    );
-  }
   return (
-    <a href={href} title={title} target="_blank" rel="noopener noreferrer">
+    <a {...linkProps(href)} title={title}>
       {children}
     </a>
   );

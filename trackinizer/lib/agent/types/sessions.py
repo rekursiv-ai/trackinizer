@@ -17,8 +17,8 @@ Axioms:
    :class:`ContextClear`. Two independent sequences, neither nested in the
    other; "what applied here" is the last of each before the record. A session
    is therefore its RECORDS and nothing else -- no object wraps them and no
-   metadata sits beside them, since a container holding a whole session is the
-   materialization axiom 11 forbids.
+   metadata sits beside them, since a container holding a whole session could
+   not be yielded a record at a time (axiom 11).
 7. Settings are what was requested; a record reports what was fulfilled.
 8. A provider is named per turn, so one session may span several.
 9. A tool result is typed by what the tool DID, not by who ran it, so the
@@ -26,13 +26,16 @@ Axioms:
 10. Whatever a record's own fields do not name, ``extra`` holds, so the line
     still rewrites to the bytes it was read from. One source line can become
     several records; only the first of them carries it.
-11. An adapter reads and writes in ONE pass, holding neither the stream it
-    reads nor the one it writes. ``normalize`` YIELDS each record as its line
-    lands and ``denormalize`` consumes an iterable, so nothing -- not even the
-    records -- is materialized on the adapter's behalf. Sessions reach 273 MB,
-    and ONE non-ASCII character makes CPython widen a whole string to 4 bytes
-    per character: a reader that listed its lines cost 1.09 GB before parsing
-    began, and a writer that joined its output cost 2.6 GB.
+11. An adapter never holds the TEXT it reads or writes. A line format's
+    ``normalize`` YIELDS each record as its line lands and then forgets it,
+    holding back only the opening clear until the lines that assemble it have
+    arrived; a document format (gemini, the normalized JSON) has no line to
+    follow and reads its document whole. ``denormalize`` takes TWO passes over
+    its records, so it holds them as a list -- the conventions it writes by are
+    stated anywhere in the stream -- but streams its output. Sessions reach
+    273 MB, and ONE non-ASCII character makes CPython widen a whole string to
+    4 bytes per character: a reader that listed its lines cost 1.09 GB before
+    parsing began, and a writer that joined its output cost 2.6 GB.
 
     A live session has no EOF, which is what forces the shape rather than
     merely rewarding it: a reader that returned one value when the stream ended
@@ -51,10 +54,12 @@ Axioms:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 
+from treekle import PlainTree
+
 from trackinizer.lib.agent.types.capability import SummaryKind, ThinkingEffort
-from trackinizer.lib.custom_json import JSON, JSONValue
 
 
 __all__ = [
@@ -121,8 +126,8 @@ class TurnContext:
     model: str | None = None
     effort: ThinkingEffort | None = None
     summary_kind: SummaryKind | None = None
-    encoding: JSON = field(default_factory=dict[str, JSONValue])
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    encoding: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -141,7 +146,7 @@ class UserMessage:
     timestamp: str | None = None
     content: str | None = None
     attachments: tuple[Attachment, ...] = ()
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -152,7 +157,7 @@ class AssistantMessage:
     timestamp: str | None = None
     content: str | None = None
     attachments: tuple[Attachment, ...] = ()
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -164,7 +169,7 @@ class Thinking:
     content: str | None = None
     encrypted: str | None = None
     summary: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -175,8 +180,8 @@ class ToolCall:
     timestamp: str | None = None
     call_id: str
     name: str
-    arguments: JSON = field(default_factory=dict[str, JSONValue])
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    arguments: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -186,7 +191,7 @@ class ToolResult:
     context_id: int | None = None
     timestamp: str | None = None
     call_id: str
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -223,10 +228,9 @@ class FileReadResult(ToolResult):
         -- and one span could only describe those by claiming everything
         between them was read too.
 
-        A ``None`` count means the read ran to a bound this record cannot
-        resolve to a number: ``sed -n '20,$p'`` ends at the file's last line,
-        and ``tail -5`` counts backwards from it, neither of which is knowable
-        without the file.
+        A ``None`` count means the end is unknown, as in ``sed -n '20,$p'``.
+        A ``None`` start means the beginning is unknown, as in ``tail -5``;
+        its count is five, but its start depends on the file's length.
 
     """
 
@@ -370,7 +374,7 @@ class SystemMessage:
     content: str | None = None
     attachments: tuple[Attachment, ...] = ()
     subtype: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -379,9 +383,9 @@ class TokenUsage:
 
     context_id: int | None = None
     timestamp: str | None = None
-    info: JSON = field(default_factory=dict[str, JSONValue])
-    rate_limits: JSON = field(default_factory=dict[str, JSONValue])
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    info: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    rate_limits: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -392,7 +396,7 @@ class ContextState:
     timestamp: str | None = None
     kind: str = ""
     content: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -406,7 +410,7 @@ class ContextCompaction:
 
     So a session reads::
 
-        SessionMetadata
+        TurnContext
         ContextClear(system_prompt)
         ...records...
         ContextCompaction          <- it happened, and why
@@ -431,7 +435,7 @@ class ContextCompaction:
     context_id: int | None = None
     timestamp: str | None = None
     summary: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -471,7 +475,7 @@ class ContextClear:
     system_prompt: str | None = None
     summary: str | None = None
     history: tuple[SessionRecord, ...] = ()
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -484,7 +488,7 @@ class AgentToAgentMessage:
     attachments: tuple[Attachment, ...] = ()
     sender: str | None = None
     recipient: str | None = None
-    extra: JSON = field(default_factory=dict[str, JSONValue])
+    extra: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -494,7 +498,7 @@ class UncategorizedRecord:
     context_id: int | None = None
     timestamp: str | None = None
     kind: str
-    payload: JSON = field(default_factory=dict[str, JSONValue])
+    payload: Mapping[str, PlainTree] = field(default_factory=dict[str, PlainTree])
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

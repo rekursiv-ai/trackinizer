@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import uuid
 
-from trackinizer.lib.custom_json import DictCodec
+from treekle import from_plain
 
 
 if TYPE_CHECKING:
@@ -42,7 +42,7 @@ class TestMiddleware:
             headers={"Idempotency-Key": "not-a-uuid"},
         )
         assert resp.status_code == 400
-        body = DictCodec.coerce(resp.json())
+        body = from_plain(resp.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "Idempotency-Key" in detail
@@ -71,6 +71,6 @@ class TestMiddleware:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

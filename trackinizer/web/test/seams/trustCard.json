@@ -1,0 +1,36 @@
+{
+  "ciphertext": null,
+  "context_id": null,
+  "idx": 1,
+  "kind": "SystemMessage",
+  "model": null,
+  "payload": {
+    "attachments": {
+      "py/tuple": []
+    },
+    "content": "claude waits for trust in ~/proj",
+    "context_id": null,
+    "extra": {
+      "$interaction": {
+        "cli": "claude",
+        "folder": "~/proj",
+        "id": "card-1",
+        "input": {
+          "folder": "~/proj"
+        },
+        "machine": "gx10",
+        "plan": null,
+        "questions": null,
+        "remembered": false,
+        "state": "pending",
+        "tool": "claude",
+        "type": "trust"
+      }
+    },
+    "py/object": "trackinizer.lib.agent.types.sessions.SystemMessage",
+    "subtype": "interaction",
+    "timestamp": "2026-10-20T00:00:00+00:00"
+  },
+  "text": "claude waits for trust in ~/proj",
+  "timestamp": "2026-10-20T00:00:00Z"
+}

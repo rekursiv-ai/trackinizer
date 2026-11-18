@@ -45,6 +45,7 @@ __all__ = [
     "Frame",
     "Host",
     "HostSpec",
+    "decode_frame",
     "decode_status",
     "decode_winsize",
     "encode_frame",
@@ -84,6 +85,9 @@ class Frame(enum.IntEnum):
     OUTPUT = 6
     ACK = 7
     EXIT = 8
+    SIGNAL = 9
+    ROUTE = 10
+    KEEPALIVE = 11
 
 
 # The header is one byte of kind and a four-byte payload length. Every integer on the
@@ -92,6 +96,26 @@ class Frame(enum.IntEnum):
 def encode_frame(kind: Frame, payload: bytes = b"") -> bytes:
     """Return ``payload`` framed as one ``kind`` record."""
     return bytes([kind]) + len(payload).to_bytes(4) + payload
+
+
+def decode_frame(message: bytes) -> tuple[Frame, bytes]:
+    """Return the kind and payload of one whole record, as a WebSocket message holds it.
+
+    Args:
+      message: The record's bytes, header included.
+
+    Returns:
+      kind: What the record carries.
+      payload: Its bytes.
+
+    Raises:
+      ValueError: The message is short, its length disagrees with its header, or
+        its kind is unknown.
+
+    """
+    if len(message) < 5 or int.from_bytes(message[1:5]) != len(message) - 5:
+        raise ValueError(f"malformed frame of {len(message)} bytes")
+    return Frame(message[0]), message[5:]
 
 
 def encode_winsize(rows: int, cols: int) -> bytes:
@@ -392,7 +416,14 @@ class Host:
                 writer.write(encode_frame(Frame.ACK, bytes([submitted])))
             case Frame.STOP:
                 self._stop()
-            case Frame.OUTPUT | Frame.ACK | Frame.EXIT:
+            case (
+                Frame.OUTPUT
+                | Frame.ACK
+                | Frame.EXIT
+                | Frame.SIGNAL
+                | Frame.ROUTE
+                | Frame.KEEPALIVE
+            ):
                 raise ValueError(f"{kind.name} is a host frame, not a client's")
 
     def _send(self, writer: asyncio.StreamWriter, frame: bytes) -> None:

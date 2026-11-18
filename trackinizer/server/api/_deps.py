@@ -6,15 +6,26 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 import dataclasses
 import datetime
+import functools
 import uuid
 
-from trackinizer.lib.custom_json import MutableJSON
+from trackinizer.server.api.replays import Replays
+from trackinizer.server.capture_relay import CaptureRelay
+from trackinizer.server.chat_hub import ChatHub
+from trackinizer.server.chat_partials import ChatPartials
+from trackinizer.server.config import Config
+from trackinizer.server.execs import ExecHub
+from trackinizer.server.terminals import Terminal, TerminalHub
+from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
 
 
 if TYPE_CHECKING:
-    from fastapi import Request
+    from fastapi import FastAPI, Request
+    from starlette.requests import HTTPConnection
 
+    from trackinizer.server.config import Assistant, ChatOrgs
     from trackinizer.server.inbound import InboundQueue
+    from trackinizer.server.secrets import SecretBackend
     from trackinizer.server.store.core import Store
     from trackinizer.types.inquiries import Inquiry
 
@@ -22,6 +33,7 @@ if TYPE_CHECKING:
 class _State(Protocol):
     store: Store
     inbound: InboundQueue
+    secrets: SecretBackend | None
 
 
 def get_store(request: Request) -> Store:
@@ -52,23 +64,244 @@ def get_inbound(request: Request) -> InboundQueue:
     return app.state.inbound
 
 
-def tag_row(inquiry: Inquiry) -> MutableJSON:
-    """Serialize one Inquiry that is known to exist.
+def get_replays(request: Request) -> Replays:
+    """Return the app's consuming-request receipts, made on first use.
+
+    Args:
+      request: The authorized consuming request.
+
+    Returns:
+      replays: Receipts kept by this application process.
+
+    """
+    app = cast("FastAPI", request.app)
+    replays: object = getattr(app.state, "replays", None)
+    if not isinstance(replays, Replays):
+        replays = app.state.replays = Replays()
+    return replays
+
+
+def get_hub(request: Request) -> ChatHub:
+    """Return the Chat event hub held on the app state, made on first use.
+
+    An app built by hand, as a test harness does, has no lifespan to make one, so
+    the first request that needs the hub makes it.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The ChatHub.
+
+    """
+    app = cast("FastAPI", request.app)
+    hub: object = getattr(app.state, "hub", None)
+    if not isinstance(hub, ChatHub):
+        hub = app.state.hub = ChatHub()
+    return hub
+
+
+def terminal_hub(app: FastAPI) -> TerminalHub:
+    """Return the app's terminal hub, made on first use.
+
+    Args:
+      app: The application, whose state holds the store.
+
+    Returns:
+      result: The hub.
+
+    """
+    held: object = getattr(app.state, "terminals", None)
+    if isinstance(held, TerminalHub):
+        return held
+    config: object = getattr(app.state, "config", None)
+    hub = TerminalHub(
+        alive=functools.partial(_alive, store=cast("_State", app.state).store),
+        ice_servers=config.terminal_stun if isinstance(config, Config) else (),
+    )
+    app.state.terminals = hub
+    return hub
+
+
+def get_terminal_hub(request: HTTPConnection) -> TerminalHub:
+    """Return the terminal hub held on the app state.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The hub.
+
+    """
+    return terminal_hub(cast("FastAPI", request.app))
+
+
+def get_exec_hub(request: HTTPConnection) -> ExecHub:
+    """Return the exec hub held on the app state, made on first use.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The hub.
+
+    """
+    app = cast("FastAPI", request.app)
+    hub: object = getattr(app.state, "execs", None)
+    if not isinstance(hub, ExecHub):
+        hub = app.state.execs = ExecHub()
+    return hub
+
+
+def get_relay(request: Request) -> CaptureRelay:
+    """Return the canvas-capture relay held on the app state, made on first use.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The CaptureRelay.
+
+    """
+    app = cast("FastAPI", request.app)
+    relay: object = getattr(app.state, "relay", None)
+    if not isinstance(relay, CaptureRelay):
+        relay = app.state.relay = CaptureRelay()
+    return relay
+
+
+def get_partials(request: Request) -> ChatPartials:
+    """Return the chats' answers in writing, held on the app state, made on first use.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The ChatPartials.
+
+    """
+    app = cast("FastAPI", request.app)
+    partials: object = getattr(app.state, "partials", None)
+    if not isinstance(partials, ChatPartials):
+        partials = app.state.partials = ChatPartials()
+    return partials
+
+
+def get_chat_streaming(request: Request) -> bool:
+    """Return whether chats' answers are held as they are written; on without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The configured ``chat_streaming``.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.chat_streaming if isinstance(config, Config) else True
+
+
+def get_assistant(request: Request) -> Assistant | None:
+    """Return the configured assistant; none without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The configured assistant, if any.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.assistant if isinstance(config, Config) else None
+
+
+def auth_is_disabled(request: HTTPConnection) -> bool:
+    """Return whether the server runs with authentication off (``--no-auth``).
+
+    Args:
+      request: The request or WebSocket.
+
+    Returns:
+      disabled: True when every caller resolves to a synthetic admin.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return isinstance(config, Config) and config.auth_disabled
+
+
+def get_staff(request: Request) -> tuple[str, ...]:
+    """Return the configured staff patterns; none without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The staff patterns, empty when nobody is staff.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.staff if isinstance(config, Config) else ()
+
+
+def get_chat_orgs(request: Request) -> ChatOrgs:
+    """Return how science chats group their users; ``individual`` without a Config.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: ``single``, ``domain`` or ``individual``.
+
+    """
+    config: object = getattr(cast("FastAPI", request.app).state, "config", None)
+    return config.chat_orgs if isinstance(config, Config) else "individual"
+
+
+def get_secrets(request: Request) -> SecretBackend | None:
+    """Return the secret backend held on the app state; ``None`` when disabled.
+
+    Args:
+      request: Request.
+
+    Returns:
+      result: The backend, or ``None`` when secret storage is turned off.
+
+    """
+    app = cast(_App, request.app)
+    return app.state.secrets
+
+
+def tag_row(inquiry: Inquiry, names: frozenset[str] | None = None) -> MutableJSON:
+    """Serialize one Inquiry that is known to exist, whole or only the ``names`` keys.
 
     The total variant. Callers holding a ``list[Inquiry]`` used to route
     through :func:`tag_kind` and then filter its ``None`` back out -- a guard
     for a case the type already excluded, kept alive only because the
     signature was wider than any caller needed.
 
+    A key not in ``names`` is never converted, so a list naming a few keys
+    skips the walk of the large ones (an Experiment's ``config`` and
+    ``outcome``). The keys keep the whole row's order.
+
     Args:
       inquiry: Inquiry to serialize; raises TypeError if None.
+      names: The keys to keep, ``kind`` among them; None keeps every key.
 
     Returns:
       payload: JSON with "kind" field set to the Inquiry subclass name.
 
     """
-    payload = cast(MutableJSON, _jsonable(inquiry))
-    payload["kind"] = type(inquiry).__name__
+    payload: MutableJSON = {
+        # Dataclass reflection returns Any; this cast establishes the recursive boundary.
+        field.name: cast(
+            MutableJSONValue,
+            _jsonable(cast(object, getattr(inquiry, field.name))),
+        )
+        for field in dataclasses.fields(inquiry)
+        if names is None or field.name in names
+    }
+    if names is None or "kind" in names:
+        payload["kind"] = type(inquiry).__name__
     return payload
 
 
@@ -109,11 +342,13 @@ def tag_kind(inquiry: Inquiry | None) -> MutableJSON | None:
 def _jsonable(value: object) -> object:
     """Convert one value -- and everything under it -- to JSON-shaped data."""
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {
-            field.name: _jsonable(cast(object, getattr(value, field.name)))
-            for field in dataclasses.fields(value)
-        }
-    if isinstance(value, tuple | list):
+        result: dict[str, object] = {}
+        for field in dataclasses.fields(value):
+            # Dataclass reflection returns Any; this cast establishes the recursive boundary.
+            field_value = cast(object, getattr(value, field.name))
+            result[field.name] = _jsonable(field_value)
+        return result
+    if isinstance(value, (tuple, list)):
         # Tuples become lists: the projection fields (edges, ``labels``,
         # ``issue_kind``) are tuples on the model, and a caller comparing
         # structures in-process would see the type differ even though both
@@ -146,3 +381,18 @@ def _jsonable(value: object) -> object:
 
 class _App(Protocol):
     state: _State
+
+
+async def _alive(term: Terminal, *, store: Store) -> bool:
+    """Whether the machine's credential is live and its owner an active user."""
+    async with store.engine.acquire() as conn:
+        return bool(
+            await conn.fetchval(
+                "SELECT EXISTS (SELECT 1 FROM machines m "
+                "JOIN machine_credentials c ON c.machine_id = m.id "
+                "JOIN users u ON u.email = m.owner "
+                "WHERE m.id = $1 AND c.revoked_at IS NULL "
+                "AND u.status = 'active' AND u.role IN ('writer', 'admin'))",
+                term.machine_id,
+            ),
+        )

@@ -38,7 +38,10 @@
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0 0; }
 .md a:not(.ref) {
   color: var(--accent-hover); text-decoration: underline;
-  text-decoration-color: #6ea8ee66; text-underline-offset: 3px;
+  /* The link's own colour, thinned: written as a literal it was the dark skin's accent,
+     so every light skin underlined in a blue it does not use. */
+  text-decoration-color: color-mix(in srgb, var(--accent-hover) 40%, transparent);
+  text-underline-offset: 3px;
 }
 .ref {
   display: inline-flex; align-items: center; gap: 4px; vertical-align: -2px;

@@ -1,0 +1,150 @@
+/* The app's one bar (TopBar.tsx), over the main area: three columns — the workspace's own cluster
+   at the left, the search over the middle of the window, and the account's cluster at the right.
+   The columns cannot overlap, so a long workstream list truncates instead of running under the search.
+   The bar always sits at the top of the window; it has no hidden state and nothing scrolls past it. */
+.topbar {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 6px;
+  height: 44px; min-width: 0; flex: none;
+  padding: 0 10px; padding-top: env(safe-area-inset-top, 0px); position: relative; z-index: 45;
+}
+.topbar-left { display: flex; flex: 1 1 auto; align-items: center; gap: 4px; min-width: 0; }
+.topbar-logo { display: grid; place-items: center; width: 24px; height: 24px; border-radius: var(--radius); flex: none; color: #ffffff; }
+.topbar-logo .ws-mark { width: 17px; height: 17px; color: #ffffff; }
+.topbar-logo:hover { background: var(--surface-hover); }
+.topbar-go, .compose-button { display: none !important; }
+.topbar-stations { display: flex; flex: 1; min-width: 0; align-items: center; }
+
+/* A menu from a button of the bar: under it, over the main area. */
+.topbar-pop-root { position: relative; flex: none; }
+.topbar-pop {
+  position: absolute; z-index: 50; top: calc(100% + 6px); left: 0; display: flex; flex-direction: column; gap: 1px;
+  width: 248px; max-height: calc(100vh - 64px); padding: 6px; overflow-y: auto;
+  border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-overlay); box-shadow: 0 16px 48px #0008;
+}
+.topbar-pop[hidden] { display: none; }
+.topbar-pop-label { padding: 8px 8px 2px; font-size: 11px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.topbar-item {
+  display: flex; align-items: center; gap: 9px; width: 100%; min-height: 30px; padding: 4px 8px; border-radius: var(--radius);
+  font-size: 13px; font-weight: 500; color: var(--ink-muted); text-align: left;
+}
+.topbar-item .ic { color: var(--muted); }
+.topbar-item:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.topbar-item.is-current { background: var(--accent-soft); color: var(--text); }
+.topbar-item:disabled { opacity: .45; cursor: default; }
+.topbar-item > .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workbench-menu { left: auto; right: 0; width: 300px; }
+
+/* ---- Machines (MachinesMenu.tsx): your machines, how to connect one, what the server provides ---- */
+.machines-button { position: relative; }
+.machines-dot { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 0 2px var(--bg); }
+.machines-menu { left: auto; right: 0; width: 360px; max-width: calc(100vw - 20px); gap: 4px; }
+.machines-menu:focus { outline: none; }
+.machines-note { margin: 0; padding: 2px 8px 4px; font-size: 13px; color: var(--ink-muted); }
+.machines-list, .machines-provided ul { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0 4px; list-style: none; }
+.machines-row { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 4px; font-size: 13px; }
+.machines-status { flex: none; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--muted); }
+.machines-status.is-online { border-color: var(--green); background: var(--green); }
+.machines-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
+.machines-state { flex: none; font-size: 12px; color: var(--muted); }
+.machines-connect { margin: 2px 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; }
+.machines-connect summary { cursor: pointer; font-weight: 500; }
+.machines-connect a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.machines-connect ol { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 2px; padding-left: 18px; color: var(--ink-muted); }
+.machines-connect .helper-command { margin-top: 4px; }
+.machines-provided li { display: flex; flex-direction: column; gap: 1px; padding: 4px; font-size: 13px; }
+.machines-provided li span { color: var(--ink-muted); }
+
+.topbar-preview-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong, #343538);
+  border-radius: 4px;
+  font: 500 10.5px/1 var(--mono);
+  letter-spacing: .06em;
+  color: var(--muted, #8b8d91);
+  text-transform: uppercase;
+}
+
+/* ---- Workstreams in the bar (WorkstreamBar.tsx) ---- */
+.workstream-bar-wrap { position: relative; display: flex; flex: 1; min-width: 0; align-items: center; gap: 4px; }
+.workstream-bar-wrap .workstream-new,
+.workstream-bar-wrap .workstream-divider,
+.workstream-bar-wrap .workstream-pin { display: none !important; }
+.workstream-bar { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 3px; overflow-x: auto; scrollbar-width: none; }
+.workstream-bar::-webkit-scrollbar { display: none; }
+.workstream-slot { display: contents; }
+.workstream-bar:has(.is-current) .workstream-slot:not(:has(.is-current)) { display: none !important; }
+.workstream-bar:not(:has(.is-current)) .workstream-slot:not(:first-child) { display: none !important; }
+/* `--group` is this element's own: the eight skins reach for it to tint a workstream,
+   and nothing else defines it, so a title that drops it leaves `var(--group)` undefined
+   in skins.css. It stays here even where the title's own chrome is flat. */
+.workstream-title {
+  --group: var(--accent);
+  display: inline-flex !important; align-items: center !important; height: 28px !important;
+  padding: 0 4px !important; border: 0 !important; border-radius: 4px;
+  background: transparent !important; color: var(--text, #ffffff) !important;
+  font-size: 13.5px !important; font-weight: 500 !important; cursor: pointer; white-space: nowrap;
+}
+.workstream-title:hover, .workstream-title:focus-visible { background: var(--surface-hover, rgba(255,255,255,0.06)) !important; color: #ffffff !important; }
+.workstream-title.is-current { border: 0 !important; background: transparent !important; color: #ffffff !important; font-weight: 500 !important; }
+.workstream-title[draggable="true"] { cursor: pointer; }
+.workstream-title.is-dragged { opacity: .45; }
+.workstream-title-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.workstream-title-text::after { content: " ▾"; font-size: 11px; color: var(--muted, #8b8d91); margin-left: 4px; }
+.workstream-name { width: 160px; border-color: var(--accent); background: var(--bg); color: var(--text); font: inherit; }
+.workstream-pin { display: none !important; }
+.workstream-divider { display: none !important; }
+.workstream-new { display: none !important; }
+.workstream-pop { position: absolute; z-index: 55; }
+.workstream-menu { position: fixed; min-width: 190px; width: 210px; }
+.workstream-drawer { position: fixed; z-index: 60; top: 52px; right: 12px; display: flex; flex-direction: column; gap: 10px; width: min(360px, calc(100vw - 24px)); max-height: calc(100vh - 64px); padding: 14px; overflow-y: auto; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface-overlay); box-shadow: 0 16px 48px #0008; }
+.workstream-drawer-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.workstream-drawer h2, .workstream-drawer h3 { margin: 0; font-size: 15px; }
+.workstream-drawer ul { display: flex; flex-direction: column; gap: 8px; margin: 0; padding-left: 18px; }
+.workstream-drawer li { display: flex; flex-direction: column; gap: 2px; }
+.workstream-session { color: var(--muted); font: 11px ui-monospace, monospace; }
+.workstream-problem { position: absolute; top: calc(100% + 4px); left: 0; z-index: 60; margin: 0; padding: 5px 8px; border-radius: 5px; background: var(--surface-raised); color: var(--error-text); font-size: 12px; }
+
+/* ---- The account (AccountMenu.tsx) ---- */
+.account { margin-left: 4px; }
+.account-button { display: flex; align-items: center; gap: 8px; height: 32px; padding: 2px; border-radius: 16px; transition: background .15s, padding .22s; }
+.account-button .avatar { width: 28px; height: 28px; font-size: 13px; }
+/* The email and role slide out while the pointer rests on the avatar or the menu is open. */
+.account-reveal { display: flex; align-items: center; gap: 8px; max-width: 0; overflow: hidden; opacity: 0; white-space: nowrap; font-size: 13px; color: var(--ink-muted); transition: max-width .26s cubic-bezier(.22, 1, .36, 1), opacity .18s; }
+.account-button:hover, .account-button:focus-visible, .account-button[aria-expanded="true"] { background: var(--surface-hover); padding-right: 10px; }
+.account-button:is(:hover, :focus-visible, [aria-expanded="true"]) .account-reveal { max-width: 320px; opacity: 1; }
+.account-menu { left: auto; right: 0; width: 320px; max-width: calc(100vw - 20px); border-radius: 16px; padding: 8px; }
+.account-head { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 12px 8px 10px; text-align: center; }
+.avatar-large { width: 56px; height: 56px; font-size: 24px; }
+.account-head-email { margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.account-head-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.account-section { display: flex; flex-direction: column; gap: 1px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); }
+.skin-grid, .theme-choice { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px 8px 6px; }
+.skin-option { padding: 5px 4px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; color: var(--ink-muted); }
+.skin-option:hover { background: var(--surface-hover); color: var(--text); }
+.skin-option[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.account-other { display: flex; align-items: center; }
+.account-other > .topbar-item { flex: 1; min-width: 0; }
+.account-other .avatar { width: 26px; height: 26px; font-size: 12px; }
+.account-other .label { display: flex; flex-direction: column; line-height: 1.3; }
+.account-other-email { overflow: hidden; text-overflow: ellipsis; }
+.account-other-meta { font-size: 11.5px; font-weight: 400; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.account-kind { flex: none; padding: 1px 6px; border: 1px solid var(--line-strong); border-radius: 4px; font-size: 10px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.account-forget { opacity: 0; }
+.account-other:hover .account-forget, .account-forget:focus-visible { opacity: 1; }
+@media (hover: none) { .account-forget { opacity: 1; } }
+.account-sign-out, .account-sign-out .ic { color: var(--error-text); }
+
+@media (max-width: 760px) {
+  .topbar { padding-left: max(8px, env(safe-area-inset-left, 0px)); padding-right: max(8px, env(safe-area-inset-right, 0px)); }
+  .workstream-new > span { display: none; }
+  .account-button:hover:not([aria-expanded="true"]) { padding-right: 2px; background: none; }
+  .account-button:hover:not([aria-expanded="true"]) .account-reveal { max-width: 0; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .account-reveal, .account-button { transition: none; }
+}
+/* A chat in the workstream waits on the person: the blue dot an editor puts on a tab that needs you. */
+.workstream-waiting { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+

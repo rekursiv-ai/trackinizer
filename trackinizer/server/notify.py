@@ -12,14 +12,15 @@ import asyncio
 import json
 import logging
 
+from treekle import from_plain, json_loads
+
 import asyncpg
 
-from trackinizer.lib.custom_json import DictCodec, StrCodec, loads
 from trackinizer.lib.postgres import DatabaseEngine
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     from trackinizer.lib.postgres import Conn
 
@@ -41,7 +42,11 @@ _DEAD_CONN_ERRORS = (
 __all__ = [
     "NOTIFICATION_BUFFER",
     "NOTIFY_CHANNEL",
+    "SSE_PING",
+    "Hears",
     "Notification",
+    "changed_id",
+    "iter_changed_ids",
     "iter_sse_events",
     "notify_after_commit",
     "tx",
@@ -51,13 +56,29 @@ __all__ = [
 NOTIFY_CHANNEL: Final = "trackinizer"
 """Postgres ``LISTEN/NOTIFY`` channel for post-commit inquiry change fan-out."""
 
+SSE_PING: Final = b"event: ping\ndata: {}\n\n"
+"""The keep-alive: a named event, because ``EventSource`` never shows the page a comment."""
+
+type Hears = Callable[[UUID, str], Awaitable[bool]]
+"""Whether a live stream's viewer hears of a write to a session's transcript, given
+the session's id and the audience the write's ping names."""
+
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class Notification:
-    """A notification event for database changes."""
+    """A notification event for database changes.
+
+    Attributes:
+      engine: Where to publish it.
+      subject_id: The inquiry that changed.
+      audience: For a write to a session's transcript, the audience a viewer must read
+        to hear of it; ``None`` for any other change, which every viewer hears.
+
+    """
 
     engine: DatabaseEngine
     subject_id: UUID
+    audience: str | None = None
 
 
 NOTIFICATION_BUFFER: ContextVar[list[Notification] | None] = ContextVar(
@@ -138,6 +159,7 @@ async def notify_after_commit() -> AsyncGenerator[None]:
 async def iter_sse_events(
     engine: DatabaseEngine,
     *,
+    hears: Hears,
     keepalive_sec: float = 25.0,
 ) -> AsyncGenerator[bytes]:
     r"""Relay each ``NOTIFY_CHANNEL`` payload as one SSE ``data:`` frame.
@@ -146,8 +168,14 @@ async def iter_sse_events(
     emits and the SPA's ``EventSource`` parses. Both SSE routes call this so
     they share one generator and one wire contract.
 
-    The stream opens with an SSE comment and sends another after every
-    ``keepalive_sec`` without a frame; ``EventSource`` ignores comment lines.
+    A payload that names an audience, as a write to a session's transcript does, is
+    relayed only when ``hears`` says the viewer hears of it: a live stream would
+    otherwise tell every viewer when a session they may not read is being written.
+
+    The stream opens with an SSE comment and sends a ``ping`` event after every
+    ``keepalive_sec`` without a frame. ``EventSource`` never shows a comment to
+    the page, so the page hears the event and treats a stream silent for 2.5
+    times ``keepalive_sec`` as dead; an older page ignores it.
     A proxy in front of production holds the response headers until the first
     body byte, and the Cloudflare edge answers 524 after 125 s without one and
     cuts a stream idle for 125 s, so a quiet stream never opened in the browser.
@@ -158,11 +186,12 @@ async def iter_sse_events(
 
     Args:
       engine: Database connection to listen on.
-      keepalive_sec: Longest silence before a keep-alive comment; must stay
+      hears: Whether the viewer hears of a write to a transcript.
+      keepalive_sec: Longest silence before a ping; must stay
         well under the edge's 125 s idle cutoff.
 
     Yields:
-      item: SSE-formatted frames (bytes with id and newline) and comments.
+      item: SSE-formatted frames (bytes with id and newline), comments and pings.
 
     """
     payloads = engine.listen(NOTIFY_CHANNEL)
@@ -180,14 +209,14 @@ async def iter_sse_events(
         while True:
             done, _ = await asyncio.wait({pending}, timeout=keepalive_sec)
             if not done:
-                yield b": keepalive\n\n"
+                yield SSE_PING
                 continue
             try:
                 payload = pending.result()
             except StopAsyncIteration:
                 return
             pending = asyncio.ensure_future(anext(payloads))
-            frame = _sse_frame(payload)
+            frame = await _sse_frame(payload, hears=hears)
             if frame:
                 yield frame
     finally:
@@ -196,12 +225,49 @@ async def iter_sse_events(
         await payloads.aclose()
 
 
-def _sse_frame(payload: str) -> bytes:
-    """One SSE ``data:`` frame for a NOTIFY payload; empty for a malformed one."""
+async def iter_changed_ids(
+    engine: DatabaseEngine,
+    *,
+    hears: Hears,
+) -> AsyncGenerator[str]:
+    """Yield the inquiry id of each ``NOTIFY_CHANNEL`` payload, as the web stream relays it.
+
+    Args:
+      engine: Database connection to listen on.
+      hears: Whether the viewer hears of a write to a transcript; a payload naming
+        one it does not is skipped.
+
+    Yields:
+      id: An inquiry id; a malformed payload is logged and skipped.
+
+    """
+    payloads = engine.listen(NOTIFY_CHANNEL)
     try:
-        payload_data = DictCodec.coerce(loads(payload))
-        subject_id = StrCodec.coerce(payload_data["id"])
-    except (json.JSONDecodeError, KeyError, TypeError):
+        async for payload in payloads:
+            if (subject_id := await changed_id(payload, hears=hears)) is not None:
+                yield subject_id
+    finally:
+        await payloads.aclose()
+
+
+async def changed_id(payload: str, *, hears: Hears) -> str | None:
+    """Read the inquiry id out of a NOTIFY payload a viewer may hear of.
+
+    Args:
+      payload: The payload ``_publish_notifications`` sent.
+      hears: Whether the viewer hears of a write to a transcript.
+
+    Returns:
+      id: The inquiry id; None for a malformed payload, and for a write to a
+        transcript the viewer does not hear of.
+
+    """
+    try:
+        payload_data = json_loads(payload, dict[str, object])
+        subject_id = from_plain(payload_data["id"], str)
+        audience = from_plain(payload_data.get("audience"), str, default=None)
+        transcript = None if audience is None else (UUID(subject_id), audience)
+    except (KeyError, TypeError, ValueError):
         # Drop one bad payload rather than kill the stream, but LOG it: a
         # silent drop would hide a payload-shape regression (the producer
         # and this relay drifting apart).
@@ -210,6 +276,16 @@ def _sse_frame(payload: str) -> bytes:
             NOTIFY_CHANNEL,
             payload,
         )
+        return None
+    if transcript is None or await hears(*transcript):
+        return subject_id
+    return None
+
+
+async def _sse_frame(payload: str, *, hears: Hears) -> bytes:
+    """One SSE ``data:`` frame for a NOTIFY payload; empty when the viewer gets none."""
+    subject_id = await changed_id(payload, hears=hears)
+    if subject_id is None:
         return b""
     return f"data: {json.dumps({'id': subject_id})}\n\n".encode()
 
@@ -222,19 +298,26 @@ def _sse_frame(payload: str) -> bytes:
 # entries with repeats (the changed row plus its own emit), and the SSE payload carries
 # only the id, so a second NOTIFY for the same id is pure redundant round-trip latency.
 # The first-seen engine per id wins (a buffer never spans engines within one commit).
+# A ping that names no audience wins over one that does, for the same id: it reaches
+# every viewer, the readers among them, where the other is dropped for every viewer who
+# does not read its audience.
 async def _publish_notifications(
     notifications: Sequence[Notification],
 ) -> None:
     """Publish one post-commit NOTIFY per affected inquiry."""
     by_subject: dict[UUID, Notification] = {}
     for notification in notifications:
-        by_subject.setdefault(notification.subject_id, notification)
+        kept = by_subject.get(notification.subject_id)
+        if kept is None or (
+            kept.audience is not None and notification.audience is None
+        ):
+            by_subject[notification.subject_id] = notification
     for notification in by_subject.values():
+        payload: dict[str, str] = {"id": str(notification.subject_id)}
+        if notification.audience is not None:
+            payload["audience"] = notification.audience
         try:
-            await notification.engine.notify(
-                NOTIFY_CHANNEL,
-                json.dumps({"id": str(notification.subject_id)}),
-            )
+            await notification.engine.notify(NOTIFY_CHANNEL, json.dumps(payload))
         except Exception as exc:  # noqa: BLE001 -- best-effort post-commit fanout.
             logging.getLogger(__name__).warning(
                 "post-commit NOTIFY failed for %s: %s",

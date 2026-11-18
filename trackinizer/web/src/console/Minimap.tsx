@@ -4,6 +4,7 @@ import type { HistogramRead } from "../api/histogram";
 import type { FeedFilters } from "../api/sessions";
 import { dateTime } from "../detail/time";
 import { LiveContext } from "../live";
+import type { Registration } from "../live/hub";
 import { ReadFailure } from "../ui/failure";
 import { HistogramLive, histogramQuery, iso, spanRead } from "./histogram";
 import { at, bucketsFor, fractionOf, markOf, moveTo, type Span, spanOf, ticks, trackOf, type View, ZOOMS, zoomTo } from "./timeline";
@@ -106,7 +107,7 @@ export function Minimap({ filters, shown, onSeek, onWindow }: MinimapProps) {
       <div
         className="minimap-band"
         onPointerDown={(event) => {
-          if (event.button !== 0) return;
+          if (event.button !== 0 || (counts.error && !counts.data)) return;
           event.currentTarget.setPointerCapture(event.pointerId);
           pick.current = { x: event.clientX, from: along(event), dragged: false };
         }}
@@ -238,8 +239,18 @@ function useLiveBand(read: HistogramRead | null): void {
   const hub = useContext(LiveContext);
   const client = useQueryClient();
   const [live] = useState(() => new HistogramLive(client));
-  useEffect(() => live.follow(read));
-  useEffect(() => (hub ? hub.register({ update: (batch) => live.update(batch) }).dispose : undefined), [hub, live]);
+  const registration = useRef<Registration | null>(null);
+  useEffect(() => {
+    const joined = hub?.register({ update: (batch) => live.update(batch) });
+    registration.current = joined ?? null;
+    return () => {
+      joined?.dispose();
+      registration.current = null;
+    };
+  }, [hub, live]);
+  useEffect(() => {
+    if (live.follow(read)) registration.current?.push([], true);
+  });
 }
 
 /** `value`, once it has stayed the same for `SETTLE_MS`. */

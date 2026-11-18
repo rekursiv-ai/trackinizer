@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pytest
 
+from trackinizer.lib.agent.sessions import udiff
 from trackinizer.lib.agent.sessions.udiff import parse_udiff, render_udiff
 from trackinizer.lib.agent.types.sessions import Splice
 
@@ -205,7 +206,37 @@ def test_a_hand_built_splice_renders_without_a_header() -> None:
     assert rendered == "-old\n+new\n"
 
 
+def test_an_unterminated_context_only_diff_keeps_its_last_byte() -> None:
+    edits = parse_udiff(" context")
+
+    assert edits == (Splice(lead=" context"),)
+    assert render_udiff(edits) == " context"
+
+
+@pytest.mark.parametrize(
+    ("splice", "want"),
+    [
+        (Splice(lead="a\n", trail="z\n"), Splice(lead="a\n", trail="z")),
+        (Splice(lead="a\n", after="y\n"), Splice(lead="a\n", after="y")),
+        (Splice(lead="a\n", before="x\n"), Splice(lead="a\n", before="x")),
+        (Splice(lead="a\n"), Splice(lead="a")),
+    ],
+    ids=["trail", "after", "before", "lead"],
+)
+def test_unterminate_trims_only_the_last_populated_field(
+    splice: Splice,
+    want: Splice,
+) -> None:
+    assert udiff._unterminate(splice) == want
+
+
+def test_an_empty_splice_is_unchanged_when_unterminated() -> None:
+    splice = Splice()
+
+    assert udiff._unterminate(splice) is splice
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -18,8 +18,8 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from trackinizer.lib.custom_json import MutableJSON
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api.locks import require_unlocked
 from trackinizer.server.auth import AuthIdentity, require_role
 from trackinizer.types.edges import Edge
 from trackinizer.types.errors import ConflictError, ValidationError
@@ -31,6 +31,7 @@ from trackinizer.wire.bodies import (
     FieldSet,
 )
 from trackinizer.wire.edge_bodies import CreateEdge, CreateEdgeBatch
+from trackinizer.wire.json_types import MutableJSON
 from trackinizer.wire.routes import (
     EdgeFieldRoute,
     edge_field_path,
@@ -94,6 +95,11 @@ async def create_edge_batch_route(
       response: JSON with "ok" flag and per-item success/error list.
 
     """
+    await require_unlocked(
+        request,
+        identity,
+        [row for item in req.items for row in (item.from_id, item.to_id)],
+    )
     store = get_store(request)
     items: list[_EdgeBatchSuccess | _EdgeBatchFailure] = []
     for index, item in enumerate(req.items):
@@ -145,6 +151,7 @@ async def create_edge_route(
       response: JSON with edge mutation result (change_id, created flag).
 
     """
+    await require_unlocked(request, identity, [from_id, to_id])
     store = get_store(request)
     change_id, created = await store.add_edge(
         from_id=from_id,
@@ -185,6 +192,7 @@ async def delete_edge_route(
       response: JSON with edge mutation result (change_id, created flag).
 
     """
+    await require_unlocked(request, identity, [from_id, to_id])
     store = get_store(request)
     change_id = await store.remove_edge(
         from_id=from_id,
@@ -221,6 +229,7 @@ async def patch_edge_labels_route(
       response: JSON with edge mutation result (change_id, created flag).
 
     """
+    await require_unlocked(request, identity, [from_id, to_id])
     store = get_store(request)
     method = store.add_edge_label if req.op == "add" else store.remove_edge_label
     change_id = await method(
@@ -369,6 +378,7 @@ def _make_edge_put(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJSON
         *,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
+        await require_unlocked(request, identity, [from_id, to_id])
         store = get_store(request)
         change_id = await _set_edge_annotation(
             store,
@@ -385,7 +395,7 @@ def _make_edge_put(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJSON
 
     handler.__name__ = f"set_edge_{route.column}_route"
     handler.__qualname__ = handler.__name__
-    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- The route annotation mirrors a runtime Pydantic union.
+    handler.__annotations__["body"] = FieldSet[route.value_type]  # ty: ignore[invalid-type-form] -- The route annotation mirrors a runtime Pydantic union.  # pyrefly: ignore[not-a-type] -- The route annotation mirrors a runtime Pydantic union.
     return handler
 
 
@@ -401,6 +411,7 @@ def _make_edge_delete(route: EdgeFieldRoute) -> Callable[..., Awaitable[MutableJ
         *,
         identity: Annotated[AuthIdentity, Depends(require_role("writer"))],
     ) -> MutableJSON:
+        await require_unlocked(request, identity, [from_id, to_id])
         store = get_store(request)
         change_id = await _set_edge_annotation(
             store,

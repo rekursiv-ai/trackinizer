@@ -9,6 +9,8 @@ from trackinizer.client.errors import ClientError
 from trackinizer.lib.userdirs import config_dir
 from trackinizer.trax import profile
 from trackinizer.trax.conftest import FakeClient, run
+from trackinizer.trax.context import trax_env
+from trackinizer.trax.login import LoginResult
 from trackinizer.trax.profile import Profile
 
 
@@ -267,6 +269,14 @@ def test_profile_file_is_mode_0600() -> None:
     assert path.stat().st_mode & 0o777 == 0o600
     path.chmod(0o644)
     profile.save_profile("prod", Profile(url="http://x:1", api_key="trax_topsecret"))
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_current_profile_pointer_is_mode_0600() -> None:
+    profile.save_profile("prod", Profile(url="http://x:1"))
+    profile.switch_profile("prod")
+    path = config_dir() / "rekursiv-ai" / "trax" / "current"
+    assert path.read_text() == "prod\n"
     assert path.stat().st_mode & 0o777 == 0o600
 
 
@@ -538,7 +548,205 @@ def test_write_atomic_uses_unique_temp_per_write(
     assert leftovers == [], f"temp file leaked: {leftovers}"
 
 
+def _save(name: str, url: str) -> None:
+    profile.save_profile(name, Profile(url=url, api_key="trax_k"))
+
+
+def test_a_shell_from_a_terminal_uses_the_saved_profile_for_its_server(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    _save("hosted", "https://trax.test")
+    _save("local", "http://127.0.0.1:8765")
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://trax.test/")
+
+    assert profile.load_profile().url == "https://trax.test"
+    assert profile.unmatched_server_hint() is None
+
+
+def test_an_explicit_profile_or_url_beats_the_server_a_terminal_names(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    _save("hosted", "https://trax.test")
+    _save("local", "http://127.0.0.1:8765")
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://trax.test")
+    monkeypatch.setenv("TRACKINIZER_PROFILE", "local")
+
+    assert profile.load_profile().url == "http://127.0.0.1:8765"
+    monkeypatch.delenv("TRACKINIZER_PROFILE")
+    profile.switch_profile("local")
+    assert profile.load_profile().url == "http://127.0.0.1:8765"
+
+
+def test_a_server_without_a_saved_profile_gets_the_login_hint_and_localhost(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    monkeypatch.delenv("TRACKINIZER_URL", raising=False)
+    _save("local", "http://127.0.0.1:8765")
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://other.test")
+
+    hint = profile.unmatched_server_hint()
+
+    assert hint is not None
+    assert "trax profile remote url to https://other.test, then add a token" in hint
+    assert "from Settings" in hint
+    assert "token to" not in hint
+    assert profile.load_profile().url == "http://127.0.0.1:8765"
+    monkeypatch.setenv("TRACKINIZER_URL", "https://x.test")
+    assert profile.unmatched_server_hint() is None
+
+
+@pytest.mark.parametrize(
+    "server",
+    [
+        "ftp://x.test",
+        "https://user:pw@x.test",
+        "https://x.test/a b",
+        "https://x.test/\x1b[31m",
+        "javascript:alert(1)",
+        "https://",
+        "x.test",
+    ],
+)
+def test_a_server_that_is_not_a_sound_url_is_ignored_and_never_echoed(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    server: str,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    monkeypatch.delenv("TRACKINIZER_URL", raising=False)
+    _save("hosted", "https://x.test")
+    monkeypatch.setenv("LC_TRAX_SERVER", server)
+
+    assert profile.terminal_server() is None
+    assert profile.unmatched_server_hint() is None
+    assert profile.load_profile().url != server
+
+
+def test_the_hint_quotes_a_server_that_holds_a_shell_metacharacter(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _redirect_config(monkeypatch, tmp_path)
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    monkeypatch.delenv("TRACKINIZER_URL", raising=False)
+    monkeypatch.setenv("LC_TRAX_SERVER", "https://x.test/;rm")
+
+    hint = profile.unmatched_server_hint()
+
+    assert hint is not None
+    assert "'https://x.test/;rm'" in hint
+
+
+def test_trax_env_prefers_the_plain_name_over_the_ssh_forwarded_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
+    monkeypatch.delenv("LC_TRAX_WORKSPACE", raising=False)
+    assert trax_env("WORKSPACE") is None
+    monkeypatch.setenv("LC_TRAX_WORKSPACE", "from-ssh")
+    assert trax_env("WORKSPACE") == "from-ssh"
+    monkeypatch.setenv("TRAX_WORKSPACE", "plain")
+    assert trax_env("WORKSPACE") == "plain"
+
+
+def test_profile_login_runs_the_device_login_and_names_the_result(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[tuple[str, str]] = []
+
+    def fake_login(url: str, *, profile: str) -> LoginResult:
+        asked.append((url, profile))
+        return LoginResult(profile=profile, role="writer")
+
+    monkeypatch.setattr("trackinizer.trax.login.login", fake_login)
+
+    run(["profile", "work", "login", "https://trackinizer.example"], client)
+
+    assert asked == [("https://trackinizer.example", "work")]
+    assert capsys.readouterr().out == "logged in: profile work (writer)\n"
+    assert not client.calls
+
+
+def test_profile_help_lists_the_login_form(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(["profile", "help"], client)
+
+    assert (
+        "trax profile foo login https://trackinizer.example" in capsys.readouterr().out
+    )
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [["work", "login"], ["work", "login", "a", "b"], ["login", "work", "x"]],
+)
+def test_profile_login_needs_a_name_and_one_url(
+    client: FakeClient,
+    argv: list[str],
+) -> None:
+    with pytest.raises(ClientError):
+        run(["profile", *argv], client)
+
+
+def test_a_usable_profile_is_a_pinned_one_or_a_saved_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+    assert not profile.has_usable_profile()
+
+    profile.save_profile("work", Profile(url="http://work:9000"))
+    assert not profile.has_usable_profile()
+
+    profile.switch_profile("work")
+    assert profile.has_usable_profile()
+
+
+def test_a_saved_default_profile_is_usable(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TRACKINIZER_PROFILE", raising=False)
+
+    profile.save_profile("default", Profile(url="http://work:9000"))
+
+    assert profile.has_usable_profile()
+
+
+def test_a_profile_set_in_the_environment_is_usable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_PROFILE", "lab")
+
+    assert profile.has_usable_profile()
+
+
+@pytest.mark.parametrize("name", ["", ".", "..", "a/b", "a b"])
+def test_a_profile_name_that_could_leave_the_directory_is_refused(name: str) -> None:
+    with pytest.raises(ClientError, match="invalid profile name"):
+        profile.validate_profile_name(name)
+
+
+def test_profile_repr_and_str_hold_no_key_text() -> None:
+    """A traceback or log line that shows a ``Profile`` must not print its key."""
+    key = "tok-SENTINEL-7b41d9"
+    shown = Profile(url="http://prod:9000", author="alice", api_key=key)
+
+    assert key not in repr(shown)
+    assert key not in str(shown)
+    assert shown != Profile(url="http://prod:9000", author="alice", api_key="other")
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -18,7 +18,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from trackinizer.lib.custom_json import DictCodec
+from treekle import from_plain
+
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
     TEST_USER_EMAIL,
@@ -98,7 +99,7 @@ class TestViewerHitsWriterRoute403:
         install_identity(make_test_identity(role="viewer"))
         r = client.post("/api/inquiries/issue", json={"title": "x"})
         assert r.status_code == 403
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "viewer" in detail
@@ -111,7 +112,10 @@ class TestViewerHitsWriterRoute403:
         install_identity(make_test_identity(role="viewer"))
         # list_kind hits two fetches: main select + bulk edges. Empty
         # rows are enough -- the assertion is the 200, not the payload.
-        engine.conn.fetch.side_effect = [[], []]
+        engine.conn.fetch.side_effect = [
+            list[dict[str, object]](),
+            list[dict[str, object]](),
+        ]
         r = client.get("/api/inquiries?kind=Issue")
         assert r.status_code == 200
 
@@ -219,7 +223,7 @@ class TestAccountAttribution:
             json={"title": "ghost account", "account": "ghost@example.com"},
         )
         assert r.status_code == 422, r.text
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         detail = body["detail"]
         assert isinstance(detail, str)
         assert "not an active user" in detail
@@ -240,12 +244,12 @@ class TestAccountAttribution:
             json={"title": "blank account", "account": "  "},
         )
         assert r.status_code == 422, r.text
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert "not an active user" not in str(body)
         assert "account" in str(body)
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

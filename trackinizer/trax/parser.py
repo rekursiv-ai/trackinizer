@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal, cast, get_args
 
+import argparse
+import math
 import uuid
 
+from treekle import from_plain
+
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import FloatCodec, ListCodec
 from trackinizer.trax.grammar import (
     AGAINST_RELATION_SPELLINGS,
     COST_FIELDS,
@@ -85,6 +89,30 @@ _ALL_FILTER_FIELDS: frozenset[str] = frozenset(
 )
 
 
+def parse_backfill_timestamp(value: str) -> str:
+    """Parse a past, timezone-aware ISO 8601 creation timestamp for argparse.
+
+    Args:
+      value: Explicitly dated creation time supplied to ``--backfill``.
+
+    Returns:
+      timestamp: ISO 8601 text with its timezone preserved.
+
+    Raises:
+      argparse.ArgumentTypeError: If the timestamp is invalid, naive, or future.
+
+    """
+    try:
+        created = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("expected an ISO 8601 timestamp") from error
+    if created.tzinfo is None or created.utcoffset() is None:
+        raise argparse.ArgumentTypeError("timestamp requires an explicit timezone")
+    if created >= datetime.now(UTC):
+        raise argparse.ArgumentTypeError("timestamp must be in the past")
+    return created.isoformat()
+
+
 def parse_list_query(
     kind: Inquiry.InquiryKind | None,
     tokens: Sequence[str],
@@ -119,6 +147,8 @@ def parse_list_query(
         if isinstance(clause, _KindClause):
             kinds.append(clause.kind)
         elif isinstance(clause, _RangeClause):
+            if not kinds:
+                raise ClientError("seq range requires a preceding kind")
             # Per GRAMMAR.md 6, a range token binds to the most recently named
             # kind, last-wins across space-separated tokens. The union lives
             # inside one comma-separated token (``222..260,279..``), carried as
@@ -232,10 +262,58 @@ class _UnknownClause:
 
     token: str
 
-    bad_filter_op: str | None = None
+    bad_filter_op: str = ""
 
 
 _Clause = _KindClause | _RangeClause | _FilterClause | _MutationClause | _UnknownClause
+
+
+# Its own parser rather than ``parse_list_query``'s: that one reads kinds and seq
+# ranges too, and an export selector takes neither. Same CLI spelling though, so
+# ``labels nre '^machine:'`` means here exactly what it means in a list query.
+def parse_export_selector(tokens: Sequence[str]) -> tuple[Filter, ...]:
+    """Parse ``<field> <op> [value]`` triples into export selector clauses.
+
+    Args:
+      tokens: The export command's positional tokens.
+
+    Returns:
+      selector: One filter per clause, in the order given.
+
+    Raises:
+      ClientError: If a clause is malformed or names a field or op that is
+        not a filter.
+
+    """
+    clauses: list[Filter] = []
+    index = 0
+    while index < len(tokens):
+        field = tokens[index]
+        if index + 1 >= len(tokens):
+            raise ClientError(
+                f"export selector clause {field!r} needs an operator "
+                f"(e.g. {field} is <value>)",
+            )
+        op = tokens[index + 1]
+        if op not in FILTER_OPS:
+            raise ClientError(
+                f"unknown filter operator {op!r} after field {field!r}",
+            )
+        if op in VALUELESS_FILTER_OPS:
+            value, index = "", index + 2
+        elif index + 2 >= len(tokens):
+            raise ClientError(f"export selector clause '{field} {op}' needs a value")
+        else:
+            value, index = tokens[index + 2], index + 3
+        # ``Filter`` runs every rule decidable from the clause alone, so a bad
+        # regex or an over-long operand is refused here rather than by the server.
+        try:
+            clauses.append(
+                Filter(field=canonical_filter_field(field), op=op, value=value),
+            )
+        except ValueError as err:
+            raise ClientError(str(err)) from err
+    return tuple(clauses)
 
 
 def parse_bulk_apply(
@@ -469,6 +547,14 @@ def ref_text(ref: Ref) -> str:
     return str(ref.uuid)
 
 
+def parse_sequence_number(value: str) -> int:
+    """Convert a sequence token to an integer or raise ClientError."""
+    try:
+        return int(value)
+    except ValueError as err:
+        raise ClientError(f"invalid sequence number: {err}") from err
+
+
 def starts_with_ref(tokens: Sequence[str]) -> bool:
     """Whether the first token is a seq number or UUID.
 
@@ -480,7 +566,7 @@ def starts_with_ref(tokens: Sequence[str]) -> bool:
 
     """
     return bool(tokens) and (
-        tokens[0].isdigit() or UUID_RE.match(tokens[0]) is not None
+        tokens[0].isdecimal() or UUID_RE.match(tokens[0]) is not None
     )
 
 
@@ -514,13 +600,13 @@ def parse_subject_list(
             if pos + 1 >= len(tokens):
                 return None
             next_token = tokens[pos + 1]
-            if not (next_token.isdigit() or UUID_RE.match(next_token)):
+            if not (next_token.isdecimal() or UUID_RE.match(next_token)):
                 return None
             current_kind = KIND_LOWER[lower]
             pos += 1
             continue
-        if token.isdigit():
-            subjects.append(SeqRef(kind=current_kind, seq=int(token)))
+        if token.isdecimal():
+            subjects.append(SeqRef(kind=current_kind, seq=parse_sequence_number(token)))
             pos += 1
             continue
         if UUID_RE.match(token):
@@ -637,7 +723,7 @@ def edge_metadata(
             # this branch handling every remaining valid field.
             if op not in ("to", "add", "del"):
                 raise ClientError("edge label uses to, add, or del")
-            labels = ListCodec.coerce(metadata.get("labels"), str)
+            labels = from_plain(metadata.get("labels"), list[str], default=[])
             if op == "to":
                 labels = resolve_labels((value,))
             elif op == "add":
@@ -690,14 +776,17 @@ def consume_ref(
     head = args[pos]
     if UUID_RE.match(head):
         return UuidRef(uuid=uuid.UUID(head), expected_kind=kind_hint), 1
-    if kind_hint is not None and head.isdigit():
-        return SeqRef(kind=kind_hint, seq=int(head)), 1
+    if kind_hint is not None and head.isdecimal():
+        return SeqRef(kind=kind_hint, seq=parse_sequence_number(head)), 1
     if head.lower() in KIND_LOWER:
         if pos + 1 >= len(args):
             raise ClientError(f"incomplete ref: kind {head!r} without seq")
         seq_token = args[pos + 1]
-        if seq_token.isdigit():
-            return SeqRef(kind=parse_kind(head), seq=int(seq_token)), 2
+        if seq_token.isdecimal():
+            return SeqRef(
+                kind=parse_kind(head),
+                seq=parse_sequence_number(seq_token),
+            ), 2
         if UUID_RE.match(seq_token):
             return UuidRef(
                 uuid=uuid.UUID(seq_token),
@@ -975,15 +1064,15 @@ def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
         token_text = tokens[index].lower()
         op_next = token(tokens, index + 1)
         op_next_lower = op_next.lower() if op_next is not None else None
-        if token_text in KIND_LOWER and not _is_mutation_head(
-            token_text,
-            op_next_lower,
+        if (
+            token_text in KIND_LOWER
+            and op_next_lower not in FILTER_OPS
+            and not _is_mutation_head(token_text, op_next_lower)
         ):
             # A token that is both a kind keyword and a list field (only
-            # ``codechange``) is a bare kind ONLY when no mutation operator
-            # follows: ``trax issue belief`` widens, but ``codechange add 7`` is
-            # a field mutation. A bare kind is never followed by to/add/del, so
-            # the next token disambiguates without ambiguity.
+            # ``codechange``) is a bare kind only when no field operator
+            # follows: ``trax issue codechange`` widens, but ``codechange is
+            # UUID`` filters and ``codechange add 7`` mutates the list.
             yield _KindClause(kind=KIND_LOWER[token_text])
             index += 1
         elif ranges := _parse_range(token_text):
@@ -1011,11 +1100,7 @@ def _scan_clauses(tokens: Sequence[str]) -> Iterator[_Clause]:
             yield _MutationClause(tokens=tuple(tokens[index : index + span]))
             index += span
         else:
-            bad_op = (
-                op_next
-                if token_text in _ALL_FILTER_FIELDS and op_next_lower is not None
-                else None
-            )
+            bad_op = (op_next or "") if token_text in _ALL_FILTER_FIELDS else ""
             yield _UnknownClause(token=tokens[index], bad_filter_op=bad_op)
             index += 1
 
@@ -1059,7 +1144,7 @@ def _parse_metric_mask(tokens: Sequence[str], index: int) -> tuple[MetricMask, i
     # take no value and apply only to the ``step`` axis (metric-grammar.md
     # Grammar summary).
     if op in frozenset(
-        get_args(cast(object, wire_metrics_query.MetricReduce.__value__)),
+        get_args(wire_metrics_query.MetricReduce.__value__),
     ):
         if field != "step":
             raise ClientError(f"{op} applies to step only, not {field!r}")
@@ -1119,9 +1204,10 @@ def _parse_range(token_text: str) -> tuple[SeqRange, ...]:
 def _parse_interval(part: str) -> SeqRange:
     """Parse one range element -- an interval or a bare seq -- raising if malformed."""
     if ".." not in part:
-        if not part.isdigit():
+        if not part.isdecimal():
             raise ClientError(f"invalid range element {part!r}")
-        return SeqRange(start=int(part), stop=int(part))
+        seq = parse_sequence_number(part)
+        return SeqRange(start=seq, stop=seq)
     try:
         return parse_interval(part)
     except ValueError as err:
@@ -1201,6 +1287,8 @@ def _parse_cost_action(
         # ValueError leaking a Python traceback to the CLI (mirrors the edge
         # valence guard).
         raise ClientError(f"cost {field!r} must be a number, got {value!r}") from None
+    if not math.isfinite(delta):
+        raise ClientError(f"cost {field!r} must be finite, got {value!r}")
     return AddCost(field=field, value=delta), 3
 
 
@@ -1249,12 +1337,12 @@ def _parse_relation_or_edge(
 ) -> tuple[Action, int]:
     """Decide between a relation projection and an edge mutation."""
     value = token(tokens, index + 1)
-    if value is None or value.isdigit():
+    if value is None or value.isdecimal():
         return RelationAction(
             relation=relation,
             index=value or "",
             against=word in AGAINST_RELATION_SPELLINGS,
-        ), 2 if value else 1
+        ), 2 if value is not None else 1
     edge = EDGE_ALIASES.get(word)
     if edge is None:
         raise ClientError(
@@ -1304,12 +1392,16 @@ def _parse_edge_action(
     # then post-target -- so post-target overrides pre. Setting the same key twice
     # is malformed input either way; the order just makes it deterministic.
     metadata, consumed_metadata = edge_metadata(tokens[offset:])
-    merged = _apply_valence_alias(edge, {**inbound, **dict(pre_meta), **metadata})
+    merged, valence_injected = _apply_valence_alias(
+        edge,
+        {**inbound, **dict(pre_meta), **metadata},
+    )
     return EdgeAction(
         edge=edge,
         target=target,
         metadata=merged,
         annotate=bool(merged),
+        valence_injected=valence_injected,
     ), pre_consumed + consumed + 1 + consumed_metadata
 
 
@@ -1317,16 +1409,22 @@ def _parse_edge_action(
 # ``-0.5``. Either way the polarity is the SPELLING and the value is the magnitude, so a
 # user-supplied valence must be non-negative on BOTH branches: the positive spelling
 # stores it as-is, the ``dis*`` spelling negates it. For a non-citation alias
-# (``valence_default`` unset) the metadata passes through.
-def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, object]:
+# (``valence_default`` unset) the metadata passes through. The second return value
+# marks an INJECTED polarity default: it must reach a fresh edge, but the caller
+# must keep it off an existing edge's annotation path so a note-only edit never
+# clobbers the stored valence.
+def _apply_valence_alias(
+    edge: Edge,
+    metadata: dict[str, object],
+) -> tuple[dict[str, object], bool]:
     """Resolve a citation alias's valence convention into a concrete ``valence``."""
     if edge.valence_default is None:
-        return metadata
+        return metadata, False
     given = metadata.get("valence")
     if given is None:
         metadata["valence"] = edge.valence_default
-        return metadata
-    value = FloatCodec.coerce(given)
+        return metadata, True
+    value = from_plain(given, float)
     if value < 0:
         # The magnitude is non-negative; the for/against polarity is carried by
         # the spelling (plain vs ``dis*``), not by a negative value. A positive
@@ -1338,4 +1436,4 @@ def _apply_valence_alias(edge: Edge, metadata: dict[str, object]) -> dict[str, o
             f"(the spelling sets the for/against polarity); got {value}",
         )
     metadata["valence"] = -value if edge.valence_negate else value
-    return metadata
+    return metadata, False

@@ -408,6 +408,7 @@ async def _session(store: Store, *, cli_session_id: str | None = None) -> UUID:
             cli_session_id=cli_session_id,
         ),
         requested_actor="agent",
+        audience="open",
     )
     return session_id
 
@@ -478,6 +479,6 @@ async def _audit_actors(store: Store, session_id: UUID) -> set[str]:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

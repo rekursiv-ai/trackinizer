@@ -11,11 +11,13 @@ import argparse
 import gzip
 import json
 
+from treekle import from_plain, json_loads
+
 import httpx2
 import pytest
 
 from trackinizer.lib import zstd_compat
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
+from trackinizer.trax.profile import Profile
 from trackinizer.web.scripts import measure as measurement
 from trackinizer.web.scripts.measure import (
     Row,
@@ -23,6 +25,7 @@ from trackinizer.web.scripts.measure import (
     Stream,
     _add_arguments,
     _get,
+    _headers,
     _serial,
     _summary,
     _write,
@@ -250,6 +253,34 @@ def test_every_request_is_a_get_and_every_baseline_is_measured() -> None:
     assert [(s.status, s.message) for s in across.samples] == [(400, _BUDGET)]
 
 
+@pytest.mark.parametrize(
+    ("count", "membership"),
+    [(0, ""), (5, "membership: 5 ids, three kinds")],
+)
+def test_reads_of_the_newest_issues_are_named_for_the_issues_there_are(
+    count: int,
+    membership: str,
+) -> None:
+    """S4: with fewer than 13 Issues no row claims 13, and with none none is taken."""
+
+    def answer(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/api/inquiries":
+            rows = from_plain(_body("/api/inquiries"), list[object])[:count]
+            return httpx2.Response(200, content=iter([json.dumps(rows).encode()]))
+        return _answer(request, [])
+
+    with httpx2.Client(
+        base_url="http://server",
+        transport=httpx2.MockTransport(answer),
+    ) as http:
+        names = [row.name for row in measure(http, repeats=1, queries=(), hub="")]
+    assert [n for n in names if n.startswith("membership")] == (
+        [membership] if membership else []
+    )
+    assert ("detail: newest Issues" in names) == bool(count)
+    assert ("refetch: 50 Issues by seq_range" in names) == bool(count)
+
+
 def test_moved_flags_a_median_time_or_size_over_2x_either_way() -> None:
     def row(name: str, seconds: float, json_bytes: int) -> Row:
         sample = Sample(
@@ -260,22 +291,21 @@ def test_moved_flags_a_median_time_or_size_over_2x_either_way() -> None:
         )
         return Row(name=name, samples=(sample,))
 
-    baseline = DictCodec.coerce(
-        loads(
-            json.dumps(
-                report(
-                    [
-                        row("steady", 1.0, 1000),
-                        row("slower", 1.0, 1000),
-                        row("smaller", 1.0, 3000),
-                        row("gone", 1.0, 1000),
-                    ],
-                    stream=Stream(seconds=20.0, frames=0, distinct_ids=0, status=200),
-                    url="http://server",
-                    sha="abc",
-                ),
+    baseline = json_loads(
+        json.dumps(
+            report(
+                [
+                    row("steady", 1.0, 1000),
+                    row("slower", 1.0, 1000),
+                    row("smaller", 1.0, 3000),
+                    row("gone", 1.0, 1000),
+                ],
+                stream=Stream(seconds=20.0, frames=0, distinct_ids=0, status=200),
+                url="http://server",
+                sha="abc",
             ),
         ),
+        dict[str, object],
     )
     current = [
         row("steady", 2.0, 500),
@@ -305,8 +335,9 @@ def test_an_error_answer_is_reported_but_never_timed_as_a_read() -> None:
         Row(name="refused", samples=(refused,)),
     ]
     stream = Stream(seconds=1.0, frames=0, distinct_ids=0, status=200)
-    summaries = ListCodec.mappings(
+    summaries = from_plain(
         report(rows, stream=stream, url="u", sha="s")["rows"],
+        list[dict[str, object]],
     )
 
     assert [(r["median_seconds"], r["median_json_bytes"]) for r in summaries] == [
@@ -314,19 +345,74 @@ def test_an_error_answer_is_reported_but_never_timed_as_a_read() -> None:
         (None, None),
     ]
     assert summaries[1]["statuses"] == [502]
-    baseline = DictCodec.coerce(
-        loads(
-            json.dumps(
-                report(
-                    [Row(name="mixed", samples=(ok,))],
-                    stream=stream,
-                    url="u",
-                    sha="s",
-                ),
+    baseline = json_loads(
+        json.dumps(
+            report(
+                [Row(name="mixed", samples=(ok,))],
+                stream=stream,
+                url="u",
+                sha="s",
             ),
         ),
+        dict[str, object],
     )
     assert moved(rows, baseline) == []
+
+
+def test_a_baseline_row_with_no_successful_answer_is_not_compared() -> None:
+    """N1-01: a baseline's null median is skipped, as the docstring promises."""
+    refused = Sample(seconds=0.01, status=502, json_bytes=2, wire_bytes=2)
+    ok = Sample(seconds=1.0, status=200, json_bytes=1000, wire_bytes=100)
+    stream = Stream(seconds=1.0, frames=0, distinct_ids=0, status=200)
+    baseline = json_loads(
+        json.dumps(
+            report(
+                [Row(name="r", samples=(refused,))],
+                stream=stream,
+                url="u",
+                sha="s",
+            ),
+        ),
+        dict[str, object],
+    )
+    assert moved([Row(name="r", samples=(ok,))], baseline) == []
+
+
+@pytest.mark.parametrize(
+    ("status", "body", "message"),
+    [
+        (422, b'{"detail": [{"msg": "x"}]}', '[{"msg": "x"}]'),
+        (400, b'{"detail": "too broad"}', "too broad"),
+        (502, b"[]", "[]"),
+        (502, b"null", "null"),
+        (502, b'{"error": "down"}', '{"error": "down"}'),
+        (502, b"<html>bad gateway</html>", "<html>bad gateway</html>"),
+        (502, b"\xff" + b"x" * 300, "\ufffd" + "x" * 199),
+    ],
+)
+def test_an_error_answer_of_any_shape_is_kept_with_its_message(
+    status: int,
+    body: bytes,
+    message: str,
+) -> None:
+    """N1-02: an error body that is not a dict with a string detail still samples."""
+    with httpx2.Client(
+        base_url="http://server",
+        transport=httpx2.MockTransport(
+            lambda _: httpx2.Response(status, content=iter([body])),
+        ),
+    ) as http:
+        sample = _get(http, "/api/web/search")
+    assert (sample.status, sample.message) == (status, message)
+
+
+def test_the_profile_token_goes_to_its_server_however_its_url_is_spelled() -> None:
+    """N1-03: one rule decides the profile's server, as mirror_local's does."""
+    profile = Profile(url="https://h", api_key="trax_secret")
+    assert _headers("https://h:443", profile)["Authorization"] == "Bearer trax_secret"
+    assert _headers("https://h/", profile)["Authorization"] == "Bearer trax_secret"
+    assert "Authorization" not in _headers("https://h.evil", profile)
+    assert "Authorization" not in _headers("http://127.0.0.1:8765", profile)
 
 
 def test_a_refused_stream_is_its_answer_not_a_quiet_stream() -> None:
@@ -341,7 +427,7 @@ def test_a_refused_stream_is_its_answer_not_a_quiet_stream() -> None:
 
     assert stream == Stream(seconds=0.0, frames=0, distinct_ids=0, status=401)
     document = report([], stream=stream, url="u", sha="s")
-    assert DictCodec.coerce(document["stream"])["frames_per_sec"] is None
+    assert from_plain(document["stream"], dict[str, object])["frames_per_sec"] is None
 
 
 @pytest.mark.parametrize("flag", ["--repeats", "--stream-sec"])
@@ -359,7 +445,9 @@ def test_two_reports_in_one_second_never_overwrite_each_other(tmp_path: Path) ->
     second = _write({"run": 2}, url="http://server:8765", folder=tmp_path)
 
     assert first != second
-    assert [DictCodec.coerce(loads(p.read_text()))["run"] for p in (first, second)] == [
+    assert [
+        json_loads(p.read_text(), dict[str, object])["run"] for p in (first, second)
+    ] == [
         1,
         2,
     ]
@@ -439,13 +527,19 @@ def _body(path: str) -> object:
             "backlinks": {"narrows": [peer, peer]},
         }
     if path.startswith("/api/web/get/"):
-        return {"self": {"kind": "Issue", "seq": 1}, "edges": {}, "backlinks": {}}
+        return {
+            "self": {"kind": "Issue", "seq": 1},
+            "edges": dict[str, list[dict[str, object]]](),
+            "backlinks": dict[str, list[dict[str, object]]](),
+        }
     if path == "/api/change_log":
         return [{"id": "c", "created": "2026-09-27T00:00:00+00:00"}]
-    return [] if path == "/api/web/search" else {}
+    return (
+        list[dict[str, object]]() if path == "/api/web/search" else dict[str, object]()
+    )
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

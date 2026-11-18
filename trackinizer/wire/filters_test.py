@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from trackinizer.types.columns import (
     column_specs,
     flat_column_specs,
@@ -71,6 +73,22 @@ def test_agentsession_filter_aliases_resolve_to_storage_columns() -> None:
     assert canonical_filter_field("rooms") == "agentsession_rooms"
 
 
+@pytest.mark.parametrize(
+    ("field", "column"),
+    [
+        ("author", "paper_authors"),
+        ("authors", "paper_authors"),
+        ("codechange", "experiment_codechanges"),
+        ("codechanges", "experiment_codechanges"),
+    ],
+)
+def test_list_filter_aliases_resolve_to_storage_columns(
+    field: str,
+    column: str,
+) -> None:
+    assert canonical_filter_field(field) == column
+
+
 def test_non_nullable_columns_match_schema_metadata() -> None:
     """The NOT-NULL set tracks the column specs, not a hand-kept list.
 
@@ -80,7 +98,7 @@ def test_non_nullable_columns_match_schema_metadata() -> None:
     same way the source derives it, so a hardcoded edit that desyncs from
     the specs fails loudly.
     """
-    identity = {"id", "kind", "seq", "created", "modified"}
+    identity = {"id", "kind", "seq", "locked", "created", "modified"}
     expected = set(identity)
     for src in (
         Inquiry,
@@ -95,9 +113,12 @@ def test_non_nullable_columns_match_schema_metadata() -> None:
         AgentSession,
     ):
         for name, flat in flat_column_specs(src).items():
-            if flat.spec.required or flat.spec.flatten is not None:
+            # A column required of one kind is NULL on the other kinds' rows.
+            kind_free = flat.spec.applies_to_inquiry_kinds is None
+            if (flat.spec.required and kind_free) or flat.spec.flatten is not None:
                 expected.add(storage_name(name, flat.spec))
     assert set(NON_NULLABLE_COLUMNS) == expected
+    assert "agentsession_audience" not in NON_NULLABLE_COLUMNS
 
 
 def test_validate_presence_op_rejects_not_null_allows_nullable() -> None:
@@ -112,6 +133,6 @@ def test_validate_presence_op_rejects_not_null_allows_nullable() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

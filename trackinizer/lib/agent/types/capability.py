@@ -7,8 +7,8 @@ axes are the one grouping: ``settings.thinking_x`` validates against
 ``capability.thinking.x``. An axis added to one side without the other is a
 field nothing can select or nothing validates.
 
-Each axis is TOTAL: its unset value is spelled ``none``, so no field is
-``| None``.
+Selectable axes are TOTAL: their unset value is spelled ``none``.
+Descriptive facts such as ``knowledge_cutoff`` may still be ``None``.
 """
 
 from __future__ import annotations
@@ -101,9 +101,10 @@ class ThinkingCapability:
 class ModelCapability:
     """What one model offers: every value a caller may select.
 
-    One catalog row, or one transport's restrictions. ``prices`` and the two
-    trailing transport facts have no :class:`ModelSettings` counterpart --
-    nothing selects a price, a retry policy, or an auth mode.
+    One catalog row, or one transport's restrictions. ``prices``,
+    ``effort_as_level``, and the trailing transport facts have no
+    :class:`ModelSettings` counterpart -- nothing selects a price, a wire
+    spelling, a retry policy, or an auth mode.
 
     ``temperature`` is absent: its domain is a continuous range, so it cannot
     join the membership check. It rides ``ModelRequest``.
@@ -132,11 +133,20 @@ class ModelCapability:
     thinking: ThinkingCapability = field(default_factory=ThinkingCapability)
     """Reasoning effort, budget, and visibility this transport accepts."""
 
+    effort_as_level: bool = False
+    """Whether the wire takes the effort as a named level.
+
+    Gemini 3 ``thinkingLevel``, Qwen 3.8 and Kimi K3 ``reasoning_effort``;
+    otherwise the wire takes a token budget derived from the effort.
+    """
+
     service_tier: frozenset[ServiceTier] = frozenset({"auto", "default"})
     """Speed/price tiers this transport accepts.
 
-    ``auto`` and ``default`` are universal -- every vendor serves a request
-    that names no tier. ``flex`` and ``priority`` are opt-in per row.
+    The default is the two a model row offers when it states no tier. Only
+    ``auto`` -- a request naming no tier -- is universal: a transport with no
+    tier parameter (``openai.compatible()``) narrows the meet to it. ``flex``,
+    ``priority``, and ``ultrafast`` are opt-in per row.
     """
 
     # Defaults to BOTH values, not to its unset one: a model row does not know
@@ -180,10 +190,6 @@ class ModelCapability:
         # or what it costs.
         return replace(
             self,
-            model_id=self.model_id,
-            wire_model_id=self.wire_model_id,
-            context=self.context,
-            prices=self.prices,
             thinking=self.thinking & other.thinking,
             service_tier=self.service_tier & other.service_tier,
             manage_context_server_side=(
@@ -192,6 +198,27 @@ class ModelCapability:
             cache_ttl_sec=other.cache_ttl_sec,
             retries_internally=other.retries_internally,
             account_auth=other.account_auth,
+        )
+
+    @override
+    def __hash__(self) -> int:
+        """Hash capability values, independent of mapping insertion order."""
+        return hash(
+            (
+                self.model_id,
+                self.wire_model_id,
+                self.knowledge_cutoff,
+                self.approx_chars_per_token,
+                frozenset(self.context.items()),
+                frozenset(self.prices.items()),
+                self.thinking,
+                self.effort_as_level,
+                self.service_tier,
+                self.manage_context_server_side,
+                self.cache_ttl_sec,
+                self.retries_internally,
+                self.account_auth,
+            ),
         )
 
 
@@ -249,7 +276,7 @@ class ModelSettings:
         Assignment is the API -- ``settings.thinking_budget = "auto"`` --
         so the check lives here rather than in a method a caller can route
         around. ``capability`` itself is exempt: it is the authority, not a
-        choice, and swapping it re-derives every axis via :meth:`adopt`.
+        choice. Swapping it atomically re-narrows every axis and context.
 
         Args:
           name: Attribute being set.
@@ -259,6 +286,20 @@ class ModelSettings:
           ValueError: ``value`` is outside what :attr:`capability` allows.
 
         """
+        if name == "capability" and hasattr(self, "capability"):
+            assert isinstance(value, ModelCapability)
+            context = (
+                self.context
+                if self.context in value.context
+                else _lowest("context", value.context, _ladder(ContextTag))
+            )
+            narrowed = type(self).narrowest(value, context=context)
+            narrowed.adopt(self)
+            object.__setattr__(self, name, value)
+            for f in fields(self):
+                if f.name != "capability":
+                    object.__setattr__(self, f.name, getattr(narrowed, f.name))
+            return
         if name != "capability":
             _reject_unoffered(self.capability, name, value)
         object.__setattr__(self, name, value)
@@ -297,7 +338,7 @@ class ModelSettings:
           ValueError: A name is not an axis of this class.
 
         """
-        names = {f.name for f in fields(self)}
+        names = {f.name for f in fields(self)} - {"capability"}
         unknown = sorted(set(choices) - names)
         if unknown:
             raise ValueError(f"not settings axes: {', '.join(unknown)}")
@@ -403,7 +444,7 @@ def _reject_unoffered(capability: ModelCapability, name: str, value: object) -> 
 
 def _ladder[T](alias: object) -> tuple[T, ...]:
     """Return the Literal's members, in declaration order -- least committing first."""
-    underlying: object = cast(TypeAliasType, alias).__value__  # pyright: ignore[reportAny] -- PEP 695 aliases expose their target through __value__.
+    underlying: object = cast(TypeAliasType, alias).__value__
     return cast(tuple[T, ...], get_args(underlying))
 
 

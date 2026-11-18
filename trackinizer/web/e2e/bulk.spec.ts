@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import type { APIRequestContext, Page, Request } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, abortStream, allowStreamErrors } from "./fixtures";
 
 // Multi-select edits from a list against the e2e server, with the Python client
 // as a second user. Each test labels its rows with a label of its own and
@@ -80,9 +80,9 @@ test("a bulk status change with one row changed by someone else: the report name
   const { ids, label } = await createIssues(request, "conflict");
   // With the stream on, the other change could show before the pick; acting on
   // what the page showed before it did is the case compare-and-set exists for.
-  await page.route("**/api/web/subscribe", (route) => route.abort());
+  await abortStream(page);
   // The stream this turns off, and the compare-and-set 409 the other change causes.
-  allowErrors(failedResource("/api/web/subscribe", "ERR_FAILED"));
+  allowStreamErrors(allowErrors);
   allowErrors(failedResource("/api/inquiries/", 409));
   const writes = await selectAll(page, label);
   await pythonEdit(baseURL!, ids[1]!, "status", "abandoned");
@@ -160,9 +160,9 @@ test("a bulk priority checks each row first: one changed since the list loaded i
     ids.push((await response.json()).id as string);
   }
   // Without the stream the list keeps showing P1 High on every row.
-  await page.route("**/api/web/subscribe", (route) => route.abort());
+  await abortStream(page);
   // The stream this turns off.
-  allowErrors(failedResource("/api/web/subscribe", "ERR_FAILED"));
+  allowStreamErrors(allowErrors);
   const writes = await selectAll(page, label);
   await pythonEdit(baseURL!, ids[1]!, "priority", 30);
 

@@ -1,10 +1,12 @@
 /* The graph's colours, as tokens that encode.ts's readPalette reads: a kind with
-   no --g-kind-<Kind> draws in --g-fallback. The hues are the design's own — the
-   palette of server/assets/graph.html that the prototype was built on — edges
-   are their quiet tints, so structure recedes behind the nodes; status rings are
-   neutrals and one alert, none of them a node hue, so the key shows each ring
-   beside the app's status glyph. A file of their own, loaded by palette.ts, so
-   the detail's graph preview has them without the graph's chunk. */
+   no --g-kind-<Kind> draws in --g-fallback. Node hues are v1's categorical wheel,
+   at even brightness; edges are quiet slates, so structure recedes behind the
+   nodes; status rings are neutrals and one alert, none of them a node hue, so the
+   key shows each ring beside the app's status glyph. A file of their own, loaded
+   by palette.ts, so the detail's graph preview has them without the graph's chunk.
+   A fixed skin (skins.css) ignores the theme: one on a light ground takes the
+   light set, one on a dark ground the dark one, and each its own where its
+   ground would fade a node or a ring (tokens.test.ts). */
 :root {
   --g-kind-Issue: #6e8efb;
   --g-kind-Belief: #4cc9a0;
@@ -48,24 +50,31 @@
   --g-duo-record: #e6defa;
   --g-duo-belief: #5b8cff;
 }
-:root[data-theme="light"] {
-  /* The same hues, deepened to hold on a light ground. */
-  --g-kind-Issue: #3f6ad0;
-  --g-kind-Belief: #229d78;
-  --g-kind-Experiment: #8a63d9;
-  --g-kind-Paper: #2ba3bc;
-  --g-kind-CodeChange: #c9662a;
-  --g-kind-WebResult: #b08f1f;
-  --g-kind-WebSearch: #7fa63a;
-  --g-kind-AgentSession: #d64e74;
-  --g-kind-Artifact: #c65050;
-  --g-edge-narrows: #5f79c0;
-  --g-edge-requires: #a3894f;
-  --g-edge-produced_by: #7d7699;
-  --g-edge-proves: #4f9c6c;
-  --g-edge-favors: #4f9c6c;
-  --g-edge-supersedes: #b0607a;
-  --g-edge-cites_paper: #6266b5;
+:root[data-theme="light"]:not([data-skin]),
+:root[data-skin="retro"],
+:root[data-skin="console"],
+:root[data-skin="minimal"],
+:root[data-skin="brutal"] {
+  --g-kind-Issue: #2f6fd6;
+  --g-kind-Belief: #7b5fd8;
+  --g-kind-Experiment: #2f9d5a;
+  --g-kind-Paper: #1f97a6;
+  --g-kind-CodeChange: #c56f2a;
+  --g-kind-WebResult: #a88a1c;
+  --g-kind-WebSearch: #c94068;
+  --g-kind-AgentSession: #5656d6;
+  --g-kind-Artifact: #b84646;
+  --g-edge-narrows: #7f8aa6;
+  --g-edge-requires: #a39470;
+  --g-edge-produced_by: #9aa3b5;
+  --g-edge-proves: #6f9c83;
+  --g-edge-favors: #6f979c;
+  --g-edge-supersedes: #a3707c;
+  --g-edge-cites_paper: #8a7fa8;
+  /* A citation's two sides, deepened like the rest: without these the light set
+     inherits the dark mint and amber from :root, which the canvas and the node
+     looks both read, so every piece of evidence on the graph kept its dark
+     colour on a light ground. */
   --g-vpos: #4f9c6c;
   --g-vneg: #c2703a;
   --g-status-active: #17212d;
@@ -78,4 +87,28 @@
      darken rather than lighten to stay a dot at all. */
   --g-duo-record: #9b92b5;
   --g-duo-belief: #2f5fd6;
+}
+/* The skins whose ground fades a colour of their set: each that colour a step stronger. */
+:root[data-skin="retro"] {
+  --g-kind-Experiment: #2e9857;
+  --g-kind-Paper: #1e92a1;
+  --g-kind-WebResult: #a0831b;
+  --g-status-complete: #7f8b9b;
+  --g-status-abandoned: #b3bcc5;
+  --g-status-invalid: #bc7611;
+}
+:root[data-skin="console"] {
+  --g-kind-Experiment: #2c9254;
+  --g-kind-Paper: #1d8e9c;
+  --g-kind-CodeChange: #bf6c29;
+  --g-kind-WebResult: #997e19;
+  --g-status-complete: #7b8696;
+  --g-status-abandoned: #aeb6be;
+  --g-status-invalid: #b47111;
+}
+:root[data-skin="dos"] {
+  --g-status-abandoned: #5e6482;
+}
+:root[data-skin="hacker"] {
+  --g-status-abandoned: #4f5677;
 }

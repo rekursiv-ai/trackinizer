@@ -20,6 +20,8 @@ export type Route =
    * `#/graph?group=none`.
    */
   | { readonly name: "graph"; readonly focus?: GraphFocus; readonly grouped?: false }
+  /** The knowledge flow, `#/blocks`: a prompt's distilled answer as blocks. */
+  | { readonly name: "blocks"; readonly focus?: string; readonly hops?: 1 | 2 | 3 }
   /** Your settings: `#/settings`. */
   | { readonly name: "settings" }
   /** Users and the allowlist: `#/admin`. It parses for anyone; the view refuses non-admins. */
@@ -65,6 +67,8 @@ export function formatRoute(route: Route): string {
       if (route.grouped === false) params.push("group=none");
       return params.length > 0 ? `#/graph?${params.join("&")}` : "#/graph";
     }
+    case "blocks":
+      return route.focus ? `#/blocks?focus=${route.focus}${route.hops ? `&hops=${route.hops}` : ""}` : "#/blocks";
     case "settings":
       return "#/settings";
     case "admin":
@@ -141,6 +145,15 @@ export function parseHash(hash: string, kinds: readonly string[]): Route {
       const hops = HOPS.find((option) => String(option) === (query.get("hops") ?? "1"));
       return ref && hops ? { name: "graph", focus: { ref, hops }, ...grouped } : notFound;
     }
+    case "blocks": {
+      if (rest.length > 0) return notFound;
+      const focus = query.get("focus");
+      if (focus === null) return { name: "blocks" };
+      // A distilled neighbourhood is counted in hops, so `all` — which `HOPS` offers the graph —
+      // is not one of them here, and a link asking for it falls back to the default two.
+      const hops = ([1, 2, 3] as const).find((option) => String(option) === (query.get("hops") ?? "2"));
+      return focus ? { name: "blocks", focus, ...(hops ? { hops } : {}) } : notFound;
+    }
     case "settings":
     case "admin":
       return rest.length === 0 ? { name: head } : notFound;
@@ -174,3 +187,5 @@ export function parseSeq(digits: string): number | null {
 
 /** A record id: the five-group UUID the server assigns. */
 export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// focus: the blocks route distills the store on request

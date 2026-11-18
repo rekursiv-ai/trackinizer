@@ -23,6 +23,8 @@ from typing import TYPE_CHECKING
 
 import json
 
+from treekle import from_plain, json_loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex
@@ -33,13 +35,6 @@ from trackinizer.lib.agent.types.sessions import (
     FileWriteResult,
     SessionRecord,
     ToolCall,
-)
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    ListCodec,
-    StrCodec,
-    json_unfreeze,
-    loads,
 )
 
 
@@ -286,12 +281,20 @@ def test_editing_a_lifted_path_rewrites_the_replayed_command(
 def _replayed_command(native: str) -> str:
     """Return the Bash command a rewritten claude transcript carries."""
     for line in native.splitlines():
-        record = DictCodec.coerce(loads(line))
-        message = DictCodec.coerce(record.get("message"))
-        for block in ListCodec.mappings(message.get("content")):
-            if StrCodec.coerce(block.get("name")) == "Bash":
-                return StrCodec.coerce(
-                    DictCodec.coerce(block.get("input")).get("command"),
+        record = json_loads(line, dict[str, object])
+        message = from_plain(record.get("message"), dict[str, object], default={})
+        for block in from_plain(
+            message.get("content"),
+            list[dict[str, object]],
+            default=[],
+        ):
+            if from_plain(block.get("name"), str, default="") == "Bash":
+                return from_plain(
+                    from_plain(block.get("input"), dict[str, object], default={}).get(
+                        "command",
+                    ),
+                    str,
+                    default="",
                 )
     return ""
 
@@ -327,7 +330,7 @@ def test_a_lifted_result_keeps_the_shell_execution_it_came_from() -> None:
     lifted = _lifted(list(claude.normalize(StringIO(native))))
 
     assert isinstance(lifted, FileReadResult)
-    assert "$shell" in json_unfreeze(lifted.extra)
+    assert "$shell" in lifted.extra
 
 
 def test_a_session_with_no_shell_call_lifts_nothing() -> None:
@@ -335,6 +338,6 @@ def test_a_session_with_no_shell_call_lifts_nothing() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

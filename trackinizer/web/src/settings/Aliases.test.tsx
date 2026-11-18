@@ -2,7 +2,7 @@ import { QueryClient } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { stubFetch } from "../api/testing";
-import { storageKey } from "../state/store";
+import { DEFAULT_PREFERENCES, preferences, receivePreferences } from "../preferences";
 import { AliasesSection } from "./Aliases";
 import { ownerNames } from "./owners";
 import { KINDS, profile, renderScreen, serveAccount } from "./testing";
@@ -13,15 +13,14 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  receivePreferences(DEFAULT_PREFERENCES);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
-function stored(): unknown {
-  return JSON.parse(localStorage.getItem(storageKey(ADA.email)) ?? "null");
-}
 
 function names() {
   return within(screen.getByRole("list", { name: "Your names" }))
@@ -63,10 +62,10 @@ test("suggestions come from one list request, and none is ticked until the user 
 
   fireEvent.click(within(suggestions).getByRole("checkbox", { name: /^ada/ }));
   expect(names()).toEqual(["ada@example.com", "ada"]);
-  expect(stored()).toMatchObject({ aliases: ["ada"] });
+  expect(preferences().aliases).toEqual(["ada"]);
   fireEvent.click(within(suggestions).getByRole("checkbox", { name: /^ada/ }));
   expect(names()).toEqual(["ada@example.com"]);
-  expect(stored()).toMatchObject({ aliases: [] });
+  expect(preferences().aliases).toEqual([]);
 });
 
 /** Owner rows for `count` names, `agent-0` the most frequent: `agent-i` owns `count - i` rows. */
@@ -121,20 +120,6 @@ test("a name can be typed, is added once, and removed with its button; the email
   fireEvent.click(screen.getByRole("button", { name: "Remove dan" }));
   expect(names()).toEqual(["ada@example.com"]);
   await screen.findByText("No other owner names on rows under your account.");
-});
-
-test("a name the browser refuses to store stays typed, with the reason", () => {
-  serveAccount(ADA);
-  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-    throw new Error("The quota has been exceeded.");
-  });
-  renderScreen(<AliasesSection />, ADA);
-  const field = screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement;
-  fireEvent.change(field, { target: { value: "dan" } });
-  fireEvent.submit(field);
-  expect(screen.getByRole("alert").textContent).toBe("Not saved: The quota has been exceeded.");
-  expect(field.value).toBe("dan");
-  expect(names()).toEqual(["ada@example.com"]);
 });
 
 test("a failed refetch keeps the suggestions on screen, beside the error and Retry", async () => {

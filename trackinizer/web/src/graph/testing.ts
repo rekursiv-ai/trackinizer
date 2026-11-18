@@ -42,6 +42,7 @@ export const PALETTE: Palette = {
   match: "match",
   duoRecord: "duo-record",
   duoBelief: "duo-belief",
+  highlight: "highlight",
 };
 
 /** The server's vocabulary as far as the graph reads it: kinds, statuses and edge kinds. */

@@ -6,6 +6,8 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from typing import cast, get_args
 
+from treekle import ReadError
+
 import pytest
 
 from trackinizer.conftest import new_uuid
@@ -59,6 +61,62 @@ class TestRowConverters:
         assert b.labels == ("auth",)
         assert b.narrows == ()
         assert b.narrowed_by == ()
+
+    @pytest.mark.parametrize(
+        ("stored", "read"),
+        [
+            (None, None),
+            ([], ()),
+            (["auth", "ui"], ("auth", "ui")),
+            # Not the list of str asyncpg sends: the codec decides, as before.
+            (("auth",), ("auth",)),
+        ],
+    )
+    def test_text_array_columns_read_as_tuples(
+        self,
+        stored: object,
+        read: tuple[str, ...] | None,
+    ) -> None:
+        now = datetime.now(UTC)
+        row = cast(
+            Row,
+            {
+                "id": new_uuid(),
+                "seq": 1,
+                "owner": None,
+                "account": "alice",
+                "status": "active",
+                "title": "t",
+                "description": None,
+                "labels": stored,
+                "subscribers": stored,
+                "created": now,
+                "modified": now,
+            },
+        )
+        issue = Issue.from_row(row)
+        assert (issue.labels, issue.subscribers) == (read, read)
+
+    def test_a_text_array_holding_a_non_string_is_refused(self) -> None:
+        now = datetime.now(UTC)
+        row = cast(
+            Row,
+            {
+                "id": new_uuid(),
+                "seq": 1,
+                "owner": None,
+                "account": "alice",
+                "status": "active",
+                "title": "t",
+                "description": None,
+                "labels": ["auth", 7],
+                "subscribers": None,
+                "created": now,
+                "modified": now,
+            },
+        )
+        with pytest.raises(ReadError):
+            Issue.from_row(row)
 
     def test_row_to_belief_no_citations(self) -> None:
         cid = new_uuid()
@@ -260,7 +318,7 @@ class TestKindToClass:
     """``KIND_TO_CLASS`` is the canonical row-discriminator -> class registry."""
 
     def test_covers_every_declared_kind(self) -> None:
-        declared = set(get_args(cast(object, Inquiry.InquiryKind.__value__)))
+        declared = set(get_args(Inquiry.InquiryKind.__value__))
         assert set(KIND_TO_CLASS) == declared
 
     def test_enumerates_every_concrete_subclass(self) -> None:
@@ -300,6 +358,6 @@ class TestKindToClass:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

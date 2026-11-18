@@ -2,23 +2,38 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 import os
+import socket
 import tempfile
 import threading
 import time
 
 from trackinizer.client.errors import ClientError
+from trackinizer.trax import cli
 from trackinizer.trax.cli import parse_and_run
+from trackinizer.trax.client_cache import Target
 from trackinizer.trax.context import cwd, env
-from trackinizer.trax.daemon.protocol import PROTOCOL_VERSION, Request
-from trackinizer.trax.daemon.server import handle
+from trackinizer.trax.daemon import server
+from trackinizer.trax.daemon.client import STALE_EXIT_CODE
+from trackinizer.trax.daemon.protocol import (
+    PROTOCOL_VERSION,
+    Request,
+    Response,
+    read_frame,
+    socket_address,
+    write_frame,
+)
+from trackinizer.trax.daemon.server import _Handler, _is_live, _Server, handle
 from trackinizer.trax.render import echo, table_width
 
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
@@ -237,6 +252,54 @@ class TestForwardedEnvironment:
         assert seen == ["/home/somebody"]
 
 
+class TestTokenIsNeverTheDaemons:
+    """The daemon's own ``TRACKINIZER_TOKEN`` must not authenticate a caller.
+
+    The caller's token never crosses the socket, so a name the overlay does not
+    claim would fall through to the shell that spawned the daemon and send
+    that key to whichever server the caller named.
+    """
+
+    def test_daemon_reads_token_as_absent(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
+        seen: list[str | None] = []
+        handle(
+            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
+        )
+
+        assert seen == [None]
+
+    def test_a_request_cannot_carry_the_token(self) -> None:
+        """Only ``FORWARDED_ENV`` names bind, so a foreign client cannot send a key."""
+        seen: list[str | None] = []
+        handle(
+            make_request(
+                ["x"],
+                env={"TRACKINIZER_URL": "http://caller:1", "TRACKINIZER_TOKEN": "k"},
+            ),
+            run=lambda _argv: seen.append(env("TRACKINIZER_TOKEN")),
+        )
+
+        assert seen == [None]
+
+    def test_a_caller_url_resolves_with_no_key(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_TOKEN", "daemon-shell-token")
+        targets: list[Target] = []
+        handle(
+            make_request(["x"], env={"TRACKINIZER_URL": "http://caller:1"}),
+            run=lambda _argv: targets.append(cli._resolve_target(Namespace())),
+        )
+
+        assert targets == [Target(url="http://caller:1", author="", api_key="")]
+
+
 class TestConcurrentRequests:
     """The daemon is threaded, so per-request state must be per-THREAD.
 
@@ -335,6 +398,197 @@ class TestConcurrentRequests:
             )
 
 
+class TestConnection:
+    """One connection end to end: a frame in, the verb run, a frame back."""
+
+    def test_answers_a_caller_on_the_same_source(self, tmp_path: Path) -> None:
+        reply = _exchange(tmp_path, make_request(["help"]), hang_up=False)
+
+        assert reply is not None
+        assert reply.exit_code == 0
+        assert reply.stdout
+
+    def test_answers_stale_to_a_caller_on_other_source(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        """A daemon behind its caller's source must refuse, then shut down."""
+        stopping: list[_Server] = []
+
+        def begin_shutdown(server: _Server) -> None:
+            stopping.append(server)
+
+        monkeypatch.setattr(_Server, "begin_shutdown", begin_shutdown)
+        request = make_request(["help"])
+        request.source_version = "v2"
+
+        reply = _exchange(tmp_path, request, hang_up=False)
+
+        assert reply == Response(stdout="", stderr="", exit_code=STALE_EXIT_CODE)
+        assert len(stopping) == 1
+
+    def test_survives_a_caller_that_hung_up(self, tmp_path: Path) -> None:
+        """A caller gone before the answer must not take the handler with it."""
+        assert _exchange(tmp_path, make_request(["help"]), hang_up=True) is None
+
+
+class TestShutdown:
+    """A daemon leaving must answer every caller it already has.
+
+    A caller whose request was delivered cannot tell a reset connection from a
+    verb that ran, so it reports the command lost. Measured on alpha: a
+    redeploy made the daemon stale, and a campaign launch reading its Issue in
+    the same second failed with ``Connection reset by peer``.
+    """
+
+    def test_a_request_in_flight_is_answered_before_the_daemon_exits(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        slow = _Slow()
+        monkeypatch.setattr(server, "handle", slow)
+        sock = socket_address(tmp_path / "s.sock")
+        # A daemon thread, so a daemon that never stops fails the test, not hangs it.
+        daemon = threading.Thread(
+            target=server.serve,
+            args=(tmp_path / "s.sock",),
+            kwargs={"version": "v1", "poll_interval_sec": 0.001},
+            daemon=True,
+        )
+        daemon.start()
+        # The file appears at bind, before the daemon listens: wait until it accepts.
+        _wait_for(lambda: _is_live(sock))
+        caller = _send(sock, request=make_request(["x"]))
+        assert slow.started.wait(timeout=5)
+        stale = make_request(["x"])
+        stale.source_version = "v2"
+
+        assert Response.from_json(read_frame(_send(sock, request=stale))).exit_code == (
+            STALE_EXIT_CODE
+        )
+        _wait_for(lambda: not sock.exists())
+        daemon.join(timeout=0.05)
+        assert daemon.is_alive(), "the daemon exited with a request still running"
+        slow.release.set()
+        assert Response.from_json(read_frame(caller)).stdout == "done"
+        daemon.join(timeout=5)
+        assert not daemon.is_alive()
+
+    def test_a_queued_connection_is_answered_not_reset(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        def queued(request: Request) -> Response:
+            del request
+            return Response(stdout="queued", stderr="", exit_code=0)
+
+        monkeypatch.setattr(server, "handle", queued)
+        sock = socket_address(tmp_path / "s.sock")
+        daemon = _Server(str(sock), version="v1")
+        caller = _send(sock, request=make_request(["x"]))
+
+        daemon.retire()
+        daemon.drain()
+        daemon.server_close()
+
+        assert Response.from_json(read_frame(caller)).stdout == "queued"
+        assert not sock.exists()
+
+    def test_retiring_leaves_a_successors_socket_alone(self, tmp_path: Path) -> None:
+        sock = socket_address(tmp_path / "s.sock")
+        daemon = _Server(str(sock), version="v1")
+        sock.unlink()
+        successor = _Server(str(sock), version="v1")
+        try:
+            daemon.retire()
+
+            assert sock.exists()
+        finally:
+            daemon.server_close()
+            successor.server_close()
+
+    def test_shutdown_begins_once_off_the_air_on_a_thread_that_cannot_hold_exit(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        # A daemon thread: one still waiting on a loop that never ran must not keep
+        # the process alive. Once: the idle poll asks every second while it waits.
+        sock = socket_address(tmp_path / "s.sock")
+        daemon = _Server(str(sock), version="v1")
+        before = set(threading.enumerate())
+        try:
+            daemon.begin_shutdown()
+            daemon.begin_shutdown()
+            # No loop has run, so each shutdown thread waits for one to stop.
+            waiting = [t for t in threading.enumerate() if t not in before]
+
+            assert [t.daemon for t in waiting] == [True]
+            assert not sock.exists()
+            # The shutdown already asked for stops the loop at once and frees it.
+            loop = threading.Thread(
+                target=daemon.serve_forever,
+                kwargs={"poll_interval": _POLL_INTERVAL_SEC},
+                daemon=True,
+            )
+            loop.start()
+            loop.join(timeout=5)
+            waiting[0].join(timeout=5)
+            assert not loop.is_alive()
+            assert not waiting[0].is_alive()
+        finally:
+            daemon.server_close()
+
+
+class _Slow:
+    """A verb that blocks until released, to hold a request in flight."""
+
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(self, request: Request) -> Response:
+        del request
+        self.started.set()
+        self.release.wait(timeout=5)
+        return Response(stdout="done", stderr="", exit_code=0)
+
+
+def _send(sock: Path, *, request: Request) -> socket.socket:
+    """Connect to ``sock`` and send ``request``; return the open connection."""
+    caller = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    caller.settimeout(5)
+    caller.connect(str(sock))
+    write_frame(caller, request.to_json())
+    return caller
+
+
+def _wait_for(condition: Callable[[], bool]) -> None:
+    """Poll ``condition`` until it holds, failing after five seconds."""
+    deadline = time.monotonic() + 5
+    while not condition():
+        assert time.monotonic() < deadline, "condition never held"
+        time.sleep(_POLL_INTERVAL_SEC)
+
+
+def _exchange(tmp_path: Path, request: Request, *, hang_up: bool) -> Response | None:
+    """Hand one framed request to a handler, and return its reply unless hung up."""
+    server = _Server(str(socket_address(tmp_path / "s.sock")), "v1")
+    caller, daemon_end = socket.socketpair()
+    try:
+        write_frame(caller, request.to_json())
+        if hang_up:
+            caller.close()
+        _Handler(daemon_end, None, server)
+        return None if hang_up else Response.from_json(read_frame(caller))
+    finally:
+        caller.close()
+        daemon_end.close()
+        server.server_close()
+
+
 def _run_concurrently(worker: Callable[[str], None], items: Sequence[str]) -> None:
     """Run ``worker`` over ``items`` in parallel threads and join them all."""
     threads = [threading.Thread(target=worker, args=(item,)) for item in items]
@@ -349,6 +603,6 @@ def _current_user() -> str:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

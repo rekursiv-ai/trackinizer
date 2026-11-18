@@ -399,6 +399,7 @@ class _LifecycleMixin(_StoreShared):
 # untouched. Only a sequence lagging its data -- the signature of a datadir rebuild or
 # dump reload that wrote literal ``seq`` values without replaying ``setval`` -- is
 # bumped, so the next ``nextval`` cannot re-mint an existing ref.
+# Audience: internal -- reads sequences; the dynamic name is never a session table.
 async def _reconcile_sequences(conn: Conn) -> None:
     """Advance each per-kind ref sequence to the maximum ``seq`` in rows."""
     for kind, seq_name in SEQ_FOR_KIND.items():

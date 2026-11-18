@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import fields
 from datetime import UTC, datetime
-from typing import cast, get_args
+from typing import get_args
 
 import pytest
 
@@ -47,7 +47,7 @@ class TestChangeKindAlignment:
     )
 
     def test_every_storage_name_is_a_change_kind(self) -> None:
-        valid = set(get_args(cast(object, Change.Kind.__value__)))
+        valid = set(get_args(Change.Kind.__value__))
         for cls in self.INQUIRY_CLASSES:
             for name, spec in column_specs(cls).items():
                 # Immutable columns are set once at submit and never edited, so
@@ -137,6 +137,6 @@ class TestRowConverters:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

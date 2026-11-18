@@ -21,19 +21,21 @@ from trackinizer.server import server, web
 from trackinizer.server.api.app import app
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.server.config import (
+    Assistant,
     Config,
     ConfigError,
     build_engine,
 )
+from trackinizer.server.embedders.registry import EMBEDDERS
 from trackinizer.server.route_iter import registered_paths
 from trackinizer.server.server import (
     _configure_logging,
     _parse_args,
+    _session_embedder_choices,
     _SuppressZeroTaskCancel,
     logger,
     main,
 )
-from trackinizer.server.visuals.catalog import Workspace
 
 
 if TYPE_CHECKING:
@@ -59,6 +61,27 @@ def restore_global_log_levels() -> Iterator[None]:
     yield
     root.setLevel(root_level)
     logger.setLevel(package_level)
+
+
+class TestSessionEmbedderChoices:
+    def test_choices_are_empty_then_stubs_then_identities_then_bare_slugs(
+        self,
+    ) -> None:
+        choices = _session_embedder_choices()
+        identities = sorted(EMBEDDERS)
+        slugs = sorted({identity.partition("@")[0] for identity in identities})
+        assert choices[:3] == ["", "stub", "stub-1024"]
+        assert choices[3 : 3 + len(identities)] == identities
+        assert choices[3 + len(identities) :] == slugs
+        assert all("@" in identity for identity in identities)
+        assert all("@" not in slug for slug in slugs)
+
+    def test_the_bare_slug_is_cut_at_the_first_at_sign(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(server, "EMBEDDERS", {"slug@1024@extra": object})
+        assert _session_embedder_choices()[-1] == "slug"
 
 
 class TestPureFunctions:
@@ -177,6 +200,67 @@ class TestPureFunctions:
         assert remaining == []
         assert Config.from_args(flags).auth_disabled is auth_disabled
 
+    def test_assistant_flag_names_the_one_shared_partner(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_ASSISTANT", raising=False)
+        flags, remaining = _parse_args(
+            argparse.ArgumentParser(),
+            ["--assistant", "scout=kb@example.com"],
+        )
+
+        assert remaining == []
+        assert Config.from_args(flags).assistant == Assistant(
+            actor="scout",
+            email="kb@example.com",
+        )
+        assert (
+            Config.from_args(_parse_args(argparse.ArgumentParser(), [])[0]).assistant
+            is None
+        )
+
+    def test_assistant_flag_defaults_from_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_ASSISTANT", "scout=kb@example.com")
+
+        flags, _ = _parse_args(argparse.ArgumentParser(), [])
+        assert Config.from_args(flags).assistant == Assistant(
+            actor="scout",
+            email="kb@example.com",
+        )
+        flags, _ = _parse_args(argparse.ArgumentParser(), ["--assistant", "s=x@y.z"])
+        assert Config.from_args(flags).assistant == Assistant(actor="s", email="x@y.z")
+
+    def test_staff_flag_names_who_holds_the_staff_audience(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delenv("TRACKINIZER_STAFF", raising=False)
+        flags, remaining = _parse_args(
+            argparse.ArgumentParser(),
+            ["--staff", "*@example.com,ada@x.y"],
+        )
+
+        assert remaining == []
+        assert Config.from_args(flags).staff == ("*@example.com", "ada@x.y")
+        assert (
+            Config.from_args(_parse_args(argparse.ArgumentParser(), [])[0]).staff == ()
+        )
+
+    def test_staff_flag_defaults_from_the_environment(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("TRACKINIZER_STAFF", "*@example.com")
+
+        flags, _ = _parse_args(argparse.ArgumentParser(), [])
+        assert Config.from_args(flags).staff == ("*@example.com",)
+        flags, _ = _parse_args(argparse.ArgumentParser(), ["--staff", "a@x.y"])
+        assert Config.from_args(flags).staff == ("a@x.y",)
+
     def test_parse_args_overrides(self) -> None:
         parser = argparse.ArgumentParser()
         flags, _ = _parse_args(
@@ -255,10 +339,9 @@ class TestPureFunctions:
         )
         fresh = FastAPI()
         monkeypatch.setattr(server, "app", fresh)
-        server._configure_app(flags)
-        catalog: object = getattr(fresh.state, "visual_catalog", None)
-        assert isinstance(catalog, Workspace)
-        assert catalog.default_visual == "trax.chat"
+        # Chat is no visual, so the override reaches the catalog and is refused there.
+        with pytest.raises(ValueError, match="Default visual must be registered"):
+            server._configure_app(flags)
 
     @pytest.mark.parametrize(
         ("argv", "message"),
@@ -630,6 +713,6 @@ class TestCoverageRoutesAndCli:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

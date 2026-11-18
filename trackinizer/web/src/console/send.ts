@@ -1,3 +1,4 @@
+import { isChatHandle } from "../api/chats";
 import type { FeedEvent, MessageTarget } from "../api/sessions";
 
 /** The text a line sends, and each target it names; or why it cannot be sent. */
@@ -30,6 +31,8 @@ export function parseLine(line: string, shown: readonly FeedEvent[], to: readonl
     const room = colon < 0 ? null : part.slice(colon + 1);
     if (!actor) return { problem: `An agent's name is missing in '${part}'` };
     if (room === "") return { problem: `A room is missing in '${part}'` };
+    // A chat is the station's own: the server refuses a browser's message to one.
+    if (isChatHandle(actor)) return { problem: `${actor} is a chat: open its station to talk to it` };
     targets.push({ actor, room });
   }
   return { targets, text };
@@ -37,12 +40,14 @@ export function parseLine(line: string, shown: readonly FeedEvent[], to: readonl
 
 /**
  * Where `@*` sends: each distinct agent-and-room pair among `shown`, in the order
- * first shown. An agent in several rooms is sent to in each, since the server
- * refuses a bare name for one; an agent in none is sent to once, with no room.
+ * first shown, a chat's not among them. An agent in several rooms is sent to in
+ * each, since the server refuses a bare name for one; an agent in none is sent to
+ * once, with no room.
  */
 export function broadcastTargets(shown: readonly FeedEvent[]): MessageTarget[] {
   const targets = new Map<string, MessageTarget>();
   for (const { actor, rooms } of shown) {
+    if (isChatHandle(actor)) continue;
     for (const room of rooms?.length ? rooms : [null]) {
       const target = { actor, room };
       targets.set(targetName(target), target);

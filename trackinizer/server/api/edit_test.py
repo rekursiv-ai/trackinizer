@@ -8,11 +8,12 @@ import asyncio
 import dataclasses
 
 from fastapi import HTTPException
+from treekle import from_plain
 
 import pytest
 
 from trackinizer.conftest import make_store, new_uuid, set_field_row
-from trackinizer.lib.custom_json import DictCodec
+from trackinizer.server.api.conftest import TEST_USER_EMAIL
 from trackinizer.server.api.edit import _run_compare_and_set
 from trackinizer.server.auth import AuthIdentity
 from trackinizer.wire.bodies import FieldSet
@@ -95,19 +96,51 @@ class TestRoutes:
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
-        set_field_row(engine.conn, {"account": "old@example.com", "kind": "Issue"})
+        set_field_row(engine.conn, {"account": TEST_USER_EMAIL, "kind": "Issue"})
         r = client.put(
             f"/api/inquiries/{new_uuid()}/account",
             json={"value": "new@example.com", "actor": "alice"},
         )
         assert r.status_code == 200, r.text
 
-    def test_set_account_route_rejects_inactive_user(
+    def test_set_account_route_refuses_moving_a_row_to_a_service_account(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"account": TEST_USER_EMAIL, "kind": "Issue"})
+
+        r = client.put(
+            f"/api/inquiries/{new_uuid()}/account",
+            json={"value": "campaign@service.invalid", "actor": "alice"},
+        )
+
+        assert r.status_code == 403, r.text
+
+    def test_set_account_route_refuses_a_writer_who_does_not_hold_the_row(
         self,
         route_client: tuple[TestClient, Store, FakeEngine],
     ) -> None:
         client, _store, engine = route_client
         set_field_row(engine.conn, {"account": "old@example.com", "kind": "Issue"})
+
+        r = client.put(
+            f"/api/inquiries/{new_uuid()}/account",
+            json={"value": TEST_USER_EMAIL, "actor": "alice"},
+        )
+
+        assert r.status_code == 403, r.text
+        assert not any(
+            isinstance(call.args[0], str) and "change_log" in call.args[0]
+            for call in engine.conn.execute.call_args_list
+        )
+
+    def test_set_account_route_rejects_inactive_user(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        set_field_row(engine.conn, {"account": TEST_USER_EMAIL, "kind": "Issue"})
 
         # Make the account-active probe answer "no active row"; the route's
         # gate must 422 before any field write.
@@ -121,7 +154,7 @@ class TestRoutes:
             json={"value": "ghost@example.com", "actor": "alice"},
         )
         assert r.status_code == 422, r.text
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert "not an active user" in str(body["detail"])
 
     def test_account_has_no_delete_route(
@@ -191,7 +224,7 @@ class TestRoutes:
         # (``_mutate_list_field`` normalizes and rejects the empty element),
         # which surfaces as a 409 ConflictError -- not the old Pydantic 422.
         assert r.status_code == 409
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert "must be non-empty" in str(body["detail"])
 
     def test_add_issue_kind_route(
@@ -217,13 +250,15 @@ class TestRoutes:
             engine.conn,
             {"experiment_codechanges": [], "kind": "Experiment"},
         )
+        # The lock probe fetches first and finds no locked row. Then
         # ``add_codechange`` validates the target via lookup_kinds
         # (one fetch). After it, the emit_change cascade re-walks
         # ``edges`` -- side_effect lets the validator return the kind
         # row first, then the cascade walk returns no edges.
         engine.conn.fetch.side_effect = [
+            list[dict[str, object]](),
             [{"id": codechange, "kind": "CodeChange"}],
-            [],
+            list[dict[str, object]](),
         ]
         r = client.patch(
             f"/api/experiment/{target}/codechanges",
@@ -295,7 +330,7 @@ class TestRoutes:
             },
         )
         assert r.status_code == 409
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert "expected 'active'" in str(body["detail"])
 
     def test_transition_owner_route_accepts_null_expectation(
@@ -335,7 +370,7 @@ class TestRoutes:
         )
 
         assert response.status_code == 409
-        body = DictCodec.coerce(response.json())
+        body = from_plain(response.json(), dict[str, object])
         assert "expected None" in str(body["detail"])
 
     def test_misspelled_guard_field_is_422_not_blind_write(
@@ -619,6 +654,6 @@ class TestCoverageRoutesAndCli:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -7,6 +7,9 @@ Adds:
   (``--app-dir``). With it, ``/`` answers 302 to ``/app/``, and ``/me``,
   ``/admin``, ``/graph`` and ``/console`` lead into the app likewise.
 - ``GET /auth/login_page`` -- the sign-in page (``assets/login.html``).
+- ``GET /auth/device`` -- where a person approves a program's device login
+  (``assets/device.html``), for a signed-in visitor; the others go to the sign-in
+  page, which returns them here.
 - ``GET /static/*`` -- files from ``--static-dir``, to anyone.
 - ``GET /api/web/search`` -- cross-kind ILIKE search over title/description.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
@@ -40,8 +43,10 @@ from typing import (
 )
 from urllib.parse import quote
 from uuid import UUID
+from weakref import WeakSet
 
 import asyncio
+import html
 import math
 import re
 import shlex
@@ -50,19 +55,26 @@ import uuid
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import (
-    FileResponse,
+    HTMLResponse,
     RedirectResponse,
     Response,
     StreamingResponse,
 )
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from treekle import from_plain, json_loads
+from treekle.absent import ABSENT
 
-from trackinizer.lib.absent import ABSENT
-from trackinizer.lib.custom_json import FloatCodec, IntCodec, ListCodec
-from trackinizer.server.api._deps import tag_row
+from trackinizer.server.api._deps import (
+    get_assistant,
+    get_inbound,
+    get_store,
+    tag_row,
+)
 from trackinizer.server.api._regex_guard import regex_failures_as_400
 from trackinizer.server.api._routes_shared import parse_fields
+from trackinizer.server.api.session_access import session_reader
+from trackinizer.server.audience import TranscriptPings
 from trackinizer.server.auth import (
     AuthIdentity,
     current_user,
@@ -74,33 +86,44 @@ from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.graph_focus import read_neighbourhood
-from trackinizer.server.store.session_feed import WHOLE_FEED, FeedScope
+from trackinizer.server.store.session_feed import (
+    WHOLE_FEED,
+    FeedScope,
+    StationAgents,
+)
 from trackinizer.server.store.session_search import (
     SessionSearchHit,
     search_session_records,
 )
 from trackinizer.server.values import vetted_sql
+from trackinizer.server.visuals.partners import live_run_states
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
+from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
+from trackinizer.wire.wire_device import DEVICE_PAGE_PATH
 from trackinizer.wire.wire_sessions import (
     FeedCursor,
     FeedFacetsResponse,
     FeedHistogramResponse,
     FeedResponse,
+    FeedWhose,
 )
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Sequence
+    from collections.abc import AsyncGenerator, Awaitable, Callable, Sequence
 
     import asyncpg
 
     from trackinizer.lib.postgres import Conn, DatabaseEngine
     from trackinizer.server.store.core import Store
+    from trackinizer.types.embedder import QueryEmbedder
 
 
 _CWD: Final = Path(__file__).resolve().parent
+_DEFAULT_APP_NAME: Final = "Trackinizer"
+"""What the sign-in page calls the app when the served build names none."""
 
 
 type WebView = dict[str, object]
@@ -109,24 +132,8 @@ type WebView = dict[str, object]
 router = APIRouter()
 
 
-def get_store(request: Request) -> Store:
-    """Return the process-wide store."""
-    return _state(request).store
-
-
 _SESSION_SEARCH_MAX_LIMIT: Final = 200
 _SESSION_SEARCH_MAPPER: Final = FootprintMapper().name
-
-
-class _QueryEmbedder(Protocol):
-    """A session embedder that can embed a query with its instruction prefix."""
-
-    name: str
-    dim: int
-
-    async def embed_query(self, text: str) -> list[float]:
-        """Embed a search query on the query-side manifold."""
-        ...
 
 
 # See ``_AppRoute``: shared caches must never store an /app/ response.
@@ -233,6 +240,8 @@ async def web_search_sessions(
     limit: int = 20,
     model: str = "",
     dim: int | None = None,
+    whose: FeedWhose | None = None,
+    hidden: bool = False,
 ) -> WebView:
     """Hybrid session search: embeddings + scoped tsvector, RRF-merged.
 
@@ -255,14 +264,19 @@ async def web_search_sessions(
         be swept). Unknown names are a 400. Empty uses the process default.
       dim: Optional dim override paired with ``model`` (a Matryoshka model
         accepts any dim in its range); must agree with any ``@dim`` in ``model``.
+      whose: Whose sessions to search, as the feed's ``whose`` says. Unnamed, a
+        person searches their own, as the console opens on them, and the
+        configured assistant every one it reads, since it holds none of the
+        sessions it is asked about.
+      hidden: Search the ``private`` sessions the caller reads too.
 
     Returns:
       body: ``{"hits": [...], "semantic": bool, "degraded": bool}`` -- each hit
         carries ``session_id``/``part``/``idx`` (where the console opens),
-        ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``.
+        ``title``, ``field``/``chunk``, ``score``, ``source``, ``snippet``. A session
+        whose transcript the caller does not read has no hit.
 
     """
-    del identity
     if limit < 1 or limit > _SESSION_SEARCH_MAX_LIMIT:
         raise HTTPException(
             status_code=400,
@@ -284,6 +298,12 @@ async def web_search_sessions(
         # skipped; 1 is a valid placeholder the query never reaches.
         dim=embedder.dim if embedder is not None else 1,
         limit=limit,
+        scope=feed_scope(
+            request,
+            identity,
+            whose=whose or _searched_by_default(request, identity),
+            hidden=hidden,
+        ),
     )
     return {
         "hits": [_session_hit_to_dict(hit) for hit in hits],
@@ -388,6 +408,7 @@ async def web_get(
         )
     return {
         "self": _row_to_dict(row),
+        "locked": row["locked"],
         "edges": edges,
         "backlinks": backlinks,
         "changes": [_change_to_dict(c) for c in changes],
@@ -545,11 +566,10 @@ async def web_subscribe(
     Forwards every ``NOTIFY_CHANNEL`` payload as ``{"id": "<uuid>"}``
     via :func:`iter_sse_events` -- shared with ``/api/change_log/stream``
     so both routes emit one wire shape. Gated at ``viewer`` like every
-    read route (see the Auth section of ``docs/design.md``). The stream
-    is unfiltered: every subscriber sees every mutated id and the SPA
-    decides what to fetch. Per-subscriber server-side filtering is a
-    future refinement, not a security boundary -- authz already gates
-    who may open the stream at all.
+    read route (see the Auth section of ``docs/design.md``). Every subscriber
+    sees every mutated id and the SPA decides what to fetch, except that a
+    record written to a session's transcript is relayed only to a subscriber
+    who reads that session.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -559,9 +579,17 @@ async def web_subscribe(
       stream: Server-sent events of mutated node ids.
 
     """
-    del identity
     engine = _state(request).engine
-    return StreamingResponse(iter_sse_events(engine), media_type="text/event-stream")
+    return StreamingResponse(
+        iter_sse_events(
+            engine,
+            hears=TranscriptPings(
+                engine=engine,
+                reader=session_reader(request, identity),
+            ).hears,
+        ),
+        media_type="text/event-stream",
+    )
 
 
 _PROBE_MAX_SEC: Final = 600.0
@@ -632,21 +660,39 @@ async def web_subscribe_probe(
 
 
 def feed_scope(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    *,
     actor: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     room: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     cli: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
     kind: Annotated[list[str] | None, Query(max_length=MAX_LIST_LIMIT)] = None,
+    station: UUID | None = None,
+    whose: FeedWhose = "everyone",
+    hidden: bool = False,
 ) -> FeedScope:
     """Read the feed's filters: each repeatable, any of its values, all of them.
 
     Args:
+      request: The request, which carries the configuration.
+      identity: Authenticated user, whose station ``station`` must be, and who
+        reads.
       actor: Sessions by routing name.
       room: Sessions by a room they joined.
       cli: Sessions by the CLI they wrap.
       kind: Records by kind.
+      station: Only the agents of this station of the caller: the sessions below
+        its chat's by ``produced_by`` edges, to depth 4 and 500 sessions, never the
+        chat's own. A station that is not the caller's, or holds no chat, keeps
+        nothing.
+      whose: ``mine``, the sessions held under the caller's account; ``campaigns``,
+        those of the campaigns the caller launched; ``everyone``, every session the
+        caller reads.
+      hidden: Keep the ``private`` sessions the caller reads; they are left out
+        otherwise.
 
     Returns:
-      scope: The records the filters keep.
+      scope: The records the filters keep, read as the caller.
 
     """
     return FeedScope(
@@ -654,6 +700,14 @@ def feed_scope(
         rooms=tuple(room or ()),
         clis=tuple(cli or ()),
         kinds=tuple(kind or ()),
+        station=(
+            None
+            if station is None
+            else StationAgents(workspace_id=station, user_id=identity.user_id)
+        ),
+        account=identity.email if whose == "mine" else "",
+        asker=identity.email if whose == "campaigns" else "",
+        reader=session_reader(request, identity, hidden=hidden),
     )
 
 
@@ -663,12 +717,16 @@ async def web_feed(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
-    after_created: datetime | None = None,
+    after_created: UtcDatetime | None = None,
     after_session: UUID | None = None,
     after_part: int | None = None,
     after_seq: int | None = None,
-    since: datetime | None = None,
-    until: datetime | None = None,
+    before_created: UtcDatetime | None = None,
+    before_session: UUID | None = None,
+    before_part: int | None = None,
+    before_seq: int | None = None,
+    since: UtcDatetime | None = None,
+    until: UtcDatetime | None = None,
     conversation: bool = False,
     limit: int = 200,
     tail: bool = False,
@@ -683,13 +741,18 @@ async def web_feed(
     required; the order key is composite so a bare ``created`` resume would
     skip same-instant ties, and ``part`` joined it when the feed moved to IR
     records -- position restarts within each source file). ``since`` / ``until``
-    bound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind``
-    filter (:func:`feed_scope`), and ``conversation=true`` keeps only what the
-    facets count as conversation. ``tail=true`` returns the
+    bound a fixed historical window; ``actor`` / ``room`` / ``cli`` / ``kind`` /
+    ``whose`` filter and ``hidden`` keeps ``private`` sessions (:func:`feed_scope`),
+    and ``conversation=true`` keeps only what the facets count as conversation.
+    ``tail=true`` returns the
     newest page (the live console's first load) so a backlog does not force a
     replay from the beginning. The response carries ``next_after`` (a composite
     cursor) for the next poll; an empty page echoes the supplied cursor so the
     tail does not rewind.
+
+    ``before_created`` / ``before_session`` / ``before_part`` / ``before_seq``
+    form an exclusive upper cursor in the same order. With ``tail=true`` they
+    read the preceding page without repeating a same-instant boundary.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -699,6 +762,10 @@ async def web_feed(
       after_session: Resume cursor: session id of last-seen turn.
       after_part: Resume cursor: part index within the session.
       after_seq: Resume cursor: sequence number within the part.
+      before_created: Upper cursor: creation timestamp of the oldest turn held.
+      before_session: Upper cursor: session id of the oldest turn held.
+      before_part: Upper cursor: part index within the session.
+      before_seq: Upper cursor: sequence number within the part.
       since: Absolute window start (inclusive).
       until: Absolute window end (inclusive).
       conversation: Keep only conversation, what a person or agent said.
@@ -706,15 +773,30 @@ async def web_feed(
       tail: Return newest page first (true) or oldest available (false).
 
     Returns:
-      feed: Turns across all sessions, pagination cursor for next poll.
+      feed: Turns across the sessions the caller reads, pagination cursor for next
+        poll. A session whose transcript the caller does not read has no turn here.
 
     """
     del identity
     if limit < 1 or limit > 1000:
         raise HTTPException(status_code=400, detail="limit must be in [1, 1000]")
-    after = _feed_cursor(after_created, after_session, after_part, after_seq)
+    _check_window(since, until)
+    after = _feed_cursor(
+        after_created,
+        session_id=after_session,
+        part=after_part,
+        seq=after_seq,
+    )
+    before = _feed_cursor(
+        before_created,
+        session_id=before_session,
+        part=before_part,
+        seq=before_seq,
+        direction="before",
+    )
     events = await get_store(request).read_feed(
         after=after,
+        before=before,
         since=since,
         until=until,
         scope=scope,
@@ -748,14 +830,16 @@ async def web_feed_facets(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
-    since: datetime | None = None,
-    until: datetime | None = None,
+    since: UtcDatetime | None = None,
+    until: UtcDatetime | None = None,
 ) -> FeedFacetsResponse:
     """Count the feed between ``since`` and ``until`` by session, room and kind.
 
     The counts are of the records ``/feed`` returns for the same window and
     filters, so the console can list agents, rooms and verbosity levels with
-    their sizes before it loads any of them.
+    their sizes before it loads any of them. An agent whose run is polling says
+    in ``state`` what the run is doing, such as ``taken_over`` after someone opened
+    its CLI in a terminal, which the console offers to reattach.
 
     Args:
       request: FastAPI request object for middleware access.
@@ -765,15 +849,33 @@ async def web_feed_facets(
       until: Window end (inclusive); unset counts to the last.
 
     Returns:
-      facets: Per session, room and record kind, what the window holds.
+      facets: Per session, room and record kind, what the window holds of the
+        sessions the caller reads.
 
     """
-    del identity
     _check_window(since, until)
-    return await get_store(request).read_feed_facets(
-        since=since,
-        until=until,
-        scope=scope,
+    del identity
+    store = get_store(request)
+    facets = await store.read_feed_facets(since=since, until=until, scope=scope)
+    if not facets.actors:
+        return facets
+    inbound = get_inbound(request)
+    polled = [
+        actor.session_id
+        for actor in facets.actors
+        if actor.ended is None and inbound.has_poller(actor.session_id)
+    ]
+    if not polled:
+        return facets
+    async with store.engine.acquire() as conn:
+        states = await live_run_states(conn, inbound=inbound, session_ids=polled)
+    return facets.model_copy(
+        update={
+            "actors": [
+                actor.model_copy(update={"state": states.get(actor.session_id, "idle")})
+                for actor in facets.actors
+            ],
+        },
     )
 
 
@@ -783,8 +885,8 @@ async def web_feed_histogram(
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     *,
     scope: Annotated[FeedScope, Depends(feed_scope)] = WHOLE_FEED,
-    since: datetime | None = None,
-    until: datetime | None = None,
+    since: UtcDatetime | None = None,
+    until: UtcDatetime | None = None,
     buckets: int = 120,
 ) -> FeedHistogramResponse:
     """Count the feed's records per time bucket, over at most the last 7 days.
@@ -804,7 +906,8 @@ async def web_feed_histogram(
       buckets: Most buckets to return, 2 to 1000.
 
     Returns:
-      histogram: The grid and each bucket's record count, oldest first.
+      histogram: The grid and each bucket's record count, oldest first, of the
+        sessions the caller reads.
 
     Raises:
       HTTPException: 400 for ``buckets`` outside 2 to 1000, an ``until`` before
@@ -831,9 +934,6 @@ async def web_feed_histogram(
         buckets=buckets,
         scope=scope,
     )
-
-
-# -- Search query parsing ----------------------------------------------------
 
 
 # -- JSON serialization ------------------------------------------------------
@@ -920,14 +1020,15 @@ def attach(
 
     Args:
       app: FastAPI instance to mount routes on.
-      assets_dir: Directory holding ``login.html`` (overrides the bundled one).
+      assets_dir: Directory holding ``login.html`` and ``device.html`` (overrides the
+        bundled ones).
       static_dir: Directory to serve at /static; unset mounts none.
       app_dir: Directory of a built web app to serve at /app/; unset mounts none.
 
     """
-    if getattr(app.state, "web_attached", False):
+    if app in _ATTACHED:
         return
-    app.state.web_attached = True
+    _ATTACHED.add(app)
     assets = assets_dir or (_CWD / "assets")
     app.include_router(router, prefix="/api/web")
 
@@ -935,13 +1036,7 @@ def attach(
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
     if app_dir is not None:
-        # ``check_dir=False`` lets the server start before a build exists.
-        app.add_api_route(
-            "/app/{path:path}",
-            _AppRoute(files=StaticFiles(directory=app_dir, check_dir=False)),
-            methods=["GET"],
-            include_in_schema=False,
-        )
+        _get(app, "/app/{path:path}", _AppRoute(files=_app_files(app_dir)))
         # Stored links name ``/`` with a hash, which the browser keeps across a
         # redirect whose ``Location`` has none, and the app's router reads the old
         # hashes. 302, not 301: a browser keeps a 301 for good, which would pin
@@ -953,13 +1048,17 @@ def attach(
             ("/graph", "/app/#/graph"),
             ("/console", "/app/#/console"),
         ):
-            app.add_api_route(
-                path,
-                _RedirectRoute(location=location),
-                methods=["GET"],
-                include_in_schema=False,
-            )
-    _add_login_route(app, assets / "login.html")
+            _get(app, path, _RedirectRoute(location=location))
+    _add_login_route(app, page_path=assets / "login.html", app_dir=app_dir)
+    _add_device_route(app, page_path=assets / "device.html", app_dir=app_dir)
+
+
+# What a browser fetches to offer "Install" before anyone has signed in: Chrome asks
+# for the manifest and its icons without the session cookie. They hold nothing but a
+# name and a logo.
+_INSTALL_FILES: Final = frozenset(
+    {"manifest.webmanifest", "icon-192.png", "icon-512.png"},
+)
 
 
 # Files are served through ``get_response`` from a route, not by mounting the
@@ -1010,7 +1109,7 @@ class _AppRoute:
         path: str,
         identity: AuthIdentity | None,
     ) -> Response:
-        if identity is not None:
+        if identity is not None or path in _INSTALL_FILES:
             try:
                 return await self.files.get_response(path, scope=request.scope)
             except StarletteHTTPException as err:
@@ -1046,23 +1145,77 @@ class _RedirectRoute:
         )
 
 
+# The sign-in page is the server's own, so its app name is not a setting: it is the
+# name the served build gives itself, read on every request as the build is (a build
+# may be swapped under a running server), and Trackinizer when there is none.
 @dataclass(frozen=True, slots=True, kw_only=True)
 class _LoginPageRoute:
     page_path: Path
+    app_dir: Path | None
 
-    async def __call__(self) -> FileResponse:
-        return FileResponse(self.page_path)
+    async def __call__(self) -> HTMLResponse:
+        name = _app_name(self.app_dir)
+        return HTMLResponse(
+            self.page_path.read_text().replace("{{app_name}}", html.escape(name)),
+        )
 
 
-def _add_login_route(app: FastAPI, page_path: Path) -> None:
+# The device page asks the API for everything it shows, so it holds nothing of anyone's
+# and is served as the sign-in page is. A visitor who is not signed in is sent to sign
+# in and back, with the code the link carried.
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _DevicePageRoute:
+    page_path: Path
+    app_dir: Path | None
+
+    async def __call__(
+        self,
+        request: Request,
+        identity: Annotated[AuthIdentity | None, Depends(optional_identity)],
+    ) -> Response:
+        if identity is None:
+            return _login_redirect(request)
+        name = _app_name(self.app_dir)
+        return HTMLResponse(
+            self.page_path.read_text().replace("{{app_name}}", html.escape(name)),
+            headers={"Cache-Control": _APP_CACHE_CONTROL},
+        )
+
+
+def _add_device_route(app: FastAPI, page_path: Path, app_dir: Path | None) -> None:
+    """Mount the device login page when its asset exists."""
+    if page_path.is_file():
+        _get(
+            app,
+            DEVICE_PAGE_PATH,
+            _DevicePageRoute(page_path=page_path, app_dir=app_dir),
+        )
+
+
+def _add_login_route(app: FastAPI, page_path: Path, app_dir: Path | None) -> None:
     """Mount the login page when its asset exists."""
     if page_path.is_file():
-        app.add_api_route(
+        _get(
+            app,
             "/auth/login_page",
-            _LoginPageRoute(page_path=page_path),
-            methods=["GET"],
-            include_in_schema=False,
+            _LoginPageRoute(page_path=page_path, app_dir=app_dir),
         )
+
+
+def _app_name(app_dir: Path | None) -> str:
+    """Return the name in the build's ``manifest.webmanifest``, else ``Trackinizer``."""
+    if app_dir is not None:
+        try:
+            manifest = json_loads(
+                (app_dir / "manifest.webmanifest").read_bytes(),
+                dict[str, object],
+            )
+        except (OSError, ValueError):
+            return _DEFAULT_APP_NAME
+        name = manifest.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    return _DEFAULT_APP_NAME
 
 
 def _login_redirect(request: Request) -> RedirectResponse:
@@ -1088,20 +1241,32 @@ def _feed_cursor(
     session_id: UUID | None,
     part: int | None,
     seq: int | None,
+    *,
+    direction: Literal["after", "before"] = "after",
 ) -> tuple[datetime, UUID, int, int] | None:
     """Assemble the composite feed cursor, or ``None`` when unset."""
     if created is None and session_id is None and seq is None and part is None:
         return None
-    if created is None or session_id is None or seq is None:
+    if (
+        created is None
+        or session_id is None
+        or seq is None
+        or (direction == "before" and part is None)
+    ):
         raise HTTPException(
             status_code=400,
-            detail="after_created, after_session, after_seq must be given together",
+            detail=(
+                "before_created, before_session, before_part, before_seq must "
+                "be given together"
+                if direction == "before"
+                else "after_created, after_session, after_seq must be given together"
+            ),
         )
-    return (created, session_id, IntCodec.coerce(part, 0), seq)
+    return (created, session_id, 0 if part is None else part, seq)
 
 
 def _check_window(since: datetime | None, until: datetime | None) -> None:
-    """Refuse a window that ends before it starts; a naive time is local."""
+    """Refuse a window that ends before it starts; a naive time is UTC."""
     if (
         since is not None
         and until is not None
@@ -1285,11 +1450,10 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
     for column in _SNAPSHOT_COLUMNS:
         if column == "marginal_cost":
             out["marginal_cost"] = {
-                "agent_usd": FloatCodec.coerce(
-                    row[prefix + "marginal_cost_agent_usd"],
-                ),
-                "resource_usd": FloatCodec.coerce(
+                "agent_usd": from_plain(row[prefix + "marginal_cost_agent_usd"], float),
+                "resource_usd": from_plain(
                     row[prefix + "marginal_cost_resource_usd"],
+                    float,
                 ),
             }
             continue
@@ -1300,9 +1464,9 @@ def _snapshot_to_dict(row: asyncpg.Record, *, prefix: str) -> WebView:
         if value is None:
             continue
         if column in ("labels", "subscribers", "issue_kind"):
-            out[column] = ListCodec.coerce(value, str)
+            out[column] = from_plain(value, list[str])
         elif column == "experiment_codechanges":
-            out[column] = [str(uid) for uid in ListCodec.coerce(value, UUID)]
+            out[column] = [str(uid) for uid in from_plain(value, list[UUID])]
         elif isinstance(value, UUID):
             out[column] = str(value)
         else:
@@ -1371,7 +1535,7 @@ def _add_edge_annotation(ref: WebView, row: asyncpg.Record) -> None:
     if row["valence"] is not None:
         ref["valence"] = row["valence"]
     if row["labels"]:
-        ref["labels"] = ListCodec.coerce(row["labels"], str)
+        ref["labels"] = from_plain(row["labels"], list[str])
 
 
 class _AppState(Protocol):
@@ -1380,10 +1544,10 @@ class _AppState(Protocol):
     # Populated lazily by ``_session_embedder``; ``config`` is set by the app
     # lifespan (absent in the duck-typed test apps, hence the getattr reads).
     config: object
-    session_embedder: _QueryEmbedder | None
+    session_embedder: QueryEmbedder | None
     # A/B override embedders, cached per stored name by ``_override_embedder`` so
     # repeated ``?model=`` queries reuse one loaded model.
-    session_embedder_overrides: dict[str, _QueryEmbedder]
+    session_embedder_overrides: dict[str, QueryEmbedder]
 
 
 class _AppLike(Protocol):
@@ -1435,12 +1599,12 @@ def _isoformat(value: object) -> str:
 # ``embed_query``, so caching the instance is cheap and only the first semantic
 # search pays the model load. ``None`` (unset knob or no config) means the
 # semantic arm is unavailable and the route degrades.
-def _session_embedder(request: Request) -> _QueryEmbedder | None:
+def _session_embedder(request: Request) -> QueryEmbedder | None:
     """Return the process's default session-search embedder, or ``None``."""
     state = _state(request)
     cached = getattr(state, "session_embedder", ABSENT)
     if cached is not ABSENT:
-        return cast("_QueryEmbedder | None", cached)
+        return cast("QueryEmbedder | None", cached)
     # ``isinstance`` narrowing, not ``getattr(config, ...)``: the lifespan
     # stores a real ``Config`` (``api/app.py``), so a typed read means a field
     # rename breaks type-checking here instead of silently disabling the
@@ -1448,10 +1612,7 @@ def _session_embedder(request: Request) -> _QueryEmbedder | None:
     config: object = getattr(state, "config", None)
     name = config.session_embedder if isinstance(config, Config) else ""
     dim = config.session_embedder_dim if isinstance(config, Config) else None
-    embedder = cast(
-        "_QueryEmbedder | None",
-        registry.build_session_embedder(name, dim=dim),
-    )
+    embedder = registry.build_cached_session_embedder(name, dim=dim)
     state.session_embedder = embedder
     return embedder
 
@@ -1470,27 +1631,25 @@ def _override_embedder(
     request: Request,
     name: str,
     dim: int | None,
-) -> _QueryEmbedder:
-    """Return the cached A/B override embedder for ``(name, dim)``; 400 if unknown."""
+) -> QueryEmbedder | None:
+    """Return the locally cached A/B model; degrade if uncached, 400 if unknown."""
     state = _state(request)
-    cache = getattr(state, "session_embedder_overrides", ABSENT)
-    if cache is ABSENT:
-        cache = {}
-        state.session_embedder_overrides = cache
-    overrides = cast("dict[tuple[str, int | None], _QueryEmbedder]", cache)
-    key = (name, dim)
-    cached = overrides.get(key)
-    if cached is not None:
-        return cached
+    if not hasattr(state, "session_embedder_overrides"):
+        state.session_embedder_overrides = {}
+    overrides = state.session_embedder_overrides
     try:
-        embedder = registry.build_session_embedder(name, dim=dim)
+        key = (
+            name if registry.is_weightless(name) else registry.resolved_name(name, dim)
+        )
+        cached = overrides.get(key)
+        if cached is not None:
+            return cached
+        embedder = registry.build_cached_session_embedder(name, dim=dim)
     except ConfigError as err:
         raise HTTPException(status_code=400, detail=str(err)) from err
-    if embedder is None:
-        raise HTTPException(status_code=400, detail="model must be non-empty")
-    typed = cast("_QueryEmbedder", embedder)
-    overrides[key] = typed
-    return typed
+    if embedder is not None:
+        overrides[key] = embedder
+    return embedder
 
 
 def _search_embedder(
@@ -1499,13 +1658,23 @@ def _search_embedder(
     semantic: bool,
     model: str,
     dim: int | None,
-) -> _QueryEmbedder | None:
+) -> QueryEmbedder | None:
     """Select the query embedder: the ``model``/``dim`` override, else the default."""
+    if dim is not None and not model:
+        raise HTTPException(status_code=400, detail="dim requires model")
     if not semantic:
         return None
     if model:
         return _override_embedder(request, model, dim)
     return _session_embedder(request)
+
+
+def _searched_by_default(request: Request, identity: AuthIdentity) -> FeedWhose:
+    """Return whose sessions a search that names none reads: see the route."""
+    assistant = get_assistant(request)
+    if assistant is not None and identity.email.lower() == assistant.email.lower():
+        return "everyone"
+    return "mine"
 
 
 async def _probe_frames(
@@ -1526,3 +1695,17 @@ async def _probe_frames(
         seq += 1
         due_sec += every_sec
     await asyncio.sleep(for_sec - (time.monotonic() - start))
+
+
+# Apps ``attach`` has already mounted; weak, so a discarded test app is freed.
+_ATTACHED: WeakSet[FastAPI] = WeakSet()
+
+
+def _get(app: FastAPI, path: str, endpoint: Callable[..., Awaitable[object]]) -> None:
+    """Mount a GET-only route that the OpenAPI schema leaves out."""
+    app.get(path, include_in_schema=False)(endpoint)
+
+
+def _app_files(app_dir: Path) -> StaticFiles:
+    """Serve ``app_dir``; ``check_dir=False`` lets the server start before a build."""
+    return StaticFiles(directory=app_dir, check_dir=False)

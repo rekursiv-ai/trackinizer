@@ -44,17 +44,10 @@ import itertools
 import time
 import uuid
 
+from treekle import from_plain
+
 from trackinizer.client.client import Client, server_url
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import (
-    BoolCodec,
-    DatetimeCodec,
-    DictCodec,
-    FloatCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-)
 from trackinizer.trax.profile import load_profile
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.bodies import BATCH_MAX_ITEMS
@@ -72,7 +65,8 @@ from trackinizer.wire.wire_sessions import SessionEnd, SessionStart
 if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Sequence
 
-    from trackinizer.lib.custom_json import JSONValue
+    from treekle import PlainTree
+
     from trackinizer.trax.profile import Profile
 
 
@@ -89,7 +83,7 @@ def main() -> int:
 
     """
     parser = argparse.ArgumentParser(
-        description=(__doc__ or "").split("\n", 2)[2],
+        description=__doc__.split("\n", 2)[2] if __doc__ else None,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     _add_arguments(parser)
@@ -174,14 +168,16 @@ def tally(events: Iterable[Mapping[str, object]]) -> list[Activity]:
     counts: Counter[UUID] = Counter()
     last: dict[UUID, Mapping[str, object]] = {}
     for event in events:
-        session_id = UUID(StrCodec.coerce(event.get("session_id")))
+        session_id = UUID(from_plain(event.get("session_id"), str))
         counts[session_id] += 1
         last[session_id] = event
     return [
         Activity(
             session_id=session_id,
-            cli=StrCodec.coerce(last[session_id].get("cli")),
-            rooms=tuple(ListCodec.coerce(last[session_id].get("rooms"), str)),
+            cli=from_plain(last[session_id].get("cli"), str, default=""),
+            rooms=tuple(
+                from_plain(last[session_id].get("rooms"), list[str], default=[]),
+            ),
             events=count,
         )
         for session_id, count in counts.items()
@@ -364,7 +360,7 @@ class ReadOnlySource:
     def __init__(self, client: Client) -> None:
         self._client = client
 
-    def get(self, path: str, **params: object) -> JSONValue:
+    def get(self, path: str, **params: object) -> PlainTree:
         """Send one GET request."""
         return self._client.get(path, params=params)
 
@@ -434,7 +430,12 @@ def mirror(
     """
     clock = _Stopwatch()
     chosen = select_sessions(_sample(source, now=now, hours=hours), limit=sessions)
-    picked = [_node(source.get(f"/api/inquiries/{a.session_id}")) for a in chosen]
+    picked = [
+        _node(
+            from_plain(source.get(f"/api/inquiries/{a.session_id}"), dict[str, object]),
+        )
+        for a in chosen
+    ]
     transcripts = [_transcript(source, a.session_id, limit=records) for a in chosen]
     clock.lap("read sessions")
     graph, edges = _read_graph(source)
@@ -529,10 +530,13 @@ def _sample(source: ReadOnlySource, *, now: datetime, hours: float) -> list[Acti
     events: list[dict[str, object]] = []
     for k in range(12):
         since = now - timedelta(hours=hours * (12 - k) / 12)
-        page = DictCodec.coerce(
+        page = from_plain(
             source.get("/api/web/feed", since=since.isoformat(), limit=250),
+            dict[str, object],
         )
-        events.extend(ListCodec.mappings(page.get("events")))
+        events.extend(
+            from_plain(page.get("events"), list[dict[str, object]], default=[]),
+        )
     return tally(events)
 
 
@@ -559,11 +563,11 @@ def _transcript(source: ReadOnlySource, session_id: UUID, *, limit: int) -> Tran
 
 def _read_graph(source: ReadOnlySource) -> tuple[list[SourceNode], list[SourceEdge]]:
     """Read the graph's nodes as whole rows, and its edges."""
-    graph = DictCodec.coerce(source.get("/api/web/graph", limit=1000))
+    graph = from_plain(source.get("/api/web/graph", limit=1000), dict[str, object])
     seqs: dict[str, list[int]] = {}
-    for node in ListCodec.mappings(graph.get("nodes")):
-        seqs.setdefault(StrCodec.coerce(node.get("kind")), []).append(
-            IntCodec.coerce(node.get("seq")),
+    for node in from_plain(graph.get("nodes"), list[dict[str, object]], default=[]):
+        seqs.setdefault(from_plain(node.get("kind"), str), []).append(
+            from_plain(node.get("seq"), int),
         )
     nodes = [
         _node(row)
@@ -572,12 +576,12 @@ def _read_graph(source: ReadOnlySource) -> tuple[list[SourceNode], list[SourceEd
     ]
     edges = [
         SourceEdge(
-            from_id=UUID(StrCodec.coerce(edge.get("from_id"))),
-            to_id=UUID(StrCodec.coerce(edge.get("to_id"))),
-            edge_kind=StrCodec.coerce(edge.get("edge_kind")),
-            valence=FloatCodec.coerce(edge["valence"]) if "valence" in edge else None,
+            from_id=UUID(from_plain(edge.get("from_id"), str)),
+            to_id=UUID(from_plain(edge.get("to_id"), str)),
+            edge_kind=from_plain(edge.get("edge_kind"), str),
+            valence=from_plain(edge["valence"], float) if "valence" in edge else None,
         )
-        for edge in ListCodec.mappings(graph.get("edges"))
+        for edge in from_plain(graph.get("edges"), list[dict[str, object]], default=[])
     ]
     return nodes, edges
 
@@ -598,13 +602,14 @@ def _rows_by_seq(
             for run in _runs(chunk)
         ]
         rows.extend(
-            ListCodec.mappings(
+            from_plain(
                 source.get(
                     "/api/inquiries",
                     kind=kind,
                     limit=MAX_LIST_LIMIT,
                     seq_range=ranges,
                 ),
+                list[dict[str, object]],
             ),
         )
     return rows
@@ -621,15 +626,12 @@ def _runs(seqs: Sequence[int]) -> list[list[int]]:
     return runs
 
 
-def _node(row: object) -> SourceNode:
-    fields = DictCodec.coerce(row, default=None)
-    created = DatetimeCodec.coerce(fields.get("created"))
-    if created is None:
-        raise ValueError(f"row {fields.get('id')} has no created time")
+def _node(fields: dict[str, object]) -> SourceNode:
+    created = from_plain(fields.get("created"), datetime)
     return SourceNode(
-        id=UUID(StrCodec.coerce(fields.get("id"))),
+        id=UUID(from_plain(fields.get("id"), str)),
         # A kind this server lacks is refused by its submit route, by name.
-        kind=cast(Inquiry.InquiryKind, StrCodec.coerce(fields.get("kind"))),
+        kind=cast(Inquiry.InquiryKind, from_plain(fields.get("kind"), str)),
         created=created,
         row=fields,
     )
@@ -692,22 +694,26 @@ def _open(target: Client, node: SourceNode) -> tuple[UUID, bool, bool]:
     """Find or open a session; return its local id, whether live, whether new."""
     key = mirror_key(node.id)
     try:
-        change = DictCodec.coerce(target.get(f"/api/change_log/{key}"))
+        change = from_plain(target.get(f"/api/change_log/{key}"), dict[str, object])
     except ClientError as err:
         if err.status_code != 404:
             raise
     else:
-        local = UUID(StrCodec.coerce(change.get("subject_id")))
-        row = DictCodec.coerce(target.get(f"/api/inquiries/{local}"))
-        return local, DatetimeCodec.coerce(row.get("ended")) is None, False
+        local = UUID(from_plain(change.get("subject_id"), str))
+        row = from_plain(target.get(f"/api/inquiries/{local}"), dict[str, object])
+        return (
+            local,
+            from_plain(row.get("ended"), datetime, default=None) is None,
+            False,
+        )
     row = node.row
     started = target.session_start(
         SessionStart(
-            cli=StrCodec.coerce(row.get("cli")),
-            title=StrCodec.coerce(row.get("title")) or None,
-            started=DatetimeCodec.coerce(row.get("started")),
-            actor=StrCodec.coerce(row.get("owner")) or None,
-            rooms=ListCodec.coerce(row.get("rooms"), str) or None,
+            cli=from_plain(row.get("cli"), str),
+            title=from_plain(row.get("title"), str, default="") or None,
+            started=from_plain(row.get("started"), datetime, default=None),
+            actor=from_plain(row.get("owner"), str, default="") or None,
+            rooms=from_plain(row.get("rooms"), list[str], default=[]) or None,
             idempotency_key=key,
         ),
     )
@@ -762,15 +768,20 @@ def _end(
     """End each live local session whose source session ended; return how many."""
     ended = 0
     for node in nodes:
-        when = DatetimeCodec.coerce(node.row.get("ended"))
+        when = from_plain(node.row.get("ended"), datetime, default=None)
         if node.id not in live or when is None:
             continue
         target.session_end(
             ids[node.id],
             SessionEnd(
                 ended=when,
-                cli_session_id=StrCodec.coerce(node.row.get("cli_session_id")) or None,
-                actor=StrCodec.coerce(node.row.get("owner")) or None,
+                cli_session_id=from_plain(
+                    node.row.get("cli_session_id"),
+                    str,
+                    default="",
+                )
+                or None,
+                actor=from_plain(node.row.get("owner"), str, default="") or None,
             ),
         )
         ended += 1
@@ -785,36 +796,50 @@ def _add_edges(
     ids: Mapping[UUID, UUID],
 ) -> tuple[int, list[str]]:
     """Add the edges the target lacks; return how many landed, and each refusal."""
-    graph = DictCodec.coerce(target.get("/api/web/graph", params={"limit": 5000}))
-    local = {
-        (
-            UUID(StrCodec.coerce(e.get("from_id"))),
-            UUID(StrCodec.coerce(e.get("to_id"))),
-            StrCodec.coerce(e.get("edge_kind")),
-        )
-        for e in ListCodec.mappings(graph.get("edges"))
-    }
+    copied = [edge for edge in edges if edge.from_id in ids and edge.to_id in ids]
+    local = _local_edges(target, {ids[edge.from_id] for edge in copied})
     items = [
-        _edge_item(edge, ids=ids) for edge in missing_edges(edges, ids=ids, local=local)
+        _edge_item(edge, ids=ids)
+        for edge in missing_edges(copied, ids=ids, local=local)
     ]
     added = 0
     failures: list[str] = []
     while items:
         chunk, items = items[:BATCH_MAX_ITEMS], items[BATCH_MAX_ITEMS:]
-        response = DictCodec.coerce(
+        response = from_plain(
             target.post("/api/edges/batch", body={"items": chunk}),
+            dict[str, object],
         )
-        results = ListCodec.mappings(response.get("items"))
+        results = from_plain(response.get("items"), list[dict[str, object]], default=[])
         done = len(
-            list(itertools.takewhile(lambda r: BoolCodec.coerce(r.get("ok")), results)),
+            list(itertools.takewhile(lambda r: from_plain(r.get("ok"), bool), results)),
         )
         added += done
         if done < len(chunk):
             failures.append(
-                f"{chunk[done]}: {StrCodec.coerce(results[done].get('error'))}",
+                f"{chunk[done]}: {from_plain(results[done].get('error'), str)}",
             )
             items = chunk[done + 1 :] + items
     return added, failures
+
+
+# Read by each copied edge's ``from`` end, not from the graph route: that returns only
+# the newest nodes, so on a large target an older copied edge looks missing, is posted
+# again, upserts as a no-op, and is counted as added.
+def _local_edges(
+    target: Client,
+    subjects: Iterable[UUID],
+) -> set[tuple[UUID, UUID, str]]:
+    """Return the target's outbound edges of ``subjects``: ``(from, to, kind)``."""
+    local: set[tuple[UUID, UUID, str]] = set()
+    for subject in subjects:
+        view = from_plain(target.get(f"/api/web/get/{subject}"), dict[str, object])
+        for kind, peers in from_plain(view.get("edges"), dict[str, object]).items():
+            local.update(
+                (subject, UUID(from_plain(peer.get("id"), str)), kind)
+                for peer in from_plain(peers, list[dict[str, object]])
+            )
+    return local
 
 
 def _edge_item(edge: SourceEdge, *, ids: Mapping[UUID, UUID]) -> dict[str, object]:

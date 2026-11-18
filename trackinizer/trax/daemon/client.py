@@ -16,6 +16,7 @@ import time
 
 from trackinizer.trax.daemon.protocol import (
     FORWARDED_ENV,
+    KEY_ENV,
     PROTOCOL_VERSION,
     Request,
     Response,
@@ -39,8 +40,9 @@ Derived rather than written literally so the respawn target follows the
 package if it is ever moved or renamed."""
 
 SERVE_FLAG: Final = "--__serve"
-"""Hidden flag that turns this entry point into the daemon. Underscored and
-undocumented: it is an implementation detail of ``trax``, not a verb."""
+"""Hidden flag that turns this entry point into the daemon, followed by the
+source fingerprint it serves. Underscored and undocumented: it is an
+implementation detail of ``trax``, not a verb."""
 
 STALE_EXIT_CODE: Final = 75
 """Daemon's answer when its source predates the caller's. 75 is EX_TEMPFAIL:
@@ -63,6 +65,21 @@ _VALUE_OPERATORS: Final[frozenset[str]] = frozenset({"to"})
 # execute in a daemon that owns neither.
 _LOCAL_ONLY_VERBS: Final[frozenset[str]] = frozenset({"run"})
 
+# ``job`` runs ssh with a throwaway key that lives in the caller's temp directory,
+# reads a secret's value from the caller's stdin and streams logs and files to the
+# caller, none of which a daemon shares. Judged in verb position only, so ``title to
+# job`` still delegates.
+_JOB_VERBS: Final[frozenset[str]] = frozenset({"job"})
+
+# The verbs after ``machine NAME`` that must run in the calling process.
+_MACHINE_HOST_VERBS: Final[frozenset[str]] = frozenset({"enroll", "connect"})
+
+# These verbs print output that grows with the graph. The daemon answers with a verb's
+# whole output in one frame, which ``protocol`` caps, so ``export`` runs in this process
+# and writes each line as it comes. They are judged in verb position only, so ``title to
+# export`` still delegates.
+_STREAMING_VERBS: Final[frozenset[str]] = frozenset({"export"})
+
 # Global flags that take a separate value token, so the scan for the verb
 # knows to skip past it. Mirrors ``cli._VALUE_FLAGS``.
 _VALUE_FLAGS: Final[frozenset[str]] = frozenset({"--profile", "--host", "--port"})
@@ -82,9 +99,13 @@ def should_delegate(argv: Sequence[str]) -> bool:
     """Whether ``argv`` may run in the daemon rather than this process.
 
     Refuses the daemon's own serve flag, anything that SPAWNS a CLI on a PTY,
-    and any command whose value is the ``-`` stdin sentinel. Each is judged by
-    POSITION rather than by presence, so a row whose title happens to be "run"
-    still gets the daemon.
+    any command whose value is the ``-`` stdin sentinel, ``machine NAME
+    enroll`` / ``machine NAME connect``, ``profile NAME login URL``, ``job``, and
+    ``export``, whose output outgrows a frame. Each is judged by POSITION rather than
+    by presence, so a row whose title happens to be "run" still gets the
+    daemon. An invocation with both ``TRACKINIZER_TOKEN`` and
+    ``TRACKINIZER_URL`` non-empty runs in this process: the key must not cross
+    the socket.
 
     Args:
       argv: Command-line arguments.
@@ -95,7 +116,14 @@ def should_delegate(argv: Sequence[str]) -> bool:
     """
     if SERVE_FLAG in argv:
         return False
-    if _spawns_a_terminal(argv):
+    # ``cli._resolve_target`` reads the key only beside a URL, and ops shells export a
+    # lone token, so refusing on the token alone would forfeit the daemon on every
+    # call there for nothing.
+    if os.getenv(KEY_ENV, default="") and os.getenv("TRACKINIZER_URL", default=""):
+        return False
+    if _spawns_a_terminal(argv) or _hosts_a_machine(argv) or _logs_in(argv):
+        return False
+    if _verb(argv) in _STREAMING_VERBS | _JOB_VERBS:
         return False
     return not any(
         token == _STDIN_SENTINEL and argv[index - 1].lower() in _VALUE_OPERATORS
@@ -144,7 +172,7 @@ def delegate(
         # local socket address must leave the original in-process CLI working.
         return None
     response = _try_once(argv, path, source_version)
-    if response is None and spawn and _spawn(path):
+    if response is None and spawn and _spawn(path, source_version=source_version):
         response = _try_once(argv, path, source_version)
     if response is None or response.exit_code == STALE_EXIT_CODE:
         # Stale daemon: it is shutting itself down, but this invocation must
@@ -181,17 +209,44 @@ def _spawns_a_terminal(argv: Sequence[str]) -> bool:
     )
 
 
+# ``machine NAME enroll`` prints a secret on stdout and ``machine NAME connect`` is a
+# long-running loop, so neither belongs in a daemon request. The verbs are the third
+# token, so ``machine NAME role to connect`` still delegates.
+def _hosts_a_machine(argv: Sequence[str]) -> bool:
+    """Whether ``argv`` is ``machine NAME enroll`` or ``machine NAME connect``."""
+    start = _verb_index(argv)
+    tail = [token.lower() for token in argv[start : start + 3]]
+    return len(tail) == 3 and tail[0] == "machine" and tail[2] in _MACHINE_HOST_VERBS
+
+
+# ``profile NAME login URL`` prints a code and then polls for minutes until a person
+# approves it in a browser. A daemon answers with a command's whole output in one frame
+# when it ends, so the code would reach the terminal only after the login had timed out.
+# The third token, so ``profile NAME url to login`` still delegates.
+def _logs_in(argv: Sequence[str]) -> bool:
+    """Whether ``argv`` is ``profile NAME login URL``."""
+    start = _verb_index(argv)
+    tail = [token.lower() for token in argv[start : start + 3]]
+    return len(tail) == 3 and tail[0] == "profile" and tail[2] == "login"
+
+
 def _verb(argv: Sequence[str]) -> str:
     """Return the verb token: the first argument past the global-flag prefix."""
+    index = _verb_index(argv)
+    return argv[index].lower() if index < len(argv) else ""
+
+
+def _verb_index(argv: Sequence[str]) -> int:
+    """Return the index of the first argument past the global-flag prefix."""
     index = 0
     while index < len(argv):
         token = argv[index]
         if not token.startswith("--"):
-            return token.lower()
+            return index
         if "=" not in token and token in _VALUE_FLAGS:
             index += 1
         index += 1
-    return ""
+    return len(argv)
 
 
 # Returns ``None`` only while nothing has been delivered. Once the request is on the
@@ -219,7 +274,7 @@ def _try_once(argv: Sequence[str], path: Path, source_version: str) -> Response 
             return None
         try:
             return Response.from_json(read_frame(conn))
-        except (OSError, ValueError, ConnectionError) as err:
+        except (OSError, ValueError) as err:
             raise DaemonRequestLostError(
                 f"the daemon accepted this command but did not report its result: {err}",
             ) from err
@@ -269,10 +324,14 @@ def _request(argv: Sequence[str], source_version: str) -> Request:
 # directory first on ``sys.path``. Inherited from a caller inside another checkout, the
 # daemon imported that checkout's package, answered every request stale, and exited.
 #
+# The daemon serves the caller's fingerprint rather than taking its own: this one was
+# taken before the daemon imports anything, so it cannot vouch for an edit that lands
+# while the daemon imports the CLI.
+#
 # Readiness is a successful connect, not the socket file appearing: a stale file from a
 # killed daemon exists immediately, and waiting on existence would report ready before
 # anything is listening.
-def _spawn(path: Path) -> bool:
+def _spawn(path: Path, *, source_version: str) -> bool:
     """Start a detached daemon and wait until it ACCEPTS, returning success."""
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     # 3.2ms, paid only on the once-per-daemon-lifetime spawn. Every other
@@ -281,7 +340,7 @@ def _spawn(path: Path) -> bool:
 
     try:
         subprocess.Popen(  # noqa: S603 -- fixed interpreter and module path.
-            [sys.executable, "-m", _CLI_MODULE, SERVE_FLAG],
+            [sys.executable, "-m", _CLI_MODULE, SERVE_FLAG, source_version],
             cwd=_CWD.parents[__name__.count(".") - 1],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,

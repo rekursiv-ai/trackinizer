@@ -10,7 +10,7 @@ graph it is most often a **companion** of a Paper (its code repo, dataset,
 notebook, or project page).
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax/SKILL.md`.
+`../SKILL.md`.
 
 ## Completeness bar
 

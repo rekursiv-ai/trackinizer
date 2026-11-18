@@ -10,32 +10,29 @@ records route reads.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict
 from unittest.mock import AsyncMock
 
 import uuid
 
 from fastapi import FastAPI
+from treekle import from_plain, immutable
 
 import httpx2
 import pytest
 
 from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    AssistantMessage,
     SessionRecord,
     Thinking,
     UncategorizedRecord,
     UserMessage,
 )
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    IntCodec,
-    ListCodec,
-    StrCodec,
-    json_freeze,
-)
 from trackinizer.server.api import session_ir_routes
 from trackinizer.server.api.conftest import (
     TEST_API_KEY_ID,
+    TEST_USER_EMAIL,
     install_identity,
     make_test_identity,
 )
@@ -43,6 +40,7 @@ from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.store.session_ir import RecentSessionTurn, SessionManifest
 from trackinizer.types.inquiries import AgentSession, Issue
 from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.wire_session_ir import RecordBody
 
 
 if TYPE_CHECKING:
@@ -50,6 +48,23 @@ if TYPE_CHECKING:
 
     from trackinizer.conftest import FakeEngine
     from trackinizer.server.store.core import Store
+
+
+class _Indexed(TypedDict):
+    idx: int
+
+
+class _Page(TypedDict):
+    part: int
+    records: list[_Indexed]
+
+
+class _Part(TypedDict):
+    part: int
+
+
+class _Parts(TypedDict):
+    parts: list[_Part]
 
 
 _CIPHERTEXT = "gAAAAABqPBiCY9-vjMraAiiOTNS8xKmaodTJ4D2l6XR2pMszVFyz"
@@ -76,7 +91,13 @@ class TestReadParts:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -86,7 +107,7 @@ class TestReadParts:
                     SessionManifest(
                         part=0,
                         name="a.jsonl",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="claude",
                         records=3,
@@ -94,7 +115,7 @@ class TestReadParts:
                     SessionManifest(
                         part=1,
                         name="b.jsonl",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="",
                         records=1,
@@ -106,9 +127,11 @@ class TestReadParts:
         response = client.get(f"/api/sessions/{session_id}/parts")
 
         assert response.status_code == 200, response.text
-        body = DictCodec.coerce(response.json())
-        parts = ListCodec.coerce(body["parts"], object)
-        assert [StrCodec.coerce(DictCodec.coerce(p)["name"]) for p in parts] == [
+        body = from_plain(response.json(), dict[str, object])
+        parts = from_plain(body["parts"], list[object])
+        assert [
+            from_plain(from_plain(p, dict[str, object])["name"], str) for p in parts
+        ] == [
             "a.jsonl",
             "b.jsonl",
         ]
@@ -127,7 +150,13 @@ class TestReadParts:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="sh")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="sh",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -137,7 +166,7 @@ class TestReadParts:
                     SessionManifest(
                         part=0,
                         name="pty",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="",
                         records=2,
@@ -148,9 +177,9 @@ class TestReadParts:
 
         response = client.get(f"/api/sessions/{uuid.uuid4()}/parts")
 
-        body = DictCodec.coerce(response.json())
-        parts = ListCodec.coerce(body["parts"], object)
-        assert DictCodec.coerce(parts[0])["format"] == ""
+        body = from_plain(response.json(), dict[str, object])
+        parts = from_plain(body["parts"], list[object])
+        assert from_plain(parts[0], dict[str, object])["format"] == ""
 
     def test_a_non_session_id_is_a_404(
         self,
@@ -159,11 +188,15 @@ class TestReadParts:
     ) -> None:
         """An Issue is not a session, even though both are inquiries."""
         client, store, _engine = route_client
-        monkeypatch.setattr(store, "get_inquiry", AsyncMock(return_value=Issue()))
+        read = AsyncMock(return_value=Issue())
+        monkeypatch.setattr(store, "get_inquiry", read)
+        asked = uuid.uuid4()
 
-        response = client.get(f"/api/sessions/{uuid.uuid4()}/parts")
+        response = client.get(f"/api/sessions/{asked}/parts")
 
         assert response.status_code == 404
+        assert response.json() == {"detail": f"unknown session {asked}"}
+        read.assert_awaited_once_with(asked)
 
 
 class TestReadRecords:
@@ -176,7 +209,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -187,10 +226,12 @@ class TestReadRecords:
         response = client.get(f"/api/sessions/{uuid.uuid4()}/records?part=0")
 
         assert response.status_code == 200, response.text
-        body = DictCodec.coerce(response.json())
-        assert IntCodec.coerce(body["part"]) == 0
-        records = ListCodec.coerce(body["records"], object)
-        assert [IntCodec.coerce(DictCodec.coerce(r)["idx"]) for r in records] == [0, 1]
+        body = from_plain(response.json(), dict[str, object])
+        assert from_plain(body["part"], int) == 0
+        records = from_plain(body["records"], list[object])
+        assert [
+            from_plain(from_plain(r, dict[str, object])["idx"], int) for r in records
+        ] == [0, 1]
 
     def test_ciphertext_rides_beside_the_payload(
         self,
@@ -207,7 +248,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="codex",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -219,12 +266,16 @@ class TestReadRecords:
             ),
         )
 
-        body = DictCodec.coerce(
+        body = from_plain(
             client.get(f"/api/sessions/{uuid.uuid4()}/records").json(),
+            dict[str, object],
         )
-        record = DictCodec.coerce(ListCodec.coerce(body["records"], object)[0])
+        record = from_plain(
+            from_plain(body["records"], list[object])[0],
+            dict[str, object],
+        )
 
-        assert StrCodec.coerce(record["ciphertext"]) == _CIPHERTEXT
+        assert from_plain(record["ciphertext"], str) == _CIPHERTEXT
         assert _CIPHERTEXT not in str(record["payload"])
 
     def test_plaintext_only_reaches_the_store(
@@ -238,7 +289,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -262,7 +319,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -284,7 +347,13 @@ class TestReadRecords:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(store, "read_session_records", read)
 
@@ -305,7 +374,13 @@ class TestRecentTurns:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="codex",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         read = AsyncMock(
             return_value=[
@@ -347,7 +422,13 @@ class TestRecentTurns:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="codex")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="codex",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         read = AsyncMock(return_value=[])
         monkeypatch.setattr(store, "read_recent_session_turns", read)
@@ -374,6 +455,7 @@ class TestViewerOwnedCapture:
             AsyncMock(
                 return_value=AgentSession(
                     cli="codex",
+                    audience="open",
                     opened_by_api_key_id=TEST_API_KEY_ID
                     if owns_session
                     else uuid.uuid4(),
@@ -412,7 +494,13 @@ class TestLegacyPart:
         monkeypatch.setattr(
             store,
             "get_inquiry",
-            AsyncMock(return_value=AgentSession(cli="claude")),
+            AsyncMock(
+                return_value=AgentSession(
+                    cli="claude",
+                    audience="open",
+                    opened_by_api_key_id=TEST_API_KEY_ID,
+                ),
+            ),
         )
         monkeypatch.setattr(
             store,
@@ -422,7 +510,7 @@ class TestLegacyPart:
                     SessionManifest(
                         part=-1,
                         name="legacy",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=session_id,
                         format="",
                         records=2,
@@ -430,7 +518,7 @@ class TestLegacyPart:
                     SessionManifest(
                         part=0,
                         name="s.jsonl",
-                        metadata=json_freeze({}),
+                        metadata=immutable({}),
                         ir_id=uuid.uuid4(),
                         format="claude",
                         records=1,
@@ -466,7 +554,7 @@ async def test_a_legacy_transcript_reads_every_listed_part(integ_store: Store) -
     part = await integ_store.upsert_session_manifest(
         session_id,
         name="s.jsonl",
-        metadata=json_freeze({}),
+        metadata=immutable({}),
         ir_id=uuid.uuid4(),
         format="claude",
         records=1,
@@ -508,22 +596,38 @@ async def test_a_legacy_transcript_reads_every_listed_part(integ_store: Store) -
         page.text for page in pages
     ]
     assert [
-        (
-            IntCodec.coerce(body["part"]),
-            IntCodec.coerce(DictCodec.coerce(record)["idx"]),
-        )
-        for body in (DictCodec.coerce(page.json()) for page in pages)
-        for record in ListCodec.coerce(body["records"], object)
+        (body["part"], record["idx"])
+        for body in (from_plain(page.json(), _Page) for page in pages)
+        for record in body["records"]
     ] == [(-1, 0), (-1, 1), (0, 0)]
+
+
+def test_a_persons_line_is_any_the_loader_reads_as_one() -> None:
+    """The assistant's line, a stamped CLI line and an authored one name their poster.
+
+    A CLI's own user turn and an answer name none.
+    """
+    records: list[SessionRecord] = [
+        AgentToAgentMessage(sender="ada@x.y", content="kb"),
+        UserMessage(
+            content="bob@x.y: hi",
+            extra=immutable({"$inbound": {"source": "bob@x.y", "room": None}}),
+        ),
+        UserMessage(content="hi", extra=immutable({"author": "cy@x.y"})),
+        UserMessage(content="typed at the terminal"),
+        AssistantMessage(content="answer"),
+    ]
+
+    posters = session_ir_routes._posters(
+        [RecordBody.of(_row(idx, record)) for idx, record in enumerate(records)],
+    )
+
+    assert posters == ["ada@x.y", "bob@x.y", "cy@x.y"]
 
 
 def _listed_parts(response: httpx2.Response) -> list[int]:
     """Return the ``part`` of every entry a ``GET .../parts`` response lists."""
-    body = DictCodec.coerce(response.json())
-    return [
-        IntCodec.coerce(DictCodec.coerce(entry)["part"])
-        for entry in ListCodec.coerce(body["parts"], object)
-    ]
+    return [entry["part"] for entry in from_plain(response.json(), _Parts)["parts"]]
 
 
 # The rows migration 020 writes for a session captured before the IR: its turns at the
@@ -531,14 +635,16 @@ def _listed_parts(response: httpx2.Response) -> list[int]:
 # Written directly because the table 020 reads no longer exists (021 dropped it);
 # ``schema_backfill_test.py`` runs 020 itself and pins this shape.
 async def _legacy_session(store: Store, *, turns: int) -> uuid.UUID:
-    """Return an AgentSession holding ``turns`` backfilled records at part ``-1``."""
+    """Return the viewer's AgentSession holding ``turns`` records at part ``-1``."""
     session_id = uuid.uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'legacy')",
+            "$2, 'legacy', 'open')",
             session_id,
+            TEST_USER_EMAIL,
         )
         await conn.execute(
             "INSERT INTO session_manifests "
@@ -571,6 +677,6 @@ async def _viewer() -> AuthIdentity:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

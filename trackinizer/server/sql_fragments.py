@@ -82,7 +82,7 @@ def _policy_exclude_clauses(
 # tests ``status = 'active'`` rather than ``status = 'complete'``.
 _ELIGIBLE_ISSUE_PREDICATE: Final[str] = vetted_sql(
     "issue.kind = 'Issue' AND issue.status = 'active' "
-    "  AND issue.owner IS NULL "
+    "  AND issue.owner IS NULL AND NOT issue.locked "
     "  AND NOT EXISTS ("
     # ``requires`` is stored requirer -> prerequisite, so an issue with an
     # active prerequisite (its to-side) is not yet schedulable.

@@ -2,7 +2,7 @@ import { Icon, type IconName } from "./icons";
 
 /** How a kind is named and drawn. */
 export type KindLook = {
-  /** For a list or a sidebar entry: `Code changes`. */
+  /** For a list or a Go menu entry: `Code changes`. */
   readonly plural: string;
   /** For one row, in running text: `code change`. */
   readonly one: string;
@@ -32,7 +32,7 @@ const LOOKS: { readonly [kind: string]: KindLook } = {
   Paper: { plural: "Papers", one: "paper", icon: "book" },
   Artifact: { plural: "Artifacts", one: "artifact", icon: "box" },
   CodeChange: { plural: "Code changes", one: "code change", icon: "commit" },
-  // Not "search": that magnifier is the sidebar's search button, beside it.
+  // Not "search": that magnifier is the top bar's search button.
   WebSearch: { plural: "Web searches", one: "web search", icon: "textSearch" },
   WebResult: { plural: "Web results", one: "web result", icon: "globe" },
   AgentSession: { plural: "Agent sessions", one: "agent session", icon: "bot" },

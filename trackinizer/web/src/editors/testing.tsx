@@ -4,6 +4,10 @@ import { vi } from "vitest";
 import type { Change, DetailRow } from "../api/detail";
 import { type Sent, stubFetch } from "../api/testing";
 import { change, detail } from "../detail/testing";
+import { DEFAULT_PREFERENCES } from "../preferences";
+
+/** The preferences route: the user's drafts and data are written there, and are not writes to the row. */
+const PREFERENCES = "/api/me/preferences";
 
 /**
  * A server holding one inquiry, `self`: it serves its detail, its row and its
@@ -35,7 +39,7 @@ export function serveRow(self: DetailRow) {
     /** The writes sent, as `METHOD field` and body. */
     writes: () =>
       server.sent
-        .filter((request) => request.method !== "GET")
+        .filter((request) => request.method !== "GET" && request.path !== PREFERENCES)
         .map((request) => ({ call: `${request.method} ${request.path.split("/").at(-1)}`, body: request.body })),
   };
   server.sent = stubFetch(async (request) => {
@@ -43,6 +47,7 @@ export function serveRow(self: DetailRow) {
     const at = held.findIndex((hold) => hold.method === request.method && hold.path === pathname);
     if (at >= 0) await held.splice(at, 1)[0]!.until;
     const row = server.self;
+    if (pathname === PREFERENCES) return Response.json({ ...DEFAULT_PREFERENCES, ...(await request.clone().json()) });
     if (request.method === "GET") {
       if (pathname === `/api/web/get/${row.id}`) return Response.json(detail(row, { changes }));
       if (pathname === `/api/inquiries/${row.id}`) return Response.json(row);

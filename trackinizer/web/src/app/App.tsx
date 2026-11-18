@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { Component, type ReactNode, startTransition, useDeferredValue, useEffect, useState } from "react";
+import { APP } from "../appName";
+import { type ReactNode, startTransition, useDeferredValue, useEffect, useState } from "react";
 import { ApiError } from "../api/client";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { CopyDetails } from "../debug/CopyDetails";
@@ -11,6 +12,8 @@ import { Icon, Logo } from "../ui/icons";
 import { ToastProvider } from "../ui/toast";
 import { EmptyState } from "../ui/view";
 import { MetaContext, ProfileContext, useBoot } from "./boot";
+import { CanvasStream } from "./canvasStream";
+import { CrashBoundary } from "./CrashBoundary";
 import { createQueryClient } from "./queryClient";
 import { Session, SessionContext } from "./session";
 import { Shell } from "./Shell";
@@ -47,7 +50,7 @@ export function App({
   }, []);
   if (!started) return <Frame busy />;
   return (
-    <CrashBoundary reload={reload}>
+    <CrashBoundary reload={reload} frame={(crash) => <Frame>{crash}</Frame>}>
       <QueryClientProvider client={queryClient}>
         <SessionContext value={session}>
           <CommandRegistryContext value={registry}>
@@ -89,8 +92,10 @@ function Boot() {
       <MetaContext value={boot.meta}>
         <ProfileContext value={boot.profile}>
           <RouterProvider kinds={boot.meta.kinds}>
-            <LiveProvider>
-              <Shell />
+            <LiveProvider canvas={boot.profile.visual_workspace_enabled}>
+              <CanvasStream enabled={boot.profile.visual_workspace_enabled}>
+                  <Shell />
+              </CanvasStream>
             </LiveProvider>
           </RouterProvider>
         </ProfileContext>
@@ -103,7 +108,7 @@ function Boot() {
   const message = boot.error instanceof Error ? boot.error.message : String(boot.error);
   return (
     <Frame>
-      <EmptyState icon={<Icon name="x" size={24} />} title="Could not start Trackinizer">
+      <EmptyState icon={<Icon name="x" size={24} />} title={`Could not start ${APP.name}`}>
         <p role="alert">{message}</p>
         <span className="w-actions">
           <button type="button" className="btn" onClick={boot.retry}>
@@ -116,56 +121,16 @@ function Boot() {
   );
 }
 
-/**
- * A render crash anywhere in the app shows what happened, with Copy details and
- * Reload, in place of a blank page. React's root logs the crash
- * (`logRenderError`, passed to `createRoot` in main.tsx).
- */
-class CrashBoundary extends Component<{ reload: () => void; children: ReactNode }, Crashed> {
-  state: Crashed = { crash: null };
-
-  static getDerivedStateFromError(error: unknown) {
-    return { crash: { error } };
-  }
-
-  render() {
-    const { crash } = this.state;
-    if (!crash) return this.props.children;
-    const { error } = crash;
-    const message = error instanceof Error ? error.message : String(error);
-    return (
-      <Frame>
-        <EmptyState icon={<Icon name="x" size={24} />} title="Trackinizer stopped on an error">
-          <p role="alert">{message}</p>
-          <p>Copy the details for a bug report, then reload to start again.</p>
-          <span className="w-actions">
-            <button type="button" className="btn" onClick={this.props.reload}>
-              Reload
-            </button>
-            <CopyDetails message={`The page crashed: ${message}`} error={error} labelled />
-          </span>
-        </EmptyState>
-      </Frame>
-    );
-  }
-}
-
-/** The app's frame before boot: the logo in the sidebar and an empty panel. */
+/** The app's frame before boot: the logo in the top bar and an empty panel. */
 function Frame({ busy = false, children }: { busy?: boolean; children?: ReactNode }) {
   return (
     <div className="app" aria-busy={busy}>
-      <nav className="sidebar" aria-label="Sidebar">
-        <div className="ws-row">
-          <span className="ws-switch">
-            <Logo />
-            Trackinizer
-          </span>
-        </div>
-      </nav>
+      <div className="topbar">
+        <span className="topbar-logo" title={APP.name}>
+          <Logo />
+        </span>
+      </div>
       <main className="main">{children}</main>
     </div>
   );
 }
-
-/** What the app crashed on, once it has. */
-type Crashed = { readonly crash: { readonly error: unknown } | null };

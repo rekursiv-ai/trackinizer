@@ -1,0 +1,1551 @@
+{
+ "title": "Chance rate · 1/97 on 4,705 pairs",
+ "prompt": "what is the chance rate",
+ "budget": {
+  "prose": 1,
+  "section": 3,
+  "cells": 1,
+  "figure": 3,
+  "marks": 1,
+  "footnote": 1
+ },
+ "compose": [
+  {
+   "node": "prose",
+   "lead": true,
+   "span": true,
+   "text": "Chance is 1/97 = 1.0309%, because the task is 97-way: predict the residue of a sum mod 97. On the 4,705 held-out pairs that is 48.5 correct, and one eval carries 0.1473 pp of sampling noise, so a single eval anywhere in 0.742% to 1.320% is indistinguishable from guessing. The clamped arm is not flat at that line: it climbs to it from 0% at memorization, first crosses it at step 1,400, and spends 106 of its 121 evals inside the band. The other 15 matter to the sentence you asked about, because 7 of them sit above the band and all 7 are after step 10,400."
+  },
+  {
+   "node": "section",
+   "label": "where 1.0309 per cent comes from",
+   "size": "97 classes, 4,705 held-out pairs"
+  },
+  {
+   "node": "cells",
+   "cells": [
+    "chance",
+    "1.0309%",
+    "= 48.5 of 4,705",
+    "one-eval sd",
+    "0.1473 pp",
+    "95% band",
+    "0.742% to 1.320%"
+   ]
+  },
+  {
+   "node": "figure",
+   "figure": {
+    "kind": "equation",
+    "display": true,
+    "tex": "\\text{chance}=\\tfrac{1}{p}=\\tfrac{1}{97}=1.0309\\%,\\qquad \\sigma_{\\text{eval}}=\\sqrt{\\tfrac{\\hat p\\,(1-\\hat p)}{n}}=\\sqrt{\\tfrac{0.010309\\times0.989691}{4705}}=0.1473\\ \\text{pp}"
+   }
+  },
+  {
+   "node": "section",
+   "label": "the two non-grokking arms against the line",
+   "size": "121 evals each, 100-step intervals"
+  },
+  {
+   "node": "figure",
+   "figure": {
+    "kind": "chart",
+    "label": "Every eval of the two arms that never generalized, against the chance line. The solid rule is 1.0309%; the dashed pair is the 95% sampling band for one eval on 4,705 pairs. The clamped arm rises out of memorization to the line by step 1,400 and stays in the band for 106 of 121 evals, with 7 above it, all after step 10,400. no_decay sits below the line for the whole run. The decay arm is not drawn: it reaches 100% and would flatten this scale to a baseline.",
+    "spec": {
+     "height": 240,
+     "layer": [
+      {
+       "data": {
+        "values": [
+         {
+          "y": 0.7423
+         },
+         {
+          "y": 1.3196
+         }
+        ]
+       },
+       "mark": {
+        "type": "rule",
+        "strokeDash": [
+         4,
+         3
+        ]
+       },
+       "encoding": {
+        "y": {
+         "field": "y",
+         "type": "quantitative",
+         "scale": {
+          "domain": [
+           0,
+           1.6
+          ]
+         },
+         "axis": {
+          "title": "test accuracy (%)",
+          "values": [
+           0,
+           0.4,
+           0.8,
+           1.6
+          ]
+         }
+        }
+       }
+      },
+      {
+       "data": {
+        "values": [
+         {
+          "y": 1.0309
+         }
+        ]
+       },
+       "mark": {
+        "type": "rule",
+        "strokeWidth": 2
+       },
+       "encoding": {
+        "y": {
+         "field": "y",
+         "type": "quantitative",
+         "scale": {
+          "domain": [
+           0,
+           1.6
+          ]
+         },
+         "axis": {
+          "title": "test accuracy (%)",
+          "values": [
+           0,
+           0.4,
+           0.8,
+           1.6
+          ]
+         }
+        }
+       }
+      },
+      {
+       "data": {
+        "values": [
+         {
+          "x": 250,
+          "y": 1.3196,
+          "t": "+1.96 sd  1.3196%"
+         },
+         {
+          "x": 250,
+          "y": 1.0309,
+          "t": "chance  1.0309%"
+         },
+         {
+          "x": 250,
+          "y": 0.7423,
+          "t": "-1.96 sd  0.7423%"
+         }
+        ]
+       },
+       "mark": {
+        "type": "text",
+        "align": "left",
+        "baseline": "bottom",
+        "dy": -4,
+        "fontSize": 10.5
+       },
+       "encoding": {
+        "x": {
+         "field": "x",
+         "type": "quantitative"
+        },
+        "y": {
+         "field": "y",
+         "type": "quantitative",
+         "scale": {
+          "domain": [
+           0,
+           1.6
+          ]
+         },
+         "axis": {
+          "title": "test accuracy (%)",
+          "values": [
+           0,
+           0.4,
+           0.8,
+           1.6
+          ]
+         }
+        },
+        "text": {
+         "field": "t",
+         "type": "nominal"
+        }
+       }
+      },
+      {
+       "data": {
+        "values": [
+         {
+          "step": 1,
+          "acc": 1,
+          "arm": "clamp"
+         },
+         {
+          "step": 100,
+          "acc": 0,
+          "arm": "clamp"
+         },
+         {
+          "step": 200,
+          "acc": 0.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 300,
+          "acc": 0.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 400,
+          "acc": 0.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 500,
+          "acc": 0.23,
+          "arm": "clamp"
+         },
+         {
+          "step": 600,
+          "acc": 0.32,
+          "arm": "clamp"
+         },
+         {
+          "step": 700,
+          "acc": 0.64,
+          "arm": "clamp"
+         },
+         {
+          "step": 800,
+          "acc": 0.74,
+          "arm": "clamp"
+         },
+         {
+          "step": 900,
+          "acc": 0.87,
+          "arm": "clamp"
+         },
+         {
+          "step": 1000,
+          "acc": 0.85,
+          "arm": "clamp"
+         },
+         {
+          "step": 1100,
+          "acc": 1.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 1200,
+          "acc": 0.98,
+          "arm": "clamp"
+         },
+         {
+          "step": 1300,
+          "acc": 1,
+          "arm": "clamp"
+         },
+         {
+          "step": 1400,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 1500,
+          "acc": 0.98,
+          "arm": "clamp"
+         },
+         {
+          "step": 1600,
+          "acc": 1.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 1700,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 1800,
+          "acc": 1,
+          "arm": "clamp"
+         },
+         {
+          "step": 1900,
+          "acc": 1.15,
+          "arm": "clamp"
+         },
+         {
+          "step": 2000,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 2100,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 2200,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 2300,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 2400,
+          "acc": 1.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 2500,
+          "acc": 1.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 2600,
+          "acc": 1.08,
+          "arm": "clamp"
+         },
+         {
+          "step": 2700,
+          "acc": 1.06,
+          "arm": "clamp"
+         },
+         {
+          "step": 2800,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 2900,
+          "acc": 1.06,
+          "arm": "clamp"
+         },
+         {
+          "step": 3000,
+          "acc": 1.08,
+          "arm": "clamp"
+         },
+         {
+          "step": 3100,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 3200,
+          "acc": 0.98,
+          "arm": "clamp"
+         },
+         {
+          "step": 3300,
+          "acc": 1.06,
+          "arm": "clamp"
+         },
+         {
+          "step": 3400,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 3500,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 3600,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 3700,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 3800,
+          "acc": 1.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 3900,
+          "acc": 1,
+          "arm": "clamp"
+         },
+         {
+          "step": 4000,
+          "acc": 1.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 4100,
+          "acc": 1.02,
+          "arm": "clamp"
+         },
+         {
+          "step": 4200,
+          "acc": 1.06,
+          "arm": "clamp"
+         },
+         {
+          "step": 4300,
+          "acc": 1.06,
+          "arm": "clamp"
+         },
+         {
+          "step": 4400,
+          "acc": 0.98,
+          "arm": "clamp"
+         },
+         {
+          "step": 4500,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 4600,
+          "acc": 1.08,
+          "arm": "clamp"
+         },
+         {
+          "step": 4700,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 4800,
+          "acc": 1.04,
+          "arm": "clamp"
+         },
+         {
+          "step": 4900,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 5000,
+          "acc": 1.06,
+          "arm": "clamp"
+         },
+         {
+          "step": 5100,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 5200,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 5300,
+          "acc": 1.08,
+          "arm": "clamp"
+         },
+         {
+          "step": 5400,
+          "acc": 1.17,
+          "arm": "clamp"
+         },
+         {
+          "step": 5500,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 5600,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 5700,
+          "acc": 1.13,
+          "arm": "clamp"
+         },
+         {
+          "step": 5800,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 5900,
+          "acc": 1.13,
+          "arm": "clamp"
+         },
+         {
+          "step": 6000,
+          "acc": 1.15,
+          "arm": "clamp"
+         },
+         {
+          "step": 6100,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 6200,
+          "acc": 1.17,
+          "arm": "clamp"
+         },
+         {
+          "step": 6300,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 6400,
+          "acc": 1.17,
+          "arm": "clamp"
+         },
+         {
+          "step": 6500,
+          "acc": 1.13,
+          "arm": "clamp"
+         },
+         {
+          "step": 6600,
+          "acc": 1.17,
+          "arm": "clamp"
+         },
+         {
+          "step": 6700,
+          "acc": 1.23,
+          "arm": "clamp"
+         },
+         {
+          "step": 6800,
+          "acc": 1.23,
+          "arm": "clamp"
+         },
+         {
+          "step": 6900,
+          "acc": 1.15,
+          "arm": "clamp"
+         },
+         {
+          "step": 7000,
+          "acc": 1.21,
+          "arm": "clamp"
+         },
+         {
+          "step": 7100,
+          "acc": 1.15,
+          "arm": "clamp"
+         },
+         {
+          "step": 7200,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 7300,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 7400,
+          "acc": 1.13,
+          "arm": "clamp"
+         },
+         {
+          "step": 7500,
+          "acc": 1.15,
+          "arm": "clamp"
+         },
+         {
+          "step": 7600,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 7700,
+          "acc": 1.17,
+          "arm": "clamp"
+         },
+         {
+          "step": 7800,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 7900,
+          "acc": 1.21,
+          "arm": "clamp"
+         },
+         {
+          "step": 8000,
+          "acc": 1.11,
+          "arm": "clamp"
+         },
+         {
+          "step": 8100,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 8200,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 8300,
+          "acc": 1.23,
+          "arm": "clamp"
+         },
+         {
+          "step": 8400,
+          "acc": 1.21,
+          "arm": "clamp"
+         },
+         {
+          "step": 8500,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 8600,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 8700,
+          "acc": 1.23,
+          "arm": "clamp"
+         },
+         {
+          "step": 8800,
+          "acc": 1.21,
+          "arm": "clamp"
+         },
+         {
+          "step": 8900,
+          "acc": 1.21,
+          "arm": "clamp"
+         },
+         {
+          "step": 9000,
+          "acc": 1.21,
+          "arm": "clamp"
+         },
+         {
+          "step": 9100,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 9200,
+          "acc": 1.28,
+          "arm": "clamp"
+         },
+         {
+          "step": 9300,
+          "acc": 1.19,
+          "arm": "clamp"
+         },
+         {
+          "step": 9400,
+          "acc": 1.23,
+          "arm": "clamp"
+         },
+         {
+          "step": 9500,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 9600,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 9700,
+          "acc": 1.3,
+          "arm": "clamp"
+         },
+         {
+          "step": 9800,
+          "acc": 1.28,
+          "arm": "clamp"
+         },
+         {
+          "step": 9900,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 10000,
+          "acc": 1.28,
+          "arm": "clamp"
+         },
+         {
+          "step": 10100,
+          "acc": 1.21,
+          "arm": "clamp"
+         },
+         {
+          "step": 10200,
+          "acc": 1.3,
+          "arm": "clamp"
+         },
+         {
+          "step": 10300,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 10400,
+          "acc": 1.32,
+          "arm": "clamp"
+         },
+         {
+          "step": 10500,
+          "acc": 1.32,
+          "arm": "clamp"
+         },
+         {
+          "step": 10600,
+          "acc": 1.23,
+          "arm": "clamp"
+         },
+         {
+          "step": 10700,
+          "acc": 1.17,
+          "arm": "clamp"
+         },
+         {
+          "step": 10800,
+          "acc": 1.28,
+          "arm": "clamp"
+         },
+         {
+          "step": 10900,
+          "acc": 1.3,
+          "arm": "clamp"
+         },
+         {
+          "step": 11000,
+          "acc": 1.3,
+          "arm": "clamp"
+         },
+         {
+          "step": 11100,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 11200,
+          "acc": 1.38,
+          "arm": "clamp"
+         },
+         {
+          "step": 11300,
+          "acc": 1.34,
+          "arm": "clamp"
+         },
+         {
+          "step": 11400,
+          "acc": 1.3,
+          "arm": "clamp"
+         },
+         {
+          "step": 11500,
+          "acc": 1.32,
+          "arm": "clamp"
+         },
+         {
+          "step": 11600,
+          "acc": 1.25,
+          "arm": "clamp"
+         },
+         {
+          "step": 11700,
+          "acc": 1.36,
+          "arm": "clamp"
+         },
+         {
+          "step": 11800,
+          "acc": 1.32,
+          "arm": "clamp"
+         },
+         {
+          "step": 11900,
+          "acc": 1.3,
+          "arm": "clamp"
+         },
+         {
+          "step": 12000,
+          "acc": 1.3,
+          "arm": "clamp"
+         },
+         {
+          "step": 1,
+          "acc": 1,
+          "arm": "no_decay"
+         },
+         {
+          "step": 100,
+          "acc": 0,
+          "arm": "no_decay"
+         },
+         {
+          "step": 200,
+          "acc": 0.02,
+          "arm": "no_decay"
+         },
+         {
+          "step": 300,
+          "acc": 0.02,
+          "arm": "no_decay"
+         },
+         {
+          "step": 400,
+          "acc": 0.04,
+          "arm": "no_decay"
+         },
+         {
+          "step": 500,
+          "acc": 0.09,
+          "arm": "no_decay"
+         },
+         {
+          "step": 600,
+          "acc": 0.15,
+          "arm": "no_decay"
+         },
+         {
+          "step": 700,
+          "acc": 0.11,
+          "arm": "no_decay"
+         },
+         {
+          "step": 800,
+          "acc": 0.15,
+          "arm": "no_decay"
+         },
+         {
+          "step": 900,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1000,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1100,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1200,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1300,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1400,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1500,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1600,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1700,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1800,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 1900,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2000,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2100,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2200,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2300,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2400,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2500,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2600,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2700,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2800,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 2900,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3000,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3100,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3200,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3300,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3400,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3500,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3600,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3700,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3800,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 3900,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4000,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4100,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4200,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4300,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4400,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4500,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4600,
+          "acc": 0.17,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4700,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4800,
+          "acc": 0.17,
+          "arm": "no_decay"
+         },
+         {
+          "step": 4900,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5000,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5100,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5200,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5300,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5400,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5500,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5600,
+          "acc": 0.19,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5700,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5800,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 5900,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6000,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6100,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6200,
+          "acc": 0.21,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6300,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6400,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6500,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6600,
+          "acc": 0.23,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6700,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6800,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 6900,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7000,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7100,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7200,
+          "acc": 0.26,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7300,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7400,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7500,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7600,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7700,
+          "acc": 0.32,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7800,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 7900,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8000,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8100,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8200,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8300,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8400,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8500,
+          "acc": 0.32,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8600,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8700,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8800,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 8900,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9000,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9100,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9200,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9300,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9400,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9500,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9600,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9700,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9800,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 9900,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10000,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10100,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10200,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10300,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10400,
+          "acc": 0.32,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10500,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10600,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10700,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10800,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 10900,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11000,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11100,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11200,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11300,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11400,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11500,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11600,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11700,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11800,
+          "acc": 0.28,
+          "arm": "no_decay"
+         },
+         {
+          "step": 11900,
+          "acc": 0.3,
+          "arm": "no_decay"
+         },
+         {
+          "step": 12000,
+          "acc": 0.3,
+          "arm": "no_decay"
+         }
+        ]
+       },
+       "mark": {
+        "type": "point",
+        "filled": true,
+        "size": 16
+       },
+       "encoding": {
+        "x": {
+         "field": "step",
+         "type": "quantitative",
+         "axis": {
+          "title": "step",
+          "tickCount": 7,
+          "format": "d"
+         }
+        },
+        "y": {
+         "field": "acc",
+         "type": "quantitative",
+         "scale": {
+          "domain": [
+           0,
+           1.6
+          ]
+         },
+         "axis": {
+          "title": "test accuracy (%)",
+          "values": [
+           0,
+           0.4,
+           0.8,
+           1.6
+          ]
+         }
+        },
+        "color": {
+         "field": "arm",
+         "type": "nominal",
+         "legend": {
+          "title": "arm"
+         }
+        },
+        "tooltip": [
+         {
+          "field": "arm",
+          "type": "nominal"
+         },
+         {
+          "field": "step",
+          "type": "quantitative"
+         },
+         {
+          "field": "acc",
+          "type": "quantitative",
+          "title": "test accuracy (%)"
+         }
+        ]
+       }
+      }
+     ]
+    }
+   }
+  },
+  {
+   "node": "marks",
+   "span": true,
+   "items": [
+    {
+     "kind": "demand",
+     "text": "Say the band, not `never left chance`. The checkable sentence is that the clamped arm's test accuracy stayed inside 0.742% to 1.320% for 106 of its 121 evals and finished 98.70 pp below the decay arm, which is what rules out generalization. `Never left` also claims the 15 evals outside the band did not happen."
+    },
+    {
+     "kind": "finding",
+     "text": "The clamped arm did move, upward, and only as far as chance. It is at 0.32% at step 600 when the norm is pinned, 0.85% at 1,000, first above 1.0309% at step 1,400, and averages 1.137% across the 115 evals from step 600 on: 53.5 of 4,705 against 48.5 expected."
+    },
+    {
+     "kind": "flag",
+     "text": "Seven evals sit above the 95% band and all seven are late: 1.32% at 10,400 and 10,500, 1.38% at 11,200, 1.34% at 11,300, 1.32% at 11,500, 1.36% at 11,700, 1.32% at 11,800. The best of them is 64.9 of 4,705 against 48.5 expected, 2.37 sd out. That is 16 extra pairs, not a circuit, but it is a drift and not a flat line."
+    },
+    {
+     "kind": "note",
+     "text": "The 121 evals share one test set and successive states of one model, so they are not 121 independent draws. The band is the right test for a single eval. An aggregate computed across the run, 7.70 sd on the post-clamp mean, treats correlated evals as independent and overstates the excess by an unknown factor."
+    },
+    {
+     "kind": "finding",
+     "text": "no_decay is the arm that is genuinely off the line, and it is below it: final test 0.30%, 14.1 of 4,705, 4.96 sd under chance. Only 1 of its 121 evals lands inside the band, the untrained eval at step 1. A memorizing model is anti-predictive on held-out pairs, so below chance is the memorizing baseline here, not chance itself."
+    }
+   ]
+  },
+  {
+   "node": "section",
+   "label": "each arm in counts, not percentages",
+   "size": "n = 4,705, chance = 48.5"
+  },
+  {
+   "node": "figure",
+   "figure": {
+    "kind": "table",
+    "table": {
+     "caption": "Each arm against the chance line, in counts as well as percentages. n = 4,705 held-out pairs, chance 1.0309% (48.5 correct), one-eval sd 0.1473 pp, 95% band 0.742% to 1.320%. z is (final test minus chance) divided by that sd, so it is the test for one eval and not for the run. Counts are derived from the accuracy the runner filed at 4 decimal places, so each lands within half a pair of the integer.",
+     "columns": [
+      "final test",
+      "correct of 4,705",
+      "z vs chance",
+      "best eval",
+      "best eval step",
+      "evals above chance",
+      "evals inside band"
+     ],
+     "rows": [
+      [
+       "decay",
+       100,
+       4705,
+       672.07,
+       100,
+       2700,
+       "110 of 121",
+       "4 of 121"
+      ],
+      [
+       "no_decay",
+       0.3,
+       14.1,
+       -4.96,
+       1,
+       1,
+       "0 of 121",
+       "1 of 121"
+      ],
+      [
+       "clamp",
+       1.3,
+       61.2,
+       1.83,
+       1.38,
+       11200,
+       "96 of 121",
+       "106 of 121"
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "node": "footnote",
+   "text": "Chance and the band are computed here, not filed: p = 97 and 4,705 held-out pairs come from the run config quoted on the previous surface, the sd is the binomial one printed above · the three series are the 121-eval curves embedded in that surface, which is now the only copy: /tmp/grok_clamp.json, /tmp/grok_no_decay.json, /tmp/grok_decay.json and /tmp/run_grok.py are gone from this box, and Experiment#1658 and Belief#651 both 404 on this server, whose graph has been reset since they were filed · so every figure here is traceable to that published answer and no further back, and the two words `weight-decay-driven` and `blocks circuit formation` remain untested for the reasons that surface gave."
+  }
+ ]
+}

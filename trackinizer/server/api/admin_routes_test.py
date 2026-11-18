@@ -8,25 +8,32 @@ from unittest.mock import AsyncMock
 
 import uuid
 
+from fastapi import HTTPException
+from treekle import from_plain
+
 import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.lib.custom_json import DictCodec, ListCodec
+from trackinizer.server.api import auth_routes
+from trackinizer.server.api.admin_routes import _refuse_last_admin_loss
 from trackinizer.server.api.app import app
 from trackinizer.server.api.conftest import (
+    TEST_API_KEY_ID,
     TEST_USER_ID,
     clear_identity_override,
     install_identity,
     make_test_identity,
 )
-from trackinizer.server.auth import Role, current_user
+from trackinizer.server.auth import AuthIdentity, Role, current_user
+from trackinizer.server.config import Config
 
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
 
     from trackinizer.conftest import FakeEngine
+    from trackinizer.lib.postgres import Conn
     from trackinizer.server.store.core import Store
 
 
@@ -39,6 +46,7 @@ def _user_row(
     role: str = "viewer",
     status: str = "active",
     email: str = "alice@example.com",
+    hosted_domain: str | None = None,
 ) -> dict[str, object]:
     """One ``users``-row shape for ``fetch`` / ``fetchrow`` mocks."""
     return {
@@ -49,6 +57,7 @@ def _user_row(
         "status": status,
         "created_at": datetime(2026, 1, 1, tzinfo=UTC),
         "last_login": None,
+        "hosted_domain": hosted_domain,
     }
 
 
@@ -80,7 +89,7 @@ class _JsonResponse(Protocol):
 
 def _json(response: _JsonResponse) -> dict[str, object]:
     """Narrow a TestClient JSON body at the HTTP boundary."""
-    return DictCodec.coerce(response.json())
+    return from_plain(response.json(), dict[str, object])
 
 
 def _json_detail(response: _JsonResponse) -> str:
@@ -238,8 +247,8 @@ class TestAdminUsers:
         engine.conn.fetch = AsyncMock(return_value=[row])
         r = client.get("/api/admin/users")
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
-        users = ListCodec.mappings(body["users"])
+        body = from_plain(r.json(), dict[str, object])
+        users = from_plain(body["users"], list[dict[str, object]])
         assert len(users) == 1
         user = users[0]
         assert user["email"] == "bob@example.com"
@@ -248,6 +257,104 @@ class TestAdminUsers:
         # ``id`` and ``created_at`` are serialized for the table view.
         assert user["id"] == str(row["id"])
         assert "created_at" in user
+
+    def test_list_derives_a_staff_flag_from_the_deployment_setting(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        monkeypatch.setattr(
+            app.state,
+            "config",
+            Config(staff=("*@example.com", "ada@other.org")),
+            raising=False,
+        )
+        engine.conn.fetch = AsyncMock(
+            return_value=[
+                _user_row(email="member@example.com", hosted_domain="example.com"),
+                _user_row(email="consumer@example.com"),
+                _user_row(email="ada@other.org"),
+                _user_row(email="bob@other.org", hosted_domain="other.org"),
+            ],
+        )
+        body = from_plain(client.get("/api/admin/users").json(), dict[str, object])
+        users = from_plain(body["users"], list[dict[str, object]])
+        assert {u["email"]: u["staff"] for u in users} == {
+            "member@example.com": True,
+            "consumer@example.com": False,
+            "ada@other.org": True,
+            "bob@other.org": False,
+        }
+
+    def test_list_marks_nobody_staff_when_the_setting_is_unset(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        monkeypatch.setattr(app.state, "config", Config(), raising=False)
+        engine.conn.fetch = AsyncMock(
+            return_value=[_user_row(email="member@example.com", hosted_domain="x.y")],
+        )
+        body = from_plain(client.get("/api/admin/users").json(), dict[str, object])
+        (user,) = from_plain(body["users"], list[dict[str, object]])
+        assert user["staff"] is False
+
+    def test_a_service_account_cannot_be_made_an_admin(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        """A role change to admin for a service account is refused and writes nothing."""
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.fetchval = AsyncMock(return_value="agent@service.invalid")
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        r = client.put(
+            f"/api/admin/users/{uuid.uuid4()}/role",
+            json={"role": "admin"},
+        )
+        assert r.status_code == 422, r.text
+        assert "service account" in _json_detail(r)
+        assert not any("UPDATE users SET role" in s for s in _executed_sql(engine))
+
+    def test_a_service_account_may_change_between_viewer_and_writer(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.fetchval = AsyncMock(return_value="agent@service.invalid")
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        engine.conn.fetchrow = AsyncMock(
+            return_value={"target_is_admin_active": False, "other_admins": 1},
+        )
+        r = client.put(
+            f"/api/admin/users/{uuid.uuid4()}/role",
+            json={"role": "viewer"},
+        )
+        assert r.status_code == 200, r.text
+        assert any("UPDATE users SET role" in s for s in _executed_sql(engine))
+
+    def test_no_admin_route_can_make_a_user_staff(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        """Staff is a deploy-time setting: a request cannot write it, whatever it says."""
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        r = client.put(
+            f"/api/admin/users/{uuid.uuid4()}/role",
+            json={"role": "writer", "staff": True},
+        )
+        assert r.status_code == 200, r.text
+        assert not any("staff" in sql for sql in _executed_sql(engine))
+        assert not [
+            route for route in app.routes if "staff" in getattr(route, "path", "")
+        ]
 
     def test_role_change_happy_path(
         self,
@@ -715,6 +822,105 @@ class TestAdminRemoveUser:
         )
 
 
+class TestAdminResetPreferences:
+    """``DELETE /api/admin/users/{id}/preferences``: reset, never read."""
+
+    @pytest.mark.parametrize("role", ["viewer", "writer"])
+    def test_non_admin_403_and_nothing_written(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        role: str,
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role=cast(Role, role)))
+        r = client.delete(f"/api/admin/users/{uuid.uuid4()}/preferences")
+        assert r.status_code == 403
+        assert not _executed_sql(engine)
+
+    def test_admin_reset_clears_the_column_and_answers_nothing(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.execute = AsyncMock(return_value="UPDATE 1")
+        user = uuid.uuid4()
+        r = client.delete(f"/api/admin/users/{user}/preferences")
+        assert r.status_code == 204, r.text
+        assert r.content == b""
+        assert engine.conn.execute.call_args.args == (
+            "UPDATE users SET preferences = NULL WHERE id = $1",
+            user,
+        )
+        assert not engine.conn.fetchrow.called
+        assert not engine.conn.fetchval.called
+
+    def test_404_when_user_missing(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        engine.conn.execute = AsyncMock(return_value="UPDATE 0")
+        r = client.delete(f"/api/admin/users/{uuid.uuid4()}/preferences")
+        assert r.status_code == 404
+
+
+_LAST_ADMIN_QUERY = (
+    "SELECT "
+    "(SELECT role = 'admin' AND status = 'active' FROM users WHERE id = $1) "
+    "  AS target_is_admin_active, "
+    "(SELECT COUNT(*) FROM users "
+    "  WHERE role = 'admin' AND status = 'active' AND id != $1) "
+    "  AS other_admins"
+)
+
+
+class TestRefuseLastAdminLoss:
+    """The guard every demote, disable and delete runs: never the last active admin."""
+
+    @pytest.mark.asyncio
+    async def test_reads_the_target_and_the_other_active_admins_in_one_query(
+        self,
+    ) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=None)
+        target = uuid.uuid4()
+        await _refuse_last_admin_loss(cast("Conn", conn), target)
+        conn.fetchrow.assert_awaited_once_with(_LAST_ADMIN_QUERY, target)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "row",
+        [
+            None,
+            {"target_is_admin_active": False, "other_admins": 0},
+            {"target_is_admin_active": None, "other_admins": 0},
+            {"target_is_admin_active": True, "other_admins": 1},
+        ],
+    )
+    async def test_a_change_that_leaves_an_active_admin_passes(
+        self,
+        row: dict[str, object] | None,
+    ) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(return_value=row)
+        await _refuse_last_admin_loss(cast("Conn", conn), uuid.uuid4())
+
+    @pytest.mark.asyncio
+    async def test_the_last_active_admin_is_refused_with_409(self) -> None:
+        conn = AsyncMock()
+        conn.fetchrow = AsyncMock(
+            return_value={"target_is_admin_active": True, "other_admins": 0},
+        )
+        with pytest.raises(HTTPException) as refused:
+            await _refuse_last_admin_loss(cast("Conn", conn), uuid.uuid4())
+        assert (refused.value.status_code, refused.value.detail) == (
+            409,
+            "last_admin: refusing to leave the org without an active admin.",
+        )
+
+
 class TestAdminAllowlist:
     def test_list_returns_rows(
         self,
@@ -727,8 +933,8 @@ class TestAdminAllowlist:
         )
         r = client.get("/api/admin/allowlist")
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
-        entries = ListCodec.mappings(body["entries"])
+        body = from_plain(r.json(), dict[str, object])
+        entries = from_plain(body["entries"], list[dict[str, object]])
         assert len(entries) == 1
         entry = entries[0]
         assert entry["email_or_pattern"] == "*@example.com"
@@ -793,6 +999,31 @@ class TestAdminAllowlist:
         )
         assert insert.args[1] == "*@example.com"
         assert _json(r)["email_or_pattern"] == "*@example.com"
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "campaign@service.invalid",
+            " Campaign@Service.Invalid ",
+            "*@service.invalid",
+            "*@SERVICE.INVALID",
+        ],
+    )
+    def test_add_refuses_an_entry_that_could_admit_a_service_address(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        entry: str,
+    ) -> None:
+        """No service account signs in, so no allowlist entry may name one."""
+        client, _store, engine = route_client
+        install_identity(make_test_identity(role="admin"))
+        r = client.post(
+            "/api/admin/allowlist",
+            json={"email_or_pattern": entry, "role": "viewer"},
+        )
+        assert r.status_code == 422, r.text
+        assert "service" in _json_detail(r)
+        assert not any("INSERT INTO allowlist" in s for s in _executed_sql(engine))
 
     def test_set_allowlist_role_canonicalizes_path_param(
         self,
@@ -984,23 +1215,135 @@ class TestProfileRoute:
     ) -> None:
         client, _store, engine = route_client
         install_identity(make_test_identity(role="admin"))
+        # The profile reads the user, then the rules Issue, of which there is none.
         engine.conn.fetchrow = AsyncMock(
-            return_value={
-                "name": "Alice",
-                "last_login": datetime(2026, 1, 1, tzinfo=UTC),
-                "visual_workspace_enabled": False,
-            },
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": datetime(2026, 1, 1, tzinfo=UTC),
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": datetime(2026, 2, 1, tzinfo=UTC),
+                    "acknowledged_rules_version": "v1",
+                    "preferences": None,
+                },
+                None,
+            ],
         )
         r = client.get("/api/me/profile")
         assert r.status_code == 200, r.text
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert body["email"]
         assert body["role"] == "admin"
         assert body["name"] == "Alice"
         assert body["visual_workspace_enabled"] is False
+        assert body["acknowledged_rules_version"] == "v1"
+        assert body["rules_version"] is None
+        assert body["rules_issue_id"] is None
         last_login = body["last_login"]
         assert isinstance(last_login, str)
         assert last_login.startswith("2026")
+
+    @pytest.mark.parametrize("key", [TEST_API_KEY_ID, None])
+    def test_names_the_key_the_caller_used(
+        self,
+        key: uuid.UUID | None,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        install_identity(make_test_identity(api_key_id=key))
+        engine.conn.fetchrow = AsyncMock(
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": None,
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": None,
+                    "acknowledged_rules_version": None,
+                    "preferences": None,
+                },
+                None,
+            ],
+        )
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        assert body["api_key_id"] == (None if key is None else str(key))
+
+    @pytest.mark.parametrize(
+        ("read", "opening", "pinned"),
+        [
+            ({"open"}, {"open"}, None),
+            ({"staff", "open"}, {"open", "staff"}, None),
+            ({"open"}, {"staff"}, "staff"),
+        ],
+    )
+    def test_lists_what_the_credential_reads_and_opens(
+        self,
+        read: set[str],
+        opening: set[str],
+        pinned: str | None,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, engine = route_client
+        base = make_test_identity()
+        install_identity(
+            AuthIdentity(
+                user_id=base.user_id,
+                api_key_id=base.api_key_id,
+                email=base.email,
+                role=base.role,
+                read_audiences=frozenset(read),
+                open_audiences=frozenset(opening),
+                pinned_audience=pinned,
+            ),
+        )
+        engine.conn.fetchrow = AsyncMock(
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": None,
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": None,
+                    "acknowledged_rules_version": None,
+                    "preferences": None,
+                },
+                None,
+            ],
+        )
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+        assert body["read_audiences"] == sorted(read)
+        assert body["open_audiences"] == sorted(opening)
+        assert body["pinned_audience"] == pinned
+        assert body["summary_accounts"] == []
+
+    def test_lists_only_the_staff_settings_service_accounts(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        client, _store, engine = route_client
+        engine.conn.fetchrow = AsyncMock(
+            side_effect=[
+                {
+                    "name": "Alice",
+                    "last_login": None,
+                    "visual_workspace_enabled": False,
+                    "acknowledged_at": None,
+                    "preferences": None,
+                    "acknowledged_rules_version": None,
+                },
+                None,
+            ],
+        )
+        staff = ("lee@staff.example", "campaign@service.invalid", "*@staff.example")
+
+        def staff_of(request: object) -> tuple[str, ...]:
+            del request
+            return staff
+
+        monkeypatch.setattr(auth_routes, "get_staff", staff_of)
+
+        body = from_plain(client.get("/api/me/profile").json(), dict[str, object])
+
+        assert body["summary_accounts"] == ["campaign@service.invalid"]
 
     def test_401_without_auth(
         self,
@@ -1018,6 +1361,6 @@ def _sql(value: object) -> str:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

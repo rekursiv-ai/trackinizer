@@ -26,6 +26,7 @@ everything above it::
     │   labels
     │   marginal_cost
     │   subscribers
+    │   app
     │   superseded_by
     │   supersedes
     │   produces
@@ -89,6 +90,7 @@ everything above it::
                 ended
                 rooms
                 opened_by_api_key_id
+                audience
 """
 
 from __future__ import annotations
@@ -101,7 +103,8 @@ from uuid import UUID, uuid4
 import re
 import sys
 
-from trackinizer.lib.custom_json import ListCodec
+from treekle import from_plain
+
 from trackinizer.types.columns import (
     ColumnSpec,
     Row,
@@ -308,6 +311,25 @@ class Inquiry:
     storage -- there is no separate subscriptions table, and no open/close
     timestamps or explicit-vs-implicit distinction are kept."""
 
+    app: dict[str, object] | None = field(
+        default=None,
+        metadata=ColumnSpec(
+            sql_type="JSONB",
+            sql_check=(
+                "jsonb_typeof(app) = 'object' AND octet_length(app::text) <= 65536"
+            ),
+            compare_and_set=True,
+        ),
+    )
+    """What an application layered on trackinizer keeps on this row, as one JSON
+    object keyed by app name (``{"<app>": {...}}``), so two apps never collide.
+    An app's visual draws from it: the row is the app's anchor (a campaign's
+    brief Issue, a board's Artifact) or one of the rows the app gathers by its
+    labels and edges (a campaign's Experiments). Stored and returned verbatim and
+    never read by trackinizer; at most 64 KiB. A writer that changes one field of
+    it writes the whole object, so it compares and sets (``Store.transition_app``)
+    to keep a field another writer set meanwhile."""
+
     superseded_by: tuple[InquiryEdge, ...] = ()
     """Successor inquiries that replace or refine this one.
 
@@ -478,17 +500,9 @@ class Inquiry:
             "status": row["status"],
             "title": row["title"],
             "description": row["description"],
-            "labels": (
-                None
-                if row["labels"] is None
-                else tuple(ListCodec.coerce(row["labels"], str))
-            ),
+            "labels": _strings(row["labels"]),
             "marginal_cost": Cost.from_row(row),
-            "subscribers": (
-                None
-                if row["subscribers"] is None
-                else tuple(ListCodec.coerce(row["subscribers"], str))
-            ),
+            "subscribers": _strings(row["subscribers"]),
             "created": row["created"],
             "modified": row["modified"],
         }
@@ -507,9 +521,25 @@ class Inquiry:
             # An array column comes back a list; the frozen dataclass holds a
             # tuple. The spec is the one place an array is declared.
             if value is not None and spec is not None and spec.sql_type.endswith("[]"):
-                value = tuple(ListCodec.coerce(value))
+                value = tuple(from_plain(value, list[object]))
             kwargs[f.name] = value
         return cast(_InquiryConstructor[Self], cls)(**kwargs)
+
+
+# A ``text[]`` column arrives from asyncpg as a list of str, which needs only a
+# check; the codec's general decode walked each of a row's labels through its
+# type dispatch, most of a 1,000-row list's time (60 labels a row in production).
+def _strings(value: object) -> tuple[str, ...] | None:
+    """Return a ``text[]`` column as a tuple, or None for NULL; anything else is decoded."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        items = cast("list[object]", value)
+        strings = [item for item in items if isinstance(item, str)]
+        if len(strings) == len(items):
+            return tuple(strings)
+        return tuple(from_plain(items, list[str]))
+    return tuple(from_plain(value, list[str]))
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1216,6 +1246,31 @@ class AgentSession(Artifact):
     submit, never edited -- so it carries no setter, route, or change_log
     mirror."""
 
+    audience: str | None = field(
+        default=None,
+        metadata=ColumnSpec(
+            applies_to_inquiry_kinds=frozenset({"AgentSession"}),
+            sql_type="TEXT",
+            # ``wire/audience.py`` spells the same shape; ``types`` cannot import it.
+            sql_check="audience ~ '^[a-z][a-z0-9_-]{0,31}$'",
+            required=True,
+            # Moved only by ``Store.set_session_audience``, which holds the rules a
+            # blind field write would skip: who may hide a session, and that a
+            # ``staff`` one is never lowered.
+            route_editable=False,
+        ),
+    )
+    """Who may read this session's transcript: ``open``, ``private`` or ``staff``.
+
+    Only the transcript is gated; the envelope (title, actor, times, cost, edges)
+    and the rows a session files stay open. Stamped at submit; its owner moves it
+    between ``open`` and ``private``, and a chat whose assistant read a staff
+    session for an asker becomes ``staff``, each through
+    ``Store.set_session_audience``, audited in the change log. It has no field
+    route. The shape is checked in SQL and the accepted set in code, so a new value
+    is not a migration. Required on every AgentSession and NULL on every other
+    kind."""
+
 
 # Walks the ``Inquiry`` subclass tree so a new kind registers itself with no parallel
 # edit, then resolves each walked class through this module's namespace.
@@ -1255,7 +1310,7 @@ exported class (see :func:`_kind_to_class`).
 target) and is intentionally absent: it is never a stored row ``kind``.
 """
 
-_MISSING_KINDS = set(get_args(cast(object, Inquiry.InquiryKind.__value__))) - set(
+_MISSING_KINDS = set(get_args(Inquiry.InquiryKind.__value__)) - set(
     KIND_TO_CLASS,
 )
 if _MISSING_KINDS:

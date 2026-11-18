@@ -1,7 +1,7 @@
 """Request bodies for inquiry submit and edit routes.
 
 Each ``SubmitX`` mirrors its dataclass minus the auto-generated fields
-(id, seq, status, marginal_cost, edge projections, created, modified),
+(id, seq, status, marginal_cost, edge projections, modified),
 which the Store fills in or edges supply. Per-field edits share three
 uniform bodies (:class:`FieldSet`, :class:`FieldOp`,
 :class:`FieldMutation`) keyed by HTTP method; the field's concrete type
@@ -10,12 +10,13 @@ lives in ``types/inquiries.py``, not here.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 import uuid
 
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -39,6 +40,8 @@ from trackinizer.types.inquiries import (
     Paper,
     is_valid_source,
 )
+from trackinizer.wire.json_types import UtcDatetime
+from trackinizer.wire.wire_science_chat import CHAT_SESSION_PREFIX
 
 
 if TYPE_CHECKING:
@@ -83,7 +86,7 @@ class SubmitBase(_CostFields):
     """Inquiry-base fields every submit body carries.
 
     Only ``title`` is required at the API boundary. Every other base
-    field is optional and stored as SQL NULL when unset -- NULL is the
+    content field is optional and stored as SQL NULL when unset -- NULL is the
     single encoding of "absent" (an unset ``owner`` is genuinely unowned,
     not actor-stamped). Defaults for per-kind columns are a client
     decision, so a bare-HTTP submit gets the minimal-information row.
@@ -100,6 +103,32 @@ class SubmitBase(_CostFields):
         return value
 
     description: str | None = None
+    created: AwareDatetime | None = None
+    """Optional historical creation instant for importing an inquiry. Requires
+    an explicit timezone and cannot be in the future. Applies only to initial
+    creation; the server owns ``modified`` and the audit event's timestamp.
+    ``None`` keeps the database's current creation-time default."""
+
+    @field_validator("created", mode="before")
+    @classmethod
+    def _parse_created(cls, value: object) -> datetime | None:
+        if value is None or isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        raise ValueError("created must be an ISO timestamp with an explicit timezone")
+
+    @field_validator("created", mode="after")
+    @classmethod
+    def _validate_created(cls, value: datetime | None) -> datetime | None:
+        # The asyncpg driver maps the UTC minimum to -infinity, whose naive decode
+        # breaks comparisons with ordinary inquiry timestamps.
+        if value is not None and value <= datetime.min.replace(tzinfo=UTC):
+            raise ValueError("created must be after 0001-01-01T00:00:00Z")
+        if value is not None and value > datetime.now(UTC):
+            raise ValueError("created must not be in the future")
+        return value
+
     status: Inquiry.Status | None = None
     """Optional lifecycle status at creation. ``None`` is born ``active`` (the
     server default); an explicit value (e.g. ``complete``) is honored so a
@@ -107,6 +136,10 @@ class SubmitBase(_CostFields):
     complete instead of needing a follow-up edit. The DB CHECK validates it,
     and kind-specific lifecycle CHECKs still apply (an ``AgentSession`` cannot
     be born ``complete`` without ``ended``)."""
+
+    app: dict[str, object] | None = None
+    """App-layer fields as one JSON object keyed by app name; stored verbatim,
+    opaque to trackinizer. See :attr:`Inquiry.app`."""
 
     owner: Inquiry.Actor | None = None
     account: Inquiry.Actor | None = None
@@ -131,6 +164,10 @@ class SubmitBase(_CostFields):
     actor: str | None = None
     """Audit actor recorded on the ``created`` change. ``None`` lets the
     server default from the authenticated principal's email."""
+
+    reason: str = ""
+    """Optional context for the backfill creation audit. The historical
+    creation timestamp is prepended while preserving this explanation."""
 
     # ``submit_batch`` does ``item.actor or actor``, so a whitespace-only ``actor``
     # would silently fall through to the batch actor -- the same malformed-input hazard
@@ -232,7 +269,7 @@ class SubmitPaper(SubmitBase):
     publication_type: Paper.PublicationType | None = None
     venue: str | None = None
     subvenue: str | None = None
-    publish_date: datetime | None = None
+    publish_date: UtcDatetime | None = None
     source: str | None = None
     google_scholar_cluster_id: str | None = None
     google_scholar_cites_id: str | None = None
@@ -371,7 +408,7 @@ class SubmitAgentSession(SubmitBase):
     cli_session_id: str | None = Field(default=None, min_length=1)
     """The CLI's own session id, for correlation with vendor records."""
 
-    started: datetime | None = None
+    started: UtcDatetime | None = None
     # No ``ended`` at create: a session is born live (``ended IS NULL``).
     # ``ended`` is stamped only by ``POST /api/sessions/{id}/end``, which sets
     # it together with ``status = 'complete'`` -- the lifecycle CHECK on
@@ -397,6 +434,15 @@ class SubmitAgentSession(SubmitBase):
     @classmethod
     def _validate_rooms(cls, value: list[str] | None) -> list[str] | None:
         return None if value is None else _validate_room_names(value)
+
+    @model_validator(mode="after")
+    def _protect_chat_creation_time(self) -> Self:
+        """Keep the timestamp that determines a chat's starter server-owned."""
+        if self.created is not None and (self.cli_session_id or "").startswith(
+            CHAT_SESSION_PREFIX,
+        ):
+            raise ValueError("created cannot be backfilled for science chat sessions")
+        return self
 
 
 # A room name must be a single clean token: non-blank (it is matched verbatim against
@@ -694,8 +740,8 @@ class FieldSet[T](FieldMutation):
 
     * ``"set"`` (default) -- blind overwrite; ``expected`` must be absent.
     * ``"cas"`` -- compare-and-set; ``expected`` is required and the route
-      409s if the live value differs. Valid only on ``owner``, ``status``, and
-      ``judgement`` (the route 400s elsewhere).
+      409s if the live value differs. Valid only on ``owner``, ``status``,
+      ``judgement`` and ``app`` (the route 400s elsewhere).
 
     The discriminator is what makes a typo'd guard a hard error instead of
     a silent blind write: ``extra="forbid"`` 422s an unknown field (e.g. a

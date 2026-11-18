@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { editableFields } from "../api/fields";
 import { stubFetch } from "../api/testing";
+import { HighlightStore } from "../app/highlights";
 import { CommandRegistry } from "../commands/registry";
 import { stubLayout } from "../editors/testing";
 import { openedAt } from "./queries";
@@ -53,6 +54,20 @@ function rail(name: string): [string | null, (string | null)[]][] {
     [...item.querySelectorAll(".edge-name")].map((edge) => edge.textContent),
   ]);
 }
+
+test("an Issue's properties open folded, under a summary that unfolds them; other kinds' open unfolded", async () => {
+  serveDetails([detail(row("Issue", 1)), detail(row("Belief", 2))]);
+  renderDetail({ kind: "Issue", seq: 1 });
+  await screen.findByRole("heading", { level: 1 });
+  const fold = screen.getByLabelText("Properties", { selector: "aside" }).querySelector("details")!;
+  expect(fold.open).toBe(false);
+  await userEvent.click(within(fold).getByText("Properties and details", { selector: "summary" }));
+  expect(fold.open).toBe(true);
+  cleanup();
+  renderDetail({ kind: "Belief", seq: 2 });
+  await screen.findByRole("heading", { level: 1 });
+  expect(screen.getByLabelText("Properties", { selector: "aside" }).querySelector("details")!.open).toBe(true);
+});
 
 test("a Kind#seq link resolves its id, then shows the inquiry", async () => {
   const root = row("Issue", 1, { description: "See Belief#2 and [the plan](https://example.com/p)." });
@@ -112,7 +127,7 @@ test("a detail draws its page in a render after the one its inquiry lands in, wh
 });
 
 test("an Artifact lookup link shows its published content", async () => {
-  const artifact = row("Artifact", 7);
+  const artifact = { ...row("Artifact", 7), id: uuid(70) };
   stubFetch((request) => {
     const path = new URL(request.url).pathname;
     if (path === `/api/web/get/${artifact.id}`) return Response.json(detail(artifact));
@@ -463,6 +478,36 @@ test("a child's priority glyph is its edge priority under this parent (COLD-17)"
   expect(within(prop("Priority")).getByRole("img", { name: "P1 High" })).toBeTruthy();
 });
 
+test("a peer the assistant points at is marked in the rail, and the record itself when its own id is pointed at", async () => {
+  const highlights = new HighlightStore();
+  serveDetails([
+    detail(row("Issue", 1), {
+      backlinks: { narrows: [peer("Issue", 2), peer("Issue", 3)] },
+      edges: { narrows: [peer("Issue", 8)] },
+    }),
+  ]);
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { highlights });
+  await screen.findByRole("heading", { level: 1 });
+  const marked = () => [...document.querySelectorAll(".rail-peer.is-highlighted .rail-title")].map((title) => title.textContent);
+  expect(marked()).toEqual([]);
+  expect(document.querySelector(".d-head.is-highlighted")).toBeNull();
+  act(() => highlights.set([uuid(3), uuid(8)]));
+  expect(marked()).toEqual(["Issue number 8 Issue#8", "Issue number 3 Issue#3"]);
+  expect(section("Parents").querySelectorAll(".is-highlighted")).toHaveLength(1);
+  act(() => highlights.set([uuid(1)]));
+  expect(marked()).toEqual([]);
+  expect(document.querySelector(".d-head.is-highlighted")).not.toBeNull();
+  act(() => highlights.set([]));
+  expect(document.querySelector(".is-highlighted")).toBeNull();
+});
+
+test("outside a canvas the record page marks nothing", async () => {
+  serveDetails([detail(row("Issue", 1), { backlinks: { narrows: [peer("Issue", 2)] } })]);
+  renderDetail({ kind: "Issue", seq: 1 });
+  await screen.findByRole("heading", { level: 1 });
+  expect(document.querySelector(".is-highlighted")).toBeNull();
+});
+
 test("cost names its scope, keeps sub-cent values, and reads none recorded at zero", async () => {
   serveDetails([detail(row("Issue", 1, { marginal_cost: { agent_usd: 0.0042, resource_usd: 0 } })), detail(row("Belief", 2))]);
   renderDetail({ kind: "Issue", seq: 1 });
@@ -670,6 +715,103 @@ test("Purge shows in the danger style in the inquiry's ⋯ menu", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
   expect(screen.getByRole("option", { name: "Purge…" }).classList.contains("danger")).toBe(true);
   expect(screen.getByRole("option", { name: /^Add relation…/ }).classList.contains("danger")).toBe(false);
+});
+
+async function openActions(account: string, role: "writer" | "admin" = "writer") {
+  stubLayout();
+  serveDetails([detail(row("Issue", 1, { account }))]);
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role } });
+  await screen.findByRole("heading", { level: 1 });
+  await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
+}
+
+test("Purge is not offered to a writer who is not the row's account", async () => {
+  await openActions("bob@example.com");
+  expect(screen.queryByRole("option", { name: "Purge…" })).toBeNull();
+});
+
+test("Purge is offered to the row's account, whatever the case of the address", async () => {
+  await openActions("ADA@example.com");
+  expect(screen.getByRole("option", { name: "Purge…" })).toBeTruthy();
+});
+
+test("Purge is offered to an admin on another account's row", async () => {
+  await openActions("bob@example.com", "admin");
+  expect(screen.getByRole("option", { name: "Purge…" })).toBeTruthy();
+});
+
+test("a locked inquiry wears a Locked badge, and an unlocked one does not", async () => {
+  const locked = row("Issue", 1);
+  serveDetails([detail(locked, { locked: true })]);
+  renderDetail({ kind: "Issue", seq: 1 });
+  await screen.findByRole("heading", { level: 1 });
+  expect(document.querySelector(".d-lock")?.textContent).toBe("Locked");
+  cleanup();
+  serveDetails([detail(row("Issue", 2), { locked: false })]);
+  renderDetail({ kind: "Issue", seq: 2 });
+  await screen.findByRole("heading", { level: 1 });
+  expect(document.querySelector(".d-lock")).toBeNull();
+});
+
+test("only an admin's ⋯ menu offers Lock, which locks the inquiry and reads it again", async () => {
+  stubLayout();
+  const target = row("Issue", 1);
+  let locked = false;
+  const sent = stubFetch((request) => {
+    const { pathname } = new URL(request.url);
+    if (pathname === "/api/inquiries/Issue/1") return Response.json(target);
+    if (pathname === `/api/admin/inquiries/${target.id}/lock`) {
+      locked = true;
+      return Response.json({ id: target.id, locked });
+    }
+    return Response.json(detail(target, { locked }));
+  });
+  renderDetail({ kind: "Issue", seq: 1 });
+  await screen.findByRole("heading", { level: 1 });
+  await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
+  expect(screen.queryByRole("option", { name: "Lock" })).toBeNull();
+  cleanup();
+
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role: "admin" } });
+  await screen.findByRole("heading", { level: 1 });
+  await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
+  await userEvent.click(screen.getByRole("option", { name: "Lock" }));
+  await waitFor(() => expect(document.querySelector(".d-lock")).not.toBeNull());
+  const writes = sent.filter((request) => request.method === "PUT");
+  expect(writes.map((request) => [request.path, request.body])).toEqual([[`/api/admin/inquiries/${target.id}/lock`, { locked: true }]]);
+});
+
+test("a locked inquiry offers a writer no edit, add or purge, and an admin all of them", async () => {
+  stubLayout();
+  serveDetails([detail(row("Issue", 1), { locked: true })]);
+  renderDetail({ kind: "Issue", seq: 1 });
+  await screen.findByRole("heading", { level: 1 });
+  expect(within(section("Children")).queryByRole("button")).toBeNull();
+  expect(within(section("Parents")).queryByRole("button")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Issue#1 actions" })).toBeNull();
+  cleanup();
+
+  serveDetails([detail(row("Issue", 1), { locked: true })]);
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role: "admin" } });
+  await screen.findByRole("heading", { level: 1 });
+  expect(within(section("Children")).getByRole("button", { name: "Add child" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Issue#1 actions" })).toBeTruthy();
+});
+
+test("a refused lock says why in a toast", async () => {
+  stubLayout();
+  const target = row("Issue", 1);
+  stubFetch((request) => {
+    const { pathname } = new URL(request.url);
+    if (pathname === "/api/inquiries/Issue/1") return Response.json(target);
+    if (pathname === `/api/admin/inquiries/${target.id}/lock`) return Response.json({ detail: "inquiry not found" }, { status: 404 });
+    return Response.json(detail(target));
+  });
+  renderDetail({ kind: "Issue", seq: 1 }, undefined, { profile: { ...PROFILE, role: "admin" } });
+  await screen.findByRole("heading", { level: 1 });
+  await userEvent.click(screen.getByRole("button", { name: "Issue#1 actions" }));
+  await userEvent.click(screen.getByRole("option", { name: "Lock" }));
+  expect((await screen.findByText(/Could not lock Issue#1/)).textContent).toContain("inquiry not found");
 });
 
 test("Esc goes back to the kind's list", async () => {

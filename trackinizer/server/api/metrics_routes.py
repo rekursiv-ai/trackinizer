@@ -18,12 +18,16 @@ other operation's controls, validate pagination, and serialize.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from trackinizer.server.api._deps import get_store
+from trackinizer.server.api._regex_guard import regex_failures_as_400
+from trackinizer.server.api.query import parse_filter
 from trackinizer.server.auth import require_role
+from trackinizer.wire.column_shapes import lowers_into_sql
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
     MAX_LIST_LIMIT,
@@ -44,7 +48,12 @@ from trackinizer.wire.wire_metrics_query import (
     MetricRankResponse,
     MetricRankRow,
     MetricWriteResponse,
+    RankFilter,
 )
+
+
+if TYPE_CHECKING:
+    from trackinizer.wire.filters import Filter
 
 
 router = APIRouter()
@@ -157,6 +166,7 @@ async def query_metrics_route(
         masks=body.masks,
         sort=body.sort,
         limit=body.limit,
+        offset=body.offset or 0,
     )
     return MetricQueryResponse(points=[point for _eid, point in rows])
 
@@ -205,8 +215,11 @@ async def rank_metrics_route(
 ) -> MetricRankResponse:
     """Cross-experiment masked read/rank over the given experiments.
 
+    Each of ``filters`` is checked as the list route checks a ``filter``
+    param, on the Experiment's columns, so a bad clause is the same 400.
+
     Args:
-      body: Request body with experiment_ids and query (masks, sort, limit).
+      body: Request body with experiment_ids or filters, and query (masks, sort, limit, offset).
       request: FastAPI Request context (used to get the store).
 
     Returns:
@@ -218,15 +231,35 @@ async def rank_metrics_route(
     """
     _reject_write(body.query)
     store = get_store(request)
-    rows = await store.query_metrics(
-        body.experiment_ids,
-        masks=body.query.masks,
-        sort=body.query.sort,
-        limit=body.query.limit,
-    )
+    with regex_failures_as_400():
+        rows = await store.query_metrics(
+            body.experiment_ids
+            if body.experiment_ids is not None
+            else tuple(_rank_filter(clause) for clause in body.filters or ()),
+            masks=body.query.masks,
+            sort=body.query.sort,
+            limit=body.query.limit,
+            offset=body.query.offset or 0,
+        )
     return MetricRankResponse(
         rows=[MetricRankRow(experiment_id=eid, point=point) for eid, point in rows],
     )
+
+
+# The store refuses a filter with no SQL form too, as a 409 for its direct callers; a
+# rank request naming one is malformed, the 400 ``parse_filter`` gives its refusals.
+def _rank_filter(clause: RankFilter) -> Filter:
+    """Check one rank clause as the list checks a ``filter`` param, raising 400."""
+    filt = parse_filter(clause.model_dump(exclude_none=True), "Experiment")
+    if not lowers_into_sql(filt.field, filt.op):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"filter {filt.field} {filt.op} has no SQL form; "
+                "a metric query cannot select runs by it"
+            ),
+        )
+    return filt
 
 
 # The read routes share the write route's body model, so without this a ``write``

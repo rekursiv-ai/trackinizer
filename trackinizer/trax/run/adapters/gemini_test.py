@@ -77,6 +77,10 @@ class TestResumeCorrelation:
         """
         assert GeminiAdapter().session_id_from_path(tmp_path / "session-x.json") is None
 
+    def test_no_command_line_resumes_a_session(self) -> None:
+        """Unmeasured, so every gemini run is a new session to the runner."""
+        assert GeminiAdapter().resumed_session(("--resume", "latest")) is None
+
 
 class TestReader:
     def test_each_file_gets_its_own_reader(self) -> None:
@@ -109,6 +113,6 @@ class TestReader:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

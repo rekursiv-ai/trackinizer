@@ -66,6 +66,25 @@ class TestInsertInquiryGuards:
             )
         conn.execute.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_a_column_required_of_one_kind_is_asked_of_that_kind_only(
+        self,
+    ) -> None:
+        conn = make_conn()
+        values = {"title": "x", "account": "a@b.c"}
+
+        with pytest.raises(ValueError, match="agentsession_audience"):
+            await insert_inquiry(
+                cast(Conn, conn),
+                new_uuid(),
+                "AgentSession",
+                values=values,
+            )
+        conn.execute.assert_not_called()
+
+        await insert_inquiry(cast(Conn, conn), new_uuid(), "Issue", values=values)
+        conn.execute.assert_called_once()
+
 
 class TestPureFunctions:
     @pytest.mark.asyncio
@@ -233,11 +252,11 @@ class TestCLIHelpers:
         # A bogus edge_kind must be rejected by the guard, not silently accepted
         # because it is neither a citation nor a structural kind.
         with pytest.raises(ValidationError, match="edge kind"):
-            validate_edge_valence("bogus", 0.5)  # ty: ignore[invalid-argument-type] -- negative test passes an intentionally invalid kind.  # pyright: ignore[reportArgumentType] -- negative test passes an intentionally invalid kind.
+            validate_edge_valence("bogus", 0.5)  # ty: ignore[invalid-argument-type] -- negative test passes an intentionally invalid kind.  # pyright: ignore[reportArgumentType] -- negative test passes an intentionally invalid kind.  # pyrefly: ignore[bad-argument-type] -- negative test passes an intentionally invalid kind.
 
     def test_edge_priority_rejects_unknown_edge_kind(self) -> None:
         with pytest.raises(ValidationError, match="edge kind"):
-            validate_edge_priority("bogus", 5)  # ty: ignore[invalid-argument-type] -- negative test passes an intentionally invalid kind.  # pyright: ignore[reportArgumentType] -- negative test passes an intentionally invalid kind.
+            validate_edge_priority("bogus", 5)  # ty: ignore[invalid-argument-type] -- negative test passes an intentionally invalid kind.  # pyright: ignore[reportArgumentType] -- negative test passes an intentionally invalid kind.  # pyrefly: ignore[bad-argument-type] -- negative test passes an intentionally invalid kind.
 
     def test_reject_edge_cycle_self_loop(self) -> None:
         """Self-loop is rejected outright before any DB walk."""
@@ -271,6 +290,6 @@ class TestCoverageStoreReadsAndEdits:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

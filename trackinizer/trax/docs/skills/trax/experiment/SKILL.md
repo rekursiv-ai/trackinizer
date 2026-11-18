@@ -9,7 +9,7 @@ An `Experiment` is an empirical measurement produced by code at one or more
 commits. Write it so the result is reproducible and its provenance is traceable.
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax/SKILL.md`.
+`../SKILL.md`.
 
 ## Completeness bar
 

@@ -29,8 +29,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast
 
 from itsdangerous import BadSignature, URLSafeTimedSerializer
-
-from trackinizer.lib.custom_json import DictCodec, StrCodec
+from treekle import ReadError, from_plain
 
 
 if TYPE_CHECKING:
@@ -153,17 +152,17 @@ def read_session_cookie(
         unexpired, else ``None``.
 
     """
-    raw = cookies.get(SESSION_COOKIE_NAME)
+    raw = cookies.get(SESSION_COOKIE_NAME, "")
     if not raw:
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_SESSION_SALT)
     try:
-        payload = DictCodec.coerce(
-            cast(dict[str, object], serializer.loads(raw, max_age=max_age_seconds)),
-        )
-    except BadSignature:
+        # Itsdangerous returns Any; conversion below validates the payload shape.
+        loaded = cast(object, serializer.loads(raw, max_age=max_age_seconds))
+        payload = from_plain(loaded, dict[str, object])
+        return from_plain(payload.get("user_id"), str, default=None)
+    except (BadSignature, ReadError):
         return None
-    return StrCodec.coerce(payload.get("user_id"), default=None)
 
 
 def clear_session_cookie(response: _SetsCookies) -> None:
@@ -231,21 +230,21 @@ def read_oauth_state_cookie(
         ``None`` when missing, expired, tampered, or wrong shape.
 
     """
-    raw = cookies.get(OAUTH_STATE_COOKIE_NAME)
+    raw = cookies.get(OAUTH_STATE_COOKIE_NAME, "")
     if not raw:
         return None
     serializer = URLSafeTimedSerializer(secret, salt=_OAUTH_STATE_SALT)
     try:
-        payload = DictCodec.coerce(
-            cast(
-                dict[str, object],
-                serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
-            ),
+        # Itsdangerous returns Any; conversion below validates the payload shape.
+        loaded = cast(
+            object,
+            serializer.loads(raw, max_age=OAUTH_STATE_MAX_AGE_SECONDS),
         )
-    except BadSignature:
+        payload = from_plain(loaded, dict[str, object])
+        state = from_plain(payload.get("state"), str, default="")
+        next_url = from_plain(payload.get("next"), str, default="")
+    except (BadSignature, ReadError):
         return None
-    state = StrCodec.coerce(payload.get("state"))
-    next_url = StrCodec.coerce(payload.get("next"))
     if not state or not next_url:
         return None
     return state, next_url

@@ -60,6 +60,7 @@ export async function serveSeeded(port: number): Promise<Served> {
     const seeded = JSON.parse(
       execFileSync(join(WEB, "scripts", "seed_screenshots.py"), ["--url", origin], { encoding: "utf8" }),
     ) as Seeded;
+    // The seed locks no Issue, so no rules are in force and the welcome flow does not stand over the views.
     return { origin, seeded, data, stop: stopped };
   } catch (error) {
     await stopped();

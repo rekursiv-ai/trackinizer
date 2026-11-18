@@ -1,9 +1,8 @@
 r"""Map Postgres-side filter failures to the 400 they are.
 
-Two routes lower caller text into a Postgres query: ``/api/web/search`` and
-``/api/inquiries``. A regex becomes a ``~`` operand and an order operand
-becomes a ``::numeric`` cast, so in both cases Postgres parses the caller's
-string at query time and can reject it.
+Routes that lower caller text into a Postgres query use this guard. A regex
+becomes a ``~`` operand and an order operand becomes a ``::numeric`` cast,
+so Postgres parses the caller's string at query time and can reject it.
 
 Postgres runs POSIX ARE, so a pattern that compiles in Python can still be
 rejected there (``(?P<x>a)``, ``\z``) -- as SQLSTATE 2201B, an

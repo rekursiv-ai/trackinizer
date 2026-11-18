@@ -73,9 +73,10 @@ async def _seed_rows(store: Store, count: int) -> None:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'index test')",
+            "'tester@example.com', 'index test', 'open')",
             session_id,
         )
         for idx in range(count):
@@ -173,6 +174,6 @@ async def test_dimensionless_column_holds_the_seeded_vectors(store: Store) -> No
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -4,20 +4,27 @@ from __future__ import annotations
 
 from dataclasses import replace
 from io import StringIO
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import TYPE_CHECKING, Final
 from unittest.mock import patch
 
 import base64
+import json
+
+from treekle import ReadError, from_plain, json_loads
 
 import pytest
 
 from trackinizer.lib.agent.sessions import claude
 from trackinizer.lib.agent.sessions.claude import _group
+from trackinizer.lib.agent.sessions.testdata.mistype import mistyped, unread, without
 from trackinizer.lib.agent.types.sessions import (
     AgentStatusResult,
+    AgentToAgentMessage,
     AssistantMessage,
     Attachment,
     ContextClear,
+    ContextCompaction,
     ContextState,
     FileEditResult,
     FileReadResult,
@@ -40,16 +47,42 @@ from trackinizer.lib.agent.types.sessions import (
     WebSearchResult,
     WebSearchResults,
 )
-from trackinizer.lib.custom_json import DictCodec, ListCodec, loads
 
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
 
 
+_CWD: Final = Path(__file__).resolve().parent
+
+
 ENVELOPE = (
     '"userType":"external","cwd":"/workspace","sessionId":"s1","version":"2.1.241"'
 )
+FIXTURES: Final = {
+    name: (_CWD / "testdata" / name).read_text().splitlines(keepends=True)
+    for name in ("claude_main.jsonl", "claude_sidechain.jsonl")
+}
+"""Real sessions, one line per element, by file name."""
+
+_KEPT_AS_TEXT: Final = frozenset(
+    {
+        "permissionMode",
+        "message.model",
+        "message.content",
+        "message.content.0.type",
+        "message.content.0.tool_use_id",
+        "message.content.0.content",
+        "toolUseResult.results.0.content",
+        "attachment",
+        "attachment.type",
+    },
+)
+"""Fields whose wrong value only the line's own text can write back.
+
+Read as absent, the line would be rewritten with a different value, so the line is
+kept as text instead.
+"""
 
 
 def _line(**fields: str) -> str:
@@ -252,6 +285,24 @@ def test_a_record_outside_the_transcript_maps_to_its_own_type(
     records = list(claude.normalize(StringIO(native + "\n")))
 
     assert isinstance(_last_act(records), expected)
+
+
+def test_a_system_line_reads_its_time_text_and_kind() -> None:
+    native = (
+        '{"type":"system","subtype":"informational","content":"Hook ran",'
+        '"timestamp":"2026-08-24T20:29:52.614Z","uuid":"y1"}\n'
+    )
+
+    message = _last_act(list(claude.normalize(StringIO(native))))
+
+    assert isinstance(message, SystemMessage)
+    assert (message.timestamp, message.content, message.subtype) == (
+        "2026-08-24T20:29:52.614Z",
+        "Hook ran",
+        "informational",
+    )
+    # Read into fields, so not kept a second time in the residual.
+    assert not {"content", "subtype"} & set(message.extra)
 
 
 def test_a_queued_message_is_its_contexts_prose() -> None:
@@ -625,9 +676,9 @@ def test_deleting_one_call_does_not_move_another_across_prose() -> None:
 
 def _content_blocks(native: str) -> list[dict[str, object]]:
     """Return the message content blocks of a written line."""
-    record = DictCodec.coerce(loads(native.splitlines()[0]))
-    message = DictCodec.coerce(record.get("message"))
-    return list(ListCodec.mappings(message.get("content")))
+    record = json_loads(native.splitlines()[0], dict[str, object])
+    message = from_plain(record.get("message"), dict[str, object], default={})
+    return list(from_plain(message.get("content"), list[dict[str, object]], default=[]))
 
 
 def test_a_malformed_failure_marker_prevents_lifting() -> None:
@@ -798,8 +849,13 @@ def test_a_null_read_file_round_trips() -> None:
     assert output.getvalue() == native
 
 
-@pytest.mark.parametrize("payload", ["{}", "null"], ids=["empty", "null"])
+@pytest.mark.parametrize(
+    "payload",
+    ["{}", "null", '"Error: Exit code 1"', '[{"type":"text","text":"ok"}]'],
+    ids=["empty", "null", "failed-call-string", "mcp-block-list"],
+)
 def test_an_explicit_tool_payload_round_trips(payload: str) -> None:
+    """A failed call answers with a bare string, an MCP tool with a block list."""
     native = _line(
         type='"assistant"',
         message=(
@@ -820,6 +876,50 @@ def test_an_explicit_tool_payload_round_trips(payload: str) -> None:
     claude.denormalize(records, output)
 
     assert output.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    ("name", "index"),
+    [(name, index) for name, lines in FIXTURES.items() for index in range(len(lines))],
+)
+def test_a_mistyped_field_aborts_neither_the_read_nor_the_write(
+    name: str,
+    index: int,
+) -> None:
+    """A log field of the wrong type reads as absent, as a missing one does.
+
+    The line is read beside the call or result it pairs with by tool id, so a
+    result meets its wrong field on the path the call's tool name selects.
+    """
+    lines = FIXTURES[name]
+    ids = {token for token in lines[index].split('"') if token.startswith("toolu_")}
+    window = [
+        at
+        for at, line in enumerate(lines)
+        if at == index or any(f'"{id_}"' in line for id_ in ids)
+    ]
+    record = json_loads(lines[index], dict[str, object])
+    failed: list[str] = []
+    for path, changed in mistyped(record):
+        session = _swapped(lines, window, index, changed)
+        records = list(claude.normalize(StringIO(session)))
+        missing = _swapped(lines, window, index, without(record, path))
+        try:
+            claude.denormalize(records, StringIO())
+        except TypeError as error:
+            failed.append(f"{path}: {error}")
+        if path not in _KEPT_AS_TEXT and unread(records) > unread(
+            claude.normalize(StringIO(missing)),
+        ):
+            failed.append(f"{path}: the line reads worse than without the field")
+
+    assert failed == [], "\n".join(failed)
+
+
+def _swapped(lines: list[str], window: list[int], index: int, record: object) -> str:
+    """Return the session of ``window`` with line ``index`` replaced by ``record``."""
+    line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    return "".join(line if at == index else lines[at] for at in window)
 
 
 @pytest.mark.parametrize(
@@ -1404,6 +1504,63 @@ def test_clearing_assistant_acts_removes_source_blocks() -> None:
     assert '"content":[{"future":true}]' in output.getvalue()
 
 
+_FOREIGN = TurnContext(encoding={"newline_terminated": True})
+
+
+def _tool_uses(records: Sequence[SessionRecord]) -> list[str]:
+    """Return the id of every ``tool_use`` block a claude rewrite holds."""
+    output = StringIO()
+    claude.denormalize(records, output)
+    rebuilt = list(claude.normalize(StringIO(output.getvalue())))
+    return [record.call_id for record in rebuilt if isinstance(record, ToolCall)]
+
+
+def test_an_untyped_foreign_result_after_a_typed_one_does_not_abort() -> None:
+    # Only a TYPED result has a claude tool to name; an untyped one after an
+    # assistant line reached the synthetic-call path and raised ``KeyError``.
+    records = [
+        _FOREIGN,
+        ShellCommandResult(call_id="a", command=("ls",)),
+        AssistantMessage(content="x"),
+        UncategorizedToolResult(call_id="b", content="y"),
+    ]
+
+    assert _tool_uses(records) == ["a"]
+
+
+def test_a_foreign_call_after_its_result_is_written_once() -> None:
+    # The call is synthesized ahead of its answer, so the real one arriving
+    # later would state the same id a second time.
+    records = [
+        _FOREIGN,
+        ShellCommandResult(call_id="a", command=("ls",)),
+        ToolCall(call_id="a", name="shell"),
+    ]
+
+    assert _tool_uses(records) == ["a"]
+
+
+def test_a_call_added_after_a_deleted_one_is_still_written() -> None:
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":['
+            '{"type":"tool_use","id":"a","name":"Read","input":{}},'
+            '{"type":"tool_use","id":"b","name":"Read","input":{}}]}'
+        ),
+    )
+    records = list(claude.normalize(StringIO(native)))
+    # Same context and an empty residual, so the new call stays on the line.
+    kept = [
+        replace(record, call_id="c")
+        if isinstance(record, ToolCall) and record.call_id == "b"
+        else record
+        for record in records
+    ]
+
+    assert _tool_uses(kept) == ["a", "c"]
+
+
 def test_thinking_encryption_uses_provider_string() -> None:
     native = _line(
         type='"assistant"',
@@ -1506,7 +1663,673 @@ def test_grouping_still_joins_the_acts_of_one_line() -> None:
     assert groups == [[lead, call, usage], [next_line]]
 
 
+def test_claude_helpers_preserve_missing_and_malformed_values() -> None:
+    line: dict[str, object] = {"message": {"content": [7, {}]}}
+    claude._rename_calls(line, {"c": "Bash"})
+    assert line == {"message": {"content": [7, {}]}}
+    assert claude._split_widths(None, [1]) == []
+    assert claude._split_widths("a", []) == ["a"]
+    assert claude._split_widths("a\nb", [1]) == ["a\nb"]
+    assert claude._split_widths("a\nb", [1, 1]) == ["a", "b"]
+    assert claude._read_attachment({"type": "image", "source": {"type": "bad"}}) is None
+    assert (
+        claude._read_attachment(
+            {"type": "image", "source": {"type": "base64", "data": "!"}},
+        )
+        is None
+    )
+    assert claude._effort("future") is None
+    assert claude._millis(None) is None
+    assert claude._millis(1.5, 1500) == 1500
+    assert claude._millis(1.5, 1501) == 1500.0
+
+
+def test_claude_shape_writers_preserve_absent_blocks() -> None:
+    attachment = Attachment(mime_descriptor="image/png", data=b"hi")
+    block = {
+        "type": "image",
+        "source": {"type": "base64", "data": None, "$held": ["data"]},
+    }
+    assert claude._write_attachment_shape(block, None) == block
+    assert (
+        from_plain(
+            claude._write_attachment_shape(block, attachment)["source"],
+            dict[str, object],
+        )["data"]
+        == "aGk="
+    )
+    assert claude._write_thinking_shape({"type": "thinking"}, None) == {
+        "type": "thinking",
+    }
+    assert claude._write_agent_blocks(
+        AgentStatusResult(call_id="c", content="hi"),
+        {},
+    ) == [
+        {"type": "text", "text": "hi"},
+    ]
+    assert claude._result_values(UncategorizedToolResult(call_id="c"), {}) == {}
+    assert claude._write_result_content(
+        UncategorizedToolResult(call_id="c", content="new"),
+        [{"type": "text", "text": "old"}, {"type": "other"}],
+    ) == [{"type": "text", "text": "new"}, {"type": "other"}]
+
+
+def test_claude_writer_special_result_shapes() -> None:
+    assert (
+        claude._write_result_block(
+            UncategorizedToolResult(
+                call_id="c",
+                content=None,
+                extra={"$result": {"$text": True}},
+            ),
+        )["content"]
+        == ""
+    )
+    assert (
+        claude._write_tool_payload(
+            UncategorizedToolResult(call_id="c"),
+            {"toolUseResult": "failed"},
+            {},
+        )
+        == "failed"
+    )
+    assert claude._write_blocks(
+        (Thinking(content="t"), ToolCall(call_id="c", name="x")),
+        1,
+        {},
+    ) == [
+        {"type": "thinking", "thinking": "t"},
+        {"type": "tool_use", "id": "c", "name": "x", "input": {}},
+    ]
+    assert claude._write_thinking(
+        Thinking(summary="summary", extra={"$signature_present": True}),
+    ) == {
+        "type": "thinking",
+        "thinking": "summary",
+        "signature": "",
+    }
+
+
+def test_a_line_context_reads_what_the_line_states_and_keeps_the_rest() -> None:
+    previous = TurnContext(
+        model="old",
+        effort="low",
+        permission="ask",
+        extra={"cwd": "/w"},
+    )
+
+    kept = claude._read_line_context({}, previous)
+    stated = claude._read_line_context(
+        {"permissionMode": "plan", "effort": 7},
+        previous,
+    )
+
+    assert (kept.model, kept.effort, kept.permission) == ("old", "low", "ask")
+    assert dict(kept.extra) == {"cwd": "/w"}
+    # A stated field replaces the prior one, even when its value is unreadable.
+    assert (stated.permission, stated.effort) == ("plan", None)
+
+
+def test_claude_reader_context_and_result_edge_cases() -> None:
+    previous = TurnContext(model="old", effort="low", permission="ask")
+    updated = claude._read_line_context(
+        {"message": {"model": "new"}, "effort": "high"},
+        previous,
+    )
+    assert (updated.model, updated.effort, updated.permission) == ("new", "high", "ask")
+    assert claude._parse("{") is None
+    assert claude._effort(7) is None
+
+
+def test_a_line_stating_no_settings_keeps_the_previous_ones() -> None:
+    previous = TurnContext(
+        model="m",
+        effort="low",
+        permission="ask",
+        extra={"gitBranch": "main"},
+    )
+
+    kept = claude._read_line_context({"type": "user"}, previous)
+
+    assert kept == replace(previous, extra={"gitBranch": "main"})
+
+
+def test_a_line_s_own_settings_replace_the_previous_ones() -> None:
+    previous = TurnContext(model="m", effort="low", permission="ask")
+
+    updated = claude._read_line_context(
+        {"permissionMode": "plan", "effort": "max", "message": {"model": "n"}},
+        previous,
+    )
+
+    assert (updated.model, updated.effort, updated.permission) == ("n", "max", "plan")
+
+
+def test_a_null_model_clears_the_previous_one() -> None:
+    previous = TurnContext(model="m")
+
+    updated = claude._read_line_context({"message": {"model": None}}, previous)
+
+    assert updated.model is None
+
+
+@pytest.mark.parametrize(
+    "record",
+    [{"permissionMode": 7}, {"message": {"model": 7}}],
+)
+def test_a_malformed_setting_is_a_read_error(record: dict[str, object]) -> None:
+    # The line's guard keeps it as its bytes; a guessed setting would be wrong.
+    with pytest.raises(ReadError):
+        claude._read_line_context(record, TurnContext(model="m"))
+
+
+def test_a_line_with_malformed_settings_round_trips() -> None:
+    # A non-string setting raised out of ``normalize`` and lost the file.
+    native = _line(
+        type='"user"',
+        permissionMode="7",
+        message='{"role":"user","content":"hi"}',
+    ) + _line(
+        type='"assistant"',
+        message='{"role":"assistant","model":7,"content":[]}',
+    )
+    output = StringIO()
+
+    claude.denormalize(claude.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+@pytest.mark.parametrize(
+    "native",
+    [
+        _line(type='"assistant"', message='{"role":"assistant","content":7}'),
+        _line(type='"assistant"', message='{"role":7,"content":[]}'),
+        _line(type='"user"', message='{"role":"user","content":[7]}'),
+        _line(type='"attachment"', attachment="[7]"),
+        _line(type="7", message='{"role":"user","content":"x"}'),
+        _line(
+            type='"user"',
+            message=(
+                '{"role":"user","content":[{"type":"tool_result",'
+                '"tool_use_id":"c","content":"x"}]}'
+            ),
+            toolUseResult='{"type":"text","file":7}',
+        ),
+    ],
+    ids=["content", "role", "block", "attachment", "type", "tool-file"],
+)
+def test_a_line_with_a_malformed_field_round_trips(native: str) -> None:
+    # One malformed field raised ``ReadError`` out of ``normalize`` -- or out
+    # of the writer -- and lost the whole file.
+    output = StringIO()
+
+    claude.denormalize(claude.normalize(StringIO(native)), output)
+
+    assert output.getvalue() == native
+
+
+def test_a_system_line_reads_its_own_fields() -> None:
+    message = claude._read_system(
+        {"type": "system", "timestamp": "t", "content": "c", "subtype": "s"},
+    )
+
+    assert (message.timestamp, message.content, message.subtype) == ("t", "c", "s")
+    assert not {"content", "subtype"} & set(message.extra)
+    assert (
+        claude._carries_a_compaction(
+            UserMessage(extra={"isCompactSummary": True}),
+        )
+        is True
+    )
+    assert claude._numbered("a\nb") == "1\ta\n2\tb"
+
+
+def test_a_system_line_reads_a_mistyped_field_as_absent() -> None:
+    message = claude._read_system(
+        {"type": "system", "timestamp": 5, "content": 7, "subtype": ["s"]},
+    )
+
+    assert (message.timestamp, message.content, message.subtype) == (None, None, None)
+    assert (message.extra["$content_value"], message.extra["$subtype_value"]) == (
+        7,
+        ("s",),
+    )
+
+
+def test_claude_writer_handles_special_record_shapes(tmp_path: Path) -> None:
+    assert claude._rename_calls({"message": 7}, {}) is None
+    assert claude._rename_calls({"message": {"content": {}}}, {}) is None
+    assert (
+        claude._rename_calls(
+            {"message": {"content": ["text", {"type": "tool_use", "id": "c"}]}},
+            {"c": "Bash"},
+        )
+        is None
+    )
+    assert (
+        claude._stated_cwd(
+            (
+                TurnContext(extra={"payload": {"cwd": 7}}),
+                TurnContext(extra={"cwd": "/work"}),
+            ),
+        )
+        == "/work"
+    )
+    assert claude._stated_cwd((TurnContext(extra={"payload": {"cwd": 7}}),)) == ""
+    assert (
+        claude._write_group((TokenUsage(info={"input_tokens": 1}),), TurnContext(), {})
+        is None
+    )
+    assert (
+        claude._write_group((AgentToAgentMessage(content="hi"),), TurnContext(), {})
+        is None
+    )
+    assert (
+        claude._write_group((SystemMessage(content="bad"),), TurnContext(), {})
+        is not None
+    )
+    assert (
+        claude._write_group((UncategorizedRecord(kind="foreign"),), TurnContext(), {})
+        == {}
+    )
+    assert claude._splice(
+        ["type"],
+        {"type": "user"},
+        {"$source_order": True, "future": 1, "$sessionId": "s"},
+        {},
+    ) == {"type": "user", "future": 1, "sessionId": "s"}
+    assert claude._write_tool_call_shape({"type": "tool_use", "id": "c"}, None) == {
+        "type": "tool_use",
+        "id": "c",
+    }
+    assert (
+        from_plain(
+            claude._write_attachment(
+                Attachment(mime_descriptor="image/png", data=b"x"),
+                media_first=True,
+            )["source"],
+            dict[str, object],
+        )["media_type"]
+        == "image/png"
+    )
+    assert (
+        from_plain(
+            claude._write_attachment(
+                Attachment(mime_descriptor="image/png", data=b"x"),
+                media_first=False,
+            )["source"],
+            dict[str, object],
+        )["data"]
+        == "eA=="
+    )
+    assert (
+        from_plain(
+            claude._write_user(
+                UserMessage(content="hi", extra={"promptSource": "user"}),
+                TurnContext(permission="ask"),
+                {},
+            ),
+            dict[str, object],
+        )["permissionMode"]
+        == "ask"
+    )
+    assert claude._split("a\nb", 2) == ["a", "b"]
+    assert claude._split("a\nb", 3) == ["a\nb"]
+    assert claude._write_tool_call_shape(
+        {
+            "type": "tool_use",
+            "id": "old",
+            "name": "old",
+            "input": {},
+            "$held": ["id", "name", "input"],
+        },
+        ToolCall(
+            call_id="new",
+            name="Read",
+            arguments={"path": str(tmp_path / "input")},
+        ),
+    ) == {
+        "type": "tool_use",
+        "id": "new",
+        "name": "Read",
+        "input": {"path": str(tmp_path / "input")},
+    }
+
+
+def test_claude_writer_skips_non_string_shell_commands() -> None:
+    stream = StringIO()
+    writer = claude._Emitter(
+        stream,
+        escaped_default=False,
+        exceptions=b"",
+        newline_terminated=True,
+    )
+    line: dict[str, object] = {
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "c",
+                    "name": "Bash",
+                    "input": {"command": 7},
+                },
+            ],
+        },
+    }
+    call = ToolCall(call_id="c", name="Bash")
+    writer.add(line, calls=(call,))
+    writer._apply_shell_edit(
+        FileWriteResult(call_id="c", path="x", content="new", extra={"$shell": True}),
+    )
+    assert line == {
+        "message": {
+            "content": [
+                {
+                    "type": "tool_use",
+                    "id": "c",
+                    "name": "Bash",
+                    "input": {"command": 7},
+                },
+            ],
+        },
+    }
+
+
+def test_claude_user_shape_replays_results_and_stencils() -> None:
+    result = UncategorizedToolResult(call_id="c", content="done")
+    shape = [
+        {"type": "tool_result", "tool_use_id": "c", "$held": ["content"]},
+        {"type": "text", "text": "old", "$held": ["text"]},
+        {"type": "other"},
+    ]
+    assert claude._write_user_shape(UserMessage(content="new"), shape, (result,)) == [
+        {"type": "tool_result", "tool_use_id": "c", "content": "done"},
+        {"type": "text", "text": "new"},
+        {"type": "other"},
+    ]
+    assert claude._write_user_shape(
+        UserMessage(content="new"),
+        [{"type": "other"}],
+    ) == [
+        {"type": "other"},
+        {"type": "text", "text": "new"},
+    ]
+    assert claude._write_user_shape(
+        UserMessage(content="new"),
+        [{"type": "other", "$held": ["value"]}],
+    ) == [{"type": "other"}, {"type": "text", "text": "new"}]
+    assert claude._write_user_shape(UserMessage(content="new"), [7]) == [
+        7,
+        {"type": "text", "text": "new"},
+    ]
+    result_line = from_plain(
+        claude._write_result(
+            UncategorizedToolResult(
+                call_id="c",
+                content="done",
+                extra={"$content_shape": [{"type": "other"}]},
+            ),
+            {},
+        ),
+        dict[str, object],
+    )
+    assert from_plain(result_line["message"], dict[str, object])["content"] == [
+        {"type": "other"},
+    ]
+
+
+def test_a_foreign_call_restated_after_its_typed_result_is_written_once() -> None:
+    """A real call arriving after its synthesized one is not a second ``tool_use``.
+
+    Codex can state the same call twice -- once ahead of its result, once
+    after -- and only the first sighting of a written-ahead id may register.
+    """
+    records = [
+        _FOREIGN,
+        ShellCommandResult(call_id="a", command=("ls",)),
+        ToolCall(call_id="a", name="shell"),
+        ToolCall(call_id="a", name="shell"),
+    ]
+
+    assert _tool_uses(records) == ["a"]
+
+
+def test_a_foreign_call_before_its_result_takes_the_claude_tool_name() -> None:
+    """The call stays where it was said, ahead of the prose after it."""
+    records = [
+        _FOREIGN,
+        ToolCall(call_id="a", name="shell"),
+        AssistantMessage(content="running"),
+        ShellCommandResult(call_id="a", command=("ls",)),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    written = output.getvalue()
+    assert written.count('"type":"tool_use"') == 1
+    assert '"name":"Bash"' in written
+    assert written.index('"type":"tool_use"') < written.index('"running"')
+
+
+def test_a_session_with_no_lines_writes_nothing() -> None:
+    output = StringIO()
+
+    claude.denormalize([TurnContext()], output)
+
+    assert output.getvalue() == ""
+
+
+def test_a_foreign_cwd_stated_on_the_launch_settings_names_the_project() -> None:
+    records = [
+        TurnContext(
+            encoding={"newline_terminated": True},
+            extra={"payload": {"cwd": "/launch"}},
+        ),
+        UserMessage(content="hi"),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    assert '"cwd":"/launch"' in output.getvalue()
+
+
+def test_a_long_session_streams_through_a_bounded_window() -> None:
+    """More lines than the edit window flush as they pass, still in order."""
+    native = "".join(
+        _line(type='"user"', message=f'{{"role":"user","content":"m{index}"}}')
+        for index in range(40)
+    )
+
+    assert _round_trip(native) == native
+
+
+def test_a_shell_edit_for_a_call_that_left_the_window_replays_unedited() -> None:
+    """A lifted result whose call already flushed cannot reach back to it."""
+    call = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"tool_use","id":"c1",'
+            '"name":"Bash","input":{"command":"/bin/cat old.txt"}}]}'
+        ),
+    )
+    filler = "".join(
+        _line(type='"user"', message=f'{{"role":"user","content":"m{index}"}}')
+        for index in range(40)
+    )
+    result = _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"c1","content":"body\\n"}]}'
+        ),
+        toolUseResult='{"stdout":"body\\n","stderr":"","interrupted":false}',
+    )
+    records = list(claude.normalize(StringIO(call + filler + result)))
+    read = _last_act(records)
+    assert isinstance(read, FileReadResult)
+    changed = [
+        replace(record, path="new.txt") if record is read else record
+        for record in records
+    ]
+    output = StringIO()
+
+    claude.denormalize(changed, output)
+
+    assert '"command":"/bin/cat old.txt"' in output.getvalue()
+
+
+def test_another_providers_uncategorized_record_writes_no_claude_line() -> None:
+    records = [UserMessage(content="hi"), UncategorizedRecord(kind="event_msg/x")]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    assert output.getvalue().count("\n") == 1
+
+
+def test_edited_text_beyond_the_stated_blocks_is_not_invented() -> None:
+    """A line led by a result refills its text slots, and drops ones left empty."""
+    native = _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":['
+            '{"type":"tool_result","tool_use_id":"c","content":"x"},'
+            '{"type":"text","text":"a"}]}'
+        ),
+    )
+    records = list(claude.normalize(StringIO(native)))
+    edited = [
+        replace(record, content=None) if isinstance(record, UserMessage) else record
+        for record in records
+    ]
+    output = StringIO()
+
+    claude.denormalize(edited, output)
+
+    assert _round_trip(native) == native
+    assert '"type":"text"' not in output.getvalue()
+
+
+def test_search_groups_replay_prose_and_scalar_rows_around_groups() -> None:
+    payload = (
+        '{"query":"q","results":["summary",{"tool_use_id":"s1","content":'
+        '[7,{"url":"u1"}]}]}'
+    )
+    native = _line(
+        type='"assistant"',
+        message=(
+            '{"role":"assistant","content":[{"type":"tool_use","id":"c1",'
+            '"name":"WebSearch","input":{}}]}'
+        ),
+    ) + _line(
+        type='"user"',
+        message=(
+            '{"role":"user","content":[{"type":"tool_result",'
+            '"tool_use_id":"c1","content":"ok"}]}'
+        ),
+        toolUseResult=payload,
+    )
+
+    assert _round_trip(native) == native
+
+
+def test_a_search_shape_entry_without_a_template_replays_verbatim() -> None:
+    search = WebSearchResults(
+        call_id="c1",
+        query="q",
+        extra={"$result": {"tool_name": "WebSearch", "rows": [{"loose": 1}]}},
+    )
+    output = StringIO()
+
+    claude.denormalize([search], output)
+
+    assert '"results":[{"loose":1}]' in output.getvalue()
+
+
+def test_the_turns_model_and_effort_fill_a_line_that_states_neither() -> None:
+    records = [
+        TurnContext(model="claude-opus-5", effort="high"),
+        AssistantMessage(content="hi"),
+    ]
+    output = StringIO()
+
+    claude.denormalize(records, output)
+
+    line = json_loads(output.getvalue(), dict[str, object])
+    assert line["effort"] == "high"
+    assert from_plain(line["message"], dict[str, object])["model"] == "claude-opus-5"
+
+
+def test_a_compact_summary_line_opens_a_window_carrying_it() -> None:
+    native = _line(type='"user"', message='{"role":"user","content":"hi"}') + _line(
+        type='"user"',
+        isCompactSummary="true",
+        message='{"role":"user","content":"the summary"}',
+    )
+
+    records = list(claude.normalize(StringIO(native)))
+
+    clears = [record for record in records if isinstance(record, ContextClear)]
+    assert clears[-1].summary == "the summary"
+    assert any(isinstance(record, ContextCompaction) for record in records)
+    assert _round_trip(native) == native
+
+
+@pytest.mark.parametrize("native", ["\n", "[1]\n"], ids=["blank", "non-object"])
+def test_a_line_holding_no_record_survives_verbatim(native: str) -> None:
+    records = list(claude.normalize(StringIO(native)))
+
+    assert IncompleteRecord(text=native) in records
+    assert _round_trip(native) == native
+
+
+@pytest.mark.parametrize(
+    ("parts", "blocks"),
+    [
+        (2, [{"type": "text", "text": "a b"}, {"type": "text", "text": "c"}]),
+        (1, [{"type": "text", "text": "a b\nc"}]),
+        (3, [{"type": "text", "text": "a b\nc"}]),
+    ],
+)
+def test_prose_splits_into_its_stated_blocks_on_line_breaks_only(
+    parts: int,
+    blocks: list[dict[str, str]],
+) -> None:
+    """A block count that does not match the line breaks keeps the prose whole."""
+    output = StringIO()
+
+    claude.denormalize(
+        [AssistantMessage(content="a b\nc", extra={"$parts": parts})],
+        output,
+    )
+
+    message = json_loads(output.getvalue(), dict[str, object])["message"]
+    assert from_plain(message, dict[str, object])["content"] == blocks
+
+
+def test_an_assistant_line_writing_keys_out_of_order_round_trips() -> None:
+    native = _line(
+        type='"assistant"',
+        message='{"content":[{"type":"text","text":"hi"}],"role":"assistant"}',
+    )
+
+    assert _round_trip(native) == native
+
+
+def test_claude_user_reader_preserves_unknown_blocks() -> None:
+    records = claude._read_user(
+        {"type": "user", "timestamp": "t"},
+        {"role": "user", "content": {"future": 1}},
+        {},
+    )
+    assert isinstance(records[0], UserMessage)
+    assert records[0].extra["$content_value"] == {"future": 1}
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -11,18 +11,18 @@ import asyncio
 from configgle import Fig, Makes
 from fastapi import APIRouter, FastAPI
 from fastapi.testclient import TestClient
+from treekle import json_loads
 
 from trackinizer.addons.addon import AddonManifest
 from trackinizer.addons.deployment import Deployment
 from trackinizer.conftest import make_store
-from trackinizer.lib.custom_json import DictCodec, loads
 from trackinizer.server.api import addons_routes, app
 from trackinizer.server.api.addons_routes import attach_deployment, deployment_of
 from trackinizer.server.api.app import _build_app, lifespan
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.auth import AuthIdentity, current_user
 from trackinizer.server.config import Config
-from trackinizer.server.visuals.catalog import Workspace
+from trackinizer.server.visuals.catalog import StaticVisual, Workspace
 
 
 if TYPE_CHECKING:
@@ -55,6 +55,35 @@ class Probe:
         )
 
 
+class Hooked:
+    """A test addon with one open route, which authenticates its caller itself."""
+
+    class Config(Fig["Hooked"]):
+        pass
+
+    def __init__(self, config: Hooked.Config) -> None:
+        del config
+
+    def manifest(self) -> AddonManifest:
+        hook = APIRouter()
+        hook.add_api_route("/hook", _ping, methods=["POST"])
+        ping = APIRouter()
+        ping.add_api_route("/ping", _ping)
+        return AddonManifest(
+            title="Hooked",
+            description="Takes a vendor's call.",
+            routers=[ping],
+            open_routers=[hook],
+        )
+
+
+class HookedSite(Makes["Deployment"], Deployment.Config):
+    """A deployment running the hooked addon."""
+
+    hooked: Hooked.Config = field(default_factory=Hooked.Config)
+    """The hooked addon."""
+
+
 class ProbeSite(Makes["Deployment"], Deployment.Config):
     """A deployment running the probe addon."""
 
@@ -68,7 +97,7 @@ def test_the_catalog_is_empty_without_a_deployment(
     client, _, _ = route_client
     response = client.get("/api/addons")
     assert response.status_code == 200
-    assert DictCodec.coerce(loads(response.content)) == {"addons": []}
+    assert json_loads(response.content, dict[str, object]) == {"addons": []}
 
 
 def test_the_module_app_always_has_a_visual_catalog() -> None:
@@ -83,7 +112,7 @@ def test_mounted_routes_are_prefixed_listed_and_need_a_viewer() -> None:
     app.dependency_overrides[current_user] = _viewer
     assert client.get("/api/addons/probe/ping").json() == {"pong": True}
     assert client.get("/ping").status_code == 404
-    listed = DictCodec.coerce(loads(client.get("/api/addons").content))
+    listed = json_loads(client.get("/api/addons").content, dict[str, object])
     assert listed["addons"] == [
         {
             "name": "probe",
@@ -101,25 +130,45 @@ def test_mounted_routes_are_prefixed_listed_and_need_a_viewer() -> None:
     ]
 
 
+def test_an_open_router_mounts_without_a_sign_in_and_a_viewer_router_still_needs_one() -> (
+    None
+):
+    app = _app_with(_hooked_deployment())
+    app.state.store, _ = make_store()
+    client = TestClient(app)
+    assert client.post("/api/addons/hooked/hook").json() == {"pong": True}
+    assert client.get("/api/addons/hooked/ping").status_code == 401
+
+
+def _notes_visuals() -> Workspace.Config:
+    """Return a catalog of one visual, which is not the default catalog's."""
+    return Workspace.Config(
+        visuals=[
+            StaticVisual.Config(type="x.notes", title="Notes", description="Notes."),
+        ],
+        default_visual="x.notes",
+    )
+
+
 def test_attaching_sets_the_deployments_visual_catalog() -> None:
     cfg = Deployment.Config()
-    cfg.visuals.default_visual = "trax.chat"
+    cfg.visuals = _notes_visuals()
     deployment = cfg.make()
     app = _app_with(deployment)
     assert _visual_catalog(app) is deployment.visuals
-    assert _visual_catalog(app).default_visual == "trax.chat"
+    assert _visual_catalog(app).default_visual == "x.notes"
 
 
 def test_a_real_deployment_replaces_the_default_one_of_a_built_app() -> None:
     built = _build_app()
     assert deployment_of(built).manifests == {}
     cfg = ProbeSite()
-    cfg.visuals.default_visual = "trax.chat"
+    cfg.visuals = _notes_visuals()
     real = cfg.make()
     attach_deployment(built, deployment=real)
     assert deployment_of(built) is real
     assert _visual_catalog(built) is real.visuals
-    assert _visual_catalog(built).default_visual == "trax.chat"
+    assert _visual_catalog(built).default_visual == "x.notes"
     built.state.store, _ = make_store()
     built.dependency_overrides[current_user] = _viewer
     assert TestClient(built).get("/api/addons/probe/ping").status_code == 200
@@ -191,6 +240,10 @@ def _probe_deployment() -> Deployment:
     return ProbeSite().make()
 
 
+def _hooked_deployment() -> Deployment:
+    return HookedSite().make()
+
+
 def _app_with(deployment: Deployment) -> FastAPI:
     app = FastAPI(lifespan=lifespan)
     app.include_router(addons_routes.router)
@@ -212,6 +265,6 @@ async def _ping() -> dict[str, bool]:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

@@ -1,6 +1,6 @@
 import { expect, test } from "vitest";
 import type { FeedActorFacet, FeedEvent } from "../api/sessions";
-import { addressed, complete, type Context, type Mention, mentionAt, suggest } from "./mentions";
+import { addressed, type Context, type Mention, mentionAt, suggest } from "./mentions";
 
 /** `actor`'s session as the facets list it: heard from at `last` (10:MM), in `rooms`. */
 function agent(actor: string, last: string, rooms: string[] = [], ended: string | null = null): FeedActorFacet {
@@ -115,18 +115,6 @@ test.each<[string, Context, string, boolean, string[]]>([
   ],
 ])("suggest: %s", (_, context, query, whole, names) => {
   expect(suggest(context, { query, whole })).toEqual(names);
-});
-
-test.each<[string, string, number, string, { text: string; caret: number }]>([
-  ["at the end of the line, with a space to type the message after", "@ti", 3, "tiles-a", { text: "@tiles-a ", caret: 9 }],
-  ["before the message, the caret past its space", "@ti hello", 3, "tiles-a", { text: "@tiles-a hello", caret: 9 }],
-  ["the whole name, from the caret in its middle", "@tixx hello", 3, "tiles-a", { text: "@tiles-a hello", caret: 9 }],
-  ["a list item, the caret before its comma", "@a,@b hi", 2, "alpha", { text: "@alpha,@b hi", caret: 6 }],
-  ["the last of a list", "@a,@b", 5, "beta:ops", { text: "@a,@beta:ops ", caret: 13 }],
-  ["every agent shown", "@", 1, "*", { text: "@* ", caret: 3 }],
-  ["after leading space", "  @t", 4, "tiles-a", { text: "  @tiles-a ", caret: 11 }],
-])("complete: %s", (_, text, caret, name, completed) => {
-  expect(complete(text, mentionAt(text, caret)!, name)).toEqual(completed);
 });
 
 test.each<[string, string, string, string]>([

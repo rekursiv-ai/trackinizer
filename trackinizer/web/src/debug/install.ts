@@ -2,6 +2,7 @@ import type { ErrorInfo } from "react";
 import { ApiError, failureFields } from "../api/client";
 import { errorDetails, refusedDetails } from "./details";
 import { type Fields, log, recentEvents, setDebug } from "./log";
+import { recentTimings } from "./timings";
 
 /**
  * Start debug support, once, before the app renders.
@@ -10,9 +11,10 @@ import { type Fields, log, recentEvents, setDebug } from "./log";
  *   holds `trackinizer.v2.debug` = `1`; info and debug events then reach the
  *   console too.
  * - Uncaught errors and unhandled rejections are logged.
- * - The devtools console gets `trackinizer.events()`, the ring, and
+ * - The devtools console gets `trackinizer.events()`, the ring,
  *   `trackinizer.details()`, the text Copy details would give, or the text
- *   the clipboard last refused it.
+ *   the clipboard last refused it, and `trackinizer.timings()`, the canvas's
+ *   frame and paint marks.
  *
  * Returns the function that undoes it.
  */
@@ -23,7 +25,7 @@ export function installDebug(): () => void {
   addEventListener("error", uncaught);
   addEventListener("unhandledrejection", unhandled);
   const details = () => refusedDetails() ?? errorDetails("Asked for in the console", null);
-  Object.assign(window, { trackinizer: { events: recentEvents, details } });
+  Object.assign(window, { trackinizer: { events: recentEvents, details, timings: recentTimings } });
   return () => {
     removeEventListener("error", uncaught);
     removeEventListener("unhandledrejection", unhandled);

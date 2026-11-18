@@ -17,7 +17,10 @@
 .modal.small { width: min(460px, calc(100vw - 32px)); }
 .modal-b { padding: 16px 16px 12px; display: flex; flex-direction: column; gap: 10px; }
 .modal-b h3 { font-size: 15px; font-weight: 600; }
-.modal-b p { font-size: 13px; color: var(--muted); line-height: 1.55; }
+/* A dialog's own hand-written paragraph, and only that: the library's primitives
+   carry a class and set their own size and ink, and a bare element selector here
+   would silently re-steal a summary back to 13px grey. */
+.modal-b > p:not([class]) { font-size: 13px; color: var(--muted); line-height: 1.55; }
 .modal-f { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 16px; border-top: 1px solid var(--line); flex-wrap: wrap; }
 
 .w-versions { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: 13px; }

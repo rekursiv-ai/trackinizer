@@ -29,7 +29,7 @@ Load-bearing code:
 - [`server/store/read.py`](../server/store/read.py) --
   `what_changed_for_anyone` (cursor query; LEFT JOIN resolves the
   subject's short seq).
-- [`trax/run/session.py`](../trax/run/session.py) -- `_render_inbound`
+- [`trax/run/inbound.py`](../trax/run/inbound.py) -- `render_inbound`
   (client-side shaping: what actually reaches the child).
 - [`examples/subscriber_demo.sh`](../examples/subscriber_demo.sh) -- the
   executable spec, end to end against a real server.
@@ -58,6 +58,10 @@ One JSON object per change, metadata only:
   (no row to join) falls back to the UUID, which stays resolvable via
   `trax id`.
 - `caused_by` rides along on cascade-emitted events.
+- `actor` and `reason` are free text the writer sets. A session whose audience is
+  not `open` receives the envelope without them (and without "(by ...)" in
+  `agent_message`), because an inbound line becomes that session's next user
+  turn. The session reads who and why from the row.
 
 **No `old`/`new` delta** -- unbounded text (descriptions, abstracts) must
 not ride a line-oriented injection; the recipient runs `row` for the
@@ -68,9 +72,10 @@ the server route (`GET /api/change_log/<uuid>`) is already there.
 
 ## Client-side shaping
 
-The server pushes the **same envelope to every session**; the `trax run`
-poller (`_render_inbound`) decides what reaches the child's stdin, because
-only the client knows what is attached:
+The server pushes the **same envelope to every `open` session** (the others
+get it without `actor` and `reason`, above); the `trax run` poller
+(`render_inbound`) decides what reaches the child's stdin, because only the
+client knows what is attached:
 
 | session child | receives |
 |---|---|

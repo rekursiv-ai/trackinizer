@@ -179,8 +179,8 @@ def render_udiff(edits: Sequence[Splice]) -> str:
         # splice whose text merely lacks ``\n`` is a DIFFERENT fact -- an
         # append states the bytes it wrote, and no patch ever annotated them --
         # so the flag travels rather than being inferred from the text.
-        out.extend(_marked("-", splice.before, terminate="before" in splice.bare))
-        out.extend(_marked("+", splice.after, terminate="after" in splice.bare))
+        out.extend(_marked("-", splice.before or "", terminate="before" in splice.bare))
+        out.extend(_marked("+", splice.after or "", terminate="after" in splice.bare))
         trail = splice.trail or ""
         out.append(
             f"{trail}\n{_NO_NEWLINE}\n" if "trail" in splice.bare and trail else trail,
@@ -192,13 +192,13 @@ def render_udiff(edits: Sequence[Splice]) -> str:
 # mid-line rebuilds exactly as the provider wrote it. When more diff FOLLOWS that line,
 # the missing terminator is stated the way git does -- an annotation -- because the next
 # line has to start somewhere.
-def _marked(mark: str, text: str | None, *, terminate: bool = False) -> list[str]:
+def _marked(mark: str, text: str, *, terminate: bool = False) -> list[str]:
     """Return each line of ``text`` under ``mark``, keeping its termination."""
     lines = _lines(text)
     if not lines:
         return []
     out = [f"{mark}{line}\n" for line in lines]
-    if text is not None and not text.endswith("\n"):
+    if not text.endswith("\n"):
         out[-1] = out[-1].removesuffix("\n")
         if terminate:
             out[-1] += f"\n{_NO_NEWLINE}\n"
@@ -208,10 +208,8 @@ def _marked(mark: str, text: str | None, *, terminate: bool = False) -> list[str
 # A final line without its newline is still a line: ``printf hi >> f`` appends exactly
 # ``hi``, and dropping the last piece unconditionally rendered that whole edit as
 # nothing.
-def _lines(text: str | None) -> list[str]:
+def _lines(text: str) -> list[str]:
     """Return text as its lines, terminated or not."""
-    if not text:
-        return []
     pieces = text.split("\n")
     return pieces[:-1] if pieces[-1] == "" else pieces
 
@@ -261,8 +259,14 @@ def _joined(lines: Sequence[str]) -> str | None:
 
 def _unterminate(splice: Splice) -> Splice:
     """Drop the trailing newline from a splice's last populated field."""
-    for name in ("trail", "after", "before", "lead"):
-        value: object = getattr(splice, name)  # pyright: ignore[reportAny] -- splice fields are string-or-None by fixed names.
-        if isinstance(value, str) and value:
-            return replace(splice, **{name: value.removesuffix("\n")})
-    return splice
+    match splice:
+        case Splice(trail=str(text)) if text:
+            return replace(splice, trail=text.removesuffix("\n"))
+        case Splice(after=str(text)) if text:
+            return replace(splice, after=text.removesuffix("\n"))
+        case Splice(before=str(text)) if text:
+            return replace(splice, before=text.removesuffix("\n"))
+        case Splice(lead=str(text)) if text:
+            return replace(splice, lead=text.removesuffix("\n"))
+        case _:
+            return splice

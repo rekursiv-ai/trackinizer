@@ -8,7 +8,7 @@ description: ALWAYS invoke this skill when attaching a git commit as a trackiniz
 A `CodeChange` is one git commit, citeable like any other artifact.
 
 Per-kind expectations doc (SoT). Fields owned by `types/inquiries.py`; grammar by
-`../trax/SKILL.md`.
+`../SKILL.md`.
 
 ## Completeness bar
 

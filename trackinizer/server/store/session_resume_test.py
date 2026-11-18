@@ -14,6 +14,8 @@ from uuid import UUID, uuid4
 
 import json
 
+from treekle import immutable
+
 import pytest
 import pytest_asyncio
 
@@ -21,13 +23,17 @@ from trackinizer.lib.agent.sessions import (
     claude,
     codex,
 )
-from trackinizer.lib.agent.types.sessions import SessionRecord, Thinking
-from trackinizer.lib.custom_json import DictCodec, json_freeze
+from trackinizer.lib.agent.sessions.tail import Tail
+from trackinizer.lib.agent.types.sessions import (
+    IncompleteRecord,
+    SessionRecord,
+    Thinking,
+    UncategorizedRecord,
+)
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.trax.run.errors import CiphertextDroppedError
-from trackinizer.trax.run.materialize import materialize_claude
+from trackinizer.trax.run.materialize import materialize
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 from trackinizer.wire.bodies import SubmitAgentSession
@@ -73,6 +79,7 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
     records.extend(reader.close())
     session_id = await store.submit_agentsession(
         SubmitAgentSession(title=f"resume {name}", cli="claude", account="t@e"),
+        audience="open",
     )
     part = await store.upsert_session_manifest(
         session_id,
@@ -80,7 +87,7 @@ async def _captured(store: Store, name: str) -> tuple[UUID, int]:
         # How the file SPELLS its bytes, which is all the manifest carries
         # now: identity is not in the IR, so the capturing client mints the
         # ``ir_id`` rather than reading one off the reader.
-        metadata=json_freeze(reader.encoding),
+        metadata=immutable(reader.encoding),
         ir_id=uuid4(),
         format="codex" if name.startswith("codex") else "claude",
         records=len(records),
@@ -132,9 +139,11 @@ async def test_a_claude_session_resumes_to_its_stored_records(store: Store) -> N
     records, sealed = await _read_back(store, session_id, part)
     manifests = await store.read_session_manifests(session_id)
 
-    written = materialize_claude(
+    written = materialize(
+        target="claude",
         records=records,
         encoding=manifests[0].metadata,
+        attach=session_id,
         sealed=sealed,
     )
     with written.path.open(encoding="utf-8") as handle:
@@ -150,15 +159,20 @@ def _without_session_id(records: Sequence[TraxRecord]) -> list[TraxRecord]:
     """Each record with any ``sessionId`` dropped from its residual."""
     out: list[TraxRecord] = []
     for record in records:
-        residual = DictCodec.coerce(getattr(record, "extra", None))
-        if "sessionId" not in residual:
+        if (
+            isinstance(
+                record,
+                (IncompleteRecord, UncategorizedRecord, Stdin, Stdout, Stderr),
+            )
+            or "sessionId" not in record.extra
+        ):
             out.append(record)
             continue
         out.append(
             replace(
                 record,
-                extra=json_freeze(
-                    {k: v for k, v in residual.items() if k != "sessionId"},
+                extra=immutable(
+                    {k: v for k, v in record.extra.items() if k != "sessionId"},
                 ),
             ),
         )
@@ -177,9 +191,11 @@ async def test_a_codex_capture_resumes_as_claude(store: Store) -> None:
     records, sealed = await _read_back(store, session_id, part)
     manifests = await store.read_session_manifests(session_id)
 
-    written = materialize_claude(
+    written = materialize(
+        target="claude",
         records=records,
         encoding=manifests[0].metadata,
+        attach=session_id,
         sealed=sealed,
     )
 
@@ -203,9 +219,11 @@ async def test_the_materialized_file_names_the_minted_id(store: Store) -> None:
     records, sealed = await _read_back(store, session_id, part)
     manifests = await store.read_session_manifests(session_id)
 
-    written = materialize_claude(
+    written = materialize(
+        target="claude",
         records=records,
         encoding=manifests[0].metadata,
+        attach=session_id,
         sealed=sealed,
     )
 
@@ -249,6 +267,7 @@ async def test_stamping_the_id_re_attaches_rather_than_forking(store: Store) -> 
             cli_session_id=str(minted),
         ),
         requested_actor="agent",
+        audience="open",
     )
 
     assert resumed == session_id, "the resumed run forked a second AgentSession"
@@ -268,6 +287,7 @@ async def test_without_the_stamp_the_run_forks(store: Store) -> None:
             cli_session_id=str(uuid4()),
         ),
         requested_actor="agent",
+        audience="open",
     )
 
     assert forked != session_id
@@ -292,9 +312,11 @@ async def test_dropped_ciphertext_refuses_the_resume(store: Store) -> None:
 
     assert any(isinstance(r, Thinking) for r in records), "fixture carries no thinking"
     with pytest.raises(CiphertextDroppedError):
-        materialize_claude(
+        materialize(
+            target="claude",
             records=records,
             encoding=manifests[0].metadata,
+            attach=session_id,
             sealed=sealed,
         )
 
@@ -323,6 +345,6 @@ async def test_the_session_stays_searchable_without_its_ciphertext(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

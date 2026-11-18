@@ -9,13 +9,14 @@ edit machinery is reused through the composed :class:`Store`.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Final, cast
 from uuid import UUID
 
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import asyncpg
 
     from trackinizer.lib.postgres import Conn
@@ -25,15 +26,9 @@ else:
 
     asyncpg = lazy_import("asyncpg")  # ~60 ms; only start_session() needs it.
 
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    IntCodec,
-    JSONValue,
-    ListCodec,
-    StrCodec,
-    json_freeze,
-    loads,
-)
+from treekle import from_plain
+
+from trackinizer.server.audience import visible_sql
 from trackinizer.server.notify import notify_after_commit, tx
 from trackinizer.server.store.change_id_slot import (
     _peek_client_change_id,
@@ -45,11 +40,13 @@ from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     FeedScope,
 )
+from trackinizer.server.store.session_ir import _decoded_payload
 from trackinizer.server.store.submit import _SubmitMixin
 from trackinizer.server.values import vetted_sql
 from trackinizer.types.change_log import Snapshot
 from trackinizer.types.errors import ConflictError, NotFoundError
 from trackinizer.types.inquiries import Inquiry
+from trackinizer.wire.audience import OPEN, PRIVATE
 from trackinizer.wire.wire_sessions import FeedEvent
 
 
@@ -63,6 +60,12 @@ _LOCK_SESSION_SQL: Final = (
     "FROM inquiries WHERE id = $1 FOR UPDATE"
 )
 """Lock a session's row for a lifecycle move, reading what each move checks."""
+
+_RESUMED_SQL: Final = (
+    "SELECT id, owner, status, agentsession_ended, agentsession_rooms, "
+    "agentsession_audience FROM inquiries WHERE kind = 'AgentSession' "
+)
+"""Read what a resume or an attach re-opens; the caller names the row and locks it."""
 
 _SEEN_WRITE_EVERY: Final = timedelta(minutes=1)
 """How stale a session's ``last_seen`` must be before a sign of life rewrites it."""
@@ -78,22 +81,6 @@ _SEEN_AGAIN_SQL: Final = (
     "UPDATE session_liveness SET last_seen = $2 "
     "WHERE session_id = $1 AND last_seen < $3"
 )
-
-
-def _strip_postgres_nuls(value: JSONValue) -> JSONValue:
-    """Drop non-displayable NUL artifacts that PostgreSQL JSONB cannot store."""
-    if isinstance(value, str):
-        return value.replace("\0", "")
-    if isinstance(value, Mapping):
-        mapping = value
-        return {
-            key.replace("\0", ""): _strip_postgres_nuls(item)
-            for key, item in mapping.items()
-        }
-    if isinstance(value, Sequence):
-        sequence = value
-        return [_strip_postgres_nuls(item) for item in sequence]
-    return value
 
 
 class _SessionMixin(_SubmitMixin, _EditMixin):
@@ -134,8 +121,9 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             taken = {
                 row["owner"]
                 for row in await conn.fetch(
-                    "SELECT owner FROM inquiries "
-                    "WHERE kind = 'AgentSession' AND owner IS NOT NULL",
+                    "SELECT owner FROM inquiries WHERE kind = 'AgentSession' "
+                    "AND (owner = $1 OR starts_with(owner, $1 || '#'))",
+                    requested,
                 )
             }
         if requested not in taken:
@@ -150,10 +138,12 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         req: SubmitAgentSession,
         *,
         requested_actor: str,
+        audience: str,
         api_key_id: UUID | None = None,
+        attach: UUID | None = None,
         max_reserve_attempts: int = 16,
     ) -> tuple[UUID, str, int]:
-        """Open or RESUME a session, returning ``(id, granted_owner, next_seq)``.
+        """Open, RESUME or ATTACH a session; return ``(id, granted_owner, next_seq)``.
 
         Reserves the next free ``@actor`` name (:meth:`reserve_session_actor`)
         and inserts the row, retrying when the live-owner partial unique index
@@ -166,9 +156,17 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         AgentSession's ``agentsession_cli_session_id``, re-attach that session
         instead of minting a new one -- same id, same granted handle -- and
         re-open it if ended (clear ``ended``, status back to ``active``), so the
-        resumed run continues the original log. ``next_seq`` is the event log's
-        continuation point (``max(seq)+1``, or 0 for a fresh session) so the
-        caller seeds its sequence and appends rather than colliding at seq 0.
+        resumed run continues the original log. A resume asked to be ``private``
+        hides the ``open`` session it re-attaches, as the key that opened it may,
+        and refuses one in any other audience before touching it. ``next_seq`` is
+        always 0: record keys derive from their position in the source file, so a
+        resumed run re-derives the same keys and needs no continuation point.
+
+        Attach: ``attach`` names the session a run re-opens by its id, whichever key
+        opened it, as a resume re-opens one by its ``cli_session_id``. Its
+        ``cli_session_id`` is left as it is, so a science chat keeps its
+        ``chat:<id>``; the run's file becomes the session's next part. The caller
+        has already checked that its key may write the session.
 
         Idempotent: when this request reuses a prior start's idempotency key,
         the original session id AND its granted owner are replayed -- the
@@ -178,18 +176,36 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         Args:
           req: SubmitAgentSession body (may include cli_session_id for resume).
           requested_actor: Desired routing name; suffixed with #N if taken.
+          audience: Who may read the transcript of a session this call mints;
+            ``private`` hides one it resumes too.
           api_key_id: API key that opened this session; used in resume correlation.
+          attach: The session to re-open by its id, or ``None`` to open or resume.
           max_reserve_attempts: Max retries on live-owner unique constraint.
 
         Returns:
-          session_id: Server-minted UUID (or re-attached on resume).
-          granted_actor: Routing name (requested or requested#N).
+          session_id: Server-minted UUID (or re-attached on resume or attach).
+          granted_actor: Routing name (requested or requested#N); the session's own
+            on a resume or attach.
           next_seq: Zero (deprecated; kept for wire compatibility).
 
         Raises:
-          ConflictError: Max reserve attempts exhausted; cannot acquire a name.
+          ConflictError: Max reserve attempts exhausted; cannot acquire a name. Or
+            a ``private`` resume or attach of a session in an audience other than
+            ``open``.
+          NotFoundError: ``attach`` names no session.
 
         """
+        if attach is not None:
+            attached = await self._resume_session(
+                req,
+                api_key_id=api_key_id,
+                actor=requested_actor,
+                hide=audience == PRIVATE,
+                attach=attach,
+            )
+            if attached is None:
+                raise NotFoundError(f"session {attach} not found")
+            return attached
         # Resume correlation BEFORE reserve/replay: a known cli_session_id
         # re-attaches the original session. Guard non-null so two fresh
         # (null-id) runs never correlate to each other.
@@ -198,6 +214,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
                 req,
                 api_key_id=api_key_id,
                 actor=requested_actor,
+                hide=audience == PRIVATE,
             )
             if resumed is not None:
                 return resumed
@@ -235,6 +252,7 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             try:
                 session_id = await self.submit_agentsession(
                     req.model_copy(update={"owner": granted}),
+                    audience=audience,
                     api_key_id=api_key_id,
                     actor=granted,
                 )
@@ -312,35 +330,56 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
     # disabled after the stamp does not rewrite anyone's existing stamp, and resume --
     # like a plain field edit -- never revalidates it. Resume inherits the stamp as-is;
     # this is the consistent behavior, not a carve-out.
+    #
+    # An attach names the session by its id instead, and is not scoped to the opening
+    # key: the route has checked the caller may write it, and a science chat takes runs
+    # from more keys than its opener's.
     async def _resume_session(
         self,
         req: SubmitAgentSession,
         *,
         api_key_id: UUID | None,
         actor: Inquiry.Actor,
+        hide: bool,
+        attach: UUID | None = None,
     ) -> tuple[UUID, str, int] | None:
-        """Re-attach (and re-open if ended) the session for this CLI session id."""
+        """Re-attach (and re-open if ended) the session by CLI session id or by id."""
         async with (
             notify_after_commit(),
             self.engine.acquire() as conn,
             tx(conn),
         ):
-            row = await conn.fetchrow(
-                "SELECT id, owner, status, agentsession_ended, agentsession_rooms "
-                "FROM inquiries WHERE kind = 'AgentSession' "
-                "AND agentsession_cli_session_id = $1 "
-                "AND agentsession_opened_by_api_key_id IS NOT DISTINCT FROM $2 "
-                "ORDER BY seq LIMIT 1 FOR UPDATE",
-                req.cli_session_id,
-                api_key_id,
-            )
+            if attach is None:
+                row = await conn.fetchrow(
+                    vetted_sql(
+                        _RESUMED_SQL,
+                        "AND agentsession_cli_session_id = $1 "
+                        "AND agentsession_opened_by_api_key_id IS NOT DISTINCT FROM $2 "
+                        "ORDER BY seq LIMIT 1 FOR UPDATE",
+                    ),
+                    req.cli_session_id,
+                    api_key_id,
+                )
+            else:
+                row = await conn.fetchrow(
+                    vetted_sql(_RESUMED_SQL, "AND id = $1 FOR UPDATE"),
+                    attach,
+                )
             if row is None:
                 return None
             session_id = row["id"]
             assert isinstance(session_id, UUID)
             # NULL for a session captured from a transcript rather than opened
             # live; resolve_live_sessions reads the column the same way.
-            owner = StrCodec.coerce(row["owner"])
+            owner = from_plain(row.get("owner"), str, default="")
+            if hide:
+                await self._hide_resumed(
+                    conn,
+                    session_id=session_id,
+                    held=from_plain(row.get("agentsession_audience"), str, default=""),
+                    api_key_id=api_key_id,
+                    actor=actor,
+                )
             if row["agentsession_ended"] is not None:
                 # Attribute the audit to the resuming caller, not the original
                 # owner.
@@ -354,19 +393,49 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             # Apply any new rooms from the resuming request: ``--resume --room X``
             # must join X. ``_mutate_list_field_on_conn`` is idempotent (a re-add
             # of an existing room is a no-op) and runs on this open tx.
-            if req.rooms:
-                for room in req.rooms:
-                    await self._mutate_list_field_on_conn(
-                        conn,
-                        session_id,
-                        room,
-                        column="agentsession_rooms",
-                        api_key_id=api_key_id,
-                        actor=actor,
-                        include=True,
-                    )
+            for room in req.rooms or ():
+                await self._mutate_list_field_on_conn(
+                    conn,
+                    session_id,
+                    room,
+                    column="agentsession_rooms",
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    include=True,
+                )
             next_seq = await self._next_event_seq(conn, session_id)
             return session_id, owner, next_seq
+
+    # Before the re-open, so a refusal rolls back a session left as it was: ended, if it
+    # was, with its queue unreleased.
+    async def _hide_resumed(
+        self,
+        conn: Conn,
+        *,
+        session_id: UUID,
+        held: str,
+        api_key_id: UUID | None,
+        actor: Inquiry.Actor,
+    ) -> None:
+        """Make the ``open`` session a private resume re-attaches ``private``."""
+        if held == PRIVATE:
+            return
+        if held != OPEN:
+            raise ConflictError(
+                f"session {session_id} is {held!r}, which a private resume never hides",
+            )
+        await self._update_field(conn, session_id, "agentsession_audience", PRIVATE)
+        await self._emit_field_change(
+            conn,
+            session_id,
+            "AgentSession",
+            "agentsession_audience",
+            Snapshot(agentsession_audience=held),
+            new=Snapshot(agentsession_audience=PRIVATE),
+            api_key_id=api_key_id,
+            actor=actor,
+            reason="hidden by its owner on resume",
+        )
 
     # A ``trax run`` polls continuously, so its row is rewritten at most once a minute:
     # the reaper's window is many minutes, and a write per poll would be one per session
@@ -611,15 +680,119 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         return [
             (
                 _uuid(row["id"]),
-                tuple(ListCodec.coerce(row["agentsession_rooms"], str)),
+                tuple(from_plain(row["agentsession_rooms"], list[str], default=[])),
             )
             for row in rows
         ]
+
+    async def read_session_audiences(
+        self,
+        session_ids: Sequence[UUID],
+    ) -> dict[UUID, str | None]:
+        """Read the audience of each session in ``session_ids``.
+
+        Args:
+          session_ids: Session ids to look up.
+
+        Returns:
+          audiences: The audience by id. An id that is no session is absent.
+
+        """
+        async with self.engine.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT id, agentsession_audience FROM inquiries "
+                "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[])",
+                list(session_ids),
+            )
+        return {
+            _uuid(row["id"]): from_plain(
+                row["agentsession_audience"],
+                str,
+                default=None,
+            )
+            for row in rows
+        }
+
+    async def set_session_audience(
+        self,
+        session_ids: Sequence[UUID],
+        *,
+        audience: str,
+        replacing: frozenset[str],
+        refusing: frozenset[str],
+        api_key_id: UUID | None,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> list[UUID]:
+        """Move sessions into ``audience``, all or none, each move audited.
+
+        One transaction locks every session first, so no move lands while another
+        reads them: a session in a ``refusing`` audience refuses the whole call, and
+        only those in a ``replacing`` one move.
+
+        Args:
+          session_ids: The sessions; an id that is no session is skipped.
+          audience: Where they go.
+          replacing: The audiences a session moves out of; any other stays.
+          refusing: The audiences that refuse the call, moving nothing.
+          api_key_id: The key behind the move, for the audit.
+          actor: System-wide author label for the audit.
+          reason: Why, for the audit.
+
+        Returns:
+          moved: The sessions that moved, in id order.
+
+        Raises:
+          ConflictError: A session is in a ``refusing`` audience.
+
+        """
+        moved: list[UUID] = []
+        async with (
+            notify_after_commit(),
+            self.engine.acquire() as conn,
+            tx(conn),
+        ):
+            rows = await conn.fetch(
+                "SELECT id, agentsession_audience AS audience FROM inquiries "
+                "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[]) "
+                "ORDER BY id FOR UPDATE",
+                list(session_ids),
+            )
+            refused = [row["id"] for row in rows if row["audience"] in refusing]
+            if refused:
+                raise ConflictError(
+                    f"sessions {refused} are in an audience that refuses {audience!r}",
+                )
+            for row in rows:
+                held = from_plain(row["audience"], str)
+                if held not in replacing:
+                    continue
+                session_id = _uuid(row["id"])
+                await self._update_field(
+                    conn,
+                    session_id,
+                    "agentsession_audience",
+                    audience,
+                )
+                await self._emit_field_change(
+                    conn,
+                    session_id,
+                    "AgentSession",
+                    "agentsession_audience",
+                    Snapshot(agentsession_audience=held),
+                    new=Snapshot(agentsession_audience=audience),
+                    api_key_id=api_key_id,
+                    actor=actor,
+                    reason=reason,
+                )
+                moved.append(session_id)
+        return moved
 
     async def read_feed(
         self,
         *,
         after: tuple[datetime, UUID, int, int] | None = None,
+        before: tuple[datetime, UUID, int, int] | None = None,
         since: datetime | None = None,
         until: datetime | None = None,
         scope: FeedScope = WHOLE_FEED,
@@ -640,11 +813,14 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             part, idx)`` to resume past. The cursor is composite (not bare
             ``created``) because the order key is, so a page boundary falling
             inside a same-``created`` group does not skip the rows after it.
+          before: Exclusive composite upper bound; with ``tail``, the page
+            immediately preceding this key, including same-instant ties.
           since: Inclusive lower bound on ``created`` -- a historical window's
             start (distinct from ``after``, which is the exclusive resume
             cursor); combine with ``until`` to bound a fixed window.
           until: Inclusive upper bound on ``created``; bounds a window's end.
-          scope: Which sessions and record kinds to keep.
+          scope: Which sessions and record kinds to keep, and who reads them: no
+            turn of a session they may not read is returned.
           conversation: Keep only conversation, the records the facets count as
             what a person or agent said (``session_feed.CONVERSATION``), so a page
             of ``limit`` holds that many of them.
@@ -661,13 +837,14 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
         """
         clauses = ["i.kind = 'AgentSession'"]
         params: list[object] = []
-        if after is not None:
-            params.extend(after)
-            n = len(params)
-            clauses.append(
-                f"(e.created, e.session_id, e.part, e.idx) > "
-                f"(${n - 3}, ${n - 2}, ${n - 1}, ${n})",
-            )
+        for cursor, comparison in ((after, ">"), (before, "<")):
+            if cursor is not None:
+                params.extend(cursor)
+                n = len(params)
+                clauses.append(
+                    f"(e.created, e.session_id, e.part, e.idx) {comparison} "
+                    f"(${n - 3}, ${n - 2}, ${n - 1}, ${n})",
+                )
         if since is not None:
             params.append(since)
             clauses.append(f"e.created >= ${len(params)}")
@@ -675,6 +852,9 @@ class _SessionMixin(_SubmitMixin, _EditMixin):
             params.append(until)
             clauses.append(f"e.created <= ${len(params)}")
         clauses.extend(scope.clauses(params, kind="e.kind"))
+        # Audience: gated -- a turn of a session ``scope.reader`` may not read is not in
+        # the feed.
+        clauses.append(visible_sql("i", params=params, reader=scope.reader))
         if conversation:
             # In a CASE, so the planner neither estimates the test nor scans an
             # index for its kinds. Bare, beside the Messages level's kind filter, it
@@ -917,19 +1097,17 @@ def _feed_event(row: asyncpg.Record) -> FeedEvent:
     """Build one feed item from a ``session_records`` join row."""
     return FeedEvent(
         session_id=_uuid(row["session_id"]),
-        actor=StrCodec.coerce(row["owner"]),
-        rooms=ListCodec.coerce(row["agentsession_rooms"], str),
+        actor=from_plain(row.get("owner"), str, default=""),
+        rooms=from_plain(row.get("agentsession_rooms"), list[str], default=[]),
         cli=_optional_str(row["agentsession_cli"]),
-        part=IntCodec.coerce(row["part"], None),
-        seq=IntCodec.coerce(row["idx"], None),
-        kind=StrCodec.coerce(row["kind"], None),
+        part=from_plain(row["part"], int),
+        seq=from_plain(row["idx"], int),
+        kind=from_plain(row["kind"], str),
         created=_datetime(row["created"]),
         timestamp=_optional_datetime(row["timestamp"]),
         model=_optional_str(row["model"]),
-        message=json_freeze(
-            DictCodec.coerce(loads(StrCodec.coerce(row["payload"], None))),
-        ),
-        text=StrCodec.coerce(row["text"], None),
+        message=_decoded_payload(from_plain(row["payload"], str)),
+        text=from_plain(row["text"], str),
     )
 
 

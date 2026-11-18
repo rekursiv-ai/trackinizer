@@ -58,6 +58,7 @@ __all__ = [
     "ModelEntry",
     "bucket_specs",
     "build_backfill_embedder",
+    "build_cached_session_embedder",
     "build_session_embedder",
     "is_weightless",
     "resolved_name",
@@ -132,6 +133,17 @@ def build_session_embedder(
         return _build_stub(name)
     entry, resolved_dim = _resolve_model(name, dim)
     return entry.build(resolved_dim)
+
+
+def build_cached_session_embedder(
+    name: str,
+    *,
+    dim: int | None = None,
+) -> QueryEmbedder | None:
+    """Build only a locally cached session embedder; otherwise disable semantics."""
+    if not weights_present(name, dim=dim):
+        return None
+    return build_session_embedder(name, dim=dim)
 
 
 def is_weightless(name: str) -> bool:

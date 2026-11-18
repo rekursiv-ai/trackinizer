@@ -1,5 +1,5 @@
 import type { APIRequestContext, Page } from "@playwright/test";
-import { expect, failedResource, test } from "./fixtures";
+import { expect, failedResource, test, streamOpened } from "./fixtures";
 
 // The console (#/console): every session's captured records as one live feed,
 // narrowed by a view that saves itself, and a line that messages agents. The test
@@ -43,7 +43,7 @@ async function drain(request: APIRequestContext, id: string): Promise<string[]> 
 
 /** Open the console once the live stream is connected. */
 async function openConsole(page: Page) {
-  const subscribed = page.waitForResponse((response) => response.url().includes("/api/web/subscribe"));
+  const subscribed = streamOpened(page);
   await page.goto("/app/#/console");
   await subscribed;
 }
@@ -106,6 +106,31 @@ test("a view picks a family of agents and a level, follows them live, moves by t
   await expect(levels.getByRole("button", { name: /^\+ Calls/ })).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(".console-mark")).toHaveText("History");
   await expect(lines(page)).toHaveCount(4);
+});
+
+test("a view saved in one browser is in a fresh browser of the same user, and nothing of it is kept in either browser's storage", async ({ page, browser }) => {
+  const name = `Saved ${TAG}`;
+  await openConsole(page);
+  const views = page.getByRole("region", { name: "Views" });
+  const kept = page.waitForResponse((response) => response.url().endsWith("/api/me/preferences") && response.request().method() === "PATCH" && response.ok());
+  await page.getByRole("group", { name: "Level" }).getByRole("button", { name: /^All/ }).click();
+  await kept;
+  await views.getByRole("button", { name: "Rename Untitled view" }).click();
+  const renamed = page.waitForResponse((response) => response.url().endsWith("/api/me/preferences") && response.request().method() === "PATCH" && response.ok());
+  await views.getByRole("textbox", { name: "View name" }).fill(name);
+  await views.getByRole("textbox", { name: "View name" }).press("Enter");
+  await renamed;
+  expect(await page.evaluate(() => Object.keys(localStorage).filter((key) => key.includes("console")))).toEqual([]);
+
+  const second = await browser.newContext();
+  try {
+    const other = await second.newPage();
+    await openConsole(other);
+    await expect(other.getByRole("region", { name: "Views" }).getByRole("button", { name, exact: true })).toBeVisible();
+    await expect(other.getByRole("group", { name: "Level" }).getByRole("button", { name: /^All/ })).toHaveAttribute("aria-pressed", "true");
+  } finally {
+    await second.close();
+  }
 });
 
 test("a line goes to the view's agents, each once with a retry, @ lists them, and @agent and @* still work", async ({ page, allowErrors }) => {

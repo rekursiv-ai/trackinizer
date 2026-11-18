@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Final
 from uuid import UUID
 
-from trackinizer.lib.custom_json import ListCodec
+from treekle import from_plain
 
 
 if TYPE_CHECKING:
@@ -75,9 +75,9 @@ async def read_neighbourhood(
         room = limit - len(distances)
         if room < 1 or not frontier:
             break
-        frontier = ListCodec.coerce(
+        frontier = from_plain(
             await conn.fetchval(_NEXT_HOP, frontier, list(distances), room),
-            UUID,
+            list[UUID],
         )
         distances |= dict.fromkeys(frontier, hop)
     return distances

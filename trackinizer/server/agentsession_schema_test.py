@@ -99,6 +99,7 @@ async def test_agentsession_lifecycle_writes_succeed(store: Store) -> None:
         ),
         api_key_id=None,
         actor="ci",
+        audience="open",
     )
     assert await store.get_inquiry(session_id) is not None
 
@@ -157,6 +158,7 @@ async def test_submit_agentsession_stamps_opening_api_key(store: Store) -> None:
         ),
         api_key_id=opener,
         actor="ci",
+        audience="open",
     )
     async with store.engine.acquire() as conn:
         stored = await conn.fetchval(
@@ -224,10 +226,11 @@ async def test_create_time_status_cannot_violate_agentsession_lifecycle(
             ),
             api_key_id=None,
             actor="ci",
+            audience="open",
         )
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

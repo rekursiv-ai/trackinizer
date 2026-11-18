@@ -6,7 +6,7 @@ import { expect, vi } from "vitest";
 import type { Detail, Peer } from "../api/detail";
 import type { Ancestor, InquiryRow } from "../api/inquiries";
 import type { Profile } from "../api/me";
-import { type Sent, stubFetch } from "../api/testing";
+import { AGREED, type Sent, stubFetch } from "../api/testing";
 import { type Meta, MetaContext, ProfileContext } from "../app/boot";
 import { createQueryClient } from "../app/queryClient";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
@@ -22,7 +22,7 @@ const META: Meta = {
   edges: {},
   kinds: KINDS,
 };
-const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false };
+const PROFILE: Profile = { user_id: "u1", email: "ada@example.com", name: "Ada", role: "writer", last_login: null, visual_workspace_enabled: false, ...AGREED };
 
 /** An ancestor `seq` with the ids of what narrows it, as the list route sends one. */
 export function up(seq: number, ...children: number[]): Ancestor {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import threading
@@ -18,7 +18,7 @@ class Target:
 
     author: str
 
-    api_key: str
+    api_key: str = field(repr=False)
 
 
 _CLIENTS: Final[dict[Target, Client]] = {}

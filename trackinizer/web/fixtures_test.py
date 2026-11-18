@@ -34,12 +34,13 @@ import sys
 import time
 import uuid
 
+from treekle import PlainTree, from_plain, json_loads, mutable
+
 import httpx2
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.lib.agent.types.sessions import AssistantMessage, ToolCall, UserMessage
-from trackinizer.lib.custom_json import DictCodec, JSONValue, ListCodec, StrCodec, loads
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.wire_metrics import MetricPoint
 from trackinizer.wire.wire_session_ir import ManifestBody, RecordBody
@@ -49,7 +50,7 @@ from trackinizer.wire.wire_sessions import SessionStart
 if TYPE_CHECKING:
     from collections.abc import Generator, Sequence
 
-    from trackinizer.lib.custom_json import MutableJSONValue
+    from treekle import MutablePlainTree
 
 
 _CWD: Final = Path(__file__).resolve().parent
@@ -132,7 +133,7 @@ def test_normalising_ignores_random_ids_times_and_the_order_of_timed_rows() -> N
     ]
 
     assert normalised[0] == normalised[1]
-    assert loads(normalised[0]) == [
+    assert json.loads(normalised[0]) == [
         {
             "id": "00000000-0000-4000-9000-000000000001",
             "subject": "00000000-0000-4000-8000-000000000001",
@@ -154,7 +155,7 @@ class _Recorder:
     rows: dict[str, int] = field(default_factory=dict)
     """Each inquiry the graph made, numbered in the order it was made."""
 
-    exchanges: dict[str, dict[str, JSONValue]] = field(default_factory=dict)
+    exchanges: dict[str, dict[str, PlainTree]] = field(default_factory=dict)
 
     def call(
         self,
@@ -163,14 +164,14 @@ class _Recorder:
         path: str,
         *,
         query: Sequence[tuple[str, str]] = (),
-        body: JSONValue = None,
+        body: PlainTree = None,
         keyed: bool = False,
-    ) -> MutableJSONValue:
+    ) -> MutablePlainTree:
         """Send one request and record it as fixture ``name``; return its body.
 
         A keyed request carries an ``Idempotency-Key`` header, as every edit does.
         """
-        headers = {"Idempotency-Key": _key(name)} if keyed else {}
+        headers = {"Idempotency-Key": str(_uuid_key(name))} if keyed else {}
         response = self.http.request(
             method,
             path,
@@ -179,7 +180,7 @@ class _Recorder:
             headers=headers,
         )
         parsed = _parsed(response)
-        request: dict[str, JSONValue] = {"method": method, "path": path}
+        request: dict[str, PlainTree] = {"method": method, "path": path}
         if query:
             request["query"] = [list(pair) for pair in query]
         if headers:
@@ -197,8 +198,8 @@ class _Recorder:
         method: str,
         path: str,
         *,
-        body: JSONValue = None,
-    ) -> MutableJSONValue:
+        body: PlainTree = None,
+    ) -> MutablePlainTree:
         """Send one request that builds the graph; it must succeed."""
         response = self.http.request(method, path, json=body)
         assert response.is_success, (
@@ -234,7 +235,7 @@ class _Normaliser:
     rows: Mapping[str, int]
     others: dict[str, str] = field(default_factory=dict)
 
-    def value(self, raw: JSONValue) -> JSONValue:
+    def value(self, raw: PlainTree) -> PlainTree:
         """Return ``raw`` normalised, walking objects in key order."""
         if isinstance(raw, str):
             return self._text(raw)
@@ -245,7 +246,7 @@ class _Normaliser:
                 else self.value(member)
                 for key, member in sorted(raw.items())
             }
-        if isinstance(raw, list | tuple):
+        if isinstance(raw, (list, tuple)):
             return [self.value(item) for item in _ordered(raw, rows=self.rows)]
         return raw
 
@@ -268,7 +269,7 @@ class _Normaliser:
 # ones would still differ between a run where two rows tied and one where they did not.
 # The graph's edges (``from_id``) come in no order at all. Lists of anything else
 # (metric points, transcript records, validation errors) keep the server's order.
-def _ordered(items: Sequence[JSONValue], *, rows: Mapping[str, int]) -> list[JSONValue]:
+def _ordered(items: Sequence[PlainTree], *, rows: Mapping[str, int]) -> list[PlainTree]:
     """Put a list of rows in an order by content, since the server's rests on ids."""
     if not any(
         isinstance(item, Mapping)
@@ -292,9 +293,10 @@ def _exercise(rec: _Recorder, *, url: str) -> None:
     graph |= _add_evidence(rec, graph, url=url)
     _write_fields(rec, graph)
     _write_edges(rec, graph)
+    _lock(rec, graph)
     _read_lists(rec)
     _read_rows(rec, graph)
-    _account(rec)
+    _account(rec, graph)
     _admin(rec)
     # Last: it renames the root, which a read after it would show.
     _stream(rec, target=graph["root"])
@@ -304,23 +306,27 @@ def _build_graph(rec: _Recorder) -> dict[str, str]:
     """Make Issues with parents and a prerequisite, and a Belief with evidence."""
     root = _create(rec, "issue", title="Web app fixtures", priority=10, owner="dan")
     prereq = _create(rec, "issue", title="Prerequisite", priority=20)
-    child = _id(
-        rec.call(
-            "inquiries/createInquiry",
-            "POST",
-            "/api/inquiries/issue",
-            body={
-                "title": "Child",
-                "description": "Narrows **Issue#1** and requires Issue#2.",
-                "priority": 0,
-                "issue_kind": ["bug"],
-                "narrows": [[root, 0]],
-                "requires": [prereq],
-                "subscribers": ["Agent"],
-                "labels": ["fixture"],
-                "idempotency_key": _key("inquiries/createInquiry"),
-            },
-        ),
+    child = from_plain(
+        from_plain(
+            rec.call(
+                "inquiries/createInquiry",
+                "POST",
+                "/api/inquiries/issue",
+                body={
+                    "title": "Child",
+                    "description": "Narrows **Issue#1** and requires Issue#2.",
+                    "priority": 0,
+                    "issue_kind": ["bug"],
+                    "narrows": [[root, 0]],
+                    "requires": [prereq],
+                    "subscribers": ["Agent"],
+                    "labels": ["fixture"],
+                    "idempotency_key": str(_uuid_key("inquiries/createInquiry")),
+                },
+            ),
+            dict[str, object],
+        ).get("id"),
+        str,
     )
     _ = rec.row(child)
     question = _create(
@@ -397,7 +403,7 @@ def _add_evidence(
                     "kind": "Artifact",
                     "title": "Answer: newest first",
                     "subscribers": ["Agent"],
-                    "idempotency_key": _key("inquiries/createBatch"),
+                    "idempotency_key": str(_uuid_key("inquiries/createBatch")),
                 },
             ],
             "edges": [
@@ -409,7 +415,7 @@ def _add_evidence(
             ],
         },
     )
-    for made in ListCodec.coerce(DictCodec.coerce(answer).get("ids"), str):
+    for made in from_plain(from_plain(answer, dict[str, object]).get("ids"), list[str]):
         _ = rec.row(made)
     with Client(url) as client:
         client.log_metrics(
@@ -490,7 +496,12 @@ def _write_fields(rec: _Recorder, graph: Mapping[str, str]) -> None:
             f"/api/issue/{child}/priority",
             {"value": "high"},
         ),
-        ("inquiries/clearField", "DELETE", f"/api/inquiries/{child}/description", {}),
+        (
+            "inquiries/clearField",
+            "DELETE",
+            f"/api/inquiries/{child}/description",
+            dict[str, PlainTree](),
+        ),
         (
             "inquiries/patchField",
             "PATCH",
@@ -512,14 +523,14 @@ def _write_edges(rec: _Recorder, graph: Mapping[str, str]) -> None:
     """Add an edge, annotate it, and remove another."""
     edge = f"/api/edges/{graph['child']}/requires/{graph['question']}"
     for name, method, path, body in (
-        ("edges/addEdge", "POST", edge, {}),
+        ("edges/addEdge", "POST", edge, dict[str, PlainTree]()),
         (
             "edges/setEdgeAnnotation",
             "PUT",
             f"{edge}/note",
             {"value": "Blocks the sort."},
         ),
-        ("edges/clearEdgeAnnotation", "DELETE", f"{edge}/note", {}),
+        ("edges/clearEdgeAnnotation", "DELETE", f"{edge}/note", dict[str, PlainTree]()),
         (
             "edges/patchEdgeLabels",
             "PATCH",
@@ -539,9 +550,11 @@ def _read_lists(rec: _Recorder) -> None:
         {"field": "status", "op": "is", "value": "active"},
         separators=(",", ":"),
     )
-    kinds = ListCodec.coerce(
-        DictCodec.coerce(rec.setup("GET", "/api/meta/enums")).get("inquiry_kind_all"),
-        str,
+    kinds = from_plain(
+        from_plain(rec.setup("GET", "/api/meta/enums"), dict[str, object]).get(
+            "inquiry_kind_all",
+        ),
+        list[str],
     )
     # The quarter hour that held the time an hour ago: the histogram reads only the
     # last 7 days, and its window must end before the fixture session began.
@@ -652,7 +665,7 @@ def _read_lists(rec: _Recorder) -> None:
         ),
         ("graph/getGraph", "/api/web/graph", [("limit", "1000")]),
         # The whole feed: the fixture session's three turns, two of them said.
-        ("sessions/readFeedFacets", "/api/web/feed/facets", []),
+        ("sessions/readFeedFacets", "/api/web/feed/facets", list[tuple[str, str]]()),
         (
             # Four quarter hours, all empty; times written as the app writes them.
             "histogram/readHistogram",
@@ -708,15 +721,37 @@ def _read_rows(rec: _Recorder, graph: Mapping[str, str]) -> None:
         _ = rec.call(name, "GET", path, query=query)
 
 
-def _account(rec: _Recorder) -> None:
-    """Make, list, change and revoke a token, then sign out."""
-    token = _id(
-        rec.call(
-            "me/createToken",
-            "POST",
-            "/api/me/tokens",
-            body={"name": "fixtures", "role": "viewer"},
-        ),
+def _lock(rec: _Recorder, graph: dict[str, str]) -> None:
+    """Lock the root and unlock it, so the later reads show it unlocked."""
+    path = f"/api/admin/inquiries/{graph['root']}/lock"
+    _ = rec.call("admin/setInquiryLock", "PUT", path, body={"locked": True})
+    _ = rec.call("admin/setInquiryLock.clear", "PUT", path, body={"locked": False})
+
+
+# The root is Issue#1, the rules once it is locked; it is unlocked again after.
+def _account(rec: _Recorder, graph: dict[str, str]) -> None:
+    """Agree to the rules, make, list, change and revoke a token, then sign out."""
+    lock = f"/api/admin/inquiries/{graph['root']}/lock"
+    _ = rec.setup("PUT", lock, body={"locked": True})
+    shown = from_plain(rec.setup("GET", "/api/me/profile"), dict[str, object])
+    _ = rec.call(
+        "me/acknowledge",
+        "PUT",
+        "/api/me/acknowledge",
+        body={"rules_version": from_plain(shown["rules_version"], str)},
+    )
+    _ = rec.setup("PUT", lock, body={"locked": False})
+    token = from_plain(
+        from_plain(
+            rec.call(
+                "me/createToken",
+                "POST",
+                "/api/me/tokens",
+                body={"name": "fixtures", "role": "viewer"},
+            ),
+            dict[str, object],
+        ).get("id"),
+        str,
     )
     _ = rec.call("me/listTokens", "GET", "/api/me/tokens")
     _ = rec.call(
@@ -731,12 +766,14 @@ def _account(rec: _Recorder) -> None:
 
 def _admin(rec: _Recorder) -> None:
     """Change the other admin's role and status, edit the allowlist, delete the user."""
-    users = ListCodec.mappings(
-        DictCodec.coerce(rec.call("admin/listUsers", "GET", "/api/admin/users")).get(
-            "users",
-        ),
+    users = from_plain(
+        from_plain(
+            rec.call("admin/listUsers", "GET", "/api/admin/users"),
+            dict[str, object],
+        )["users"],
+        list[dict[str, object]],
     )
-    user = f"/api/admin/users/{next(_id(u) for u in users if u.get('email') == _OTHER_ADMIN)}"
+    user = f"/api/admin/users/{next(from_plain(from_plain(u, dict[str, object]).get('id'), str) for u in users if u.get('email') == _OTHER_ADMIN)}"
     entry = "/api/admin/allowlist/ada%40example.com"
     added = {"email_or_pattern": " Ada@Example.com ", "role": "viewer"}
     for name, method, path, body in (
@@ -773,40 +810,35 @@ def _stream(rec: _Recorder, *, target: str) -> None:
         }
 
 
-def _create(rec: _Recorder, kind: str, **body: JSONValue) -> str:
+def _create(rec: _Recorder, kind: str, **body: PlainTree) -> str:
     """Create one ``kind`` row as setup, labelled ``fixture``; return its id."""
     return rec.row(
-        _id(
-            rec.setup(
-                "POST",
-                f"/api/inquiries/{kind}",
-                body={"labels": ["fixture"], **body},
-            ),
+        from_plain(
+            from_plain(
+                rec.setup(
+                    "POST",
+                    f"/api/inquiries/{kind}",
+                    body={"labels": ["fixture"], **body},
+                ),
+                dict[str, object],
+            ).get("id"),
+            str,
         ),
     )
-
-
-def _id(body: object) -> str:
-    return StrCodec.coerce(DictCodec.coerce(body).get("id"), default=None)
-
-
-def _key(name: str) -> str:
-    """Return fixture ``name``'s idempotency key, the same in every run."""
-    return str(_uuid_key(name))
 
 
 def _uuid_key(name: str) -> uuid.UUID:
     return uuid.uuid5(uuid.NAMESPACE_URL, f"trackinizer-web-app-fixtures/{name}")
 
 
-def _parsed(response: httpx2.Response) -> MutableJSONValue:
+def _parsed(response: httpx2.Response) -> MutablePlainTree:
     """Return the body as JSON when the server says it is, else as text."""
     if "json" in response.headers.get("content-type", ""):
-        return loads(response.text)
+        return mutable(json_loads(response.text))
     return response.text
 
 
-def _response(response: httpx2.Response, *, body: JSONValue) -> dict[str, JSONValue]:
+def _response(response: httpx2.Response, *, body: PlainTree) -> dict[str, PlainTree]:
     headers = {
         name: response.headers[name]
         for name in ("content-type", "location")
@@ -815,7 +847,7 @@ def _response(response: httpx2.Response, *, body: JSONValue) -> dict[str, JSONVa
     return {"status": response.status_code, "headers": headers, "body": body}
 
 
-def _render(value: JSONValue) -> str:
+def _render(value: PlainTree) -> str:
     return json.dumps(value, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
@@ -910,6 +942,6 @@ def _free_port() -> int:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

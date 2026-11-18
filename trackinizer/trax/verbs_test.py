@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast, get_args, override
+from typing import TYPE_CHECKING, ClassVar, cast, get_args, override
 
 import argparse
 import io
 import uuid
 
+from treekle import from_plain, json_loads
+
 import pytest
 
 from trackinizer.client.client import Client
 from trackinizer.client.errors import ClientError
-from trackinizer.lib.custom_json import DictCodec, IntCodec, loads
+from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    AssistantMessage,
+    ToolCall,
+    UncategorizedToolResult,
+    UserMessage,
+)
 from trackinizer.trax import cli, verbs
 from trackinizer.trax.conftest import FakeClient, run
 from trackinizer.trax.grammar import (
@@ -19,6 +27,7 @@ from trackinizer.trax.grammar import (
     ListQuery,
 )
 from trackinizer.trax.run.errors import NotResumableError
+from trackinizer.trax.run.materialize import Materialized
 from trackinizer.trax.verbs import (
     LABELS_BY_EDGE_KIND,
     Blocked,
@@ -29,6 +38,7 @@ from trackinizer.trax.verbs import (
     resolve_actor,
 )
 from trackinizer.types.edges import Edge
+from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.wire.filters import Filter
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import MAX_LIST_LIMIT
@@ -37,6 +47,7 @@ from trackinizer.wire.wire_metrics_query import (
     MetricMaskClause,
     MetricRankRow,
 )
+from trackinizer.wire.wire_session_ir import PartBody, RecordBody
 
 
 if TYPE_CHECKING:
@@ -51,7 +62,7 @@ def _batch_items(client: FakeClient) -> list[tuple[str, dict[str, object]]]:
     calls = [c for c in client.calls if c[0] == "submit_batch"]
     assert len(calls) == 1, f"expected one submit_batch, got {len(calls)}"
     items = cast(list[tuple[str, dict[str, object]]], calls[0][1][0])
-    return [(str(kind), dict(body)) for kind, body in items]
+    return [(kind, dict(body)) for kind, body in items]
 
 
 def _batch_edges(client: FakeClient) -> list[dict[str, object]]:
@@ -62,14 +73,30 @@ def _batch_edges(client: FakeClient) -> list[dict[str, object]]:
     return [dict(e) for e in edges]
 
 
-def test_resolve_actor_uses_windows_username_env(
+@pytest.mark.parametrize(
+    ("author", "login", "expected"),
+    [
+        ("profile-ada", {"USER": "login-bea", "USERNAME": "windows-cy"}, "profile-ada"),
+        ("", {"USER": "login-bea"}, "login-bea"),
+        ("", {"USERNAME": "windows-cy"}, "windows-cy"),
+        ("", {}, "user"),
+    ],
+)
+def test_resolve_actor_falls_back_from_flag_to_profile_to_login_to_user(
     client: FakeClient,
     monkeypatch: pytest.MonkeyPatch,
+    author: str,
+    login: dict[str, str],
+    expected: str,
 ) -> None:
-    client.author = ""
-    monkeypatch.delenv("USER", raising=False)
-    monkeypatch.setenv("USERNAME", "alice")
-    assert resolve_actor("", cast(Client, client)) == "alice"
+    """`--as` wins; then the profile's author, `$USER`, `$USERNAME`, else user."""
+    client.author = author
+    for name in ("USER", "USERNAME"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in login.items():
+        monkeypatch.setenv(name, value)
+    assert resolve_actor("", cast(Client, client)) == expected
+    assert resolve_actor("flag-di", cast(Client, client)) == "flag-di"
 
 
 def test_kind_verb_no_ref_lists(client: FakeClient) -> None:
@@ -1946,10 +1973,45 @@ def test_export_writes_each_line_to_stdout(
     run(["export"], client)
 
     assert [c[0] for c in client.calls] == ["export"]
+    assert client.calls[0][2] == {"selector": ()}
     assert capsys.readouterr().out == (
         '{"format":"trackinizer-export","version":1,"migrations":[]}\n'
         '{"table":"inquiries","row":{"title":"canned"}}\n'
     )
+
+
+def test_export_sends_its_selector_clauses_in_order(client: FakeClient) -> None:
+    """``labels is x labels nre y`` reaches the client as two ANDed clauses."""
+    run(
+        ["export", "labels", "is", "org:rekursiv", "labels", "nre", "^machine:"],
+        client,
+    )
+
+    assert client.calls[0][2] == {
+        "selector": (
+            Filter(field="labels", op="is", value="org:rekursiv"),
+            Filter(field="labels", op="nre", value="^machine:"),
+        ),
+    }
+
+
+@pytest.mark.parametrize(
+    "tokens",
+    [
+        pytest.param(["labels"], id="no-op"),
+        pytest.param(["labels", "is"], id="no-value"),
+        pytest.param(["labels", "wat", "x"], id="unknown-op"),
+    ],
+)
+def test_a_malformed_export_selector_is_refused_before_the_request(
+    client: FakeClient,
+    tokens: list[str],
+) -> None:
+    """A half-written clause must not fall through to exporting everything."""
+    with pytest.raises(ClientError):
+        run(["export", *tokens], client)
+
+    assert client.calls == []
 
 
 def test_kindless_filter_queries_every_kind(client: FakeClient) -> None:
@@ -2075,7 +2137,7 @@ def test_whole_collection_views_never_exceed_server_cap(client: FakeClient) -> N
         # Every paged request the helper issued must be within the server cap.
         for call in (c for c in client.calls if c[0] == "list_kind"):
             kwargs = call[-1]
-            assert IntCodec.coerce(kwargs["limit"], 0) <= MAX_LIST_LIMIT, verb
+            assert from_plain(kwargs["limit"], int) <= MAX_LIST_LIMIT, verb
 
 
 def test_search_dispatches_semantic_by_default(client: FakeClient) -> None:
@@ -2129,7 +2191,7 @@ def test_search_json_output_is_the_raw_body(
 ) -> None:
     run(["search-sessions", "lock", "--format", "json"], client)
     out = capsys.readouterr().out
-    body = DictCodec.coerce(loads(out))
+    body = json_loads(out, dict[str, object])
     assert "hits" in body
     assert body["semantic"] is True
 
@@ -2626,7 +2688,7 @@ def test_edge_labels_dict_is_pinned_to_edge_kind() -> None:
     extra key is dead code. Pin the constant's keys to the closed ``Edge.Kind``
     literal so adding a kind forces a label entry.
     """
-    assert set(LABELS_BY_EDGE_KIND) == set(get_args(cast(object, Edge.Kind.__value__)))
+    assert set(LABELS_BY_EDGE_KIND) == set(get_args(Edge.Kind.__value__))
 
 
 def test_blocked_render_builds_seq_index_once_no_nested_scan() -> None:
@@ -3562,111 +3624,889 @@ def test_an_unresumable_target_reports_why_rather_than_raising(
         run(["agentsession", "1", "run", "gemini"], client)
 
 
-def test_workspace_show_uses_current_revision_and_renders_updated_state(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """A visual write reads the revision first and reports the returned state."""
-    workspace_id = uuid.uuid4()
-    instance_id = uuid.uuid4()
-    record_id = uuid.uuid4()
+_CATALOG: dict[str, object] = {
+    "default_visual": "trax.browse",
+    "visuals": [
+        {"type": "trax.browse", "parameter_schema": {}},
+        {"type": "trax.subgraph", "parameter_schema": {}},
+        {
+            "type": "x.demo",
+            "parameter_schema": {
+                "label": {"type": "string"},
+                "count": {"type": "integer"},
+                "flag": {"type": "boolean"},
+            },
+        },
+    ],
+}
 
-    class WorkspaceClient:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, object, object]] = []
 
-        def get(self, path: str) -> dict[str, object]:
-            self.calls.append(("get", path, None))
-            return {
-                "id": str(workspace_id),
-                "revision": 8,
-                "visuals": [],
-                "focused_instance": None,
-            }
+class _CanvasClient:
+    """A canvas that records each operation and navigation sent to it."""
 
-        def post(self, path: str, *, body: object) -> dict[str, object]:
-            self.calls.append(("post", path, body))
-            return {
-                "id": str(workspace_id),
-                "revision": 9,
-                "visuals": [
-                    {
-                        "id": str(instance_id),
-                        "type": "trax.chat",
-                        "version": 1,
-                        "placement": "side",
-                        "record_id": str(record_id),
-                        "params": {},
-                    },
-                ],
-                "focused_instance": str(instance_id),
-            }
+    def __init__(self) -> None:
+        self.operations: list[dict[str, object]] = []
+        self.navigations: list[str] = []
+        self.highlights: list[list[uuid.UUID]] = []
+        self.chat_windows: list[bool] = []
+        self.preferences: list[dict[str, object]] = []
+        self.reads: list[str] = []
+        self.workspace = uuid.uuid4()
 
-    client = WorkspaceClient()
+    def get(self, path: str) -> dict[str, object]:
+        self.reads.append(path)
+        return _CATALOG
+
+    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, object]:
+        self.reads.append(f"/api/workspaces/{workspace_id}")
+        return self._state(8, visuals=[])
+
+    def apply_workspace_operation(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        operation: dict[str, object],
+    ) -> dict[str, object]:
+        del workspace_id
+        self.operations.append(operation)
+        if operation["kind"] != "mark":
+            return self._state(9, visuals=[])
+        record = str(self.workspace)
+        return {
+            **self._state(9, visuals=[]),
+            "record_labels": {record: "Experiment#12 Measured tails"},
+            "marks": [
+                {
+                    "id": "m1",
+                    "author": "agent",
+                    "page": "#/graph",
+                    "covers": {"records": [record], "instances": ["inst-1"]},
+                },
+                {"id": "m2", "author": "jp", "covers": {}},
+            ],
+        }
+
+    def navigate(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        route: str,
+    ) -> dict[str, object]:
+        del workspace_id
+        self.navigations.append(route)
+        return self._state(8, visuals=[])
+
+    def highlight(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        ids: Sequence[uuid.UUID],
+    ) -> dict[str, object]:
+        del workspace_id
+        self.highlights.append(list(ids))
+        return self._state(8, visuals=[])
+
+    def chat_window(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        hidden: bool,
+    ) -> dict[str, object]:
+        del workspace_id
+        self.chat_windows.append(hidden)
+        return self._state(8, visuals=[])
+
+    def set_preferences(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        change: dict[str, object],
+    ) -> dict[str, object]:
+        del workspace_id
+        self.preferences.append(dict(change))
+        return {
+            **self._state(8, visuals=[]),
+            "preferences": {"theme": "light", "highlight_mentions": False},
+        }
+
+    def _state(self, revision: int, *, visuals: list[object]) -> dict[str, object]:
+        return {"id": str(self.workspace), "revision": revision, "visuals": visuals}
+
+
+def _workspace(client: _CanvasClient, *arguments: str) -> None:
     cli.parse_and_run(
-        [
-            "workspace",
-            str(workspace_id),
-            "show",
-            "trax.chat",
-            "--record",
-            str(record_id),
-            "--placement",
-            "side",
-        ],
+        ["workspace", str(client.workspace), *arguments],
         client_factory=lambda: cast(Client, client),
     )
 
-    assert client.calls[0] == ("get", f"/api/workspaces/{workspace_id}", None)
-    assert client.calls[1][0:2] == (
-        "post",
-        f"/api/workspaces/{workspace_id}/operations",
-    )
-    body = cast(dict[str, object], client.calls[1][2])
-    assert body["revision"] == 8
-    assert body["operation"] == {
-        "kind": "show",
-        "visual_type": "trax.chat",
-        "placement": "side",
-        "record_id": str(record_id),
-        "params": {},
-    }
-    output = capsys.readouterr().out
-    assert f"workspace {workspace_id} revision 9" in output
-    assert f"trax.chat {instance_id} side record={record_id}" in output
 
-    for arguments, expected in (
+def test_workspace_with_no_action_reads_and_renders_the_canvas(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+
+    _workspace(client)
+
+    assert client.reads == [f"/api/workspaces/{client.workspace}"]
+    assert f"workspace {client.workspace} revision 8" in capsys.readouterr().out
+
+
+def _bare(client: _CanvasClient, *arguments: str) -> None:
+    """Run `trax workspace` with no id."""
+    cli.parse_and_run(
+        ["workspace", *arguments],
+        client_factory=lambda: cast(Client, client),
+    )
+
+
+def test_workspace_with_no_id_uses_the_station_the_session_was_placed_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_WORKSPACE", str(client.workspace))
+    instance = uuid.uuid4()
+
+    _bare(client)
+    _bare(client, "show", "trax.subgraph", "--record", str(uuid.uuid4()))
+    _bare(client, "place", str(instance), "left")
+
+    assert client.reads[0] == f"/api/workspaces/{client.workspace}"
+    shown, placed = client.operations
+    assert shown["kind"] == "show"
+    assert shown["visual_type"] == "trax.subgraph"
+    assert (placed["kind"], placed["instance_id"]) == ("place", str(instance))
+
+
+def test_workspace_with_no_id_reads_the_ssh_forwarded_station(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
+    monkeypatch.setenv("LC_TRAX_WORKSPACE", str(client.workspace))
+
+    _bare(client)
+
+    assert client.reads[0] == f"/api/workspaces/{client.workspace}"
+
+
+def test_workspace_with_no_id_and_no_station_says_what_to_give(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRAX_WORKSPACE", raising=False)
+    monkeypatch.delenv("LC_TRAX_WORKSPACE", raising=False)
+
+    with pytest.raises(ClientError, match=r"no workspace"):
+        _bare(_CanvasClient())
+
+
+def test_an_explicit_workspace_id_wins_over_the_placed_station(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _CanvasClient()
+    monkeypatch.setenv("TRAX_WORKSPACE", str(uuid.uuid4()))
+
+    _workspace(client)
+
+    assert client.reads == [f"/api/workspaces/{client.workspace}"]
+
+
+def test_workspace_show_sends_one_operation_through_the_clients_one_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+    record = uuid.uuid4()
+    instance = uuid.uuid4()
+
+    _workspace(
+        client,
+        "show",
+        "trax.subgraph",
+        "--record",
+        str(record),
+        "--placement",
+        "side",
+    )
+    _workspace(client, "hide", str(instance))
+    _workspace(client, "focus", str(instance))
+    _workspace(client, "place", str(instance), "floating")
+    _workspace(client, "place", str(instance), "left")
+
+    assert client.operations == [
+        {
+            "kind": "show",
+            "visual_type": "trax.subgraph",
+            "placement": "side",
+            "record_id": str(record),
+        },
+        {"kind": "hide", "instance_id": str(instance)},
+        {"kind": "focus", "instance_id": str(instance)},
+        {"kind": "place", "instance_id": str(instance), "placement": "floating"},
+        {"kind": "place", "instance_id": str(instance), "placement": "left"},
+    ]
+    assert client.reads == []
+    assert f"workspace {client.workspace} revision 9" in capsys.readouterr().out
+
+
+def test_workspace_show_reads_each_param_as_the_type_the_catalog_gives_it() -> None:
+    """A value that looks like a number is still a string where the catalog says so."""
+    client = _CanvasClient()
+
+    _workspace(
+        client,
+        "show",
+        "x.demo",
+        "--param",
+        "label=123",
+        "--param",
+        "count=-5",
+        "--param",
+        "flag=true",
+    )
+
+    assert client.operations == [
+        {
+            "kind": "show",
+            "visual_type": "x.demo",
+            "params": {"label": "123", "count": -5, "flag": True},
+        },
+    ]
+
+
+def test_workspace_show_without_params_does_not_read_the_catalog() -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "show", "trax.subgraph")
+
+    assert "/api/visuals" not in client.reads
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["show", "x.demo", "--param", "label"], "KEY=VALUE"),
+        (["show", "x.demo", "--param", "=x"], "KEY=VALUE"),
+        (["show", "x.demo", "--param", "a b=x"], "KEY=VALUE"),
         (
-            ["hide", str(instance_id)],
-            {"kind": "hide", "instance_id": str(instance_id)},
+            ["show", "x.demo", "--param", "label=a", "--param", "label=b"],
+            "more than once",
+        ),
+        (["show", "x.demo", "--param", "color=red"], "takes: label, count, flag"),
+        (["show", "trax.browse", "--param", "route=#/graph"], "takes: none"),
+        (["show", "x.demo", "--param", "count=many"], "needs an integer"),
+        (["show", "x.demo", "--param", "flag=yes"], "needs true or false"),
+        (["show", "nothing.here", "--param", "a=b"], "not a visual in the catalog"),
+        (["hide", str(uuid.uuid4()), "--param", "label=a"], "only with show"),
+        (["--param", "label=a"], "does not accept operation arguments"),
+    ],
+)
+def test_workspace_refuses_a_param_it_cannot_send(
+    arguments: list[str],
+    message: str,
+) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match=message):
+        _workspace(client, *arguments)
+
+    assert client.operations == []
+
+
+def test_workspace_navigate_moves_the_page_without_an_operation() -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "navigate", "#/search/a%3Fb")
+
+    assert client.navigations == ["#/search/a%3Fb"]
+    assert client.operations == []
+    assert client.reads == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["navigate"],
+        ["navigate", "#/graph", "#/console"],
+        ["navigate", "#/graph", "--record", str(uuid.uuid4())],
+    ],
+)
+def test_workspace_navigate_takes_exactly_one_route(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="navigate requires one route"):
+        _workspace(client, *arguments)
+
+    assert client.navigations == []
+
+
+def test_workspace_hide_or_show_chat_moves_the_window_without_an_operation() -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "hide", "chat")
+    _workspace(client, "show", "chat")
+
+    assert client.chat_windows == [True, False]
+    assert client.operations == []
+    assert client.reads == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["hide", "chat", "--record", str(uuid.uuid4())],
+        ["show", "chat", "--placement", "main"],
+        ["show", "chat", "--param", "hops=2"],
+    ],
+)
+def test_workspace_chat_takes_no_other_argument(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="chat takes no other argument"):
+        _workspace(client, *arguments)
+
+    assert client.chat_windows == []
+    assert client.reads == []
+
+
+def test_workspace_chat_is_not_a_verb_of_its_own() -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="unknown workspace action 'chat'"):
+        _workspace(client, "chat", "hide")
+
+    assert client.chat_windows == []
+
+
+def test_workspace_key_to_value_sets_the_owners_preference_as_json_or_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "theme", "to", "light")
+    _workspace(client, "highlight_mentions", "to", "false")
+    _workspace(client, "theme", "to", "null")
+
+    assert client.preferences == [
+        {"theme": "light"},
+        {"highlight_mentions": False},
+        {"theme": None},
+    ]
+    assert client.operations == []
+    assert client.reads == []
+    assert (
+        '  preferences highlight_mentions=false theme="light"'
+        in capsys.readouterr().out.splitlines()
+    )
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["theme", "to"],
+        ["theme", "to", "light", "dark"],
+        ["theme", "to", "light", "--record", str(uuid.uuid4())],
+    ],
+)
+def test_workspace_key_to_takes_one_value_and_nothing_else(
+    arguments: list[str],
+) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="theme to takes one VALUE"):
+        _workspace(client, *arguments)
+
+    assert client.preferences == []
+
+
+def test_workspace_highlight_sends_the_ids_without_an_operation() -> None:
+    client = _CanvasClient()
+    first, second = uuid.uuid4(), uuid.uuid4()
+
+    _workspace(client, "highlight", f"{first},{second}")
+    _workspace(client, "highlight", "")
+
+    assert client.highlights == [[first, second], []]
+    assert client.operations == []
+    assert client.reads == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["highlight"],
+        ["highlight", str(uuid.uuid4()), str(uuid.uuid4())],
+        ["highlight", str(uuid.uuid4()), "--record", str(uuid.uuid4())],
+    ],
+)
+def test_workspace_highlight_takes_one_list_of_uuids(arguments: list[str]) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="highlight requires"):
+        _workspace(client, *arguments)
+
+    assert client.highlights == []
+
+
+def test_workspace_highlight_refuses_a_ref_that_is_not_a_uuid() -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match="not a valid UUID"):
+        _workspace(client, "highlight", "Issue#12")
+
+    assert client.highlights == []
+
+
+@pytest.mark.parametrize(
+    ("verb", "value"),
+    [("agentsession", "run"), ("experiment", "metric")],
+)
+def test_tail_keywords_are_literal_field_values(
+    verb: str,
+    value: str,
+    client: FakeClient,
+) -> None:
+    run([verb, "1", "title", "to", value], client)
+    edits = [call for call in client.calls if call[0] == "edit"]
+    assert edits[0][1][1:3] == ("title", value)
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [
+        ["claude", "--as", "bob", "--", "--model", "opus"],
+        ["claude", "--detach", "--name", "job"],
+        ["claude", "--", "--lossy"],
+    ],
+)
+def test_resume_preserves_runner_tail(
+    tail: list[str],
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    written = Materialized(
+        path=tmp_path / "session.jsonl",
+        cli_session_id=uuid.uuid4(),
+        attach=uuid.uuid4(),
+        prefix_bytes=0,
+    )
+
+    def prepare(*args: object, **kwargs: object) -> Materialized:
+        del args, kwargs
+        return written
+
+    seen: list[list[str]] = []
+
+    def enter(argv: list[str], **kwargs: object) -> None:
+        del kwargs
+        seen.append(argv)
+
+    monkeypatch.setattr(verbs, "prepare_resume", prepare)
+    monkeypatch.setattr("trackinizer.trax.run.session.main", enter)
+    run(["agentsession", "1", "run", *tail], client)
+    assert seen == [tail]
+
+
+def test_resume_writes_into_the_session_after_its_loaded_history(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The run attaches to the resumed session and skips what it was loaded with."""
+    written = Materialized(
+        path=tmp_path / "session.jsonl",
+        cli_session_id=uuid.uuid4(),
+        attach=uuid.uuid4(),
+        prefix_bytes=4_096,
+    )
+
+    def prepare(*args: object, **kwargs: object) -> Materialized:
+        del args, kwargs
+        return written
+
+    entered: list[dict[str, object]] = []
+
+    def enter(argv: list[str], **kwargs: object) -> None:
+        del argv
+        entered.append(kwargs)
+
+    monkeypatch.setattr(verbs, "prepare_resume", prepare)
+    monkeypatch.setattr("trackinizer.trax.run.session.main", enter)
+    run(["agentsession", "1", "run", "claude"], client)
+
+    [kwargs] = entered
+    assert kwargs["attach"] == written.attach
+    assert kwargs["prefix_bytes"] == 4_096
+    assert kwargs["resume_path"] == written.path
+    assert kwargs["cli_session_id"] == str(written.cli_session_id)
+
+
+class _StoredClient(FakeClient):
+    """Serves a session of three parts: the bot's, claude's and codex's."""
+
+    _PARTS: ClassVar = (
+        (
+            "sagent",
+            [AgentToAgentMessage(sender="ada", content=f"q{n}") for n in range(5)],
         ),
         (
-            ["focus", str(instance_id)],
-            {"kind": "focus", "instance_id": str(instance_id)},
+            "claude",
+            [
+                UserMessage(content="typed"),
+                ToolCall(call_id="t1", name="Grep"),
+                UncategorizedToolResult(call_id="t1", content="r" * 300),
+                AssistantMessage(content="a\nb"),
+                AssistantMessage(content="after the cut"),
+            ],
         ),
-        (
-            ["place", str(instance_id), "floating"],
-            {
-                "kind": "place",
-                "instance_id": str(instance_id),
-                "placement": "floating",
-            },
-        ),
+        ("codex", [AssistantMessage(content="never printed")]),
+    )
+
+    @override
+    def read_session_parts(self, session_id: uuid.UUID) -> list[PartBody]:
+        self.calls.append(("read_session_parts", (session_id,), {}))
+        return [
+            PartBody(part=number, name=f"{number}.jsonl", format=fmt, records=len(held))
+            for number, (fmt, held) in enumerate(self._PARTS)
+        ]
+
+    @override
+    def read_session_records(
+        self,
+        session_id: uuid.UUID,
+        *,
+        part: int = 0,
+        after_idx: int = -1,
+        limit: int = MAX_LIST_LIMIT,
+        plaintext_only: bool = False,
+    ) -> list[RecordBody]:
+        self.calls.append(("read_session_records", (session_id,), {"part": part}))
+        return [
+            RecordBody.of(
+                SessionRecordRow.of(
+                    session_id=session_id,
+                    part=part,
+                    idx=idx,
+                    record=record,
+                ),
+            )
+            for idx, record in enumerate(self._PARTS[part][1])
+        ]
+
+
+def test_records_prints_the_parts_up_to_the_record_named(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--to 1:3`` is the last record a window left out; nothing after it prints."""
+    client = _StoredClient()
+
+    run(["agentsession", "7", "records", "--to", "1:3"], client)
+
+    printed = capsys.readouterr().out.splitlines()
+    assert [line.split(" ", 1)[0] for line in printed] == [
+        *(f"p0#{n}" for n in range(5)),
+        "p1#0",
+        "p1#1",
+        "p1#2",
+        "p1#3",
+    ]
+    assert printed[0].endswith("user ada: q0")
+    assert printed[5].endswith("user terminal: typed")
+    assert printed[6].endswith("call claude: Grep")
+    assert printed[7].endswith("result claude: " + "r" * 200)
+    assert printed[8].endswith("assistant claude: a b")
+    assert {call[0] for call in client.calls} == {
+        "resolve_id",
+        "read_session_parts",
+        "read_session_records",
+    }
+
+
+def test_records_of_one_part_print_as_the_stored_json(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    run(
+        ["agentsession", "7", "records", "--part", "2", "--format", "json"],
+        _StoredClient(),
+    )
+
+    [line] = capsys.readouterr().out.splitlines()
+    stored = json_loads(line, dict[str, object])
+    assert (stored["part"], stored["idx"], stored["kind"]) == (2, 0, "AssistantMessage")
+
+
+@pytest.mark.parametrize(
+    "tail",
+    [["--to", "one"], ["--format", "yaml"], ["--lossy"]],
+    ids=["bad-place", "bad-format", "stray-flag"],
+)
+def test_records_refuses_a_flag_it_does_not_read(tail: list[str]) -> None:
+    with pytest.raises(ClientError, match=r"records|--to"):
+        run(["agentsession", "7", "records", *tail], _StoredClient())
+
+
+def test_noop_metadata_link_echoes_exists(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    command = ["belief", "3", "proves", "paper", "5", "valence", "to", "0.9"]
+    run(command, client)
+    capsys.readouterr()
+    run(command, client)
+    assert "exists: Belief#3 proves Paper#5" in capsys.readouterr().out
+
+
+def test_actor_resolution_precedence_and_default(
+    client: FakeClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("USER", "unix")
+    monkeypatch.setenv("USERNAME", "windows")
+    client.author = "profile"
+    for command, expected in (
+        (["issue", "1", "title", "to", "x", "--as", "explicit"], "explicit"),
+        (["issue", "1", "title", "to", "x"], "profile"),
     ):
-        call_index = len(client.calls)
+        run(command, client)
+        assert [call for call in client.calls if call[0] == "edit"][-1][2][
+            "actor"
+        ] == expected
+    client.author = ""
+    run(["issue", "1", "title", "to", "x"], client)
+    assert [call for call in client.calls if call[0] == "edit"][-1][2][
+        "actor"
+    ] == "unix"
+    monkeypatch.delenv("USER")
+    monkeypatch.delenv("USERNAME")
+    run(["issue", "1", "title", "to", "x"], client)
+    assert [call for call in client.calls if call[0] == "edit"][-1][2][
+        "actor"
+    ] == "user"
+
+
+def test_a_cost_field_prints_the_axis_of_its_row_to_six_places(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Print the axis of the resolved row, with no deep walk."""
+    ref = SeqRef(kind="Issue", seq=7)
+    client.cost_payload = {"agent_usd": 1.25, "resource_usd": 2.5}
+
+    verbs.run_cost_field(
+        ref,
+        field="resource-cost",
+        args=argparse.Namespace(),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    assert capsys.readouterr().out == "2.500000\n"
+    assert ("resolve_id", (ref,), {}) in client.calls
+    assert ("cost_for", (client.target_id,), {"deep": False}) in client.calls
+
+
+def test_a_cost_field_the_row_lacks_prints_zero(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Print zero for an axis the row lacks."""
+    client.cost_payload = {}
+
+    verbs.run_cost_field(
+        SeqRef(kind="Issue", seq=7),
+        field="agent-cost",
+        args=argparse.Namespace(),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    assert capsys.readouterr().out == "0.000000\n"
+
+
+def test_an_added_cost_without_an_actor_flag_takes_the_profiles_author(
+    client: FakeClient,
+) -> None:
+    """Fall back to the profile's author when no actor flag is given."""
+    client.author = "profile-ada"
+
+    verbs.run_add_cost(
+        SeqRef(kind="Issue", seq=7),
+        field="agent-cost",
+        value=0.5,
+        args=argparse.Namespace(),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    [(_, _, keywords)] = [call for call in client.calls if call[0] == "add_cost"]
+    assert keywords == {"actor": "profile-ada", "reason": ""}
+
+
+def test_an_added_cost_carries_its_actor_and_reason(
+    client: FakeClient,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Land the signed delta on the resolved row, by the named actor and why."""
+    ref = SeqRef(kind="Issue", seq=7)
+
+    verbs.run_add_cost(
+        ref,
+        field="agent-cost",
+        value=-0.5,
+        args=argparse.Namespace(actor="ada", reason="refund"),
+        client_factory=lambda: cast(Client, client),
+    )
+
+    assert (
+        "add_cost",
+        (client.target_id, "marginal_cost_agent_usd", -0.5),
+        {"actor": "ada", "reason": "refund"},
+    ) in client.calls
+    assert ("resolve_id", (ref,), {}) in client.calls
+    assert capsys.readouterr().out == "added: Issue#7 agent-cost -0.500000\n"
+
+
+def test_workspace_rejects_a_malformed_id_by_name_and_value() -> None:
+    """A mistyped workspace id is named in the error, not swallowed."""
+    with pytest.raises(
+        ClientError,
+        match=r"^workspace is not a valid UUID: 'not-a-uuid'$",
+    ):
         cli.parse_and_run(
-            ["workspace", str(workspace_id), *arguments],
+            ["workspace", "not-a-uuid"],
+            client_factory=lambda: cast(Client, _RecordingWorkspace(uuid.uuid4())),
+        )
+
+
+def test_workspace_param_is_refused_off_show() -> None:
+    """Only a shown visual takes params."""
+    workspace_id = uuid.uuid4()
+    client = _RecordingWorkspace(workspace_id)
+    with pytest.raises(ClientError, match="only with show"):
+        cli.parse_and_run(
+            [
+                "workspace",
+                str(workspace_id),
+                "hide",
+                str(uuid.uuid4()),
+                "--param",
+                "hops=3",
+            ],
             client_factory=lambda: cast(Client, client),
         )
-        assert client.calls[call_index][0] == "get"
-        operation_call = client.calls[call_index + 1]
-        assert operation_call[0] == "post"
-        assert cast(dict[str, object], operation_call[2]) == {
+    assert client.operations == []
+
+
+class _RecordingWorkspace:
+    """A workspace at revision 8 that keeps each operation posted to it."""
+
+    def __init__(self, workspace_id: uuid.UUID) -> None:
+        self.state: dict[str, object] = {
+            "id": str(workspace_id),
             "revision": 8,
-            "operation": expected,
+            "visuals": [],
+            "focused_instance": None,
         }
+        self.operations: list[object] = []
+
+    def get(self, path: str) -> dict[str, object]:
+        del path
+        return self.state
+
+    def post(self, path: str, *, body: object) -> dict[str, object]:
+        del path
+        self.operations.append(from_plain(body, dict[str, object])["operation"])
+        return self.state
+
+
+def _operation(client: _CanvasClient) -> dict[str, object]:
+    """Return the one operation the client was asked to apply."""
+    [operation] = client.operations
+    return operation
+
+
+def test_workspace_mark_draws_a_box_from_two_corners_and_names_its_records() -> None:
+    client = _CanvasClient()
+    record = uuid.uuid4()
+
+    _workspace(client, "mark", "0.1,0.2", "0.4,0.5")
+    _workspace(client, "mark", "0,0", "1,1", "--record", f"{record},{record}")
+
+    plain, covered = client.operations
+    corners = [{"x": 0.1, "y": 0.2}, {"x": 0.4, "y": 0.5}]
+    assert plain == {"kind": "mark", "mark": {"points": corners}}
+    assert covered == {
+        "kind": "mark",
+        "mark": {
+            "points": [{"x": 0.0, "y": 0.0}, {"x": 1.0, "y": 1.0}],
+            "covers": {"records": [str(record)] * 2},
+        },
+    }
+
+
+def test_workspace_mark_remove_and_clear_send_their_operations() -> None:
+    first, second = _CanvasClient(), _CanvasClient()
+    mark_id = uuid.uuid4()
+
+    _workspace(first, "mark", "remove", str(mark_id))
+    _workspace(second, "mark", "clear")
+
+    assert _operation(first) == {"kind": "remove_mark", "id": str(mark_id)}
+    assert _operation(second) == {"kind": "clear_marks"}
+
+
+def test_workspace_mark_clear_page_names_the_page_to_clear() -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "mark", "clear", "--page", "#/graph")
+
+    assert _operation(client) == {"kind": "clear_marks", "page": "#/graph"}
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["mark"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "0,0"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "0,0", "1,1", "2,2"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "clear", "now"], "mark takes X1,Y1 X2,Y2"),
+        (["mark", "remove"], "mark remove takes one MARK_ID"),
+        (["mark", "remove", "not-a-uuid"], "mark is not a valid UUID"),
+        (["mark", "0,0", "left,right"], "X,Y fractions"),
+        (["mark", "0,0", "0.5"], "X,Y fractions"),
+        (["mark", "0,0", "0.1,0.2,0.3"], "X,Y fractions"),
+        (["mark", "0,0", "1,1", "--placement", "main"], "no --placement"),
+        (["mark", "0,0", "1,1", "--page", "#/graph"], "--page goes with mark clear"),
+        (
+            ["mark", "remove", str(uuid.uuid4()), "--page", "#/graph"],
+            "--page goes with",
+        ),
+        (["mark", "clear", "--record", str(uuid.uuid4())], "mark takes X1,Y1"),
+    ],
+)
+def test_workspace_mark_refuses_a_malformed_command(
+    arguments: list[str],
+    message: str,
+) -> None:
+    client = _CanvasClient()
+
+    with pytest.raises(ClientError, match=message):
+        _workspace(client, *arguments)
+
+    assert client.operations == []
+
+
+def test_workspace_prints_each_box_with_its_id_page_and_what_it_covers(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _CanvasClient()
+
+    _workspace(client, "mark", "0.3,0.3", "0.5,0.5")
+
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[-2:] == [
+        "  box m1 by agent on #/graph covers: Experiment#12 Measured tails, inst-1",
+        "  box m2 by jp on no page covers: nothing",
+    ]
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

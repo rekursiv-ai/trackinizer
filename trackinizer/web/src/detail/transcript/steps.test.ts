@@ -33,7 +33,7 @@ test("a tool row is one line: what it did, to what, and how it went", () => {
   expect(toolSummary(bash, ran("", "", 0))).toMatchObject({ outcome: "no output", failed: false });
   // A call with no result says only what it asked; a result with no call, what it ran.
   expect(toolSummary(bash, null)).toMatchObject({ verb: "Ran", target: "pytest -x \\ …", outcome: "" });
-  const codex = view("ShellCommandResult", { command: { "py/tuple": ["/bin/bash", "-lc", "date -u"] }, stdout: "now", stderr: "", exit_code: 0 });
+  const codex = view("ShellCommandResult", { command: ["/bin/bash", "-lc", "date -u"], stdout: "now", stderr: "", exit_code: 0 });
   expect(toolSummary(null, codex)).toMatchObject({ verb: "Ran", target: "date -u", outcome: "1 line" });
 
   const read = view("FileReadResult", { path: "/work/loop/a.py", content: "import os\n\nprint(1)\n" });
@@ -46,13 +46,13 @@ test("a tool row is one line: what it did, to what, and how it went", () => {
     language: "py",
   });
   const splice = { before: "a\nb\n", after: "c\n", lead: null, trail: null, start: null, count: null };
-  const edit = view("FileEditResult", { path: "src/b.ts", edits: { "py/tuple": [splice] } });
+  const edit = view("FileEditResult", { path: "src/b.ts", edits: [splice] });
   expect(toolSummary(null, edit)).toMatchObject({ tool: "edit", verb: "Edited", target: "src/b.ts", outcome: "+1 −2", language: "ts" });
   const write = view("FileWriteResult", { path: "/w/notes.md", content: "# Notes\n" });
   expect(toolSummary(null, write)).toMatchObject({ tool: "write", verb: "Wrote", target: "/w/notes.md", outcome: "1 line", language: "md" });
   const grep = view("ToolCall", { name: "Grep", arguments: { pattern: "x|y", path: "loop" } });
   expect(toolSummary(grep, view("UncategorizedToolResult", { content: "a.py\nb.py" }))).toMatchObject({ tool: "search", verb: "Searched", target: "x|y", outcome: "2 lines" });
-  const found = { "py/tuple": [{ url: "https://a.b/", title: "A", snippet: "" }] };
+  const found = [{ url: "https://a.b/", title: "A", snippet: "" }];
   expect(toolSummary(null, view("WebSearchResults", { query: "pglite", content: found }))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
   const fetched = view("WebFetchResult", { url: "https://a.b/", content: "x", code: 200, size: 2048 });
   expect(toolSummary(null, fetched)).toMatchObject({ verb: "Fetched", target: "https://a.b/", outcome: "HTTP 200 · 2.0 KB" });
@@ -105,4 +105,15 @@ test("a run of two or more tool steps between messages is one group, with the re
 
 test("a file's language is its extension, or its name when it has none", () => {
   expect(["/w/a.PY", "src/x.test.tsx", "Makefile", "dir.d/README", ""].map(languageOf)).toEqual(["py", "tsx", "makefile", "readme", ""]);
+});
+
+test("a tool row reads tagged tuples as it reads plain arrays", () => {
+  const view = (kind: string, payload: { [field: string]: unknown }) => recordView(record(kind, payload));
+  const codex = view("ShellCommandResult", { command: { "py/tuple": ["/bin/bash", "-lc", "date -u"] }, stdout: "now", stderr: "", exit_code: 0 });
+  expect(toolSummary(null, codex)).toMatchObject({ verb: "Ran", target: "date -u", outcome: "1 line" });
+  const splice = { before: "a\nb\n", after: "c\n", lead: null, trail: null, start: null, count: null };
+  const edit = view("FileEditResult", { path: "src/b.ts", edits: { "py/tuple": [splice] } });
+  expect(toolSummary(null, edit)).toMatchObject({ tool: "edit", verb: "Edited", target: "src/b.ts", outcome: "+1 −2", language: "ts" });
+  const found = { "py/tuple": [{ url: "https://a.b/", title: "A", snippet: "" }] };
+  expect(toolSummary(null, view("WebSearchResults", { query: "pglite", content: found }))).toMatchObject({ verb: "Searched the web", target: "pglite", outcome: "1 result" });
 });

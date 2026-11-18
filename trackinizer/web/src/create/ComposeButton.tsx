@@ -5,9 +5,10 @@ import { kindLook } from "../ui/kinds";
 import { createKindFor, creatableKinds } from "./draft";
 
 /**
- * The compose button beside search in the sidebar: New, for the kind on screen.
- * Viewers do not see it. Apart from the create form, which loads as a chunk of
- * its own when first opened (src/router/views.ts).
+ * The top bar's compose button beside Search: New, for the kind on screen, its
+ * icon alone, named and titled by what it makes and its key. Viewers do not
+ * see it. Apart from the create form, which loads as a chunk of its own when
+ * first opened (src/router/views.ts).
  */
 export function ComposeButton({ onNavigate }: { onNavigate: () => void }) {
   const { kinds } = useMeta();
@@ -18,7 +19,7 @@ export function ComposeButton({ onNavigate }: { onNavigate: () => void }) {
   return (
     <button
       type="button"
-      className="icon-btn compose-btn"
+      className="icon-btn compose-button"
       disabled={mode === "disabled"}
       onClick={() => {
         onNavigate();
@@ -27,7 +28,7 @@ export function ComposeButton({ onNavigate }: { onNavigate: () => void }) {
       title={`New ${kindLook(kind).one} (C)`}
       aria-label={`New ${kindLook(kind).one}`}
     >
-      <Icon name="compose" size={15} />
+      <Icon name="compose" />
     </button>
   );
 }

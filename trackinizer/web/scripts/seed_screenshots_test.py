@@ -11,7 +11,8 @@ import itertools
 import re
 import uuid
 
-from trackinizer.lib.custom_json import DictCodec, StrCodec
+from treekle import from_plain
+
 from trackinizer.types.edges import EDGE_POLICIES, kind_group_members
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.web.scripts.graph_structure import Link, Node, Structure
@@ -22,7 +23,8 @@ from trackinizer.wire.wire_sessions import SessionStart, SessionStartResponse
 
 
 if TYPE_CHECKING:
-    from trackinizer.lib.custom_json import JSONValue
+    from treekle import PlainTree
+
     from trackinizer.wire.wire_session_ir import ManifestBody
     from trackinizer.wire.wire_sessions import SessionEnd
 
@@ -46,8 +48,8 @@ def test_the_artifact_is_an_html_report_produced_by_the_cache_issue() -> None:
     client, shots = _seeded()
     published = client.artifacts[shots.artifact]
     assert published["format"] == "html"
-    assert "<svg" in StrCodec.coerce(published["html"])
-    issue = uuid.UUID(StrCodec.coerce(published["issue_id"]))
+    assert "<svg" in from_plain(published["html"], str)
+    issue = uuid.UUID(from_plain(published["issue_id"], str))
     assert client.bodies[issue]["title"] == "Cache merge ranks between calls"
 
 
@@ -120,7 +122,7 @@ def test_each_experiments_chart_bears_out_its_outcome() -> None:
     # The Experiment screenshot shows a chart beside the outcome it supports.
     client, _ = _seeded()
     charts = {
-        StrCodec.coerce(client.bodies[experiment]["title"]): {
+        from_plain(client.bodies[experiment]["title"], str): {
             key: [(point.step, point.value) for point in points if point.key == key]
             for key in dict.fromkeys(point.key for point in points)
         }
@@ -169,8 +171,9 @@ def test_each_session_is_a_conversation_in_a_room() -> None:
     client, _ = _seeded()
     assert len(client.sessions) >= 3
     for start, records in client.sessions.values():
-        assert start.rooms
-        assert start.actor
+        rooms = start.rooms or []
+        assert rooms
+        assert start.actor is not None
         kinds = [record.kind for record in records]
         assert {"UserMessage", "AssistantMessage"} <= set(kinds)
         assert [record.idx for record in records] == list(range(len(records)))
@@ -357,12 +360,12 @@ class _FakeClient:
     ) -> None:
         self.calls.append(("add_cost", target_id, field, value, actor))
 
-    def post(self, path: str, *, body: object = None) -> JSONValue:
+    def post(self, path: str, *, body: object = None) -> PlainTree:
         """Publish an Artifact; answer with its id, as the server does."""
         assert path == "/api/artifacts/content"
         self.calls.append(("post", path, body))
         artifact = self._id()
-        self.artifacts[artifact] = DictCodec.coerce(body)
+        self.artifacts[artifact] = from_plain(body, dict[str, object])
         return {"artifact_id": str(artifact)}
 
     def _id(self) -> uuid.UUID:
@@ -374,10 +377,10 @@ def _end(edge: Mapping[str, object], end: str, ids: Sequence[uuid.UUID]) -> uuid
     index = edge.get(f"{end}_index")
     if isinstance(index, int):
         return ids[index]
-    return uuid.UUID(StrCodec.coerce(edge[f"{end}_id"], default=None))
+    return uuid.UUID(from_plain(edge[f"{end}_id"], str))
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

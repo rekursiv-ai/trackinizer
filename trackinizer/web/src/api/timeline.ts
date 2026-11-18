@@ -14,8 +14,13 @@ export type TimelineOptions = CallOptions & {
 export const TIMELINE_MAX_DIRECTIONS = 12;
 export const TIMELINE_MAX_RESULTS = 5;
 export const TIMELINE_MAX_EVIDENCE = 6;
+export const TIMELINE_MAX_LEADS = 3;
 
-/** Fetch one bounded Issue/Experiment timeline through the generated API client. */
+const KINDS: ReadonlySet<unknown> = new Set<TimelineRecord["kind"]>([
+  "Issue", "Artifact", "Experiment", "Paper", "Belief", "CodeChange", "WebResult", "WebSearch", "AgentSession",
+]);
+
+/** Fetch one bounded lineage and timeline of a record of any kind through the generated API client. */
 export async function getEvidenceTimeline(
   recordId: string,
   { directionLimit = 8, resultsPerDirection = 3, signal }: TimelineOptions = {},
@@ -39,6 +44,7 @@ function isEvidenceTimeline(value: unknown): value is EvidenceTimeline {
   if (!isObject(value) || !isRecord(value.target) || !(value.issue === null || isRecord(value.issue))) return false;
   if (!isRecordArray(value.root_results, isExperiment, TIMELINE_MAX_RESULTS)
     || !isRecordArray(value.directions, isDirection, TIMELINE_MAX_DIRECTIONS)
+    || !isRecordArray(value.leads, isRecord, TIMELINE_MAX_LEADS)
     || !isRecordArray(value.unresolved_questions, isRecord, TIMELINE_MAX_DIRECTIONS)
     || !(value.selected_result === null || isExperiment(value.selected_result))) return false;
   return typeof value.root_results_truncated === "boolean"
@@ -64,7 +70,7 @@ function isEvidence(value: unknown): value is TimelineEvidence {
 }
 function isRecord(value: unknown): value is TimelineRecord {
   return isObject(value) && typeof value.id === "string"
-    && (value.kind === "Issue" || value.kind === "Experiment" || value.kind === "Belief")
+    && KINDS.has(value.kind)
     && typeof value.seq === "number" && typeof value.title === "string"
     && typeof value.status === "string" && typeof value.created === "string"
     && typeof value.modified === "string"

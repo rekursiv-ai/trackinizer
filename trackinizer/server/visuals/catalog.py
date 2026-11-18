@@ -10,8 +10,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 __all__ = [
+    "ContextGraphVisual",
+    "FilesVisual",
+    "KnowledgeVisual",
     "ParameterDescription",
     "StaticVisual",
+    "TerminalVisual",
     "TimelineVisual",
     "Visual",
     "VisualCatalogBody",
@@ -49,7 +53,7 @@ class ParameterDescription(BaseModel):
             if self.minimum is not None or self.maximum is not None:
                 raise ValueError("String parameters cannot have integer bounds.")
         elif self.type == "integer":
-            if type(self.default) is not int:
+            if isinstance(self.default, (str, bool)):
                 raise ValueError("Integer parameters need an integer default.")
             if self.minimum is None or self.maximum is None:
                 raise ValueError("Integer parameters need minimum and maximum.")
@@ -60,7 +64,7 @@ class ParameterDescription(BaseModel):
             if self.max_length is not None:
                 raise ValueError("Integer parameters cannot have a maximum length.")
         else:
-            if type(self.default) is not bool:
+            if not isinstance(self.default, bool):
                 raise ValueError("Boolean parameters need a boolean default.")
             if (
                 self.minimum is not None
@@ -78,9 +82,14 @@ class VisualDescription(BaseModel):
     version: int = Field(ge=1)
     title: str = Field(min_length=1)
     description: str
-    requires: list[Literal["record", "session"]]
+    requires: list[Literal["record"]]
     default_size: Literal["compact", "wide"]
+    default_placement: Literal["main", "side", "floating"] | None = None
+    """Where a show lands when it names no placement; none means the size rule below."""
+
     parameter_schema: dict[str, ParameterDescription]
+    record_kinds: list[str] | None = None
+    """Kinds of record a show may target: none means any kind, empty means no record."""
 
 
 class VisualCatalogBody(BaseModel):
@@ -103,7 +112,7 @@ class StaticVisual:
 
     class Config(Fig["StaticVisual"]):
         type: str = ""
-        """Namespaced visual type such as `trax.chat`; keep it stable."""
+        """Namespaced visual type such as `trax.browse`; keep it stable."""
 
         version: int = 1
         """Renderer version; raise it when saved parameters cannot render."""
@@ -114,13 +123,16 @@ class StaticVisual:
         description: str = ""
         """One sentence saying what the visual shows."""
 
-        requires: list[Literal["record", "session"]] = field(
-            default_factory=list[Literal["record", "session"]],
+        requires: list[Literal["record"]] = field(
+            default_factory=list[Literal["record"]],
         )
         """Targets a show operation must supply for the visual."""
 
         default_size: Literal["compact", "wide"] = "wide"
         """Pane shape used when a show operation names no placement."""
+
+        record_kinds: list[str] | None = None
+        """Kinds of record a show may target; none means any, empty means no record."""
 
     def __init__(self, config: Config) -> None:
         """Keep the configured entry until projection."""
@@ -141,14 +153,15 @@ class StaticVisual:
             requires=self.config.requires,
             default_size=self.config.default_size,
             parameter_schema={},
+            record_kinds=self.config.record_kinds,
         )
 
 
 class TimelineVisual:
-    """A bounded chronology of an Issue's directions and evidence."""
+    """A bounded lineage and chronology of any record: leads, directions, evidence."""
 
     class Config(Fig["TimelineVisual"]):
-        title: str = "Evidence timeline"
+        title: str = "Lineage and timeline"
         """Name shown in the Configure panel."""
 
         direction_limit: int = 12
@@ -178,7 +191,10 @@ class TimelineVisual:
             type="trax.timeline",
             version=1,
             title=self.config.title,
-            description="Follow dated directions, results, and signed evidence.",
+            description=(
+                "Any record by date, under its lead issues, over its directions, "
+                "results, and signed evidence."
+            ),
             requires=["record"],
             default_size="wide",
             parameter_schema={
@@ -198,6 +214,192 @@ class TimelineVisual:
         )
 
 
+class ContextGraphVisual:
+    """A record in its graph: what lies near it lit, the ring past that dimmed."""
+
+    class Config(Fig["ContextGraphVisual"]):
+        title: str = "Context graph"
+        """Name shown in the Configure panel."""
+
+        default_hops: int = 2
+        """Edges out from the record lit when the request names no reach."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title and reach until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the window and the reach and highlight a caller may set.
+
+        Returns:
+          description: Inert catalog entry carrying the window's bounds.
+
+        """
+        return VisualDescription(
+            type="trax.subgraph",
+            version=1,
+            title=self.config.title,
+            description="See a record in context: what lies near it, in the graph.",
+            requires=["record"],
+            default_size="wide",
+            parameter_schema={
+                # The window reads its ring through `/api/web/graph?focus=`,
+                # which walks at most 3 hops.
+                "hops": ParameterDescription(
+                    type="integer",
+                    default=self.config.default_hops,
+                    minimum=1,
+                    maximum=3,
+                ),
+                # Inquiry ids, comma-separated: 512 holds 13.
+                "highlight": ParameterDescription(
+                    type="string",
+                    default="",
+                    max_length=512,
+                ),
+            },
+        )
+
+
+class KnowledgeVisual:
+    """The records within reach of one record, each with the rows and the wires that formed it."""
+
+    class Config(Fig["KnowledgeVisual"]):
+        title: str = "What we know"
+        """Name shown in the Configure panel."""
+
+        default_hops: int = 2
+        """Records gathered this many edges from the anchor when the ask names no reach."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title and reach until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the fold and the bounds every caller must respect.
+
+        Returns:
+          description: Inert catalog entry carrying the fold's bounds.
+
+        """
+        return VisualDescription(
+            type="trax.knowledge",
+            version=1,
+            title=self.config.title,
+            description=(
+                "The records within reach of one record, each a block: the belief, "
+                "the papers, runs and issues wired into it, joined by stored edges. "
+                "A block opens to what formed it; a wire opens to who asserted it."
+            ),
+            requires=["record"],
+            default_size="wide",
+            # A fold is the answer, not a second column: measured on a station holding
+            # Browse, a subgraph and this fold as `main` tiles, each lane was ~330px,
+            # so six tiers became six rows and the header collided with `Open in
+            # graph`. Float it over the stage and the same fold is one window. The
+            # graph it used to sit over is no longer drawn unless someone asks for it.
+            default_placement="floating",
+            parameter_schema={
+                # The fold reads records through `/api/web/graph?focus=`, which walks
+                # at most 3 hops, and shows each one's own edge one hop past that.
+                "hops": ParameterDescription(
+                    type="integer",
+                    default=self.config.default_hops,
+                    minimum=1,
+                    maximum=3,
+                ),
+                # One record's inquiry id: its formation panel opens already read.
+                "claim": ParameterDescription(
+                    type="string",
+                    default="",
+                    max_length=512,
+                ),
+            },
+        )
+
+
+class FilesVisual:
+    """A record's files and what changed in them, each change with its diff."""
+
+    class Config(Fig["FilesVisual"]):
+        title: str = "Files"
+        """Name shown in the Configure panel."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the view and the narrowing a caller may set.
+
+        Returns:
+          description: Inert catalog entry carrying the narrowing's bounds.
+
+        """
+        return VisualDescription(
+            type="trax.files",
+            version=1,
+            title=self.config.title,
+            description=(
+                "A record's files and what changed in them, each change with its diff."
+            ),
+            requires=["record"],
+            default_size="wide",
+            parameter_schema={
+                # A path prefix (`loop/foo/`), or a glob when it holds `*` or `?`
+                # (`**/*.py`), matched without case; empty shows every path.
+                "path": ParameterDescription(type="string", default="", max_length=512),
+                # True hides the file tree, leaving only the changed files.
+                "changed": ParameterDescription(type="boolean", default=False),
+                # A changed file's path, or a name every changed file ending in
+                # `/<name>` matches, whose diff opens; it never narrows the list.
+                "file": ParameterDescription(type="string", default="", max_length=512),
+            },
+        )
+
+
+class TerminalVisual:
+    """A shell on one of the viewer's own machines."""
+
+    class Config(Fig["TerminalVisual"]):
+        title: str = "Terminal"
+        """Name shown in the Configure panel."""
+
+    def __init__(self, config: Config) -> None:
+        """Keep the configured title until projection."""
+        self.config = config
+
+    def describe(self) -> VisualDescription:
+        """Describe the view and the parameters a caller may set.
+
+        Returns:
+          description: Inert catalog entry; it starts nothing until its owner clicks.
+
+        """
+        return VisualDescription(
+            type="trax.terminal",
+            version=1,
+            title=self.config.title,
+            description=(
+                "A shell on one of your own machines. "
+                "It starts only when you click Start terminal."
+            ),
+            requires=[],
+            default_size="wide",
+            parameter_schema={
+                # A machine name; empty lets the viewer pick one.
+                "machine": ParameterDescription(
+                    type="string",
+                    default="",
+                    max_length=63,
+                ),
+                # True when an agent asked for a terminal: the viewer's browser then
+                # opens one by itself, with their own session. No key ever opens it.
+                "start": ParameterDescription(type="boolean", default=False),
+            },
+        )
+
+
 class Workspace:
     """The trusted composition of visual configs and its initial selection."""
 
@@ -208,26 +410,37 @@ class Workspace:
                     type="trax.browse",
                     title="Browse",
                     description="Browse trax records by kind and query.",
+                    record_kinds=[],
                 ),
-                StaticVisual.Config(
-                    type="trax.chat",
-                    title="Chat",
-                    description="Talk with a connected trax run session.",
-                    requires=["session"],
-                    default_size="compact",
-                ),
-                StaticVisual.Config(
-                    type="trax.subgraph",
-                    title="Context graph",
-                    description="Explore a selected record and its issue lineage.",
-                    requires=["record"],
-                ),
+                ContextGraphVisual.Config(),
+                KnowledgeVisual.Config(),
                 TimelineVisual.Config(),
                 StaticVisual.Config(
                     type="trax.artifact",
                     title="Artifact",
                     description="Read immutable shared Artifact content.",
                     requires=["record"],
+                    record_kinds=["Artifact"],
+                ),
+                StaticVisual.Config(
+                    type="trax.summary",
+                    title="Campaign summary",
+                    description=(
+                        "What a campaign did, for readers who may not read its "
+                        "transcripts: its sessions, steps, phases and beliefs."
+                    ),
+                    requires=["record"],
+                    record_kinds=["Issue", "AgentSession"],
+                ),
+                FilesVisual.Config(),
+                TerminalVisual.Config(),
+                StaticVisual.Config(
+                    type="trax.blocks",
+                    title="Blocks",
+                    description=(
+                        "A distilled answer: blocks of knowledge and the flow "
+                        "between them, from the prompt's records."
+                    ),
                 ),
             ],
         )

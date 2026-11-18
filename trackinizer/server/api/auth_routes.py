@@ -5,40 +5,70 @@ dependency. The token endpoints let a caller mint a key (the plaintext
 secret is shown exactly once), list their keys without exposing secrets
 or hashes, revoke a key, and re-tier a key's role. Keys not owned by the
 caller (or already revoked) return 404, never a hint that they exist.
+
+Minting, revoking and re-tiering answer a person only (``current_human``): a service
+account's key gets 403 on them, since an admin manages a service account's keys.
 """
 
 from __future__ import annotations
 
-from typing import Annotated, cast
+from typing import TYPE_CHECKING, Annotated, cast
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
+from treekle import from_plain
 
-from trackinizer.lib.custom_json import MutableJSON
-from trackinizer.server.api._deps import get_store
+from trackinizer.server.api._deps import (
+    get_chat_orgs,
+    get_hub,
+    get_staff,
+    get_store,
+)
 from trackinizer.server.api._routes_shared import (
     RoleLiteral,
     engine_of,
     iso_format,
 )
 from trackinizer.server.auth import (
+    AudienceCeilingError,
     AuthIdentity,
     Role,
     RoleCeilingError,
     create_api_key,
+    current_human,
     current_user,
+    key_within_caller,
     list_api_keys,
+    mint_open_into,
     revoke_api_key,
     set_api_key_role,
 )
+from trackinizer.server.chat_hub import PreferencesFrame
+from trackinizer.server.preferences import (
+    Preferences,
+    stored_preferences,
+    write_preferences,
+)
+from trackinizer.server.visuals.workspace_store import station_ids
+from trackinizer.wire.audience import AudienceName
+from trackinizer.wire.json_types import MutableJSON, MutableJSONValue
+from trackinizer.wire.wire_service_accounts import is_service_address
+
+
+if TYPE_CHECKING:
+    from collections.abc import Collection
+
+    from trackinizer.lib.postgres import Conn
 
 
 __all__ = [
+    "AcknowledgeResult",
     "CreateTokenBody",
     "TokenRoleChangeBody",
     "VisualWorkspacePreference",
+    "acknowledge_route",
     "create_token_route",
     "list_tokens_route",
     "profile_route",
@@ -59,10 +89,16 @@ class CreateTokenBody(BaseModel):
     defaults to the caller's own role; a stronger role is rejected with
     403, which lets a writer mint a viewer-only token for a read-only
     agent without losing their own write capability.
+
+    ``open_into`` pins the one audience the key opens sessions into. It may not exceed
+    what the caller opens into: an audience beyond that is 403, and a name that is no
+    audience is 422. A key minted by another key that leaves it out inherits that
+    key's pin.
     """
 
     name: str = Field(min_length=1, max_length=128)
     role: RoleLiteral | None = None
+    open_into: AudienceName | None = None
 
 
 class TokenRoleChangeBody(BaseModel):
@@ -79,6 +115,19 @@ class VisualWorkspacePreference(BaseModel):
     """The user's opt-in for the agent-guided canvas."""
 
     enabled: bool
+
+
+class AcknowledgeBody(BaseModel):
+    """The rules version the caller read before they agreed."""
+
+    rules_version: str
+
+
+class AcknowledgeResult(BaseModel):
+    """When the caller agreed to the alpha rules, and to which version of them."""
+
+    acknowledged_at: str
+    acknowledged_rules_version: str
 
 
 @router.get("/api/me/profile")
@@ -99,21 +148,35 @@ async def profile_route(
       identity: Authenticated user from Bearer token or session cookie.
 
     Returns:
-      result: JSON with user_id, email, name, role, last_login, and canvas opt-in.
+      result: JSON with user_id, email, name, role, last_login, canvas opt-in, the
+        user's preferences (every key, defaults filled), the
+        id of the API key the request used (``None`` for a browser session), when
+        the caller agreed to the rules and to which version, and the current rules
+        version with the id of the Issue that holds the rules (both ``None`` while
+        Issue#1 is missing or unlocked), the audiences the credential reads and
+        opens into, with its pin if any, and the server's organisation mode
+        (``org_mode``: ``single``, ``domain`` or ``individual``), which says who
+        reads what the caller makes.
 
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT name, last_login, visual_workspace_enabled "
-            "FROM users WHERE id = $1",
+            "SELECT name, last_login, visual_workspace_enabled, acknowledged_at, "
+            "acknowledged_rules_version, preferences FROM users WHERE id = $1",
             identity.user_id,
         )
+        rules_issue_id, rules_version = await _rules(conn)
     name = identity.email if row is None else row["name"]
     assert isinstance(name, str)
     last_login = None if row is None else row["last_login"]
     workspace_enabled = False if row is None else row["visual_workspace_enabled"]
     assert isinstance(workspace_enabled, bool)
+    acknowledged_version = (
+        None
+        if row is None
+        else from_plain(row["acknowledged_rules_version"], str, default=None)
+    )
     return {
         "user_id": str(identity.user_id),
         "email": identity.email,
@@ -121,7 +184,80 @@ async def profile_route(
         "role": identity.role,
         "last_login": iso_format(last_login),
         "visual_workspace_enabled": workspace_enabled,
+        "preferences": stored_preferences(
+            None if row is None else row["preferences"],
+        ).model_dump(
+            mode="json",
+        ),
+        "api_key_id": None if identity.api_key_id is None else str(identity.api_key_id),
+        "acknowledged_at": None if row is None else iso_format(row["acknowledged_at"]),
+        "acknowledged_rules_version": acknowledged_version,
+        "rules_issue_id": None if rules_issue_id is None else str(rules_issue_id),
+        "rules_version": rules_version,
+        "read_audiences": _names(identity.read_audiences),
+        "open_audiences": _names(identity.open_audiences),
+        "pinned_audience": identity.pinned_audience,
+        "org_mode": get_chat_orgs(request),
+        # The service accounts the operator made staff: the accounts whose Artifacts a
+        # page may trust as the summary service's, since only an admin makes one.
+        "summary_accounts": [a for a in get_staff(request) if is_service_address(a)],
     }
+
+
+@router.put("/api/me/acknowledge", response_model=AcknowledgeResult)
+async def acknowledge_route(
+    body: AcknowledgeBody,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_user)],
+) -> AcknowledgeResult:
+    """Record that the caller agreed to the alpha rules as they stand now.
+
+    The rules are Issue#1; their version is its last change, so editing them makes
+    this agreement stale and the welcome flow asks again.
+
+    Args:
+      body: The rules version the caller was shown; it must still be the current
+        one, so an agreement never covers rules the caller did not read.
+      request: FastAPI request with a database engine.
+      identity: Authenticated account owner.
+
+    Returns:
+      result: When the caller agreed, and the rules version they agreed to.
+
+    Raises:
+      HTTPException: 403 for an API key, 409 when no rules are in force or they
+        changed since the caller read them.
+
+    """
+    if identity.api_key_id is not None:
+        raise HTTPException(
+            status_code=403,
+            detail="Agreeing to the rules requires an interactive session",
+        )
+    async with engine_of(request).acquire() as conn:
+        _, version = await _rules(conn)
+        if version is None:
+            raise HTTPException(
+                status_code=409,
+                detail="There are no rules in force to agree to",
+            )
+        if body.rules_version != version:
+            raise HTTPException(
+                status_code=409,
+                detail="The rules changed since you read them; read them again",
+            )
+        stamped = await conn.fetchval(
+            "UPDATE users SET acknowledged_at = clock_timestamp(), "
+            "acknowledged_rules_version = $1 WHERE id = $2 RETURNING acknowledged_at",
+            version,
+            identity.user_id,
+        )
+    if stamped is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    return AcknowledgeResult(
+        acknowledged_at=iso_format(stamped) or "",
+        acknowledged_rules_version=version,
+    )
 
 
 @router.put(
@@ -162,11 +298,56 @@ async def set_visual_workspace_preference(
     return VisualWorkspacePreference(enabled=enabled)
 
 
+@router.patch("/api/me/preferences", response_model=Preferences)
+async def set_preferences_route(
+    body: MutableJSON,
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(current_user)],
+) -> Preferences:
+    """Set some of the caller's preferences, and put others back to their defaults.
+
+    The keys the body leaves out keep their values. The change is one statement, so
+    two tabs changing different keys at once both keep theirs. Every station of
+    the caller is sent the result, so each of their tabs shows it.
+
+    Args:
+      body: The keys to change: a value sets the key, ``null`` puts it back to its
+        default.
+      request: FastAPI request with a database engine.
+      identity: The account whose preferences change.
+
+    Returns:
+      preferences: Every key after the change, defaults filled.
+
+    Raises:
+      HTTPException: 422 for a key no preference has or a value its key does not
+        take, and nothing is written; 404 when the caller's user is gone.
+
+    """
+    async with engine_of(request).acquire() as conn:
+        try:
+            preferences = await write_preferences(
+                conn,
+                user_id=identity.user_id,
+                change=body,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        stations = await station_ids(conn, user_id=identity.user_id)
+    if preferences is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    # Every tab of the user, whichever station it shows, takes the change at once.
+    hub = get_hub(request)
+    for station in stations:
+        hub.publish(station, frame=PreferencesFrame(preferences=preferences))
+    return preferences
+
+
 @router.post("/api/me/tokens")
 async def create_token_route(
     body: CreateTokenBody,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(current_user)],
+    identity: Annotated[AuthIdentity, Depends(current_human)],
 ) -> MutableJSON:
     """Create a new API key for the authenticated user.
 
@@ -178,37 +359,44 @@ async def create_token_route(
     *effective* role -- the weaker of their user role and the role of the
     credential they presented -- defaulting to that ceiling when omitted. A
     stronger role returns 403, the boundary that keeps a writer from minting
-    an admin token and a scoped-down key from self-escalating.
+    an admin token and a scoped-down key from self-escalating. The pin follows the
+    same rule: the key opens at most what the caller does.
 
     Args:
-      body: Request body with name and optional role ceiling.
+      body: Request body with name, optional role ceiling and pin.
       request: FastAPI Request context (used to get the store).
-      identity: Authenticated user from Bearer token or session cookie.
+      identity: Authenticated person from Bearer token or session cookie.
 
     Returns:
-      result: JSON with key id, name, prefix, role, and plaintext secret.
+      result: JSON with key id, name, prefix, role, the stored pin and plaintext
+        secret.
 
     Raises:
-      HTTPException: 403 if requested role exceeds caller's effective role.
+      HTTPException: 403 if the requested role or pin exceeds the caller's, or if
+        the caller is a service account.
 
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
         try:
+            open_into = mint_open_into(identity, open_into=body.open_into)
             key_id, secret, prefix, role = await create_api_key(
                 conn,
                 user_id=identity.user_id,
                 name=body.name,
                 role=body.role,
                 ceiling=identity.role,
+                open_into=open_into,
+                minter=identity,
             )
-        except RoleCeilingError as exc:
+        except (RoleCeilingError, AudienceCeilingError) as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {
         "id": str(key_id),
         "name": body.name,
         "prefix": prefix,
         "role": role,
+        "open_into": open_into,
         "secret": secret,
     }
 
@@ -241,28 +429,34 @@ async def list_tokens_route(
 async def revoke_token_route(
     key_id: uuid.UUID,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(current_user)],
+    identity: Annotated[AuthIdentity, Depends(current_human)],
 ) -> MutableJSON:
     """Revoke one of the authenticated user's keys.
 
     Unknown id, foreign owner, and already-revoked all return 404, so an
-    attacker probing UUIDs learns nothing about which keys exist.
+    attacker probing UUIDs learns nothing about which keys exist. A pinned key
+    cannot revoke a key that opens beyond it, and gets the same 404.
 
     Args:
       key_id: API key UUID to revoke.
       request: FastAPI Request context (used to get the store).
-      identity: Authenticated user from Bearer token or session cookie.
+      identity: Authenticated person from Bearer token or session cookie.
 
     Returns:
       result: JSON with {"ok": true} on success.
 
     Raises:
-      HTTPException: 404 if key not found, owned by another user, or already revoked.
+      HTTPException: 403 if the caller is a service account; 404 if key not found,
+        owned by another user, or already revoked.
 
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
-        revoked = await revoke_api_key(conn, key_id=key_id, user_id=identity.user_id)
+        revoked = await key_within_caller(
+            conn,
+            identity=identity,
+            key_id=key_id,
+        ) and await revoke_api_key(conn, key_id=key_id, user_id=identity.user_id)
     if not revoked:
         raise HTTPException(status_code=404, detail="token not found")
     # The verified-bearer cache would otherwise keep honoring this key for up
@@ -278,7 +472,7 @@ async def set_token_role_route(
     key_id: uuid.UUID,
     body: TokenRoleChangeBody,
     request: Request,
-    identity: Annotated[AuthIdentity, Depends(current_user)],
+    identity: Annotated[AuthIdentity, Depends(current_human)],
 ) -> MutableJSON:
     """Re-tier one of the caller's keys within the caller's effective ceiling.
 
@@ -286,25 +480,31 @@ async def set_token_role_route(
     caller's *effective* role (the weaker of their user role and the
     presented credential's role), and anything stronger returns 403.
     Unknown id, foreign owner, and already-revoked all fold to 404, matching
-    the revoke route's anti-enumeration stance.
+    the revoke route's anti-enumeration stance. A pinned key cannot
+    re-tier a key that opens beyond it, and gets the same 404.
 
     Args:
       key_id: API key UUID to re-tier.
       body: Request body with new role.
       request: FastAPI Request context (used to get the store).
-      identity: Authenticated user from Bearer token or session cookie.
+      identity: Authenticated person from Bearer token or session cookie.
 
     Returns:
       result: JSON with {"ok": true, "role": new_role} on success.
 
     Raises:
-      HTTPException: 403 if role exceeds caller's effective ceiling; 404 otherwise.
+      HTTPException: 403 if role exceeds caller's effective ceiling or the caller is
+        a service account; 404 otherwise.
 
     """
     engine = engine_of(request)
     async with engine.acquire() as conn:
         try:
-            updated = await set_api_key_role(
+            updated = await key_within_caller(
+                conn,
+                identity=identity,
+                key_id=key_id,
+            ) and await set_api_key_role(
                 conn,
                 key_id=key_id,
                 user_id=identity.user_id,
@@ -328,7 +528,36 @@ def _serialize(row: dict[str, object]) -> MutableJSON:
         "name": str(row["name"]),
         "prefix": str(row["prefix"]),
         "role": cast(Role, row["role"]),
+        "open_into": cast("str | None", row["open_into"]),
         "created_at": iso_format(row["created_at"]),
         "last_used_at": iso_format(row["last_used_at"]),
         "revoked_at": iso_format(row["revoked_at"]),
     }
+
+
+# The version is when the rules' words last changed: the latest title or description
+# edit, else the Issue's creation. It is not ``modified``, which every cascade and cost
+# roll-up under the Issue moves as well, and each move would ask every user to agree
+# again.
+# Rules are in force only while Issue#1 exists and is locked, so a deployment opts in by
+# having an admin lock the Issue; until then nobody has anything to agree to.
+async def _rules(conn: Conn) -> tuple[uuid.UUID | None, str | None]:
+    """Read the rules Issue's id and version; ``(None, None)`` if none is in force."""
+    row = await conn.fetchrow(
+        "SELECT issue.id, coalesce((SELECT max(log.created) FROM change_log AS log "
+        "WHERE log.subject_id = issue.id AND log.kind IN ('title', 'description')), "
+        "issue.created) AS version "
+        "FROM inquiries AS issue "
+        "WHERE issue.kind = 'Issue' AND issue.seq = 1 AND issue.locked",
+    )
+    if row is None:
+        return None, None
+    return (
+        from_plain(row["id"], uuid.UUID),
+        from_plain(iso_format(row["version"]), str),
+    )
+
+
+def _names(audiences: Collection[str]) -> list[MutableJSONValue]:
+    """Return audience names sorted, as JSON."""
+    return list[MutableJSONValue](sorted(audiences))

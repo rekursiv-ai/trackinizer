@@ -8,11 +8,12 @@ from unittest.mock import AsyncMock
 
 import uuid
 
+from treekle import from_plain
+
 import asyncpg
 import pytest
 
 from trackinizer.conftest import executed_sql
-from trackinizer.lib.custom_json import DictCodec, ListCodec
 from trackinizer.wire.bodies import SubmitBase
 
 
@@ -40,7 +41,7 @@ class TestRoutes:
         client, _store, _engine = route_client
         r = client.post("/api/inquiries/issue", json={"title": "t"})
         assert r.status_code == 201
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert "id" in body
 
     def test_submit_codechange_allows_unset_sha(
@@ -76,11 +77,11 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         # Inquiry ids are server-minted; assert structure, not equality
         # against the sent idempotency_keys.
         assert list(body) == ["ids"]
-        ids = ListCodec.coerce(body["ids"], str)
+        ids = from_plain(body["ids"], list[str])
         assert len(ids) == 2
         assert all(_is_uuid(s) for s in ids)
 
@@ -161,6 +162,25 @@ class TestRoutes:
         assert r.status_code == 200, r.text
         # One distinct account -> exactly one active-user probe.
         assert probe_calls == 1
+
+    def test_a_writer_cannot_file_a_row_as_a_service_account(
+        self,
+        route_client: tuple[TestClient, Store, FakeEngine],
+    ) -> None:
+        client, _store, _engine = route_client
+        body = {
+            "title": "forged",
+            "account": "campaign@service.invalid",
+            "idempotency_key": str(uuid.uuid4()),
+        }
+
+        single = client.post("/api/inquiries/artifact", json=body)
+        batch = client.post(
+            "/api/inquiries/batch",
+            json={"items": [{"kind": "Artifact", **body}]},
+        )
+
+        assert (single.status_code, batch.status_code) == (403, 403)
 
     def test_submit_batch_route_validates_discriminator(
         self,
@@ -262,8 +282,8 @@ class TestRoutes:
         ]
         r = client.post("/api/inquiries/batch", json={"items": items})
         assert r.status_code == 200
-        body = DictCodec.coerce(r.json())
-        ids = ListCodec.coerce(body["ids"], str)
+        body = from_plain(r.json(), dict[str, object])
+        ids = from_plain(body["ids"], list[str])
         assert len(ids) == len(item_keys)
         assert all(_is_uuid(s) for s in ids)
         verbs = [s for s in executed_sql(conn) if s in ("BEGIN", "COMMIT", "ROLLBACK")]
@@ -379,7 +399,7 @@ class TestRoutes:
             },
         )
         assert r.status_code == 200
-        body = DictCodec.coerce(r.json())
+        body = from_plain(r.json(), dict[str, object])
         assert body["ids"] == [str(v) for v in existing.values()]
         inserts = [
             c
@@ -392,6 +412,6 @@ class TestRoutes:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

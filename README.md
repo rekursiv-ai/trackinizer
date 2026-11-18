@@ -31,7 +31,11 @@ message to an agent in the console, answered live.
 #   PG_MAJOR="$(apt-cache depends postgresql | grep -m1 -oP 'postgresql-\K\d+')"
 #   sudo apt-get install -y postgresql "postgresql-$PG_MAJOR-pgvector"
 
-uv tool install trackinizer
+# `trackinizer` alone installs `trax`, the client; the server is the `server` extra.
+uv tool install 'trackinizer[server]'
+
+# Optional: install authoring guidance for your agent (claude, codex, or cursor).
+trax doctor --fix --target codex --offline
 
 # Local server at http://127.0.0.1:8765.
 trackinizer
@@ -48,6 +52,10 @@ by Postgres (real or PGlite). FastAPI on top.
 that contract over Postgres + HTTP.
 
 ## The UI
+
+New to the web app? [`docs/user_guide.md`](trackinizer/docs/user_guide.md)
+walks through it and `trax` end to end: signing in, Chat and the canvas,
+terminals on your own machine, and agent sessions.
 
 The web app browses the same records the API serves. Its source is `web/`
 ([`web/README.md`](trackinizer/web/README.md)), and the package ships it
@@ -93,6 +101,12 @@ children, a graph of what lies within two hops, and its activity.
 **Experiment** -- its outcome, config and metric charts, and the Belief it proves.
 
 <img src="https://raw.githubusercontent.com/rekursiv-ai/trackinizer/main/trackinizer/docs/screenshots/experiment.webp" width="640" alt="An Experiment with its outcome, metric charts and the Belief it proves">
+
+### Chat
+
+A canvas's Chat talks to the server's shared assistant. An admin sets it with
+`trackinizer --assistant ACTOR=EMAIL`; with none live, Chat says so and sends
+nothing. [`docs/api.md`](trackinizer/docs/api.md) has the rules.
 
 ## The model
 
@@ -252,6 +266,12 @@ PGlite datadir it is not tied to the storage internals that wrote it, and an
 unchanged graph exports the same bytes twice. Line format:
 [`docs/api.md`](trackinizer/docs/api.md) section 3.24.
 
+`trax export labels is org:rekursiv labels nre '^machine:'` writes the
+subgraph those clauses match instead. Clauses read like any other filter and
+AND together; the inquiries decide the subgraph, and an edge comes along only
+when both of its ends did. The header names the selector, so a reader can
+tell a slice from a backup.
+
 ## Package dependency graph
 
 Four layers, two legs sharing one contract spine. An arrow means
@@ -384,6 +404,8 @@ trackinizer                        # pglite (default)
 trackinizer --engine pg --dsn ...  # against real Postgres
 trackinizer --no-auth              # single-user local mode: everyone is admin
 trackinizer --app-dir DIR          # the web app built in DIR at /app/
+trackinizer --assistant ACTOR=EMAIL  # the shared Chat partner (or $TRACKINIZER_ASSISTANT)
+trackinizer --staff PATTERNS         # who is staff: user@host or *@domain (or $TRACKINIZER_STAFF)
 trackinizer --no-web               # without /api/web, /app/ or the login page
 ```
 
@@ -392,7 +414,10 @@ useful on its own:
 
 ```bash
 trax help                          # grammar and subjects
+trax doctor                        # check skills, profile, and server access
 trax issue                         # list issues
+trax env                           # list the org's environment variables
+trax machine                       # list the machines campaigns may run on
 ```
 
 From a source checkout, both are `uv run python -m trackinizer.server`

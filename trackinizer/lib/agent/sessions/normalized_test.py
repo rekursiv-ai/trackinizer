@@ -6,6 +6,8 @@ from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+from treekle import from_plain, json_loads
+
 import pytest
 
 from trackinizer.lib.agent.sessions import claude, codex, normalized
@@ -27,7 +29,6 @@ from trackinizer.lib.agent.types.sessions import (
     UncategorizedToolResult,
     UserMessage,
 )
-from trackinizer.lib.custom_json import ListCodec, StrCodec, loads
 
 
 if TYPE_CHECKING:
@@ -118,9 +119,10 @@ def test_session_json_is_a_bare_array_of_tagged_records() -> None:
 
     text = stream.getvalue()
     assert text.endswith("\n")
-    document = ListCodec.mappings(loads(text))
+    document = json_loads(text, list[dict[str, object]])
     assert [
-        StrCodec.coerce(entry.get("py/object")).rpartition(".")[2] for entry in document
+        from_plain(entry.get("py/object"), str, default="").rpartition(".")[2]
+        for entry in document
     ] == ["TurnContext", "UserMessage"]
 
 
@@ -159,6 +161,6 @@ def test_a_captured_session_survives_the_json_round_trip(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

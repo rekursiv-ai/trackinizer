@@ -7,21 +7,35 @@ keeps, which records count as conversation, and which a histogram counts.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
 import itertools
+import json
 
 from asyncpg.pool import PoolConnectionProxy
+from treekle import mutable
 
 import pytest
 
+from trackinizer.lib.agent.types.sessions import (
+    AgentToAgentMessage,
+    Attachment,
+    UserMessage,
+)
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.store.session_feed import (
     WHOLE_FEED,
     BucketGrid,
     FeedScope,
+    StationAgents,
+    _room_facets,
 )
+from trackinizer.server.values import vetted_sql
+from trackinizer.types.session_records import SessionRecordRow
+from trackinizer.wire.audience import AUDIENCES
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
     FeedBucket,
@@ -36,14 +50,24 @@ if TYPE_CHECKING:
     from trackinizer.server.store.core import Store
 
 
+# Reads every session that is not a chat, whoever holds it: these tests are of what a
+# scope keeps, not of who reads.
+_ANYONE = SessionReader(audiences=AUDIENCES, every_session=True, oversight=True)
+_ALL_SESSIONS = replace(WHOLE_FEED, reader=_ANYONE)
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 # A UTC midnight, so a day's bucket starts on it.
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
+_OWNER = UUID(int=1)
+_OTHER_OWNER = UUID(int=2)
 _HUMAN = '{"content": "Go ahead.", "extra": {}}'
 _HARNESS = '{"content": "Stop hook feedback", "extra": {"isMeta": true}}'
-_SAID = '{"content": "Done.", "attachments": {"py/tuple": []}, "extra": {}}'
-_BLANK = '{"content": " \\n", "attachments": {"py/tuple": []}, "extra": {}}'
+_SAID = '{"content": "Done.", "attachments": [], "extra": {}}'
+_BLANK = '{"content": " \\n", "attachments": [], "extra": {}}'
 _ATTACHED = (
+    '{"content": null, "attachments": [{"mime_descriptor": "image/png"}], "extra": {}}'
+)
+# The same message as a codec-tagged row: its attachments tuple is a ``py/tuple``.
+_ATTACHED_TAGGED = (
     '{"content": null, "attachments": {"py/tuple": [{"mime_descriptor": "image/png"}]},'
     ' "extra": {}}'
 )
@@ -54,13 +78,13 @@ _QUEUED = (
 # A codex agent's message to another, in the envelope codex writes before it.
 _PEER = (
     '{"content": "Message Type: %s\\nTask name: /root\\nSender: /root/prototype'
-    '\\nPayload:\\n%s", "attachments": {"py/tuple": []}, "extra": {}}'
+    '\\nPayload:\\n%s", "attachments": [], "extra": {}}'
 )
 # What a harness writes on the user's turn, no person: codex's context, and the
 # notice Claude Code gives when a background task ends.
 _CODEX_CONTEXT = (
     '{"content": "<codex_internal_context source=\\"goal\\">\\nKeep going.\\n'
-    '</codex_internal_context>", "attachments": {"py/tuple": []}, "extra": {}}'
+    '</codex_internal_context>", "attachments": [], "extra": {}}'
 )
 _TASK_NOTICE = (
     '{"content": "<task-notification>\\n<status>completed</status>\\n'
@@ -69,6 +93,35 @@ _TASK_NOTICE = (
 
 
 # ---- The bucket grid --------------------------------------------------------
+
+
+def test_room_facets_total_each_room_largest_first() -> None:
+    """A room counts every session of each actor in it; ties order by name."""
+    seen = datetime(2026, 10, 7, tzinfo=UTC)
+    actors = [
+        FeedActorFacet(
+            actor=actor,
+            session_id=uuid4(),
+            cli=None,
+            rooms=list(rooms),
+            count=count,
+            conversation=0,
+            last=seen,
+            ended=None,
+        )
+        for actor, rooms, count in (
+            ("b", ("r1", "r2"), 2),
+            ("a", ("r2",), 3),
+            ("c", ("r3",), 2),
+            ("d", ("r2",), 1),
+        )
+    ]
+
+    assert _room_facets(actors) == [
+        FeedRoomFacet(room="r2", count=6, actors=["a", "b", "d"]),
+        FeedRoomFacet(room="r1", count=2, actors=["b"]),
+        FeedRoomFacet(room="r3", count=2, actors=["c"]),
+    ]
 
 
 def test_the_grid_is_the_finest_that_fits_on_multiples_of_its_width() -> None:
@@ -180,8 +233,21 @@ async def test_a_scope_keeps_any_value_of_a_field_and_every_named_field(
             [("UserMessage", _T0, _HUMAN), ("ToolCall", _T0, "{}")],
         )
 
-    async def kept(**scope: tuple[str, ...]) -> set[tuple[str, str]]:
-        events = await integ_store.read_feed(scope=FeedScope(**scope))
+    async def kept(
+        *,
+        actors: tuple[str, ...] = (),
+        rooms: tuple[str, ...] = (),
+        clis: tuple[str, ...] = (),
+        kinds: tuple[str, ...] = (),
+    ) -> set[tuple[str, str]]:
+        scope = replace(
+            _ALL_SESSIONS,
+            actors=actors,
+            rooms=rooms,
+            clis=clis,
+            kinds=kinds,
+        )
+        events = await integ_store.read_feed(scope=scope)
         return {(event.actor, event.kind) for event in events}
 
     both = {"UserMessage", "ToolCall"}
@@ -195,6 +261,196 @@ async def test_a_scope_keeps_any_value_of_a_field_and_every_named_field(
         ("b", k) for k in both
     }
     assert await kept() == {(a, k) for a in "abc" for k in both}
+
+
+# ---- A station's agents -----------------------------------------------------
+
+
+def _walk(first: int) -> str:
+    """Return the station clause as its values are bound after ``first`` others."""
+    workspace, owner, prefix, depth, limit = (f"${first + n}" for n in range(1, 6))
+    return vetted_sql(
+        "i.id IN (WITH RECURSIVE walk(id, depth) AS (SELECT c.id, 0 FROM inquiries c "
+        "WHERE c.kind = 'AgentSession' AND c.agentsession_cli_session_id = ",
+        prefix,
+        "::text || (SELECT w.station->>'conversation_id' FROM visual_workspaces w "
+        "WHERE w.id = ",
+        workspace,
+        " AND w.user_id = ",
+        owner,
+        ") UNION SELECT e.from_id, walk.depth + 1 FROM walk JOIN edges e "
+        "ON e.to_id = walk.id AND e.edge_kind = 'produced_by' "
+        "AND e.from_kind = 'AgentSession' WHERE walk.depth < ",
+        depth,
+        ") SELECT id FROM walk GROUP BY id HAVING min(depth) > 0 "
+        "ORDER BY min(depth), id LIMIT ",
+        limit,
+        ")",
+    )
+
+
+_STATION = StationAgents(workspace_id=UUID(int=7), user_id=UUID(int=8))
+_STATION_VALUES = [_STATION.workspace_id, _STATION.user_id, "chat:", 4, 500]
+
+
+def test_a_station_scope_binds_its_owner_and_the_bounds_of_the_walk() -> None:
+    alone: list[object] = []
+    beside: list[object] = []
+
+    assert FeedScope(reader=_ANYONE, station=_STATION).clauses(
+        alone,
+        kind="e.kind",
+    ) == [_walk(0)]
+    assert FeedScope(reader=_ANYONE, actors=("a",), station=_STATION).clauses(
+        beside,
+        kind="e.kind",
+    ) == ["i.owner = ANY($1::text[])", _walk(1)]
+
+    assert alone == _STATION_VALUES
+    assert beside == [["a"], *_STATION_VALUES]
+    assert FeedScope(reader=_ANYONE, station=_STATION).names_sessions
+    assert not _ALL_SESSIONS.names_sessions
+
+
+def test_each_field_of_a_scope_binds_one_array_in_the_order_the_sql_tests_it() -> None:
+    params: list[object] = []
+
+    clauses = FeedScope(
+        reader=_ANYONE,
+        actors=("a",),
+        rooms=("r",),
+        clis=("c",),
+        kinds=("k", "l"),
+    ).clauses(params, kind="e.kind")
+
+    assert clauses == [
+        "i.owner = ANY($1::text[])",
+        "i.agentsession_rooms &&($2::text[])",
+        "i.agentsession_cli = ANY($3::text[])",
+        "e.kind = ANY($4::text[])",
+    ]
+    assert params == [["a"], ["r"], ["c"], ["k", "l"]]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_station_keeps_the_agents_its_chat_produced_in_every_read(
+    integ_store: Store,
+) -> None:
+    """The chat itself, other chats' agents and unlinked sessions stay out."""
+    conversation = uuid4()
+    station = await _station(integ_store, _OWNER, conversation)
+    chat = await _session(integ_store, "chat-1", cli_session_id=f"chat:{conversation}")
+    lead = await _session(integ_store, "lead-2")
+    worker = await _session(integ_store, "worker-1")
+    outsider = await _session(integ_store, "outsider")
+    other_chat = await _session(integ_store, "chat-2", cli_session_id="chat:other")
+    other_lead = await _session(integ_store, "lead-9")
+    await _produced_by(
+        integ_store,
+        (lead, chat),
+        (worker, lead),
+        (other_lead, other_chat),
+    )
+    for session in (chat, lead, worker, outsider, other_lead):
+        await _records(integ_store, session, [("ToolCall", _T0, "{}")])
+    scope = FeedScope(
+        reader=_ANYONE,
+        station=StationAgents(workspace_id=station, user_id=_OWNER),
+    )
+
+    feed = await integ_store.read_feed(scope=scope)
+    facets = await integ_store.read_feed_facets(since=None, until=None, scope=scope)
+    counts = await _counts(
+        integ_store,
+        _T0,
+        _T0 + timedelta(minutes=1),
+        buckets=2,
+        scope=scope,
+    )
+
+    assert {event.actor for event in feed} == {"lead-2", "worker-1"}
+    assert {actor.actor for actor in facets.actors} == {"lead-2", "worker-1"}
+    assert sum(counts) == 2
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_station_walks_four_produced_by_edges_and_survives_a_cycle(
+    integ_store: Store,
+) -> None:
+    conversation = uuid4()
+    station = await _station(integ_store, _OWNER, conversation)
+    chain = [
+        await _session(
+            integ_store,
+            f"depth-{depth}",
+            cli_session_id=f"chat:{conversation}" if depth == 0 else None,
+        )
+        for depth in range(6)
+    ]
+    await _produced_by(
+        integ_store,
+        *zip(chain[1:], chain[:-1], strict=True),
+        (chain[0], chain[5]),
+    )
+    for session in chain:
+        await _records(integ_store, session, [("ToolCall", _T0, "{}")])
+
+    feed = await integ_store.read_feed(
+        scope=FeedScope(
+            reader=_ANYONE,
+            station=StationAgents(workspace_id=station, user_id=_OWNER),
+        ),
+    )
+
+    assert {event.actor for event in feed} == {f"depth-{n}" for n in range(1, 5)}
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_station_reads_at_most_500_agents(integ_store: Store) -> None:
+    conversation = uuid4()
+    station = await _station(integ_store, _OWNER, conversation)
+    chat = await _session(integ_store, "chat-1", cli_session_id=f"chat:{conversation}")
+    await _children(integ_store, chat, count=501)
+
+    facets = await integ_store.read_feed_facets(
+        since=None,
+        until=None,
+        scope=FeedScope(
+            reader=_ANYONE,
+            station=StationAgents(workspace_id=station, user_id=_OWNER),
+        ),
+    )
+
+    assert len(facets.actors) == 500
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_station_without_a_chat_or_of_another_owner_matches_nothing(
+    integ_store: Store,
+) -> None:
+    conversation = uuid4()
+    chatless = await _station(integ_store, _OWNER, None)
+    owned = await _station(integ_store, _OWNER, conversation, name="owned")
+    chat = await _session(integ_store, "chat-1", cli_session_id=f"chat:{conversation}")
+    lead = await _session(integ_store, "lead-2")
+    await _produced_by(integ_store, (lead, chat))
+    await _records(integ_store, lead, [("ToolCall", _T0, "{}")])
+
+    async def kept(workspace_id: UUID, user_id: UUID) -> int:
+        scope = FeedScope(
+            reader=_ANYONE,
+            station=StationAgents(workspace_id=workspace_id, user_id=user_id),
+        )
+        return len(await integ_store.read_feed(scope=scope))
+
+    assert await kept(chatless, _OWNER) == 0
+    assert await kept(owned, _OTHER_OWNER) == 0
+    assert await kept(uuid4(), _OWNER) == 0
+    assert await kept(owned, _OWNER) == 1
 
 
 # ---- The facets -------------------------------------------------------------
@@ -253,7 +509,7 @@ async def test_facets_count_a_window_by_session_room_and_kind(
     facets = await integ_store.read_feed_facets(
         since=_T0,
         until=_T0 + hour,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
 
     assert facets.actors == [
@@ -266,6 +522,8 @@ async def test_facets_count_a_window_by_session_room_and_kind(
             conversation=1,
             last=_T0 + 12 * minute,
             ended=ended,
+            account="tester@example.com",
+            audience="open",
         ),
         FeedActorFacet(
             actor="talker",
@@ -276,6 +534,8 @@ async def test_facets_count_a_window_by_session_room_and_kind(
             conversation=4,
             last=_T0 + 9 * minute,
             ended=None,
+            account="tester@example.com",
+            audience="open",
         ),
     ]
     assert facets.rooms == [
@@ -293,7 +553,7 @@ async def test_facets_count_a_window_by_session_room_and_kind(
     everything = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
     assert [(a.actor, a.count) for a in everything.actors] == [
         ("worker", 3),
@@ -303,7 +563,7 @@ async def test_facets_count_a_window_by_session_room_and_kind(
     said = await integ_store.read_feed_facets(
         since=_T0,
         until=_T0 + hour,
-        scope=FeedScope(rooms=("ops",), kinds=("AssistantMessage",)),
+        scope=FeedScope(reader=_ANYONE, rooms=("ops",), kinds=("AssistantMessage",)),
     )
     assert [(a.actor, a.count, a.conversation) for a in said.actors] == [
         ("worker", 1, 1),
@@ -343,13 +603,55 @@ async def test_facets_hold_one_snapshot_while_a_session_is_purged(
     facets = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
 
     assert [(actor.actor, actor.count) for actor in facets.actors] == [("gone", 1)]
 
 
 # ---- The conversation feed ----------------------------------------------------
+
+
+@pytest.mark.db_postgres
+@pytest.mark.asyncio(loop_scope="session")
+async def test_backward_feed_cursor_pages_same_instant_ties_without_overlap(
+    integ_store: Store,
+) -> None:
+    """Backward pages preserve the whole order key and the caller's scope."""
+    picked = await _session(integ_store, "picked", rooms=("lab",))
+    outside = await _session(integ_store, "outside", rooms=("ops",))
+    await _records(
+        integ_store,
+        picked,
+        [("AssistantMessage", _T0 - timedelta(seconds=1), _SAID)]
+        + [("ContextState", _T0, "{}") for _ in range(301)],
+    )
+    await _records(integ_store, outside, [("AssistantMessage", _T0, _SAID)])
+    scope = FeedScope(reader=_ANYONE, rooms=("lab",))
+    newest = await integ_store.read_feed(scope=scope, tail=True, limit=300)
+    assert [event.seq for event in newest] == list(range(2, 302))
+    first = newest[0]
+    older = await integ_store.read_feed(
+        before=(first.created, first.session_id, first.part, first.seq),
+        scope=scope,
+        tail=True,
+        limit=300,
+    )
+    assert [(event.session_id, event.seq) for event in older] == [
+        (picked, 0),
+        (picked, 1),
+    ]
+    assert {(event.session_id, event.part, event.seq) for event in older + newest} == {
+        (picked, 0, seq) for seq in range(302)
+    }
+    assert (
+        await integ_store.read_feed(
+            before=(older[0].created, picked, 0, 0),
+            scope=scope,
+            tail=True,
+        )
+        == []
+    )
 
 
 @pytest.mark.db_pglite
@@ -379,6 +681,7 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         ("AgentToAgentMessage", _PEER % ("FINAL_ANSWER", "Implemented.")),
         ("UserMessage", _CODEX_CONTEXT),
         ("UserMessage", _TASK_NOTICE),
+        ("AgentToAgentMessage", _ATTACHED_TAGGED),
     )
     await _records(
         integ_store,
@@ -386,7 +689,7 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         [(kind, _T0 + i * minute, payload) for i, (kind, payload) in enumerate(turns)],
     )
     await _records(integ_store, other, [("ContextState", _T0, _QUEUED % "human")])
-    talker = FeedScope(actors=("talker",))
+    talker = FeedScope(reader=_ANYONE, actors=("talker",))
 
     said = await integ_store.read_feed(scope=talker, conversation=True)
     newest = await integ_store.read_feed(
@@ -403,8 +706,9 @@ async def test_the_conversation_feed_keeps_what_the_facets_count(
         (4, "AgentToAgentMessage"),
         (5, "ContextState"),
         (9, "AgentToAgentMessage"),
+        (12, "AgentToAgentMessage"),
     ]
-    assert [event.seq for event in newest] == [5, 9]
+    assert [event.seq for event in newest] == [9, 12]
     assert [actor.conversation for actor in facets.actors] == [len(said)]
     assert len(await integ_store.read_feed(scope=talker)) == len(turns)
 
@@ -435,7 +739,7 @@ async def test_the_facets_count_no_record_with_nothing_to_read(
     facets = await integ_store.read_feed_facets(
         since=None,
         until=None,
-        scope=FeedScope(actors=("thinker",)),
+        scope=FeedScope(reader=_ANYONE, actors=("thinker",)),
     )
 
     assert [(actor.count, actor.conversation) for actor in facets.actors] == [(2, 1)]
@@ -469,11 +773,11 @@ async def test_every_feed_read_shows_only_each_part_s_live_prefix(
         )
 
     reads = (
-        await integ_store.read_feed(),
-        await integ_store.read_feed(tail=True),
-        await integ_store.read_feed(conversation=True),
+        await integ_store.read_feed(scope=_ALL_SESSIONS),
+        await integ_store.read_feed(scope=_ALL_SESSIONS, tail=True),
+        await integ_store.read_feed(scope=_ALL_SESSIONS, conversation=True),
         await integ_store.read_feed(
-            scope=FeedScope(kinds=("AssistantMessage",)),
+            scope=FeedScope(reader=_ANYONE, kinds=("AssistantMessage",)),
             tail=True,
         ),
     )
@@ -511,7 +815,7 @@ async def test_a_histogram_counts_records_in_each_bucket(integ_store: Store) -> 
         until=_T0 + 3 * day - timedelta(seconds=1),
         earliest=_T0,
         buckets=3,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
     assert (days.start, days.end, days.bucket_seconds) == (_T0, _T0 + 3 * day, 86_400)
     assert days.counts == [
@@ -525,9 +829,13 @@ async def test_a_histogram_counts_records_in_each_bucket(integ_store: Store) -> 
     morning = (_T0 + 10 * hour, _T0 + 12 * hour - timedelta(seconds=1))
     assert await _counts(integ_store, *morning, buckets=4) == [1, 1, 0, 1]
     for scope, by_day, by_half_hour in (
-        (FeedScope(clis=("codex",)), [1, 0, 0], [0, 0, 0, 1]),
-        (FeedScope(kinds=("ToolCall",)), [2, 1, 1], [1, 0, 0, 1]),
-        (FeedScope(actors=("first",), kinds=("ToolCall",)), [1, 1, 1], [1, 0, 0, 0]),
+        (FeedScope(reader=_ANYONE, clis=("codex",)), [1, 0, 0], [0, 0, 0, 1]),
+        (FeedScope(reader=_ANYONE, kinds=("ToolCall",)), [2, 1, 1], [1, 0, 0, 1]),
+        (
+            FeedScope(reader=_ANYONE, actors=("first",), kinds=("ToolCall",)),
+            [1, 1, 1],
+            [1, 0, 0, 0],
+        ),
     ):
         assert await _counts(integ_store, *whole, buckets=3, scope=scope) == by_day, (
             scope
@@ -558,7 +866,7 @@ async def test_a_histogram_without_since_starts_at_the_first_record(
         until=_T0 + 7 * hour,
         earliest=_T0,
         buckets=2,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
 
     assert histogram.counts == [
@@ -593,7 +901,7 @@ async def test_a_histogram_starts_no_earlier_than_earliest(integ_store: Store) -
             until=_T0 + hour,
             earliest=_T0 + 20 * minute,
             buckets=2,
-            scope=WHOLE_FEED,
+            scope=_ALL_SESSIONS,
         )
         assert histogram.counts == [
             FeedBucket(start=first, count=1),
@@ -609,9 +917,78 @@ async def test_an_empty_feed_is_one_empty_bucket(integ_store: Store) -> None:
         until=_T0,
         earliest=_T0 - timedelta(days=7),
         buckets=120,
-        scope=WHOLE_FEED,
+        scope=_ALL_SESSIONS,
     )
     assert histogram.counts == [FeedBucket(start=_T0, count=0)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize("peer", [False, True])
+async def test_typed_attachment_only_messages_are_conversation(
+    integ_store: Store,
+    peer: bool,
+) -> None:
+    session_id = await _session(integ_store, "attached")
+    attachments = (Attachment(mime_descriptor="image/png", data=b"image"),)
+    record = (
+        AgentToAgentMessage(
+            content="Message Type: MESSAGE\nTask name: /root\nSender: /peer\nPayload:\n",
+            attachments=attachments,
+        )
+        if peer
+        else UserMessage(attachments=attachments)
+    )
+    row = SessionRecordRow.of(session_id=session_id, part=0, idx=0, record=record)
+    await _records(
+        integ_store,
+        session_id,
+        [(row.kind, _T0, json.dumps(mutable(row.payload)))],
+    )
+    facets = await integ_store.read_feed_facets(
+        since=None,
+        until=None,
+        scope=_ALL_SESSIONS,
+    )
+    assert [(actor.count, actor.conversation) for actor in facets.actors] == [(1, 1)]
+    events = await integ_store.read_feed(scope=_ALL_SESSIONS, conversation=True)
+    assert [(event.session_id, event.kind) for event in events] == [
+        (session_id, row.kind),
+    ]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    "scope",
+    [
+        FeedScope(reader=_ANYONE, actors=("picked",)),
+        FeedScope(reader=_ANYONE, clis=("codex",)),
+        FeedScope(reader=_ANYONE, kinds=("UserMessage",)),
+        FeedScope(reader=_ANYONE, rooms=("picked-room",)),
+    ],
+)
+async def test_histogram_without_since_uses_scoped_first_record(
+    integ_store: Store,
+    scope: FeedScope,
+) -> None:
+    first = await _session(integ_store, "outside")
+    picked = await _session(integ_store, "picked", cli="codex", rooms=("picked-room",))
+    await _records(integ_store, first, [("ToolCall", _T0, "{}")])
+    await _records(
+        integ_store,
+        picked,
+        [("UserMessage", _T0 + timedelta(hours=5.5), _HUMAN)],
+    )
+    histogram = await integ_store.read_feed_histogram(
+        since=None,
+        until=_T0 + timedelta(hours=7),
+        earliest=_T0,
+        buckets=2,
+        scope=scope,
+    )
+    assert histogram.start == _T0 + timedelta(hours=4)
+    assert [bucket.count for bucket in histogram.counts] == [1, 0]
 
 
 # ---- Helpers ----------------------------------------------------------------
@@ -624,23 +1001,94 @@ async def _session(
     cli: str = "claude",
     rooms: Sequence[str] = (),
     ended: datetime | None = None,
+    cli_session_id: str | None = None,
 ) -> UUID:
     """Insert an AgentSession row as capture leaves it."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO inquiries (id, kind, seq, status, account, title, owner, "
-            "agentsession_cli, agentsession_rooms, agentsession_ended) "
+            "agentsession_cli, agentsession_rooms, agentsession_ended, "
+            "agentsession_cli_session_id, agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), $2, "
-            "'tester@example.com', $3, $3, $4, $5, $6)",
+            "'tester@example.com', $3, $3, $4, $5, $6, $7, 'open')",
             session_id,
             "complete" if ended else "active",
             owner,
             cli,
             list(rooms) or None,
             ended,
+            cli_session_id,
         )
     return session_id
+
+
+async def _station(
+    store: Store,
+    user_id: UUID,
+    conversation_id: UUID | None,
+    *,
+    name: str = "unnamed-workstream#1",
+) -> UUID:
+    """Insert a station of ``user_id`` holding ``conversation_id``, and its owner."""
+    workspace_id = uuid4()
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status) "
+            "VALUES ($1, $2, 'Test', 'writer', 'active') ON CONFLICT DO NOTHING",
+            user_id,
+            f"{user_id}@example.com",
+        )
+        await conn.execute(
+            "INSERT INTO visual_workspaces (id, user_id, state, station) "
+            "VALUES ($1, $2, '{}'::jsonb, $3)",
+            workspace_id,
+            user_id,
+            {"name": name}
+            | (
+                {}
+                if conversation_id is None
+                else {"conversation_id": str(conversation_id)}
+            ),
+        )
+    return workspace_id
+
+
+async def _produced_by(store: Store, *pairs: tuple[UUID, UUID]) -> None:
+    """Link each ``(child, parent)`` pair of sessions with a ``produced_by`` edge."""
+    async with store.engine.acquire() as conn:
+        for child, parent in pairs:
+            await conn.execute(
+                "INSERT INTO edges (from_id, from_kind, to_id, to_kind, edge_kind) "
+                "VALUES ($1, 'AgentSession', $2, 'AgentSession', 'produced_by')",
+                child,
+                parent,
+            )
+
+
+async def _children(store: Store, parent: UUID, *, count: int) -> None:
+    """Add ``count`` sessions produced by ``parent``, each holding one record."""
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "WITH made AS (INSERT INTO inquiries (id, kind, seq, status, account, "
+            "title, owner, agentsession_cli, agentsession_audience) SELECT "
+            "gen_random_uuid(), 'AgentSession', nextval('seq_agentsession'), 'active', "
+            "'tester@example.com', 'w' || n, 'w' || n, 'claude', 'open' "
+            "FROM generate_series(1, $2::int) AS n "
+            "RETURNING id), linked AS (INSERT INTO edges (from_id, from_kind, to_id, "
+            "to_kind, edge_kind) SELECT id, 'AgentSession', $1, 'AgentSession', "
+            "'produced_by' FROM made) INSERT INTO session_records (session_id, part, "
+            "idx, kind, created, payload) SELECT id, 0, 0, 'ToolCall', $3, '{}'::json "
+            "FROM made",
+            parent,
+            count,
+            _T0,
+        )
+        await conn.execute(
+            "INSERT INTO session_manifests (session_id, part, name, metadata, "
+            "ir_id, format, records) SELECT session_id, 0, 's.jsonl', '{}'::json, "
+            "gen_random_uuid(), 'claude', 1 FROM session_records",
+        )
 
 
 async def _records(
@@ -684,7 +1132,7 @@ async def _counts(
     until: datetime,
     *,
     buckets: int,
-    scope: FeedScope = WHOLE_FEED,
+    scope: FeedScope = _ALL_SESSIONS,
 ) -> list[int]:
     """Read a histogram that may start at ``_T0``, as its bucket counts."""
     histogram = await store.read_feed_histogram(
@@ -698,6 +1146,6 @@ async def _counts(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

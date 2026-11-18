@@ -69,6 +69,7 @@ class TestStartSession:
                     account="tester@example.com",
                 ),
                 requested_actor="alice",
+                audience="open",
             )
 
     @pytest.mark.asyncio
@@ -116,10 +117,35 @@ class TestStartSession:
                     account="tester@example.com",
                 ),
                 requested_actor="alice",
+                audience="open",
             )
         assert sid == existing_id
         assert owner == "alice"
         assert next_seq == 0
+
+
+@pytest.mark.asyncio
+async def test_session_audiences_keep_nulls_and_omit_unknown_sessions() -> None:
+    """A lookup returns stored audiences keyed by session, including NULL."""
+    first, second, unknown = new_uuid(), new_uuid(), new_uuid()
+    conn = make_conn()
+    conn.fetch = AsyncMock(
+        return_value=[
+            {"id": first, "agentsession_audience": "open"},
+            {"id": second, "agentsession_audience": None},
+        ],
+    )
+    store, _ = make_store(conn)
+
+    assert await store.read_session_audiences([first, second, unknown]) == {
+        first: "open",
+        second: None,
+    }
+    conn.fetch.assert_awaited_once_with(
+        "SELECT id, agentsession_audience FROM inquiries "
+        "WHERE kind = 'AgentSession' AND id = ANY($1::uuid[])",
+        [first, second, unknown],
+    )
 
 
 class TestEndSession:
@@ -365,7 +391,10 @@ class TestEndSession:
         conn = make_conn()
         set_field_row(conn, {**self._live_row(), "kind": "Issue"})
         store, _engine = make_store(conn)
-        with pytest.raises(ConflictError, match="only an AgentSession can be ended"):
+        with pytest.raises(
+            ConflictError,
+            match=r"is a Issue; only an AgentSession can be ended$",
+        ):
             await store.end_session(
                 new_uuid(),
                 ended=datetime(2026, 1, 1, tzinfo=UTC),
@@ -454,23 +483,81 @@ class TestEndSessionOnADatabase:
             _ = await db_store.end_session(session_id, ended=first, actor="closer")
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_a_live_session_in_no_room_resolves_with_none(db_store: Store) -> None:
+    session_id = await _open(db_store)
+    async with db_store.engine.acquire() as conn:
+        await conn.execute(
+            "UPDATE inquiries SET agentsession_rooms = NULL WHERE id = $1",
+            session_id,
+        )
+
+    assert await db_store.resolve_live_sessions("agent") == [(session_id, ())]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_an_attach_reopens_the_session_by_id_and_keeps_its_cli_id(
+    db_store: Store,
+) -> None:
+    """Another key's run re-opens an ended chat by its id; its ``chat:`` id stays."""
+    opener = await _api_key(db_store, email="opener@example.com")
+    runner = await _api_key(db_store, email="runner@example.com")
+    chat = f"chat:{uuid4()}"
+    session_id, owner, _ = await db_store.start_session(
+        SubmitAgentSession(title="s", cli="sagent", cli_session_id=chat, account="t@e"),
+        requested_actor="chat-1",
+        audience="open",
+        api_key_id=opener,
+    )
+    _ = await db_store.end_session(session_id, ended=datetime.now(UTC), actor="chat-1")
+
+    attached = await db_store.start_session(
+        SubmitAgentSession(title="ignored", cli="claude", account="t@e"),
+        requested_actor="claude",
+        audience="open",
+        api_key_id=runner,
+        attach=session_id,
+    )
+
+    row = await db_store.get_inquiry(session_id)
+    assert isinstance(row, AgentSession)
+    assert attached == (session_id, owner, 0)
+    assert (row.status, row.ended, row.cli_session_id, row.opened_by_api_key_id) == (
+        "active",
+        None,
+        chat,
+        opener,
+    )
+    with pytest.raises(NotFoundError):
+        _ = await db_store.start_session(
+            SubmitAgentSession(title="s", cli="claude", account="t@e"),
+            requested_actor="claude",
+            audience="open",
+            attach=uuid4(),
+        )
+
+
 async def _open(store: Store) -> UUID:
     """Open a live session."""
     session_id, _, _ = await store.start_session(
         SubmitAgentSession(title="s", cli="claude", account="t@e"),
         requested_actor="agent",
+        audience="open",
     )
     return session_id
 
 
-async def _api_key(store: Store) -> UUID:
-    """Return a stored API key that a close can be attributed to."""
+async def _api_key(store: Store, *, email: str = "closer@example.com") -> UUID:
+    """Return a stored API key, of a new user ``email``, that a write is attributed to."""
     user, key = uuid4(), uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
             "INSERT INTO users (id, email, name, role, status) "
-            "VALUES ($1, 'closer@example.com', 'Closer', 'writer', 'active')",
+            "VALUES ($1, $2, 'Closer', 'writer', 'active')",
             user,
+            email,
         )
         await conn.execute(
             "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role) "
@@ -497,6 +584,6 @@ async def _close_audit(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

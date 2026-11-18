@@ -53,6 +53,24 @@ test("a hub's detail renders every child, its Markdown and its activity", async 
   await expect(page.locator(".timeline")).toContainText(/librarian \d+ upstream changes/);
 });
 
+test("a link in a description to this server's route moves the tab in place, and Back returns", async ({ page, request, baseURL }) => {
+  const [target] = await create(request, [{ kind: "Issue", title: "Link target" }]);
+  const { self: targetSelf } = await (await request.get(`/api/web/get/${target}`)).json();
+  const [source] = await create(request, [
+    { kind: "Issue", title: "Link source", description: `[go](${baseURL}/app/#/ref/Issue/${targetSelf.seq})` },
+  ]);
+  const { self } = await (await request.get(`/api/web/get/${source}`)).json();
+  await page.goto(`/app/#/ref/Issue/${self.seq}`);
+  await expect(heading(page)).toHaveText("Link source");
+  let popup = false;
+  page.context().on("page", () => (popup = true));
+  await page.locator('[data-field="description"]').getByRole("link", { name: "go" }).click();
+  await expect(heading(page)).toHaveText("Link target");
+  await page.goBack();
+  await expect(heading(page)).toHaveText("Link source");
+  expect(popup).toBe(false);
+});
+
 test("a lookup link opens by id, with evidence confidence beside the author's", async ({ page }) => {
   await page.goto(`/app/#/lookup/${ids[CHILDREN + 2]}`);
   await expect(heading(page)).toHaveText("Detail belief");
@@ -169,6 +187,31 @@ test("narrow, the rail stacks under the title and text, above other relations", 
   expect(description!.y + description!.height).toBeLessThanOrEqual(rail!.y);
   // Wide, the rail stands beside the text, its Parents level with the title; narrow, it stacks under the text.
   expect(rail!.y + rail!.height).toBeLessThanOrEqual(other!.y);
+});
+
+test("an HTML Artifact opens filling its record's pane, and the record follows below it", async ({ page, request }) => {
+  const [issue] = await create(request, [{ kind: "Issue", title: "An HTML report's issue" }]);
+  const published = await request.post("/api/artifacts/content", {
+    headers: { "Idempotency-Key": crypto.randomUUID() },
+    data: { issue_id: issue, title: "An HTML report", summary: "A report.", format: "html", html: "<p>report</p>" },
+  });
+  expect(published.ok(), await published.text()).toBe(true);
+  const { artifact_id: artifact } = (await published.json()) as { artifact_id: string };
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto(`/app/#/lookup/${artifact}`);
+  const frame = page.locator(".artifact-html-frame");
+  await expect(frame).toBeVisible();
+  await expect(heading(page)).toHaveText("An HTML report (revision 1)");
+  const sizes = await frame.evaluate((element) => {
+    const pane = element.closest(".d-scroll")!.getBoundingClientRect();
+    const box = element.getBoundingClientRect();
+    return { pane: [pane.left, pane.top, pane.width, pane.height], frame: [box.left, box.top, box.width, box.height] };
+  });
+  // The frame is the pane, edge to edge; the record's title waits below it.
+  sizes.frame.forEach((value, at) => expect(value).toBeCloseTo(sizes.pane[at]!, 0));
+  const title = (await heading(page).boundingBox())!;
+  expect(title.y).toBeGreaterThanOrEqual(sizes.frame[1]! + sizes.frame[3]!);
+  await expect(page.getByRole("link", { name: "Open full page" })).toHaveCount(0);
 });
 
 test("a description that is a job's JSON result shows as a JSON view, its metrics a table; code takes its colours", async ({

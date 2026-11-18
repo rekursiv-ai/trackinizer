@@ -13,10 +13,21 @@ claude or codex through the ordinary :mod:`convert` path.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, TextIO
-from uuid import UUID, uuid5
+from uuid import NAMESPACE_DNS, UUID, uuid5
 
 import json
 
+from treekle import (
+    MutablePlainTree,
+    ReadError,
+    from_plain,
+    immutable,
+    json_loads,
+    mutable,
+)
+
+from trackinizer.lib.agent.sessions.provider_fields import read_or_default
+from trackinizer.lib.agent.sessions.unmodeled import extract_unmodeled_fields
 from trackinizer.lib.agent.types.sessions import (
     AssistantMessage,
     ContextClear,
@@ -26,18 +37,6 @@ from trackinizer.lib.agent.types.sessions import (
     TurnContext,
     UncategorizedRecord,
     UserMessage,
-)
-from trackinizer.lib.custom_json import (
-    DictCodec,
-    JSONValue,
-    ListCodec,
-    MutableJSONValue,
-    StrCodec,
-    decode_or_none,
-    json_freeze,
-    json_unfreeze,
-    loads,
-    residual,
 )
 
 
@@ -66,12 +65,21 @@ def normalize(stream: TextIO) -> Iterator[SessionRecord]:
     yield from _read(stream.read())
 
 
-def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
+def denormalize(
+    records: Iterable[SessionRecord],
+    stream: TextIO,
+    *,
+    seed: UUID = NAMESPACE_DNS,
+) -> None:
     """Denormalize records as a Gemini session document.
 
     Args:
       records: Provider-neutral records, in stream order.
       stream: Destination text stream.
+      seed: Namespace for the ``sessionId`` a FOREIGN stream is missing. The
+        format is sniffed by that key, so a document without one reads as no
+        format at all. The id is derived from the messages written, so one
+        stream converts to one id and two different streams to two.
 
     """
     ordered = [
@@ -96,9 +104,10 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
         (record for record in ordered if isinstance(record, TurnContext)),
         TurnContext(),
     )
-    stored = dict(json_unfreeze(declared.extra))
+    stored = mutable(declared.extra)
     compact = bool(stored.pop("$compact", False))
-    document: dict[str, MutableJSONValue] = {}
+    messages = _write_messages(body)
+    document: dict[str, MutablePlainTree] = {}
     # Only keys a gemini document itself carries. Another adapter's metadata
     # names its own conventions -- claude states ``ascii_escaped`` and an
     # escape bitmap -- and writing those through put keys on the wire gemini
@@ -107,14 +116,12 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
     if "sessionId" in stored:
         document.update(stored)
     else:
-        # A stream from another provider declares no gemini id, and identity is
-        # the caller's rather than the session's -- but the format is SNIFFED
-        # by this key's presence, so a document without one reads as no format
-        # at all. Derived from the records so two conversions agree.
-        document["sessionId"] = str(uuid5(_GEMINI_NAMESPACE, str(len(body))))
-    document["messages"] = [
-        json_unfreeze(json_freeze(message)) for message in _write_messages(body)
-    ]
+        # Derived from WHAT is written, so two conversions of one stream agree
+        # and two streams that merely have the same length do not collide.
+        document["sessionId"] = str(
+            uuid5(seed, json.dumps(messages, ensure_ascii=False, sort_keys=True)),
+        )
+    document["messages"] = messages
     json.dump(
         document,
         stream,
@@ -127,27 +134,33 @@ def denormalize(records: Iterable[SessionRecord], stream: TextIO) -> None:
 # records rather than one nested blob.
 def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
     """Normalize one gemini message into its acts."""
-    kind = StrCodec.coerce(message.get("type"))
+    kind = read_or_default(message.get("type"), str, default="")
     if kind == "user":
         return [
             UserMessage(
-                content=StrCodec.coerce(message.get("content")),
-                timestamp=decode_or_none(str, message.get("$timestamp")),
-                extra=json_freeze(residual(message, ("type", "content", "$timestamp"))),
+                content=from_plain(message.get("content"), str, default=""),
+                timestamp=read_or_default(message.get("$timestamp"), str, default=None),
+                extra=immutable(
+                    extract_unmodeled_fields(
+                        message,
+                        ("type", "content", "$timestamp"),
+                    ),
+                ),
             ),
         ]
     if kind != "gemini":
         return [
             UncategorizedRecord(
                 kind=kind,
-                payload=json_freeze(DictCodec.coerce(message)),
+                payload=immutable(message),
             ),
         ]
-    calls = ListCodec.coerce(message.get("toolCalls"))
-    stamp = decode_or_none(str, message.get("$timestamp"))
+    calls = from_plain(message.get("toolCalls"), list[object], default=[])
+    stamp = read_or_default(message.get("$timestamp"), str, default=None)
     kept = dict(
-        json_unfreeze(
-            residual(message, ("type", "content", "toolCalls", "$timestamp")),
+        extract_unmodeled_fields(
+            message,
+            ("type", "content", "toolCalls", "$timestamp"),
         ),
     )
     if "toolCalls" in message and not calls:
@@ -158,30 +171,38 @@ def _read_message(message: Mapping[str, object]) -> list[SessionRecord]:
         kept["$tool_calls_present"] = True
     return [
         AssistantMessage(
-            content=StrCodec.coerce(message.get("content")),
+            content=from_plain(message.get("content"), str, default=""),
             timestamp=stamp,
-            extra=json_freeze(kept),
+            extra=immutable(kept),
         ),
         *(
             ToolCall(
-                call_id=StrCodec.coerce(DictCodec.coerce(call).get("id")),
-                name=StrCodec.coerce(DictCodec.coerce(call).get("name")),
+                call_id=from_plain(call.get("id"), str, default=""),
+                name=from_plain(call.get("name"), str, default=""),
                 timestamp=stamp,
-                arguments=json_freeze(
-                    DictCodec.coerce(DictCodec.coerce(call).get("args")),
+                arguments=immutable(
+                    from_plain(call.get("args"), dict[str, object], default={}),
                 ),
-                extra=json_freeze(
-                    residual(DictCodec.coerce(call), ("id", "name", "args")),
+                extra=immutable(
+                    extract_unmodeled_fields(call, ("id", "name", "args")),
                 ),
             )
-            for call in calls
+            for call in (
+                from_plain(value, dict[str, object], default={}) for value in calls
+            )
         ),
     ]
 
 
-def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValue]]:
+# Every value THAWED: a record's residual is frozen to arbitrary depth, and ``json``
+# cannot encode the ``mappingproxy`` a one-level copy leaves inside.
+def _write_messages(
+    records: Iterable[SessionRecord],
+) -> list[MutablePlainTree]:
     """Rebuild the document's message list from the stream's records."""
-    out: list[dict[str, JSONValue]] = []
+    out: list[MutablePlainTree] = []
+    # The last message written, when it is a ``gemini`` turn a call can join.
+    open_turn: dict[str, MutablePlainTree] | None = None
     for record in records:
         match record:
             case UserMessage():
@@ -195,25 +216,29 @@ def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValu
                         # document has none, and adding one would rewrite bytes
                         # gemini itself wrote.
                         **(
-                            {"$timestamp": record.timestamp} if record.timestamp else {}
+                            {"$timestamp": stamp}
+                            if (stamp := record.timestamp or "")
+                            else {}
                         ),
-                        **json_unfreeze(record.extra),
+                        **mutable(record.extra),
                     },
                 )
+                open_turn = None
             case AssistantMessage():
-                extra = dict(json_unfreeze(record.extra))
+                extra = mutable(record.extra)
                 empty_calls = extra.pop("$tool_calls_present", None) is not None
-                out.append(
-                    {
-                        "type": "gemini",
-                        "content": record.content or "",
-                        **(
-                            {"$timestamp": record.timestamp} if record.timestamp else {}
-                        ),
-                        **extra,
-                        **({"toolCalls": []} if empty_calls else {}),
-                    },
-                )
+                open_turn = {
+                    "type": "gemini",
+                    "content": record.content or "",
+                    **(
+                        {"$timestamp": stamp}
+                        if (stamp := record.timestamp or "")
+                        else {}
+                    ),
+                    **extra,
+                    **({"toolCalls": []} if empty_calls else {}),
+                }
+                out.append(open_turn)
             case ToolCall():
                 # A call belongs to the turn that made it: gemini nests them,
                 # so the sibling record folds back into the prior message.
@@ -223,28 +248,27 @@ def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValu
                 # own, and a fused session can open mid-conversation -- and
                 # folding it there claimed the person made the call. Asserting
                 # a turn was already open instead aborted the conversion.
-                open_turn = out and StrCodec.coerce(out[-1].get("type")) == "gemini"
-                if not open_turn:
-                    opened: dict[str, JSONValue] = {"type": "gemini", "content": ""}
-                    if record.timestamp:
-                        opened["$timestamp"] = record.timestamp
-                    out.append(opened)
-                call: dict[str, JSONValue] = {
-                    "id": record.call_id,
-                    "name": record.name,
-                    "args": json_unfreeze(record.arguments),
-                    **json_unfreeze(record.extra),
-                }
-                appended: list[JSONValue] = [
-                    *(
-                        json_freeze(DictCodec.coerce(existing))
-                        for existing in ListCodec.coerce(out[-1].get("toolCalls"))
-                    ),
-                    json_freeze(call),
-                ]
-                out[-1]["toolCalls"] = appended
+                if open_turn is None:
+                    open_turn = {"type": "gemini", "content": ""}
+                    if stamp := record.timestamp or "":
+                        open_turn["$timestamp"] = stamp
+                    out.append(open_turn)
+                calls = open_turn.setdefault("toolCalls", [])
+                assert isinstance(calls, list)
+                calls.append(
+                    {
+                        "id": record.call_id,
+                        "name": record.name,
+                        "args": mutable(record.arguments),
+                        **mutable(record.extra),
+                    },
+                )
             case UncategorizedRecord():
-                out.append(dict(json_unfreeze(record.payload)))
+                payload = mutable(record.payload)
+                # A message the reader could not type, kept as it was: possibly
+                # no object at all, so it rides under a key of its own.
+                out.append(payload.get("$message", payload))
+                open_turn = None
             case _:
                 # Every other IR record kind came from another provider; a
                 # gemini document has no shape for it, so a conversion into
@@ -253,39 +277,35 @@ def _write_messages(records: Iterable[SessionRecord]) -> list[dict[str, JSONValu
     return out
 
 
-_GEMINI_NAMESPACE = UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
-"""Namespace for deriving the ``sessionId`` a foreign stream declares none of.
-
-The DNS namespace constant, used as an arbitrary fixed seed: what matters is
-that the derivation is stable across processes, not which namespace it names.
-"""
-
-
 def _read(text: str) -> list[SessionRecord]:
     """Return the records one whole document holds."""
     # Settings before the acts they govern, then the context the window opens
     # from. Gemini declares neither a prompt nor an escaping convention, so
     # both state only what the format itself fixes.
     out: list[SessionRecord] = [
-        TurnContext(encoding=json_freeze({"newline_terminated": True})),
-        ContextClear(extra=json_freeze({"$opens": True})),
+        TurnContext(encoding=immutable({"newline_terminated": True})),
+        ContextClear(extra=immutable({"$opens": True})),
     ]
     if not text.strip():
         return out
     try:
-        decoded = loads(text)
+        decoded = json_loads(text)
     except json.JSONDecodeError:
         return [*out, IncompleteRecord(text=text)]
     # A document that is not an object carries no session: an array or a bare
     # scalar is kept verbatim rather than read as an empty one, which would
     # silently discard whatever the file did hold.
-    document: dict[str, object] = DictCodec.coerce(decoded)
-    if not document:
+    if not isinstance(decoded, dict) or not decoded:
         return [*out, IncompleteRecord(text=text)]
-    messages = ListCodec.coerce(document.get("messages"))
+    document = from_plain(decoded, dict[str, object])
+    try:
+        messages = from_plain(document.get("messages"), list[object], default=[])
+    except ReadError:
+        # No message list, no messages to keep one by one: the document is kept whole.
+        return [*out, IncompleteRecord(text=text)]
     # Everything outside ``messages`` is the file's own declaration, which is
     # settings: it rides the opening context rather than a record of its own.
-    extra = dict(json_unfreeze(residual(document, ("messages",))))
+    extra = dict(extract_unmodeled_fields(document, ("messages",)))
     # Whether the file separates compactly, decided by re-encoding the parsed
     # document that way and seeing whether it reproduces the input. Both
     # spellings occur, and guessing one rewrites the other's bytes.
@@ -293,9 +313,20 @@ def _read(text: str) -> list[SessionRecord]:
         json.dumps(decoded, ensure_ascii=False, separators=(",", ":")) == text
     )
     out[0] = TurnContext(
-        encoding=json_freeze({"newline_terminated": True}),
-        extra=json_freeze(extra),
+        encoding=immutable({"newline_terminated": True}),
+        extra=immutable(extra),
     )
     for message in messages:
-        out.extend(_read_message(DictCodec.coerce(message)))
+        # One message is the unit a malformed field can spoil: it raised out of
+        # ``normalize`` and lost the document. Kept whole instead, it is
+        # written back exactly as it was read.
+        try:
+            out.extend(_read_message(from_plain(message, dict[str, object])))
+        except ReadError:
+            out.append(
+                UncategorizedRecord(
+                    kind="",
+                    payload=immutable({"$message": message}),
+                ),
+            )
     return out

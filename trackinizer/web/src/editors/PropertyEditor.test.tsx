@@ -4,6 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { Session } from "../app/session";
 import { PROFILE, renderDetail, row } from "../detail/testing";
+import { DEFAULT_PREFERENCES, receivePreferences } from "../preferences";
+import { adoptLocalUserData } from "../state/local";
+import { resetPreferences } from "../state/testing";
 import { prop, propButton, serveRow, stubLayout } from "./testing";
 
 /** My email as a menu option names it, with its "me" hint. */
@@ -14,9 +17,10 @@ beforeEach(() => {
   stubLayout();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   vi.restoreAllMocks();
+  await resetPreferences();
   vi.unstubAllGlobals();
 });
 
@@ -341,7 +345,7 @@ test("a form saved unchanged writes nothing, though its input cannot show the st
   expect(server.writes()).toEqual([]);
 });
 
-test("a form open when the session ends is kept, and reopens with its text on the next load (RV-01)", async () => {
+test("a form open when the session ends waits in this browser, and the next boot sends it, to reopen with its text (RV-01)", async () => {
   localStorage.clear();
   const server = serveRow(row("Paper", 1, { venue: "NeurIPS" }));
   const session = new Session(() => {});
@@ -350,10 +354,28 @@ test("a form open when the session ends is kept, and reopens with its text on th
   fireEvent.change(await screen.findByRole("textbox", { name: "Venue" }), { target: { value: "ICML, camera-ready" } });
   act(() => session.leaveForLogin());
   cleanup();
+  receivePreferences(DEFAULT_PREFERENCES);
 
+  await adoptLocalUserData("ada@example.com");
   await open(server);
   expect(await screen.findByRole("textbox", { name: "Venue" })).toHaveProperty("value", "ICML, camera-ready");
   expect(localStorage.length).toBe(0);
+});
+
+test("a form's text is written once typing pauses, and reopens on the next load", async () => {
+  const server = serveRow(row("Paper", 1, { venue: "NeurIPS" }));
+  await open(server);
+  fireEvent.click(propButton("Venue"));
+  fireEvent.change(await screen.findByRole("textbox", { name: "Venue" }), { target: { value: "ICML" } });
+  dispatchEvent(new Event("pagehide"));
+  const drafts = { [`${server.self.id}:venue`]: { text: "ICML", base: "NeurIPS" } };
+  await waitFor(() => expect(server.sent.filter((request) => request.path === "/api/me/preferences").map((request) => request.body)).toEqual([{ drafts }]));
+  cleanup();
+
+  receivePreferences(DEFAULT_PREFERENCES);
+  receivePreferences({ ...DEFAULT_PREFERENCES, drafts });
+  await open(server);
+  expect(await screen.findByRole("textbox", { name: "Venue" })).toHaveProperty("value", "ICML");
 });
 
 test("a form already open when the browser goes offline cannot save (CR-W02)", async () => {

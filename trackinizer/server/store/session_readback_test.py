@@ -25,19 +25,20 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 from uuid import UUID, uuid4
 
+from treekle import immutable
+
 import pytest
 import pytest_asyncio
 
 from trackinizer.lib.agent.sessions import claude, codex
+from trackinizer.lib.agent.sessions.tail import Tail
 from trackinizer.lib.agent.types.sessions import (
     SessionRecord,
     Thinking,
     TurnContext,
 )
-from trackinizer.lib.custom_json import json_freeze
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.store.core import Store
-from trackinizer.trax.run.adapters.tail import Tail
 from trackinizer.types.session_records import SessionRecordRow
 from trackinizer.types.streams import Stderr, Stdin, Stdout, TraxRecord
 
@@ -68,9 +69,10 @@ async def _session_row(store: Store) -> UUID:
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', 'readback test')",
+            "'tester@example.com', 'readback test', 'open')",
             session_id,
         )
     return session_id
@@ -99,7 +101,7 @@ async def _ingest(store: Store, path: Path, session_id: UUID) -> int:
     part = await store.upsert_session_manifest(
         session_id,
         name=path.name,
-        metadata=json_freeze(reader.encoding),
+        metadata=immutable(reader.encoding),
         # Identity left the IR, so the client mints one per FILE. It names the
         # stored part, not the transcript: what claude writes into every line
         # rides each record's own residual.
@@ -244,7 +246,7 @@ async def test_ciphertext_survives_the_round_trip(store: Store) -> None:
     part = await _ingest(store, path, session_id)
 
     rows = await store.read_session_records(session_id, part=part, limit=100_000)
-    sealed = [row for row in rows if row.ciphertext]
+    sealed = [row for row in rows if row.ciphertext is not None]
 
     assert sealed, "the fixture carries no sealed thinking; pick another"
     # Stored stripped, returned whole: both halves of the split are asserted.
@@ -309,6 +311,6 @@ async def test_the_manifest_metadata_survives_storage(store: Store) -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

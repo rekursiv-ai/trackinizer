@@ -514,6 +514,6 @@ def test_a_codex_session_crosses_to_a_file_claude_can_read() -> None:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

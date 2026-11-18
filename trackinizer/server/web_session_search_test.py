@@ -11,29 +11,36 @@ embedder is configured (a keyword search must never load an 8 GB model).
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
+from unittest.mock import Mock
 from uuid import UUID, uuid4
 
-from fastapi import HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request
+from treekle import from_plain
 
 import pytest
 import pytest_asyncio
 
-from trackinizer.lib.custom_json import DictCodec, ListCodec
 from trackinizer.server import web
+from trackinizer.server.audience import SessionReader
 from trackinizer.server.auth import AuthIdentity
-from trackinizer.server.config import Config
+from trackinizer.server.config import Assistant, Config
 from trackinizer.server.embedders import registry
 from trackinizer.server.embedders.stub import StubEmbedder
 from trackinizer.server.semantic_mapper_footprint import FootprintMapper
 from trackinizer.server.store.core import Store
 from trackinizer.server.store.session_embed import sweep_session_embeddings
+from trackinizer.server.store.session_feed import FeedScope
 
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from trackinizer.lib.postgres import PostgresEngine
+    from trackinizer.server.store.session_search import SessionSearchHit
+    from trackinizer.wire.wire_sessions import FeedWhose
 
 
 _VIEWER = AuthIdentity(
@@ -88,14 +95,17 @@ async def store(integ_engine: PostgresEngine) -> AsyncIterator[Store]:
 
 
 async def _session(store: Store, *, title: str = "route search") -> UUID:
+    """Insert an open session of the viewer's, which a search finds by default."""
     session_id = uuid4()
     async with store.engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO inquiries (id, kind, seq, status, account, title) "
+            "INSERT INTO inquiries (id, kind, seq, status, account, title, "
+            "agentsession_audience) "
             "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-            "'tester@example.com', $2)",
+            "$3, $2, 'open')",
             session_id,
             title,
+            _VIEWER.email,
         )
     return session_id
 
@@ -139,17 +149,18 @@ async def test_fts_arm_returns_hits_with_position_and_title(store: Store) -> Non
     await _record(store, session_id, idx=0, text="advisory lock acquired cleanly")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder=""),
             q="advisory lock",
             identity=_VIEWER,
             semantic=False,
         ),
+        dict[str, object],
     )
-    hits = ListCodec.mappings(body["hits"])
+    hits = from_plain(body["hits"], list[dict[str, object]])
     assert len(hits) == 1
-    hit = DictCodec.coerce(hits[0])
+    hit = from_plain(hits[0], dict[str, object])
     assert hit["session_id"] == str(session_id)
     assert (hit["part"], hit["idx"]) == (0, 0)
     assert hit["title"] == "deploy log"
@@ -169,19 +180,20 @@ async def test_semantic_requested_without_model_degrades_to_fts(store: Store) ->
     await _record(store, session_id, idx=0, text="postgres deadlock trace")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder=""),
             q="deadlock",
             identity=_VIEWER,
             semantic=True,
         ),
+        dict[str, object],
     )
     assert body["degraded"] is True
     assert body["semantic"] is False
-    hits = ListCodec.mappings(body["hits"])
+    hits = from_plain(body["hits"], list[dict[str, object]])
     assert len(hits) == 1
-    assert DictCodec.coerce(hits[0])["source"] == "fts"
+    assert from_plain(hits[0], dict[str, object])["source"] == "fts"
 
 
 @pytest.mark.db_pglite
@@ -193,19 +205,20 @@ async def test_semantic_arm_runs_with_a_configured_embedder(store: Store) -> Non
     await _record(store, session_id, idx=1, text="unrelated chatter about lunch")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder="stub-1024"),
             q="deploy the release to production",
             identity=_VIEWER,
             semantic=True,
         ),
+        dict[str, object],
     )
     assert body["degraded"] is False
     assert body["semantic"] is True
-    hits = ListCodec.mappings(body["hits"])
+    hits = from_plain(body["hits"], list[dict[str, object]])
     assert hits
-    top = DictCodec.coerce(hits[0])
+    top = from_plain(hits[0], dict[str, object])
     assert (top["session_id"], top["idx"]) == (str(session_id), 0)
     assert top["source"] in ("semantic", "both")
 
@@ -218,17 +231,24 @@ async def test_semantic_false_skips_the_model_entirely(store: Store) -> None:
     await _record(store, session_id, idx=0, text="advisory lock token here")
     await _seed(store)
 
-    body = DictCodec.coerce(
+    body = from_plain(
         await web.web_search_sessions(
             _request(store, session_embedder="stub-1024"),
             q="advisory lock",
             identity=_VIEWER,
             semantic=False,
         ),
+        dict[str, object],
     )
     assert body["semantic"] is False
     assert body["degraded"] is False  # Not degraded: the caller opted out.
-    assert DictCodec.coerce(ListCodec.mappings(body["hits"])[0])["source"] == "fts"
+    assert (
+        from_plain(
+            from_plain(body["hits"], list[dict[str, object]])[0],
+            dict[str, object],
+        )["source"]
+        == "fts"
+    )
 
 
 @pytest.mark.db_pglite
@@ -257,7 +277,7 @@ async def test_model_override_reuses_one_instance_across_requests(
     monkeypatch.setattr(registry, "build_session_embedder", counting_build)
     request = _request(store, session_embedder="")  # No default; override drives it.
     for _ in range(2):
-        body = DictCodec.coerce(
+        body = from_plain(
             await web.web_search_sessions(
                 request,
                 q="deploy the release to production",
@@ -265,6 +285,7 @@ async def test_model_override_reuses_one_instance_across_requests(
                 semantic=True,
                 model="stub-1024",
             ),
+            dict[str, object],
         )
         assert body["semantic"] is True
         assert body["degraded"] is False
@@ -288,27 +309,29 @@ async def test_model_override_caches_two_dims_as_distinct_entries(
     await _seed(store)
 
     builds: list[tuple[str, int | None]] = []
-    real_build = registry.build_session_embedder
 
-    def counting_build(name: str, *, dim: int | None = None) -> object:
+    def counting_build(name: str, *, dim: int | None = None) -> StubEmbedder:
         builds.append((name, dim))
-        return real_build(name, dim=dim)
+        assert dim is not None
+        return StubEmbedder(dim=dim)
 
+    monkeypatch.setattr(registry, "weights_present", Mock(return_value=True))
     monkeypatch.setattr(registry, "build_session_embedder", counting_build)
     request = _request(store, session_embedder="")
     for override_dim in (512, 256, 512):  # 512 repeats -> its second call is cached.
-        _ = DictCodec.coerce(
+        _ = from_plain(
             await web.web_search_sessions(
                 request,
                 q="deploy the release to production",
                 identity=_VIEWER,
                 semantic=True,
-                model="stub",
+                model="qwen3-embedding-4b",
                 dim=override_dim,
             ),
+            dict[str, object],
         )
     # 512 built once (reused on repeat), 256 built once -> two distinct entries.
-    assert builds == [("stub", 512), ("stub", 256)]
+    assert builds == [("qwen3-embedding-4b", 512), ("qwen3-embedding-4b", 256)]
 
 
 @pytest.mark.db_pglite
@@ -325,7 +348,7 @@ async def test_model_override_unknown_is_400(store: Store) -> None:
             model="qwen3-embeddings-4b",  # Typo'd slug -- no such model.
         )
     assert caught.value.status_code == 400
-    assert "did you mean" in str(caught.value.detail)
+    assert "did you mean" in caught.value.detail
 
 
 @pytest.mark.db_pglite
@@ -343,7 +366,7 @@ async def test_model_override_unsupported_dim_is_400(store: Store) -> None:
             dim=99_999,  # Above the 2560 Matryoshka ceiling.
         )
     assert caught.value.status_code == 400
-    assert "2560" in str(caught.value.detail)
+    assert "2560" in caught.value.detail
 
 
 @pytest.mark.db_pglite
@@ -360,7 +383,170 @@ async def test_bad_limit_and_empty_query_are_400(store: Store) -> None:
     assert caught.value.status_code == 400
 
 
+@pytest.mark.parametrize("override", [False, True])
+def test_uncached_model_degrades_without_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    override: bool,
+) -> None:
+    build = Mock(side_effect=AssertionError("Uncached model constructed"))
+    monkeypatch.setattr(registry, "weights_present", Mock(return_value=False))
+    monkeypatch.setattr(registry, "build_session_embedder", build)
+    app = FastAPI()
+    app.state.config = Config(session_embedder="qwen3-embedding-4b")
+    request = Request({"type": "http", "app": app})
+    assert (
+        web._search_embedder(
+            request,
+            semantic=True,
+            model="qwen3-embedding-4b" if override else "",
+            dim=None,
+        )
+        is None
+    )
+    build.assert_not_called()
+
+
+def test_override_alias_uses_resolved_identity_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    build = Mock(return_value=StubEmbedder(dim=512))
+    monkeypatch.setattr(registry, "weights_present", Mock(return_value=True))
+    monkeypatch.setattr(registry, "build_session_embedder", build)
+    request = Request({"type": "http", "app": FastAPI()})
+    first = web._override_embedder(request, "qwen3-embedding-4b", 512)
+    second = web._override_embedder(request, "qwen3-embedding-4b@512", None)
+    assert first is second
+    assert build.call_count == 1
+
+
+@pytest.mark.parametrize("semantic", [False, True])
+def test_dimension_without_model_is_rejected(semantic: bool) -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    with pytest.raises(HTTPException) as caught:
+        web._search_embedder(request, semantic=semantic, model="", dim=256)
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_feed_rejects_reversed_window_before_reading_store() -> None:
+    request = Request({"type": "http", "app": FastAPI()})
+    since = datetime(2026, 9, 1, tzinfo=UTC)
+    with pytest.raises(HTTPException) as caught:
+        await web.web_feed(
+            request,
+            _VIEWER,
+            since=since,
+            until=since - timedelta(days=1),
+        )
+    assert caught.value.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_the_search_is_read_for_the_reader_its_caller_is_of_their_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_session_records", search)
+    request = _request(cast(Store, Mock()), session_embedder="")
+
+    held = (frozenset({"open", "private"}), frozenset({"open", "private", "staff"}))
+    for audiences in held:
+        _ = await web.web_search_sessions(
+            request,
+            q="x",
+            identity=replace(_VIEWER, read_audiences=audiences),
+            semantic=False,
+        )
+
+    assert search.asked == [
+        FeedScope(
+            account=_VIEWER.email,
+            reader=SessionReader(
+                audiences=audiences,
+                email=_VIEWER.email,
+                oversight="staff" in audiences,
+                hidden=False,
+            ),
+        )
+        for audiences in held
+    ]
+
+
+@pytest.mark.asyncio
+async def test_search_sessions_takes_whose_and_hidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Search widens to every session the caller reads, or narrows to their campaigns."""
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_session_records", search)
+    request = _request(cast(Store, Mock()), session_embedder="")
+    caller = replace(_VIEWER, read_audiences=frozenset({"open", "private"}))
+
+    cases: tuple[tuple[FeedWhose, bool], ...] = (
+        ("everyone", True),
+        ("campaigns", False),
+    )
+    for whose, hidden in cases:
+        _ = await web.web_search_sessions(
+            request,
+            q="x",
+            identity=caller,
+            semantic=False,
+            whose=whose,
+            hidden=hidden,
+        )
+
+    assert [
+        (each.account, each.asker, each.reader.hidden) for each in search.asked
+    ] == [
+        ("", "", True),
+        ("", _VIEWER.email, False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_assistant_searches_every_session_it_reads_unless_it_names_whose(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """It holds none of the sessions it is asked about, where a person searches theirs."""
+    search = _SearchSpy()
+    monkeypatch.setattr(web, "search_session_records", search)
+    state = _State(store=cast(Store, Mock()), session_embedder="")
+    state.config = Config(assistant=Assistant(actor="scout", email=_VIEWER.email))
+    request = cast(Request, _Request(_App(state)))
+
+    for whose in (None, "mine"):
+        _ = await web.web_search_sessions(
+            request,
+            q="x",
+            identity=_VIEWER,
+            semantic=False,
+            whose=whose,
+        )
+
+    assert [each.account for each in search.asked] == ["", _VIEWER.email]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class _SearchSpy:
+    """Stand in for the session search, keeping each scope it is asked for."""
+
+    asked: list[FeedScope] = field(default_factory=list[FeedScope])
+
+    async def __call__(
+        self,
+        engine: object,
+        *,
+        scope: FeedScope,
+        **rest: object,
+    ) -> list[SessionSearchHit]:
+        """Keep ``scope`` and find nothing."""
+        del engine, rest
+        self.asked.append(scope)
+        return []
+
+
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

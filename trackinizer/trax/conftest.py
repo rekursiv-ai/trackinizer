@@ -13,17 +13,20 @@ from typing import TYPE_CHECKING, Self, cast
 
 import uuid
 
+from treekle import PlainTree, from_plain
+from treekle.absent import Absent
+
 import pytest
 
-from trackinizer.client.client import Client, EdgeWrite
-from trackinizer.lib.absent import Absent
-from trackinizer.lib.custom_json import IntCodec, JSONValue
+from trackinizer.client.client import ArtifactRevision, Client, EdgeWrite
+
 from trackinizer.trax import cli
 from trackinizer.types.inquiries import Inquiry
 from trackinizer.wire.filters import (
     FILTER_FIELD_ALIASES,
     Filter,
 )
+from trackinizer.wire import wire_code
 from trackinizer.wire.refs import Ref, SeqRef, UuidRef
 from trackinizer.wire.routes import (
     DEFAULT_LIST_LIMIT,
@@ -42,16 +45,19 @@ from trackinizer.wire.wire_session_ir import (
     SlashCommandBody,
 )
 from trackinizer.wire.wire_sessions import (
+    InboundDrainItem,
+    InboundKind,
     SessionEnd,
     SessionEndResponse,
     SessionStart,
     SessionStartResponse,
-    WorkspaceMessageContext,
 )
+from trackinizer.wire.wire_terminals import TerminalMachines, TerminalOpened
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Sequence
+    from trackinizer.wire.wire_code import CodeDiff, CodeFile
+    from collections.abc import Callable, Iterator, Mapping, Sequence
     from pathlib import Path
     from types import TracebackType
 
@@ -60,6 +66,7 @@ if TYPE_CHECKING:
         MetricMaskClause,
         MetricRankRow,
     )
+    from trackinizer.wire.wire_terminals import OpenTerminal
 
 
 _ABSENT = Absent()
@@ -312,6 +319,27 @@ class FakeClient:
         del exc_type, exc, tb
         self.close()
 
+    def my_email(self) -> str:
+        """Return the email the caller is authenticated as."""
+        self.calls.append(("my_email", (), {}))
+        return self.author or "fake@example.com"
+
+    def code_file(self, record_id: uuid.UUID, *, path: str) -> CodeFile | None:
+        """Return one file of a record's snapshot, with its text."""
+        self.calls.append(("code_file", (record_id,), {"path": path}))
+        return None
+
+    def code_diff(
+        self,
+        from_record: uuid.UUID,
+        to_record: uuid.UUID,
+        *,
+        context: int = wire_code.DEFAULT_DIFF_CONTEXT,
+    ) -> CodeDiff | None:
+        """Return how one record's code differs from another's, path by path."""
+        self.calls.append(("code_diff", (from_record, to_record), {"context": context}))
+        return None
+
     def resolve_id(self, ref: Ref) -> tuple[Inquiry.InquiryKind, uuid.UUID]:
         """Resolve id."""
         self.calls.append(("resolve_id", (ref,), {}))
@@ -377,6 +405,29 @@ class FakeClient:
             ),
         )
 
+    def transition_app(
+        self,
+        target_id: uuid.UUID,
+        *,
+        expected_from: dict[str, object] | None,
+        to: dict[str, object] | None,
+        actor: Inquiry.Actor,
+        reason: str = "",
+    ) -> None:
+        """Transition app."""
+        self.calls.append(
+            (
+                "transition_app",
+                (target_id,),
+                {
+                    "expected_from": expected_from,
+                    "to": to,
+                    "actor": actor,
+                    "reason": reason,
+                },
+            ),
+        )
+
     def submit(self, kind: Inquiry.InquiryKind, body: dict[str, object]) -> uuid.UUID:
         """Submit."""
         self.calls.append(("submit", (kind, body), {}))
@@ -409,8 +460,9 @@ class FakeClient:
         offset: int = 0,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, JSONValue]]:
-        """List kind."""
+        fields: Sequence[str] | None = None,
+    ) -> list[dict[str, PlainTree]]:
+        """List kind; ``fields`` keeps only the named keys of each row."""
         self.calls.append(
             (
                 "list_kind",
@@ -435,7 +487,10 @@ class FakeClient:
                 row
                 for row in rows
                 if any(
-                    _seq_in_interval(IntCodec.coerce(row.get("seq")), interval)
+                    _seq_in_interval(
+                        from_plain(row.get("seq"), int, default=0),
+                        interval,
+                    )
                     for interval in seq_ranges
                 )
             ]
@@ -460,9 +515,11 @@ class FakeClient:
         if status is not None:
             rows = [row for row in rows if row.get("status") == status]
         for filt in filters:
-            rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]
+            rows = [row for row in rows if bool(match_filter(_storage_view(row), filt))]  # pyrefly: ignore[unnecessary-type-conversion] -- The stub's type hides the runtime value (numpy/torch scalar or non-str key); the conversion is load-bearing.
+        if fields is not None:
+            rows = [{k: v for k, v in row.items() if k in fields} for row in rows]
         return cast(
-            list[dict[str, JSONValue]],
+            list[dict[str, PlainTree]],
             cast(
                 object,
                 rows[offset : offset + limit],
@@ -476,7 +533,7 @@ class FakeClient:
         status: Inquiry.Status | None = None,
         seq_ranges: Sequence[SeqRange] = (),
         filters: Sequence[Filter] = (),
-    ) -> list[dict[str, JSONValue]]:
+    ) -> list[dict[str, PlainTree]]:
         """Page past the cap, mirroring the real client's whole-collection fetch.
 
         Records a ``list_kind_all`` call, then pages via ``list_kind`` in
@@ -495,7 +552,7 @@ class FakeClient:
                 },
             ),
         )
-        rows: list[dict[str, JSONValue]] = []
+        rows: list[dict[str, PlainTree]] = []
         offset = 0
         while True:
             page = self.list_kind(
@@ -514,7 +571,7 @@ class FakeClient:
     def get_inquiry(
         self,
         ref: Ref,
-    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]]:
+    ) -> tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, PlainTree]]:
         """Get inquiry."""
         self.calls.append(("get_inquiry", (ref,), {}))
         if isinstance(ref, UuidRef):
@@ -544,7 +601,7 @@ class FakeClient:
         detail = dict(self.detail)
         detail["self"] = row
         return cast(
-            tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, JSONValue]],
+            tuple[Inquiry.InquiryKind, uuid.UUID, dict[str, PlainTree]],
             cast(
                 object,
                 (
@@ -555,11 +612,11 @@ class FakeClient:
             ),  # -- fake detail payload is JSON-shaped.
         )
 
-    def next_issue(self) -> dict[str, JSONValue] | None:
+    def next_issue(self) -> dict[str, PlainTree] | None:
         """Next issue."""
         self.calls.append(("next_issue", (), {}))
         return cast(
-            dict[str, JSONValue] | None,
+            dict[str, PlainTree] | None,
             self.next_payload,  # -- fake payload is JSON-shaped.
         )
 
@@ -569,7 +626,7 @@ class FakeClient:
         owner: Inquiry.Actor,
         actor: Inquiry.Actor | None = None,
         reason: str = "",
-    ) -> dict[str, JSONValue] | None:
+    ) -> dict[str, PlainTree] | None:
         """Record a claim; the fake hands back its canned next-issue row."""
         self.calls.append(
             (
@@ -579,7 +636,7 @@ class FakeClient:
             ),
         )
         return cast(
-            dict[str, JSONValue] | None,
+            dict[str, PlainTree] | None,
             self.next_payload,  # -- fake payload is JSON-shaped.
         )
 
@@ -588,9 +645,9 @@ class FakeClient:
         self.calls.append(("version", (), {}))
         return "testsha"
 
-    def export(self) -> Iterator[str]:
+    def export(self, *, selector: Sequence[Filter] = ()) -> Iterator[str]:
         """Two canned export lines: a header and one row."""
-        self.calls.append(("export", (), {}))
+        self.calls.append(("export", (), {"selector": tuple(selector)}))
         yield '{"format":"trackinizer-export","version":1,"migrations":[]}'
         yield '{"table":"inquiries","row":{"title":"canned"}}'
 
@@ -621,11 +678,11 @@ class FakeClient:
             ),
         )
 
-    def recent_changes(self, *, limit: int = 50) -> list[dict[str, JSONValue]]:
+    def recent_changes(self, *, limit: int = 50) -> list[dict[str, PlainTree]]:
         """Recent changes."""
         self.calls.append(("recent_changes", (), {"limit": limit}))
         return cast(
-            list[dict[str, JSONValue]],
+            list[dict[str, PlainTree]],
             cast(object, list(self.changes)),  # -- fake changes are JSON-shaped.
         )
 
@@ -635,12 +692,12 @@ class FakeClient:
         *,
         semantic: bool = True,
         limit: int = 20,
-    ) -> dict[str, JSONValue]:
+    ) -> dict[str, PlainTree]:
         """Search sessions."""
         self.calls.append(
             ("search_sessions", (query,), {"semantic": semantic, "limit": limit}),
         )
-        return cast("dict[str, JSONValue]", cast(object, dict(self.session_hits)))
+        return cast("dict[str, PlainTree]", cast(object, dict(self.session_hits)))
 
     def cost_for(self, target_id: uuid.UUID, *, deep: bool = False) -> dict[str, float]:
         """Cost for."""
@@ -703,6 +760,7 @@ class FakeClient:
         # carry it on the upsert (the store collapses empty), so it threads the
         # clear through ``annotate_edge`` after the POST. Mirror that here so a
         # test sees the same two-call shape (TRAX-CLI-004).
+        label_tuple = tuple(labels or ())
         self.calls.append(
             (
                 "add_edge",
@@ -712,7 +770,7 @@ class FakeClient:
                     "priority": priority,
                     "note": note,
                     "valence": valence,
-                    "labels": () if labels is None else tuple(labels),
+                    "labels": label_tuple,
                     "reason": reason,
                 },
             ),
@@ -730,8 +788,8 @@ class FakeClient:
             supplied["note"] = note
         if valence is not None:
             supplied["valence"] = valence
-        if labels:
-            supplied["labels"] = tuple(labels)
+        if label_tuple:
+            supplied["labels"] = label_tuple
         created = key not in self._edges
         if created:
             self._edges[key] = supplied
@@ -787,6 +845,30 @@ class FakeClient:
     def purge(self, target_id: uuid.UUID, *, actor: str, reason: str = "") -> None:
         """Purge."""
         self.calls.append(("purge", (target_id,), {"actor": actor, "reason": reason}))
+
+    def publish_artifact_content(
+        self,
+        issue_id: uuid.UUID,
+        *,
+        title: str,
+        summary: str,
+        html: str,
+        previous_id: uuid.UUID | None = None,
+    ) -> ArtifactRevision:
+        """Publish artifact content."""
+        self.calls.append(
+            (
+                "publish_artifact_content",
+                (issue_id,),
+                {
+                    "title": title,
+                    "summary": summary,
+                    "html": html,
+                    "previous_id": previous_id,
+                },
+            ),
+        )
+        return ArtifactRevision(artifact_id=uuid.uuid4(), revision=1)
 
     def session_start(self, body: SessionStart) -> SessionStartResponse:
         """Session start."""
@@ -905,13 +987,14 @@ class FakeClient:
         masks: Sequence[MetricMaskClause],
         sort: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[MetricPoint]:
         """Query metrics."""
         self.calls.append(
             (
                 "query_metrics",
                 (experiment_id,),
-                {"masks": tuple(masks), "sort": sort, "limit": limit},
+                {"masks": tuple(masks), "sort": sort, "limit": limit, "offset": offset},
             ),
         )
         return []
@@ -935,18 +1018,19 @@ class FakeClient:
 
     def rank_metrics(
         self,
-        experiment_ids: Sequence[uuid.UUID],
+        experiment_ids: Sequence[uuid.UUID] | Sequence[Filter],
         *,
         masks: Sequence[MetricMaskClause],
         sort: str | None = None,
         limit: int | None = None,
+        offset: int | None = None,
     ) -> list[MetricRankRow]:
         """Rank metrics."""
         self.calls.append(
             (
                 "rank_metrics",
                 (tuple(experiment_ids),),
-                {"masks": tuple(masks), "sort": sort, "limit": limit},
+                {"masks": tuple(masks), "sort": sort, "limit": limit, "offset": offset},
             ),
         )
         return []
@@ -960,9 +1044,18 @@ class FakeClient:
         self.calls.append(("session_end", (session_id, body), {}))
         return SessionEndResponse(id=session_id)
 
-    def enqueue_inbound(self, session_id: uuid.UUID, text: str) -> int:
+    def enqueue_inbound(
+        self,
+        session_id: uuid.UUID,
+        text: str,
+        *,
+        kind: InboundKind = "line",
+        payload: dict[str, object] | None = None,
+    ) -> int:
         """Enqueue inbound."""
-        self.calls.append(("enqueue_inbound", (session_id, text), {}))
+        self.calls.append(
+            ("enqueue_inbound", (session_id, text), {"kind": kind, "payload": payload}),
+        )
         return 1
 
     def drain_inbound(
@@ -970,10 +1063,42 @@ class FakeClient:
         session_id: uuid.UUID,
         *,
         wait_sec: float = 0.0,
-    ) -> list[tuple[str, str | None, str | None, WorkspaceMessageContext | None]]:
+        run: str | None = None,
+        machine: str | None = None,
+        cwd: str | None = None,
+        cli: str | None = None,
+        instance: str | None = None,
+    ) -> list[InboundDrainItem]:
         """Drain inbound."""
-        self.calls.append(("drain_inbound", (session_id,), {"wait_sec": wait_sec}))
+        self.calls.append(
+            (
+                "drain_inbound",
+                (session_id,),
+                {
+                    "wait_sec": wait_sec,
+                    "run": run,
+                    "machine": machine,
+                    "cwd": cwd,
+                    "cli": cli,
+                    "instance": instance,
+                },
+            ),
+        )
         return []
+
+    def terminal_machines(
+        self,
+        *,
+        workspace: uuid.UUID | None = None,
+    ) -> TerminalMachines:
+        """Terminal machines."""
+        self.calls.append(("terminal_machines", (), {"workspace": workspace}))
+        return TerminalMachines(machines=[])
+
+    def open_terminal(self, body: OpenTerminal) -> TerminalOpened:
+        """Open terminal."""
+        self.calls.append(("open_terminal", (body,), {}))
+        return TerminalOpened(terminal_id=uuid.uuid4(), ticket="fake-ticket")
 
     def send_message(
         self,
@@ -985,6 +1110,69 @@ class FakeClient:
         """Send message."""
         self.calls.append(("send_message", (actor, text), {"room": room}))
         return [self.target_id]
+
+    def read_workspace(self, workspace_id: uuid.UUID) -> dict[str, PlainTree]:
+        """Read workspace."""
+        self.calls.append(("read_workspace", (workspace_id,), {}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
+    def apply_workspace_operation(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        operation: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Apply workspace operation."""
+        self.calls.append(
+            (
+                "apply_workspace_operation",
+                (workspace_id,),
+                {"operation": dict(operation)},
+            ),
+        )
+        return {"id": str(workspace_id), "revision": 1, "visuals": []}
+
+    def navigate(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        route: str,
+    ) -> dict[str, PlainTree]:
+        """Navigate."""
+        self.calls.append(("navigate", (workspace_id,), {"route": route}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
+    def highlight(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        ids: Sequence[uuid.UUID],
+    ) -> dict[str, PlainTree]:
+        """Highlight."""
+        self.calls.append(("highlight", (workspace_id,), {"ids": list(ids)}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
+    def chat_window(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        hidden: bool,
+    ) -> dict[str, PlainTree]:
+        """Hide or show Chat."""
+        self.calls.append(("chat_window", (workspace_id,), {"hidden": hidden}))
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
+
+    def set_preferences(
+        self,
+        workspace_id: uuid.UUID,
+        *,
+        change: Mapping[str, object],
+    ) -> dict[str, PlainTree]:
+        """Change the station owner's preferences."""
+        self.calls.append(
+            ("set_preferences", (workspace_id,), {"change": dict(change)}),
+        )
+        return {"id": str(workspace_id), "revision": 0, "visuals": []}
 
     def add_subscriber(
         self,

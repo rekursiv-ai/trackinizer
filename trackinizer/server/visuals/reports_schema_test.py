@@ -50,6 +50,6 @@ async def test_report_migration_matches_fresh_schema(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

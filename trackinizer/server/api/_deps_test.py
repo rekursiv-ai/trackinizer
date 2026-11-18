@@ -19,11 +19,24 @@ import decimal
 import types
 import typing
 
+from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
+from starlette.requests import Request
 
 import pytest
 
-from trackinizer.server.api._deps import tag_kind
+from trackinizer.server.api._deps import (
+    get_assistant,
+    get_chat_orgs,
+    get_chat_streaming,
+    get_hub,
+    get_partials,
+    tag_kind,
+    tag_row,
+)
+from trackinizer.server.chat_hub import ChatHub
+from trackinizer.server.chat_partials import ChatPartials
+from trackinizer.server.config import Assistant, Config
 from trackinizer.types import inquiries
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
@@ -54,7 +67,7 @@ def _resolve(annotation: object) -> object:
     if isinstance(annotation, typing.TypeAliasType):
         # PEP 695 aliases (``type Actor = str``, ``type Status = Literal[...]``)
         # are values rather than types; unwrap to whatever they name.
-        value: object = annotation.__value__  # pyright: ignore[reportAny] -- TypeAliasType's stub exposes its value as Any.
+        value: object = annotation.__value__
         return _resolve(value)
     return annotation
 
@@ -135,9 +148,9 @@ def _sample(annotation: object) -> object:
 # by ``test_every_field_is_populated``.
 def _populated[T: Inquiry](subclass: type[T]) -> T:
     """One instance of ``subclass`` with every field set to a real value."""
-    hints = cast(dict[str, object], typing.get_type_hints(subclass, _INQUIRIES_NS))
+    hints = typing.get_type_hints(subclass, _INQUIRIES_NS)
     return subclass(
-        **{  # pyright: ignore[reportArgumentType] -- Dynamic dataclass fields are validated by the runtime oracle.  # ty: ignore[invalid-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.
+        **{  # pyright: ignore[reportArgumentType] -- Dynamic dataclass fields are validated by the runtime oracle.  # ty: ignore[invalid-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.  # pyrefly: ignore[bad-argument-type] -- Dynamic dataclass fields are validated by the runtime oracle.
             field.name: _sample(hints[field.name])
             for field in dataclasses.fields(subclass)
         },
@@ -176,6 +189,129 @@ def _issue(
         modified=datetime(2026, 8, 19, 10, 12, 35, 995_201, tzinfo=UTC),
         produces=produces,
     )
+
+
+def _request(app: FastAPI) -> Request:
+    return Request({"type": "http", "app": app, "headers": []})
+
+
+class TestGetHub:
+    def test_an_app_built_by_hand_gets_one_hub_on_first_use(self) -> None:
+        app = FastAPI()
+        first = get_hub(_request(app))
+        assert get_hub(_request(app)) is first
+        assert get_hub(_request(FastAPI())) is not first
+
+    def test_an_app_keeps_the_hub_it_was_given(self) -> None:
+        app = FastAPI()
+        given = ChatHub()
+        app.state.hub = given
+        assert get_hub(_request(app)) is given
+
+    def test_something_that_is_not_a_hub_is_replaced(self) -> None:
+        app = FastAPI()
+        app.state.hub = "not a hub"
+        replaced = get_hub(_request(app))
+        assert get_hub(_request(app)) is replaced
+
+
+class TestGetPartials:
+    def test_an_app_gets_one_store_of_partials_on_first_use(self) -> None:
+        app = FastAPI()
+        first = get_partials(_request(app))
+        assert get_partials(_request(app)) is first
+        assert get_partials(_request(FastAPI())) is not first
+
+    def test_an_app_keeps_the_partials_it_was_given_and_replaces_anything_else(
+        self,
+    ) -> None:
+        app = FastAPI()
+        given = ChatPartials()
+        app.state.partials = given
+        kept = get_partials(_request(app))
+        app.state.partials = "not partials"
+        assert kept is given
+        assert isinstance(get_partials(_request(app)), ChatPartials)
+
+
+class TestGetChatStreaming:
+    def test_a_server_streams_unless_its_config_turns_it_off(self) -> None:
+        app = FastAPI()
+        assert get_chat_streaming(_request(app)) is True
+        app.state.config = "not a config"
+        assert get_chat_streaming(_request(app)) is True
+        app.state.config = Config()
+        assert get_chat_streaming(_request(app)) is True
+        app.state.config = Config(chat_streaming=False)
+        assert get_chat_streaming(_request(app)) is False
+
+
+class TestGetAssistant:
+    def test_the_assistant_is_the_configs(self) -> None:
+        app = FastAPI()
+        kb = Assistant(actor="scout", email="kb@example.com")
+        app.state.config = Config(assistant=kb)
+        assert get_assistant(_request(app)) == kb
+
+    def test_none_without_a_config_or_an_assistant(self) -> None:
+        app = FastAPI()
+        assert get_assistant(_request(app)) is None
+        app.state.config = "not a config"
+        assert get_assistant(_request(app)) is None
+        app.state.config = Config()
+        assert get_assistant(_request(app)) is None
+
+
+class TestGetChatOrgs:
+    def test_a_server_is_individual_unless_its_config_says_otherwise(
+        self,
+    ) -> None:
+        app = FastAPI()
+        assert get_chat_orgs(_request(app)) == "individual"
+        app.state.config = "not a config"
+        assert get_chat_orgs(_request(app)) == "individual"
+        app.state.config = Config()
+        assert get_chat_orgs(_request(app)) == "individual"
+        app.state.config = Config(chat_orgs="single")
+        assert get_chat_orgs(_request(app)) == "single"
+
+
+class TestTagRow:
+    def test_a_known_row_is_the_encoder_output_plus_its_kind(self) -> None:
+        issue = _issue()
+        expected = cast(dict[str, object], jsonable_encoder(issue))
+        expected["kind"] = "Issue"
+        assert tag_row(issue) == expected
+
+    @pytest.mark.parametrize("subclass", _KINDS)
+    def test_named_fields_are_the_whole_rows_keys_in_order(
+        self,
+        subclass: type[Inquiry],
+    ) -> None:
+        instance = _populated(subclass)
+        whole = tag_row(instance)
+        for names in (
+            frozenset({"id", "title", "kind"}),
+            frozenset({"labels", "created", "judgement"}),
+            frozenset(whole),
+        ):
+            named = tag_row(instance, names)
+            assert named == {key: value for key, value in whole.items() if key in names}
+            assert list(named) == [key for key in whole if key in names]
+
+    def test_a_field_not_named_is_never_serialized(self) -> None:
+        # A list sends 50-1,000 rows; walking an Experiment's config and outcome
+        # only to drop them was most of a slim list's time.
+        experiment = dataclasses.replace(
+            _populated(Experiment),
+            config={"unserializable": {"a set"}},
+        )
+        assert tag_row(experiment, frozenset({"id", "kind"})) == {
+            "id": str(experiment.id),
+            "kind": "Experiment",
+        }
+        with pytest.raises(TypeError, match="set"):
+            tag_row(experiment, frozenset({"config"}))
 
 
 class TestTagKind:
@@ -256,6 +392,7 @@ class TestTagKind:
         # oracle while exercising nothing.
         instance = _populated(Issue)
         assert instance.produces, "edge tuples must carry an element"
+        assert instance.labels is not None
         assert instance.labels, "list-valued columns must carry an element"
 
     @pytest.mark.parametrize("subclass", _KINDS)
@@ -276,6 +413,6 @@ class TestTagKind:
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

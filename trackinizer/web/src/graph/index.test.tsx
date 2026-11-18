@@ -5,15 +5,14 @@ import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ALL_NODES, type Graph, type GraphEdge, type GraphNode } from "../api/graph";
 import { type Sent, stubFetch } from "../api/testing";
-import type { WorkspaceState } from "../api/workspaces";
 import { MetaContext } from "../app/boot";
+import { HighlightContext, HighlightStore } from "../app/highlights";
 import { CommandRegistry, CommandRegistryContext, Shortcuts } from "../commands/registry";
 import { LiveContext } from "../live";
 import { LiveHub } from "../live/hub";
 import { testClient } from "../live/testing";
 import { RouterProvider } from "../router/router";
-import { SIDEBAR } from "../app/Sidebar";
-import { type Panel, usePanel } from "../ui/panel";
+import type { Panel } from "../ui/panel";
 import { type WorkspaceActions, WorkspaceActionsProvider } from "../visuals/workspaceActions";
 import { GraphView } from ".";
 import { graphQuery } from "./live";
@@ -56,6 +55,7 @@ vi.mock("./GraphRecord", () => ({
 
 let client: QueryClient;
 let renderer: FakeRenderer;
+let highlights: HighlightStore;
 let sent: Sent[];
 /** What the server answers for each limit. */
 let answers: Map<number, Graph | Promise<Response>>;
@@ -70,11 +70,13 @@ const GRAPH: Graph = {
 beforeEach(() => {
   client = testClient();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   answers = new Map([[1000, GRAPH]]);
   history.replaceState(null, "", "#/graph?group=none");
   // The halos' colours, named for what they mark; jsdom has no stylesheet.
   document.documentElement.style.setProperty("--text", "halo");
   document.documentElement.style.setProperty("--accent-hover", "match");
+  document.documentElement.style.setProperty("--amber", "highlight");
   // jsdom has none; the roots list scrolls its marked row into view.
   Element.prototype.scrollIntoView = () => {};
   // Nor pointer capture; the timeline's scrub takes it on the way down.
@@ -107,7 +109,9 @@ function show({ hub = null, canvas = null }: { hub?: LiveHub | null; canvas?: Wo
             <CommandRegistryContext value={new CommandRegistry()}>
               <Shortcuts />
               <WorkspaceActionsProvider value={canvas}>
-                <GraphView createRenderer={renderer.create} />
+                <HighlightContext value={highlights}>
+                  <GraphView createRenderer={renderer.create} />
+                </HighlightContext>
               </WorkspaceActionsProvider>
             </CommandRegistryContext>
           </LiveContext>
@@ -120,43 +124,24 @@ function show({ hub = null, canvas = null }: { hub?: LiveHub | null; canvas?: Wo
 }
 
 /** Re-read the canvas, as the tab's poll does after an agent writes to it. */
-const canvasTick = () => act(() => view.rerender(tree()));
 
 /**
  * The canvas the graph shares its selection with. `asked` and `hidden` are what
  * it was told to show and take away; `send` moves it the way an agent's operation
  * does, and the state it holds answers to the graph's reads.
  */
-function canvasStub(recordId: string | null) {
+/** A canvas that records the shows a view sends it. */
+function canvasStub() {
   const asked: string[] = [];
-  const hidden: string[] = [];
-  const withRecord = (id: string | null): WorkspaceState => ({
-    id: "ws",
-    revision: 1,
-    connected_session_id: null,
-    focused_instance: null,
-    visuals: id === null ? [] : [{ id: "pane", type: "trax.record", version: 1, placement: "side", record_id: id, params: {} }],
-  });
-  let state: WorkspaceState | null = withRecord(recordId);
   const actions: WorkspaceActions = {
     busy: false,
     writeError: null,
-    revealRecord: async () => true,
-    showVisual: async (_type, id) => {
-      asked.push(id);
-      state = withRecord(id);
-      return true;
+    operate: (operation) => {
+      if (operation.kind === "show" && operation.record_id) asked.push(operation.record_id);
     },
-    connectSession: () => {},
-    hideVisual: (instanceId) => {
-      hidden.push(instanceId);
-      state = withRecord(null);
-    },
-    get workspace() {
-      return state;
-    },
+    visualTypes: new Set(["trax.record"]),
   };
-  return { actions, asked, hidden, send: (id: string | null) => (state = withRecord(id)) };
+  return { actions, asked };
 }
 
 /** Show the graph and wait for the count its first answer gives. */
@@ -311,6 +296,7 @@ test("the legend pill hides and shows the key, pressed while it shows; which is 
   expect(pill().textContent).toBe("legend ▴");
   cleanup();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   const again = await shown();
   expect(key()).toBeNull();
   expect(pill().getAttribute("aria-pressed")).toBe("false");
@@ -631,37 +617,25 @@ test("a click on the background, or Esc, clears the selection", async () => {
   await peekGone();
 });
 
-test("the selection and the canvas's record are one thing: what an agent shows arrives as the selection, and a pick goes out as the same operation", async () => {
-  const canvas = canvasStub(uuid(3));
+test("a pick on the graph goes out to the canvas as the show an agent would write", async () => {
+  const canvas = canvasStub();
   show({ canvas: canvas.actions });
   await screen.findByText("3 nodes, 2 edges");
-  // A record already on the canvas is the selection, and the graph does not write
-  // it back: an agent's show, seen by a tab that opened after it.
-  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Paper#3");
+  // Nothing picked yet, so the graph has made no claim on the canvas.
   expect(canvas.asked).toEqual([]);
-  expect(renderer.selects).toEqual([null, "A paper"]);
-  // The graph's own pick is the operation an agent writes: the same show, the other way.
   act(() => renderer.events!.click(renderer.node("Issue 1")));
   expect(canvas.asked).toEqual([uuid(1)]);
   expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#1");
-  // An agent moving the canvas moves the field, which answers the write with a
-  // write of its own only once — it does not echo.
-  act(() => canvas.send(uuid(2)));
-  canvasTick();
-  expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
-  expect(renderer.selects.at(-1)).toBe("Issue 2");
-  expect(canvas.asked).toEqual([uuid(1)]);
-  // Taking it off the canvas ends the selection, and the graph lets it go.
-  act(() => canvas.send(null));
-  canvasTick();
-  await peekGone();
-  expect(canvas.hidden).toEqual([]);
-  // With nothing on the canvas, a pick puts a record back, and a clear takes it off.
+  // The same record picked again is not written again.
   act(() => renderer.events!.click(renderer.node("Issue 1")));
-  expect(canvas.asked).toEqual([uuid(1), uuid(1)]);
+  expect(canvas.asked).toEqual([uuid(1)]);
+  act(() => renderer.events!.click(renderer.node("Issue 2")));
+  expect(canvas.asked).toEqual([uuid(1), uuid(2)]);
+  // Clearing the selection leaves the pane on the last record: taking a pane down
+  // wants its instance id, which the canvas hands to its visuals, not to a route.
   act(() => renderer.events!.click(null));
   await peekGone();
-  expect(canvas.hidden).toEqual(["pane"]);
+  expect(canvas.asked).toEqual([uuid(1), uuid(2)]);
 });
 
 test("a link in Peek to a node the graph draws selects it in place and centres on it; Open and others navigate", async () => {
@@ -739,6 +713,19 @@ test("search finds no node a filter hides, so a pick never centres on empty spac
     fireEvent.change(search(), { target: { value: query } });
     expect(screen.getByRole("listbox", { name: "Matches" }).textContent, query).toContain("No matches");
   }
+});
+
+test("what the assistant points at takes the highlight halo, under the selection's and over a match's; an empty list clears it", async () => {
+  const { user } = await shown();
+  expect(halos()).toEqual([]);
+  act(() => highlights.set([uuid(1), uuid(3)]));
+  expect(halos()).toEqual(["Issue 1: highlight", "A paper: highlight"]);
+  expect(dimmed()).toEqual([]);
+  await user.click(search());
+  fireEvent.change(search(), { target: { value: "issue" } });
+  expect(halos()).toEqual(["Issue 1: highlight", "Issue 2: match", "A paper: highlight"]);
+  act(() => highlights.set([]));
+  expect(halos()).toEqual(["Issue 1: match", "Issue 2: match"]);
 });
 
 test("with a focus, search groups its matches within the focus's hops and elsewhere", async () => {
@@ -1026,11 +1013,31 @@ test("Esc clears the selection first, then the focus; the focus chip's close cle
   await waitFor(() => expect(location.hash).toBe("#/graph"));
 });
 
-test("a focus on an inquiry the graph has not loaded says so and lights nothing", async () => {
+test("a focus on an inquiry no size of the graph holds says so and lights nothing", async () => {
+  // The view reaches for the next size up before giving this answer, so the larger
+  // graph has to be answered too; without the row there either, it settles on saying so.
+  answers.set(5000, GRAPH);
   history.replaceState(null, "", "#/graph?focus=Issue/99&hops=2");
   await shown();
-  expect(within(screen.getByRole("group", { name: "Focus" })).getByText("Issue#99 is not among the nodes loaded")).toBeTruthy();
+  expect(within(await screen.findByRole("group", { name: "Focus" })).getByText("Issue#99 is not among the nodes loaded")).toBeTruthy();
   expect(dimmed()).toEqual([]);
+});
+
+test("a focus outside the newest nodes loads the next size up rather than reporting it cannot see it", async () => {
+  // The record someone has just read about is usually not among the newest thousand of a
+  // store that holds thousands — the rail's Graph opens on what the canvas is about
+  // (`graph/topic`), and that landed on "not among the nodes loaded" while the row was
+  // one size setting away. One step up, and the focus lights.
+  answers.set(5000, { nodes: [...GRAPH.nodes, node(99)], edges: [edge(99, 1)] });
+  history.replaceState(null, "", "#/graph?focus=Issue/99&hops=2");
+  // Not `shown`: the first answer is stepped over too quickly to wait on its count.
+  show();
+  // The larger graph arrives and the focus is in it: the chip names the row it found.
+  await screen.findByText("4 nodes, 1 edge");
+  expect(within(screen.getByRole("group", { name: "Focus" })).getByText(/^Issue#99 · /)).toBeTruthy();
+  // One step, and only one: it reads 1k then 5k, never the whole store.
+  expect(limits()).toEqual(["1000", "5000"]);
+  expect(screen.getByRole("button", { name: "Nodes: 5k" })).toBeTruthy();
 });
 
 // Two trees, 1 <- 2 and 3 <- 4, 3 <- 5, and 6 under no root; the newer tree, 3's, lists first.
@@ -1190,6 +1197,7 @@ test("Peek's button, or ], collapses it and frames the canvas again; the selecti
   await user.keyboard("]");
   cleanup();
   renderer = new FakeRenderer();
+  highlights = new HighlightStore();
   const again = await shown();
   act(() => renderer.events!.click(renderer.node("Issue 1")));
   expect(collapsed()).toBe("true");
@@ -1224,20 +1232,3 @@ test("the search results' button, or [, collapses them to a strip with their cou
   expect(renderer.refits).toHaveLength(2);
 });
 
-/** The app's sidebar button, as the shell holds it. */
-function SidebarButton() {
-  return (
-    <button type="button" onClick={usePanel(SIDEBAR).toggle}>
-      Sidebar
-    </button>
-  );
-}
-
-test("collapsing or expanding the app's sidebar frames the graph again in the width it changes", async () => {
-  const { user } = await shown();
-  render(<SidebarButton />);
-  await user.click(screen.getByRole("button", { name: "Sidebar" }));
-  expect(renderer.refits).toHaveLength(1);
-  await user.click(screen.getByRole("button", { name: "Sidebar" }));
-  expect(renderer.refits).toHaveLength(2);
-});

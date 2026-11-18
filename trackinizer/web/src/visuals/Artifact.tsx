@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { ApiError } from "../api/client";
 import { getArtifactContentRevision } from "../api/artifacts";
 import { formatRoute, UUID } from "../router/route";
+import { useVisualMark } from "./marks";
 import type { RendererProps } from "./registry";
+import { HtmlArtifact } from "./HtmlArtifact";
 import "./Artifact.css";
 
 /** A graph row cited by an Artifact finding. */
@@ -57,30 +59,49 @@ export type ArtifactContentRevision = {
 );
 
 /** Render the revision selected by a canvas operation. */
-export function Artifact({ instance }: RendererProps) {
+export function Artifact({ instance, workspace }: RendererProps) {
   const id = instance.record_id;
   if (typeof id !== "string" || !UUID.test(id)) {
     return <p className="visual-unsupported">Open an Artifact or ask the agent to select one.</p>;
   }
-  return <ArtifactPage id={id} />;
+  return <ArtifactPage id={id} shown={{ instance, workspace }} />;
 }
 
-/** Read one exact revision; the link stays valid after later publications. */
-export function ArtifactPage({ id, optional = false }: { readonly id: string; readonly optional?: boolean }) {
-  const query = useQuery({
+/** One exact revision, read once however many places draw it: it never changes. */
+function useArtifactContent(id: string) {
+  return useQuery({
     queryKey: ["artifact-content", id],
     queryFn: ({ signal }) => getArtifactContentRevision(id, { signal }),
     staleTime: Infinity,
     retry: false,
   });
+}
+
+/** Read one exact revision; the link stays valid after later publications. */
+export function ArtifactPage({ id, optional = false, framed = true, shown }: {
+  readonly id: string;
+  readonly optional?: boolean;
+  /** Whether an HTML revision's page is drawn here; a record's page draws it across the pane itself (`ArtifactFrame`). */
+  readonly framed?: boolean;
+  /** The canvas visual this page is, so its data's paint is marked (`trackinizer.timings()`). */
+  readonly shown?: Pick<RendererProps, "instance" | "workspace">;
+}) {
+  const query = useArtifactContent(id);
+  useVisualMark(shown?.instance, shown?.workspace ?? null, "data", query.isSuccess);
   if (query.isPending) return <div className="visual-loading" aria-busy="true">Loading Artifact…</div>;
   if (optional && query.error instanceof ApiError && query.error.status === 404) return null;
   if (query.isError) return <div className="visual-unsupported" role="alert">Could not load this Artifact revision. <button className="btn ghost" type="button" onClick={() => void query.refetch()}>Retry</button></div>;
-  return <ArtifactContent artifact={query.data} />;
+  return <ArtifactContent artifact={query.data} framed={framed} />;
 }
 
-/** Render a versioned Artifact summary, evidence, or isolated custom HTML. */
-export function ArtifactContent({ artifact }: { readonly artifact: ArtifactContentRevision }) {
+/** An HTML revision's page alone, as a record's page opens it, across the pane; nothing for a structured one, or one not read. */
+export function ArtifactFrame({ id }: { readonly id: string }) {
+  const query = useArtifactContent(id);
+  return query.data?.format === "html" ? <HtmlArtifact id={query.data.artifact_id} title={query.data.title} /> : null;
+}
+
+/** Render a versioned Artifact summary, evidence, or isolated custom HTML (unless not `framed`). */
+export function ArtifactContent({ artifact, framed = true }: { readonly artifact: ArtifactContentRevision; readonly framed?: boolean }) {
   return <article className="artifact-content">
     <header className="artifact-header">
       <p className="artifact-eyebrow">Artifact revision {artifact.revision}</p>
@@ -90,7 +111,6 @@ export function ArtifactContent({ artifact }: { readonly artifact: ArtifactConte
       <p className="artifact-byline">By {artifact.author} · {artifact.created_at.slice(0, 10)}</p>
       <p className="artifact-source">
         <a href={formatRoute({ name: "lookup", id: artifact.artifact_id })}>Link to this Artifact</a>
-        {artifact.format === "html" && <>{" · "}<a href={htmlPageUrl(artifact.artifact_id)} target="_blank" rel="noopener noreferrer">Open full page</a></>}
       </p>
       <p className="artifact-source">
         Source: <a href={formatRoute({ name: "lookup", id: artifact.issue_id })}>Issue</a>
@@ -103,7 +123,7 @@ export function ArtifactContent({ artifact }: { readonly artifact: ArtifactConte
         <Citation key={citationKey(citation, index)} citation={citation} />)}</ul>
     </section>}
     {artifact.format === "html"
-      ? <HtmlArtifact id={artifact.artifact_id} title={artifact.title} />
+      ? framed && <HtmlArtifact id={artifact.artifact_id} title={artifact.title} />
       : <StructuredArtifact sections={artifact.sections} />}
   </article>;
 }
@@ -164,20 +184,3 @@ function citationKey(citation: ArtifactCitation, index: number): string {
   return `${citation.record_id}:${citation.claim_id ?? ""}:${index}`;
 }
 
-// The page route sends the sandbox CSP itself, so the frame and the full-page
-// link share one policy. A real URL (not srcdoc) also lets the page's own
-// history.pushState/replaceState work.
-function HtmlArtifact({ id, title }: { readonly id: string; readonly title: string }) {
-  return <iframe
-    className="artifact-html-frame"
-    title={`${title} Artifact content`}
-    sandbox="allow-scripts allow-popups"
-    referrerPolicy="no-referrer"
-    src={htmlPageUrl(id)}
-  />;
-}
-
-/** The sandboxed page route serving one HTML Artifact revision. */
-function htmlPageUrl(id: string): string {
-  return `/api/artifacts/${encodeURIComponent(id)}/html`;
-}

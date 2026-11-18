@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import ValidationError
 
 import pytest
 
 from trackinizer.server.visuals.catalog import (
+    ContextGraphVisual,
+    FilesVisual,
+    KnowledgeVisual,
     ParameterDescription,
     StaticVisual,
+    TerminalVisual,
     TimelineVisual,
     Workspace,
     default_catalog,
@@ -21,11 +27,42 @@ def test_default_workspace_builds_the_default_catalog() -> None:
     assert default_workspace().catalog() == default_catalog()
     assert [visual.type for visual in default_catalog().visuals] == [
         "trax.browse",
-        "trax.chat",
         "trax.subgraph",
+        "trax.knowledge",
         "trax.timeline",
         "trax.artifact",
+        "trax.summary",
+        "trax.files",
+        "trax.terminal",
+        "trax.blocks",
     ]
+
+
+def test_every_registered_visual_is_named_in_the_agent_skill() -> None:
+    """A seat that cannot read a type's name from its skill never asks for it.
+
+    Measured: with `trax.knowledge` missing from the SKILL.md list, a real Claude
+    turn asked for what a record stands on chose `trax.subgraph` instead.
+    """
+    skill = (
+        Path(__file__).parents[2] / "trax" / "docs" / "skills" / "trax" / "SKILL.md"
+    ).read_text()
+    missing = [
+        visual.type for visual in default_catalog().visuals if visual.type not in skill
+    ]
+    assert missing == []
+
+
+def test_a_type_that_is_not_registered_has_no_description() -> None:
+    """A show of an unknown type is refused by the lookup, not by an exception."""
+    workspace = default_workspace()
+    assert workspace.visual("x.unknown") is None
+    summary = workspace.visual("trax.summary")
+    assert summary is not None
+    assert (summary.requires, summary.record_kinds) == (
+        ["record"],
+        ["Issue", "AgentSession"],
+    )
 
 
 def test_static_visual_is_configured_by_data() -> None:
@@ -34,23 +71,157 @@ def test_static_visual_is_configured_by_data() -> None:
         type="x.notes",
         title="Notes",
         description="Free-form notes.",
-        requires=["session"],
+        requires=["record"],
         default_size="compact",
     ).make()
     described = visual.describe()
     assert (described.type, described.title, described.requires) == (
         "x.notes",
         "Notes",
-        ["session"],
+        ["record"],
     )
     assert described.default_size == "compact"
+    # No placement of its own, so a show of it still lands by the size rule.
+    assert described.default_placement is None
     assert described.parameter_schema == {}
+
+
+def test_browse_is_the_page_and_takes_no_record_or_parameter() -> None:
+    """Browse draws the page: no record, no parameters, version unchanged."""
+    browse = default_workspace().visual("trax.browse")
+    assert browse is not None
+    assert browse.version == 1
+    assert browse.record_kinds == []
+    assert browse.parameter_schema == {}
+
+
+def test_record_visuals_name_the_kinds_they_accept() -> None:
+    """The catalog says what each visual can draw, so a show can be refused early."""
+    kinds = {visual.type: visual.record_kinds for visual in default_catalog().visuals}
+    assert kinds == {
+        "trax.browse": [],
+        "trax.subgraph": None,
+        "trax.knowledge": None,
+        "trax.timeline": None,
+        "trax.artifact": ["Artifact"],
+        "trax.summary": ["Issue", "AgentSession"],
+        "trax.files": None,
+        "trax.terminal": None,
+        "trax.blocks": None,
+    }
 
 
 def test_default_visual_requiring_a_record_is_rejected() -> None:
     """A new canvas cannot open on a tile that has no record to render."""
     with pytest.raises(ValueError, match="record"):
         Workspace.Config(default_visual="trax.subgraph").make()
+
+
+def test_context_graph_bounds_its_reach_and_its_highlight() -> None:
+    """The window lights 1 to 3 hops, 2 unless asked, and marks ids it lists."""
+    described = ContextGraphVisual.Config().make().describe()
+    assert (described.type, described.requires, described.default_size) == (
+        "trax.subgraph",
+        ["record"],
+        "wide",
+    )
+    hops = described.parameter_schema["hops"]
+    assert (hops.type, hops.default, hops.minimum, hops.maximum) == (
+        "integer",
+        2,
+        1,
+        3,
+    )
+    highlight = described.parameter_schema["highlight"]
+    assert (highlight.type, highlight.default, highlight.max_length) == (
+        "string",
+        "",
+        512,
+    )
+
+
+def test_knowledge_bounds_its_reach_and_names_one_claim() -> None:
+    """The fold takes claims 1 to 3 edges out, 2 unless asked, and opens one by id."""
+    described = KnowledgeVisual.Config().make().describe()
+    assert (described.type, described.requires, described.default_size) == (
+        "trax.knowledge",
+        ["record"],
+        "wide",
+    )
+    # The fold is the answer over the stage, not a third lane in the page's row.
+    assert described.default_placement == "floating"
+    assert set(described.parameter_schema) == {"hops", "claim"}
+    hops = described.parameter_schema["hops"]
+    assert (hops.type, hops.default, hops.minimum, hops.maximum) == ("integer", 2, 1, 3)
+    claim = described.parameter_schema["claim"]
+    assert (claim.type, claim.default, claim.max_length) == ("string", "", 512)
+    assert default_workspace().visual("trax.knowledge") == described
+
+
+def test_terminal_needs_no_record_and_bounds_its_machine_and_has_no_terminal_id() -> (
+    None
+):
+    """The tile starts nothing itself, caps its machine and keeps no terminal id."""
+    described = TerminalVisual.Config().make().describe()
+    assert (described.type, described.requires, described.default_size) == (
+        "trax.terminal",
+        [],
+        "wide",
+    )
+    machine = described.parameter_schema["machine"]
+    assert (machine.type, machine.default, machine.max_length) == ("string", "", 63)
+    assert set(described.parameter_schema) == {"machine", "start"}
+    start = described.parameter_schema["start"]
+    assert (start.type, start.default) == ("boolean", False)
+
+
+def test_files_takes_any_record_and_bounds_its_narrowing() -> None:
+    """The files view draws any record; its path and file are capped at 512."""
+    described = FilesVisual.Config().make().describe()
+    assert described.model_dump() == {
+        "type": "trax.files",
+        "version": 1,
+        "title": "Files",
+        "description": (
+            "A record's files and what changed in them, each change with its diff."
+        ),
+        "requires": ["record"],
+        "default_size": "wide",
+        "default_placement": None,
+        "parameter_schema": {
+            "path": {
+                "type": "string",
+                "default": "",
+                "minimum": None,
+                "maximum": None,
+                "max_length": 512,
+            },
+            "changed": {
+                "type": "boolean",
+                "default": False,
+                "minimum": None,
+                "maximum": None,
+                "max_length": None,
+            },
+            "file": {
+                "type": "string",
+                "default": "",
+                "minimum": None,
+                "maximum": None,
+                "max_length": 512,
+            },
+        },
+        "record_kinds": None,
+    }
+    assert default_workspace().visual("trax.files") == described
+
+
+def test_context_graph_default_reach_past_three_hops_is_a_config_error() -> None:
+    """The neighbourhood read walks at most 3 hops, so no default may ask more."""
+    config = ContextGraphVisual.Config()
+    config.default_hops = 4
+    with pytest.raises(ValueError, match="outside its bounds"):
+        config.make().describe()
 
 
 def test_timeline_config_raises_the_descriptor_bound_instead_of_failing() -> None:
@@ -99,6 +270,6 @@ def test_parameter_bounds_that_do_not_apply_to_the_type_are_rejected(
 
 
 if __name__ == "__main__":
-    from trackinizer.lib.testing.main import test_main
+    from trackinizer.lib.testing.runner import test_main
 
     test_main(__file__)

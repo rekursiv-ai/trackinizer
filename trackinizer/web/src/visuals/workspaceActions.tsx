@@ -1,10 +1,14 @@
 import { createContext, useContext } from "react";
+import type { WorkspaceOperation } from "../api/workspaces";
 
-type WorkspaceActions = {
+/** What a canvas lets the views inside it do to it. */
+export type WorkspaceActions = {
   readonly busy: boolean;
   readonly writeError: string | null;
-  readonly revealRecord: (recordId: string) => Promise<boolean>;
-  readonly connectSession: (sessionId: string | null) => void;
+  /** Apply one canvas operation. Links never need it: they only set the address. */
+  readonly operate: (operation: WorkspaceOperation) => void;
+  /** The visual types this deployment's catalog offers. */
+  readonly visualTypes: ReadonlySet<string>;
 };
 
 const WorkspaceActionsContext = createContext<WorkspaceActions | null>(null);

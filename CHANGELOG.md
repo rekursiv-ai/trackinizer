@@ -3,6 +3,193 @@
 All notable trackinizer changes are documented here. This project follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Changed
+
+- **Breaking for anyone who runs the server from PyPI.** A bare `pip install
+  trackinizer` now installs the client side only: `trax`, `Client` and the wire
+  and type models, with none of the database driver, web framework or torch.
+  The server, its web app and the embedders moved to the `server` extra:
+  install it with `pip install 'trackinizer[server]'` (`uv tool install
+  'trackinizer[server]'`). The `trackinizer` command on a bare install prints
+  that line and exits 2 instead of a traceback. The extra holds `asyncpg`,
+  `py-pglite`, `fastapi`, `starlette`, `uvicorn`, `itsdangerous`, `configgle`,
+  `zstandard`, `torch`, `transformers`, `huggingface-hub` and `peft`. `bashlex`
+  and `watchdog` (macOS) stay in the base: `trax run` session capture needs
+  them. A source checkout is unaffected.
+
+### Removed
+
+- `trackinizer.lib.worker_count` is no longer part of the package. It moved,
+  with the pre-commit gates that use it, to `tools/gate/` at the repository
+  root, which the wheel does not ship.
+
+## 0.1.7 - 2026-10-21
+
+### Added
+
+- Variables: an org stores launch variables in a `variables` table, served by
+  `/api/variables`. Secret values live in a backend chosen by
+  `TRACKINIZER_SECRETS` (a file store or AWS Secrets Manager); the table keeps
+  only the name and who set it.
+- `trax env` lists, sets and deletes the org's variables, and `Client` gains
+  `list_variables`, `put_variable` and `delete_variable`.
+- `trax run` masks the values named in `TRAX_REDACT_NAMES` in every sink it
+  writes, including multi-line and cut-off forms and base64 attachment bytes
+  of uploaded records. It exits when a named value is missing or shorter than
+  `MIN_SECRET_LENGTH`.
+- `trax machine` registers machines and their roles, labels and facts.
+  Matching `Client` methods and `/api/machines` routes cover list, get, put,
+  label changes and delete.
+- Machine credentials: an admin enrolls a machine for a one-use, 15-minute
+  token; the host joins once, heartbeats, and reads online until 180 s of
+  silence. A revoked credential answers 410, an unknown one 401.
+- `trax machine NAME connect` hosts a machine: it joins with the enrollment
+  token on stdin, saves the credential for this user, and heartbeats until
+  revoked; `trax machine NAME` shows its status.
+- Browser terminal: the owner of a connected machine opens a shell on it from a
+  web tile, over WebSockets the host dials out to the server. Nothing the
+  terminal shows or receives is stored. Only the owner opens one, from a browser
+  session and never with a key;
+  the host opts in with `TRAX_MACHINE_TERMINAL=1` and logs every open locally.
+  Adds the `websockets` dependency.
+- Direct terminal link: a browser may offer the host a WebRTC data channel over the
+  terminal sockets, so typing no longer crosses a distant server. The server only
+  forwards the offer and keeps the idle and lifetime limits (`KEEPALIVE`); it still
+  relays when no direct path forms. The host needs aiortc, which is not a dependency:
+  `uv tool install --with aiortc trackinizer`. `TRACKINIZER_TERMINAL_STUN` names the
+  STUN servers (none by default).
+- A writer can enroll a machine of their own: `trax machine connect` with no name
+  uses the short hostname, enrolls it as a personal machine only its owner and
+  admins see, and serves terminals. Machines gain an `owner`; the owner (or an
+  admin) can revoke it.
+- A shell opened from a terminal carries the trax context (`TRAX_WORKSTREAM`,
+  `TRAX_WORKSPACE`, `TRACKINIZER_PROFILE`, and `LC_TRAX_*` copies that survive
+  `ssh`). `trax` reads `TRAX_X`, else `LC_TRAX_X`, and uses the saved profile
+  whose URL is `LC_TRAX_SERVER` when none is selected; with none saved it prints
+  how to log in.
+- `trax` takes its server and key from `TRACKINIZER_URL` and
+  `TRACKINIZER_TOKEN`. A malformed token is refused, and a lone token is
+  ignored.
+- Queued inbound messages carry `InboundDrainItem.source_role` and Chat
+  messages carry `ChatMessage.author_role`, the sender's attested role.
+- `Client.get` accepts a per-request `timeout`.
+- `trax run` warns when it cannot capture what the CLI continues: a resume
+  that names no session it can find (`claude --continue`, the picker, a search
+  term, `codex resume --last`), and, at exit, a typed slash command that can
+  move the CLI into another session (`/clear`, `/resume`, `/branch`, `/fork`;
+  codex `/new`, `/resume`, `/fork`). Each points at
+  `trax agentsession <seq> run <cli>`. `docs/design_session_resume.md` lists
+  what every resume path and session command captures.
+
+### Changed
+
+- A restarted `trax machine connect` serves at once instead of waiting 180 s for
+  its old self to go silent: its first heartbeat takes the machine (`claim:
+  take`), and the host it replaced stops. Ctrl-C releases the machine, which
+  reads offline at once.
+- `trax machine connect` keeps a machine's credential per server
+  (`machines/<host>[_<port>]/<name>.credential`), so one computer can be a
+  machine of several servers. A credential saved under the old layout is not
+  read: the next `connect` with no NAME enrolls and joins again by itself.
+- `trax env NAME del` reports success when the variable is already gone.
+  Variable rows are written before secret values.
+- `trax run` no longer masks a bare PEM armour fragment; full armour lines of
+  a configured PEM value are still masked.
+- **Breaking:** `Redactor.redact_json` and `redact_mapping` take `PlainTree`;
+  `redact_mapping` returns `Mapping[str, PlainTree]`.
+- **Breaking:** the `trax run` `Adapter` protocol gains `resumed_session`
+  (which session a command line continues) and `session_switch_commands`.
+- trackinizer declares `pydantic-core`, which `server.preferences` imports.
+- The wheel no longer ships test support: `trackinizer.lib.testing`,
+  `lib.agent.sessions.testdata`, `lib.posix.testing`, `lib.postgres.testing`,
+  `server.api.canvas_test_support`, `server.embedders.qwen_fakes` and
+  `trax.run.fake_chat_server`.
+
+### Fixed
+
+- `trax run` no longer fails an upload with HTTP 413: a record too large to
+  send keeps its beginning and end around a marker, notes the cut in
+  `$trackinizer_truncated`, and resuming its session needs `--lossy`.
+- `trax run <cli> -- <resume>` captures the session it continues when the
+  resume names it by id: `claude --resume <session-id>` in each spelling claude
+  accepts (`--resume=<id>`, `-r <id>`, `-r<id>`), from any project directory,
+  and `codex resume <session-id>`. The transcript existed before the run, so it
+  was skipped as an earlier run's and the session stored no records; it is now
+  followed from its start and re-attaches the AgentSession that captured it,
+  as `trax agentsession <seq> run <cli>` does.
+- `trax run claude -- --resume` (the picker), `-r<id>`, and short-flag clusters
+  such as `-pc` start: `--session-id` is no longer added beside a resume, which
+  claude rejects without `--fork-session`. A `--resume <search term>` is no
+  longer claimed as a session id.
+- A `--fork-session` run captures the fork's new transcript, including
+  `trax agentsession <seq> run claude -- --fork-session`, which followed the
+  old one and re-attached the old AgentSession.
+- A fresh `trax run claude` stamps its session with claude's session id when it
+  opens, not only when it closes: a run killed before closing was ended
+  unstamped, and resuming it stored the whole conversation in a second
+  AgentSession.
+
+## 0.1.6 - 2026-10-07
+
+### Added
+
+- `Store.submit` accepts any concrete inquiry submission body, using the
+  same typed dispatcher for single submissions and mixed-kind batches.
+
+### Changed
+
+- **Breaking:** Python JSON types move from `trackinizer.lib.custom_json` to
+  `trackinizer.lib.codec`: client return annotations use `PlainTree`, and
+  session-record JSON fields use `Mapping[str, PlainTree]`. Wire-model JSON
+  aliases now live in `trackinizer.wire.json_types`.
+- Session payloads use the shared codec's record tags, while provider JSON
+  fields such as `extra` and tool arguments stay plain objects and arrays.
+  Reads still accept older plain records; the web transcript and conversation
+  feed accept both plain and tagged attachment arrays.
+- Structured Artifact snapshots no longer have a second 30 MB check after
+  citations are frozen. Publication requests remain capped at 30 MB, HTML
+  remains capped at 30 MB, and each publisher's storage remains 500 MB.
+
+### Fixed
+
+- `trax agentsession SEQ run claude|codex` writes the resumed transcript
+  before stamping its new CLI session id on the server, and stamps it before
+  starting the runner. A failed file write or missing reasoning ciphertext
+  leaves the server's session id unchanged.
+- Resume checks the records the target will actually write, including when
+  resuming in the same format, so dropped acts require `--lossy`. Native
+  runner arguments after `--` pass through unchanged.
+- `trax run` ends its session before waiting for the inbound poller to stop.
+  Ending a session releases held inbound requests immediately, instead of
+  making exit wait out the poll; queued messages are not drained to an
+  exiting runner.
+- Session search checks for locally cached weights before constructing an
+  embedder, including `model=` overrides, and falls back to full text when
+  weights are absent. Override instances are reused by resolved model name;
+  `dim` without `model` answers 400.
+- Session readers preserve malformed provider fields instead of aborting the
+  rest of a Claude, Codex or sagent transcript. Claude replay also handles
+  untyped foreign tool results and avoids duplicate calls when a result
+  precedes its call.
+- `trax` treats `run` and `metric` as literal field values unless they follow
+  a complete command subject or clause. Adding an already-present edge now
+  prints `exists:` instead of silently succeeding.
+- `GET /api/web/feed` rejects invalid time windows, and feed histograms choose
+  their starting point from records matching the requested filters.
+- Graph mirroring checks existing edges through their source inquiries,
+  instead of the newest-node graph window, so older edges are not reported
+  as newly added. Live graph replay rejects `--seed` with `--traverse` or
+  `--limit`.
+- Malformed signed session and OAuth-state cookie payloads are ignored
+  instead of raising a server error.
+
+### Removed
+
+- **Breaking:** `trackinizer.trax.run.materialize.materialize_claude`; use
+  `materialize(target="claude", ...)` instead.
+
 ## 0.1.5 - 2026-10-03
 
 ### Added
@@ -279,10 +466,6 @@ All notable trackinizer changes are documented here. This project follows
   `data_dir()/rekursiv-ai/trackinizer/`. Nothing migrates the old
   locations, so an existing profile or database is simply not found and
   has to be moved by hand.
-- A malformed request body returns HTTP 422 instead of 500. A stray key
-  in a client-supplied `message` raised a bare `ValueError` out of the
-  codec, which matched no handler; it is now a `SchemaError` the API
-  maps to 422, reporting both the offending and the valid field names.
 - Filters whose two evaluators would disagree are refused with a 400
   naming the spelling that works, rather than answered differently
   depending on which evaluator ran. Refused: a regex on a column with no

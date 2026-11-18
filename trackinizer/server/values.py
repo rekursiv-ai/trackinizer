@@ -20,6 +20,7 @@ __all__ = [
 ]
 
 
+# Audience: internal -- a SQL fragment; the query that embeds it carries the gate.
 def manifest_bound(alias: str) -> tuple[str, str]:
     """Return the SQL to bound a record scan by its part's live manifest prefix.
 

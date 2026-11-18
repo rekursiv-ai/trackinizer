@@ -2,6 +2,8 @@ import { queryOptions, type UseQueryResult, useQueries } from "@tanstack/react-q
 import { createContext, useContext } from "react";
 import { getEdgeTopology, getEnums, getFieldOwners, type EdgeTopology, type Enums, type FieldOwners } from "../api/meta";
 import { getProfile, type Profile } from "../api/me";
+import { adoptLegacyPreferences, receivePreferences } from "../preferences";
+import { adoptLocalUserData } from "../state/local";
 import { useOnline } from "../ui/bars";
 import { prefetched } from "./prefetch";
 
@@ -34,10 +36,21 @@ export const bootQueries = {
     queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getEdgeTopology({ signal })),
     staleTime: Infinity,
   }),
-  /** Refetch it after a 403: the role may have changed. */
+  /**
+   * Refetch it after a 403: the role may have changed. It brings the user's
+   * preferences, shown before the app is (`src/preferences.ts`), and this
+   * browser's own from before they lived on the server, or kept as a session
+   * ended, are sent once.
+   */
   profile: queryOptions({
     queryKey: ["me", "profile"],
-    queryFn: ({ queryKey, signal }) => prefetched(queryKey, () => getProfile({ signal })),
+    queryFn: async ({ queryKey, signal }) => {
+      const profile = await prefetched(queryKey, () => getProfile({ signal }));
+      receivePreferences(profile.preferences);
+      void adoptLegacyPreferences(profile.email);
+      void adoptLocalUserData(profile.email);
+      return profile;
+    },
   }),
 };
 
@@ -92,6 +105,12 @@ function combineBoot([enums, fieldOwners, edges, profile]: [
 export const MetaContext = createContext<Meta | null>(null);
 export const ProfileContext = createContext<Profile | null>(null);
 
+/**
+ * Whether the page shows a locked inquiry that the signed-in user may not change
+ * (only an admin may), so its write controls do not show.
+ */
+export const LockedContext = createContext(false);
+
 /** The server's vocabulary. */
 export function useMeta(): Meta {
   const meta = useContext(MetaContext);
@@ -107,11 +126,13 @@ export function useProfile(): Profile {
 }
 
 /**
- * How write controls show: `hidden` for a viewer, `disabled` while offline,
- * `enabled` otherwise. The server refuses a viewer's writes with 403 anyway.
+ * How write controls show: `hidden` for a viewer, and on a locked inquiry for
+ * anyone but an admin, `disabled` while offline, `enabled` otherwise. The server
+ * refuses a viewer's writes, and a locked row's, with 403 anyway.
  */
 export function useWriteMode(): "hidden" | "disabled" | "enabled" {
   const online = useOnline();
-  if (useProfile().role === "viewer") return "hidden";
+  const locked = useContext(LockedContext);
+  if (useProfile().role === "viewer" || locked) return "hidden";
   return online ? "enabled" : "disabled";
 }
