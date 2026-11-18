@@ -160,23 +160,24 @@ async def test_session_ir_migrations_match_the_baseline_indexes(
 async def test_migration_063_matches_the_baseline_shape(
     integ_rollback_conn: Conn,
 ) -> None:
-    """063's change stamp and cursor table equal the fresh install's.
+    """063's change stamp equals the fresh install's.
 
-    Bootstrap builds the baseline. This strips what 063 adds -- the cursor table,
-    the trigger, its function, the index and the column, as a pre-063 database
-    lacks them -- replays ``schema.063``, and compares columns, indexes and the
-    trigger, which neither file can check about the other.
+    Bootstrap builds the baseline. This strips what 063 adds -- the trigger, its
+    function, the index and the column, as a pre-063 database lacks them -- replays
+    ``schema.063`` and then ``schema.081``, which drops the cursor table 063 also
+    builds, and compares columns, indexes and the trigger, which neither file can
+    check about the other.
     """
     conn = integ_rollback_conn
     baseline = await _change_stamp_shape(conn)
     assert baseline[2], "the baseline created no change-stamp trigger"
     await conn.execute(
-        "DROP TABLE session_index_cursor; "
         "DROP TRIGGER session_records_stamp_change ON session_records; "
         "DROP FUNCTION session_records_stamp_change(); "
         "ALTER TABLE session_records DROP COLUMN changed_xid",
     )
     await conn.execute(load_sql("schema.063"))
+    await conn.execute(load_sql("schema.081"))
     migrated = await _change_stamp_shape(conn)
 
     assert migrated == baseline
@@ -360,182 +361,33 @@ async def test_session_records_context_id_check_rejects_a_forward_reference(
 
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
-async def test_migration_022_then_023_matches_the_baseline_shape(
+async def test_migration_022_matches_the_baseline_session_bodies(
     integ_rollback_conn: Conn,
 ) -> None:
-    """The session-index tables built by 022+023 equal the fresh-install ones.
+    """The ``session_bodies`` table 022 builds equals the fresh-install one.
 
-    Bootstrap builds the baseline shape (dimension-free ``embedding`` + one
-    partial HNSW per shipped model, from schema.sql). This drops the tables (as
-    a pre-022 database lacks them), replays ``schema.022`` THEN ``schema.023`` --
-    the full chain an existing database runs -- and compares columns AND indexes.
-    Replaying 022 alone would (correctly) diverge: 023 is what widens the column
-    and swaps the single global index for the per-model partials.
+    This drops it (as a pre-022 database lacks it) and replays the chain an existing
+    database runs over the vector table 022 also builds: ``schema.022``, ``schema.023``
+    and ``schema.081``, which drops that table again. Columns and indexes compare.
     """
     conn = integ_rollback_conn
     columns = (
         "SELECT table_name, column_name, data_type, is_nullable, column_default "
         "FROM information_schema.columns WHERE table_schema = 'public' "
-        "AND table_name = ANY($1::text[]) ORDER BY table_name, ordinal_position"
+        "AND table_name = 'session_bodies' ORDER BY ordinal_position"
     )
-    indexes = (
-        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
-        "AND tablename = ANY($1::text[]) ORDER BY indexdef"
-    )
-    tables = ["session_embeddings", "session_bodies"]
-    base_cols = [dict(r) for r in await conn.fetch(columns, tables)]
-    base_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
-    assert {r["table_name"] for r in base_cols} == set(tables), (
-        "the baseline did not create every session-index table"
-    )
-    # The baseline ships one partial HNSW per model; there must be several.
-    assert sum(1 for d in base_idx if "hnsw" in d) >= _SHIPPED_PARTIAL_INDEX_COUNT, (
-        base_idx
-    )
+    indexes = "SELECT indexdef FROM pg_indexes WHERE tablename = 'session_bodies'"
+    base_cols = [dict(r) for r in await conn.fetch(columns)]
+    base_idx = {str(r["indexdef"]) for r in await conn.fetch(indexes)}
+    assert base_cols, "the baseline did not create session_bodies"
 
-    await conn.execute("DROP TABLE session_embeddings, session_bodies")
-    await conn.execute(load_sql("schema.022"))
-    await conn.execute(load_sql("schema.023"))
-    migrated_cols = [dict(r) for r in await conn.fetch(columns, tables)]
-    migrated_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
+    await conn.execute("DROP TABLE session_bodies")
+    for step in ("schema.022", "schema.023", "schema.081"):
+        await conn.execute(load_sql(step))
 
-    assert migrated_cols == base_cols
-    assert set(migrated_idx) == set(base_idx)
-
-
-# The seven partial HNSW indexes schema.023 + the baseline ship (six real models
-# + the stub). The parity test asserts the baseline carries at least this many;
-# an exact match is enforced by the column/index set-equality above.
-_SHIPPED_PARTIAL_INDEX_COUNT = 7
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_migration_023_preserves_existing_1024_rows_byte_for_byte(
-    integ_rollback_conn: Conn,
-) -> None:
-    """Widening ``embedding`` to dimension-free ``halfvec`` keeps stored rows exact.
-
-    A pre-023 database holds ``halfvec(1024)`` rows. Dropping the typmod is a
-    metadata-only change, so an existing vector must read back byte-identical
-    after 023 -- the guard against a migration that silently requantizes the
-    corpus.
-    """
-    conn = integ_rollback_conn
-    # Rebuild the PRE-023 shape: halfvec(1024) + the single global index.
-    await conn.execute("DROP TABLE session_embeddings")
-    await conn.execute(load_sql("schema.022"))
-    session_id = uuid.uuid4()
-    await conn.execute(
-        "INSERT INTO inquiries (id, kind, seq, status, account, title, "
-        "agentsession_audience) "
-        "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-        "'tester@example.com', 'row survives 023', 'open')",
-        session_id,
-    )
-    vector = "[" + ",".join("0.0123456" for _ in range(1024)) + "]"
-    await conn.execute(
-        "INSERT INTO session_embeddings "
-        "(session_id, part, idx, field, chunk, mapper, model, embedding, "
-        "text_md5) VALUES ($1, 0, 0, 'content', 0, 'footprint', "
-        "'qwen3-embedding-4b@1024', $2, 'abc')",
-        session_id,
-        vector,
-    )
-    before = await conn.fetchval(
-        "SELECT embedding::text FROM session_embeddings WHERE session_id = $1",
-        session_id,
-    )
-    await conn.execute(load_sql("schema.023"))
-    after = await conn.fetchval(
-        "SELECT embedding::text FROM session_embeddings WHERE session_id = $1",
-        session_id,
-    )
-    assert before == after
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_migration_024_matches_the_baseline_shape(
-    integ_rollback_conn: Conn,
-) -> None:
-    """The ``session_index_state`` table 024 builds equals the fresh-install one.
-
-    Bootstrap builds the baseline shape (which carries ``session_index_state``).
-    This drops it (as a pre-024 database lacks it), replays ``schema.024``, and
-    compares columns AND indexes -- the parity check neither file can make about
-    itself, since each is read by a disjoint population.
-    """
-    conn = integ_rollback_conn
-    columns = (
-        "SELECT table_name, column_name, data_type, is_nullable, column_default "
-        "FROM information_schema.columns WHERE table_schema = 'public' "
-        "AND table_name = ANY($1::text[]) ORDER BY table_name, ordinal_position"
-    )
-    indexes = (
-        "SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' "
-        "AND tablename = ANY($1::text[]) ORDER BY indexdef"
-    )
-    tables = ["session_index_state"]
-    base_cols = [dict(r) for r in await conn.fetch(columns, tables)]
-    base_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
-    assert {r["table_name"] for r in base_cols} == set(tables), (
-        "the baseline did not create session_index_state"
-    )
-
-    await conn.execute("DROP TABLE session_index_state")
-    await conn.execute(load_sql("schema.024"))
-    migrated_cols = [dict(r) for r in await conn.fetch(columns, tables)]
-    migrated_idx = [str(r["indexdef"]) for r in await conn.fetch(indexes, tables)]
-
-    assert migrated_cols == base_cols
-    assert set(migrated_idx) == set(base_idx)
-
-
-@pytest.mark.db_pglite
-@pytest.mark.asyncio(loop_scope="session")
-async def test_migration_024_backfills_markers_from_existing_vectors(
-    integ_rollback_conn: Conn,
-) -> None:
-    """024 seeds a marker per existing embedding group so nothing re-embeds.
-
-    A pre-024 database has ``session_embeddings`` rows but no marker table.
-    After 024, every embedded record must read up-to-date -- one marker per
-    ``(session_id, part, idx, mapper, model)`` group, carrying that group's md5.
-    """
-    conn = integ_rollback_conn
-    session_id = uuid.uuid4()
-    # Rebuild the PRE-024 state: embeddings present, no marker table.
-    await conn.execute("DROP TABLE session_index_state")
-    await conn.execute(
-        "INSERT INTO inquiries (id, kind, seq, status, account, title, "
-        "agentsession_audience) "
-        "VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', "
-        "'tester@example.com', 'marker backfill', 'open')",
-        session_id,
-    )
-    vector = "[" + ",".join("0.01" for _ in range(1024)) + "]"
-    # Two chunk units of ONE record share a single md5 -> one marker.
-    for chunk in (0, 1):
-        await conn.execute(
-            "INSERT INTO session_embeddings "
-            "(session_id, part, idx, field, chunk, mapper, model, embedding, "
-            "text_md5) VALUES ($1, 0, 0, 'content', $2, 'footprint-v1', "
-            "'qwen3-embedding-4b@1024', $3, 'sharedmd5')",
-            session_id,
-            chunk,
-            vector,
-        )
-    await conn.execute(load_sql("schema.024"))
-    markers = await conn.fetch(
-        "SELECT part, idx, mapper, model, text_md5 FROM session_index_state "
-        "WHERE session_id = $1",
-        session_id,
-    )
-    assert len(markers) == 1
-    assert markers[0]["text_md5"] == "sharedmd5"
-    assert markers[0]["mapper"] == "footprint-v1"
-    assert markers[0]["model"] == "qwen3-embedding-4b@1024"
+    assert [dict(r) for r in await conn.fetch(columns)] == base_cols
+    assert {str(r["indexdef"]) for r in await conn.fetch(indexes)} == base_idx
+    assert await conn.fetchval("SELECT to_regclass('session_embeddings')") is None
 
 
 @pytest.mark.db_pglite
@@ -2069,7 +1921,10 @@ async def _old_issue(conn: Conn) -> uuid.UUID:
 
 
 async def _migrate(conn: Conn, *steps: str) -> None:
-    """Run ``steps`` in order, then 066, 074, 075 and 076, as the runner applies them."""
+    """Run ``steps`` in order, then 066 and 074 to 076 and 081, as the runner does."""
+    # Every database older than 081 has the old embedding tables, which 047 deletes
+    # from and a fresh install lacks.
+    await conn.execute(load_sql("embedding_tables_down"))
     for step in steps:
         await conn.execute(load_sql(step))
     await conn.execute(_MIGRATION_066)
@@ -2078,6 +1933,7 @@ async def _migrate(conn: Conn, *steps: str) -> None:
     await conn.execute(_MIGRATION_074)
     await conn.execute(load_sql("schema.075"))
     await conn.execute(load_sql("schema.076"))
+    await conn.execute(load_sql("schema.081"))
 
 
 @pytest.mark.db_pglite
@@ -2292,6 +2148,7 @@ async def test_migration_076_brings_a_075_database_to_a_fresh_installs_catalog(
 # name no AccessGroup column, so they are found by what they say.
 async def _make_access_group_old(conn: Conn) -> None:
     """Turn a fresh database back into 065's shape: AccessGroup is no kind."""
+    await conn.execute(load_sql("embedding_tables_down"))
     await conn.execute("DELETE FROM applied_migrations WHERE name = 'schema.074.sql'")
     await conn.execute(
         "ALTER TABLE inquiries DROP COLUMN accessgroup_read_group, "
@@ -3275,6 +3132,45 @@ async def test_080_matches_a_fresh_schema(
     assert await _stamps(conn) == stamps
 
 
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_migration_081_drops_the_old_embedding_tables_a_fresh_install_lacks(
+    pglite_rollback_conn: Conn,
+    fresh_install: list[str],
+) -> None:
+    """081 drops the old engine's four tables, rows and all, and runs again as a no-op.
+
+    Bootstrap builds the baseline, which has none of them. This builds them as an
+    upgraded database still holds them, with a row each, then replays ``schema.081``.
+    """
+    conn = pglite_rollback_conn
+    await conn.execute(load_sql("embedding_tables_down"))
+    issue = await _stamped_issue(conn, "embedded")
+    await _embed_title(conn, issue, "embedded")
+    await conn.execute(
+        "INSERT INTO session_embeddings (session_id, part, idx, field, mapper, model, "
+        "embedding, text_md5) VALUES ($1, 0, 0, 'content', 'm', 'retired', "
+        "'[1,0]'::halfvec, 'md5')",
+        issue,
+    )
+    await conn.execute(
+        "INSERT INTO session_index_state (session_id, part, idx, mapper, model, "
+        "text_md5) VALUES ($1, 0, 0, 'm', 'retired', 'md5')",
+        issue,
+    )
+    await conn.execute(
+        "INSERT INTO session_index_cursor (mapper, model, snapshot) "
+        "VALUES ('m', 'retired', pg_current_snapshot())",
+    )
+    assert await _catalog_names_aside(conn) != fresh_install
+
+    await conn.execute(load_sql("schema.081"))
+    await conn.execute(load_sql("schema.081"))
+
+    assert await _catalog_names_aside(conn) == fresh_install
+    assert "embedding_tables_down.sql" not in {name for name, _ in schema_migrations()}
+
+
 async def _stamps(conn: Conn) -> set[str]:
     """Return the definitions of 080's triggers and their functions."""
     rows = await conn.fetch(
@@ -3379,8 +3275,10 @@ async def _stamp(conn: Conn, inquiry_id: uuid.UUID) -> object:
     )
 
 
+# A database older than 081 holds the old title vectors' table; the build does not.
 async def _embed_title(conn: Conn, inquiry_id: uuid.UUID, title: str) -> None:
     """Store ``title``'s hash vector as the inquiry's embedding."""
+    await conn.execute(load_sql("embedding_tables_down"))
     embedder = HashEmbedder(dim=384)
     await conn.execute(
         "INSERT INTO inquiry_embeddings (inquiry_id, model, embedding) "

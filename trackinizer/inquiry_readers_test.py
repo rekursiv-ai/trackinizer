@@ -91,10 +91,6 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
         "transcript search, and inquiry search under inquiry_read_filter",
     ),
     "server/store/submit.py": ("trusted", "write path"),
-    "server/tools/archive_embeddings.py": (
-        "trusted",
-        "operator CLI: a restore keeps only rows whose session still exists",
-    ),
     "server/visuals/reports.py": (
         "policy",
         "source Issue and citations; the created-audit lookup is a write",

@@ -23,7 +23,6 @@ from trackinizer.server.auth import AuthIdentity, ProcessKey, generate_token
 from trackinizer.server.schema_gen import substitute_schema_placeholders
 from trackinizer.server.sql import schema_migrations
 from trackinizer.server.store.core import Store
-from trackinizer.wire.bodies import SubmitIssue
 
 
 def _identity(*, user_id: uuid.UUID | None = None) -> AuthIdentity:
@@ -157,16 +156,6 @@ class TestVerifiedBearerCache:
             clock[0] += 1.0
 
         assert set(store._last_used_bumped_at) == {middle, newest}
-
-
-class TestStoreEmbedsNothing:
-    @pytest.mark.asyncio
-    async def test_a_submit_writes_no_vector(self) -> None:
-        store, engine = make_store()
-        await store.submit_issue(SubmitIssue(title="t", account="tester@example.com"))
-        sqls = executed_sql(engine.conn)
-        assert any("INSERT INTO inquiries" in s for s in sqls)
-        assert not any("inquiry_embeddings" in s for s in sqls)
 
 
 class TestStoreBootstrap:
@@ -372,18 +361,6 @@ class TestStoreBootstrap:
         await store.bootstrap()
         assert not any(
             "setval" in _sql(c.args) for c in engine.conn.execute.call_args_list
-        )
-
-    @pytest.mark.asyncio
-    async def test_bootstrap_reads_and_writes_no_vector(self) -> None:
-        """A boot neither reads nor writes an inquiry's vector."""
-        store, engine = make_store()
-        await store.bootstrap()
-        sqls = executed_sql(engine.conn)
-        assert any("CREATE TABLE IF NOT EXISTS inquiries" in s for s in sqls)
-        assert not any(
-            "FROM inquiry_embeddings" in s or "INTO inquiry_embeddings" in s
-            for s in sqls
         )
 
     @pytest.mark.asyncio

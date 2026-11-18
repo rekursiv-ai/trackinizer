@@ -15,14 +15,17 @@ from trackinizer import conftest
 from trackinizer.conftest import (
     BEGIN,
     COMMIT,
+    CORE,
     ROLLBACK,
     TRANSACTION_BEGIN,
     TRANSACTION_COMMIT,
     TRANSACTION_ROLLBACK,
+    Baselines,
     Build,
     ExchangeEngine,
     RecordingPolicy,
     Says,
+    bootstrapped,
 )
 from trackinizer.lib.postgres import Conn, DatabaseEngine, PGliteEngine, PostgresEngine
 from trackinizer.server.access_policy import (
@@ -44,6 +47,23 @@ from trackinizer.wire.bodies import SubmitIssue
 # A Protocol method the policy lacks fails both type checkers here, not a test that
 # happens to call it.
 _POLICY: Final[AccessPolicy] = RecordingPolicy()
+
+_NEAR: Final = Build(
+    name="near",
+    migrations=(
+        ("schema", "CREATE SCHEMA near"),
+        ("vectors", "CREATE TABLE near.vectors (embedding halfvec(1024) NOT NULL)"),
+        (
+            "index",
+            (
+                "CREATE INDEX vectors_hnsw ON near.vectors "
+                "USING hnsw (embedding halfvec_cosine_ops)"
+            ),
+        ),
+    ),
+    fill=bootstrapped,
+)
+"""Core's schema and a table under an HNSW index, which a restore must empty."""
 
 _PROBE_COLUMN: Final = (
     "SELECT count(*) FROM information_schema.columns "
@@ -113,18 +133,20 @@ async def test_a_postgres_test_meets_none_of_anothers_writes(
     await _write(integ_store, writer)
 
 
-# The HNSW index kept every earlier test's embeddings, and a nearest-neighbour search
-# spent its scan on them: from about the 330th test it stopped reaching a live row.
-# Enough embeddings to fill several index pages show whether the restore left them.
+# A build's HNSW index kept every earlier test's embeddings, and a nearest-neighbour
+# search spent its scan on them: from about the 330th test it stopped reaching a live
+# row. Enough embeddings to fill several index pages show whether the restore left them.
 @pytest.mark.db_pglite
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_pglite_test_meets_none_of_anothers_index_entries(
     pglite_db: PGliteEngine,
 ) -> None:
+    made = Baselines(pglite_db, root=CORE, schemas=("public", "near"))
+    await made.ready(_NEAR)
     built = await _index_sizes(pglite_db)
     await _fill_embeddings(pglite_db)
 
-    await conftest.restore(pglite_db)
+    await made.ready(_NEAR)
 
     assert await _index_sizes(pglite_db) == built
 
@@ -132,14 +154,14 @@ async def test_a_pglite_test_meets_none_of_anothers_index_entries(
 @pytest.mark.db_postgres
 @pytest.mark.asyncio(loop_scope="session")
 async def test_a_postgres_test_meets_none_of_anothers_index_entries(
-    integ_store: Store,
     integ_engine: PostgresEngine,
 ) -> None:
-    del integ_store  # Restores the build before the test.
+    made = Baselines(integ_engine, root=CORE, schemas=("public", "near"))
+    await made.ready(_NEAR)
     built = await _index_sizes(integ_engine)
     await _fill_embeddings(integ_engine)
 
-    await conftest.restore(integ_engine)
+    await made.ready(_NEAR)
 
     assert await _index_sizes(integ_engine) == built
 
@@ -210,7 +232,7 @@ async def test_another_schemas_copy_of_a_core_table_is_no_change(
     async with pglite_db.acquire() as conn:
         await conn.execute(
             "CREATE SCHEMA addon; "
-            "CREATE TABLE addon.copy AS SELECT * FROM public.session_embeddings",
+            "CREATE TABLE addon.copy AS SELECT * FROM public.inquiries",
         )
     try:
         with _refused():
@@ -513,26 +535,22 @@ async def _write(store: Store, writer: str) -> None:
 
 
 async def _index_sizes(engine: DatabaseEngine) -> dict[str, int]:
-    """Return the size in bytes of each index of schema ``public``."""
+    """Return the size in bytes of each index of schema ``near``."""
     async with engine.acquire() as conn:
         rows = await conn.fetch(
             "SELECT c.relname, pg_relation_size(c.oid) AS size FROM pg_class c "
             "JOIN pg_namespace n ON n.oid = c.relnamespace "
-            "WHERE n.nspname = 'public' AND c.relkind = 'i'",
+            "WHERE n.nspname = 'near' AND c.relkind = 'i'",
         )
     return {str(row["relname"]): cast(int, row["size"]) for row in rows}
 
 
 async def _fill_embeddings(engine: DatabaseEngine) -> None:
     """Write enough embeddings to spread their HNSW index over several pages."""
-    # Replica role skips the foreign key to an inquiry these rows have no need of.
-    async with engine.acquire() as conn, tx(conn):
-        await conn.execute("SET LOCAL session_replication_role = replica")
+    async with engine.acquire() as conn:
         await conn.execute(
-            "INSERT INTO session_embeddings "
-            "(session_id, part, idx, field, mapper, model, embedding, text_md5) "
-            "SELECT gen_random_uuid(), 0, n, 'content', 'footprint', 'stub-1024', "
-            "array_fill(n::real, ARRAY[1024])::halfvec, md5(n::text) "
+            "INSERT INTO near.vectors (embedding) "
+            "SELECT array_fill(n::real, ARRAY[1024])::halfvec "
             "FROM generate_series(1, 200) n",
         )
 

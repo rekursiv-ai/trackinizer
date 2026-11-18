@@ -104,13 +104,8 @@ class TestPureFunctions:
 class TestSchema:
     def test_schema_has_expected_tables(self) -> None:
         sql = load_sql("schema")
-        for table in ("inquiries", "edges", "change_log", "inquiry_embeddings"):
+        for table in ("inquiries", "edges", "change_log"):
             assert f"TABLE IF NOT EXISTS {table}" in sql
-
-    def test_schema_inquiry_embeddings_pk_and_dim(self) -> None:
-        sql = load_sql("schema")
-        assert "vector(384)" in sql
-        assert "PRIMARY KEY (inquiry_id, model)" in sql
 
     def test_schema_allows_many_to_many_supersedes_edges(self) -> None:
         sql = load_sql("schema")
@@ -281,6 +276,7 @@ class TestSchema:
             "schema.078.sql",
             "schema.079.sql",
             "schema.080.sql",
+            "schema.081.sql",
         ]
 
     def test_the_pin_check_spells_the_wire_shape(self) -> None:

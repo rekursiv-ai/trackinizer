@@ -2073,7 +2073,7 @@ each, so an unchanged graph exports byte-for-byte the same and new rows land
 at the end. UUIDs and timestamps are strings; `json` columns are their
 decoded value.
 
-Not exported: `inquiry_embeddings` (derived), `session_ciphertext`
+Not exported: the embedding add-on's `embedding.vectors` (derived), `session_ciphertext`
 (encrypted, retention-managed), and `users` / `api_keys` / `allowlist`
 (credentials and access control).
 

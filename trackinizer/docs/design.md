@@ -477,8 +477,8 @@ Single store: Postgres + pgvector, with PGlite as the default in-process
 substrate for prototyping. Same SQL and schema; only DSN acquisition and
 pub/sub differ.
 
-- `vector(384)` embeddings in `inquiry_embeddings` keyed by
-  `(inquiry_id, model)`, so multiple embedders coexist per inquiry.
+- `halfvec` embeddings in the embedding add-on's `embedding.vectors`, one
+  partial HNSW index per settings key.
 - `LISTEN/NOTIFY` for subscription fan-out.
 - Recursive CTEs for decomposition rollups and blocker checks.
 - No separate vector DB, search engine, or graph DB.
