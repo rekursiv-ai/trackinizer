@@ -134,7 +134,8 @@ the assistant mentions" turns that off.
 
 Keys: Ctrl+\\ (⌘\\ on a Mac) hides and shows Chat. Alt+Enter makes Chat fill
 the window, and Esc returns. ⌘K (Ctrl+K) opens the palette, which has New chat
-and New terminal among its commands.
+and New terminal among its commands. Ctrl+` opens a new terminal as a tab,
+last in the focused panel's strip, or in place of its open New Tab.
 
 ### The canvas
 
@@ -256,16 +257,17 @@ that chat.
   NAME** for each ready host.
 - Connect more computers the same way; each is offered once it is connected
   and allowed.
-- The canvas has a Terminal tile too: Workbench → Terminal, or New terminal in
-  the palette. It holds several terminals as tabs: + opens one, asking which
-  host when more than one is ready, and × closes one.
-- In the tile, Ctrl+Shift+T opens a tab, Ctrl+Shift+W closes one, and
+- The canvas opens terminals too: New terminal in the palette, or Ctrl+`.
+  Each terminal is a canvas tab of its own, which asks which host when more
+  than one is ready; × on its tab closes it and ends its shell.
+- In a terminal, Ctrl+Shift+T opens a tab, Ctrl+Shift+W closes one, and
   Ctrl+Shift+PageDown and Ctrl+Shift+PageUp switch tabs. **Your settings** →
   Appearance → "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal
   tabs" adds the short forms. Chrome keeps those in a plain tab and gives them
   to the page only in the installed app.
 - Every key typed in a terminal goes to the shell, the app's shortcuts
-  included: click outside the terminal to use ⌘K or Ctrl+\\.
+  included, but Ctrl+`, which opens another terminal: click outside the
+  terminal to use ⌘K or Ctrl+\\.
 - ⤢ makes a terminal fill the canvas, and ⤡ restores it. **Your settings** →
   Appearance → Terminal font size sets its text size.
 - The assistant can open a Terminal tile on a host it names; the terminal

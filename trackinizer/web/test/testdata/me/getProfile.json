@@ -82,7 +82,6 @@
           "text": "#00ff00"
         },
         "terminal_font_size": "13px",
-        "terminal_placement": "bottom",
         "terminal_tab_chords": false,
         "theme": "dark",
         "unread_tabs": [],
