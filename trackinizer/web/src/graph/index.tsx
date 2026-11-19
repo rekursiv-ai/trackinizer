@@ -107,6 +107,8 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   const searchBox = useRef<HTMLInputElement>(null);
   const [renderer, setRenderer] = useState<Renderer | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  /** The record panel across the whole stage, for reading rather than for pointing at the field. */
+  const [wideRecord, setWideRecord] = useState(false);
   /** A node picked by search or a Peek link, to centre on once Peek shows it. */
   const [centring, setCentring] = useState<string | null>(null);
   /** The nodes of a root's island, to frame once Peek shows the root. */
@@ -644,7 +646,7 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
               // Its own box, so the capture sees Peek's links before they navigate; Peek places itself.
               <motion.div
                 key="peek"
-                className="graph-peek"
+                className={`graph-peek${wideRecord ? " is-wide" : ""}`}
                 onClickCapture={followLink}
                 initial={{ opacity: 0, x: 24 }}
                 animate={{ opacity: 1, x: 0 }}
@@ -698,6 +700,22 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
                       </button>
                       <button type="button" className="btn ghost mono" onClick={() => focusOn(selected)}>
                         isolate
+                      </button>
+                      {/* Reading a record and keeping the field are both wanted, so the
+                          panel has a width for each: the column it opens at, and the
+                          stage. "Open full page" leaves the graph; this does not. */}
+                      <button
+                        type="button"
+                        className="btn ghost mono"
+                        aria-pressed={wideRecord}
+                        title={wideRecord ? "Give the field its room back" : "Read this record across the whole stage"}
+                        onClick={() => {
+                          setWideRecord(!wideRecord);
+                          // What the panel covers is what a fit frames around.
+                          window.requestAnimationFrame(() => renderer?.refit());
+                        }}
+                      >
+                        {wideRecord ? "narrow" : "full view"}
                       </button>
                       <a className="btn ghost mono" href={formatRoute({ name: "ref", kind: selected.kind, seq: selected.seq })}>
                         Open full page

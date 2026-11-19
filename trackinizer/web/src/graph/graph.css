@@ -42,6 +42,16 @@
   box-shadow: 0 18px 50px rgba(0, 0, 0, .55); backdrop-filter: blur(12px); overflow: hidden;
 }
 .graph-stage:has(.graph-peek .peek:not([hidden])) .proto-legend { display: none; }
+/* Full view: the panel takes the stage, for reading a record rather than for
+   pointing at the field beside it. The drag sets `--peek-w`, so the width is
+   stated here rather than left to it, and the left edge is a reading measure in
+   from the frame instead of the panel's own 430. Pressing it again gives the
+   field its room back; "Open full page" is the one that leaves the graph. */
+.graph-peek.is-wide .peek { left: 14px; width: auto; max-width: none; }
+/* The panel widens; the prose does not. A record set across 1,400px is a worse
+   read than one in its column, so the body keeps a measure and centres in the
+   room, as the page's own detail does. */
+.graph-peek.is-wide :is(.record, .briefing) { max-width: 980px; margin-inline: auto; width: 100%; }
 .graph-panel { display: flex; flex-direction: column; min-height: 0; background: var(--bg); border-right: 1px solid var(--line); }
 .graph-panel-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 6px 2px 14px; font-size: 12px; color: var(--muted); }
 .graph-panel-h b { color: var(--ink-muted); font-weight: 500; }

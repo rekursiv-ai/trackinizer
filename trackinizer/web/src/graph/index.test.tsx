@@ -25,9 +25,12 @@ vi.mock("../ui/Peek", async (importOriginal) => {
   const { PanelToggle } = await import("../ui/panel");
   return {
     ...(await importOriginal<typeof import("../ui/Peek")>()),
-    Peek: ({ row, panel, onClose, body }: { row: { kind: string; seq: number }; panel: Panel; onClose: () => void; body?: ReactNode }) => (
+    Peek: ({ row, panel, onClose, body, foot }: { row: { kind: string; seq: number }; panel: Panel; onClose: () => void; body?: ReactNode; foot?: ReactNode }) => (
       <aside id="peek" aria-label="Peek" data-collapsed={panel.collapsed}>
         {body}
+        {/* The real Peek draws the caller's foot under the body; the graph puts its
+            record commands there, so a test that presses one needs it rendered. */}
+        {foot}
         <h2>
           {row.kind}#{row.seq}
         </h2>
@@ -1272,4 +1275,18 @@ test.each([
   await waitFor(() => expect(screen.queryByText(/stopped on an error/i)).toBeNull());
   await act(async () => { await Promise.resolve(); });
   expect(screen.queryByText(/stopped on an error/i)).toBeNull();
+});
+
+test("a record can take the whole stage to be read, and give the field its room back", async () => {
+  // The panel opens as a column beside the field, which is right for pointing at
+  // what a record connects to and too narrow for reading one. Dragging its edge
+  // stops at 920px and "Open full page" leaves the graph; this does neither.
+  const { user } = await shown();
+  act(() => renderer.events!.click(renderer.node("Issue 1")));
+  expect(document.querySelector(".graph-peek")!.className).not.toContain("is-wide");
+  await user.click(screen.getByRole("button", { name: "full view" }));
+  expect(document.querySelector(".graph-peek")!.className).toContain("is-wide");
+  // And back, so the field is never given up for good.
+  await user.click(screen.getByRole("button", { name: "narrow" }));
+  expect(document.querySelector(".graph-peek")!.className).not.toContain("is-wide");
 });
