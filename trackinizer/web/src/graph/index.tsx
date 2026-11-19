@@ -653,9 +653,30 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
                 exit={{ opacity: 0, x: 24 }}
                 transition={{ type: "spring", stiffness: 420, damping: 36 }}
               >
+                {/* `tools`: reading a record and keeping the field are both wanted, so the
+                    panel has a width for each — the column it opens at, and the stage. The
+                    control sits beside collapse and close, where a window's maximise is
+                    looked for; in the foot, among the record's own commands, nobody found
+                    it. "Open full page" leaves the graph; this does not. */}
                 <Peek
                   row={selected}
                   panel={peek}
+                  tools={
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      aria-pressed={wideRecord}
+                      aria-label={wideRecord ? "Narrow the panel" : "Widen the panel to the whole stage"}
+                      title={wideRecord ? "Narrow the panel ([)" : "Widen to the whole stage (])"}
+                      onClick={() => {
+                        setWideRecord(!wideRecord);
+                        // What the panel covers is what a fit frames around.
+                        window.requestAnimationFrame(() => renderer?.refit());
+                      }}
+                    >
+                      <Icon name={wideRecord ? "minimize" : "maximize"} size={15} />
+                    </button>
+                  }
                   onClose={() => setSelectedId(null)}
                   // What the panel covers is what a fit frames around: once the drag
                   // lets go, the field is framed again in the room the panel left it.
@@ -700,22 +721,6 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
                       </button>
                       <button type="button" className="btn ghost mono" onClick={() => focusOn(selected)}>
                         isolate
-                      </button>
-                      {/* Reading a record and keeping the field are both wanted, so the
-                          panel has a width for each: the column it opens at, and the
-                          stage. "Open full page" leaves the graph; this does not. */}
-                      <button
-                        type="button"
-                        className="btn ghost mono"
-                        aria-pressed={wideRecord}
-                        title={wideRecord ? "Give the field its room back" : "Read this record across the whole stage"}
-                        onClick={() => {
-                          setWideRecord(!wideRecord);
-                          // What the panel covers is what a fit frames around.
-                          window.requestAnimationFrame(() => renderer?.refit());
-                        }}
-                      >
-                        {wideRecord ? "narrow" : "full view"}
                       </button>
                       <a className="btn ghost mono" href={formatRoute({ name: "ref", kind: selected.kind, seq: selected.seq })}>
                         Open full page

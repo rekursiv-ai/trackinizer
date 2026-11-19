@@ -50,6 +50,7 @@ export function Peek({
   onClose,
   crumbs = null,
   actions = null,
+  tools = null,
   body = null,
   foot = null,
   onResizeEnd = null,
@@ -59,6 +60,8 @@ export function Peek({
   onClose: () => void;
   crumbs?: ReactNode;
   actions?: ReactNode;
+  /** The caller's own controls for the panel itself, beside collapse and close. */
+  tools?: ReactNode;
   body?: ReactNode;
   foot?: ReactNode;
   onResizeEnd?: (() => void) | null;
@@ -167,6 +170,7 @@ export function Peek({
                   </a>
                 </>
               ) : null}
+              {tools}
               <PanelToggle panel={panel} controls={id} />
               {close}
             </div>
