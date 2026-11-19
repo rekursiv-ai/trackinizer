@@ -14,11 +14,18 @@
 /* The edge between the column and the workbench: 6 px to grab, 3 px over each of them, so it takes no room of its own. */
 .chat-column-edge { position: relative; z-index: 5; flex: 0 0 6px; margin: 0 -3px; cursor: col-resize; touch-action: none; }
 .chat-column-edge:hover, .chat-column-edge:focus-visible, .chat-column-edge:active { background: var(--accent); outline: 0; }
-/* Hidden, Chat leaves this strip at its edge: Chat's icon on the surface colour, an accent line on the side toward the workbench. Pressing it shows Chat. */
+/* Hidden, Chat leaves this strip at its edge: Chat's icon on the surface colour, and a
+   line on the side toward the workbench. The line was the accent, which put a 2px bar of
+   hue down the full height of the window beside the canvas tabs — a row that carries no
+   hue on purpose (canvas.css) — so a folded panel was the loudest thing on screen. It is
+   the chrome's own edge now, and takes the accent when the pointer or the keyboard
+   reaches for it, which is when it is a handle rather than a border. Pressing it shows Chat. */
 .chat-strip { display: flex; justify-content: center; align-items: flex-start; flex: 0 0 24px; padding: 14px 0 0; border: 0; background: var(--surface); color: var(--muted); cursor: pointer; }
-.chat-row-left .chat-strip { border-right: 2px solid var(--accent); }
-.chat-row-right .chat-strip { border-left: 2px solid var(--accent); }
+.chat-row-left .chat-strip { border-right: 2px solid var(--line-strong); }
+.chat-row-right .chat-strip { border-left: 2px solid var(--line-strong); }
 .chat-strip:hover, .chat-strip:focus-visible { background: var(--surface-hover); color: var(--text); outline: 0; }
+.chat-row-left .chat-strip:hover, .chat-row-left .chat-strip:focus-visible { border-right-color: var(--accent); }
+.chat-row-right .chat-strip:hover, .chat-row-right .chat-strip:focus-visible { border-left-color: var(--accent); }
 /* Wide, Chat and the workbench are two panels a small gap apart: the edge is the gap, and still the handle. */
 @media (width > 900px) {
   .app.with-canvas .main { background: none; border: 0; border-radius: 0; }
@@ -41,7 +48,8 @@
   .chat-column { order: 2; flex: 0 0 min(480px, 60vh); width: 100%; min-width: 0; max-width: none; border-width: 1px 0 0; border-style: solid; border-color: var(--line); }
   .chat-row-fullscreen .chat-column { flex: 1 1 auto; border: 0; }
   .chat-column-edge { display: none; }
-  .chat-row .chat-strip { order: 2; align-items: center; padding: 0; border: 0; border-top: 2px solid var(--accent); }
+  .chat-row .chat-strip { order: 2; align-items: center; padding: 0; border: 0; border-top: 2px solid var(--line-strong); }
+  .chat-row .chat-strip:hover, .chat-row .chat-strip:focus-visible { border-top-color: var(--accent); }
   .chat-column-peek { top: auto; right: 0; bottom: 0; left: 0; width: 100%; height: min(480px, 60vh); }
 }
 /* A phone shows Chat or the workbench (ChatColumn hides the other), whichever takes the whole height; a switch along the bottom takes its own room. */
