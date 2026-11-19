@@ -324,11 +324,17 @@ async def start_process_route(
         raise HTTPException(status_code=403)
     relay = get_session_relay(request)
     current = relay.process(session_id)
-    if current is not None and current.state != "detached":
+    if (
+        current is not None
+        and current.state != "detached"
+        and (not body.host or body.host == current.host)
+    ):
         return current
     place = await _start_place(request, identity, spec=body)
     if place.remote:
         await refuse_start(request, identity, session_id=session_id)
+    if current is not None and current.state != "detached":
+        await stop_process(request, session_id)
     process_id = uuid4()
     async with request_engine(request).acquire() as conn:
         _, token, _, _ = await create_api_key(

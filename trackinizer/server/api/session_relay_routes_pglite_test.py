@@ -675,19 +675,35 @@ async def test_a_start_hands_its_host_a_key_that_serves_the_session_and_only_the
     )
 
 
-async def test_a_start_while_one_starts_is_the_one_already_there(world: _World) -> None:
+@pytest.mark.parametrize("host", [None, "remote-agents", "laptop"])
+async def test_a_start_while_one_starts_is_the_one_already_there(
+    world: _World,
+    host: str | None,
+) -> None:
     headers = await _places(world)
     session_id = await world.session("ada@x.y")
     first = await world.start(headers, session_id)
 
-    second = await world.start(headers, session_id, host="laptop")
+    second = await world.start(
+        headers,
+        session_id,
+        **({} if host is None else {"host": host}),
+    )
 
-    assert second.json() == first.json()
+    assert second.status_code == 200, second.text
+    if host == "laptop":
+        before = AgentProcess.model_validate(first.json())
+        after = AgentProcess.model_validate(second.json())
+        assert after.session_id == before.session_id == session_id
+        assert after.process_id != before.process_id
+        assert (after.host, after.state) == (host, "starting")
+    else:
+        assert second.json() == first.json()
     async with world.store.engine.acquire() as conn:
         minted = await conn.fetchval(
             "SELECT count(*) FROM api_keys WHERE starts_with(name, 'agent process')",
         )
-    assert minted == 1
+    assert minted == (2 if host == "laptop" else 1)
 
 
 async def test_a_start_that_loses_a_race_revokes_the_key_it_minted(
@@ -836,35 +852,80 @@ async def test_an_input_the_relay_will_not_hold_is_refused_saying_why(
     assert "an input is at most" in sent.text
 
 
+@pytest.mark.parametrize(
+    "operation",
+    ["stop", "switch", "same", "unspecified", "missing"],
+)
 async def test_a_stop_ends_the_process_and_revokes_its_key_a_minute_later(
     world: _World,
+    operation: str,
 ) -> None:
-    headers = await _places(world)
-    laptop = await world.host("lab", owner="ada@x.y", facts=_RUNS)
+    headers = await world.key(await world.person("ada@x.y"))
+    _ = await world.person(_AGENTS)
+    service = await world.host("remote-agents", owner=_AGENTS, facts=_SERVICE)
+    target = await world.host("destination", owner="ada@x.y", facts=_RUNS)
     session_id = await world.session("ada@x.y")
-    _ = await world.start(headers, session_id, host="lab")
-    serve = await world.served(laptop)
+    _ = await world.start(headers, session_id)
+    serve = await world.served(service)
     peer = world.process(
         {"Authorization": f"Bearer {serve.token}"},
         session_id,
-        hello=Hello(process_id=serve.process_id, version="1", host="lab"),
+        hello=Hello(process_id=serve.process_id, version="1", host=service.name),
     )
     viewer = world.relay.lines(session_id, allowed=_always)
     _ = await anext(viewer)
     _ = await asyncio.wait_for(anext(viewer), 5)
+    before = world.relay.process(session_id)
 
-    stopped = await world.call(
-        "DELETE",
-        SESSION_PROCESS_PATH.format(session_id=session_id),
-        headers=headers,
-    )
-
-    assert stopped.status_code == 200
+    if operation == "stop":
+        stopped = await world.call(
+            "DELETE",
+            SESSION_PROCESS_PATH.format(session_id=session_id),
+            headers=headers,
+        )
+    else:
+        host = {"switch": target.name, "same": service.name, "missing": "missing"}.get(
+            operation,
+        )
+        stopped = await world.start(
+            headers,
+            session_id,
+            **({} if host is None else {"host": host}),
+        )
+    assert stopped.status_code == (409 if operation == "missing" else 200), stopped.text
+    if operation in {"same", "unspecified", "missing"}:
+        assert world.relay.process(session_id) == before
+        assert world.later.delays == [180.0, 30.0]
+        assert (await world.wait(service)).json() is None
+        assert (await world.wait(target)).json() is None
+        assert await world.key_live(serve.process_id)
+        if operation == "missing":
+            assert refusal_detail_code(stopped) == "no_place"
+        else:
+            assert AgentProcess.model_validate(stopped.json()) == before
+        return
     process = AgentProcess.model_validate(stopped.json())
-    assert (process.state, process.reason) == ("detached", "stopped")
+    assert process.session_id == session_id
+    if operation == "switch":
+        assert process.process_id != serve.process_id
+        assert (process.host, process.state) == (target.name, "starting")
+        offered = await world.served(target)
+        assert (offered.session_id, offered.process_id, offered.spec.host) == (
+            session_id,
+            process.process_id,
+            target.name,
+        )
+    else:
+        assert (process.state, process.reason) == ("detached", "stopped")
     assert await peer.close_code() == CLOSE_ENDED
+    assert (
+        StopProcess.model_validate((await world.wait(service)).json()).process_id
+        == serve.process_id
+    )
     # The start's two give-ups, queued then taken, then the stop's revoke.
-    assert world.later.delays == [180.0, 30.0, 60.0]
+    assert world.later.delays == [180.0, 30.0, 60.0] + (
+        [180.0, 30.0] if operation == "switch" else []
+    )
     revoking = world.later.ran[2]
     await world.sleeps.asked(60.0)
     assert await world.key_live(serve.process_id)
@@ -876,6 +937,8 @@ async def test_a_stop_ends_the_process_and_revokes_its_key_a_minute_later(
     assert not await world.key_live(serve.process_id)
     # Verified a moment ago, and refused at once all the same.
     assert (await world.call("GET", path, headers=minted)).status_code == 401
+    if operation == "switch":
+        assert await world.key_live(process.process_id)
 
 
 async def test_ending_a_session_stops_its_agent_and_revokes_its_key_a_minute_later(
