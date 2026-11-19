@@ -153,7 +153,14 @@ export class GraphModel {
       added.push(drawn);
       return drawn;
     });
+    // A wire needs both its ends to be drawable. This build's server sends only
+    // edges between the records it sends, and the view trusted that outright: one
+    // edge naming a record outside the window — another producer of the same
+    // shape, or a record dropped between the two queries — threw on a node that
+    // was not there and took the whole view down with a crash screen.
+    const drawable = new Set(this.nodes.map((drawn) => drawn.id));
     this.links = wires(graph)
+      .filter(({ from_id: from, to_id: to }) => drawable.has(from) && drawable.has(to))
       .map(({ from_id: from, to_id: to, edge_kind: kind, valence, asserted, actor }) => {
         const kept = linksBefore.get(linkKey(from, to, kind));
         if (kept) {
@@ -197,7 +204,7 @@ export class GraphModel {
     const neighbours = new Map(this.nodes.map((drawn) => [drawn.id, new Set<string>()]));
     const children = new Set<string>();
     for (const link of this.links) {
-      // The server sends only edges between the nodes it sends.
+      // Both ends are drawable: `apply` drops a wire whose ends are not here.
       neighbours.get(link.from)!.add(link.to);
       neighbours.get(link.to)!.add(link.from);
       if (link.kind === "narrows") children.add(link.from);

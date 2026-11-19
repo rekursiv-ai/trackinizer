@@ -172,3 +172,37 @@ test.each([
   });
   expect(drawn(homes)).toEqual(field.map((one) => [one.root, each]));
 });
+
+test("a claim its island cites is the head of that island, even though nothing hangs off it", () => {
+  // A research corpus is made of evidence, not of tasks: nothing narrows or
+  // produces across a citation, so a claim with twenty papers proving it has no
+  // kinship children at all. Judged on kinship alone it looked like a record
+  // nobody had built on, and every island in such a graph went unnamed.
+  const claim = node(1, { kind: "Belief" });
+  const papers = Array.from({ length: 20 }, (_, n) => node(100 + n, { kind: "Paper" }));
+  const { homes, headless } = islandHomes({
+    nodes: [claim, ...papers],
+    edges: papers.map((paper) => edge(paper.seq, 1, "proves")),
+  });
+  expect(drawn(homes)).toEqual([[claim.id, 21]]);
+  expect([...headless]).toEqual([]);
+});
+
+test("records that cite nothing and are cited by nothing still wear no name", () => {
+  // The other side of it: the rule asks whether the island built on its head, and
+  // a ball gathered only because its records happened at the same time did not.
+  const loose = Array.from({ length: 30 }, (_, n) => node(100 + n, { kind: "Paper" }));
+  const { homes, headless } = islandHomes({ nodes: loose, edges: [] });
+  const [[key]] = drawn(homes);
+  expect(headless.has(key!)).toBe(true);
+});
+
+test("a record with no date at all is grouped rather than throwing", () => {
+  // Another producer of the same shape need not send every field this build's
+  // server always sends. One undated record used to take the whole view down.
+  const dated = ball(100, 30);
+  const undated = { ...node(500), created: undefined as unknown as string };
+  const { homes } = islandHomes({ nodes: [...dated.nodes, undated], edges: dated.edges });
+  expect(homes.size).toBe(31);
+  expect(homes.get(undated.id)).toBe(dated.root);
+});

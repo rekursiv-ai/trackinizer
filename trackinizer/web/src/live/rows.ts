@@ -135,10 +135,19 @@ export function placeRow<P extends Page>(pages: readonly P[], row: InquiryRow): 
 /**
  * Microseconds since the epoch. `Date.parse` keeps only milliseconds, and the
  * server prints no fraction when the microseconds are zero.
+ *
+ * A stamp that is missing or unreadable is 0 — the beginning of time — rather
+ * than a throw. Everything that orders records runs through here, so one record
+ * arriving without a date used to take down the whole view with a crash screen:
+ * `undefined.replace is not a function`, from a field this build's own server
+ * always sends and some other producer of the same shape need not.
  */
-export function micros(iso: string): number {
+export function micros(iso: string | null | undefined): number {
+  if (typeof iso !== "string") return 0;
   const fraction = /\.(\d+)/.exec(iso)?.[1] ?? "";
-  return Date.parse(iso.replace(/\.\d+/, "")) * 1_000 + Number(fraction.slice(0, 6).padEnd(6, "0"));
+  const at = Date.parse(iso.replace(/\.\d+/, ""));
+  if (Number.isNaN(at)) return 0;
+  return at * 1_000 + Number(fraction.slice(0, 6).padEnd(6, "0"));
 }
 
 /** `MAX_FILTER_VALUE_CHARS` in `wire/filters.py`. */

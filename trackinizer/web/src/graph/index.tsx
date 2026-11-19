@@ -14,6 +14,7 @@ import {
   useState,
 } from "react";
 import type { Graph, GraphNode } from "../api/graph";
+import { micros } from "../live/rows";
 import { type Meta, useMeta } from "../app/boot";
 import { useHighlighted } from "../app/highlights";
 import { isStrings, useTabState } from "../app/tabState";
@@ -122,11 +123,15 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   const replayer = useReplay(() => setSelectedId(null));
   /** The timeline's bars and the date the view stands at, from the graph's own dates. */
   const timelineBins = useMemo(() => (data ? binsOf(data) : NO_BINS), [data]);
-  const byAge = useMemo(() => (data ? [...data.nodes].sort((a, b) => Date.parse(a.created) - Date.parse(b.created)) : NO_NODES), [data]);
+  const byAge = useMemo(() => (data ? [...data.nodes].sort((a, b) => micros(a.created) - micros(b.created)) : NO_NODES), [data]);
   const replayDate = useMemo(() => {
     if (byAge.length === 0) return "";
     const at = byAge[Math.min(byAge.length - 1, Math.round(replayer.position * (byAge.length - 1)))];
-    return new Date(at.created).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    const when = new Date(micros(at.created) / 1_000);
+    // A record with no readable date has none to show, not "Invalid Date".
+    return Number.isNaN(when.getTime()) || micros(at.created) === 0
+      ? ""
+      : when.toLocaleDateString("en-US", { month: "short", day: "numeric" });
   }, [byAge, replayer.position]);
   /**
    * The records the timeline's place draws: the oldest `position` of the graph

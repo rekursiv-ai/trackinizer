@@ -26,6 +26,8 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
   const parentOf = new Map<string, string>();
   const kin = new Map<string, string[]>();
   const adj = new Map<string, string[]>();
+  /** Who points at each record, by any edge: the graph's own sense of built on. */
+  const pointedAt = new Map<string, string[]>();
   const byId = new Map(nodes.map((node) => [node.id, node]));
   const headless = new Set<string>();
   // The server hangs a produced_by beside every narrows and every requires
@@ -58,6 +60,8 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
     }
     bump(adj, edge.from_id, edge.to_id);
     bump(adj, edge.to_id, edge.from_id);
+    // Edges are stored child to parent, so `to_id` is the end being built on.
+    bump(pointedAt, edge.to_id, edge.from_id);
   }
   // The families: what hangs together by narrowing and producing, within the
   // window. Each takes its crown from its top-most record — the one nothing in
@@ -75,30 +79,40 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
       }
     }
     // The crown is the head of the line of inquiry: nothing above it in the
-    // window and something hung below. A loose satellite -- a paper or a result
+    // window and the family built on it. A loose satellite -- a paper or a result
     // the generator left unattached, which the design does to a third of them --
-    // has nothing above it either, but it heads nothing, so it never names the
+    // has nothing above it either, but nobody built on it, so it never names the
     // island it was absorbed into.
+    //
+    // Built on means narrowed or produced, and it also means cited: a claim with
+    // twenty papers proving it is the most built-on record a graph can hold, and
+    // it has no children at all. Reading kinship alone, a graph made of evidence
+    // rather than of tasks -- which is most of a research corpus -- came out as a
+    // field of nameless balls, each one headed by the very claim its island was
+    // gathered around.
+    const mine = new Set(members);
+    const builtOn = (id: string): boolean =>
+      (childrenOf.get(id)?.length ?? 0) > 0 || (pointedAt.get(id) ?? []).some((from) => mine.has(from));
     let crown = "";
     let crownAt = -1;
     for (const headed of [true, false]) {
       for (const id of members) {
         if (parentOf.has(id)) continue;
-        if (headed && !(childrenOf.get(id)?.length)) continue;
-        const at = micros(byId.get(id)?.created ?? "");
+        if (headed && !builtOn(id)) continue;
+        const at = micros(byId.get(id)?.created);
         if (at > crownAt) [crown, crownAt] = [id, at];
       }
       if (crown !== "") break;
     }
     if (crown === "") {
       for (const id of members) {
-        const at = micros(byId.get(id)?.created ?? "");
+        const at = micros(byId.get(id)?.created);
         if (at > crownAt) [crown, crownAt] = [id, at];
       }
     }
     // The other half of that promise, kept: a satellite that was picked only
     // because the family has no head may not name the island it ends up in.
-    if (!(childrenOf.get(crown)?.length ?? 0)) headless.add(crown);
+    if (!builtOn(crown)) headless.add(crown);
     for (const id of members) topOf.set(id, crown);
   }
   const membersOf = new Map<string, string[]>();
@@ -124,18 +138,27 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
     parent.set(key, key);
     size.set(key, (size.get(key) ?? 0) + 1);
   }
+  // Both ways round. An edge is stored child to parent, and only the child's end
+  // was counted, so an island reached by its citations alone — which is what a
+  // claim is — registered as touching nothing and was handed to whatever happened
+  // nearest it in time instead of to the papers that cite it. Which end of an edge
+  // was written down is not a fact about the graph.
   const touch = new Map<string, Map<string, number>>();
+  const meets = (from: string, to: string) => {
+    const row = touch.get(from) ?? new Map<string, number>();
+    row.set(to, (row.get(to) ?? 0) + 1);
+    touch.set(from, row);
+  };
   for (const edge of edges) {
     const [ga, gb] = [refined.get(edge.from_id), refined.get(edge.to_id)];
     if (ga === undefined || gb === undefined || ga === gb) continue;
-    const row = touch.get(ga) ?? new Map<string, number>();
-    row.set(gb, (row.get(gb) ?? 0) + 1);
-    touch.set(ga, row);
+    meets(ga, gb);
+    meets(gb, ga);
   }
   const islands = (): string[] => [...size.keys()].filter((key) => find(key) === key);
   const window = new Map<string, [number, number]>();
   for (const [id, key] of refined) {
-    const at = micros(byId.get(id)?.created ?? "");
+    const at = micros(byId.get(id)?.created);
     const row = window.get(key) ?? [at, at];
     window.set(key, [Math.min(row[0], at), Math.max(row[1], at)]);
   }
@@ -192,17 +215,41 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
   // window holds whole ones -- so only a family too small to read as an island
   // gives itself up: to the neighbour its records touch most, or failing any
   // touch, to the island whose records were alive when it happened.
+  /** How much of the graph meets an island: what decides a hub from a leaf at equal size. */
+  const pull = (key: string): number => {
+    let all = 0;
+    for (const count of touch.get(key)?.values() ?? []) all += count;
+    return all;
+  };
   for (;;) {
-    const ranked = islands().sort((a, b) => size.get(a)! - size.get(b)!);
+    // Smallest first, and at equal size the least connected first. Without that
+    // tiebreak the order is arbitrary among specks, and a graph of citations is
+    // all specks to begin with — nothing is kin across a citation — so the claim
+    // at the hub could be absorbed into one of the twenty papers citing it and
+    // the island came out wearing a paper's title. Leaves go into hubs; a hub
+    // has grown past the floor by the time its own turn would have come.
+    const ranked = islands().sort((a, b) => size.get(a)! - size.get(b)! || pull(a) - pull(b));
     if (ranked.length < 2) break;
     const small = ranked.find((key) => size.get(key)! < least);
     if (small === undefined) break;
     absorb(small, (touch.get(small)?.size ?? 0) > 0 ? ranked[ranked.length - 1]! : nearest(small, ranked));
   }
   const homes = new Map([...refined].map(([id, key]) => [id, find(key)]));
-  // Only the islands that survived absorption are asked about: a headless family
-  // that a real ball took in is named by that ball's head, not by its satellite.
-  return { homes, headless: new Set([...headless].filter((key) => homes.get(key) === key)) };
+  // Whether a head was built on is asked of the island it ended up as, not of the
+  // kinship family it started from. The two are rarely the same: the papers that
+  // prove a claim are not kin to it — nothing narrows or produces across a
+  // citation — so each starts as a family of its own and they become one island
+  // only here, in absorption. Asked too early, the claim at the centre of twenty
+  // papers looked like a record nobody had built on, and its island went unnamed.
+  const held = new Map<string, Set<string>>();
+  for (const [id, key] of homes) (held.get(key) ?? held.set(key, new Set()).get(key)!).add(id);
+  const nameless = new Set<string>();
+  for (const [key, mine] of held) {
+    const built = (childrenOf.get(key)?.length ?? 0) > 0
+      || (pointedAt.get(key) ?? []).some((from) => mine.has(from));
+    if (!built) nameless.add(key);
+  }
+  return { homes, headless: nameless };
 }
 
 /**

@@ -14,6 +14,7 @@ import { useWorkspaceActions } from "./workspaceActions";
 import "./Knowledge.css";
 import { Block } from "../ui/block";
 import { Modal } from "../ui/frame";
+import { micros } from "../live/rows";
 
 /**
  * The fold, `trax.knowledge`: what the graph claims of one record.
@@ -395,7 +396,7 @@ export function foldClaims(graph: FocusGraph, anchor: string, hops: number): Fol
     // pairs that neither cross a gutter nor share a row.
     block.rests = block.wires.filter((wire) => !wire.onto && !drawn(wire) && byId.get(wire.peer.id)?.tier !== block.tier);
   }
-  blocks.sort((a, b) => a.tier! - b.tier! || b.wires.length - a.wires.length || (b.claim.confidence ?? -1) - (a.claim.confidence ?? -1) || b.claim.created.localeCompare(a.claim.created) || a.claim.seq - b.claim.seq);
+  blocks.sort((a, b) => a.tier! - b.tier! || b.wires.length - a.wires.length || (b.claim.confidence ?? -1) - (a.claim.confidence ?? -1) || micros(b.claim.created) - micros(a.claim.created) || a.claim.seq - b.claim.seq);
   blocks.forEach((block, at) => {
     block.slot = at + 1;
   });

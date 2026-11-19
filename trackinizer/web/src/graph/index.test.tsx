@@ -1240,3 +1240,36 @@ test("the search results' button, or [, collapses them to a strip with their cou
   expect(renderer.refits).toHaveLength(2);
 });
 
+
+// The same promise, kept by the view itself rather than by the functions under
+// it (robust.test.ts): a graph from another producer draws what it can and
+// never puts a crash screen over the app. The shapes are the ones that did.
+test.each([
+  ["a record with no date", (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n, at) => (at === 0 ? { ...n, created: undefined as unknown as string } : n)) })],
+  ["a record with an unreadable date", (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n, at) => (at === 0 ? { ...n, created: "yesterday" } : n)) })],
+  ["no dates at all", (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n) => ({ ...n, created: undefined as unknown as string })) })],
+  ["an edge naming a record outside the window", (g: Graph): Graph => ({
+    ...g,
+    edges: [...g.edges, { from_id: uuid(9_999), to_id: g.nodes[0]!.id, edge_kind: "proves", valence: 0.6,
+      asserted: "2026-09-20T01:00:00+00:00", actor: "ada@example.com" } as GraphEdge],
+  })],
+  ["a record with no title", (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n, at) => (at === 0 ? { ...n, title: undefined as unknown as string } : n)) })],
+  ["a kind this build has never heard of", (g: Graph): Graph => ({ ...g, nodes: g.nodes.map((n, at) => (at === 0 ? { ...n, kind: "Hypothesis" } : n)) })],
+  ["an edge kind this build has never heard of", (g: Graph): Graph => ({
+    ...g,
+    edges: [...g.edges, { from_id: g.nodes[1]!.id, to_id: g.nodes[0]!.id, edge_kind: "contradicts", valence: 0.6,
+      asserted: "2026-09-20T01:00:00+00:00", actor: "ada@example.com" } as GraphEdge],
+  })],
+  ["no edges at all", (g: Graph): Graph => ({ ...g, edges: [] })],
+  ["one record and nothing else", (g: Graph): Graph => ({ nodes: [g.nodes[0]!], edges: [] })],
+  ["no records at all", (): Graph => ({ nodes: [], edges: [] })],
+])("the graph draws a graph with %s instead of crashing", async (_name, bend) => {
+  answers.set(1000, bend(GRAPH));
+  history.replaceState(null, "", "#/graph");
+  show();
+  // The view settles on something: the field, or its own empty state. Never the
+  // app's crash screen, which is what each of these used to produce.
+  await waitFor(() => expect(screen.queryByText(/stopped on an error/i)).toBeNull());
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByText(/stopped on an error/i)).toBeNull();
+});

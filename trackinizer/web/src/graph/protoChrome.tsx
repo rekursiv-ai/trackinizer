@@ -5,6 +5,7 @@
 
 import { animate, motion } from "framer-motion";
 import { type CSSProperties, useEffect, useMemo, useRef, useState } from "react";
+import { micros } from "../live/rows";
 import type { Graph, GraphNode } from "../api/graph";
 import { usd } from "../detail/fields";
 import { type Panel, type PanelSpec } from "../ui/panel";
@@ -138,7 +139,7 @@ export function homeBriefing(graph: Graph, roots: Roots | null = null): HomeBrie
         .sort((a, b) => Math.abs(b.edge.valence ?? 0) - Math.abs(a.edge.valence ?? 0))[0];
       return strongest ? [{ cite: strongest.node, verdict: belief.judgement!, belief }] : [];
     })
-    .sort((a, b) => b.cite.created.localeCompare(a.cite.created))
+    .sort((a, b) => micros(b.cite.created) - micros(a.cite.created))
     .slice(0, 4);
   // The two flags the design's briefing ends on: a verdict its own evidence has
   // overtaken, and a claim that keeps standing under contrary proof.
@@ -147,7 +148,7 @@ export function homeBriefing(graph: Graph, roots: Roots | null = null): HomeBrie
       .filter((node) => node.kind === "Belief" && node.judgement !== "disproven")
       .map((belief) => ({ belief, against: loadOf(belief, view).against }))
       .filter((row) => row.against >= heaviest)
-      .sort((a, b) => b.against - a.against || b.belief.created.localeCompare(a.belief.created));
+      .sort((a, b) => b.against - a.against || micros(b.belief.created) - micros(a.belief.created));
   const all: RootGroup = { key: "*", root: null, members: graph.nodes.map((node) => node.id), newest: asOf, kinds: new Map() };
   const spend = spendOf(graph.nodes, view);
   // The heaviest thread: the design named the one root that spent most, and said
@@ -400,10 +401,15 @@ export function Briefing({
   );
 }
 
-/** The timeline's bars: `bins` counts of nodes by when they were made. */
+/**
+ * The timeline's bars: `bins` counts of nodes by when they were made.
+ *
+ * A record whose date is missing or unreadable counts at the beginning of time
+ * rather than as a NaN, which spread through the span and left every bar empty.
+ */
 export function binsOf(graph: Graph, bins = 72): number[] {
   if (graph.nodes.length === 0) return new Array(bins).fill(0);
-  const times = graph.nodes.map((node) => Date.parse(node.created));
+  const times = graph.nodes.map((node) => micros(node.created) / 1_000);
   const [first, last] = [Math.min(...times), Math.max(...times)];
   const span = Math.max(1, last - first);
   const out = new Array(bins).fill(0);

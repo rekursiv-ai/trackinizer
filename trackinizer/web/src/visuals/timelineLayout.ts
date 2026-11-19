@@ -1,4 +1,5 @@
 import type { EvidenceTimeline, TimelineExperiment, TimelineRecord } from "../api/timeline";
+import { micros } from "../live/rows";
 
 /** What a row is to the record in the middle: a lead above it, itself, or a direction below. */
 export type RowRole = "lead" | "record" | "direction";
@@ -41,7 +42,7 @@ export function timelineRows(data: EvidenceTimeline): readonly TimelineRow[] {
   const own = target.kind === "Experiment" && issue ? issue : target;
   const results = [...data.root_results];
   if (selected && selected.record.id !== own.id && !results.some(({ record }) => record.id === selected.record.id)) results.push(selected);
-  const byDate = (a: TimelineExperiment, b: TimelineExperiment) => a.record.created.localeCompare(b.record.created);
+  const byDate = (a: TimelineExperiment, b: TimelineExperiment) => micros(a.record.created) - micros(b.record.created);
   return [
     ...data.leads.map((record): TimelineRow => ({ role: "lead", record, results: [] })),
     { role: "record", record: own, results: results.sort(byDate) },

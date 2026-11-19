@@ -5,6 +5,9 @@
 // the design prototype's briefing gave, on the app's own data.
 
 import type { Graph, GraphEdge, GraphNode } from "../api/graph";
+// Records are ordered by `micros`, never by comparing their date strings: a
+// record whose date is missing or unreadable has to sort, not throw.
+import { micros } from "../live/rows";
 import type { RootGroup } from "./roots";
 
 /** A record as the panels read it: the node, with its edges and neighbours. */
@@ -70,7 +73,7 @@ export function evidenceOf(belief: GraphNode, view: GraphView): { node: GraphNod
       const node = view.byId.get(edge.from_id);
       return node ? [{ node, edge }] : [];
     })
-    .sort((a, b) => b.node.created.localeCompare(a.node.created));
+    .sort((a, b) => micros(b.node.created) - micros(a.node.created));
 }
 
 /** How many of `belief`'s citations are load-bearing for it, and how many against. */
@@ -114,7 +117,7 @@ export function turnsOf(group: RootGroup, view: GraphView): Turn[] {
   return turns
     .sort((a, b) => b.weight - a.weight)
     .slice(0, 4)
-    .sort((a, b) => a.created.localeCompare(b.created));
+    .sort((a, b) => micros(a.created) - micros(b.created));
 }
 
 /** A belief others lean on: its distinct citations, and the claims that cite it. */
@@ -318,7 +321,7 @@ export function impactOf(node: GraphNode, view: GraphView, take = 5): { belief: 
     }
     frontier = next;
   }
-  return out.sort((a, b) => a.hops - b.hops || b.belief.created.localeCompare(a.belief.created)).slice(0, take);
+  return out.sort((a, b) => a.hops - b.hops || micros(b.belief.created) - micros(a.belief.created)).slice(0, take);
 }
 
 /** Each edge kind's two verbs: how the edge reads from its child end, and from its parent. */
@@ -356,7 +359,7 @@ export function groupsOf(node: GraphNode, view: GraphView): ConnectionGroup[] {
     groups.set(label, rows);
   }
   return [...groups]
-    .map(([label, rows]) => ({ label, rows: rows.sort((a, b) => a.node.created.localeCompare(b.node.created)) }))
+    .map(([label, rows]) => ({ label, rows: rows.sort((a, b) => micros(a.node.created) - micros(b.node.created)) }))
     .sort((a, b) => b.rows.length - a.rows.length || a.label.localeCompare(b.label));
 }
 
