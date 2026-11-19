@@ -321,20 +321,26 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
     // Quiet enough that the field still reads as islands, not as a web: these
     // alphas are what the wires settle to at a whole field's zoom, where the
     // lines are long and many cross the same empty ground.
-    for (const kind of new Set([...weave].map((link) => link.kind))) {
+    // One colour for all of it, not each kind's own. Between islands the hues
+    // were a rainbow across the empty ground and read as noise; inside an island
+    // they are worth telling apart, because there you are following one. Out here
+    // colour is reserved for what it means — mint and coral, evidence and
+    // counter-evidence — and the plumbing is the chrome's quiet slate.
+    {
       ctx.beginPath();
       let any = false;
       for (const { link, a, b } of ends) {
-        if (link.kind !== kind || !weave.has(link) || link.hidden) continue;
+        if (!weave.has(link) || link.hidden) continue;
         if (!inView(a) && !inView(b)) continue;
         strokeEdge(a, b, true);
         any = true;
       }
-      if (!any) continue;
-      ctx.globalAlpha = (focus ? (focus.lit ? 0.22 : 0.3) : 1) * 0.24 * dens * (1 - far * 0.3);
-      ctx.strokeStyle = paint.edges[kind] ?? paint.struct;
-      ctx.lineWidth = hair;
-      ctx.stroke();
+      if (any) {
+        ctx.globalAlpha = (focus ? (focus.lit ? 0.22 : 0.3) : 1) * 0.3 * dens * (1 - far * 0.3);
+        ctx.strokeStyle = paint.struct;
+        ctx.lineWidth = hair;
+        ctx.stroke();
+      }
     }
     // What the focus touches — the hovered node, else the selected one — as the
     // prototype does: a black casing under a thick animated dash, each link in
