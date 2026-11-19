@@ -326,7 +326,14 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   // Showing or hiding the key, or collapsing Peek, changes what covers the
   // canvas, and the roots list, the search results or the briefing how wide it
   // is: frame again once it has rendered.
-  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${briefing.collapsed}`;
+  //
+  // Opening a record counts, and it was the one that did not: the panel takes a
+  // third of the stage and the field stayed where it was, so the islands sat
+  // behind it and what was left of them read as a smudge in the corner. Whether
+  // a record is open, not which one — re-framing on every click through a thread
+  // would throw the field around under the reader — and only while the panel is
+  // actually over the canvas, since collapsed it is a strip that covers nothing.
+  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${briefing.collapsed} ${selectedId !== null && !peek.collapsed} ${wideRecord}`;
   const panelsShown = useRef(panels);
   useLayoutEffect(() => {
     if (panelsShown.current === panels) return;
@@ -668,11 +675,7 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
                       aria-pressed={wideRecord}
                       aria-label={wideRecord ? "Narrow the panel" : "Widen the panel to the whole stage"}
                       title={wideRecord ? "Narrow the panel ([)" : "Widen to the whole stage (])"}
-                      onClick={() => {
-                        setWideRecord(!wideRecord);
-                        // What the panel covers is what a fit frames around.
-                        window.requestAnimationFrame(() => renderer?.refit());
-                      }}
+                      onClick={() => setWideRecord(!wideRecord)}
                     >
                       <Icon name={wideRecord ? "minimize" : "maximize"} size={15} />
                     </button>

@@ -1194,18 +1194,20 @@ const collapsed = () => peek()?.getAttribute("data-collapsed");
 
 test("Peek's button, or ], collapses it and frames the canvas again; the selection holds, and a click on another node selects it with Peek still collapsed, for the tab", async () => {
   const { user } = await shown();
+  // Opening the panel frames the field into the room it leaves (the panel takes a
+  // third of the stage), so a record is one frame before anything is collapsed.
   act(() => renderer.events!.click(renderer.node("Issue 1")));
-  expect(renderer.refits).toHaveLength(0);
+  expect(renderer.refits).toHaveLength(1);
   await user.click(screen.getByRole("button", { name: "Collapse Peek" }));
   expect(collapsed()).toBe("true");
-  expect(renderer.refits).toHaveLength(1);
+  expect(renderer.refits).toHaveLength(2);
   expect(halos()).toEqual(["Issue 1: halo"]);
   act(() => renderer.events!.click(renderer.node("Issue 2")));
   expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
   expect(collapsed()).toBe("true");
   await user.keyboard("]");
   expect(collapsed()).toBe("false");
-  expect(renderer.refits).toHaveLength(2);
+  expect(renderer.refits).toHaveLength(3);
   await user.keyboard("]");
   cleanup();
   renderer = new FakeRenderer();
@@ -1235,13 +1237,15 @@ test("the search results' button, or [, collapses them to a strip with their cou
   expect(renderer.refits).toHaveLength(1);
   expect(halos()).toEqual(["Issue 1: match", "Issue 2: match"]);
   await user.click(search());
+  // Enter opens the match, and the panel over the canvas frames the field again.
   await user.keyboard("{Enter}");
   expect(within(peek()!).getAllByRole("heading").at(-1)!.textContent).toBe("Issue#2");
+  expect(renderer.refits).toHaveLength(2);
   search().blur();
   // user-event spells the [ key "[[".
   await user.keyboard("[[");
   expect(screen.getByRole("listbox", { name: "Matches" })).toBeTruthy();
-  expect(renderer.refits).toHaveLength(2);
+  expect(renderer.refits).toHaveLength(3);
 });
 
 
