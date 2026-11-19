@@ -5594,17 +5594,6 @@
       "type": "string",
       "x-setting": true
      },
-     "terminal_placement": {
-      "default": "bottom",
-      "description": "Where the terminal opens beside the page: under it, the page's width, or at its side.",
-      "enum": [
-       "bottom",
-       "side"
-      ],
-      "title": "Terminal Placement",
-      "type": "string",
-      "x-setting": true
-     },
      "terminal_tab_chords": {
       "default": false,
       "description": "Ctrl+T, Ctrl+W and Ctrl+Tab open, close and switch terminal tabs instead of reaching the shell (Ctrl+Shift+T, Ctrl+Shift+W and Ctrl+Shift+PageUp/PageDown always do).",

@@ -207,15 +207,15 @@ wheels = [
 
 [[package]]
 name = "configgle"
-version = "1.4.6"
+version = "1.4.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "treekle" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a6/1d/b6c07c1c39d35441dd9dcb62ce5b89f29fe4c0bffa9a5d45c3753561bcc5/configgle-1.4.6.tar.gz", hash = "sha256:d66bf20c14e5cedf210def16ee30320016df08fd60eb465dba25eda6a217374e", size = 312524, upload-time = "2026-10-29T06:31:28.723Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/36/df/748476dffe526e1a4f0d4029a1ca07823a840706ea63441b60b827131566/configgle-1.4.7.tar.gz", hash = "sha256:0e914cc0cdbeee20e34c1141472875d92708b952ec2aba5abf3557a9fb1aa9bf", size = 386732, upload-time = "2026-11-19T18:59:41.323Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/bf/29b076548aa76ff8ebe3ad43a42a83d5dbaf8d0582293c08477f6eb01365/configgle-1.4.6-py3-none-any.whl", hash = "sha256:9f5333cd10934481d27f2ba6e3b0cf60faeeb43739905c7004697cadbb20b2b4", size = 85931, upload-time = "2026-10-29T06:31:26.983Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/f4/7483bc7718b5847ebec74ce372c04ce6b1964ab0722c8a5ccf661400a4fd/configgle-1.4.7-py3-none-any.whl", hash = "sha256:6bb9259f2df12a106e045295ae4bc06a1b5277fb52f536e8321f84bf9f7ca59c", size = 91677, upload-time = "2026-11-19T18:59:39.771Z" },
 ]
 
 [[package]]
@@ -1731,8 +1731,8 @@ wheels = [
 
 [[package]]
 name = "rekursiv-ai-typings"
-version = "0.1.21"
-source = { git = "https://github.com/rekursiv-ai/typings?branch=main#684771472897486b507524c7bc20ea161fc6c688" }
+version = "0.1.22.dev1+g494f20700"
+source = { git = "https://github.com/rekursiv-ai/typings?branch=main#494f207009c12cc3af84a8104b78fb62eceb5e2a" }
 
 [[package]]
 name = "rich"

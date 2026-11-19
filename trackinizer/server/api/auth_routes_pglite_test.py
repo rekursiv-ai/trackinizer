@@ -92,7 +92,6 @@ _DEFAULTS: dict[str, object] = {
     "highlight_mentions": True,
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
-    "terminal_placement": "bottom",
     "home": "graph",
     "assistant_prompt": "sagent",
     "cli_folder": "",

@@ -586,7 +586,6 @@ class TestProfile:
             "highlight_mentions": True,
             "terminal_font_size": "13px",
             "terminal_tab_chords": False,
-            "terminal_placement": "bottom",
             "home": "graph",
             "assistant_prompt": "sagent",
             "cli_folder": "",
@@ -791,7 +790,6 @@ class TestPreferences:
             "highlight_mentions": True,
             "terminal_font_size": "13px",
             "terminal_tab_chords": False,
-            "terminal_placement": "bottom",
             "home": "graph",
             "assistant_prompt": "sagent",
             "cli_folder": "",
@@ -815,7 +813,13 @@ class TestPreferences:
         )
         assert call.args[1:] == (
             {"theme": "light"},
-            ["chat_side", "chat_style", "chat_tool_calls", "chat_provider"],
+            [
+                "chat_side",
+                "chat_style",
+                "chat_tool_calls",
+                "chat_provider",
+                "terminal_placement",
+            ],
             uuid.UUID("11111111-1111-1111-1111-111111111111"),
         )
 
@@ -830,7 +834,13 @@ class TestPreferences:
         assert r.status_code == 200, r.text
         assert engine.conn.fetchrow.call_args.args[1:3] == (
             {"read": read},
-            ["lens", "chat_style", "chat_tool_calls", "chat_provider"],
+            [
+                "lens",
+                "chat_style",
+                "chat_tool_calls",
+                "chat_provider",
+                "terminal_placement",
+            ],
         )
 
     @pytest.mark.parametrize(

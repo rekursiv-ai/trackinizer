@@ -74,7 +74,6 @@ _DEFAULTS: dict[str, JsonValue] = {
     "highlight_mentions": True,
     "terminal_font_size": "13px",
     "terminal_tab_chords": False,
-    "terminal_placement": "bottom",
     "home": "graph",
     "assistant_prompt": "sagent",
     "cli_folder": "",
@@ -309,21 +308,22 @@ def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_retired_chat_provider_reads_as_nothing_and_is_written_as_none() -> (
-    None
-):
-    assert (
-        "chat_provider"
-        not in stored_preferences(
-            {"chat_provider": "codex"},
-        ).model_dump()
-    )
+@pytest.mark.parametrize(
+    ("key", "stored", "sent"),
+    [("chat_provider", "codex", "claude"), ("terminal_placement", "side", "bottom")],
+)
+async def test_a_retired_key_reads_as_nothing_and_is_refused_on_write(
+    key: str,
+    stored: str,
+    sent: str,
+) -> None:
+    assert key not in stored_preferences({key: stored}).model_dump()
     conn = cast(MockConnection, AsyncMock())
-    with pytest.raises(ValueError, match="No such preference: chat_provider"):
+    with pytest.raises(ValueError, match=f"No such preference: {key}"):
         await write_preferences(
             cast("Conn", conn),
             user_id=_USER,
-            change={"chat_provider": "claude"},
+            change={key: sent},
         )
     conn.fetchrow.assert_not_awaited()
 
@@ -410,7 +410,7 @@ async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_k
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"chat_view": _TERMINAL},
-        ["chat_style", "chat_tool_calls", "chat_provider"],
+        ["chat_style", "chat_tool_calls", "chat_provider", "terminal_placement"],
         _USER,
     )
     conn.fetchrow = cast(
@@ -429,7 +429,13 @@ async def test_a_write_picks_a_chat_view_and_puts_it_back_dropping_the_retired_k
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_view", "chat_style", "chat_tool_calls", "chat_provider"],
+        [
+            "chat_view",
+            "chat_style",
+            "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
+        ],
         _USER,
     )
 
@@ -572,7 +578,13 @@ async def test_a_write_sets_and_resets_keys_in_one_statement() -> None:
         "(coalesce(preferences, '{}'::jsonb) || $1::jsonb) - $2::text[] "
         "WHERE id = $3 RETURNING preferences",
         {"theme": "light"},
-        ["chat_side", "chat_style", "chat_tool_calls", "chat_provider"],
+        [
+            "chat_side",
+            "chat_style",
+            "chat_tool_calls",
+            "chat_provider",
+            "terminal_placement",
+        ],
         _USER,
     )
 

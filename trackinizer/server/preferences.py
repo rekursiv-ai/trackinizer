@@ -57,7 +57,6 @@ ASSISTANT_KEYS: Final = frozenset(
         "highlight_mentions",
         "terminal_font_size",
         "terminal_tab_chords",
-        "terminal_placement",
         "home",
         "assistant_prompt",
         "cli_folder",
@@ -545,14 +544,6 @@ class Preferences(_Strict):
         ),
         json_schema_extra=SETTING,
     )
-    terminal_placement: Literal["bottom", "side"] = Field(
-        default="bottom",
-        description=(
-            "Where the terminal opens beside the page: under it, the page's width, "
-            "or at its side."
-        ),
-        json_schema_extra=SETTING,
-    )
     home: Literal["graph", "empty"] = Field(
         default="graph",
         description=(
@@ -833,6 +824,7 @@ async def write_preferences(
             "chat_style",
             "chat_tool_calls",
             "chat_provider",
+            "terminal_placement",
         ],
         user_id,
     )

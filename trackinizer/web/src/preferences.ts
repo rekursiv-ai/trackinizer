@@ -56,7 +56,6 @@ export const DEFAULT_PREFERENCES: Preferences = {
   highlight_mentions: true,
   terminal_font_size: "13px",
   terminal_tab_chords: false,
-  terminal_placement: "bottom",
   home: "graph",
   assistant_prompt: "sagent",
   cli_folder: "",
