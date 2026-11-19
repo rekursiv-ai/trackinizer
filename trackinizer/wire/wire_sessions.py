@@ -96,6 +96,7 @@ __all__ = [
     "SessionPlacement",
     "SessionStart",
     "SessionStartResponse",
+    "WorkedOn",
     "campaign_asker_label",
     "checked_canvas_name",
     "session_audience_path",
@@ -507,6 +508,16 @@ class CanvasRecordContext(BaseModel):
     kind: str
     seq: int
     title: str = Field(max_length=512)
+
+
+class WorkedOn(BaseModel):
+    """A record ``GET /api/web/worked_on`` lists: its id, and its kind and seq."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: uuid.UUID
+    kind: str
+    seq: int
 
 
 class CanvasVisibleVisual(BaseModel):

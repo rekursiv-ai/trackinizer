@@ -114,9 +114,10 @@ canvas UUID and the visible visual identities to a typed inbound context.
 The browser also sends
 `page`, the `#/...` address it is on, and `trail`, the addresses before it,
 oldest first and at most 8; a malformed address, or a longer trail, returns
-422. The server resolves them: `#/lookup/<id>`, `#/inquiry/<id>`,
-`#/ref/<Kind>/<seq>` and `#/graph?focus=<ref>` name a record, and the context
-carries each as a page with its route and, when it exists, that record.
+422. The server resolves them: `#/lookup/<id>`, `#/inquiry/<id>` and
+`#/ref/<Kind>/<seq>` name a record, and the context carries each as a page with
+its route and, when it exists, that record. `#/graph`, its old `?focus=` or not,
+names none: the app draws the graph of what is relevant there.
 Any other address, or a record that does not exist, keeps its route and has
 no record. Each visible visual carries the record it shows the same way, so
 "this" means what the sender sees, and its `params` as the canvas holds them,

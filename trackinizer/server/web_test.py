@@ -74,12 +74,14 @@ from trackinizer.wire.bodies import (
     SubmitWebResult,
     SubmitWebSearch,
 )
+from trackinizer.wire.refs import SeqRef
 from trackinizer.wire.wire_sessions import (
     FeedActorFacet,
     FeedBucket,
     FeedEvent,
     FeedFacetsResponse,
     FeedHistogramResponse,
+    WorkedOn,
 )
 
 
@@ -719,6 +721,63 @@ class TestRoutes:
                 q="title:^a",
                 identity=_TEST_IDENTITY,
             )
+
+    def test_more_foci_than_a_read_takes_are_refused_before_it_runs(self) -> None:
+        engine = FakeEngine()
+        app = FastAPI()
+        app.state.engine = engine
+        app.state.store = _store(engine)
+        web.attach(app)
+        app.dependency_overrides[current_user] = _viewer
+        client = TestClient(app)
+
+        response = client.get(
+            "/api/web/graph",
+            params=tuple(("focus", "Issue/1") for _ in range(web.MOST_FOCI + 1)),
+        )
+
+        assert response.status_code == 422, response.text
+        engine.conn.fetch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_worked_on_reads_the_readers_own_changes_through_its_access(
+        self,
+    ) -> None:
+        engine = FakeEngine()
+        request = _request(_store(engine), engine)
+        engine.conn.fetch.return_value = []
+
+        await web.web_worked_on(
+            cast(Request, request),
+            identity=_TEST_IDENTITY,
+            limit=7,
+        )
+
+        call = engine.conn.fetch.call_args
+        assert call is not None
+        sql = str(call.args[0])
+        # The reader's access gates every change it counts.
+        assert "@> ARRAY['workspace']::text[] AND (" in sql
+        assert call.args[1:4] == (7, _TEST_IDENTITY.email, list(web._NOT_WORK))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [0, 101])
+    async def test_worked_on_refuses_a_limit_outside_1_to_100(self, limit: int) -> None:
+        engine = FakeEngine()
+        request = _request(_store(engine), engine)
+
+        with pytest.raises(HTTPException) as caught:
+            await web.web_worked_on(
+                cast(Request, request),
+                identity=_TEST_IDENTITY,
+                limit=limit,
+            )
+
+        assert (caught.value.status_code, caught.value.detail) == (
+            400,
+            "limit must be in [1, 100]",
+        )
+        engine.conn.fetch.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_recent_lookup_and_get_routes(self) -> None:
@@ -2666,6 +2725,107 @@ async def _linked_issues(
     return ids
 
 
+_AGENT: Final = "claude-opus"
+"""The actor of a change the reader's agent made through one of the reader's keys."""
+
+# (title, actor, change kind, days ago) of each change the reader's records list reads;
+# ``session`` is an AgentSession, ``workspace`` a workspace's Issue and ``hidden`` filed
+# from another person's private chat, which the reader may not read.
+_WORK: Final = (
+    ("agents", _AGENT, "created", 0),
+    ("older", _TEST_IDENTITY.email, "created", 3),
+    ("older", _TEST_IDENTITY.email, "title", 2),
+    ("newer", _TEST_IDENTITY.email, "created", 1),
+    # The server's cost roll-up on ``older`` is not work, so ``newer`` stays first.
+    ("older", _TEST_IDENTITY.email, "marginal_cost", 0),
+    ("stale", _TEST_IDENTITY.email, "created", 31),
+    ("theirs", _ACCOUNT, "created", 0),
+    ("session", _TEST_IDENTITY.email, "created", 0),
+    ("workspace", _TEST_IDENTITY.email, "created", 0),
+    ("hidden", _TEST_IDENTITY.email, "created", 0),
+)
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("limit", "listed"),
+    [
+        pytest.param(10, ["agents", "newer", "older"], id="10"),
+        pytest.param(1, ["agents"], id="1"),
+    ],
+)
+async def test_worked_on_lists_what_the_reader_changed_last_each_once(
+    store: Store,
+    limit: int,
+    listed: list[str],
+) -> None:
+    """Its agents' count; another's, old, cost, session, workspace or hidden do not."""
+    titles = sorted({title for title, *_ in _WORK} - {"session"})
+    ids = dict(zip(titles, await _linked_issues(store, tuple(titles), ()), strict=True))
+    (ids["session"],) = await store.submit_batch(
+        [SubmitAgentSession(account=_ACCOUNT, title="session")],
+        session_audience="open",
+    )
+    now = datetime.now(UTC)
+    async with store.engine.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO users (id, email, name, role, status)"
+            " VALUES ($1, $2, 'Web', 'viewer', 'active')",
+            _TEST_IDENTITY.user_id,
+            _TEST_IDENTITY.email,
+        )
+        await conn.execute(
+            "INSERT INTO api_keys (id, user_id, name, secret_hash, prefix, role)"
+            " VALUES ($1, $2, 'agent', '', 'tk_', 'writer')",
+            _TEST_IDENTITY.api_key_id,
+            _TEST_IDENTITY.user_id,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET labels = ARRAY['workspace'] WHERE id = $1",
+            ids["workspace"],
+        )
+        private = uuid.uuid4()
+        await conn.execute(
+            "INSERT INTO inquiries (id, kind, seq, status, account, title,"
+            " agentsession_audience, agentsession_cli)"
+            " VALUES ($1, 'AgentSession', nextval('seq_agentsession'), 'active', $2,"
+            " 'private', 'private', 'sagent')",
+            private,
+            _ACCOUNT,
+        )
+        await conn.execute(
+            "UPDATE inquiries SET filed_from_chat = $1 WHERE id = $2",
+            private,
+            ids["hidden"],
+        )
+        seqs = {
+            from_plain(row["id"], uuid.UUID): from_plain(row["seq"], int)
+            for row in await conn.fetch("SELECT id, seq FROM inquiries")
+        }
+        for title, actor, kind, days in _WORK:
+            await conn.execute(
+                "INSERT INTO change_log (id, created, actor, api_key_id, subject_id,"
+                " subject_kind, kind, old_title, new_title)"
+                " VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)",
+                uuid.uuid4(),
+                now - timedelta(days=days, minutes=1),
+                actor,
+                _TEST_IDENTITY.api_key_id if actor == _AGENT else None,
+                ids[title],
+                "AgentSession" if title == "session" else "Issue",
+                kind,
+                title if kind == "title" else None,
+            )
+    request = cast(Request, _request(store, store.engine))
+
+    worked = await web.web_worked_on(request, identity=_TEST_IDENTITY, limit=limit)
+
+    assert worked == [
+        WorkedOn(id=ids[title], kind="Issue", seq=seqs[ids[title]]) for title in listed
+    ]
+
+
 _CITED: Final = ("cited 0", "cited 1", "cited 2", "unlinked", "newest")
 # Links in both directions: ``cited 0`` points at ``newest``.
 _CITED_LINKS: Final = ((0, 4), (4, 1), (4, 2))
@@ -2748,7 +2908,7 @@ async def test_web_graph_draws_a_focus_neighbourhood_on_a_real_engine(
         request,
         identity=_TEST_IDENTITY,
         limit=limit,
-        focus=ids[_FOCUS],
+        focus=[str(ids[_FOCUS])],
         hops=hops,
     )
 
@@ -2791,9 +2951,90 @@ async def test_web_graph_refuses_an_unknown_focus_and_hops_outside_1_to_3(
         await web.web_graph(
             request,
             identity=_TEST_IDENTITY,
-            focus=ids[_FOCUS] if known else uuid.uuid4(),
+            focus=[str(ids[_FOCUS] if known else uuid.uuid4())],
             hops=hops,
         )
+
+    assert caught.value.status_code == status
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_walks_from_every_focus_named_by_id_or_by_number(
+    store: Store,
+) -> None:
+    """Each focus, a UUID or ``Kind/seq``, is at hop 0; one no row has is left out."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        # ``far``, Issue#1, by number; ``far 2`` by id; and two that name nothing.
+        focus=["issue/1", str(ids[4]), str(uuid.uuid4()), "Issue/99"],
+        hops=1,
+    )
+
+    nodes = {
+        n["id"]: n["hops"]
+        for n in (
+            from_plain(each, dict[str, object])
+            for each in from_plain(graph["nodes"], list[object])
+        )
+    }
+    assert nodes == {
+        str(ids[0]): 0,
+        str(ids[4]): 0,
+        str(ids[1]): 1,
+        str(ids[3]): 1,
+    }
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+async def test_web_graph_reads_one_record_named_both_ways_as_one_focus(
+    store: Store,
+) -> None:
+    """``focus``, Issue#3, by number and by id is one node at hop 0, not two."""
+    ids = await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    graph = await web.web_graph(
+        request,
+        identity=_TEST_IDENTITY,
+        focus=["Issue/3", str(ids[_FOCUS])],
+        hops=1,
+    )
+
+    assert [
+        (n["id"], n["hops"])
+        for n in (
+            from_plain(each, dict[str, object])
+            for each in from_plain(graph["nodes"], list[object])
+        )
+    ] == [(str(ids[1]), 1), (str(ids[2]), 0), (str(ids[3]), 1)]
+
+
+@pytest.mark.db_pglite
+@pytest.mark.asyncio(loop_scope="session")
+@pytest.mark.parametrize(
+    ("focus", "status"),
+    [
+        pytest.param(["Issue/99", str(uuid.UUID(int=1))], 404, id="none-known"),
+        pytest.param(["not a record"], 400, id="malformed"),
+    ],
+)
+async def test_web_graph_refuses_a_focus_list_naming_nothing_or_too_much(
+    store: Store,
+    focus: list[str],
+    status: int,
+) -> None:
+    """No known focus is 404, as one unknown focus is; a value of neither form, 400."""
+    await _linked_issues(store, _NEIGHBOURS, _NEIGHBOUR_LINKS)
+    request = cast(Request, _request(store, store.engine))
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(request, identity=_TEST_IDENTITY, focus=focus)
 
     assert caught.value.status_code == status
 
@@ -2819,7 +3060,7 @@ async def test_web_graph_draws_60_nodes_round_a_focus_and_1000_without(
             hub,
         )
     request = cast(Request, _request(store, store.engine))
-    around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=hub)
+    around = await web.web_graph(request, identity=_TEST_IDENTITY, focus=[str(hub)])
     assert len(from_plain(around["nodes"], list[object])) == 60
     whole = from_plain(
         (await web.web_graph(request, identity=_TEST_IDENTITY))["nodes"],
@@ -3089,7 +3330,7 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
     graph = await web.web_graph(
         request,
         identity=_TEST_IDENTITY,
-        focus=focus,
+        focus=[str(focus)],
         limit=limit,
     )
 
@@ -3109,7 +3350,8 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
         "edges": [{"from_id": str(peer), "to_id": str(focus), "edge_kind": "narrows"}],
     }
     call = _neighbourhood_call(neighbourhood)
-    assert call.args == (engine.conn, focus)
+    assert call.args == (engine.conn,)
+    assert call.kwargs["focus"] == [focus]
     assert call.kwargs["limit"] == (60 if limit is None else limit)
     assert call.kwargs["hops"] == 2
     assert call.kwargs["policy"] is get_store(request).access_policy
@@ -3119,6 +3361,36 @@ async def test_focused_graph_keeps_neighbourhood_distances_and_returned_edges(
     assert principal.role == _TEST_IDENTITY.role
     assert engine.conn.fetch.await_args_list[0].args[1:] == ([focus, peer],)
     assert engine.conn.fetch.await_args_list[1].args[1:] == ([peer, focus],)
+
+
+@pytest.mark.asyncio
+async def test_a_focus_by_number_the_reader_may_not_read_is_left_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``read_named`` reads numbers through the reader's access; one it hides drops."""
+    engine = FakeEngine()
+    request = cast(Request, _request(_store(engine), engine))
+    named = AsyncMock(return_value={})
+    neighbourhood = AsyncMock(return_value={})
+    monkeypatch.setattr(web, "read_named", named)
+    monkeypatch.setattr(web, "read_neighbourhood", neighbourhood)
+    shown = new_uuid()
+
+    with pytest.raises(HTTPException) as caught:
+        await web.web_graph(
+            request,
+            identity=_TEST_IDENTITY,
+            focus=["Issue/7", str(shown)],
+        )
+
+    assert caught.value.status_code == 404
+    call = named.await_args
+    assert call is not None
+    assert call.args == (engine.conn,)
+    assert call.kwargs["wanted"] == [SeqRef(kind="Issue", seq=7)]
+    assert call.kwargs["policy"] is get_store(request).access_policy
+    assert isinstance(call.kwargs["principal"], Principal)
+    assert _neighbourhood_call(neighbourhood).kwargs["focus"] == [shown]
 
 
 @pytest.mark.asyncio
@@ -3144,7 +3416,7 @@ async def test_focused_graph_rejects_bad_hops_and_missing_focus_without_fetching
         await web.web_graph(
             request,
             identity=_TEST_IDENTITY,
-            focus=new_uuid(),
+            focus=[str(new_uuid())],
             hops=hops,
         )
     assert (caught.value.status_code, caught.value.detail) == (status, detail)

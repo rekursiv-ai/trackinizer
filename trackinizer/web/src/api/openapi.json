@@ -5461,7 +5461,7 @@
      },
      "home": {
       "default": "graph",
-      "description": "What the canvas's Home button and a new canvas tab show: the graph, or an empty canvas.",
+      "description": "What a new workspace's canvas opens on: the graph of what is relevant, or an empty tab.",
       "enum": [
        "graph",
        "empty"
@@ -10269,6 +10269,31 @@
    },
    "WebView": {
     "additionalProperties": true,
+    "type": "object"
+   },
+   "WorkedOn": {
+    "description": "A record ``GET /api/web/worked_on`` lists: its id, and its kind and seq.",
+    "properties": {
+     "id": {
+      "format": "uuid",
+      "title": "Id",
+      "type": "string"
+     },
+     "kind": {
+      "title": "Kind",
+      "type": "string"
+     },
+     "seq": {
+      "title": "Seq",
+      "type": "integer"
+     }
+    },
+    "required": [
+     "id",
+     "kind",
+     "seq"
+    ],
+    "title": "WorkedOn",
     "type": "object"
    },
    "WorkspacesPreference": {
@@ -19930,7 +19955,7 @@
   },
   "/api/web/graph": {
    "get": {
-    "description": "Return the inquiry graph as typed nodes + directed edges, for the SPA.\n\nAt most ``limit`` nodes, at least 1, and the edges between them. The newest\ninquiries come first, each followed by the older ones it links to in either\ndirection, so an old-but-still-cited node (e.g. a foundational paper a new\nbelief proves) stays in view; selection stops at ``limit``. Every edge joins\ntwo returned nodes.\n\nWith ``focus``, the nodes are instead the focus and the inquiries nearest it\n(:func:`read_neighbourhood`): all within one edge, in either direction, before\nany two away, and so on to ``hops``, newest first within a hop, until\n``limit``. Each node then carries ``hops``, its distance from the focus.\n\nNodes are the light projection (id, kind, seq, title, status, created,\nbelief judgement/confidence), ordered by ``created`` ascending so the replay\nanimation adds them in authoring order; edges carry ``from_id`` -> ``to_id``,\n``edge_kind``, and ``valence`` when present. The detail view\n(:func:`web_get`) serves the full per-kind fields for one node on demand.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  limit: Most nodes to return, neighbours included, at least 1; 1000, or 60\n    with a ``focus``, when unset.\n  focus: The inquiry whose neighbourhood to return; unset returns the newest.\n  hops: With ``focus``, the most edges to walk from it, 1 to 3.\n\nReturns:\n  graph: Nodes and edges for replay visualization, ordered by created time.\n\nRaises:\n  HTTPException: 400 for a ``limit`` below 1 or ``hops`` outside 1 to 3; 404\n    when ``focus`` names no inquiry.",
+    "description": "Return the inquiry graph as typed nodes + directed edges, for the SPA.\n\nAt most ``limit`` nodes, at least 1, and the edges between them. The newest\ninquiries come first, each followed by the older ones it links to in either\ndirection, so an old-but-still-cited node (e.g. a foundational paper a new\nbelief proves) stays in view; selection stops at ``limit``. Every edge joins\ntwo returned nodes.\n\nWith ``focus``, the nodes are instead the foci and the inquiries nearest them\n(:func:`read_neighbourhood`): all within one edge, in either direction, before\nany two away, and so on to ``hops``, newest first within a hop, until\n``limit``; with several foci, each has a share of hop 1. Each node then\ncarries ``hops``, its distance from the nearest focus, 0 for a focus.\n\nNodes are the light projection (id, kind, seq, title, status, created,\nbelief judgement/confidence), ordered by ``created`` ascending so the replay\nanimation adds them in authoring order; edges carry ``from_id`` -> ``to_id``,\n``edge_kind``, and ``valence`` when present. The detail view\n(:func:`web_get`) serves the full per-kind fields for one node on demand.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  limit: Most nodes to return, neighbours included, at least 1; 1000, or 60\n    with a ``focus``, when unset.\n  focus: The inquiries whose neighbourhood to return, at most 10, each a UUID\n    or ``Kind/seq``; one that names nothing the reader may read is left out.\n    Unset returns the newest.\n  hops: With ``focus``, the most edges to walk from the foci, 1 to 3.\n\nReturns:\n  graph: Nodes and edges for replay visualization, ordered by created time.\n\nRaises:\n  HTTPException: 400 for a ``limit`` below 1, ``hops`` outside 1 to 3, or a\n    ``focus`` value that is neither a UUID nor ``Kind/seq`` of a known kind;\n    404 when no ``focus`` names an inquiry the reader may read. More than\n    ``MOST_FOCI`` values are refused before this runs, with 422.",
     "operationId": "web_graph_api_web_graph_get",
     "parameters": [
      {
@@ -19956,8 +19981,11 @@
       "schema": {
        "anyOf": [
         {
-         "format": "uuid",
-         "type": "string"
+         "items": {
+          "type": "string"
+         },
+         "maxItems": 10,
+         "type": "array"
         },
         {
          "type": "null"
@@ -20434,6 +20462,51 @@
      }
     },
     "summary": "Web Subscribe Probe"
+   }
+  },
+  "/api/web/worked_on": {
+   "get": {
+    "description": "Return what the reader worked on last: what its changes of 30 days touched.\n\nA change counts when the reader made it, its agents' by its keys among them, and it\nis work on the record (not one of :data:`_NOT_WORK`). An agent session's own\nrecord is left out: its changes are the run's bookkeeping, and its work shows on the\nrecords it changed. A workspace's Issue is left out too: each chat placed in it\nchanges it, and its neighbours are every session of the workspace. Only records the\nreader may still read are listed.\n\nArgs:\n  request: FastAPI request object for middleware access.\n  identity: Authenticated user, validated to have viewer role.\n  limit: Most records to return, 1-100.\n\nReturns:\n  records: Each record once, the one changed last first, with its ``kind``\n    and ``seq``, so a caller can tell it from the same record named by number.\n\nRaises:\n  HTTPException: 400 for a ``limit`` outside 1-100.",
+    "operationId": "web_worked_on_api_web_worked_on_get",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "limit",
+      "required": false,
+      "schema": {
+       "default": 10,
+       "title": "Limit",
+       "type": "integer"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "items": {
+          "$ref": "#/components/schemas/WorkedOn"
+         },
+         "title": "Response Web Worked On Api Web Worked On Get",
+         "type": "array"
+        }
+       }
+      },
+      "description": "Successful Response"
+     },
+     "422": {
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/HTTPValidationError"
+        }
+       }
+      },
+      "description": "Validation Error"
+     }
+    },
+    "summary": "Web Worked On"
    }
   },
   "/api/webresult/{target_id}/url": {

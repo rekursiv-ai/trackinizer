@@ -401,11 +401,13 @@ GET /api/web/search?q=<query>&kind=<kind>&limit=N
 GET /api/web/search?q=<query>&kind=<kind>&fields=<key>
 GET /api/web/recent_changes
 GET /api/web/recent_changes?limit=N
+GET /api/web/worked_on?limit=N
 GET /api/web/lookup/<uuid>
 GET /api/web/get/<uuid>
 GET /api/web/graph
 GET /api/web/graph?limit=N
 GET /api/web/graph?focus=<uuid>&hops=N&limit=N
+GET /api/web/graph?focus=<uuid>&focus=<Kind/seq>&hops=N&limit=N
 GET /api/web/subscribe
 GET /api/web/feed
 GET /api/web/feed?after_created=<iso>&after_session=<uuid>&after_seq=N
@@ -428,6 +430,17 @@ term. A bare term is a case-insensitive substring of `title` or
 Only `"` groups words into one term. `'` and `\` are ordinary characters, so
 `don't` and `title:\d+` mean what they say.
 
+`/api/web/worked_on` returns the records the reader worked on last, each once as
+`{id, kind, seq}`, the one changed last first, at most `limit` (default 10, 1 to
+100): the app's graph page centers on them. A change counts when the reader made
+it in the last 30 days, its agents' by its keys among them, and it is work on the
+record: cost roll-ups, a child's alert to its parents, subscription hooks, a
+purge and a lock are not, nor is any change to an agent session's own record or
+to a workspace's Issue (each chat placed in a workspace changes its Issue, whose
+neighbours are every session there). Only records the reader may still read are
+listed. The log has no index by author, so the window is what bounds the walk
+for a reader who changed little.
+
 `/api/web/graph` returns at most `limit` inquiries (default 1000) and the
 edges between them. The newest come first, each followed by the older
 inquiries it links to, until `limit` is reached. A `limit` below 1 answers
@@ -438,15 +451,23 @@ and 180,000 edges that was 42 MB (10 MB gzipped) in 0.7 s, against 8.6 MB in
 
 With `focus`, it returns that inquiry's neighbourhood instead, in the same
 shape: the focus, then every inquiry one edge away in either direction, then
-two away, up to `hops` (1 to 3, default 2). Within a hop the newest come
-first, and selection stops at `limit` (default 60), the focus included. The
-edges are those between returned nodes, and each node adds `hops`, its
-distance from the focus (0 for the focus). An unknown `focus` answers 404, and
-`hops` outside 1 to 3 answers 400. A hop reads every edge of the hop before it
-and looks up each neighbour, so its cost grows with those nodes' edges, not
-with the graph: on the same copy, 300 random foci took 1.3 ms at the median
-and 10 ms at worst, and its most-linked Issue 3 ms. A focus whose 30
-neighbours had 1,000 edges each took 35 ms.
+two away, up to `hops` (1 to 3, default 2). Within a hop the newest come first,
+and selection stops at `limit` (default 60), the focus included. The edges are
+those between returned nodes, and each node adds `hops`, its distance from the
+nearest focus (0 for a focus). `focus` may repeat, up to 10 times, each a UUID
+or `Kind/seq` (`Issue/12`). With several, hop 1 gives each focus in turn at
+most an even share of the room left, so one with many newer neighbours leaves
+room for the others, and the newest of the rest fill what is left. A focus that
+names no inquiry the reader may read is left out, by UUID and by number alike;
+when none is left the answer is 404, as it is for one unknown `focus`. More
+than 10 answers 422, as any list over its bound does; a value that is neither
+form answers 400, as `hops` outside 1 to 3 does. A hop reads every edge of the
+hop before it and looks up each neighbour, so its cost grows with those nodes'
+edges, not with the graph: on the same copy, 300 random single foci took 1.3 ms
+at the median and 10 ms at worst, and its most-linked Issue 3 ms. A focus whose
+30 neighbours had 1,000 edges each took 35 ms. These are one focus each; with
+several, hop 1 reads each focus's share, then the whole frontier again for what
+is left, so up to one more hop read per focus (not measured).
 
 `/api/web/feed` interleaves every agent session's captured records into one
 stream, oldest first, ordered by `(created, session_id, part, seq)`. A poll
@@ -925,7 +946,10 @@ canvas tab in order as `{id, name}` (none until a second one is made) and `tab` 
 the open one's id or null, so the top bar shows every canvas's tabs without
 reading each canvas.
 `POST /api/canvases/new` makes a canvas. An optional body `{workspace_id}` names
-its workspace (else the caller's default workspace, made if they have none).
+its workspace (else the caller's default workspace, made if they have none). Its
+one tab opens on the owner's `home` preference: `#/graph`, the graph page, by
+default, or `#/`, a New Tab, when `home` is `"empty"`. The first canvas `POST
+/api/canvases` makes, and one `for-chat` makes, open the same way.
 `PATCH /api/canvases/<uuid>` with `{"name"}` renames it: the name is trimmed
 and must then be 1 to 120 characters (else 422); a name the user already has is
 409.
