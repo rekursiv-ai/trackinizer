@@ -246,7 +246,9 @@ async def test_a_browser_reattaching_resumes_from_its_offset() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_offset_past_the_ring_gets_the_whole_ring_after_a_notice() -> None:
+async def test_an_offset_past_the_ring_resumes_at_its_start_with_no_stream_bytes_added() -> (
+    None
+):
     world = _World()
     term, _, first = await world.live()
     term.ring = Ring(capacity=4)
@@ -256,21 +258,18 @@ async def test_an_offset_past_the_ring_gets_the_whole_ring_after_a_notice() -> N
     second = _Socket()
     await world.relay.attach_browser(term, second, offset=1)
 
-    assert second.sent == [
-        (Frame.OUTPUT, b"\r\n--- output lost ---\r\n"),
-        (Frame.ACK, (4).to_bytes(8)),
-        (Frame.OUTPUT, b"efgh"),
-    ]
+    # The ACK past the browser's offset is how it learns output was lost; a notice sent
+    # as OUTPUT would be counted as stream bytes.
+    assert second.sent == [(Frame.ACK, (4).to_bytes(8)), (Frame.OUTPUT, b"efgh")]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", [0, 1, 2])
+@pytest.mark.parametrize("limit", [0, 1])
 async def test_a_browser_that_leaves_mid_replay_detaches_whichever_send_it_fails(
     limit: int,
 ) -> None:
     world = _World()
     term = world.open()
-    term.ring = Ring(capacity=3)
     assert await world.claim(term, _Socket())
     await world.relay.from_daemon(term, Frame.OUTPUT, b"abcdef")
     browser = _Socket(limit=limit)
@@ -1220,6 +1219,28 @@ async def test_a_route_passes_to_the_host_and_a_malformed_one_is_refused() -> No
 
 
 @pytest.mark.asyncio
+async def test_a_browsers_return_to_the_relay_asks_the_host_from_the_rings_end() -> (
+    None
+):
+    world = _World()
+    term, host, _ = await world.live()
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"abc")
+    await world.relay.from_daemon(term, Frame.KEEPALIVE, _KEEPALIVE)
+
+    # The browser reached 20 over the direct link; the ring, which saw none of it, ends
+    # at 3, and the host's replay from there keeps the ring whole.
+    back = wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 20)
+    assert await world.relay.from_browser(term, Frame.ROUTE, back)
+    await world.relay.from_daemon(term, Frame.ACK, (3).to_bytes(8))
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"defg")
+
+    assert host.sent == [
+        (Frame.ROUTE, wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 3)),
+    ]
+    assert term.ring.since(0) == (b"abcdefg", 0, False)
+
+
+@pytest.mark.asyncio
 async def test_a_host_is_idle_from_the_relay_start_until_input_or_output() -> None:
     world = _World()
     term, _, _ = await world.live()
@@ -1296,7 +1317,39 @@ async def test_a_host_that_returns_to_the_relay_restarts_the_ring_where_it_resum
     await world.relay.from_daemon(term, Frame.OUTPUT, b"xy")
 
     assert browser.sent == [(Frame.ACK, (10).to_bytes(8)), (Frame.OUTPUT, b"xy")]
-    assert term.ring.since(10) == (b"xy", 10, False)
+    assert term.ring.since(0) == (b"xy", 10, True)
+
+
+@pytest.mark.asyncio
+async def test_a_tab_opened_again_and_again_replays_all_output_with_nothing_lost() -> (
+    None
+):
+    """Each return of a terminal tab attaches a new browser while output goes direct."""
+    world = _World()
+    term, host, browser = await world.live()
+    await world.relay.from_daemon(term, Frame.OUTPUT, b"$ ls\r\n")
+    for shown in (b"a\r\n", b"b\r\n"):
+        await world.relay.from_daemon(term, Frame.KEEPALIVE, _KEEPALIVE)
+        world.relay.detach_browser(term, browser)
+        browser = _Socket()
+        await world.relay.attach_browser(term, browser, offset=0)
+        # The host, asked back from the ring's end, replays what went direct.
+        end = term.ring.end
+        await world.relay.from_daemon(term, Frame.ACK, end.to_bytes(8))
+        await world.relay.from_daemon(term, Frame.OUTPUT, shown)
+
+    world.relay.detach_browser(term, browser)
+    last = _Socket()
+    await world.relay.attach_browser(term, last, offset=0)
+
+    assert last.sent == [
+        (Frame.ACK, (0).to_bytes(8)),
+        (Frame.OUTPUT, b"$ ls\r\na\r\nb\r\n"),
+    ]
+    assert host.sent[-1] == (
+        Frame.ROUTE,
+        wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, 12),
+    )
 
 
 @pytest.mark.asyncio

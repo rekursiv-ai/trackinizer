@@ -15,18 +15,22 @@ equal that module's ``Frame`` values; a test holds them equal.
 
 - Browser to server: ``ATTACH`` (:data:`TICKET_CHARS` ASCII ticket bytes then a
   u64 offset) first, then ``INPUT``, ``RESIZE`` (u16 rows, u16 cols), ``STOP``.
-- Server to browser: ``ACK`` (u64 offset the stream resumes at), ``OUTPUT``, ``EXIT``
-  (u32 status).
+- Server to browser: ``ACK`` (u64 offset the stream resumes at; one past the
+  browser's offset means the output between is lost), ``OUTPUT``, ``EXIT`` (u32
+  status). An ``ACK`` may also fall before the browser's offset; it skips the bytes it
+  already has.
 - Server to daemon: ``INPUT``, ``RESIZE``, ``STOP``. Daemon to server: ``OUTPUT``, ``EXIT``.
 
 A direct link (a WebRTC data channel between the browser and the daemon) is set up
 over these same sockets. The server forwards ``SIGNAL`` (a :class:`DirectSignal`)
-and the browser's ``ROUTE`` (u8 route, u64 offset) without reading them. The daemon
+without reading it, and the browser's ``ROUTE`` (u8 route, u64 offset), except that a
+return to the relay goes on with the offset the server's ring ends at. The daemon
 sends ``KEEPALIVE`` (u32 milliseconds since it last saw input, then u32 milliseconds
 since the shell last wrote output) every :data:`KEEPALIVE_SEC` while output goes
 direct, so the server knows the host is in use. A daemon from before output idle
 time sends the first u32 alone. A daemon that returns to the relay answers with
-``ACK`` (the offset it resumes at) then ``OUTPUT``; the server restarts its ring there.
+``ACK`` (the offset it resumes at) then ``OUTPUT``; the server's ring continues there,
+keeping the bytes it holds before that offset.
 
 A started terminal outlives both sockets; only its shell's exit, a stop, or its host
 going ends it. A browser that drops attaches again with a fresh ticket. A daemon

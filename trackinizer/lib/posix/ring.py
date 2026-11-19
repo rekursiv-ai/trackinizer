@@ -26,9 +26,21 @@ class Ring:
         self.end += len(data)
         del self._data[: max(0, len(self._data) - self._capacity)]
 
-    def reset(self, offset: int) -> None:
-        """Forget every byte kept and continue the stream at ``offset``."""
-        self._data.clear()
+    def seek(self, offset: int) -> None:
+        """Continue the stream at ``offset``, keeping the bytes kept before it.
+
+        A sender that resends from ``offset`` resends the same bytes, so what the ring
+        holds before it stays valid. An offset past the end leaves a gap, and one before
+        the start keeps nothing, so either forgets every byte kept.
+
+        Args:
+          offset: Where the next byte appended falls in the stream.
+
+        """
+        if self.start <= offset <= self.end:
+            del self._data[offset - self.start :]
+        else:
+            self._data.clear()
         self.end = offset
 
     def since(self, offset: int) -> tuple[bytes, int, bool]:

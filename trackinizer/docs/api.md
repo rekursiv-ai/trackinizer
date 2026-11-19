@@ -1358,9 +1358,9 @@ frames are `ATTACH` (1), `INPUT` (2), `RESIZE` (3, u16 rows and cols, clamped to
 resumes at), `OUTPUT` (6) and `EXIT` (8, a u32 status). A browser that drops
 re-attaches with a ticket from `attach` and its last offset, for as long as the
 terminal lives: neither a browser's absence, nor quiet, nor age ends one. An
-offset that fell out of the 256 KiB ring gets the whole ring after a
-`--- output lost ---` line. Close codes: 4000 ended, 4001 taken over, 4004 host
-lost, 4403 refused, 4410 host revoked.
+offset that fell out of the 256 KiB ring gets the whole ring, after an `ACK` past
+it; the browser shows a `--- output lost ---` line then. Close codes: 4000 ended,
+4001 taken over, 4004 host lost, 4403 refused, 4410 host revoked.
 
 A direct link (an optional speed-up for a slow server path). The open, `attach` and
 the host's `wait` also return `ice_servers`, the STUN URLs from the server's
@@ -1370,7 +1370,9 @@ a WebRTC data channel over the same sockets: `SIGNAL` (9) carries JSON
 `{gen, type: offer|answer|abandon, sdp}` between browser and host, up to 16 KiB and 6
 a minute; the server forwards it without reading it. The channel carries the same
 frames. The browser says which path output takes with `ROUTE` (10, a route byte and a
-u64 offset; the server forwards it to the host unread). While output goes direct the
+u64 offset; the server forwards it to the host, a return to the relay with the offset
+its ring ends at, so the host replays what went direct and the ring stays whole).
+While output goes direct the
 host sends `KEEPALIVE` (11, a u32 of milliseconds since it last saw input) every 10
 seconds, so the server knows the host is in use, and the server asks the host back
 to the relay when a browser attaches. A host without aiortc answers an offer with `abandon`, and

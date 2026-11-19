@@ -11,6 +11,9 @@ the moment an open is queued. Output the daemon sends goes to a ring (so a brows
 drops can re-attach from its last offset) and to the attached browser. Nothing is
 stored: a terminal's bytes live in the ring only as long as the terminal does. Every
 send is awaited, so a slow browser slows the daemon's reads rather than growing memory.
+Output that goes direct (``terminal_direct.py``) skips the ring; the daemon is always
+asked back to the relay from the ring's end, so it replays what the ring missed and the
+ring has no gap for a re-attach to fall into.
 
 A started terminal outlives both its sockets. A daemon that drops leaves the terminal,
 and what the browser types meanwhile, for a daemon of its host to resume
@@ -439,9 +442,9 @@ class TerminalRelay:
     ) -> None:
         """Make ``socket`` the terminal's browser, closing any other with 4001.
 
-        The browser first receives the lost-output notice if its offset fell out of the
-        ring, then ``ACK`` with the offset the stream resumes at, then the ring's bytes
-        from there.
+        The browser receives ``ACK`` with the offset the stream resumes at, then the
+        ring's bytes from there. An ``ACK`` past the browser's offset is how it learns
+        that output fell out of the ring.
 
         Args:
           term: The terminal.
@@ -452,7 +455,7 @@ class TerminalRelay:
         # Publish the replay gate before yielding: the daemon must not append to the
         # ring or send live frames until this snapshot has reached the browser.
         previous, term.browser = term.browser, socket
-        data, resume, lost = term.ring.since(offset)
+        data, resume, _ = term.ring.since(offset)
         # Each browser starts its offer generations at one. Reset the daemon's
         # negotiation even when its previous browser never reached direct mode.
         relay_from = term.ring.end
@@ -467,13 +470,6 @@ class TerminalRelay:
                 Frame.ROUTE,
                 wire_terminals.encode_route(wire_terminals.ROUTE_RELAY, relay_from),
             )
-            if lost:
-                await self._to_browser(
-                    term,
-                    socket,
-                    Frame.OUTPUT,
-                    b"\r\n--- output lost ---\r\n",
-                )
             await self._to_browser(term, socket, Frame.ACK, resume.to_bytes(8))
             if data:
                 await self._to_browser(term, socket, Frame.OUTPUT, data)
@@ -585,9 +581,10 @@ class TerminalRelay:
         elif kind is Frame.SIGNAL:
             await self._live(term, Frame.SIGNAL, payload)
         elif kind is Frame.ACK and len(payload) == 8:
-            # The daemon resumes on the relay at an offset the ring never saw: output went
-            # direct meanwhile. Later offsets stay contiguous from here.
-            term.ring.reset(int.from_bytes(payload))
+            # The daemon resumes on the relay, replaying from the ring's end as asked, or
+            # past it when its own ring no longer reaches back that far. Later offsets
+            # stay contiguous from here.
+            term.ring.seek(int.from_bytes(payload))
             await self._live(term, Frame.ACK, payload)
 
     async def from_browser(self, term: Terminal, kind: Frame, payload: bytes) -> bool:
@@ -631,9 +628,15 @@ class TerminalRelay:
             await self._to_daemon(term, Frame.SIGNAL, payload)
         elif kind is Frame.ROUTE:
             try:
-                _ = wire_terminals.decode_route(payload)
+                route, _ = wire_terminals.decode_route(payload)
             except ValueError:
                 return False
+            # The browser's offset counts what came direct, which the ring never saw: a
+            # host replaying from there would leave the ring a gap, and a later attach
+            # below it would find its output lost. From the ring's end it stays whole,
+            # and the browser skips what it already has.
+            if route == wire_terminals.ROUTE_RELAY:
+                payload = wire_terminals.encode_route(route, term.ring.end)
             await self._to_daemon(term, Frame.ROUTE, payload)
         elif kind is Frame.STOP:
             await self.stop(term)
