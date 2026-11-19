@@ -131,12 +131,15 @@ def test_a_model_file_that_reaches_for_storage_is_caught(tmp_path: Path) -> None
         "from trackinizer.addons.embedding.model import Embedder\n",
     )
 
-    assert _storage_imports(tmp_path / "model.py") == [
-        "asyncpg",
-        "trackinizer.lib.postgres.Conn",
-        "trackinizer.addons.embedding.sweep",
-        "trackinizer.server.values.vec_to_text",
-    ]
+    # Sorted here too: the export renames these modules, which reorders them.
+    assert _storage_imports(tmp_path / "model.py") == sorted(
+        [
+            "asyncpg",
+            "trackinizer.lib.postgres.Conn",
+            "trackinizer.addons.embedding.sweep",
+            "trackinizer.server.values.vec_to_text",
+        ],
+    )
 
 
 def _storage_imports(path: Path) -> list[str]:
