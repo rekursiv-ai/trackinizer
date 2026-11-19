@@ -706,20 +706,31 @@ async def test_a_start_while_one_starts_is_the_one_already_there(
     assert minted == (2 if host == "laptop" else 1)
 
 
+@pytest.mark.parametrize("race", ["mint", "lookup"])
 async def test_a_start_that_loses_a_race_revokes_the_key_it_minted(
     world: _World,
     monkeypatch: pytest.MonkeyPatch,
+    race: str,
 ) -> None:
     headers = await _places(world)
     session_id = await world.session("ada@x.y")
     winner = await world.start(headers, session_id)
     winning = AgentProcess.model_validate(winner.json())
-    # As if the other start had not landed when this one looked.
-    monkeypatch.setattr(world.relay, "process", Mock(return_value=None))
-
-    lost = await world.start(headers, session_id)
-
-    assert lost.json() == winner.json()
+    if race == "mint":
+        # As if the other start had not landed when this one looked.
+        monkeypatch.setattr(world.relay, "process", Mock(return_value=None))
+        lost = await world.start(headers, session_id)
+        assert lost.json() == winner.json()
+    else:
+        changed = winning.model_copy(update={"process_id": uuid.uuid4()})
+        monkeypatch.setattr(
+            world.relay,
+            "process",
+            Mock(side_effect=[winning, changed]),
+        )
+        lost = await world.start(headers, session_id, host="laptop")
+        assert lost.status_code == 409, lost.text
+        assert world.later.delays == [180.0]
     async with world.store.engine.acquire() as conn:
         keys = await conn.fetch(
             "SELECT name, revoked_at IS NULL AS live FROM api_keys "
@@ -729,7 +740,9 @@ async def test_a_start_that_loses_a_race_revokes_the_key_it_minted(
         process_key_name(winning.process_id, session_id=session_id),
         True,
     )
-    assert [row["live"] for row in keys] == [True, False]
+    assert [row["live"] for row in keys] == (
+        [True, False] if race == "mint" else [True]
+    )
 
 
 async def test_an_input_reaches_the_process_under_its_senders_name(
@@ -854,7 +867,7 @@ async def test_an_input_the_relay_will_not_hold_is_refused_saying_why(
 
 @pytest.mark.parametrize(
     "operation",
-    ["stop", "switch", "same", "unspecified", "missing"],
+    ["stop", "switch", "switch_disconnected", "same", "unspecified", "missing"],
 )
 async def test_a_stop_ends_the_process_and_revokes_its_key_a_minute_later(
     world: _World,
@@ -875,7 +888,18 @@ async def test_a_stop_ends_the_process_and_revokes_its_key_a_minute_later(
     viewer = world.relay.lines(session_id, allowed=_always)
     _ = await anext(viewer)
     _ = await asyncio.wait_for(anext(viewer), 5)
+    minted = {"Authorization": f"Bearer {serve.token}"}
+    path = session_parts_path(session_id)
+    assert (await world.call("GET", path, headers=minted)).status_code == 200
+    if operation == "switch_disconnected":
+        peer.leave(1006)
+        await asyncio.wait_for(asyncio.gather(*world.tasks), 5)
+        disconnected = world.relay.process(session_id)
+        assert disconnected is not None
+        assert (disconnected.state, disconnected.reason) == ("detached", "disconnected")
+        assert world.relay.socket_key(session_id) is None
     before = world.relay.process(session_id)
+    switching = operation in {"switch", "switch_disconnected"}
 
     if operation == "stop":
         stopped = await world.call(
@@ -884,8 +908,10 @@ async def test_a_stop_ends_the_process_and_revokes_its_key_a_minute_later(
             headers=headers,
         )
     else:
-        host = {"switch": target.name, "same": service.name, "missing": "missing"}.get(
-            operation,
+        host = (
+            target.name
+            if switching
+            else {"same": service.name, "missing": "missing"}.get(operation)
         )
         stopped = await world.start(
             headers,
@@ -906,39 +932,80 @@ async def test_a_stop_ends_the_process_and_revokes_its_key_a_minute_later(
         return
     process = AgentProcess.model_validate(stopped.json())
     assert process.session_id == session_id
-    if operation == "switch":
+    if switching:
         assert process.process_id != serve.process_id
         assert (process.host, process.state) == (target.name, "starting")
+        if operation == "switch":
+            assert (await world.call("GET", path, headers=minted)).status_code == 401
+            assert not await world.key_live(serve.process_id)
+            assert await peer.close_code() == CLOSE_ENDED
         offered = await world.served(target)
         assert (offered.session_id, offered.process_id, offered.spec.host) == (
             session_id,
             process.process_id,
             target.name,
         )
-    else:
-        assert (process.state, process.reason) == ("detached", "stopped")
+        assert await world.key_live(process.process_id)
+        failed = await world.call(
+            "POST",
+            HOST_SESSIONS_ENDED_PATH.format(host_id=target.id),
+            headers=target.headers(),
+            body=ProcessEnded(
+                process_id=process.process_id,
+                exit_code=1,
+                reason="target failed",
+            ).model_dump(mode="json"),
+        )
+        assert failed.status_code == 204, failed.text
+        replacement = world.relay.process(session_id)
+        assert replacement is not None
+        assert (replacement.process_id, replacement.state) == (
+            process.process_id,
+            "detached",
+        )
+        watch = world.relay.lines(session_id, allowed=_always)
+        await anext(watch)
+        old = world.process(
+            minted,
+            session_id,
+            hello=Hello(process_id=serve.process_id, version="1", host=service.name),
+        )
+        closed = asyncio.ensure_future(old.close_code())
+        changed = asyncio.ensure_future(anext(watch))
+        done, _ = await asyncio.wait(
+            {closed, changed},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        for task in (closed, changed):
+            task.cancel()
+        await asyncio.gather(closed, changed, return_exceptions=True)
+        await watch.aclose()
+        assert closed in done, world.relay.process(session_id)
+        assert closed.result() == CLOSE_REFUSED
+        assert world.relay.process(session_id) == replacement
+        assert (await world.call("GET", path, headers=minted)).status_code == 401
+        assert (
+            StopProcess.model_validate((await world.wait(service)).json()).process_id
+            == serve.process_id
+        )
+        return
+    assert (process.state, process.reason) == ("detached", "stopped")
     assert await peer.close_code() == CLOSE_ENDED
     assert (
         StopProcess.model_validate((await world.wait(service)).json()).process_id
         == serve.process_id
     )
     # The start's two give-ups, queued then taken, then the stop's revoke.
-    assert world.later.delays == [180.0, 30.0, 60.0] + (
-        [180.0, 30.0] if operation == "switch" else []
-    )
+    assert world.later.delays == [180.0, 30.0, 60.0]
     revoking = world.later.ran[2]
     await world.sleeps.asked(60.0)
     assert await world.key_live(serve.process_id)
-    minted = {"Authorization": f"Bearer {serve.token}"}
-    path = session_parts_path(session_id)
     assert (await world.call("GET", path, headers=minted)).status_code == 200
     assert world.sleeps.pass_(60.0) >= 1
     await asyncio.wait_for(revoking, 5)
     assert not await world.key_live(serve.process_id)
     # Verified a moment ago, and refused at once all the same.
     assert (await world.call("GET", path, headers=minted)).status_code == 401
-    if operation == "switch":
-        assert await world.key_live(process.process_id)
 
 
 async def test_ending_a_session_stops_its_agent_and_revokes_its_key_a_minute_later(
@@ -1680,16 +1747,20 @@ async def test_a_server_with_authentication_off_serves_none_of_it(
     assert await socket.close_code() == CLOSE_REFUSED
 
 
+@pytest.mark.parametrize("prior", ["attached", "disconnected", "stopped", "exited"])
 async def test_a_process_a_person_started_holds_the_session_on_their_host(
     world: _World,
+    prior: str,
 ) -> None:
     ada = await world.person("ada@x.y")
+    headers = await world.key(ada)
     laptop = await world.host("laptop", owner="ada@x.y", facts=_RUNS)
+    target = await world.host("target", owner="ada@x.y", facts=_RUNS)
     session_id = await world.session("ada@x.y")
     process_id = uuid.uuid4()
 
     peer = world.process(
-        await world.key(ada),
+        headers,
         session_id,
         hello=Hello(process_id=process_id, version="2.0", host="laptop"),
     )
@@ -1705,9 +1776,42 @@ async def test_a_process_a_person_started_holds_the_session_on_their_host(
         "laptop",
     )
     assert line == EventLine(kind="ModelCallStarted", payload={})
-    # Known by its host, so the host's revoke closes it.
-    await world.relay.stop_host(laptop.id)
-    assert await peer.close_code() == CLOSE_HOST_REVOKED
+    if prior in {"disconnected", "exited"}:
+        peer.leave(1006 if prior == "disconnected" else 1000)
+        await asyncio.wait_for(asyncio.gather(*world.tasks), 5)
+    elif prior == "stopped":
+        stopped = await world.call(
+            "DELETE",
+            SESSION_PROCESS_PATH.format(session_id=session_id),
+            headers=headers,
+        )
+        assert stopped.status_code == 200, stopped.text
+        assert await peer.close_code() == CLOSE_ENDED
+        await asyncio.wait_for(asyncio.gather(*world.tasks), 5)
+    before = world.relay.process(session_id)
+    started = await world.start(headers, session_id, host=target.name)
+    assert started.status_code == (
+        409 if prior in {"attached", "disconnected"} else 200
+    ), started.text
+    assert (
+        await world.call("GET", session_parts_path(session_id), headers=headers)
+    ).status_code == 200
+    if prior in {"attached", "disconnected"}:
+        assert world.relay.process(session_id) == before
+        assert (await world.wait(target)).json() is None
+        # Known by its host, so the host's revoke closes it.
+        assert await world.relay.stop_host(laptop.id) == [session_id]
+        if prior == "attached":
+            assert await peer.close_code() == CLOSE_HOST_REVOKED
+    else:
+        process = AgentProcess.model_validate(started.json())
+        assert process.session_id == session_id
+        assert process.process_id != process_id
+        offered = await world.served(target)
+        assert (offered.process_id, offered.spec.host) == (
+            process.process_id,
+            target.name,
+        )
 
 
 @pytest.mark.parametrize(
