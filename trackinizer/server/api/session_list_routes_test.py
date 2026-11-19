@@ -21,7 +21,7 @@ from trackinizer.server.api.session_test_support import (
     seed_session,
 )
 from trackinizer.server.session_relay import SessionRelay
-from trackinizer.wire.wire_session_relay import AgentState
+from trackinizer.wire.wire_session_relay import AgentState, TeamMember
 
 
 if TYPE_CHECKING:
@@ -93,7 +93,15 @@ async def test_the_caller_reads_their_own_live_session_and_no_one_elses(
         (None, False),
         (AgentState(line="", busy=False, since=_SINCE), False),
         (AgentState(line="", busy=True, since=_SINCE), True),
-        (AgentState(line="", busy=False, since=_SINCE, agents=("kid",)), True),
+        (
+            AgentState(
+                line="",
+                busy=False,
+                since=_SINCE,
+                team=(TeamMember(label="kid", parent="Agent", busy=True),),
+            ),
+            True,
+        ),
     ],
     ids=["nothing-said", "idle", "busy", "a-child-works"],
 )

@@ -133,20 +133,6 @@
    "AgentState": {
     "description": "What the session's agents are doing now.\n\nThe source of a viewer's status line, its spinners, and its count of what runs\nin the background.",
     "properties": {
-     "agents": {
-      "anyOf": [
-       {
-        "items": {
-         "type": "string"
-        },
-        "type": "array"
-       },
-       {
-        "type": "null"
-       }
-      ],
-      "title": "Agents"
-     },
      "busy": {
       "title": "Busy",
       "type": "boolean"
@@ -181,6 +167,20 @@
       "format": "date-time",
       "title": "Since",
       "type": "string"
+     },
+     "team": {
+      "anyOf": [
+       {
+        "items": {
+         "$ref": "#/components/schemas/TeamMember"
+        },
+        "type": "array"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Team"
      },
      "turn_ended": {
       "anyOf": [
@@ -764,6 +764,11 @@
       "default": "",
       "title": "Agent",
       "type": "string"
+     },
+     "awaited": {
+      "default": false,
+      "title": "Awaited",
+      "type": "boolean"
      },
      "call_id": {
       "title": "Call Id",
@@ -9707,6 +9712,47 @@
      "orange"
     ],
     "type": "string"
+   },
+   "TeamMember": {
+    "description": "An agent of the session, as sagent's tree screen shows it.",
+    "properties": {
+     "busy": {
+      "title": "Busy",
+      "type": "boolean"
+     },
+     "label": {
+      "title": "Label",
+      "type": "string"
+     },
+     "parent": {
+      "default": "",
+      "title": "Parent",
+      "type": "string"
+     },
+     "session": {
+      "anyOf": [
+       {
+        "format": "uuid",
+        "type": "string"
+       },
+       {
+        "type": "null"
+       }
+      ],
+      "title": "Session"
+     },
+     "spend_usd": {
+      "default": 0.0,
+      "title": "Spend Usd",
+      "type": "number"
+     }
+    },
+    "required": [
+     "label",
+     "busy"
+    ],
+    "title": "TeamMember",
+    "type": "object"
    },
    "TerminalColors": {
     "additionalProperties": false,

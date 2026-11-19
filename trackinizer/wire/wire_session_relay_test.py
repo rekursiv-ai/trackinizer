@@ -30,6 +30,7 @@ from trackinizer.wire.wire_session_relay import (
     Setting,
     SettingsLine,
     StateLine,
+    TeamMember,
     ViewerFrame,
 )
 
@@ -46,6 +47,8 @@ _JOB = BackgroundJob(
     started=_SINCE,
     state="running",
 )
+_ROOT = TeamMember(label="Agent", busy=False, spend_usd=1.5, session=_SESSION)
+_KID = TeamMember(label="kid", parent="Agent", busy=True)
 _MODEL = Setting(
     name=("model",),
     help_short="The model that answers.",
@@ -112,42 +115,41 @@ def test_a_process_may_not_send_what_only_the_relay_writes() -> None:
 
 
 @pytest.mark.parametrize(
-    ("busy", "jobs", "agents", "working"),
+    ("busy", "jobs", "team", "working"),
     [
-        (False, (), (), False),
-        (True, (), (), True),
-        (False, ("job",), (), True),
-        (False, (), ("kid",), True),
+        (False, (), (_ROOT,), False),
+        (True, (), (_ROOT,), True),
+        (False, (_JOB,), (_ROOT,), True),
+        (False, (), (_ROOT, _KID), True),
     ],
     ids=["idle", "busy", "a-job", "a-child"],
 )
 def test_a_state_works_while_the_root_a_job_or_a_child_does(
     busy: bool,
-    jobs: tuple[str, ...],
-    agents: tuple[str, ...],
+    jobs: tuple[BackgroundJob, ...],
+    team: tuple[TeamMember, ...],
     working: bool,
 ) -> None:
-    state = AgentState(
-        line="",
-        busy=busy,
-        since=_SINCE,
-        jobs=tuple(_JOB for _ in jobs),
-        agents=agents,
-    )
+    state = AgentState(line="", busy=busy, since=_SINCE, jobs=jobs, team=team)
 
     assert state.working == working
     assert AgentState.model_validate_json(state.model_dump_json()) == state
 
 
-def test_a_state_from_a_process_too_old_to_name_its_jobs_says_none_and_works_while_busy() -> (
+def test_a_state_from_a_process_too_old_to_name_its_team_says_none_and_works_while_busy() -> (
     None
 ):
-    """Such a process sends neither field: unknown, not none at all."""
+    """Such a process sends neither field, or the labels of its children at work."""
     old = AgentState.model_validate(
-        {"line": "", "busy": False, "since": "2026-11-10T12:00:00Z"},
+        {
+            "line": "",
+            "busy": False,
+            "since": "2026-11-10T12:00:00Z",
+            "agents": ["kid"],
+        },
     )
 
-    assert (old.jobs, old.agents, old.working) == (None, None, False)
+    assert (old.jobs, old.team, old.working) == (None, None, False)
     assert old.model_copy(update={"busy": True}).working
 
 
@@ -190,7 +192,7 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
             "since": "2026-11-10T12:00:00Z",
             "pending": [],
             "jobs": None,
-            "agents": None,
+            "team": None,
             "turn_ended": None,
             "working": True,
         },
@@ -202,7 +204,24 @@ def test_what_a_socket_frame_is_written_as_is_unchanged() -> None:
         "agent": "kid",
         "started": "2026-11-10T12:00:00Z",
         "state": "running",
+        "awaited": False,
     }
+    assert [member.model_dump(mode="json") for member in (_ROOT, _KID)] == [
+        {
+            "label": "Agent",
+            "parent": "",
+            "busy": False,
+            "spend_usd": 1.5,
+            "session": "00000000-0000-0000-0000-000000000001",
+        },
+        {
+            "label": "kid",
+            "parent": "Agent",
+            "busy": True,
+            "spend_usd": 0.0,
+            "session": None,
+        },
+    ]
     assert SettingsLine(settings=(_MODEL,)).model_dump(mode="json") == {
         "type": "settings",
         "settings": [
