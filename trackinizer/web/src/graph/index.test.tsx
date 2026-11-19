@@ -13,6 +13,7 @@ import { LiveHub } from "../live/hub";
 import { testClient } from "../live/testing";
 import { RouterProvider } from "../router/router";
 import type { Panel } from "../ui/panel";
+import { setChatHidden } from "../visuals/chatColumnState";
 import { type WorkspaceActions, WorkspaceActionsProvider } from "../visuals/workspaceActions";
 import { GraphView } from ".";
 import { graphQuery } from "./live";
@@ -94,6 +95,9 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  // Chat's folded state is one module's, shared by every test that mounts the
+  // shell: a full-view test that left it folded would follow the next file in.
+  setChatHidden(false);
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   sessionStorage.clear();
@@ -1282,16 +1286,18 @@ test.each([
   expect(screen.queryByText(/stopped on an error/i)).toBeNull();
 });
 
-test("a record can take the whole stage to be read, and give the field its room back", async () => {
-  // The panel opens as a column beside the field, which is right for pointing at
-  // what a record connects to and too narrow for reading one. Dragging its edge
-  // stops at 920px and "Open full page" leaves the graph; this does neither.
+test("full view gives the field the window: Chat folds, and what stands on the field comes along", async () => {
+  // Half is Chat beside the graph; full is the graph with the window to itself —
+  // not the panel over the field, which would be reading a record INSTEAD of
+  // watching the graph rather than as well as.
   const { user } = await shown();
+  expect(document.querySelector(".chat-strip")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "full" }));
+  expect(screen.getByRole("button", { name: "half" })).toBeTruthy();
+  // A record opened in full view keeps the field beside it, not under it.
   act(() => renderer.events!.click(renderer.node("Issue 1")));
-  expect(document.querySelector(".graph-peek")!.className).not.toContain("is-wide");
-  await user.click(screen.getByRole("button", { name: "Widen the panel to the whole stage" }));
-  expect(document.querySelector(".graph-peek")!.className).toContain("is-wide");
-  // And back, so the field is never given up for good.
-  await user.click(screen.getByRole("button", { name: "Narrow the panel" }));
-  expect(document.querySelector(".graph-peek")!.className).not.toContain("is-wide");
+  expect(peek()).not.toBeNull();
+  expect(document.querySelector(".graph-peek")!.className).toBe("graph-peek");
+  await user.click(screen.getByRole("button", { name: "half" }));
+  expect(screen.getByRole("button", { name: "full" })).toBeTruthy();
 });

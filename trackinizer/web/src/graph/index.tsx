@@ -15,6 +15,7 @@ import {
 } from "react";
 import type { Graph, GraphNode } from "../api/graph";
 import { micros } from "../live/rows";
+import { setChatHidden, useChatColumn } from "../visuals/chatColumnState";
 import { type Meta, useMeta } from "../app/boot";
 import { useHighlighted } from "../app/highlights";
 import { isStrings, useTabState } from "../app/tabState";
@@ -107,8 +108,8 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   const searchBox = useRef<HTMLInputElement>(null);
   const [renderer, setRenderer] = useState<Renderer | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  /** The record panel across the whole stage, for reading rather than for pointing at the field. */
-  const [wideRecord, setWideRecord] = useState(false);
+  /** Full view: Chat folded away, so the field and whatever stands on it have the window. */
+  const { hidden: chatHidden } = useChatColumn();
   /** A node picked by search or a Peek link, to centre on once Peek shows it. */
   const [centring, setCentring] = useState<string | null>(null);
   /** The nodes of a root's island, to frame once Peek shows the root. */
@@ -333,7 +334,8 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
   // a record is open, not which one — re-framing on every click through a thread
   // would throw the field around under the reader — and only while the panel is
   // actually over the canvas, since collapsed it is a strip that covers nothing.
-  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${briefing.collapsed} ${selectedId !== null && !peek.collapsed} ${wideRecord}`;
+  // Full view counts too: Chat folding away hands the stage a third more width.
+  const panels = `${view.key} ${view.roots} ${peek.collapsed} ${results.collapsed} ${briefing.collapsed} ${selectedId !== null && !peek.collapsed} ${chatHidden}`;
   const panelsShown = useRef(panels);
   useLayoutEffect(() => {
     if (panelsShown.current === panels) return;
@@ -526,6 +528,20 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
         <button type="button" className="btn ghost proto-fit" title="Fit the graph (f)" onClick={() => renderer?.fit()}>
           fit
         </button>
+        {/* Full view is the field with the window to itself: Chat folds to its strip
+            and the stage takes the width it leaves, with whatever is open on it —
+            a briefing or a record — coming along. Not the panel over the field:
+            reading a record and watching the graph are the same sitting.
+            Chat is a press away either way (its strip, the rail, or ⌘\). */}
+        <button
+          type="button"
+          className="btn ghost proto-fit"
+          aria-pressed={chatHidden}
+          title={chatHidden ? "Show Chat beside the graph (\u2318\\)" : "Give the graph the whole window (\u2318\\)"}
+          onClick={() => setChatHidden(!chatHidden)}
+        >
+          {chatHidden ? "half" : "full"}
+        </button>
       </div>
       <FilterChips
         hidden={hidden}
@@ -653,33 +669,16 @@ export function GraphView({ createRenderer = canvasRenderer }: { createRenderer?
               // Its own box, so the capture sees Peek's links before they navigate; Peek places itself.
               <motion.div
                 key="peek"
-                className={`graph-peek${wideRecord ? " is-wide" : ""}`}
+                className="graph-peek"
                 onClickCapture={followLink}
                 initial={{ opacity: 0, x: 24 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 24 }}
                 transition={{ type: "spring", stiffness: 420, damping: 36 }}
               >
-                {/* `tools`: reading a record and keeping the field are both wanted, so the
-                    panel has a width for each — the column it opens at, and the stage. The
-                    control sits beside collapse and close, where a window's maximise is
-                    looked for; in the foot, among the record's own commands, nobody found
-                    it. "Open full page" leaves the graph; this does not. */}
                 <Peek
                   row={selected}
                   panel={peek}
-                  tools={
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      aria-pressed={wideRecord}
-                      aria-label={wideRecord ? "Narrow the panel" : "Widen the panel to the whole stage"}
-                      title={wideRecord ? "Narrow the panel ([)" : "Widen to the whole stage (])"}
-                      onClick={() => setWideRecord(!wideRecord)}
-                    >
-                      <Icon name={wideRecord ? "minimize" : "maximize"} size={15} />
-                    </button>
-                  }
                   onClose={() => setSelectedId(null)}
                   // What the panel covers is what a fit frames around: once the drag
                   // lets go, the field is framed again in the room the panel left it.
