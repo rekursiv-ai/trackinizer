@@ -285,6 +285,15 @@ def test_trax_parser_never_colours(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "\x1b" not in parser.format_usage()
 
 
+def test_trax_parser_colour_stays_off_when_set() -> None:
+    """Set and read directly: only 3.14's argparse touches it, and trax ships for 3.12."""
+    parser = TraxArgumentParser(prog="trax demo")
+
+    parser.color = True
+
+    assert parser.color is False
+
+
 def test_every_trax_parser_writes_through_echo() -> None:
     """One parser class for every command, so none writes to the process streams."""
     plain = [
