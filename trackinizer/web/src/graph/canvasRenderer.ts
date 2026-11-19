@@ -301,7 +301,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         any = true;
       }
       if (!any) continue;
-      ctx.globalAlpha = (focus ? (focus.lit ? 0.3 : 0.4) : 1) * (positive ? 0.62 : 0.66) * dens * (1 - far * 0.3);
+      ctx.globalAlpha = (focus ? (focus.lit ? 0.3 : 0.4) : 1) * (positive ? 0.44 : 0.48) * dens * (1 - far * 0.3);
       ctx.strokeStyle = positive ? paint.support : paint.against;
       ctx.lineWidth = hair;
       ctx.stroke();
@@ -318,6 +318,9 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
     //
     // Quieter than evidence, so the reading does not change: what an island
     // rests on is still what the eye finds, and this is the plumbing under it.
+    // Quiet enough that the field still reads as islands, not as a web: these
+    // alphas are what the wires settle to at a whole field's zoom, where the
+    // lines are long and many cross the same empty ground.
     for (const kind of new Set([...weave].map((link) => link.kind))) {
       ctx.beginPath();
       let any = false;
@@ -328,7 +331,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         any = true;
       }
       if (!any) continue;
-      ctx.globalAlpha = (focus ? (focus.lit ? 0.22 : 0.3) : 1) * 0.42 * dens * (1 - far * 0.3);
+      ctx.globalAlpha = (focus ? (focus.lit ? 0.22 : 0.3) : 1) * 0.24 * dens * (1 - far * 0.3);
       ctx.strokeStyle = paint.edges[kind] ?? paint.struct;
       ctx.lineWidth = hair;
       ctx.stroke();
