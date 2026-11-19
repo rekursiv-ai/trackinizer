@@ -112,6 +112,7 @@ __all__ = [
     "SettingsLine",
     "StateLine",
     "StopProcess",
+    "TeamMember",
     "ViewerFrame",
     "remote_flags_refused",
 ]
@@ -217,6 +218,28 @@ class BackgroundJob(BaseModel):
     state: Literal["sleeping", "running"]
     """``sleeping`` until a delayed call starts, then ``running``."""
 
+    awaited: bool = False
+    """Whether its agent waits for it, by a ``BackgroundTask`` foreground call; that
+    call is no job of its own."""
+
+
+class TeamMember(BaseModel):
+    """An agent of the session, as sagent's tree screen shows it."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    label: str
+    parent: str = ""
+    """The label of the agent that spawned it; empty for a root."""
+
+    busy: bool
+    """Whether its model call, its tool calls or a compaction runs."""
+
+    spend_usd: float = 0.0
+    session: UUID | None = None
+    """The session its records are stored in: the session's own for the root agent;
+    ``None`` for an agent none is stored for yet."""
+
 
 class AgentState(BaseModel):
     """What the session's agents are doing now.
@@ -243,9 +266,9 @@ class AgentState(BaseModel):
     """Each background job of every agent of the session, the root's first; ``None``
     from a process too old to say, whose jobs only its records tell."""
 
-    agents: tuple[str, ...] | None = None
-    """The label of each child agent at work now: its model call, its tool calls or a
-    compaction; ``None`` from a process too old to say."""
+    team: tuple[TeamMember, ...] | None = None
+    """Each agent of the session, a root's children after it, depth first, as sagent's
+    tree screen orders them; ``None`` from a process too old to say."""
 
     turn_ended: UtcDatetime | None = None
     """When the root agent last ended a turn: left with nothing to do, failed, or
@@ -259,7 +282,11 @@ class AgentState(BaseModel):
 
         A process too old to name its jobs and agents works while its root does.
         """
-        return self.busy or bool(self.jobs) or bool(self.agents)
+        return (
+            self.busy
+            or bool(self.jobs)
+            or any(member.busy for member in self.team or ())
+        )
 
 
 class AgentProcess(BaseModel):
