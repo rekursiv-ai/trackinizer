@@ -448,3 +448,37 @@ test("the page toggle puts the visual down so the rail's routes draw, and picks 
   expect(await screen.findByRole("button", { name: "Show the page" })).toBeTruthy();
   expect(vi.mocked(applyWorkspaceOperation)).not.toHaveBeenCalled();
 });
+
+test("a station that opens with a closed page pane puts the page back, so the rail's places draw", async () => {
+  // The rail navigates and a route draws only in the page pane, so a station left
+  // with no pane and nothing else on the stage opened black: Graph, Files, Runs and
+  // Evidence each changed the address and showed nothing.
+  browseOnly();
+  const bare: WorkspaceState = { ...workspace, visuals: [] };
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(bare);
+  vi.mocked(getWorkspace).mockResolvedValue(bare);
+  vi.mocked(applyWorkspaceOperation).mockResolvedValue({
+    ...bare,
+    revision: bare.revision + 1,
+    visuals: [{ id: "page-1", type: "trax.browse", version: 1, placement: "main", record_id: null, params: {} }],
+  });
+  history.replaceState(null, "", "#/graph");
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>The graph</div></Canvas></QueryClientProvider>);
+  await waitFor(() => expect(vi.mocked(applyWorkspaceOperation)).toHaveBeenCalled(), { interval: 1 });
+  expect(vi.mocked(applyWorkspaceOperation).mock.calls[0]![2]).toMatchObject({ kind: "show", visual_type: "trax.browse" });
+  expect(await screen.findByText("The graph")).toBeTruthy();
+});
+
+test("a station that opens holding a page writes nothing: the page only goes back when there is none", async () => {
+  // The other half of the rule. Clearing the canvas is a thing a reader does on
+  // purpose — the resting state is the bare stage — so the page is put back when a
+  // station opens with nothing, never whenever the stage happens to be empty.
+  browseOnly();
+  vi.mocked(createDefaultWorkspace).mockResolvedValue(workspace);
+  vi.mocked(getWorkspace).mockResolvedValue(workspace);
+  history.replaceState(null, "", "#/graph");
+  render(<QueryClientProvider client={createQueryClient(() => {})}><Canvas><div>The graph</div></Canvas></QueryClientProvider>);
+  expect(await screen.findByText("The graph")).toBeTruthy();
+  await act(async () => { await Promise.resolve(); });
+  expect(vi.mocked(applyWorkspaceOperation)).not.toHaveBeenCalled();
+});

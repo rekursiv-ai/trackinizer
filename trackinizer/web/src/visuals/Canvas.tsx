@@ -146,6 +146,26 @@ export function Canvas({ children }: { readonly children: ReactNode }) {
     }
   }, [hash, paged]);
 
+  // A station that opens with nothing on its stage gets the page back, once.
+  //
+  // The rail's places are routes and a route draws only in the page pane, so a station
+  // whose pane was closed with nothing put up in its place opened on a black stage and
+  // stayed there: Graph, Files, Runs and Evidence each changed the address and drew
+  // nothing, with no way back but Clear. The app's home is the graph, and opening on
+  // the graph has to mean seeing it.
+  //
+  // Once per station, not whenever the stage is empty: clearing the canvas is a thing
+  // a reader does on purpose — the resting state is the bare stage — and a canvas that
+  // put the page back the instant it was cleared could not be cleared at all.
+  const opened = useRef<string | null>(null);
+  useEffect(() => {
+    if (!workspaceId || workspace === undefined || opened.current === workspaceId) return;
+    opened.current = workspaceId;
+    if (workspace.visuals.length === 0) operate({ kind: "show", visual_type: PAGE, placement: "main" });
+    // `operate` is rebuilt each render; the station it writes to is the dependency.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, workspace]);
+
   // A visual just put up takes the stage back: an answer composed while the reader is on
   // Graph would otherwise land behind the page and never be seen.
   const standing = visible.filter((visual) => visual.type !== PAGE).map((visual) => visual.id);
