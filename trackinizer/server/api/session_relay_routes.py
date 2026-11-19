@@ -333,8 +333,24 @@ async def start_process_route(
     place = await _start_place(request, identity, spec=body)
     if place.remote:
         await refuse_start(request, identity, session_id=session_id)
-    if current is not None and current.state != "detached":
-        await stop_process(request, session_id)
+    if current is not None:
+        async with request_engine(request).acquire() as conn:
+            scoped = await process_key_minted(conn, process_id=current.process_id)
+        latest = relay.process(session_id)
+        if latest is None or latest.process_id != current.process_id:
+            raise HTTPException(
+                status_code=409,
+                detail="The previous process changed; retry the start.",
+            )
+        stoppable = latest.state != "detached" or latest.reason == "disconnected"
+        if not scoped and stoppable:
+            raise HTTPException(
+                status_code=409,
+                detail="Stop and exit the foreground agent before switching hosts.",
+            )
+        if stoppable:
+            await stop_process(request, session_id)
+        await _revoke(get_store(request), process_id=current.process_id)
     process_id = uuid4()
     async with request_engine(request).acquire() as conn:
         _, token, _, _ = await create_api_key(
