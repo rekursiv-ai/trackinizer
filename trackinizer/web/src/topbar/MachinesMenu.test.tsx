@@ -52,8 +52,10 @@ test("the button says where commands run and opens the menu with the focus in it
   expect(button().getAttribute("aria-haspopup")).toBe("true");
   const shown = await open();
   expect(button().getAttribute("aria-expanded")).toBe("true");
-  // The focus moves a frame after the menu draws, so look every few milliseconds.
-  await waitFor(() => expect(shown.contains(document.activeElement)).toBe(true), { interval: 5 });
+  // The focus moves a frame after the menu draws, so look every few milliseconds —
+  // and wait longer than the default second for it, since under a full run's load
+  // that frame can land later than that and the race showed as a flake.
+  await waitFor(() => expect(shown.contains(document.activeElement)).toBe(true), { interval: 5, timeout: 5_000 });
 });
 
 test("Esc closes the menu and gives the focus back to its button; a press outside closes it", async () => {
