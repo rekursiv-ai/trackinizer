@@ -43,12 +43,45 @@
      undecidable Belief's half-tone washes toward and a cluster title outlines
      its letters in. Not `--bg`: the page's ground is a grey, and a grey halo
      around white text on the black field shows. */
-  --g-bg: #000;
+  --g-bg: #000000;
   /* The two colours the graph reads as from far off: every record one quiet
      tint, a Belief the one hue that stands out, so an island's claims are what
      the eye finds first. The kind hues above take over as it is zoomed in. */
   --g-duo-record: #e6defa;
   --g-duo-belief: #5b8cff;
+  /* ---- the chrome that floats on the field (graph.css) ----------------------
+     The briefing, the top bar, the key, the timeline: panels standing ON the
+     canvas, so they take the canvas's ground rather than the page's surfaces,
+     and they have to turn over with the theme like everything else. They were
+     the design prototype's literal hexes, which left the whole of the graph's
+     chrome black on a light page.
+     Three grounds (the field, a floating panel, a sunken well), two states, two
+     lines, and the ink ladder: --p-fg for what a record says, --p-fg-2 for what
+     supports it, --p-muted for the machinery — labels, counts, verbs. */
+  --p-ground: var(--g-bg);
+  --p-panel: rgba(10, 10, 10, .92);
+  --p-sunken: #0a0a0a;
+  --p-hover: #171717;
+  --p-picked: #141414;
+  --p-line: #1f1f1f;
+  --p-line-strong: #2e2e2e;
+  --p-track: #3a3a3a;
+  /* Brighter than the prototype's own #ececec/#a3a3a3/#6e6e6e ladder: a panel of
+     dim grey prose is what the design could get away with at 2x the size on its
+     own canvas, and what no one can read at 12px here. */
+  --p-fg: #ffffff;
+  --p-fg-2: #e8e8ec;
+  --p-muted: #c2c2cb;
+  /* The two valence inks, saturated rather than the canvas's pale mint and apricot:
+     a 1px wire reads at --g-vpos on black, but a 5px bar, a 7px dot and an 11px
+     word of the same hue all wash out to off-white. The canvas keeps its own. */
+  --p-vpos: #4fd693;
+  --p-vneg: #ff9257;
+  /* A claim standing against the weight on it: the undecidable violet. */
+  --p-odd: #bb9af7;
+  /* The verdict bar's proven segment: a near-white blue, since the evidence
+     green reads muddy at a bar's width on black. */
+  --p-proven: #eef4ff;
 }
 :root[data-theme="light"]:not([data-skin]),
 :root[data-skin="retro"],
@@ -87,6 +120,28 @@
      darken rather than lighten to stay a dot at all. */
   --g-duo-record: #9b92b5;
   --g-duo-belief: #2f5fd6;
+  /* The field itself. Not --bg: the canvas is its own surface, a shade cleaner
+     than the page around it, as the dark theme's black is against its greys. */
+  --g-bg: #ffffff;
+  /* The chrome, inverted: the same three grounds, two states and two lines, and
+     the ink ladder read from the app's own light set so a panel on the canvas
+     and a panel beside it are the same greys. */
+  --p-panel: rgba(255, 255, 255, .94);
+  --p-sunken: #f1f4f8;
+  --p-hover: #e5ebf1;
+  --p-picked: #dde5ee;
+  --p-line: #dce3ea;
+  --p-line-strong: #bec9d4;
+  --p-track: #b4c0cc;
+  --p-fg: #17212d;
+  --p-fg-2: #344255;
+  --p-muted: #5d6978;
+  --p-vpos: #1f8a5c;
+  --p-vneg: #b65a1c;
+  --p-odd: #6b4fc9;
+  /* The proven segment darkens with everything else: near-white on black, a
+     deep blue on white, and the same blue the duo pair uses up there. */
+  --p-proven: #2f5fd6;
 }
 /* The skins whose ground fades a colour of their set: each that colour a step stronger. */
 :root[data-skin="retro"] {

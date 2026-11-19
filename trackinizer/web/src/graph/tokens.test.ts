@@ -60,6 +60,38 @@ test.each(fixed)("under the %s skin the graph draws every node and ring at least
   }
 });
 
+/** Every custom property a rule declares, whatever its value: a hex, an rgba, a var(). */
+function declared(css: string, matches: (selector: string) => boolean): Set<string> {
+  const names = new Set<string>();
+  for (const match of css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/^([^{}\n][^{}]*)\{([^}]*)\}/gm)) {
+    if (!match[1]!.split(",").map((selector) => selector.trim()).some(matches)) continue;
+    for (const token of match[2]!.matchAll(/(--[\w-]+)\s*:/g)) names.add(token[1]!);
+  }
+  return names;
+}
+
+// The graph went black on a light page because one token, --g-bg, had no light
+// value: the dark set is `:root`, so anything the light block leaves out keeps
+// its dark value while everything around it turns over. The chrome's grounds and
+// its ink ladder (--p-*) were literal hexes in graph.css for the same reason.
+test("the light theme gives every colour the dark one declares a light value of its own", () => {
+  const theirs = declared(graph, (selector) => selector === ":root");
+  const ours = declared(graph, (selector) => selector === ':root[data-theme="light"]:not([data-skin])');
+  // --p-ground follows --g-bg, which the light block does set, so it needs no light value of its own.
+  const derived = new Set(["--p-ground"]);
+  expect([...theirs].filter((name) => !ours.has(name) && !derived.has(name))).toEqual([]);
+});
+
+test.each([["dark", dark], ["light", light]] as const)("the chrome's ink reads on the chrome's ground in the %s theme", (_name, theme) => {
+  // The panels float on the canvas, so they are read against the field, not the page.
+  const ground = theme.graph.get("--g-bg")!;
+  // Prose at WCAG's 4.5:1, and the machinery — labels, counts, verbs — at 3:1.
+  for (const [token, floor] of [["--p-fg", 4.5], ["--p-fg-2", 4.5], ["--p-muted", 3], ["--p-vpos", 3], ["--p-vneg", 3], ["--p-odd", 3]] as const) {
+    const value = theme.graph.get(token)!;
+    expect(contrast(value, ground), `${token} ${value} on ${ground}`).toBeGreaterThanOrEqual(floor);
+  }
+});
+
 test("the light theme's graph colours never reach a fixed skin through the theme", () => {
   const lightRules = rules(graph).filter((rule) => rule.selectors.some((selector) => selector.includes('data-theme="light"')));
   expect(lightRules.flatMap((rule) => rule.selectors.filter((selector) => selector.includes('data-theme="light"')))).toEqual([':root[data-theme="light"]:not([data-skin])']);
