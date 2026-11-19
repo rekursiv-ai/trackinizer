@@ -1089,11 +1089,19 @@ test("a ball gathered from records nobody built on wears no name: it is not a li
   answers.set(1000, DUSTY);
   history.replaceState(null, "", "#/graph");
   await shown("85 nodes, 58 edges");
-  const dust = renderer.groups!.get("Issue 100")!;
-  // The unlinked late-comers keep a ball of their own instead of a tail on either inquiry.
-  expect(dust).not.toBe(uuid(1));
-  expect(dust).not.toBe(uuid(40));
-  expect([...renderer.groups!.values()].filter((key) => key === dust).length).toEqual(25);
+  // The unlinked late-comers keep balls of their own instead of a tail on either inquiry.
+  const grouped = new Map([...renderer.groups!].flatMap(([title, key]) => (key === undefined ? [] : [[title, key] as const])));
+  const dustKeys = Array.from({ length: 25 }, (_, i) => grouped.get(`Issue ${100 + i}`)!);
+  expect(dustKeys.filter((key) => key === uuid(1) || key === uuid(40))).toEqual([]);
+  const held = new Map<string, number>();
+  for (const key of grouped.values()) held.set(key, (held.get(key) ?? 0) + 1);
+  // They hold the 25 between them and nothing else: neither inquiry gives a record up.
+  const balls = [...new Set(dustKeys)];
+  expect(balls.reduce((all, key) => all + held.get(key)!, 0)).toEqual(25);
+  // And each is a ball at this window's scale rather than a speck. What is too
+  // small to read is a share of the window (islands.ts), so the 25 stand as balls
+  // of their own here, where in a five-thousand-record view they would be one.
+  for (const key of balls) expect(held.get(key)).toBeGreaterThanOrEqual(7);
   // Each inquiry is named for the record at its head; the ball of dust has no head,
   // so none of their titles may be worn as one.
   expect(Object.fromEntries(renderer.islandNames!)).toEqual({ [uuid(1)]: "Issue 1", [uuid(40)]: "Issue 40" });

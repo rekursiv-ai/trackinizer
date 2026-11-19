@@ -152,3 +152,23 @@ test("below the floor nothing is cut, so a narrow window of one inquiry stays on
   const { homes } = islandHomes(only);
   expect(drawn(homes)).toEqual([[only.root, 240]]);
 });
+
+test.each([
+  [4, 8],
+  [5, 12],
+  [6, 20],
+  [8, 40],
+  [10, 100],
+])("a field of %i families of %i draws one island each, whatever the graph's size", (families, each) => {
+  // What "too small to read" means is a share of the window, not a count, so the
+  // same shape of graph draws the same field at any scale. Against the count it
+  // was tuned at — 24, read off a five-thousand-record view — four families of
+  // eight were four specks and came out as a single ball, which is the whole of
+  // a small graph's structure thrown away.
+  const field = Array.from({ length: families }, (_, at) => ball(1 + at * (each + 5), each));
+  const { homes } = islandHomes({
+    nodes: field.flatMap((one) => one.nodes),
+    edges: field.flatMap((one) => one.edges),
+  });
+  expect(drawn(homes)).toEqual(field.map((one) => [one.root, each]));
+});

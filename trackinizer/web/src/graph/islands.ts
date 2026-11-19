@@ -105,6 +105,7 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
   for (const [id, key] of topOf) bump(membersOf, key, id);
   const refined = new Map<string, string>();
   const cap = islandCap(nodes.length);
+  const least = leastIsland(nodes.length);
   for (const [key, members] of membersOf) {
     for (const [islandKey, row] of split(key, members, childrenOf, cap)) {
       if (headless.has(key)) headless.add(islandKey);
@@ -165,7 +166,7 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
     for (const [other, count] of touch.get(small) ?? []) {
       const rep = find(other);
       if (rep === small) continue;
-      const row = size.get(rep)! >= MIN_ISLAND_NODES ? per : spare;
+      const row = size.get(rep)! >= least ? per : spare;
       row.set(rep, (row.get(rep) ?? 0) + count);
     }
     const home = into ?? busiest(per) ?? busiest(spare) ?? fallback;
@@ -194,7 +195,7 @@ export function islandHomes({ nodes, edges }: Graph): Islands {
   for (;;) {
     const ranked = islands().sort((a, b) => size.get(a)! - size.get(b)!);
     if (ranked.length < 2) break;
-    const small = ranked.find((key) => size.get(key)! < MIN_ISLAND_NODES);
+    const small = ranked.find((key) => size.get(key)! < least);
     if (small === undefined) break;
     absorb(small, (touch.get(small)?.size ?? 0) > 0 ? ranked[ranked.length - 1]! : nearest(small, ranked));
   }
@@ -222,8 +223,23 @@ const SPLIT_FLOOR = 240;
 
 /** The cap a window of `total` records puts on one island. */
 const islandCap = (total: number): number => Math.max(SPLIT_FLOOR, Math.ceil(total * ISLAND_SHARE));
-/** A family smaller than this joins the island its records touch most. */
-const MIN_ISLAND_NODES = 24;
+/**
+ * What counts as too small to read as an island, as a share of the window, for
+ * the same reason the cap is one: a count tuned on a five-thousand-record view
+ * is most of a hundred-record one, so an absolute floor swallows every real
+ * thread a small graph has and draws the whole of it as a single ball. Eight
+ * families of forty read as eight islands either way; four families of eight
+ * read as one island under a floor of 24 and as four under a share.
+ */
+const MIN_ISLAND_SHARE = 0.08;
+/** The share's ceiling: past this a window is large enough that 24 reads as a speck. */
+const MIN_ISLAND_CEILING = 24;
+/** …and its floor: a pair of records is not a line of inquiry at any scale. */
+const MIN_ISLAND_FLOOR = 3;
+
+/** The least an island may hold in a window of `total` records. */
+const leastIsland = (total: number): number =>
+  Math.min(MIN_ISLAND_CEILING, Math.max(MIN_ISLAND_FLOOR, Math.ceil(total * MIN_ISLAND_SHARE)));
 
 /**
  * Cut one family into islands of at most the cap: the breadth-first spread
