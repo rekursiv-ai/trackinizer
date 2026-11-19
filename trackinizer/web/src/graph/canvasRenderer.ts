@@ -55,6 +55,8 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
    * density: see `SHEEN_CAP`.
    */
   let sheen = new Set<DrawLink>();
+  /** The structural wires between islands, sampled as the evidence is: see `pickCrossing`. */
+  let weave = new Set<DrawLink>();
   let hovered: DrawNode | null = null;
   let selected: DrawNode | null = null;
   /** The hovered or selected node's one-hop neighbourhood, cached per node. */
@@ -299,14 +301,38 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         any = true;
       }
       if (!any) continue;
-      ctx.globalAlpha = (focus ? (focus.lit ? 0.3 : 0.4) : 1) * (positive ? 0.34 : 0.38) * dens * (1 - far * 0.3);
+      ctx.globalAlpha = (focus ? (focus.lit ? 0.3 : 0.4) : 1) * (positive ? 0.62 : 0.66) * dens * (1 - far * 0.3);
       ctx.strokeStyle = positive ? paint.support : paint.against;
       ctx.lineWidth = hair;
       ctx.stroke();
     }
-    // Structure between islands draws nothing at all, as in the design: its
-    // clusters are joined only by the evidence hairlines above; the plumbing
-    // appears when you zoom into an island, not across the field.
+    // The structure between islands, under the evidence and quieter than it.
+    //
+    // It used to draw nothing at all, as the prototype has it: clusters joined
+    // only by evidence, the plumbing shown when you zoom into an island rather
+    // than across the field. On the prototype's own graph that is a handful of
+    // lines either way. On a real one it hides most of what joins the field —
+    // four fifths of the crossings in a thousand-record graph are a narrows, a
+    // requires, a produced_by or a citation — and a field whose islands are
+    // drawn as if nothing ran between them is not what the graph says.
+    //
+    // Quieter than evidence, so the reading does not change: what an island
+    // rests on is still what the eye finds, and this is the plumbing under it.
+    for (const kind of new Set([...weave].map((link) => link.kind))) {
+      ctx.beginPath();
+      let any = false;
+      for (const { link, a, b } of ends) {
+        if (link.kind !== kind || !weave.has(link) || link.hidden) continue;
+        if (!inView(a) && !inView(b)) continue;
+        strokeEdge(a, b, true);
+        any = true;
+      }
+      if (!any) continue;
+      ctx.globalAlpha = (focus ? (focus.lit ? 0.22 : 0.3) : 1) * 0.42 * dens * (1 - far * 0.3);
+      ctx.strokeStyle = paint.edges[kind] ?? paint.struct;
+      ctx.lineWidth = hair;
+      ctx.stroke();
+    }
     // What the focus touches — the hovered node, else the selected one — as the
     // prototype does: a black casing under a thick animated dash, each link in
     // the hue of the neighbour it reaches, so a hover fans out in many colours.
@@ -602,6 +628,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
       if (signature === groupingSignature) return;
       groupingSignature = signature;
       sheen = new Set();
+      weave = new Set();
       if (grouped) {
         // Group the cross-island evidence by the pair of islands it joins, then
         // keep a strided sample of each pair so no two discs are ever joined by
@@ -609,10 +636,12 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         // seven; ours can reach eighty when a well-cited belief sits in one
         // island and its citers fill another, and eighty lines between the same
         // two balls read as a searchlight, not as a connection.
+        const pick = (wanted: (link: DrawLink) => boolean): Set<DrawLink> => {
+        const into = new Set<DrawLink>();
         const pairs = new Map<string, DrawLink[]>();
         for (const { link, a, b } of ends) {
-          if (link.kind !== "proves" && link.kind !== "favors") continue;
-          const [ga, gb] = [grouped(a), grouped(b)];
+          if (!wanted(link)) continue;
+          const [ga, gb] = [grouped!(a), grouped!(b)];
           if (ga === undefined || gb === undefined || ga === gb) continue;
           const key = ga < gb ? `${ga}\u0000${gb}` : `${gb}\u0000${ga}`;
           const row = pairs.get(key);
@@ -652,8 +681,13 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
             }
             if (!any) break;
           }
-          for (const link of kept) sheen.add(link);
+          for (const link of kept) into.add(link);
         }
+        return into;
+        };
+        // Evidence first, so a crossing that is both is drawn as evidence.
+        sheen = pick((link) => link.kind === "proves" || link.kind === "favors");
+        weave = pick((link) => !sheen.has(link));
       }
       // The springs by id: `source` and `target` are the ids until something
       // swaps in the nodes, and this renderer never does, so looking a node up
