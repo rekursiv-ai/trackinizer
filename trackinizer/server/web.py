@@ -17,6 +17,8 @@ Adds:
   by vector.
 - ``GET /api/web/recent_changes`` -- the most-recent ``change_log`` rows
   with their snapshots flattened to JSON.
+- ``GET /api/web/worked_on`` -- the records the reader changed last, for the
+  graph a new workspace opens on.
 - ``GET /api/web/lookup/{target_id}`` -- resolve a UUID to its kind.
 - ``GET /api/web/get/{target_id}`` -- one inquiry with edges + backlinks +
   recent changes attached, for the web app's detail view.
@@ -88,6 +90,7 @@ from trackinizer.server.auth import (
 from trackinizer.server.notify import iter_sse_events, tx
 from trackinizer.server.regex_timeout import apply_regex_statement_timeout
 from trackinizer.server.store.graph_focus import read_neighbourhood
+from trackinizer.server.store.named import parse_named, read_named
 from trackinizer.server.store.search import (
     InquirySearchHit,
     SessionSearchHit,
@@ -100,7 +103,7 @@ from trackinizer.server.store.session_feed import (
     FeedScope,
 )
 from trackinizer.server.values import vetted_sql
-from trackinizer.types.change_log import Snapshot
+from trackinizer.types.change_log import Change, Snapshot
 from trackinizer.types.inquiries import KIND_TO_CLASS, Inquiry
 from trackinizer.wire.json_types import UtcDatetime
 from trackinizer.wire.routes import MAX_LIST_LIMIT, inquiry_relation_fields
@@ -112,6 +115,7 @@ from trackinizer.wire.wire_sessions import (
     FeedResponse,
     FeedWhose,
     SearchMode,
+    WorkedOn,
 )
 
 
@@ -396,6 +400,79 @@ async def web_recent_changes(
     return [_change_to_dict(r) for r in rows]
 
 
+MOST_FOCI: Final = 10
+"""The most ``focus`` values one ``/api/web/graph`` read takes."""
+
+
+_NOT_WORK: Final[tuple[Change.Kind, ...]] = (
+    "marginal_cost",
+    "dependency_changed",
+    "implicit_subs_opened",
+    "implicit_subs_closed",
+    "purged",
+    *Change.PROTECTED_KINDS,
+)
+"""Changes the server makes around a record, not work on it: cost roll-ups, a child's
+alert to its parents, subscription hooks, a purge and an admin's lock."""
+
+
+@router.get("/worked_on")
+async def web_worked_on(
+    request: Request,
+    identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
+    limit: int = 10,
+) -> list[WorkedOn]:
+    """Return what the reader worked on last: what its changes of 30 days touched.
+
+    A change counts when the reader made it, its agents' by its keys among them, and it
+    is work on the record (not one of :data:`_NOT_WORK`). An agent session's own
+    record is left out: its changes are the run's bookkeeping, and its work shows on the
+    records it changed. A workspace's Issue is left out too: each chat placed in it
+    changes it, and its neighbours are every session of the workspace. Only records the
+    reader may still read are listed.
+
+    Args:
+      request: FastAPI request object for middleware access.
+      identity: Authenticated user, validated to have viewer role.
+      limit: Most records to return, 1-100.
+
+    Returns:
+      records: Each record once, the one changed last first, with its ``kind``
+        and ``seq``, so a caller can tell it from the same record named by number.
+
+    Raises:
+      HTTPException: 400 for a ``limit`` outside 1-100.
+
+    """
+    if limit < 1 or limit > 100:
+        raise HTTPException(status_code=400, detail="limit must be in [1, 100]")
+    store = get_store(request)
+    params: list[object] = [limit, identity.email, list(_NOT_WORK)]
+    predicate = store.change_read_filter(
+        "c",
+        params=params,
+        principal=await request_principal(request, identity),
+    )
+    async with store.engine.acquire() as conn:
+        rows = await conn.fetch(
+            vetted_sql(
+                "SELECT c.subject_id AS id, i.kind, i.seq ",
+                _CHANGE_FROM,
+                " JOIN inquiries i ON i.id = c.subject_id",
+                f" WHERE {_CHANGE_PRINCIPAL} = $2",
+                # The window bounds the walk of the log for one who changed little.
+                " AND c.created > now() - interval '30 days'",
+                " AND c.subject_kind <> 'AgentSession' AND c.kind <> ALL($3::text[])",
+                " AND NOT coalesce(i.labels, '{}') @> ARRAY['workspace']::text[]",
+                "" if predicate == "TRUE" else f" AND ({predicate})",
+                " GROUP BY c.subject_id, i.kind, i.seq",
+                " ORDER BY max(c.created) DESC, c.subject_id LIMIT $1",
+            ),
+            *params,
+        )
+    return [WorkedOn.model_validate(dict(row)) for row in rows]
+
+
 @router.get("/lookup/{target_id}")
 async def web_lookup(
     target_id: uuid.UUID,
@@ -542,7 +619,7 @@ async def web_graph(
     request: Request,
     identity: Annotated[AuthIdentity, Depends(require_role("viewer"))],
     limit: int | None = None,
-    focus: UUID | None = None,
+    focus: Annotated[list[str] | None, Query(max_length=MOST_FOCI)] = None,
     hops: int = 2,
 ) -> WebView:
     """Return the inquiry graph as typed nodes + directed edges, for the SPA.
@@ -553,10 +630,11 @@ async def web_graph(
     belief proves) stays in view; selection stops at ``limit``. Every edge joins
     two returned nodes.
 
-    With ``focus``, the nodes are instead the focus and the inquiries nearest it
+    With ``focus``, the nodes are instead the foci and the inquiries nearest them
     (:func:`read_neighbourhood`): all within one edge, in either direction, before
     any two away, and so on to ``hops``, newest first within a hop, until
-    ``limit``. Each node then carries ``hops``, its distance from the focus.
+    ``limit``; with several foci, each has a share of hop 1. Each node then
+    carries ``hops``, its distance from the nearest focus, 0 for a focus.
 
     Nodes are the light projection (id, kind, seq, title, status, created,
     belief judgement/confidence), ordered by ``created`` ascending so the replay
@@ -569,15 +647,19 @@ async def web_graph(
       identity: Authenticated user, validated to have viewer role.
       limit: Most nodes to return, neighbours included, at least 1; 1000, or 60
         with a ``focus``, when unset.
-      focus: The inquiry whose neighbourhood to return; unset returns the newest.
-      hops: With ``focus``, the most edges to walk from it, 1 to 3.
+      focus: The inquiries whose neighbourhood to return, at most 10, each a UUID
+        or ``Kind/seq``; one that names nothing the reader may read is left out.
+        Unset returns the newest.
+      hops: With ``focus``, the most edges to walk from the foci, 1 to 3.
 
     Returns:
       graph: Nodes and edges for replay visualization, ordered by created time.
 
     Raises:
-      HTTPException: 400 for a ``limit`` below 1 or ``hops`` outside 1 to 3; 404
-        when ``focus`` names no inquiry.
+      HTTPException: 400 for a ``limit`` below 1, ``hops`` outside 1 to 3, or a
+        ``focus`` value that is neither a UUID nor ``Kind/seq`` of a known kind;
+        404 when no ``focus`` names an inquiry the reader may read. More than
+        ``MOST_FOCI`` values are refused before this runs, with 422.
 
     """
     store = get_store(request)
@@ -590,10 +672,17 @@ async def web_graph(
         raise HTTPException(status_code=400, detail="limit must be at least 1")
     if hops < 1 or hops > 3:
         raise HTTPException(status_code=400, detail="hops must be in [1, 3]")
+    named = [parse_named(each) for each in focus or ()]
+    wanted = [each for each in named if each is not None]
+    if len(wanted) < len(named):
+        raise HTTPException(
+            status_code=400,
+            detail="focus must be record ids or Kind/seq",
+        )
     async with store.engine.acquire() as conn:
         distances: dict[UUID, int] = {}
         params: list[object] = [limit or 1000]
-        if focus is None:
+        if not wanted:
             recent_filter = inquiry_read_filter(
                 "inquiries.id",
                 policy=store.access_policy,
@@ -619,9 +708,20 @@ async def web_graph(
                 ")",
             )
         else:
+            # One query names the foci given by number; ids need none.
+            found = await read_named(
+                conn,
+                wanted=[each for each in wanted if not isinstance(each, UUID)],
+                policy=store.access_policy,
+                principal=principal,
+            )
             distances = await read_neighbourhood(
                 conn,
-                focus,
+                focus=[
+                    each if isinstance(each, UUID) else found[each].id
+                    for each in wanted
+                    if isinstance(each, UUID) or each in found
+                ],
                 hops=hops,
                 limit=limit or 60,
                 policy=store.access_policy,
@@ -1019,12 +1119,22 @@ async def web_feed_histogram(
 
 _SNAPSHOT_COLUMNS: tuple[str, ...] = tuple(f.name for f in fields(Snapshot))
 
-_CHANGE_SELECT: Final = (
-    "SELECT c.*, COALESCE(k_user.email, actor_user.email) AS principal "
+_CHANGE_FROM: Final = (
     "FROM change_log c "
     "LEFT JOIN api_keys k ON k.id = c.api_key_id "
     "LEFT JOIN users k_user ON k_user.id = k.user_id "
     "LEFT JOIN users actor_user ON actor_user.email = c.actor AND c.api_key_id IS NULL"
+)
+"""``change_log`` as ``c``, joined to whoever made each change."""
+
+_CHANGE_PRINCIPAL: Final = "COALESCE(k_user.email, actor_user.email)"
+"""The email of the person who made a change: its key's owner, or its actor's."""
+
+_CHANGE_SELECT: Final = vetted_sql(
+    "SELECT c.*, ",
+    _CHANGE_PRINCIPAL,
+    " AS principal ",
+    _CHANGE_FROM,
 )
 
 

@@ -75,6 +75,7 @@ _READERS: Final[dict[str, tuple[Class, str]]] = {
     ),
     "server/store/graph_focus.py": ("policy", "the focus walk"),
     "server/store/metrics.py": ("policy", "the experiment checks and selection"),
+    "server/store/named.py": ("policy", "records named by id or Kind/seq"),
     "server/store/read.py": (
         "policy",
         (

@@ -547,8 +547,8 @@ class Preferences(_Strict):
     home: Literal["graph", "empty"] = Field(
         default="graph",
         description=(
-            "What the canvas's Home button and a new canvas tab show: "
-            "the graph, or an empty canvas."
+            "What a new workspace's canvas opens on: the graph of what is "
+            "relevant, or an empty tab."
         ),
         json_schema_extra=SETTING,
     )
@@ -782,6 +782,23 @@ def checked_change(change: Mapping[str, object]) -> Preferences:
             for problem in error.errors()
         )
         raise ValueError("; ".join(problems)) from error
+
+
+async def read_preferences(conn: Conn, *, user_id: uuid.UUID) -> object:
+    """Read a user's ``users.preferences`` as stored, for ``stored_preferences``.
+
+    A user who is gone reads as None, as one with nothing set does; a caller that must
+    tell them apart reads the row itself.
+
+    Args:
+      conn: The connection to read on.
+      user_id: Whose preferences.
+
+    Returns:
+      stored: The column's value: an object of the keys set, or None.
+
+    """
+    return await conn.fetchval("SELECT preferences FROM users WHERE id = $1", user_id)
 
 
 async def write_preferences(

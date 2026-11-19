@@ -73,7 +73,10 @@ export async function getGraphFocus(
   { signal }: CallOptions = {},
 ): Promise<FocusGraph> {
   const graph = await send(TIMEOUT_MS.read, signal, (signal) =>
-    client.GET("/api/web/graph", { params: { query: { focus, hops, limit } }, signal }),
+    client.GET("/api/web/graph", {
+      params: { query: { focus: [focus], hops, limit } },
+      signal,
+    }),
   );
   return graph as FocusGraph;
 }

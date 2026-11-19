@@ -24,6 +24,7 @@ from trackinizer.server.preferences import (
     assistant_settings_schema,
     assistant_view,
     inline_refs,
+    read_preferences,
     stored_preferences,
     write_preferences,
 )
@@ -848,6 +849,22 @@ def test_a_canvas_agent_sees_the_ui_settings_alone_the_defaults_filling_the_rest
     assert set(view) == ASSISTANT_KEYS
     assert (view["font"], view["chat_text_size"]) == ("geist", 13)
     assert assistant_view(None)["canvas_text_size"] == 14
+
+
+@pytest.mark.asyncio
+async def test_a_users_preferences_are_read_as_stored() -> None:
+    conn = cast(
+        MockConnection,
+        AsyncMock(fetchval=AsyncMock(return_value={"home": "empty"})),
+    )
+
+    stored = await read_preferences(cast("Conn", conn), user_id=_USER)
+
+    assert stored == {"home": "empty"}
+    conn.fetchval.assert_awaited_once_with(
+        "SELECT preferences FROM users WHERE id = $1",
+        _USER,
+    )
 
 
 if __name__ == "__main__":
