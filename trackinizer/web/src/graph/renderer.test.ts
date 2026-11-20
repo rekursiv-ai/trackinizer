@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { type DrawNode, GraphModel } from "./model";
+import { EDGE_GROUPS } from "./canvasRenderer";
 import { forceGraphRenderer, type Renderer } from "./renderer";
 import { node, PALETTE } from "./testing";
 
@@ -167,4 +168,17 @@ test("grouping keeps what the view asked to frame: a focus's nodes, not every no
   graph().centerAt(0, 0);
   graph().settle();
   expect(graph().centre).toEqual(centreOf(pair));
+});
+
+test("a citation that says nothing about which way it votes is not drawn as support", () => {
+  // `(valence ?? 0) >= 0` read an absent sign as a positive one, so a graph that
+  // records no valence — which another producer need not — came out wholly in the
+  // mint of supporting evidence: the view asserting what the data never said.
+  const unsigned = EDGE_GROUPS.filter((group) => group.of({ kind: "proves" } as never));
+  expect(unsigned.map((group) => group.sign)).toEqual([false]);
+  const flat = EDGE_GROUPS.filter((group) => group.of({ kind: "proves", valence: 0 } as never));
+  expect(flat.map((group) => group.sign)).toEqual([false]);
+  // A sign, either way, still reads as evidence.
+  expect(EDGE_GROUPS.filter((group) => group.of({ kind: "proves", valence: 0.6 } as never)).map((g) => [g.sign, g.positive])).toEqual([[true, true]]);
+  expect(EDGE_GROUPS.filter((group) => group.of({ kind: "proves", valence: -0.6 } as never)).map((g) => [g.sign, g.positive])).toEqual([[true, false]]);
 });

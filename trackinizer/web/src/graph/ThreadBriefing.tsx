@@ -305,7 +305,9 @@ function NextRow({ entry, palette, onSelect }: { entry: NextExperiment; palette:
         to settle <NodePill node={belief} palette={palette} onSelect={onSelect} /> {trunc(belief.title, 48)}
       </div>
       <div className="briefing-next-meta mono">
-        <span>conf {(belief.confidence ?? 0.5).toFixed(2)}</span>
+        {/* A belief with no confidence recorded has none to show: printing 0.50
+            states a score nobody set. */}
+        {typeof belief.confidence === "number" ? <span>conf {belief.confidence.toFixed(2)}</span> : <span>no confidence set</span>}
         <span>{entry.evidence} evidence</span>
         {entry.leaning > 0 ? <span>{entry.leaning} lean on it</span> : null}
         <span>{entry.price.priced ? `~${usd(entry.price.usd)} per test` : "no test priced yet"}</span>

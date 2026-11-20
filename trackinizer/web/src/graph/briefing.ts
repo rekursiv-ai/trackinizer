@@ -76,12 +76,21 @@ export function evidenceOf(belief: GraphNode, view: GraphView): { node: GraphNod
     .sort((a, b) => micros(b.node.created) - micros(a.node.created));
 }
 
+/**
+ * Whether a citation says which way it votes. An absent valence, and a flat
+ * zero, say nothing — and reading "nothing" as a vote either way is the view
+ * asserting what the record does not. A producer that never scores its
+ * citations is normal; this build's own seed happens to score every one.
+ */
+export const signed = (edge: GraphEdge): boolean => typeof edge.valence === "number" && edge.valence !== 0;
+
 /** How many of `belief`'s citations are load-bearing for it, and how many against. */
 export function loadOf(belief: GraphNode, view: GraphView): { against: number; for: number } {
   const load = { against: 0, for: 0 };
   for (const { edge } of evidenceOf(belief, view)) {
-    if (edge.edge_kind !== "proves") continue;
-    if ((edge.valence ?? 0) < 0) load.against += 1;
+    // Unscored citations count for neither side: they are cited, not weighed.
+    if (edge.edge_kind !== "proves" || !signed(edge)) continue;
+    if (edge.valence! < 0) load.against += 1;
     else load.for += 1;
   }
   return load;
@@ -102,7 +111,9 @@ export function turnsOf(group: RootGroup, view: GraphView): Turn[] {
   for (const node of membersOf(group, view)) {
     if (node.kind !== "Belief" || !node.judgement || node.judgement === "unproven") continue;
     const disproven = node.judgement === "disproven";
-    const citations = evidenceOf(node, view).filter(({ edge }) => edge.edge_kind === "proves" && ((edge.valence ?? 0) < 0) === disproven);
+    const citations = evidenceOf(node, view).filter(
+      ({ edge }) => edge.edge_kind === "proves" && signed(edge) && edge.valence! < 0 === disproven,
+    );
     const strongest = citations
       .map((citation) => ({ citation, weight: Math.abs(citation.edge.valence ?? 0) }))
       .sort((a, b) => b.weight - a.weight)[0];
@@ -365,5 +376,7 @@ export function groupsOf(node: GraphNode, view: GraphView): ConnectionGroup[] {
 
 /** `belief`'s evidence, the way its ledger reads: the heaviest votes first, whichever way they vote. */
 export function ledgerOf(belief: GraphNode, view: GraphView): { node: GraphNode; edge: GraphEdge }[] {
-  return evidenceOf(belief, view).sort((a, b) => Math.abs(b.edge.valence ?? 1) - Math.abs(a.edge.valence ?? 1));
+  // An unscored citation weighs nothing, as everywhere else here; it sorted to
+  // the top as if it were the strongest thing on the record.
+  return evidenceOf(belief, view).sort((a, b) => Math.abs(b.edge.valence ?? 0) - Math.abs(a.edge.valence ?? 0));
 }

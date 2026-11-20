@@ -295,7 +295,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
       let any = false;
       for (const { link, a, b } of ends) {
         if (!sheen.has(link) || link.hidden) continue;
-        if (((link.valence ?? 0) >= 0) !== positive) continue;
+        if (!signed(link) || link.valence! > 0 !== positive) continue;
         if (!inView(a) && !inView(b)) continue;
         strokeEdge(a, b, true);
         any = true;
@@ -695,7 +695,9 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         return into;
         };
         // Evidence first, so a crossing that is both is drawn as evidence.
-        sheen = pick((link) => link.kind === "proves" || link.kind === "favors");
+        // Only a citation that says which way it votes is evidence on the field;
+        // an unsigned one is a wire like any other and joins the weave below.
+        sheen = pick((link) => (link.kind === "proves" || link.kind === "favors") && signed(link));
         weave = pick((link) => !sheen.has(link));
       }
       // The springs by id: `source` and `target` are the ids until something
@@ -757,7 +759,8 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
  * the whole pass strokes in one path — which is what keeps a field of thousands
  * of wires cheap, and why the colour is named by kind here rather than carried.
  */
-const EDGE_GROUPS: {
+/** Exported for the test that pins which wires may wear evidence's colours. */
+export const EDGE_GROUPS: {
   kind?: string;
   sign: boolean;
   positive?: boolean;
@@ -772,11 +775,22 @@ const EDGE_GROUPS: {
   { kind: "cites_paper", sign: false, base: 0.18, of: (l) => l.kind === "cites_paper" },
   // Evidence carries the picture even at the fit out (the video's green and
   // orange strands): a brighter alpha than the structure's, at the same width.
-  { sign: true, positive: true, base: 0.72, of: (l) => l.kind === "proves" && (l.valence ?? 0) >= 0 },
-  { sign: true, positive: false, base: 0.75, of: (l) => l.kind === "proves" && (l.valence ?? 0) < 0 },
-  { sign: true, positive: true, dash: true, base: 0.45, of: (l) => l.kind === "favors" && (l.valence ?? 0) >= 0 },
-  { sign: true, positive: false, dash: true, base: 0.48, of: (l) => l.kind === "favors" && (l.valence ?? 0) < 0 },
+  //
+  // Only where the citation says which way it votes. `(valence ?? 0) >= 0` drew
+  // an unsigned citation in the mint of support, which is the view asserting
+  // something the data never said — this seed happens to sign every edge, so it
+  // never showed here, and a graph that records none would have come out wholly
+  // green. Unsigned citations are structure: drawn, and claiming nothing.
+  { kind: "proves", sign: false, base: 0.3, of: (l) => l.kind === "proves" && !signed(l) },
+  { kind: "favors", sign: false, dash: true, base: 0.24, of: (l) => l.kind === "favors" && !signed(l) },
+  { sign: true, positive: true, base: 0.72, of: (l) => l.kind === "proves" && signed(l) && l.valence! > 0 },
+  { sign: true, positive: false, base: 0.75, of: (l) => l.kind === "proves" && signed(l) && l.valence! < 0 },
+  { sign: true, positive: true, dash: true, base: 0.45, of: (l) => l.kind === "favors" && signed(l) && l.valence! > 0 },
+  { sign: true, positive: false, dash: true, base: 0.48, of: (l) => l.kind === "favors" && signed(l) && l.valence! < 0 },
 ];
+
+/** Whether a citation says which way it votes: no valence, or a flat zero, says nothing. */
+const signed = (link: DrawLink): boolean => typeof link.valence === "number" && link.valence !== 0;
 
 /**
  * What the canvas paints with, from the theme's own tokens (`tokens.css`) — the

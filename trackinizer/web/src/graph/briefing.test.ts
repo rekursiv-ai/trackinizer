@@ -3,7 +3,10 @@ import type { Graph, GraphNode } from "../api/graph";
 import {
   FALLBACK_TEST_USD,
   type GraphView,
+  ledgerOf,
+  loadOf,
   nextExperiments,
+  signed,
   shareOf,
   spendOf,
   testPriceOf,
@@ -130,4 +133,28 @@ test("a graph with no cost at all reads as free, not as unmeasured", () => {
   // A settled verdict counts even against an empty bill: the panel reads $0 per
   // verdict, which is what was spent, rather than the dash a void window gets.
   expect(spend.settled).toBe(1);
+});
+
+test("a citation with no score counts for neither side, and is not the strongest thing on the record", () => {
+  // The class of bug this pins: a field that is absent but valid, read as a
+  // value that means something. An unscored citation is cited, not weighed —
+  // counting it as support made the panels assert what the record never said,
+  // and a producer that scores nothing would have read as unanimously proven.
+  const belief = node(1, { kind: "Belief" });
+  const graph: Graph = {
+    nodes: [belief, node(2, { kind: "Paper" }), node(3, { kind: "Paper" }), node(4, { kind: "Paper" })],
+    edges: [
+      edge(2, 1, "proves", { valence: 0.9 }),
+      edge(3, 1, "proves", { valence: -0.4 }),
+      // No valence at all, and a flat zero: neither says which way it votes.
+      edge(4, 1, "proves"),
+    ],
+  };
+  const view = viewOf(graph);
+  expect(loadOf(belief, view)).toEqual({ for: 1, against: 1 });
+  // And the unscored one does not sort above the scored: it weighs nothing.
+  expect(ledgerOf(belief, view).map(({ node: cited }) => cited.seq)).toEqual([2, 3, 4]);
+  expect(signed(graph.edges[2]!)).toBe(false);
+  expect(signed({ ...graph.edges[2]!, valence: 0 })).toBe(false);
+  expect(signed(graph.edges[0]!)).toBe(true);
 });
