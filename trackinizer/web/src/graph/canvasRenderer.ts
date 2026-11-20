@@ -285,7 +285,10 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
     }
     // Connections between islands: the real cross-island evidence, as fine
     // hairlines — a hundred citations read as a sheen, not as spaghetti.
-    const hair = 0.8 / k;
+    // Just over a device pixel. At .8 the line lands sub-pixel, and what the
+    // antialiasing leaves is a dotted smear rather than a wire — the width has
+    // to clear one whole pixel before an alpha below half reads as a line.
+    const hair = 1.15 / k;
     // The prototype's own hairline alphas, and its density fade: a hundred
     // cross-island citations read as a sheen, not as a web. `sheen` is already
     // thinned to the design's density, so its size is the `dens` the design uses.
@@ -309,7 +312,7 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
         any = true;
       }
       if (any) {
-        ctx.globalAlpha = (focus ? (focus.lit ? 0.26 : 0.34) : 1) * 0.34 * dens * (1 - far * 0.3);
+        ctx.globalAlpha = (focus ? (focus.lit ? 0.26 : 0.34) : 1) * 0.46 * dens * (1 - far * 0.3);
         ctx.strokeStyle = paint.inkQuiet;
         ctx.lineWidth = hair;
         ctx.stroke();
