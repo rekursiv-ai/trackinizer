@@ -60,7 +60,7 @@ def test_detail_facts_validate_and_bound_size() -> None:
 
 
 def test_facts_accept_the_exact_byte_limit_but_refuse_one_more() -> None:
-    values = ["x" * 255] * 15 + [""]
+    values: list[str] = [*(["x" * 255] * 15), ""]
     facts: Facts = {"a": values}
     adapter = TypeAdapter(Facts)
     padding = MAX_FACTS_BYTES - len(adapter.dump_json(facts))

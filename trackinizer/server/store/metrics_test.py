@@ -270,7 +270,7 @@ class TestQueryMetrics:
         """
         conn = make_conn()
         store, _engine = make_store(conn)
-        bad = MetricMaskClause.model_construct(axis="key", op="re", value="x")
+        bad = MetricMaskClause.model_construct(axis="key", op="re", value="x")  # pyrefly: ignore[bad-argument-type] -- Deliberately an op the wire Literal refuses: the test pins the store's defense against this bypass.
         with pytest.raises(ConflictError, match="not supported on metric axis"):
             await store.query_metrics([uuid.uuid4()], masks=[bad])
 
@@ -766,7 +766,7 @@ class TestWriteMetricsMasked:
                 uuid.uuid4(),
                 masks=[
                     MetricMaskClause(axis="step", op="is", value="3"),
-                    MetricMaskClause.model_construct(axis="key", op="isnull", value=""),
+                    MetricMaskClause.model_construct(axis="key", op="isnull", value=""),  # pyrefly: ignore[bad-argument-type] -- Deliberately an op the wire Literal refuses: the test pins the store's defense against this bypass.
                 ],
                 value=0.5,
             )

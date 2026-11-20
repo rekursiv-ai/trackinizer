@@ -168,13 +168,13 @@ def test_finding_requires_cited_evidence() -> None:
 
 def test_measured_outcome_requires_positive_denominator() -> None:
     """A zero denominator cannot describe a measured result."""
+    outcome: dict[str, object] = {
+        "result": "0 wins",
+        "denominator": 0,
+        "split": "held-out",
+    }
     with pytest.raises(ValidationError):
-        ArtifactFindingDraft.model_validate(
-            {
-                **_finding(),
-                "outcome": {"result": "0 wins", "denominator": 0, "split": "held-out"},
-            },
-        )
+        ArtifactFindingDraft.model_validate({**_finding(), "outcome": outcome})
 
 
 def test_historical_zero_denominator_report_remains_readable() -> None:

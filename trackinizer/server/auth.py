@@ -1705,7 +1705,7 @@ class _AppLike(Protocol):
 
 def _config(state: _StateLike) -> _ConfigLike | None:
     """Return the lifespan-installed config, or ``None`` when no lifespan ran."""
-    return cast("_ConfigLike | None", getattr(state, "config", None))
+    return cast("_ConfigLike | None", getattr(state, "config", None))  # pyrefly: ignore[redundant-cast] -- ty reads `getattr` as `Any | None`; pyrefly already infers it.
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
