@@ -2286,7 +2286,7 @@ def test_read_session_records_pages_until_empty_and_preserves_controls(
         }
         for idx in (2, 5, 9, 14)
     ]
-    pages = iter([records[:3], records[3:], []])
+    pages = iter([records[:3], records[3:], records[4:]])
     sent: list[httpx2.Request] = []
 
     def handler(request: httpx2.Request) -> httpx2.Response:

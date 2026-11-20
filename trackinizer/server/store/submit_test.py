@@ -739,7 +739,7 @@ class TestSubmitDispatch:
         store, _engine = make_store()
         with pytest.raises(TypeError, match="SubmitBase"):
             await store.submit(
-                SubmitBase.model_construct(),
+                SubmitBase(title="base"),
                 api_key_id=None,
                 actor="me",
             )

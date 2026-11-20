@@ -252,7 +252,7 @@ class _App(Protocol):
 def _bumped(request: HTTPConnection) -> dict[UUID, float]:
     """Return the app's ``last_used`` throttle, creating it on first use."""
     state = cast("_App", request.app).state
-    bumped = cast(
+    bumped = cast(  # pyrefly: ignore[redundant-cast] -- ty reads `getattr` as `Any | None`; pyrefly already infers it.
         "dict[UUID, float] | None",
         getattr(state, "host_credential_bumped", None),
     )

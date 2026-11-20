@@ -7,7 +7,7 @@ dispatch over many items in one all-or-nothing transaction.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Annotated
+from typing import TYPE_CHECKING, Annotated, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
@@ -51,10 +51,10 @@ if TYPE_CHECKING:
 
 router = APIRouter()
 
-# Each body class keyed by its PascalCase kind discriminator, read off an
-# unvalidated instance: the ``kind`` literal is the one declaration of it.
+# Each body class keyed by its PascalCase kind discriminator, read off the
+# ``kind`` field's default: the ``kind`` literal is the one declaration of it.
 _BODY_BY_KIND: dict[str, type[SubmitBase]] = {
-    body.model_construct().kind: body
+    cast(str, body.model_fields["kind"].default): body
     for body in (
         SubmitIssue,
         SubmitArtifact,
