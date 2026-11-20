@@ -1301,3 +1301,35 @@ test("full view gives the field the window: Chat folds, and what stands on the f
   await user.click(screen.getByRole("button", { name: "half" }));
   expect(screen.getByRole("button", { name: "full" })).toBeTruthy();
 });
+
+test("a thread's briefing flags its own claims to look at, counted within the thread", async () => {
+  // The field's briefing ends on two flags — a verdict its evidence has overtaken,
+  // a claim standing under heavy contrary proof — counted over everything in view.
+  // A thread's has to ask the same of its own members: by opening one the reader
+  // has already narrowed the question, and "13 verdicts out of date" across the
+  // graph does not say which of THESE to look at.
+  const claim = node(2, { kind: "Belief", judgement: "proven", title: "Scaling holds past 1B" });
+  const against = [node(7, { kind: "Paper" }), node(8, { kind: "Paper" })];
+  answers.set(1000, {
+    nodes: [node(1), claim, node(3), ...against],
+    edges: [
+      edge(2, 1),
+      edge(3, 1),
+      // Two papers arguing against a claim still carrying a proven verdict. A
+      // vote against is a `proves` edge of negative valence, not its own kind.
+      edge(7, 2, "proves", { valence: -0.8 }),
+      edge(8, 2, "proves", { valence: -0.6 }),
+    ],
+  });
+  history.replaceState(null, "", "#/graph");
+  await shown("5 nodes, 4 edges");
+  act(() => renderer.clickIsland(uuid(1)));
+  const shownPeek = within(peek()!);
+  // The head carries its column label too: "needs attention" then "against".
+  const flagged = shownPeek.getByRole("heading", { name: /needs attention/ }).closest("section")!;
+  // The claim, with how much stands against it counted inside this thread. The
+  // same claim stands in the thread's other sections, so the row is read here.
+  const row = within(flagged as HTMLElement).getByRole("button", { name: /Scaling holds past 1B/ });
+  expect(row.textContent).toContain("Belief#2");
+  expect(row.textContent).toContain("2");
+});

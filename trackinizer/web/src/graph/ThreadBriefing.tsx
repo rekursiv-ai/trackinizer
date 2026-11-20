@@ -3,6 +3,7 @@ import { usd } from "../detail/fields";
 import { dateTime, useMinuteClock } from "../detail/time";
 import { formatRoute } from "../router/route";
 import { shortAge } from "../lists/Row";
+import { micros } from "../live/rows";
 import { Icon } from "../ui/icons";
 import { KindIcon } from "../ui/kinds";
 import { StatusGlyph } from "../ui/glyphs";
@@ -15,6 +16,7 @@ import {
   type NextExperiment,
   type Turn,
   turnsOf,
+  loadOf,
   verdictsOf,
   viewOf,
   reliedOn,
@@ -67,6 +69,17 @@ export function ThreadBriefing({
   const turns = turnsOf(group, view);
   const relied = reliedOn(members, view);
   const next = nextExperiments(group, view);
+  // The two flags the field's briefing ends on, asked of this thread alone: a
+  // verdict its own evidence has overtaken, and a claim still standing under
+  // heavy contrary proof. Across the whole graph they say how much is unsettled;
+  // asked of one thread they say which of ITS claims to look at, which is the
+  // question a reader has already narrowed to by opening this.
+  const attention = members
+    .filter((node) => node.kind === "Belief" && node.judgement !== "disproven")
+    .map((belief) => ({ belief, against: loadOf(belief, view).against }))
+    .filter((row) => row.against >= 1)
+    .sort((a, b) => b.against - a.against || micros(b.belief.created) - micros(a.belief.created))
+    .slice(0, 4);
   return (
     <aside className="briefing" aria-label="Cluster briefing">
       {onBack ? (
@@ -143,6 +156,25 @@ export function ThreadBriefing({
           <h5>best next experiments</h5>
           {next.map((entry) => (
             <NextRow key={entry.belief.id} entry={entry} palette={palette} onSelect={onSelectNode} />
+          ))}
+        </section>
+      ) : null}
+      {attention.length > 0 ? (
+        <section className="briefing-sec">
+          <h5>
+            needs attention<span className="briefing-sec-side">against</span>
+          </h5>
+          {attention.map(({ belief, against }) => (
+            <button key={belief.id} type="button" className="briefing-row" onClick={() => onSelectNode(belief)}>
+              {/* Two counts of contrary proof is the field briefing's own bar for a
+                  claim holding against the odds; one is a verdict gone stale. */}
+              <span className={`proto-ring ${against >= 2 ? "is-odd" : "is-against"}`} aria-hidden="true" />
+              <span className="briefing-row-ref mono" style={{ color: panelKind(palette, belief.kind) }}>
+                {belief.kind}#{belief.seq}
+              </span>
+              <span className="briefing-row-title">{belief.title || "(untitled)"}</span>
+              <span className="briefing-row-side num">{against}</span>
+            </button>
           ))}
         </section>
       ) : null}
