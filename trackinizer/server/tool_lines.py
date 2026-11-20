@@ -325,13 +325,13 @@ class ResultIds:
         self._over = False
 
     def feed(self, payload: bytes) -> list[str]:
-        """Return the call ids of the ``Result`` lines ``payload`` completes.
+        """Return the ids of completed result lines.
 
         Args:
           payload: Bytes the host sent, cut anywhere.
 
         Returns:
-          call_ids: Each completed ``Result``'s ``id``, in order.
+          call_ids: Ids in wire order.
 
         """
         call_ids: list[str] = []
@@ -364,11 +364,9 @@ def _result_id(raw: bytes) -> str | None:
     except (ValueError, RecursionError):
         return None
     call_id = line.get("id")
-    return (
-        call_id
-        if line.get("py/object") == "Result" and isinstance(call_id, str)
-        else None
-    )
+    if line.get("py/object") == "Result" and isinstance(call_id, str):
+        return call_id
+    return None
 
 
 def _dumped(line: dict[str, object]) -> bytes:

@@ -1,12 +1,12 @@
-"""The tool connection relay: offers, waits, the relay between two sockets and its ends, on a fake clock."""
+"""The mux tool relay, with an in-memory transport and a fake clock."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, override
+from unittest.mock import Mock
 
 import asyncio
 import logging
-import re
 import uuid
 
 import pytest
@@ -15,20 +15,19 @@ import pytest_asyncio
 from trackinizer.server import tool_relay
 from trackinizer.server.terminals import SocketClosedError, sweep_loop
 from trackinizer.server.tool_relay import (
-    ToolConnection,
     ToolConnectionBusyError,
     ToolConnectionEndError,
-    ToolConnectionRevokedError,
+    ToolConnectionUnavailableError,
     ToolRelay,
 )
 from trackinizer.wire import wire_terminals, wire_tools
-from trackinizer.wire.wire_tools import ToolOffer
+from trackinizer.wire.wire_tools import MuxStream, ToolMux
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Coroutine
+    from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 
-    from trackinizer.server.tool_relay import Inbound
+    from trackinizer.server.tool_relay import Inbound, ToolConnection
 
 
 pytestmark = pytest.mark.asyncio
@@ -39,55 +38,40 @@ _ASKER = "ada@x.y"
 _KEY = uuid.UUID(int=3)
 _INSTANCE = uuid.UUID(int=4)
 _LINE_BYTES = 256
-"""The longest host line a test relay reads for the call it answers."""
+_HELLO = b'{"py/object": "Hello", "session": "a"}\n'
+_WELCOME = b'{"py/object": "Welcome", "resumed": false}\n'
+_PING = b'{"py/object": "Ping"}\n'
 
 
 async def _pass_through(
     connection: ToolConnection,
     frame: bytes,
 ) -> tuple[bytes, bytes]:
-    """Let every frame through to the host, and answer the agent nothing."""
     del connection
     return frame, b""
 
 
 class _Time:
-    """A clock the test moves, and a sleep that ends only once it has moved far enough."""
-
     def __init__(self) -> None:
         self.now = 1_000.0
-        self._timers: list[tuple[float, asyncio.Event]] = []
 
     def __call__(self) -> float:
         return self.now
 
-    async def sleep(self, seconds: float) -> None:
-        event = asyncio.Event()
-        self._timers.append((self.now + seconds, event))
-        await event.wait()
-
     async def advance(self, seconds: float) -> None:
         self.now += seconds
-        for due, event in self._timers:
-            if due <= self.now:
-                event.set()
-        self._timers = [each for each in self._timers if not each[1].is_set()]
         await _settle()
 
 
 async def _settle() -> None:
-    """Let every task that can run, run."""
     for _ in range(30):
         await asyncio.sleep(0)
 
 
 class _Socket:
-    """One end of a tool connection: what the test pushes is read, and what is sent is kept."""
-
     def __init__(self) -> None:
         self.sent: list[bytes] = []
-        self.closed: list[int] = []
-        self.reasons: list[str] = []
+        self.closed: list[tuple[int, str]] = []
         self.reads = 0
         self.gone = False
         self.open = asyncio.Event()
@@ -101,8 +85,7 @@ class _Socket:
         self.sent.append(data)
 
     async def close(self, code: int, reason: str = "") -> None:
-        self.closed.append(code)
-        self.reasons.append(reason)
+        self.closed.append((code, reason))
 
     async def read(self) -> bytes | None:
         self.reads += 1
@@ -113,33 +96,91 @@ class _Socket:
             self._frames.put_nowait(frame)
 
     def drop(self) -> None:
-        """Go as a dropped peer does: its next read says so, and sends now fail."""
         self.gone = True
         self._frames.put_nowait(None)
 
 
-class _World:
-    """A relay on a fake clock whose hosts hold 16 tool connections, each dialed back in 20 s."""
+class _Stream(MuxStream):
+    def __init__(self, mux: ToolMux, stream_id: uuid.UUID) -> None:
+        super().__init__(mux, stream_id)
+        self.peer = _Socket()
+        self.closes = 0
 
-    def __init__(
+    @override
+    async def send(self, message: bytes, /) -> None:
+        try:
+            await self.peer.send_bytes(message)
+        except SocketClosedError as error:
+            raise ConnectionError("stream left") from error
+
+    @override
+    async def read(self) -> bytes | None:
+        return await self.peer.read()
+
+    @override
+    async def close(self) -> None:
+        self.closes += 1
+        self.peer.drop()
+
+
+class _Mux(ToolMux):
+    """The test controls greetings, stream capacity, and when the reader unwinds."""
+
+    def __init__(self) -> None:
+        self.transport = _Socket()
+        super().__init__(self.transport.send_bytes)
+        self.capacity = 32
+        self.stops = 0
+        self.streams: list[_Stream] = []
+        self.greeting: tuple[bytes, ...] | None = (_WELCOME,)
+        self.open_error: Exception | None = None
+
+    @property
+    @override
+    def has_capacity(self) -> bool:
+        return (
+            not self.stops
+            and sum(not stream.closes for stream in self.streams) < self.capacity
+        )
+
+    @override
+    async def open(self, stream_id: uuid.UUID) -> _Stream:
+        if self.open_error is not None:
+            raise self.open_error
+        assert self.has_capacity
+        stream = _Stream(self, stream_id)
+        self.streams.append(stream)
+        if self.greeting is not None:
+            stream.peer.push(*self.greeting)
+        return stream
+
+    @override
+    def stop(self) -> None:
+        self.stops += 1
+
+    @override
+    async def run(
         self,
+        read: Callable[[], Awaitable[bytes | None]],
         *,
-        connections_per_host: int = 16,
-        dial_back_sec: float = 20,
+        accept: Callable[[MuxStream], None] | None = None,
     ) -> None:
+        assert accept is None
+        assert await read() is None
+
+
+class _World:
+    def __init__(self) -> None:
         self.time = _Time()
         self.relay = ToolRelay(
             alive=self._alive,
-            connections_per_host=connections_per_host,
-            dial_back_sec=dial_back_sec,
             line_bytes=_LINE_BYTES,
             clock=self.time,
-            sleep=self.time.sleep,
         )
         self.tasks: list[asyncio.Task[object]] = []
         self.dead: set[uuid.UUID] = set()
         self.unknown: set[uuid.UUID] = set()
-        self.asked: list[tuple[str, uuid.UUID | None, uuid.UUID | None]] = []
+        self.asked: list[tuple[str, uuid.UUID | None, uuid.UUID]] = []
 
     async def _alive(self, connection: ToolConnection) -> bool:
         self.asked.append(
@@ -149,28 +190,31 @@ class _World:
             raise OSError("the database is down")
         return connection.id not in self.dead
 
-    def join(self, host_id: uuid.UUID = _HOST) -> ToolConnection:
-        """Bring an agent that nothing will serve, to fill a slot or an offer."""
-        return self.relay.join(
-            host_id,
-            agent=_Socket(),
-            asker=_ASKER,
-            api_key_id=_KEY,
-            inbound=_pass_through,
-        )
-
     def run(self, work: Coroutine[object, object, object]) -> asyncio.Task[object]:
         task = asyncio.ensure_future(work)
         self.tasks.append(task)
         return task
 
-    async def agent(
+    async def register(
         self,
-        *,
         host_id: uuid.UUID = _HOST,
+        instance: uuid.UUID = _INSTANCE,
+    ) -> tuple[_Mux, asyncio.Task[object]]:
+        mux = _Mux()
+        serving = self.run(
+            self.relay.serve_mux(host_id, instance, mux, mux.transport.read),
+        )
+        await _settle()
+        assert not serving.done()
+        assert mux.transport.reads == 1
+        return mux, serving
+
+    def join(
+        self,
+        host_id: uuid.UUID = _HOST,
+        *,
         inbound: Inbound = _pass_through,
     ) -> tuple[ToolConnection, _Socket]:
-        """Bring an agent to the host, and let it queue."""
         socket = _Socket()
         connection = self.relay.join(
             host_id,
@@ -179,36 +223,28 @@ class _World:
             api_key_id=_KEY,
             inbound=inbound,
         )
+        return connection, socket
+
+    async def agent(
+        self,
+        host_id: uuid.UUID = _HOST,
+        *,
+        inbound: Inbound = _pass_through,
+    ) -> tuple[ToolConnection, _Socket]:
+        connection, socket = self.join(host_id, inbound=inbound)
         _ = self.run(self.relay.serve_agent(connection, socket.read))
         await _settle()
         return connection, socket
 
-    async def host(self, connection: ToolConnection) -> _Socket:
-        """Dial back for an offered tool connection, and let it start."""
-        socket = _Socket()
-        attached = self.relay.attach(
-            connection.host_id,
-            connection.id,
-            socket,
-            instance=_INSTANCE,
-        )
-        assert attached is connection
-        _ = self.run(self.relay.serve_daemon(connection, socket.read))
+    async def live(self, mux: _Mux) -> tuple[ToolConnection, _Socket, _Stream]:
+        connection, agent = await self.agent()
+        agent.push(_HELLO)
         await _settle()
-        return socket
-
-    async def paired(
-        self,
-        *,
-        inbound: Inbound = _pass_through,
-    ) -> tuple[_Socket, _Socket]:
-        """Bring up a whole tool connection, and return its agent's socket and its host's."""
-        connection, agent = await self.agent(inbound=inbound)
-        assert await self.take() == ToolOffer(connection_id=connection.id)
-        return agent, await self.host(connection)
-
-    async def take(self, host_id: uuid.UUID = _HOST) -> ToolOffer | None:
-        return await self.relay.wait(host_id, wait_sec=0)
+        stream = mux.streams[-1]
+        assert connection.stream is stream
+        assert stream.peer.sent == [_HELLO]
+        assert agent.sent == [_WELCOME]
+        return connection, agent, stream
 
 
 @pytest_asyncio.fixture
@@ -220,988 +256,564 @@ async def world() -> AsyncIterator[_World]:
     _ = await asyncio.gather(*found.tasks, return_exceptions=True)
 
 
-# -- Who is offered what ----------------------------------------------------------------
+@pytest_asyncio.fixture
+async def mux(world: _World) -> _Mux:
+    found, _ = await world.register()
+    return found
 
 
-async def test_a_held_wait_returns_the_moment_an_agent_arrives(world: _World) -> None:
-    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
-    await _settle()
-    assert not waiting.done()
-
-    connection, _socket = await world.agent()
-
-    assert await waiting == ToolOffer(connection_id=connection.id)
-
-
-async def test_a_wait_with_no_agent_ends_empty_when_its_time_is_up(
-    world: _World,
-) -> None:
-    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
-    await _settle()
-
-    await world.time.advance(24)
-    assert not waiting.done()
-    await world.time.advance(1)
-
-    assert await waiting is None
-
-
-async def test_a_wait_of_no_time_answers_at_once(world: _World) -> None:
-    assert await world.take() is None
-
-
-async def test_a_wait_that_lost_its_offer_to_another_wait_keeps_waiting(
-    world: _World,
-) -> None:
-    first = world.run(world.relay.wait(_HOST, wait_sec=25))
-    second = world.run(world.relay.wait(_HOST, wait_sec=25))
-    await _settle()
-
-    connection, _socket = await world.agent()
-
-    assert await first == ToolOffer(connection_id=connection.id)
-    assert not second.done()
-    await world.time.advance(25)
-    assert await second is None
-
-
-async def test_when_the_woken_wait_goes_before_it_runs_another_wait_gets_the_offer(
-    world: _World,
-) -> None:
-    gone = world.run(world.relay.wait(_HOST, wait_sec=25))
-    kept = world.run(world.relay.wait(_HOST, wait_sec=25))
-    await _settle()
-
-    socket = _Socket()
-    connection = world.relay.join(
-        _HOST,
-        agent=socket,
-        asker=_ASKER,
-        api_key_id=_KEY,
-        inbound=_pass_through,
-    )
-    _ = world.run(world.relay.serve_agent(connection, socket.read))
-    _ = gone.cancel()
-    await _settle()
-
-    assert gone.cancelled()
-    assert await kept == ToolOffer(connection_id=connection.id)
-
-
-async def test_one_wait_takes_one_offer_oldest_first(world: _World) -> None:
-    first, _ = await world.agent()
-    second, _ = await world.agent()
-
-    assert await world.take() == ToolOffer(connection_id=first.id)
-    assert await world.take() == ToolOffer(connection_id=second.id)
-    assert await world.take() is None
-
-
-async def test_only_the_host_asked_for_is_offered_its_connections(
-    world: _World,
-) -> None:
-    connection, _ = await world.agent(host_id=_OTHER)
-
-    assert await world.take() is None
-    assert await world.take(_OTHER) == ToolOffer(connection_id=connection.id)
-
-
-async def test_a_wait_woken_twice_before_it_runs_takes_one_offer(world: _World) -> None:
-    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
-    await _settle()
-
-    first = world.join()
-    _ = world.join()
-
-    assert await waiting == ToolOffer(connection_id=first.id)
-
-
-async def test_a_revoke_right_after_an_agent_arrives_is_what_the_wait_hears(
-    world: _World,
-) -> None:
-    waiting = world.run(world.relay.wait(_HOST, wait_sec=25))
-    await _settle()
-
-    # The agent woke the wait first, and the revoke found it already woken: the tool connection is
-    # gone by the time the wait runs, so it holds on with nothing to take.
-    _ = world.join()
-    world.relay.close_host(_HOST)
-    await _settle()
-
-    assert not waiting.done()
-
-
-# -- Dialing back -----------------------------------------------------------------------
-
-
-async def test_a_host_that_never_dials_back_ends_the_connection_in_20_seconds(
-    world: _World,
-) -> None:
-    connection, agent = await world.agent()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-
-    await world.time.advance(19)
-    assert agent.closed == []
-    await world.time.advance(1)
-
-    assert agent.closed == [wire_terminals.CLOSE_DAEMON_LOST]
-    assert (
-        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE) is None
-    )
-
-
-async def test_a_host_that_dials_back_in_time_is_not_ended_by_the_timer(
-    world: _World,
-) -> None:
-    agent, host = await world.paired()
-
-    await world.time.advance(40)
-
-    assert (agent.closed, host.closed) == ([], [])
-
-
-async def test_a_relay_holds_the_connections_and_waits_the_dial_back_it_is_given() -> (
-    None
-):
-    world = _World(connections_per_host=1, dial_back_sec=5)
-    connection, agent = await world.agent()
-
-    with pytest.raises(ToolConnectionBusyError) as busy:
-        _ = world.join()
-    await world.time.advance(4)
-    assert agent.closed == []
-    await world.time.advance(1)
-
-    assert busy.value.limit == 1
-    assert str(busy.value) == "the host already holds its limit of 1 tool connections"
-    assert agent.closed == [wire_terminals.CLOSE_DAEMON_LOST]
-    assert (
-        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE) is None
-    )
-    for task in world.tasks:
-        _ = task.cancel()
-    _ = await asyncio.gather(*world.tasks, return_exceptions=True)
-
-
-async def test_an_agent_that_leaves_before_a_host_takes_the_connection_is_never_offered(
-    world: _World,
-) -> None:
-    _, agent = await world.agent()
-
-    agent.drop()
-    await _settle()
-
-    assert agent.closed == [wire_terminals.CLOSE_ENDED]
-    assert await world.take() is None
-
-
-async def test_a_connection_is_attached_only_by_its_own_host(world: _World) -> None:
-    connection, _ = await world.agent()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-
-    assert (
-        world.relay.attach(_OTHER, connection.id, _Socket(), instance=_INSTANCE) is None
-    )
-    assert (
-        world.relay.attach(_HOST, uuid.UUID(int=99), _Socket(), instance=_INSTANCE)
-        is None
-    )
-
-
-async def test_a_connection_its_host_was_never_offered_is_not_offered_again_once_attached(
-    world: _World,
-) -> None:
-    """Only an offer names a tool connection's id; one attached that way leaves the queue too."""
-    connection, _ = await world.agent()
-    assert (
-        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE)
-        is connection
-    )
-
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-
-
-async def test_a_connection_is_attached_once(world: _World) -> None:
-    connection, _ = await world.agent()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-    _ = await world.host(connection)
-
-    assert (
-        world.relay.attach(_HOST, connection.id, _Socket(), instance=_INSTANCE) is None
-    )
-
-
-# -- The relay --------------------------------------------------------------------------
-
-
-async def test_bytes_cross_both_ways_unread(world: _World) -> None:
-    agent, host = await world.paired()
-
-    agent.push(b"not json \xff\n", b"half a li")
-    host.push(b"\x00\xfe anything", b"ne\n")
-    await _settle()
-
-    assert host.sent == [b"not json \xff\n", b"half a li"]
-    assert agent.sent == [b"\x00\xfe anything", b"ne\n"]
-
-
-async def test_a_host_is_idle_from_the_relay_start_until_a_call(
-    world: _World,
-) -> None:
-    connection, _, _ = await _live(world)
-    await world.time.advance(30)
-    assert world.relay.idle_sec(_HOST) == 30
-    assert world.relay.idle_sec(_OTHER) == 30
-
-    world.relay.called(connection, "c1")
-
-    assert world.relay.idle_sec(_HOST) == 0
-    assert world.relay.idle_sec(_OTHER) == 30
-
-
-async def test_a_call_held_open_past_any_idle_time_keeps_its_host_in_use(
-    world: _World,
-) -> None:
-    connection, _, host = await _live(world)
-    world.relay.called(connection, "c1")
-    world.relay.called(connection, "c2")
-    await world.time.advance(3_000)
-    assert world.relay.idle_sec(_HOST) == 0
-
-    # The result of c1 comes split across frames, behind a ping; c2 still runs.
-    host.push(b'{"py/object": "Ping"}\n{"py/object": "Res', b'ult", "id": "c1"}\n')
-    await _settle()
-    assert (set(connection.running), world.relay.idle_sec(_HOST)) == ({"c2"}, 0)
-
-    host.push(b'{"py/object": "Result", "id": "c2", "record": {}}\n')
-    await _settle()
-    await world.time.advance(7)
-    assert (set(connection.running), world.relay.idle_sec(_HOST)) == (set(), 7)
-
-
-async def test_a_call_never_answered_keeps_its_host_in_use_an_hour_no_longer(
-    world: _World,
-) -> None:
-    connection, _, _ = await _live(world)
-    world.relay.called(connection, "hung")
-    await world.time.advance(3_599)
-    in_use = world.relay.idle_sec(_HOST)
-
-    await world.time.advance(1_801)
-
-    assert (in_use, world.relay.idle_sec(_HOST)) == (0, 1_800)
-    assert set(connection.running) == {"hung"}
-
-
-async def test_an_ack_ends_a_call_whose_result_the_relay_could_not_read(
-    world: _World,
-) -> None:
-    connection, agent, host = await _live(world)
-    world.relay.called(connection, "c1")
-
-    long = b'{"py/object": "Result", "id": "c1", "record": "' + b"x" * _LINE_BYTES
-    host.push(long, b'"}\n', b"not json\n")
-    await _settle()
-    running = set(connection.running)
-    world.relay.acked(connection, "c1")
-    world.relay.acked(connection, "c9")
-
-    assert (running, set(connection.running)) == ({"c1"}, set())
-    assert len(agent.sent) == 3
-
-
-async def test_a_connection_that_drops_mid_call_leaves_its_host_idle_from_the_drop(
-    world: _World,
-) -> None:
-    connection, agent, _ = await _live(world)
-    world.relay.called(connection, "c1")
-    await world.time.advance(600)
-
-    agent.drop()
-    await _settle()
-    await world.time.advance(5)
-
-    assert connection.ended.done()
-    assert (set(connection.running), world.relay.idle_sec(_HOST)) == (set(), 5)
-
-
-async def test_a_quiet_connection_that_only_pings_keeps_no_host_in_use(
-    world: _World,
-) -> None:
-    agent, host = await world.paired()
-    await world.time.advance(60)
-
-    host.push(b'{"py/object": "Ping"}\n')
-    agent.push(b'{"py/object": "Ack", "id": "c1"}\n')
-    await _settle()
-
-    assert world.relay.idle_sec(_HOST) == 60
-    assert (len(agent.sent), len(host.sent)) == (1, 1)
-
-
-async def _live(world: _World) -> tuple[ToolConnection, _Socket, _Socket]:
-    """Bring up a whole tool connection; return it, its agent's socket and its host's."""
-    connection, agent = await world.agent()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-    return connection, agent, await world.host(connection)
-
-
-async def test_what_an_agent_sends_before_its_host_dials_back_waits_for_it(
-    world: _World,
-) -> None:
-    connection, agent = await world.agent()
-    agent.push(b"Hello\n", b"Next\n")
-    await _settle()
-    assert agent.reads == 1
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-
-    host = await world.host(connection)
-
-    assert host.sent == [b"Hello\n", b"Next\n"]
-
-
-async def test_a_write_past_a_frame_is_split_into_frames(world: _World) -> None:
-    agent, host = await world.paired()
-    size = wire_tools.FRAME_BYTES
-
-    agent.push(b"a" * (size + 1))
-    host.push(b"b" * (2 * size))
-    await _settle()
-
-    assert [len(frame) for frame in host.sent] == [size, 1]
-    assert [len(frame) for frame in agent.sent] == [size, size]
-
-
-async def test_an_empty_frame_sends_nothing(world: _World) -> None:
-    agent, host = await world.paired()
-
-    agent.push(b"")
-    host.push(b"")
-    await _settle()
-
-    assert (agent.sent, host.sent) == ([], [])
-    assert (agent.closed, host.closed) == ([], [])
-
-
-async def test_a_slow_agent_slows_the_host(world: _World) -> None:
-    agent, host = await world.paired()
-    agent.open.clear()
-    reads = host.reads
-
-    host.push(b"one", b"two", b"three")
-    await _settle()
-
-    # The read already waiting took the first frame, which is stuck in the send, so no
-    # other was read, and nothing past it sits in the server.
-    assert host.reads == reads
-    assert agent.sent == []
-
-    agent.open.set()
-    await _settle()
-
-    assert agent.sent == [b"one", b"two", b"three"]
-
-
-async def test_a_slow_host_slows_the_agent(world: _World) -> None:
-    agent, host = await world.paired()
-    host.open.clear()
-    reads = agent.reads
-
-    agent.push(b"one", b"two")
-    await _settle()
-
-    assert agent.reads == reads
-
-    host.open.set()
-    await _settle()
-
-    assert host.sent == [b"one", b"two"]
-
-
-# -- How a tool connection ends --------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("dropped", "code"),
-    [
-        ("agent", wire_terminals.CLOSE_ENDED),
-        ("host", wire_terminals.CLOSE_DAEMON_LOST),
-    ],
-)
-async def test_a_dropped_socket_ends_the_other(
-    world: _World,
-    dropped: str,
-    code: int,
-) -> None:
-    agent, host = await world.paired()
-
-    (agent if dropped == "agent" else host).drop()
-    await _settle()
-
-    assert (agent.closed, host.closed) == ([code], [code])
-
-
-async def test_a_socket_that_drops_while_the_other_is_stuck_sending_to_it_ends_both(
-    world: _World,
-) -> None:
-    agent, host = await world.paired()
-    agent.open.clear()
-    host.push(b"stuck")
-    await _settle()
-
-    agent.drop()
-    await _settle()
-
-    assert (agent.closed, host.closed) == (
-        [wire_terminals.CLOSE_ENDED],
-        [wire_terminals.CLOSE_ENDED],
-    )
-    assert agent.sent == []
-
-
-@pytest.mark.parametrize(
-    ("gone", "code"),
-    [
-        ("agent", wire_terminals.CLOSE_ENDED),
-        ("host", wire_terminals.CLOSE_DAEMON_LOST),
-    ],
-)
-async def test_a_send_that_finds_its_peer_gone_ends_the_connection(
-    world: _World,
-    gone: str,
-    code: int,
-) -> None:
-    agent, host = await world.paired()
-
-    if gone == "agent":
-        agent.gone = True
-        host.push(b"to nobody")
-    else:
-        host.gone = True
-        agent.push(b"to nobody")
-    await _settle()
-
-    assert (agent.closed, host.closed) == ([code], [code])
-
-
-async def test_a_serve_cancelled_with_its_server_ends_the_connection(
-    world: _World,
-) -> None:
-    connection, agent = await world.agent()
-    socket = _Socket()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-    assert (
-        world.relay.attach(_HOST, connection.id, socket, instance=_INSTANCE)
-        is connection
-    )
-    serving = world.run(world.relay.serve_daemon(connection, socket.read))
-    await _settle()
-
-    _ = serving.cancel()
-    await _settle()
-
-    assert serving.cancelled()
-    assert (agent.closed, socket.closed) == (
-        [wire_terminals.CLOSE_ENDED],
-        [wire_terminals.CLOSE_ENDED],
-    )
-
-
-async def test_the_seventeenth_connection_on_a_host_is_refused(world: _World) -> None:
-    joined = [await world.agent() for _ in range(16)]
-
-    with pytest.raises(ToolConnectionBusyError) as busy:
-        _ = world.join()
-    assert busy.value.limit == 16
-
-    # Another host is not counted against this one.
-    _ = await world.agent(host_id=_OTHER)
-
-    # A tool connection that ended gives its slot back, so no drop leaks one.
-    joined[0][1].drop()
-    await _settle()
-    _ = await world.agent()
-    with pytest.raises(ToolConnectionBusyError):
-        _ = world.join()
-
-
-@pytest.mark.parametrize("ending", ["agent_drops", "host_drops", "revoked", "timer"])
-async def test_every_ending_gives_all_sixteen_slots_back(
-    world: _World,
-    ending: str,
-) -> None:
-    agents = [await world.paired() for _ in range(8)]
-    waiting = [await world.agent() for _ in range(8)]
-
-    if ending == "revoked":
-        world.relay.close_host(_HOST)
-    elif ending == "timer":
-        for agent, _ in agents:
-            agent.drop()
-        await world.time.advance(20)
-    else:
-        for agent, host in agents:
-            (agent if ending == "agent_drops" else host).drop()
-        for _, agent in waiting:
-            agent.drop()
-    await _settle()
-
-    for _ in range(16):
-        _ = world.join()
-
-
-async def test_a_revoked_host_ends_its_connections_and_leaves_another_hosts(
-    world: _World,
-) -> None:
-    agent, host = await world.paired()
-    waiting_connection, waiting = await world.agent()
-    other_connection, other = await world.agent(host_id=_OTHER)
-
-    world.relay.close_host(_HOST)
-    await _settle()
-
-    revoked = wire_terminals.CLOSE_HOST_REVOKED
-    assert (agent.closed, host.closed, waiting.closed) == (
-        [revoked],
-        [revoked],
-        [revoked],
-    )
-    assert other.closed == []
-    assert (
-        world.relay.attach(_HOST, waiting_connection.id, _Socket(), instance=_INSTANCE)
-        is None
-    )
-    assert await world.take(_OTHER) == ToolOffer(connection_id=other_connection.id)
-
-
-async def test_revoking_a_host_ends_a_held_wait_and_leaves_another_hosts(
-    world: _World,
-) -> None:
-    held = world.run(world.relay.wait(_HOST, wait_sec=25))
-    other = world.run(world.relay.wait(_OTHER, wait_sec=25))
-    await _settle()
-
-    world.relay.close_host(_HOST)
-
-    with pytest.raises(ToolConnectionRevokedError):
-        _ = await held
-    assert not other.done()
-
-
-async def test_a_host_that_rejoins_after_a_revoke_takes_new_connections(
-    world: _World,
-) -> None:
-    world.relay.close_host(_HOST)
-
-    connection, _ = await world.agent()
-
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-
-
-# -- Asking the rule again ---------------------------------------------------------------
-
-
-async def test_a_live_connection_survives_a_sweep(world: _World) -> None:
-    agent, host = await world.paired()
-
-    await world.relay.sweep()
-    await _settle()
-
-    assert (agent.closed, host.closed) == ([], [])
-    agent.push(b"Ping\n")
-    await _settle()
-    assert host.sent == [b"Ping\n"]
-
-
-async def test_the_sweep_asks_about_who_opened_a_connection_and_who_attached_to_it(
-    world: _World,
-) -> None:
-    _ = await world.paired()
-    queued, _socket = await world.agent()
-
-    await world.relay.sweep()
-
-    assert queued.instance is None
-    assert world.asked == [(_ASKER, _KEY, _INSTANCE), (_ASKER, _KEY, None)]
-
-
-async def test_a_sweep_refuses_a_connection_whose_rule_no_longer_holds_and_frees_its_slot(
-    world: _World,
-) -> None:
-    connection, agent = await world.agent()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-    host = await world.host(connection)
-    _, other = await world.agent()
-    world.dead.add(connection.id)
-
-    await world.relay.sweep()
-    await _settle()
-
-    refused = wire_terminals.CLOSE_REFUSED
-    assert (agent.closed, host.closed) == ([refused], [refused])
-    assert other.closed == []
-    for _ in range(15):
-        _ = world.join()
-    with pytest.raises(ToolConnectionBusyError):
-        _ = world.join()
-
-
-async def test_a_sweep_refuses_a_connection_no_host_has_taken_and_it_is_not_offered(
-    world: _World,
-) -> None:
-    connection, agent = await world.agent()
-    world.dead.add(connection.id)
-
-    await world.relay.sweep()
-    await _settle()
-
-    assert agent.closed == [wire_terminals.CLOSE_REFUSED]
-    assert await world.take() is None
-
-
-async def test_a_failing_question_leaves_the_connection_up_and_asks_about_the_rest(
+async def test_mux_is_required_and_duplicate_does_not_replace_it(
     world: _World,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    unknown, unknown_agent = await world.agent()
-    dead, dead_agent = await world.agent()
-    world.unknown.add(unknown.id)
-    world.dead.add(dead.id)
+    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
+    with pytest.raises(ToolConnectionUnavailableError):
+        _ = world.join()
+    mux, serving = await world.register()
+    duplicate = _Mux()
+    duplicate.transport.drop()
+    assert (
+        await world.relay.serve_mux(
+            _HOST,
+            _INSTANCE,
+            duplicate,
+            duplicate.transport.read,
+        )
+        is False
+    )
+    assert duplicate.transport.reads == 0
+    _, agent, _ = await world.live(mux)
+    _, parked = await world.agent()
+    with pytest.raises(ToolConnectionUnavailableError):
+        _ = world.join(_OTHER)
 
-    await world.relay.sweep()
+    mux.transport.drop()
     await _settle()
 
-    assert unknown_agent.closed == []
-    assert dead_agent.closed == [wire_terminals.CLOSE_REFUSED]
-    assert "liveness unknown" in caplog.text
+    assert serving.done()
+    assert serving.result() is True
+    assert (
+        agent.closed
+        == parked.closed
+        == [(wire_terminals.CLOSE_DAEMON_LOST, "the daemon left")]
+    )
+    assert [
+        line for line in caplog.messages if line.startswith("daemon tool mux ")
+    ] == [
+        f"daemon tool mux opened: host_id={_HOST} instance={_INSTANCE}",
+        f"daemon tool mux ended: host_id={_HOST} instance={_INSTANCE}",
+    ]
+    with pytest.raises(ToolConnectionUnavailableError):
+        _ = world.join()
 
 
-async def test_the_sweep_loop_sweeps_a_connection_relay(world: _World) -> None:
+async def test_mux_reader_failure_unregisters_the_daemon(world: _World) -> None:
+    async def broken_read() -> bytes | None:
+        raise ValueError("broken mux reader")
+
+    with pytest.raises(ValueError, match="broken mux reader"):
+        _ = await world.relay.serve_mux(_HOST, _INSTANCE, _Mux(), broken_read)
+    _ = await world.register()
+
+
+async def test_revocation_closes_only_its_agents_and_old_cleanup_keeps_replacement(
+    world: _World,
+) -> None:
+    first, serving = await world.register()
+    other, other_serving = await world.register(_OTHER)
+    _, agent, stream = await world.live(first)
+    _, parked = await world.agent()
+    _, unrelated = await world.agent(_OTHER)
+
+    world.relay.close_host(_HOST)
+    world.relay.close_host(_HOST)
+    await _settle()
+
+    revoked = (
+        wire_terminals.CLOSE_HOST_REVOKED,
+        "the host was revoked, or joined again",
+    )
+    assert agent.closed == parked.closed == [revoked]
+    assert stream.closes == first.stops == 1
+    assert unrelated.closed == []
+    assert other.stops == 0
+    assert not other_serving.done()
+    instance = uuid.UUID(int=5)
+    replacement, _ = await world.register(instance=instance)
+    first.transport.drop()
+    await _settle()
+    assert serving.done()
+    assert serving.result() is True
+    fresh, _, _ = await world.live(replacement)
+    assert fresh.instance == instance
+
+
+async def test_parked_socket_limit_is_independent_of_stream_limit_and_other_hosts(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    _ = await world.register(_OTHER)
+    _, agent = await world.agent()
+    for _ in range(1023):
+        _ = world.join()
+    assert mux.streams == []
+    with pytest.raises(ToolConnectionBusyError) as busy:
+        _ = world.join()
+    assert busy.value.limit == 1024
+    _ = world.join(_OTHER)
+
+    agent.drop()
+    await _settle()
+    _ = world.join()
+    with pytest.raises(ToolConnectionBusyError):
+        _ = world.join()
+
+
+async def test_sweep_keeps_the_idle_stream_and_never_replays_a_hello(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    _, agent, stream = await world.live(mux)
+    await world.time.advance(60)
+    await world.relay.sweep()
+
+    assert stream.closes == 0
+    agent.push(_PING + b"request\n")
+    await _settle()
+    assert mux.streams == [stream]
+    assert b"".join(stream.peer.sent) == _HELLO + _PING + b"request\n"
+    assert agent.sent == [_WELCOME]
+    assert agent.closed == []
+
+
+async def test_first_forwarded_bytes_open_one_stream_and_pass_the_native_greeting(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    refusal = b'{"py/object": "Refused", "reason": "All workers are busy"}\n'
+    mux.greeting = (refusal[:8], refusal[8:])
+    _, agent = await world.agent()
+    agent.push(b"")
+    await _settle()
+    assert mux.streams == []
+    agent.push(_HELLO)
+    await _settle()
+    [stream] = mux.streams
+    assert stream.peer.sent == [_HELLO]
+    assert b"".join(agent.sent) == refusal
+    stream.peer.drop()
+    await _settle()
+    assert agent.closed == [(wire_terminals.CLOSE_DAEMON_LOST, "the daemon left")]
+    assert stream.closes == 1
+
+
+async def test_at_capacity_refuses_new_agent_without_displacing_idle_agent(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    mux.capacity = 1
+    _, first, stream = await world.live(mux)
+    _, second = await world.agent()
+    second.push(_HELLO)
+    await _settle()
+
+    assert stream.closes == 0
+    assert mux.streams == [stream]
+    [(code, reason)] = second.closed
+    assert code == wire_terminals.CLOSE_REFUSED
+    assert "stream limit" in reason
+    assert second.sent == []
+    assert first.closed == []
+    first.push(b"request\n")
+    await _settle()
+    assert stream.peer.sent == [_HELLO, b"request\n"]
+
+    first.drop()
+    await _settle()
+    _, _, fresh = await world.live(mux)
+    assert mux.streams == [stream, fresh]
+    assert fresh.id != stream.id
+
+
+async def test_configured_stream_budget_is_independent_of_wire_capacity(
+    world: _World,
+    mux: _Mux,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(world.relay, "_streams", 1)
+    _, first, stream = await world.live(mux)
+    assert mux.has_capacity
+    _, second = await world.agent()
+    second.push(_HELLO)
+    await _settle()
+    assert second.closed == [
+        (wire_terminals.CLOSE_REFUSED, "the host has reached its tool stream limit"),
+    ]
+    assert first.closed == []
+    assert stream.closes == 0
+
+
+async def test_daemon_disconnect_also_closes_agents_that_have_not_sent_hello(
+    world: _World,
+) -> None:
+    mux, serving = await world.register()
+    _, first, stream = await world.live(mux)
+    _, second = await world.agent()
+    mux.transport.drop()
+    await _settle()
+    assert serving.result() is True
+    assert mux.streams == [stream]
+    assert stream.closes == 1
+    assert (
+        first.closed
+        == second.closed
+        == [(wire_terminals.CLOSE_DAEMON_LOST, "the daemon left")]
+    )
+
+
+async def test_silent_mux_open_expires_without_leaving_a_slot(
+    world: _World,
+    mux: _Mux,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def stalled(stream_id: uuid.UUID) -> _Stream:
+        del stream_id
+        return await asyncio.Future[_Stream]()
+
+    def immediately(seconds: float) -> asyncio.Timeout:
+        assert seconds == 10.0
+        return asyncio.timeout(0)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(mux, "open", stalled)
+        patch.setattr(tool_relay, "asyncio", Mock(wraps=asyncio, timeout=immediately))
+        _, agent = await world.agent()
+        agent.push(_HELLO)
+        await _settle()
+        assert agent.closed == [(wire_terminals.CLOSE_DAEMON_LOST, "the daemon left")]
+    assert mux.streams == []
+    _, fresh, _ = await world.live(mux)
+    assert fresh.closed == []
+
+
+@pytest.mark.parametrize("error", [ConnectionError, ValueError])
+async def test_open_failure_closes_agent_as_daemon_lost(
+    world: _World,
+    mux: _Mux,
+    error: type[Exception],
+) -> None:
+    mux.open_error = error("failed stream open")
     connection, agent = await world.agent()
-    world.dead.add(connection.id)
+    agent.push(_HELLO)
+    await _settle()
+    assert mux.streams == []
+    assert connection.stream is None
+    assert agent.closed == [(wire_terminals.CLOSE_DAEMON_LOST, "the daemon left")]
+
+
+async def test_ping_does_not_count_as_host_activity(world: _World, mux: _Mux) -> None:
+    _, agent, stream = await world.live(mux)
+    await world.time.advance(29)
+    agent.push(_PING)
+    await _settle()
+    assert stream.peer.sent == [_HELLO, _PING]
+    assert world.relay.idle_sec(_HOST) == 29
+
+
+async def test_sweep_skips_an_agent_blocked_on_a_daemon_send(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    _, agent, stream = await world.live(mux)
+    await world.time.advance(30)
+    agent.open.clear()
+    stream.peer.push(b"blocked\n")
+    await _settle()
+    sweeping = world.run(world.relay.sweep())
+    await _settle()
+    assert sweeping.done()
+    assert sweeping.result() is None
+    assert stream.closes == 0
+    assert agent.sent == [_WELCOME]
+
+    agent.open.set()
+    await _settle()
+    await world.relay.sweep()
+    assert agent.sent == [_WELCOME, b"blocked\n"]
+    assert stream.closes == 0
+    assert agent.closed == []
+
+
+async def test_revoking_during_inbound_does_not_open_a_stale_stream(
+    world: _World,
+    mux: _Mux,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    async def revoke(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
+        world.relay.close_host(connection.host_id)
+        return frame, b""
+
+    _, agent = await world.agent(inbound=revoke)
+    agent.push(_HELLO)
+    await _settle()
+    assert mux.streams == []
+    assert agent.closed == [
+        (wire_terminals.CLOSE_HOST_REVOKED, "the host was revoked, or joined again"),
+    ]
+    assert "tool connection failed" not in caplog.text
+
+
+async def test_active_calls_keep_host_busy_until_result_or_ack(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    connection, agent, stream = await world.live(mux)
+    await world.time.advance(30)
+    assert world.relay.idle_sec(_HOST) == world.relay.idle_sec(_OTHER) == 30
+    world.relay.called(connection, "c1")
+    world.relay.called(connection, "c2")
+    await world.time.advance(3_000)
+    await world.relay.sweep()
+    assert world.relay.idle_sec(_HOST) == 0
+    assert world.relay.idle_sec(_OTHER) == 3_030
+    assert stream.closes == 0
+
+    head = b'{"py/object": "Res'
+    tail = b'ult", "id": "c1"}\n'
+    long = (
+        b'{"py/object": "Result", "id": "c2", "record": "'
+        + b"x" * _LINE_BYTES
+        + b'"}\n'
+    )
+    stream.peer.push(head, tail, long)
+    await _settle()
+    assert agent.sent == [_WELCOME, head, tail, long]
+    assert set(connection.running) == {"c2"}
+    assert world.relay.idle_sec(_HOST) == 0
+    world.relay.acked(connection, "c2")
+    await world.time.advance(7)
+    world.relay.acked(connection, "not-a-call")
+    assert connection.running == {}
+    assert world.relay.idle_sec(_HOST) == 7
+    await world.relay.sweep()
+    assert stream.closes == 0
+    assert agent.closed == []
+
+
+async def test_dropped_pending_calls_keep_host_busy_until_the_latest_deadline(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    first, first_agent, _ = await world.live(mux)
+    second, second_agent, _ = await world.live(mux)
+    world.relay.called(first, "a")
+    await world.time.advance(8)
+    world.relay.called(second, "b")
+    await world.time.advance(1)
+    second_agent.drop()
+    await _settle()
+    first_agent.drop()
+    await _settle()
+    assert first.ended.done()
+    assert second.ended.done()
+    await world.time.advance(3_598)
+    assert world.relay.idle_sec(_HOST) == 0
+    assert world.relay.idle_sec(_OTHER) == 3_607
+    await world.time.advance(5)
+    assert world.relay.idle_sec(_HOST) == 4
+
+
+async def test_a_live_call_never_answered_only_keeps_host_busy_for_an_hour(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    connection, _, _ = await world.live(mux)
+    world.relay.called(connection, "hung")
+    await world.time.advance(3_599)
+    assert world.relay.idle_sec(_HOST) == 0
+    await world.time.advance(2)
+    assert world.relay.idle_sec(_HOST) == 1
+
+
+async def test_relay_preserves_bytes_and_backpressure_in_both_directions(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    _, agent, stream = await world.live(mux)
+    peer = stream.peer
+    agent.open.clear()
+    peer.open.clear()
+    reads = agent.reads, peer.reads
+    agent.push(b"agent \xff\n", b"next agent\n")
+    peer.push(b"daemon \xfe\n", b"next daemon\n")
+    await _settle()
+    assert (agent.reads, peer.reads) == reads
+    assert (agent.sent, peer.sent) == ([_WELCOME], [_HELLO])
+    agent.open.set()
+    peer.open.set()
+    await _settle()
+    assert agent.sent == [_WELCOME, b"daemon \xfe\n", b"next daemon\n"]
+    assert peer.sent == [_HELLO, b"agent \xff\n", b"next agent\n"]
+
+
+async def test_writes_are_split_at_the_frame_limit_and_empty_data_is_not_sent(
+    world: _World,
+    mux: _Mux,
+) -> None:
+    _, agent, stream = await world.live(mux)
+    size = wire_tools.FRAME_BYTES
+    agent.push(b"", b"a" * (size + 1))
+    stream.peer.push(b"", b"b" * (2 * size))
+    await _settle()
+    assert stream.peer.sent == [_HELLO, b"a" * size, b"a"]
+    assert agent.sent == [_WELCOME, b"b" * size, b"b" * size]
+
+
+@pytest.mark.parametrize(
+    ("ending", "code", "reason", "by"),
+    [
+        ("agent-eof", wire_terminals.CLOSE_ENDED, "the agent left", "agent"),
+        ("agent-send", wire_terminals.CLOSE_ENDED, "the agent left", "agent"),
+        ("daemon-eof", wire_terminals.CLOSE_DAEMON_LOST, "the daemon left", "daemon"),
+        ("daemon-send", wire_terminals.CLOSE_DAEMON_LOST, "the daemon left", "daemon"),
+        ("cancel", wire_terminals.CLOSE_ENDED, "the server is stopping", "server"),
+    ],
+)
+async def test_first_disconnect_closes_stream_and_logs_once(
+    world: _World,
+    mux: _Mux,
+    caplog: pytest.LogCaptureFixture,
+    *,
+    ending: str,
+    code: int,
+    reason: str,
+    by: str,
+) -> None:
+    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
+    connection, agent, stream = await world.live(mux)
+    await world.time.advance(3)
+    if ending == "agent-eof":
+        agent.open.clear()
+        stream.peer.push(b"blocked")
+        await _settle()
+        agent.drop()
+    elif ending == "agent-send":
+        agent.gone = True
+        stream.peer.push(b"undeliverable")
+    elif ending == "daemon-eof":
+        stream.peer.drop()
+    elif ending == "daemon-send":
+        stream.peer.gone = True
+        agent.push(b"undeliverable")
+    else:
+        _ = world.tasks[-1].cancel()
+    await _settle()
+    world.relay.close_host(_HOST)
+    await _settle()
+
+    assert agent.closed == [(code, reason)]
+    assert stream.closes == 1
+    assert [
+        line for line in caplog.messages if line.startswith("tool connection ended:")
+    ] == [
+        (
+            f"tool connection ended: connection={connection.id} host_id={_HOST} by={by} "
+            f"code={code} reason={reason!r} cause=- instance={_INSTANCE} duration_sec=3.000"
+        ),
+    ]
+
+
+async def test_sweep_rechecks_live_and_parked_clients_with_their_daemon_identity(
+    world: _World,
+    mux: _Mux,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    unknown, surviving, stream = await world.live(mux)
+    dead, parked = await world.agent()
+    world.unknown.add(unknown.id)
+    world.dead.add(dead.id)
 
     looping = world.run(sweep_loop(world.relay, interval_sec=0))
     await _settle()
 
-    assert agent.closed == [wire_terminals.CLOSE_REFUSED]
+    assert world.asked[:2] == [(_ASKER, _KEY, _INSTANCE), (_ASKER, _KEY, _INSTANCE)]
+    assert surviving.closed == []
+    assert stream.closes == 0
+    assert parked.closed == [
+        (
+            wire_terminals.CLOSE_REFUSED,
+            "no longer allowed: what opened this tool connection no longer holds",
+        ),
+    ]
+    assert "liveness unknown" in caplog.text
     assert not looping.done()
 
 
-# -- The seam for the line check ----------------------------------------------------------
-
-
-class _Rewrite:
-    """A line check: says what goes each way, and notes what it was shown."""
-
-    def __init__(self, *answers: tuple[bytes, bytes]) -> None:
-        self.shown: list[bytes] = []
-        self._answers = list(answers)
-
-    async def __call__(
-        self,
-        connection: ToolConnection,
-        frame: bytes,
-    ) -> tuple[bytes, bytes]:
-        del connection
-        self.shown.append(frame)
-        return self._answers.pop(0)
-
-
-async def test_inbound_decides_what_reaches_the_host_and_answers_the_agent(
+async def test_inbound_rewrites_requests_and_places_its_reply_between_daemon_lines(
     world: _World,
+    mux: _Mux,
 ) -> None:
-    check = _Rewrite((b"", b"refused\n"), (b"rewritten\n", b""))
-    agent, host = await world.paired(inbound=check)
+    shown: list[bytes] = []
 
+    async def inbound(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
+        del connection
+        shown.append(frame)
+        if frame == b"denied\n":
+            return b"", b"refused\n"
+        if frame == b"allowed\n":
+            return b"rewritten\n", b""
+        return frame, b""
+
+    _, agent = await world.agent(inbound=inbound)
+    agent.push(_HELLO)
+    await _settle()
+    stream = mux.streams[0]
+    stream.peer.push(b"half a li")
+    await _settle()
     agent.push(b"denied\n", b"allowed\n")
     await _settle()
-
-    assert check.shown == [b"denied\n", b"allowed\n"]
-    assert host.sent == [b"rewritten\n"]
-    assert agent.sent == [b"refused\n"]
-
-
-async def test_inbound_never_reads_the_hosts_direction(world: _World) -> None:
-    check = _Rewrite()
-    agent, host = await world.paired(inbound=check)
-
-    host.push(b"from the host\n")
+    assert agent.sent == [_WELCOME, b"half a li"]
+    assert shown == [_HELLO, b"denied\n"]
+    stream.peer.push(b"ne\n")
     await _settle()
+    assert agent.sent == [_WELCOME, b"half a li", b"ne\n", b"refused\n"]
+    assert shown == [_HELLO, b"denied\n", b"allowed\n"]
+    assert stream.peer.sent == [_HELLO, b"rewritten\n"]
 
-    assert check.shown == []
-    assert agent.sent == [b"from the host\n"]
 
-
-async def test_an_answer_to_the_agent_waits_for_the_end_of_the_hosts_line(
+@pytest.mark.parametrize("kind", ["failure", "refusal", "caused-refusal"])
+async def test_line_check_errors_refuse_without_forwarding_or_logging_the_payload(
     world: _World,
-) -> None:
-    check = _Rewrite((b"", b"refused\n"))
-    agent, host = await world.paired(inbound=check)
-
-    host.push(b"half a li")
-    await _settle()
-    agent.push(b"denied\n")
-    await _settle()
-    assert agent.sent == [b"half a li"]
-
-    host.push(b"ne\n")
-    await _settle()
-
-    assert agent.sent == [b"half a li", b"ne\n", b"refused\n"]
-
-
-async def test_a_failing_inbound_ends_the_connection_and_forwards_nothing(
-    world: _World,
+    mux: _Mux,
     caplog: pytest.LogCaptureFixture,
+    kind: str,
 ) -> None:
-    async def failing(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
-        del connection, frame
-        raise ValueError("the line check broke")
+    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
 
-    agent, host = await world.paired(inbound=failing)
-
-    agent.push(b"Call\n")
-    await _settle()
-
-    assert host.sent == []
-    assert (agent.closed, host.closed) == (
-        [wire_terminals.CLOSE_REFUSED],
-        [wire_terminals.CLOSE_REFUSED],
-    )
-    assert (
-        agent.reasons
-        == host.reasons
-        == [
-            "the server could not go on relaying this tool connection",
-        ]
-    )
-    assert "tool connection failed" in caplog.text
-
-
-async def test_an_inbound_refuses_the_connection_saying_why(
-    world: _World,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    async def refusing(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
-        del connection, frame
+    async def inbound(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
+        del connection
+        if frame == _HELLO:
+            return frame, b""
+        if kind == "failure":
+            raise ValueError("the line check broke")
+        if kind == "caused-refusal":
+            raise ToolConnectionEndError("é" * 100) from ValueError("invalid line")
         raise ToolConnectionEndError("é" * 100)
 
-    agent, host = await world.paired(inbound=refusing)
-
-    agent.push(b"a line nobody can read\n")
+    _, agent = await world.agent(inbound=inbound)
+    agent.push(_HELLO, b"secret request\n")
     await _settle()
-
-    assert host.sent == []
-    assert (agent.closed, host.closed) == (
-        [wire_terminals.CLOSE_REFUSED],
-        [wire_terminals.CLOSE_REFUSED],
-    )
-    # A close frame holds 123 bytes of reason, and a character is cut whole.
-    assert agent.reasons == host.reasons == ["é" * 61]
-    assert "tool connection failed" not in caplog.text
-    assert str(ToolConnectionEndError("why")) == "why"
-
-
-# -- What is logged -----------------------------------------------------------------------
-
-
-def _fields(message: str) -> dict[str, str]:
-    """Return a log line's ``key=value`` fields, a quoted value unquoted."""
-    found = cast(
-        "list[tuple[str, str, str]]",
-        re.findall(r"(\w+)=(?:'([^']*)'|(\S+))", message),
-    )
-    return {key: quoted or bare for key, quoted, bare in found}
-
-
-def _ended(
-    caplog: pytest.LogCaptureFixture,
-    connection: ToolConnection,
-) -> list[dict[str, str]]:
-    """Return the fields of each line saying ``tool connection`` ended."""
-    return [
-        _fields(record.getMessage())
-        for record in caplog.records
-        if record.getMessage().startswith("tool connection ended:")
-        and f"connection={connection.id}" in record.getMessage()
-    ]
-
-
-@pytest.mark.parametrize(
-    ("ending", "said"),
-    [
-        ("agent_leaves", ("agent", wire_terminals.CLOSE_ENDED, "the agent left")),
-        (
-            "daemon_leaves",
-            ("daemon", wire_terminals.CLOSE_DAEMON_LOST, "the daemon left"),
-        ),
-        (
-            "revoked",
-            (
-                "revoke",
-                wire_terminals.CLOSE_HOST_REVOKED,
-                "the host was revoked, or joined again",
-            ),
-        ),
-        (
-            "swept",
-            (
-                "sweep",
-                wire_terminals.CLOSE_REFUSED,
-                "no longer allowed: what opened this tool connection no longer holds",
-            ),
-        ),
-    ],
-)
-async def test_a_connection_that_ends_logs_one_line_with_its_socket_code_and_time(
-    world: _World,
-    caplog: pytest.LogCaptureFixture,
-    ending: str,
-    said: tuple[str, int, str],
-) -> None:
-    by, code, reason = said
-    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
-    connection, agent = await world.agent()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-    # The offer handed to a host says so, and which tool connection it names.
-    assert [
-        _fields(r.getMessage())
-        for r in caplog.records
-        if r.getMessage().startswith("tool connection offered:")
-    ] == [{"connection": str(connection.id), "host_id": str(_HOST)}]
-    host = await world.host(connection)
-    await world.time.advance(3)
-
-    if ending == "agent_leaves":
-        agent.drop()
-    elif ending == "daemon_leaves":
-        host.drop()
-    elif ending == "revoked":
-        world.relay.close_host(_HOST)
+    assert mux.streams[0].peer.sent == [_HELLO]
+    assert mux.streams[0].closes == 1
+    if kind == "failure":
+        reason = "the server could not go on relaying this tool connection"
+        assert "by=server" in caplog.text
     else:
-        world.dead.add(connection.id)
-        await world.relay.sweep()
-    await _settle()
-    world.relay.close_host(_HOST)
-    await _settle()
-
-    assert _ended(caplog, connection) == [
-        {
-            "connection": str(connection.id),
-            "host_id": str(_HOST),
-            "by": by,
-            "code": str(code),
-            "reason": reason,
-            "cause": "-",
-            "instance": str(_INSTANCE),
-            "duration_sec": "3.000",
-        },
-    ]
-
-
-async def test_a_dial_back_that_times_out_warns_and_ends_the_connection_once(
-    world: _World,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
-    connection, _ = await world.agent()
-
-    await world.time.advance(20)
-
-    warned = [
-        _fields(record.getMessage())
-        for record in caplog.records
-        if record.levelno == logging.WARNING
-    ]
-    assert warned == [
-        {
-            "connection": str(connection.id),
-            "host_id": str(_HOST),
-            "wait_sec": "20",
-        },
-    ]
-    (ended,) = _ended(caplog, connection)
-    # No host attached, so none is named.
-    assert (ended["by"], ended["code"], ended["instance"]) == (
-        "dial-back",
-        str(wire_terminals.CLOSE_DAEMON_LOST),
-        "-",
-    )
-
-
-def _refused_from(cause: Exception) -> ToolConnectionEndError:
-    """Return a refusal raised from ``cause``, as the agent socket's check raises one."""
-    refused = ToolConnectionEndError("refused")
-    refused.__cause__ = cause
-    return refused
-
-
-@pytest.mark.parametrize(
-    ("error", "by", "cause"),
-    [
-        (ToolConnectionEndError("refused"), "agent", "-"),
-        (_refused_from(ValueError("not json")), "agent", "ValueError"),
-        (ValueError("the line check broke"), "server", "ValueError"),
-    ],
-)
-async def test_a_connection_its_line_check_ends_names_the_socket_and_only_the_errors_type(
-    world: _World,
-    caplog: pytest.LogCaptureFixture,
-    error: Exception,
-    by: str,
-    cause: str,
-) -> None:
-    caplog.set_level(logging.INFO, logger=tool_relay.__name__)
-    checked: list[ToolConnection] = []
-
-    async def failing(connection: ToolConnection, frame: bytes) -> tuple[bytes, bytes]:
-        del frame
-        checked.append(connection)
-        raise error
-
-    connection, agent = await world.agent(inbound=failing)
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-    _ = await world.host(connection)
-
-    agent.push(b"secret-line\n")
-    await _settle()
-
-    assert checked == [connection]
-    (ended,) = _ended(caplog, connection)
-    assert (ended["by"], ended["cause"]) == (by, cause)
-    assert "secret-line" not in caplog.text
-
-
-# -- An old host's wait ------------------------------------------------------------------
-
-
-async def test_an_old_hosts_hold_lasts_its_time_and_is_never_offered_a_connection(
-    world: _World,
-) -> None:
-    holding = world.run(world.relay.hold(_HOST, wait_sec=25))
-    await _settle()
-
-    connection, _ = await world.agent()
-    await _settle()
-
-    assert not holding.done()
-    assert await world.take() == ToolOffer(connection_id=connection.id)
-    await world.time.advance(25)
-    assert await holding is None
-
-
-async def test_an_old_hosts_hold_of_no_time_ends_at_once(world: _World) -> None:
-    await world.relay.hold(_HOST, wait_sec=0)
-
-
-async def test_revoking_a_host_ends_an_old_hosts_hold(world: _World) -> None:
-    holding = world.run(world.relay.hold(_HOST, wait_sec=25))
-    await _settle()
-
-    world.relay.close_host(_HOST)
-
-    with pytest.raises(ToolConnectionRevokedError):
-        _ = await holding
+        reason = "é" * 61
+        assert "by=agent" in caplog.text
+    assert agent.closed == [(wire_terminals.CLOSE_REFUSED, reason)]
+    assert f"cause={'-' if kind == 'refusal' else 'ValueError'}" in caplog.text
+    assert "secret request" not in caplog.text
 
 
 if __name__ == "__main__":

@@ -125,9 +125,9 @@ def tool_relay(app: FastAPI) -> ToolRelay:
     config = _config(app)
     relay = ToolRelay(
         alive=functools.partial(_connection_alive, app=app),
-        connections_per_host=config.tool_connections_per_host,
-        dial_back_sec=config.tool_dial_back_sec,
         line_bytes=config.tool_line_bytes,
+        agent_sockets_per_host=config.tool_agent_sockets_per_host,
+        streams_per_host=config.tool_streams_per_host,
     )
     app.state.tool_relay = relay
     return relay
@@ -606,7 +606,6 @@ async def _alive(term: Terminal, *, store: Store) -> bool:
 
 
 # The rule ``tool_routes`` opens a tool connection under, asked again of a tool connection that may outlive it.
-# A tool connection no host has dialed back for has no instance to compare yet, and its timer is short.
 # One that does not is logged, naming the check it failed, before the sweep ends it. A tool
 # connection no key opened is its asker's own browser's (``ToolRelay.join``), so it is asked
 # the browser form again, as a key's is asked whether the key still lives: still signed in

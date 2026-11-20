@@ -162,6 +162,34 @@ class TestPureFunctions:
         assert parse_engine(name) == name
 
 
+@pytest.mark.parametrize("raw", ["0", "-1", "257", "not-a-number"])
+def test_tool_stream_cap_rejects_invalid_or_above_wire_limit(
+    monkeypatch: pytest.MonkeyPatch,
+    raw: str,
+) -> None:
+    monkeypatch.setenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", raw)
+    with pytest.raises(
+        ConfigError,
+        match="TRACKINIZER_TOOL_STREAMS_PER_HOST must be an integer between 1 and 256",
+    ):
+        _ = Config.from_env()
+
+
+def test_tool_capacity_uses_the_same_env_for_both_config_paths(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", raising=False)
+    monkeypatch.delenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", raising=False)
+    default = Config.from_env()
+    assert default.tool_agent_sockets_per_host == 1024
+    assert default.tool_streams_per_host == 128
+    monkeypatch.setenv("TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST", "2048")
+    monkeypatch.setenv("TRACKINIZER_TOOL_STREAMS_PER_HOST", "256")
+    for config in (Config.from_env(), Config.from_args(_server_args())):
+        assert config.tool_agent_sockets_per_host == 2048
+        assert config.tool_streams_per_host == 256
+
+
 class TestSessionMaxAge:
     """``session_max_age_seconds`` is configurable from env and CLI."""
 
@@ -946,14 +974,8 @@ class TestSessionSecretFile:
         assert not (tmp_path / "s").exists()
 
 
-def test_a_host_holds_16_tool_connections_each_dialed_back_in_20_seconds() -> None:
-    config = Config()
-
-    assert (
-        config.tool_connections_per_host,
-        config.tool_dial_back_sec,
-        config.tool_sweep_sec,
-    ) == (16, 20.0, 60.0)
+def test_tools_default_to_a_minute_between_access_sweeps() -> None:
+    assert Config().tool_sweep_sec == 60.0
 
 
 if __name__ == "__main__":

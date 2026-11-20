@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, Protocol, Self
+from typing import TYPE_CHECKING, Final, Literal, Protocol, Self
 
 import os
 import re
@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from trackinizer.lib.postgres import substrate
     from trackinizer.lib.postgres.substrate import DatabaseEngine
     from trackinizer.server import notify
-    from trackinizer.wire import wire_service_accounts, wire_terminals
+    from trackinizer.wire import wire_service_accounts, wire_terminals, wire_tools
 else:
     from wrapt import lazy_import
 
@@ -33,10 +33,13 @@ else:
     notify = lazy_import("trackinizer.server.notify")
     wire_service_accounts = lazy_import("trackinizer.wire.wire_service_accounts")
     wire_terminals = lazy_import("trackinizer.wire.wire_terminals")
+    wire_tools = lazy_import("trackinizer.wire.wire_tools")
     json_loads = lazy_import("treekle", "json_loads")
 
 
 __all__ = [
+    "DEFAULT_TOOL_AGENT_SOCKETS",
+    "DEFAULT_TOOL_STREAMS",
     "Assistant",
     "ChatOrgs",
     "ComputeNote",
@@ -70,6 +73,9 @@ class ConfigError(Exception):
     process exit.
     """
 
+
+DEFAULT_TOOL_AGENT_SOCKETS: Final = 1024
+DEFAULT_TOOL_STREAMS: Final = 128
 
 _DEFAULT_SESSION_MAX_AGE_SECONDS: int = (
     30 * 24 * 60 * 60
@@ -214,10 +220,10 @@ class Config:
         at every start, and where the key files live; none when unset.
         Environment only (``TRACKINIZER_SERVICE_KEYS``, comma separated
         ``NAME:ROLE`` pairs, and ``TRACKINIZER_SERVICE_KEY_DIR``).
-      tool_connections_per_host: The most tool connections one host holds at once; the
-        next agent is refused.
-      tool_dial_back_sec: How long an offered tool connection waits for its host to dial
-        back before it ends.
+      tool_agent_sockets_per_host: The per-host agent WebSocket budget, including parked
+        clients. Environment: ``TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST``.
+      tool_streams_per_host: The per-host daemon stream budget, bounded by the wire limit.
+        Environment: ``TRACKINIZER_TOOL_STREAMS_PER_HOST``.
       tool_sweep_sec: How often each tool connection's rule is asked again, so a revoked
         key or a demoted asker loses the host within it.
       tool_line_bytes: The longest line the server reads from an agent's tool connection;
@@ -251,8 +257,8 @@ class Config:
     terminal_stun: tuple[str, ...] = ()
     compute: tuple[ComputeNote, ...] = ()
     service_keys: ServiceKeys | None = None
-    tool_connections_per_host: int = 16
-    tool_dial_back_sec: float = 20.0
+    tool_agent_sockets_per_host: int = DEFAULT_TOOL_AGENT_SOCKETS
+    tool_streams_per_host: int = DEFAULT_TOOL_STREAMS
     tool_sweep_sec: float = 60.0
     tool_line_bytes: int = 16 << 20
     remote_agent_services: tuple[RemoteAgentService, ...] = ()
@@ -297,6 +303,15 @@ class Config:
             service_keys=parse_service_keys(
                 os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
                 os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
+            ),
+            tool_agent_sockets_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST",
+                default=DEFAULT_TOOL_AGENT_SOCKETS,
+            ),
+            tool_streams_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_STREAMS_PER_HOST",
+                default=DEFAULT_TOOL_STREAMS,
+                maximum=wire_tools.MUX_STREAMS,
             ),
             remote_agent_services=remote_agent_services,
             default_remote_agent_service=parse_default_remote_agent_service(
@@ -344,12 +359,35 @@ class Config:
                 os.environ.get("TRACKINIZER_SERVICE_KEYS", ""),
                 os.environ.get("TRACKINIZER_SERVICE_KEY_DIR", ""),
             ),
+            tool_agent_sockets_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_AGENT_SOCKETS_PER_HOST",
+                default=DEFAULT_TOOL_AGENT_SOCKETS,
+            ),
+            tool_streams_per_host=_tool_cap(
+                "TRACKINIZER_TOOL_STREAMS_PER_HOST",
+                default=DEFAULT_TOOL_STREAMS,
+                maximum=wire_tools.MUX_STREAMS,
+            ),
             remote_agent_services=remote_agent_services,
             default_remote_agent_service=parse_default_remote_agent_service(
                 os.environ.get("TRACKINIZER_DEFAULT_REMOTE_AGENT_SERVICE", ""),
                 services=remote_agent_services,
             ),
         )
+
+
+def _tool_cap(name: str, *, default: int, maximum: int = 65_536) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    message = f"{name} must be an integer between 1 and {maximum}, got {raw!r}"
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ConfigError(message) from None
+    if value < 1 or value > maximum:
+        raise ConfigError(message)
+    return value
 
 
 def session_max_age_from_env() -> int:
