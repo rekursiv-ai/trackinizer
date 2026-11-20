@@ -317,7 +317,7 @@ export function FocusRow({
  * loaded as a button, as a chart legend's entries are: a hidden kind clicked
  * shows it too, and a shown one shows only it, unless it is the only one shown,
  * which shows every kind — each sets the kinds Filter hides, and a hidden kind
- * has no count. `between clusters` names the two hairline hues, and `links`
+ * has no count. `between clusters` names the one hairline, and `links`
  * lists every edge kind by its stroke with how many are loaded, as toggle
  * buttons: one clicked hides that kind's wires, as `Through` does.
  */
@@ -403,8 +403,11 @@ export function Key({
       <div>
         <h2 id={`${id}-between`}>between clusters</h2>
         <ul aria-labelledby={`${id}-between`}>
-          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: panelValence(palette.support) }} /></span>supporting evidence</li>
-          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: panelValence(palette.against) }} /></span>counter-evidence</li>
+          {/* One line, because the canvas draws one: across the gaps a wire says
+              the islands are joined, and the kind and the side it takes are read
+              inside an island or off a hover's rays. The key named two hues the
+              field no longer draws. */}
+          <li><span className="graph-mark"><span className="graph-stroke" style={{ borderTopColor: palette.fallback }} /></span>a wire between two clusters</li>
         </ul>
       </div>
       <div>

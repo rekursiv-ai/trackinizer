@@ -153,3 +153,13 @@ test("a panel wears a reference's hue one step lighter than the canvas draws it"
   expect(panelValence("#9fd4a8")).toBe("#b2ddb9");
   expect(panelValence("#f5b07a")).toBe("#f7c095");
 });
+
+test("a claim nobody has scored does not draw as the surest one on the field", () => {
+  // The fill carries confidence, and `?? 1` put an unscored claim at the top of
+  // the ramp — the view saying "certain" where the record says nothing.
+  const sure = nodeLook({ kind: "Belief", status: "active", confidence: 1 } as never, PALETTE);
+  const unscored = nodeLook({ kind: "Belief", status: "active" } as never, PALETTE);
+  const middling = nodeLook({ kind: "Belief", status: "active", confidence: 0.5 } as never, PALETTE);
+  expect(unscored.fillAlpha).toBeLessThan(sure.fillAlpha);
+  expect(unscored.fillAlpha).toBeCloseTo(middling.fillAlpha, 5);
+});

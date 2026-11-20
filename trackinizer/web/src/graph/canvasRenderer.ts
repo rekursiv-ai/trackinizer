@@ -290,54 +290,27 @@ export const canvasRenderer: CreateRenderer = (host, events, covered) => {
     // cross-island citations read as a sheen, not as a web. `sheen` is already
     // thinned to the design's density, so its size is the `dens` the design uses.
     const dens = Math.min(1, Math.max(0.45, 160 / Math.max(1, sheen.size)));
-    for (const positive of [true, false] as const) {
-      ctx.beginPath();
-      let any = false;
-      for (const { link, a, b } of ends) {
-        if (!sheen.has(link) || link.hidden) continue;
-        if (!signed(link) || link.valence! > 0 !== positive) continue;
-        if (!inView(a) && !inView(b)) continue;
-        strokeEdge(a, b, true);
-        any = true;
-      }
-      if (!any) continue;
-      ctx.globalAlpha = (focus ? (focus.lit ? 0.3 : 0.4) : 1) * (positive ? 0.44 : 0.48) * dens * (1 - far * 0.3);
-      ctx.strokeStyle = positive ? paint.support : paint.against;
-      ctx.lineWidth = hair;
-      ctx.stroke();
-    }
-    // The structure between islands, under the evidence and quieter than it.
+    // Everything that crosses between islands draws the same, in one quiet ink.
     //
-    // It used to draw nothing at all, as the prototype has it: clusters joined
-    // only by evidence, the plumbing shown when you zoom into an island rather
-    // than across the field. On the prototype's own graph that is a handful of
-    // lines either way. On a real one it hides most of what joins the field —
-    // four fifths of the crossings in a thousand-record graph are a narrows, a
-    // requires, a produced_by or a citation — and a field whose islands are
-    // drawn as if nothing ran between them is not what the graph says.
-    //
-    // Quieter than evidence, so the reading does not change: what an island
-    // rests on is still what the eye finds, and this is the plumbing under it.
-    // Quiet enough that the field still reads as islands, not as a web: these
-    // alphas are what the wires settle to at a whole field's zoom, where the
-    // lines are long and many cross the same empty ground.
-    // One colour for all of it, not each kind's own. Between islands the hues
-    // were a rainbow across the empty ground and read as noise; inside an island
-    // they are worth telling apart, because there you are following one. Out here
-    // colour is reserved for what it means — mint and coral, evidence and
-    // counter-evidence — and the plumbing is the chrome's quiet slate.
+    // It was drawn as the field inside an island is: evidence in mint and coral,
+    // structure in its kinds' hues. Across the empty ground that reads as noise —
+    // a dozen long curves in six colours, each asking to be followed — and what
+    // the eye wants from the gaps is simply whether the islands are joined. The
+    // meaning is kept for where it can be acted on: inside an island, and on the
+    // rays a hover fans out. Out here a wire says "these two are connected", and
+    // the key says the same rather than naming hues it no longer draws.
     {
       ctx.beginPath();
       let any = false;
       for (const { link, a, b } of ends) {
-        if (!weave.has(link) || link.hidden) continue;
+        if (link.hidden || !(sheen.has(link) || weave.has(link))) continue;
         if (!inView(a) && !inView(b)) continue;
         strokeEdge(a, b, true);
         any = true;
       }
       if (any) {
-        ctx.globalAlpha = (focus ? (focus.lit ? 0.22 : 0.3) : 1) * 0.3 * dens * (1 - far * 0.3);
-        ctx.strokeStyle = paint.struct;
+        ctx.globalAlpha = (focus ? (focus.lit ? 0.26 : 0.34) : 1) * 0.34 * dens * (1 - far * 0.3);
+        ctx.strokeStyle = paint.inkQuiet;
         ctx.lineWidth = hair;
         ctx.stroke();
       }

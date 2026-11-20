@@ -117,7 +117,11 @@ export function nodeLook(
   const judgement = belief ? shape.judgement : undefined;
   const fade = (far ? FAR_FADE : 1) * appear;
   const alpha = (dimmed ? DIMMED_ALPHA : retired ? RETIRED_ALPHA : 1) * fade;
-  const fillAlpha = dimmed || retired ? alpha : (0.35 + 0.65 * (belief ? (shape.confidence ?? 1) : 1)) * fade;
+  // A Belief's fill carries how sure it is, so a claim nobody has scored must
+  // not draw as the surest thing on the field: unscored sits at the middle of
+  // the ramp, where "not known" belongs, rather than at its top.
+  const sureness = belief ? (typeof shape.confidence === "number" ? shape.confidence : 0.5) : 1;
+  const fillAlpha = dimmed || retired ? alpha : (0.35 + 0.65 * sureness) * fade;
   // The design's sizes: a base by kind (a Belief the biggest of the small, so a
   // claim reads at every zoom) and authority — the weighted PageRank — lifting
   // the few nodes the evidence flows through into a bright core, while the mass
