@@ -98,6 +98,10 @@ PROCESS_KEY_ROUTES: Final[Mapping[tuple[str, str], Scope]] = _route_union(
         # Its account's limits; it changes only the one on each campaign.
         ("GET", "/api/addons/knowspend/limits"): "account",
         ("PUT", "/api/addons/knowspend/limits"): "account",
+        # Its account's spend on one campaign, and its account's GPU jobs, to say
+        # whether that spend is final; the routes read the caller's own alone.
+        ("GET", "/api/addons/knowspend/campaigns"): "account",
+        ("GET", "/api/addons/jobs/jobs"): "account",
         # Its account's hosts, which its agents' tools run on.
         ("GET", "/api/terminals/hosts"): "account",
         ("GET", "/api/terminals/hosts/changes"): "account",

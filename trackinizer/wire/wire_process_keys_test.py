@@ -7,6 +7,7 @@ from uuid import UUID
 import pytest
 
 from trackinizer.wire.wire_capture import CAPTURES_PATH
+from trackinizer.wire.wire_job import JOBS_PATH
 from trackinizer.wire.wire_process_keys import (
     PROCESS_KEY_ROUTES,
     RECORDS_ROUTES,
@@ -72,6 +73,8 @@ def test_each_route_is_the_one_its_client_dials() -> None:
         ("POST", "/api/addons/knowhost/hosts/{host_id}/resume"),
         ("GET", "/api/addons/knowspend/limits"),
         ("PUT", "/api/addons/knowspend/limits"),
+        ("GET", "/api/addons/knowspend/campaigns"),
+        ("GET", JOBS_PATH),
         ("GET", "/api/inquiries"),
         ("GET", "/api/inquiries/next_issue"),
         ("GET", "/api/inquiries/{target_id}/cost"),

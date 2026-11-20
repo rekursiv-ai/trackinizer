@@ -3837,6 +3837,31 @@ class TestJobMethods:
         }
         assert (job.id, job.state, job.upload_serial) == (7, "queued", 3)
 
+    def test_submit_sends_the_campaign_it_names(self) -> None:
+        seen: list[httpx2.Request] = []
+        body = SubmitBody(
+            public_key=_JOB_KEY,
+            gpus=1,
+            minutes=5,
+            argv=["python", "x.py"],
+            commit=_JOB_COMMIT,
+            node="gpu-node-b",
+            campaign="Issue#7",
+        )
+        with _job_client(seen, httpx2.Response(201, json=_JOB_VIEW)) as client:
+            _ = client.job_submit(body)
+
+        assert json_loads(seen[0].content) == {
+            "public_key": _JOB_KEY,
+            "gpus": 1,
+            "minutes": 5,
+            "label": "",
+            "argv": ["python", "x.py"],
+            "commit": _JOB_COMMIT,
+            "node": "gpu-node-b",
+            "campaign": "Issue#7",
+        }
+
     def test_jobs_and_job_read_the_callers_jobs(self) -> None:
         seen: list[httpx2.Request] = []
         with _job_client(

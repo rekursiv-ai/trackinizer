@@ -158,6 +158,17 @@ def test_a_submit_refuses_a_bad_field(fields: dict[str, object]) -> None:
         _submit(**fields)
 
 
+def test_a_submit_names_its_campaign_by_its_brief_or_none() -> None:
+    assert not _submit().campaign
+    assert _submit(campaign="Issue#7").campaign == "Issue#7"
+    # A server older than the field refuses it, so no campaign leaves it off.
+    assert "campaign" not in _submit().model_dump(mode="json")
+    assert _submit(campaign="Issue#7").model_dump(mode="json")["campaign"] == "Issue#7"
+    for campaign in ("campaign/Issue#7", "Issue#0", "Issue#07", "issue#7", "Issue#"):
+        with pytest.raises(pydantic.ValidationError):
+            _submit(campaign=campaign)
+
+
 def test_a_submit_may_ask_for_a_whole_node_for_six_hours_and_no_more() -> None:
     assert (MAX_GPUS, MAX_MINUTES) == (8, 360)
     body = _submit(gpus=MAX_GPUS, minutes=MAX_MINUTES)
