@@ -18,10 +18,9 @@ import logging
 import re
 
 from fastapi import FastAPI, HTTPException
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocket, WebSocketDisconnect
-from treekle import from_plain
 
 import pytest
 
@@ -30,23 +29,29 @@ from trackinizer.server import auth
 from trackinizer.server.api import tool_routes
 from trackinizer.server.api.app import ROUTERS
 from trackinizer.server.api.idempotency import ChangeIdMiddleware
+from trackinizer.server.api.terminal_routes import StarletteSocket
 from trackinizer.server.api.tool_access import ToolAccess
 from trackinizer.server.config import Config
-from trackinizer.server.tool_lines import GatedCall, Outcome, ResultIds, Verdict
+from trackinizer.server.terminals import SocketClosedError
+from trackinizer.server.tool_lines import (
+    GatedCall,
+    Outcome,
+    ResultIds,
+    Verdict,
+)
 from trackinizer.server.tool_relay import (
     ToolConnection,
+    ToolConnectionBusyError,
     ToolConnectionEndError,
-    ToolConnectionRevokedError,
     ToolRelay,
 )
 from trackinizer.types.errors import NotFoundError
 from trackinizer.wire import wire_terminals
-from trackinizer.wire.wire_exec import HOST_EXEC_RESULT_PATH, HOST_EXEC_WAIT_PATH
+from trackinizer.wire.wire_exec import HOST_EXEC_RESULT_PATH
 from trackinizer.wire.wire_tools import (
-    HOST_TOOLS_WAIT_PATH,
-    HOST_TOOLS_WS_PATH,
+    HOST_TOOLS_MUX_PATH,
     TOOLS_WS_PATH,
-    ToolOffer,
+    ToolMux,
 )
 
 
@@ -76,59 +81,8 @@ _HELLO = (
 )
 
 
-def _relay(*, connections_per_host: int = 16) -> ToolRelay:
-    return ToolRelay(
-        alive=_always_alive,
-        connections_per_host=connections_per_host,
-        dial_back_sec=20,
-        line_bytes=1 << 20,
-    )
-
-
-class _Hub(ToolRelay):
-    """A relay whose every wait ends in the error the test chose."""
-
-    def __init__(self, error: Exception) -> None:
-        super().__init__(
-            alive=_always_alive,
-            connections_per_host=16,
-            dial_back_sec=20,
-            line_bytes=1 << 20,
-        )
-        self._error = error
-
-    @override
-    async def wait(self, host_id: UUID, *, wait_sec: float) -> ToolOffer | None:
-        del host_id, wait_sec
-        raise self._error
-
-    @override
-    async def hold(self, host_id: UUID, *, wait_sec: float) -> None:
-        del host_id, wait_sec
-        raise self._error
-
-
-class _Holding(ToolRelay):
-    """A relay that notes how long each wait was asked to hold, and has no offer."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            alive=_always_alive,
-            connections_per_host=16,
-            dial_back_sec=20,
-            line_bytes=1 << 20,
-        )
-        self.held: list[float] = []
-
-    @override
-    async def wait(self, host_id: UUID, *, wait_sec: float) -> ToolOffer | None:
-        del host_id
-        self.held.append(wait_sec)
-
-    @override
-    async def hold(self, host_id: UUID, *, wait_sec: float) -> None:
-        del host_id
-        self.held.append(wait_sec)
+def _relay() -> ToolRelay:
+    return ToolRelay(alive=_always_alive, line_bytes=1 << 20)
 
 
 def _app(monkeypatch: pytest.MonkeyPatch, relay: ToolRelay) -> FastAPI:
@@ -137,7 +91,6 @@ def _app(monkeypatch: pytest.MonkeyPatch, relay: ToolRelay) -> FastAPI:
     app.include_router(tool_routes.router)
     app.state.tool_relay = relay
     monkeypatch.setattr(tool_routes, "request_host", AsyncMock())
-    monkeypatch.setattr(tool_routes, "current_host", AsyncMock())
     monkeypatch.setattr(tool_routes, "require_instance", AsyncMock())
     monkeypatch.setattr(
         auth,
@@ -160,8 +113,7 @@ def _rule(monkeypatch: pytest.MonkeyPatch, access: ToolAccess) -> AsyncMock:
 _AGENT: Final = TOOLS_WS_PATH.format(name="gx10") + "?asker=Ada@x.y"
 
 
-def _params(wait_sec: float) -> dict[str, str | float]:
-    return {"instance": str(_INSTANCE), "wait_sec": wait_sec}
+_DAEMON: Final = HOST_TOOLS_MUX_PATH.format(host_id=_HOST) + f"?instance={_INSTANCE}"
 
 
 def _close_code(session: WebSocketTestSession) -> int:
@@ -169,49 +121,6 @@ def _close_code(session: WebSocketTestSession) -> int:
     with pytest.raises(WebSocketDisconnect) as closed:
         _ = session.receive_bytes()
     return closed.value.code
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        HOST_TOOLS_WAIT_PATH.format(host_id=_HOST),
-        HOST_EXEC_WAIT_PATH.format(host_id=_HOST),
-    ],
-)
-def test_a_host_whose_host_is_revoked_while_it_waits_gets_the_revoked_answer(
-    monkeypatch: pytest.MonkeyPatch,
-    path: str,
-) -> None:
-    with TestClient(_app(monkeypatch, _Hub(ToolConnectionRevokedError()))) as client:
-        response = client.get(path, params=_params(1))
-
-    assert (response.status_code, response.json()) == (
-        410,
-        {"detail": "host_revoked"},
-    )
-
-
-@pytest.mark.parametrize(
-    "path",
-    [
-        HOST_TOOLS_WAIT_PATH.format(host_id=_HOST),
-        HOST_EXEC_WAIT_PATH.format(host_id=_HOST),
-    ],
-)
-@pytest.mark.parametrize(("asked", "held"), [(1_000, 25), (3, 3)])
-def test_a_host_cannot_hold_its_wait_past_25_seconds(
-    monkeypatch: pytest.MonkeyPatch,
-    path: str,
-    asked: float,
-    held: float,
-) -> None:
-    relay = _Holding()
-
-    with TestClient(_app(monkeypatch, relay)) as client:
-        response = client.get(path, params=_params(asked))
-
-    assert (response.status_code, response.json()) == (200, None)
-    assert relay.held == [held]
 
 
 @pytest.mark.parametrize(
@@ -252,16 +161,13 @@ def test_each_refusal_of_a_socket_is_one_close_code_says_why_and_warns(
     refused = {"code": str(code), "reason": reason, "check": "-"}
 
     with TestClient(app) as client:
-        with client.websocket_connect(
-            HOST_TOOLS_WS_PATH.format(host_id=_HOST, connection_id=_PIPE)
-            + f"?instance={_INSTANCE}",
-        ) as host:
+        with client.websocket_connect(_DAEMON) as host:
             assert _closed(host) == (code, reason)
         if isinstance(error, HTTPException):
             with client.websocket_connect(_AGENT) as agent:
                 assert _closed(agent) == (code, reason)
     assert _logged(caplog, "tool connection refused:") == [
-        {"socket": "daemon", "host": str(_HOST), **refused},
+        {"socket": "daemon-mux", "host": str(_HOST), **refused},
         *(
             [{"socket": "agent", "host": "gx10", **refused}]
             if isinstance(error, HTTPException)
@@ -346,7 +252,7 @@ def test_a_persons_browser_from_this_servers_pages_asks_for_its_own_hosts(
     asker: str,
 ) -> None:
     caplog.set_level(logging.INFO, logger=tool_routes.__name__)
-    app = _app(monkeypatch, _relay())
+    app = _app(monkeypatch, _Joining())
     _browser(monkeypatch)
     rule = _rule(monkeypatch, ToolAccess(host_id=_HOST, failed=None))
 
@@ -355,9 +261,9 @@ def test_a_persons_browser_from_this_servers_pages_asks_for_its_own_hosts(
         client.websocket_connect(
             TOOLS_WS_PATH.format(name="gx10") + asker,
             headers=_OWN_PAGE,
-        ) as browser,
+        ),
     ):
-        browser.send_bytes(_HELLO)
+        pass
 
     assert rule.await_args is not None
     assert rule.await_args.kwargs == {
@@ -374,12 +280,8 @@ class _Joining(ToolRelay):
     """A relay that keeps each tool connection the route joins, past its end."""
 
     def __init__(self) -> None:
-        super().__init__(
-            alive=_always_alive,
-            connections_per_host=16,
-            dial_back_sec=20,
-            line_bytes=1 << 20,
-        )
+        super().__init__(alive=_always_alive, line_bytes=1 << 20)
+        self._mux[_HOST] = (_INSTANCE, ToolMux(AsyncMock()))
         self.joined: list[ToolConnection] = []
 
     @override
@@ -414,9 +316,9 @@ def _opened(monkeypatch: pytest.MonkeyPatch, *, browser: bool) -> ToolConnection
         client.websocket_connect(
             TOOLS_WS_PATH.format(name="gx10"),
             headers=_OWN_PAGE if browser else {},
-        ) as agent,
+        ),
     ):
-        agent.send_bytes(_HELLO)
+        pass
     (connection,) = relay.joined
     return connection
 
@@ -523,266 +425,155 @@ def _closed(session: WebSocketTestSession) -> tuple[int, str]:
     return closed.value.code, closed.value.reason
 
 
-def test_an_agent_past_the_hosts_connections_is_closed_as_full(
+def test_an_agent_without_a_connected_daemon_is_told_how_to_fix_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with (
+        TestClient(_app(monkeypatch, _relay())) as client,
+        client.websocket_connect(_AGENT) as agent,
+    ):
+        code, reason = _closed(agent)
+
+    assert code == wire_terminals.CLOSE_DAEMON_LOST
+    assert reason == "gx10 has no connected tools daemon; connect or upgrade its host"
+
+
+def test_an_agent_past_the_parked_client_cap_is_closed_as_full(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger=tool_routes.__name__)
-    app = _app(monkeypatch, _relay(connections_per_host=1))
-    path = _AGENT
-
+    relay = _relay()
+    monkeypatch.setattr(relay, "join", Mock(side_effect=ToolConnectionBusyError(64)))
     with (
-        TestClient(app) as client,
-        client.websocket_connect(path) as first,
-        client.websocket_connect(path) as refused,
+        TestClient(_app(monkeypatch, relay)) as client,
+        client.websocket_connect(_AGENT) as agent,
     ):
-        assert _closed(refused) == (
+        assert _closed(agent) == (
             wire_terminals.CLOSE_REFUSED,
-            "gx10 holds its 1 tool connections",
+            "gx10 holds its 64 tool clients",
         )
-        first.send_bytes(b"Hello\n")
-    (opened,) = _logged(caplog, "tool connection opened:")
-    assert opened == {
-        "connection": opened["connection"],
-        "host": "gx10",
-        "host_id": str(_HOST),
-        "asker": "ada@x.y",
-        "key": str(_KEY),
-        "assistant": "-",
-    }
     assert _logged(caplog, "tool connection refused:") == [
         {
             "socket": "agent",
             "host": "gx10",
             "code": str(wire_terminals.CLOSE_REFUSED),
-            "reason": "gx10 holds its 1 tool connections",
+            "reason": "gx10 holds its 64 tool clients",
             "check": "-",
         },
     ]
 
 
-def test_a_host_dialing_for_no_such_connection_is_refused(
+def test_binary_frames_cross_the_mux_and_daemon_disconnect_ends_the_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app = _app(monkeypatch, _relay())
-
+    relay = _relay()
     with (
-        TestClient(app) as client,
-        client.websocket_connect(
-            HOST_TOOLS_WS_PATH.format(host_id=_HOST, connection_id=_PIPE)
-            + f"?instance={_INSTANCE}",
-        ) as host,
-    ):
-        assert _close_code(host) == wire_terminals.CLOSE_REFUSED
-
-
-def test_binary_frames_cross_and_a_host_that_leaves_ends_the_connection(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = _app(monkeypatch, _relay())
-
-    with (
-        TestClient(app) as client,
+        TestClient(_app(monkeypatch, relay)) as client,
+        client.websocket_connect(_DAEMON) as daemon,
         client.websocket_connect(_AGENT) as agent,
     ):
         agent.send_bytes(_HELLO)
-        offer = client.get(
-            HOST_TOOLS_WAIT_PATH.format(host_id=_HOST),
-            params=_params(1),
-        ).json()
-        assert isinstance(offer, dict)
-        connection_id = cast(dict[str, str], offer)["connection_id"]
-        with client.websocket_connect(
-            HOST_TOOLS_WS_PATH.format(host_id=_HOST, connection_id=connection_id)
-            + f"?instance={_INSTANCE}",
-        ) as host:
-            assert host.receive_bytes() == _HELLO
-            host.send_bytes(b"Welcome\n")
-            assert agent.receive_bytes() == b"Welcome\n"
-
+        opened = daemon.receive_bytes()
+        assert opened[:1] == b"O"
+        stream_id = opened[1:]
+        assert daemon.receive_bytes() == b"D" + stream_id + _HELLO
+        daemon.send_bytes(b"A" + stream_id)
+        welcome = b'{"py/object": "Welcome"}\n'
+        daemon.send_bytes(b"D" + stream_id + welcome)
+        assert agent.receive_bytes() == welcome
+        assert daemon.receive_bytes() == b"A" + stream_id
+        daemon.close()
         assert _close_code(agent) == wire_terminals.CLOSE_DAEMON_LOST
-
-
-@pytest.mark.parametrize("leaving", ["agent_leaves", "agent_sends_text"])
-def test_an_agent_that_leaves_or_sends_text_ends_the_connection_and_frees_its_slot(
-    monkeypatch: pytest.MonkeyPatch,
-    leaving: str,
-) -> None:
-    relay = _relay()
-    app = _app(monkeypatch, relay)
-
-    with TestClient(app) as client, client.websocket_connect(_AGENT) as agent:
-        agent.send_bytes(_HELLO)
-        with client.websocket_connect(_daemon_path(client)) as host:
-            assert host.receive_bytes() == _HELLO
-            if leaving == "agent_leaves":
-                agent.close()
-            else:
-                agent.send_text("not binary")
-                assert _close_code(agent) == wire_terminals.CLOSE_ENDED
-            assert _close_code(host) == wire_terminals.CLOSE_ENDED
-
     assert relay._connections == {}
 
 
-def test_a_hosts_wait_and_socket_ask_for_its_own_credential_and_current_instance(
+def test_daemon_mux_checks_host_credentials_and_rejects_an_extra_socket(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     relay = _relay()
     app = _app(monkeypatch, relay)
-    current, asked, required = AsyncMock(), AsyncMock(), AsyncMock()
-    monkeypatch.setattr(tool_routes, "current_host", current)
+    asked, required = AsyncMock(), AsyncMock()
     monkeypatch.setattr(tool_routes, "request_host", asked)
     monkeypatch.setattr(tool_routes, "require_instance", required)
-
-    with TestClient(app) as client, client.websocket_connect(_AGENT) as agent:
-        agent.send_bytes(_HELLO)
-        path = _daemon_path(client)
-        with client.websocket_connect(path) as host:
-            assert host.receive_bytes() == _HELLO
-            (connection,) = relay._connections.values()
-            assert connection.instance == _INSTANCE
-
-    assert current.await_args is not None
+    path = HOST_TOOLS_MUX_PATH.format(host_id=_HOST) + f"?instance={_INSTANCE}"
+    with (
+        TestClient(app) as client,
+        client.websocket_connect(path),
+        client.websocket_connect(path) as extra,
+    ):
+        assert _close_code(extra) == wire_terminals.CLOSE_REFUSED
+    assert asked.await_count == required.await_count == 2
     assert asked.await_args is not None
-    assert (current.await_args.args[1:], asked.await_args.args[1:]) == (
-        (_HOST,),
-        (_HOST,),
-    )
-    assert [(each.args[1:], each.kwargs) for each in required.await_args_list] == [
-        ((_HOST,), {"instance": _INSTANCE}),
-    ] * 2
+    assert required.await_args is not None
+    assert asked.await_args.args[1:] == (_HOST,)
+    assert required.await_args.kwargs == {"instance": _INSTANCE}
 
 
-@pytest.mark.parametrize(
-    ("checked", "status"),
-    [("current_host", 401), ("require_instance", 403)],
-)
-@pytest.mark.parametrize(
-    "path",
-    [
-        HOST_TOOLS_WAIT_PATH.format(host_id=_HOST),
-        HOST_EXEC_WAIT_PATH.format(host_id=_HOST),
-    ],
-)
-def test_a_wait_without_the_hosts_credential_or_instance_is_refused_unheld(
+@pytest.mark.parametrize("failure", ["disabled", "stale", "frame", "send"])
+def test_daemon_mux_ends_with_the_correct_failure(
     monkeypatch: pytest.MonkeyPatch,
-    checked: str,
-    status: int,
-    path: str,
+    failure: str,
 ) -> None:
-    relay = _Holding()
+    relay = _relay()
     app = _app(monkeypatch, relay)
-    monkeypatch.setattr(
-        tool_routes,
-        checked,
-        AsyncMock(side_effect=HTTPException(status, "refused")),
-    )
-
-    with TestClient(app) as client:
-        response = client.get(path, params=_params(1))
-
-    assert response.status_code == status
-    assert relay.held == []
-
-
-def test_a_refused_host_socket_takes_nothing_so_the_current_instance_attaches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    app = _app(monkeypatch, _relay())
-
-    with TestClient(app) as client, client.websocket_connect(_AGENT) as agent:
-        agent.send_bytes(_HELLO)
-        path = _daemon_path(client)
+    path = HOST_TOOLS_MUX_PATH.format(host_id=_HOST) + f"?instance={_INSTANCE}"
+    if failure == "disabled":
+        app.state.config = Config(auth_disabled=True)
+    if failure == "stale":
         monkeypatch.setattr(
             tool_routes,
             "require_instance",
-            AsyncMock(side_effect=[HTTPException(403, "stale host instance"), None]),
+            AsyncMock(side_effect=HTTPException(403, "stale instance")),
         )
-        with client.websocket_connect(path) as stale:
-            assert _closed(stale) == (
-                wire_terminals.CLOSE_REFUSED,
-                "stale host instance",
-            )
-        with client.websocket_connect(path) as host:
-            assert host.receive_bytes() == _HELLO
+    if failure == "send":
+        monkeypatch.setattr(
+            StarletteSocket,
+            "send_bytes",
+            AsyncMock(side_effect=SocketClosedError),
+        )
+
+        async def send_on_mux(
+            self: ToolRelay,
+            host_id: UUID,
+            instance: UUID,
+            mux: ToolMux,
+            read: Callable[[], Awaitable[bytes | None]],
+        ) -> bool:
+            del self, host_id, instance, read
+            with pytest.raises(ConnectionError) as caught:
+                await mux.open(_PIPE)
+            assert isinstance(caught.value.__cause__, SocketClosedError)
+            return True
+
+        monkeypatch.setattr(ToolRelay, "serve_mux", send_on_mux)
+    with TestClient(app) as client, client.websocket_connect(path) as socket:
+        if failure == "frame":
+            socket.send_bytes(b"bad")
+        assert _close_code(socket) == (
+            wire_terminals.CLOSE_ENDED
+            if failure == "send"
+            else wire_terminals.CLOSE_REFUSED
+        )
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        HOST_TOOLS_WAIT_PATH.format(host_id=_HOST),
-        HOST_EXEC_WAIT_PATH.format(host_id=_HOST),
-    ],
-)
-def test_a_server_without_auth_refuses_every_wait_and_host_socket_unread(
-    monkeypatch: pytest.MonkeyPatch,
-    path: str,
-) -> None:
-    relay = _Holding()
-    app = _app(monkeypatch, relay)
-    app.state.config = Config(auth_disabled=True)
-    checks = {
-        name: AsyncMock()
-        for name in ("current_host", "request_host", "require_instance")
-    }
-    for name, check in checks.items():
-        monkeypatch.setattr(tool_routes, name, check)
-
-    with TestClient(app) as client:
-        waited = client.get(path, params=_params(1))
-        with client.websocket_connect(
-            HOST_TOOLS_WS_PATH.format(host_id=_HOST, connection_id=_PIPE)
-            + f"?instance={_INSTANCE}",
-        ) as host:
-            assert _closed(host) == (
-                wire_terminals.CLOSE_REFUSED,
-                "tools are not available here",
-            )
-
-    assert (waited.status_code, waited.json()) == (
-        403,
-        {
-            "detail": {
-                "code": "tools_forbidden",
-                "message": "tools are not available here",
-            },
-        },
-    )
-    assert relay.held == []
-    for check in checks.values():
-        check.assert_not_awaited()
-
-
-def _daemon_path(client: TestClient) -> str:
-    """Take the host's offer as its daemon does, and return the socket to dial back on."""
-    offer = client.get(HOST_TOOLS_WAIT_PATH.format(host_id=_HOST), params=_params(1))
-    connection_id = from_plain(offer.json(), dict[str, str])["connection_id"]
-    return (
-        HOST_TOOLS_WS_PATH.format(host_id=_HOST, connection_id=connection_id)
-        + f"?instance={_INSTANCE}"
-    )
-
-
-def test_the_exec_command_and_result_routes_are_gone() -> None:
-    """No router the app includes takes either, so each answers 404."""
+def test_legacy_tools_and_exec_routes_are_gone() -> None:
     paths = [
         "/api/hosts/gx10/exec",
         HOST_EXEC_RESULT_PATH.format(host_id=_HOST, exec_id=_PIPE),
+        f"/api/hosts/{_HOST}/exec/wait",
+        f"/api/hosts/{_HOST}/tools/wait",
+        f"/api/hosts/{_HOST}/tools/{_PIPE}/ws",
+        f"/api/hosts/{_HOST}/tool-mux/ws",
     ]
-
     included = [*ROUTERS]
-    matched = [
+    assert not [
         (path, route)
         for path in paths
         for router in included
         for route in router.routes
-        if isinstance(route, APIRoute)
-        and route.path_regex.match(path)
-        and "POST" in (route.methods or set())
+        if isinstance(route, (APIRoute, APIWebSocketRoute))
+        and route.path_regex.fullmatch(path)
     ]
-
-    assert matched == []
 
 
 def test_no_tool_route_is_in_the_schema() -> None:
@@ -828,6 +619,7 @@ def _pipe() -> ToolConnection:
         api_key_id=_KEY,
         inbound=AsyncMock(),
         opened=0.0,
+        mux=(_INSTANCE, ToolMux(AsyncMock())),
         results=ResultIds(line_bytes=1 << 20),
     )
 
@@ -941,6 +733,22 @@ async def test_a_call_let_through_runs_on_its_host_until_the_agent_acks_it() -> 
 
     assert (running, set(connection.running)) == ({"c1"}, set())
     assert relay.idle_sec(_HOST) < 1
+
+
+@pytest.mark.asyncio
+async def test_calls_from_a_rejected_frame_are_not_recorded(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger=tool_routes.__name__)
+    inbound, _ = _gated()
+    connection = _pipe()
+    assert await inbound(connection, _HELLO) == (_HELLO, b"")
+
+    with pytest.raises(ToolConnectionEndError):
+        _ = await inbound(connection, _CALL_LINE + b"not JSON\n")
+
+    assert connection.running == {}
+    assert _logged(caplog, "tool call:") == []
 
 
 def _gated() -> tuple[Inbound, ToolRelay]:

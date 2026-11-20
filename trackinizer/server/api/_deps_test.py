@@ -64,11 +64,7 @@ from trackinizer.server.session_relay import SessionRelay
 from trackinizer.server.store.core import Store
 from trackinizer.server.terminals import Terminal, TerminalRelay
 from trackinizer.server.tool_lines import ResultIds
-from trackinizer.server.tool_relay import (
-    ToolConnection,
-    ToolConnectionBusyError,
-    ToolRelay,
-)
+from trackinizer.server.tool_relay import ToolConnection, ToolRelay
 from trackinizer.types import inquiries
 from trackinizer.types.cost import Cost
 from trackinizer.types.inquiries import (
@@ -84,6 +80,7 @@ from trackinizer.types.inquiries import (
     WebResult,
     WebSearch,
 )
+from trackinizer.wire.wire_tools import ToolMux
 
 
 if typing.TYPE_CHECKING:
@@ -461,7 +458,7 @@ def _pipe(*, instance: UUID | None = None) -> ToolConnection:
         api_key_id=uuid4(),
         inbound=_pass_through,
         opened=0.0,
-        instance=instance,
+        mux=(instance or uuid4(), ToolMux(AsyncMock())),
         results=ResultIds(line_bytes=1 << 10),
     )
 
@@ -498,45 +495,11 @@ async def test_the_connection_relay_is_made_once_and_asks_if_a_connection_still_
     rule.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_the_connection_relay_holds_the_configs_connections_and_dial_back() -> (
-    None
-):
+def test_the_connection_relay_uses_the_configured_line_limit() -> None:
     app = FastAPI()
-    app.state.store, _engine = make_store()
-    app.state.config = Config(
-        tool_connections_per_host=1,
-        tool_dial_back_sec=0.01,
-        tool_line_bytes=4_096,
-    )
-    relay = tool_relay(app)
-    host_id = uuid4()
-    connection = _join(relay, host_id)
+    app.state.config = Config(tool_line_bytes=4_096)
 
-    with pytest.raises(ToolConnectionBusyError) as busy:
-        _ = _join(relay, host_id)
-    never = asyncio.Future[bytes | None]()
-    async with asyncio.timeout(5):
-        await relay.serve_agent(connection, lambda: never)
-
-    assert busy.value.limit == 1
-    assert connection.ended.result()[1] == "the daemon did not dial back in time"
-    assert connection.results._line_bytes == 4_096
-
-
-@pytest.mark.asyncio
-async def test_the_connection_relay_holds_the_default_connections_without_a_config() -> (
-    None
-):
-    app = FastAPI()
-    app.state.store, _engine = make_store()
-    relay = tool_relay(app)
-    host_id = uuid4()
-    for _ in range(Config().tool_connections_per_host):
-        _ = _join(relay, host_id)
-
-    with pytest.raises(ToolConnectionBusyError):
-        _ = _join(relay, host_id)
+    assert tool_relay(app)._line_bytes == 4_096
 
 
 @pytest.mark.asyncio
@@ -547,8 +510,6 @@ async def test_a_hosts_idle_time_is_the_shorter_of_its_connections_and_its_termi
     now = [100.0]
     connections = app.state.tool_relay = ToolRelay(
         alive=AsyncMock(),
-        connections_per_host=1,
-        dial_back_sec=1,
         line_bytes=1 << 10,
         clock=lambda: now[0],
     )
@@ -597,8 +558,6 @@ async def test_a_host_closed_ends_its_connections_terminals_and_agent_processes(
     monkeypatch.setattr(Store, "forget_bearer_identities_for_host", keys_forgotten)
     app.state.tool_relay = ToolRelay(
         alive=AsyncMock(),
-        connections_per_host=1,
-        dial_back_sec=1,
         line_bytes=1 << 10,
     )
     app.state.terminals = TerminalRelay(alive=AsyncMock())
@@ -712,7 +671,8 @@ def test_the_app_holds_one_later_made_on_first_use() -> None:
 
 
 def _join(relay: ToolRelay, host_id: UUID) -> ToolConnection:
-    """Queue an agent that nothing will serve, to fill a slot."""
+    """Join an agent to a stand-in daemon mux."""
+    relay._mux[host_id] = (uuid4(), ToolMux(AsyncMock()))
     return relay.join(
         host_id,
         agent=cast("ToolSocket", AsyncMock()),
@@ -780,7 +740,7 @@ async def test_without_an_assistant_the_sweep_asks_the_rule_of_the_keys_own_acco
 
 
 @pytest.mark.asyncio
-async def test_the_sweep_asks_the_rule_of_a_connections_key_asker_host_and_host(
+async def test_the_sweep_asks_the_rule_of_a_connections_key_asker_host_and_instance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     conn = make_conn()
