@@ -78,6 +78,7 @@ _DEFAULTS: dict[str, JsonValue] = {
     "home": "graph",
     "assistant_prompt": "sagent",
     "cli_folder": "",
+    "default_host": "",
     "chat_view": {
         "view": "chat",
         "density": "auto",
@@ -306,6 +307,21 @@ def test_a_run_folder_is_home_or_a_path_a_run_takes(folder: str) -> None:
 def test_a_run_folder_a_run_would_refuse_is_refused(folder: str) -> None:
     with pytest.raises(pydantic.ValidationError):
         Preferences.model_validate({"cli_folder": folder})
+
+
+@pytest.mark.parametrize("host", ["", "dans-macbook-pro", "gpu1", "a" * 63])
+def test_a_default_host_is_unset_or_a_hosts_name(host: str) -> None:
+    assert stored_preferences({"default_host": host}).default_host == host
+
+
+def test_the_person_or_their_agent_when_asked_picks_the_default_host() -> None:
+    assert "default_host" in AGENT_KEYS
+
+
+@pytest.mark.parametrize("host", [None, "Dans Mac", "-gpu", "gpu_1", "a" * 64, 3])
+def test_a_default_host_no_host_could_be_named_is_refused(host: object) -> None:
+    with pytest.raises(pydantic.ValidationError):
+        Preferences.model_validate({"default_host": host})
 
 
 @pytest.mark.asyncio

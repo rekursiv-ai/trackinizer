@@ -589,6 +589,7 @@ class TestProfile:
             "home": "graph",
             "assistant_prompt": "sagent",
             "cli_folder": "",
+            "default_host": "",
             "chat_view": {
                 "view": "chat",
                 "density": "auto",
@@ -793,6 +794,7 @@ class TestPreferences:
             "home": "graph",
             "assistant_prompt": "sagent",
             "cli_folder": "",
+            "default_host": "",
             "chat_view": {
                 "view": "chat",
                 "density": "auto",
