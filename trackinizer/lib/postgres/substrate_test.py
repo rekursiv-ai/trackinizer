@@ -276,18 +276,18 @@ async def test_a_tcp_start_leaves_no_socket_directory_after_shutdown(
     assert list(scratch.iterdir()) == []
 
 
-@pytest.mark.db_pglite
 @pytest.mark.asyncio
-async def test_pglite_creates_missing_workdir_ancestors(tmp_path: Path) -> None:
+async def test_pglite_creates_missing_workdir_ancestors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The workdir exists before the start writes Node's script into it."""
     workdir = tmp_path / "missing-parent" / "pg"
     assert not workdir.parent.exists()
+    _boot_without_node(monkeypatch, scratch=tmp_path / "tmp")
 
-    async with (
-        PGliteEngine(workdir=workdir, extensions=(), persist=False) as engine,
-        engine.acquire() as conn,
-    ):
-        assert await conn.fetchval("SELECT 1") == 1
-        assert workdir.is_dir()
+    async with PGliteEngine(workdir=workdir, extensions=(), persist=False):
+        assert (workdir / "pglite_manager.js").is_file()
 
 
 @pytest.mark.asyncio

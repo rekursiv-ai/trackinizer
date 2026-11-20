@@ -2,7 +2,8 @@
 
 The routes end to end are in ``device_routes_pglite_test.py`` over PGlite. These tests
 need no database, so they pin each branch of the lookup that decides whether a typed
-code is open, and which address the page link names.
+code is open, which address the page link names, and that the routes stay out of the
+API schema.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from uuid import UUID
 import secrets
 
 from fastapi import FastAPI, HTTPException, Response
+from fastapi.routing import APIRoute
 from starlette.requests import Request
 from treekle import from_plain
 
@@ -22,7 +24,7 @@ import pytest
 
 from trackinizer.conftest import FakeEngine, executed_sql, make_conn, set_field_row
 from trackinizer.mock_test_support import MockConnection
-from trackinizer.server.api import device_routes
+from trackinizer.server.api import app, device_routes
 from trackinizer.server.api.conftest import make_test_identity
 from trackinizer.server.api.device_limits import (
     CodeRequests,
@@ -572,6 +574,22 @@ async def test_device_digest_matches_the_sha256_known_answer() -> None:
     assert device_routes._digest("abc") == bytes.fromhex(
         "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     )
+
+
+# The app includes the router as this app does, and an including app can only drop a
+# route from its schema, never add one: the router's own schema is the app's share of
+# it, without the 0.5 s of building the whole app's.
+async def test_the_routes_stay_out_of_the_api_schema() -> None:
+    served = FastAPI()
+    served.include_router(device_routes.router)
+    paths = cast(dict[str, object], served.openapi()["paths"])
+
+    assert device_routes.router in app.ROUTERS
+    assert any(
+        isinstance(route, APIRoute) and route.path.startswith("/auth/device")
+        for route in device_routes.router.routes
+    )
+    assert [path for path in paths if path.startswith("/auth/device")] == []
 
 
 def _unit_device_request(

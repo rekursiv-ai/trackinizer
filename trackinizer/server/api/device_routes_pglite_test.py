@@ -8,7 +8,7 @@ clears it and sends the key as a bearer.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final, cast
+from typing import TYPE_CHECKING, Final
 
 import asyncio
 import hashlib
@@ -997,12 +997,6 @@ async def test_a_poll_is_never_cached(
     )
 
     assert response.headers["cache-control"] == "no-store"
-
-
-async def test_the_routes_stay_out_of_the_api_schema() -> None:
-    paths = cast(dict[str, object], app.openapi()["paths"])
-
-    assert [path for path in paths if path.startswith("/auth/device")] == []
 
 
 if __name__ == "__main__":

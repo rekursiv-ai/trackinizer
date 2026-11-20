@@ -121,10 +121,10 @@ async def test_authority_is_stable_under_unrelated_rows(store: Store) -> None:
     await store.recompute_authority()
     before = await _authority(store, claim, "proves_authority")
 
-    for i in range(40):
-        await store.submit_issue(
-            SubmitIssue(account="t@example.com", title=f"unrelated noise {i}"),
-        )
+    # One row is enough: ranking the whole table gives it a share of the teleport mass.
+    await store.submit_issue(
+        SubmitIssue(account="t@example.com", title="unrelated noise"),
+    )
     await store.recompute_authority()
     after = await _authority(store, claim, "proves_authority")
 
