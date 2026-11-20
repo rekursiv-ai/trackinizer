@@ -120,7 +120,7 @@ export function nodeLook(
   // A Belief's fill carries how sure it is, so a claim nobody has scored must
   // not draw as the surest thing on the field: unscored sits at the middle of
   // the ramp, where "not known" belongs, rather than at its top.
-  const sureness = belief ? (typeof shape.confidence === "number" ? shape.confidence : 0.5) : 1;
+  const sureness = belief ? reading(shape.confidence) : 1;
   const fillAlpha = dimmed || retired ? alpha : (0.35 + 0.65 * sureness) * fade;
   // The design's sizes: a base by kind (a Belief the biggest of the small, so a
   // claim reads at every zoom) and authority — the weighted PageRank — lifting
@@ -218,6 +218,11 @@ function channels(colour: string): [number, number, number] | null {
  * ends, so a hub's edges read as the backbone. `favors`, the citation that does
  * not vote, is dashed. An edge `dimmed` outside a focus draws faint.
  */
+/** A 0..1 reading, or the middle where there is none: NaN is a number and is not one. */
+function reading(value: number | undefined): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.5;
+}
+
 export function linkLook(
   link: { readonly kind: string; readonly valence?: number },
   endDegree: number,
@@ -225,9 +230,14 @@ export function linkLook(
   dimmed = false,
 ): LinkLook {
   const dash = link.kind === "favors" ? FAVORS_DASH : null;
-  if (link.valence !== undefined) {
+  // Only a reading draws as evidence. `!== undefined` let a NaN through — and
+  // `NaN < 0` is false, so it drew in the colour of support at a NaN width,
+  // which is a wire the canvas cannot stroke at all. A valence past one widened
+  // the line without limit by the same route.
+  if (typeof link.valence === "number" && Number.isFinite(link.valence)) {
+    const weight = Math.min(1, Math.abs(link.valence));
     const color = dimmed ? palette.faint : link.valence < 0 ? palette.against : palette.support;
-    return { color, width: 0.75 + 3.5 * Math.abs(link.valence), dash };
+    return { color, width: 0.75 + 3.5 * weight, dash };
   }
   const color = dimmed ? palette.faint : (palette.edges[link.kind] ?? palette.fallback);
   return { color, width: Math.min(5, 0.75 + 0.6 * Math.sqrt(endDegree)), dash };

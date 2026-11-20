@@ -269,7 +269,15 @@ function weighAuthority(nodes: readonly DrawNode[], links: readonly DrawLink[]):
     if (a === undefined || b === undefined) return;
     from[position] = a;
     to[position] = b;
-    weight[position] = (EDGE_WEIGHT[link.kind] ?? 0.3) * (link.valence === undefined ? 1 : Math.max(0.15, Math.abs(link.valence)));
+    // A weight has to be a number: this is a PageRank over the whole field, so
+    // one NaN valence spreads through every pass and comes out as a NaN
+    // authority on every record — and authority sets the radius, so the entire
+    // graph stops being drawn. A valence that is not a reading weighs as an
+    // absent one does, and a reading past one is held at one.
+    const vote = typeof link.valence === "number" && Number.isFinite(link.valence)
+      ? Math.max(0.15, Math.min(1, Math.abs(link.valence)))
+      : 1;
+    weight[position] = (EDGE_WEIGHT[link.kind] ?? 0.3) * vote;
     outWeight[a] += weight[position];
   });
   let current = new Float64Array(count).fill(1 / count);

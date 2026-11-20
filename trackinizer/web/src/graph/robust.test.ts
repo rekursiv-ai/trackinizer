@@ -14,6 +14,10 @@ import { islandHomes } from "./islands";
 import * as brief from "./briefing";
 import { binsOf } from "./protoChrome";
 import { findRoots } from "./roots";
+import { islandsOf, placeLabels } from "./clusterLabels";
+import { hopCounts, isWithin, reach } from "./hops";
+import { fillAt, linkLook, nodeLook } from "./encode";
+import { wires } from "./model";
 import { GraphModel } from "./model";
 import { PALETTE } from "./testing";
 
@@ -172,4 +176,60 @@ test.each(NUMBERS)("the graph states nothing false given %s", (_name, graph) => 
       expect(Number.isFinite(entry.score)).toBe(true);
     }
   }
+});
+
+/**
+ * The rest of the graph's own functions, over the same shapes: geometry, the
+ * walk, and the looks. Not "does it throw" — what each hands back has to be
+ * usable by whatever draws it. A NaN radius places a label nowhere; an alpha
+ * past one is a silent clamp; an id the graph does not hold is a lookup that
+ * returns undefined somewhere far from here.
+ */
+test.each([...CASES, ...NUMBERS])("every function the graph draws with answers usably for %s", (_name, graph) => {
+  const ids = new Set(graph.nodes.map((node) => node.id));
+  const { homes } = islandHomes(graph);
+  const model = new GraphModel(PALETTE);
+  model.apply(graph);
+
+  // Geometry: an island's middle and spread, and where its name goes.
+  const islands = islandsOf(model.nodes, (node) => homes.get((node as unknown as { id: string }).id));
+  for (const island of islands) {
+    expect(Number.isFinite(island.x) && Number.isFinite(island.y)).toBe(true);
+    expect(Number.isFinite(island.radius) && island.radius >= 0).toBe(true);
+    expect(island.shown).toBeGreaterThan(0);
+    expect(island.beliefs).toBeLessThanOrEqual(island.shown);
+  }
+  for (const placed of placeLabels(islands, () => 80, { height: 12, gap: 6 })) {
+    expect(Number.isFinite(placed.x) && Number.isFinite(placed.y)).toBe(true);
+  }
+
+  // The walk: every id it returns is one the graph holds.
+  for (const node of graph.nodes) {
+    const reached = reach(graph, node.id, { skipEdges: new Set(), keep: () => true });
+    for (const id of reached.keys()) expect(ids.has(id)).toBe(true);
+    for (const hops of Object.values(hopCounts(reached))) expect(Number.isFinite(hops)).toBe(true);
+    expect(isWithin(reached.get(node.id), 2)).toBe(true);
+  }
+  // A start the graph does not hold reaches nothing, rather than throwing.
+  expect(reach(graph, "no-such-record", { skipEdges: new Set(), keep: () => true }).size).toBe(0);
+
+  // Looks: what the canvas is handed must be in range, whatever the record said.
+  for (const drawn of model.nodes) {
+    const look = nodeLook(drawn, PALETTE);
+    expect(look.radius).toBeGreaterThan(0);
+    for (const alpha of [look.fillAlpha, look.washAlpha, look.ringAlpha]) {
+      expect(Number.isFinite(alpha)).toBe(true);
+      expect(alpha).toBeGreaterThanOrEqual(0);
+      expect(alpha).toBeLessThanOrEqual(1);
+    }
+    expect(fillAt(look, 1)).toMatch(/\S/);
+  }
+  for (const link of model.links) {
+    const look = linkLook(link, 2, PALETTE);
+    expect(Number.isFinite(look.width) && look.width > 0).toBe(true);
+    expect(look.color).toMatch(/\S/);
+  }
+  // Only wires the graph can draw survive: both ends present.
+  for (const wire of wires(graph)) expect(typeof wire.edge_kind).toBe("string");
+  for (const link of model.links) expect(ids.has(link.from) && ids.has(link.to)).toBe(true);
 });
