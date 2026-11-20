@@ -28,6 +28,7 @@ from pydantic import (
 from pydantic_core import to_json
 from treekle import from_plain
 
+from trackinizer.wire.wire_hosts import NAME_PATTERN
 from trackinizer.wire.wire_science_chat import AssistantPrompt
 
 
@@ -60,6 +61,7 @@ ASSISTANT_KEYS: Final = frozenset(
         "home",
         "assistant_prompt",
         "cli_folder",
+        "default_host",
         "chat_view",
         "autofix",
         "automerge",
@@ -85,6 +87,7 @@ _Id = Annotated[str, StringConstraints(max_length=100)]
 _Name = Annotated[str, StringConstraints(max_length=200)]
 _Text = Annotated[str, StringConstraints(max_length=100_000)]
 _Colour = Annotated[str, StringConstraints(pattern=r"^#[0-9a-f]{6}$")]
+_HostName = Annotated[str, StringConstraints(pattern=rf"^$|{NAME_PATTERN}")]
 
 GNOME_PALETTE: Final = (
     "#171421",
@@ -570,6 +573,14 @@ class Preferences(_Strict):
             "The folder Chat's agent starts in on a host of yours, whose skills and "
             "AGENTS.md it loads: ~/... under your home, or a full path. Empty for your "
             "home directory. Our cloud starts in its own home directory."
+        ),
+        json_schema_extra=SETTING,
+    )
+    default_host: _HostName = Field(
+        default="",
+        description=(
+            "The host of yours the file explorer opens on, and where a path clicked "
+            "in Chat opens. Empty for the first of your hosts it can browse."
         ),
         json_schema_extra=SETTING,
     )

@@ -95,6 +95,7 @@ _DEFAULTS: dict[str, object] = {
     "home": "graph",
     "assistant_prompt": "sagent",
     "cli_folder": "",
+    "default_host": "",
     "chat_view": {
         "view": "chat",
         "density": "auto",

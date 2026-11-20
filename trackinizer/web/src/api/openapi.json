@@ -5404,6 +5404,14 @@
       ],
       "description": "The inquiry you started on the create form and have not created."
      },
+     "default_host": {
+      "default": "",
+      "description": "The host of yours the file explorer opens on, and where a path clicked in Chat opens. Empty for the first of your hosts it can browse.",
+      "pattern": "^$|^[a-z0-9][a-z0-9-]{0,62}$",
+      "title": "Default Host",
+      "type": "string",
+      "x-setting": true
+     },
      "dismissed": {
       "default": [],
       "description": "The notes you dismissed, by key: each stays hidden wherever it would show.",
