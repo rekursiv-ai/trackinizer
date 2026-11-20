@@ -2083,7 +2083,7 @@ def test_a_key_order_the_table_misses_is_still_stored() -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        # codex 0.163 writes two keys the table does not list right after
+        # `codex` 0.163 writes two keys the table does not list right after
         # ``turn_id``; the writer used to move them to the end of the line.
         (
             '{"turn_id":"t1","root_turn_id":"t1","disabled_plugin_ids":[],'
