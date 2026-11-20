@@ -113,6 +113,30 @@ async def test_recompute_writes_reached_nodes_inside_one_transaction() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_citation_passes_authority_by_its_valence() -> None:
+    paper, strong, weak = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+    conn = make_conn()
+    _serve_edges(
+        conn,
+        {
+            "proves": [
+                {"from_id": paper, "to_id": strong, "valence": 0.9},
+                {"from_id": paper, "to_id": weak, "valence": -0.1},
+            ],
+        },
+    )
+    store, _ = make_store(conn)
+
+    await store.recompute_authority()
+
+    ids, scores = _score_writes(conn)["proves_authority"]
+    score = dict(
+        zip(cast(list[uuid.UUID], ids), cast(list[float], scores), strict=True),
+    )
+    assert score[strong] > score[weak] > 0.0
+
+
+@pytest.mark.asyncio
 async def test_recompute_without_conn_acquires_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

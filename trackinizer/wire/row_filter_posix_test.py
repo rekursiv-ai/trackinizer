@@ -10,7 +10,10 @@ Every Postgres expectation below was read off a live PostgreSQL 16 server
 
 from __future__ import annotations
 
+from array import array
+
 import re
+import sys
 
 import pytest
 
@@ -124,22 +127,29 @@ class TestTheWhitespaceClassIsExact:
     )
 
     @classmethod
-    def scanned(cls) -> tuple[int, ...]:
-        """Every codepoint the live scan covered, surrogates excluded."""
-        return (*range(1, 0xD800), *range(0xE000, 0x110000))
+    def scanned(cls) -> str:
+        """Every codepoint the live scan covered, surrogates excluded, once each."""
+        # Decoded from 4-byte integers in native order: 20 ms, against 100 ms for
+        # ``chr`` over each of the 1.1 million.
+        codepoints = array("I", range(1, 0xD800)) + array("I", range(0xE000, 0x110000))
+        return codepoints.tobytes().decode(f"utf-32-{sys.byteorder[0]}e")
 
+    # Each pattern here translates to one character class, which matches a character
+    # whatever surrounds it, so scanning the string of all codepoints once answers
+    # for each codepoint alone (``ord`` refuses a longer match). Asking each alone,
+    # a Python loop over 1.1 million, cost 0.12-0.21 s a test.
     def matching(self, pattern: str) -> frozenset[int]:
         """Codepoints the translated ``pattern`` matches, over the whole set."""
-        compiled = re.compile(posix_pattern(pattern))
-        return frozenset(i for i in self.scanned() if compiled.match(chr(i)))
+        found = re.compile(posix_pattern(pattern)).findall(self.scanned())
+        return frozenset(map(ord, found))
 
     def test_it_matches_postgres_codepoint_for_codepoint(self) -> None:
         assert self.matching(r"\s") == self.POSTGRES_SPACE
 
     def test_the_negation_is_the_exact_complement(self) -> None:
-        negated = self.matching(r"\S")
-        assert negated.isdisjoint(self.POSTGRES_SPACE)
-        assert len(negated) == len(self.scanned()) - len(self.POSTGRES_SPACE)
+        # What ``\S`` leaves unmatched, not the 1.1 million it matches, as a set.
+        unmatched = re.compile(posix_pattern(r"\S")).sub("", self.scanned())
+        assert frozenset(map(ord, unmatched)) == self.POSTGRES_SPACE
 
     @pytest.mark.parametrize("pattern", [r"\s", r"[\s]", r"[\sx]"])
     def test_it_is_exact_inside_a_bracket_too(self, pattern: str) -> None:
