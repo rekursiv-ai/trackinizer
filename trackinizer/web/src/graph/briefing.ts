@@ -165,9 +165,19 @@ function leansOn(id: string, view: GraphView): number {
   return leaning;
 }
 
-/** What a record paid for itself, both axes together. */
+/** A figure that can be added up: anything not a finite number is not a cost. */
+const money = (value: number | null | undefined): number => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+
+/**
+ * What a record paid for itself, both axes together.
+ *
+ * A NaN or an infinity from a producer used to flow straight through: into the
+ * bill, into the median a test is priced at, and from there into the score the
+ * next experiments are ranked by — where one NaN makes the whole sort order
+ * undefined and the panel prints "$NaN".
+ */
 export function costOf(node: GraphNode): number {
-  return (node.cost_agent_usd ?? 0) + (node.cost_resource_usd ?? 0);
+  return money(node.cost_agent_usd) + money(node.cost_resource_usd);
 }
 
 /** How many records `id` stands as the producer of. */
@@ -245,7 +255,12 @@ export function nextExperiments(group: RootGroup, view: GraphView, take = 3): Ne
     const evidence = load.for + load.against;
     const leaning = leansOn(node.id, view);
     if (evidence === 0 && leaning === 0) continue;
-    const undecided = 1 - Math.abs(2 * (node.confidence ?? 0.5) - 1) * 0.85;
+    // A confidence outside 0..1, or not a number at all, is not a reading: it
+    // reads as the middle, and the score stays a number the sort can order by.
+    const sure = typeof node.confidence === "number" && Number.isFinite(node.confidence)
+      ? Math.min(1, Math.max(0, node.confidence))
+      : 0.5;
+    const undecided = 1 - Math.abs(2 * sure - 1) * 0.85;
     const contested = load.for > 0 && load.against > 0 ? 1.5 : 1;
     const score = (undecided * contested * Math.log2(2 + evidence + leaning * 3)) / Math.sqrt(price.usd);
     // What to run: the strongest experiment that cites it, else the thread's newest.
@@ -278,7 +293,8 @@ export type Spend = {
  */
 export function spendOf(paid: readonly GraphNode[], view: GraphView): Spend {
   const [agent, resource] = paid.reduce(
-    ([a, r], node) => [a + (node.cost_agent_usd ?? 0), r + (node.cost_resource_usd ?? 0)],
+    // Through `money`, as `costOf` does: a bill with one NaN in it is "$NaN".
+    ([a, r], node) => [a + money(node.cost_agent_usd), r + money(node.cost_resource_usd)],
     [0, 0],
   );
   const settled = new Set<string>();

@@ -18,11 +18,15 @@ import { GraphModel } from "./model";
 import { PALETTE } from "./testing";
 
 /** A record with every field present, to break one at a time. */
+// `over` is spread, and that is the whole point of the helper: an earlier cut
+// cast the type and dropped it, so every case below quietly tested the same
+// well-formed record and passed for the wrong reason.
 const whole = (over: Partial<GraphNode> = {}): GraphNode => ({
   id: "00000000-0000-4000-8000-000000000001", kind: "Belief", seq: 1, title: "A claim",
   status: "active", created: "2026-09-20T01:00:00+00:00", owner: "ada@example.com",
   judgement: "proven", confidence: 0.8, cost_agent_usd: 1, cost_resource_usd: 2,
-} as GraphNode & typeof over);
+  ...over,
+} as GraphNode);
 
 const other = (id: string, over: Partial<GraphNode> = {}) => ({ ...whole(), id, seq: 2, ...over }) as GraphNode;
 const ID2 = "00000000-0000-4000-8000-000000000002";
@@ -116,4 +120,56 @@ test.each(CASES)("the graph survives %s", (_name, graph) => {
     expect(() => brief.nextExperiments(group, view)).not.toThrow();
   }
   expect(() => brief.reliedOn(graph.nodes, view)).not.toThrow();
+});
+
+/**
+ * Numbers a producer can send that are in range for the type and out of range
+ * for the meaning. Not a crash class: these all parse, and each one is a chance
+ * for a panel to divide by them, rank on them, or state them as fact.
+ */
+/** An open claim with one citation on it, so the ranking actually runs over it. */
+function scored(over: Partial<GraphNode>): Graph {
+  const claim = whole({ judgement: undefined, ...over });
+  return {
+    nodes: [claim, other(ID2, { kind: "Experiment" })],
+    edges: [{ from_id: ID2, to_id: claim.id, edge_kind: "proves", valence: 0.5,
+      asserted: "2026-09-20T01:00:00+00:00", actor: "x" }] as Graph["edges"],
+  };
+}
+
+const NUMBERS: [string, Graph][] = [
+  ["a confidence above one", scored({ confidence: 7 })],
+  ["a negative confidence", scored({ confidence: -3 })],
+  ["a NaN confidence", scored({ confidence: Number.NaN })],
+  ["an infinite cost", { nodes: [whole({ cost_agent_usd: Number.POSITIVE_INFINITY })], edges: [] }],
+  ["a NaN cost", { nodes: [whole({ cost_agent_usd: Number.NaN })], edges: [] }],
+  ["a valence past one", { nodes: [whole(), other(ID2, { kind: "Paper" })], edges: [
+    { from_id: ID2, to_id: whole().id, edge_kind: "proves", valence: 42, asserted: "2026-09-20T01:00:00+00:00", actor: "x" }] as Graph["edges"] }],
+  ["a NaN valence", { nodes: [whole(), other(ID2, { kind: "Paper" })], edges: [
+    { from_id: ID2, to_id: whole().id, edge_kind: "proves", valence: Number.NaN, asserted: "2026-09-20T01:00:00+00:00", actor: "x" }] as Graph["edges"] }],
+  ["a seq of zero", { nodes: [whole({ seq: 0 })], edges: [] }],
+  ["a date far in the future", { nodes: [whole({ created: "9999-01-01T00:00:00+00:00" })], edges: [] }],
+];
+
+test.each(NUMBERS)("the graph states nothing false given %s", (_name, graph) => {
+  const { homes } = islandHomes(graph);
+  for (const node of graph.nodes) expect(homes.has(node.id)).toBe(true);
+  const view = brief.viewOf(graph);
+  const roots = findRoots(graph);
+  expect(() => new GraphModel(PALETTE).apply(graph)).not.toThrow();
+  expect(Number.isFinite(brief.spendOf(graph.nodes, view).total)).toBe(true);
+  // A price a panel prints, or divides a score by: never NaN, never negative.
+  const price = brief.testPriceOf(graph.nodes, view);
+  expect(Number.isFinite(price.usd)).toBe(true);
+  expect(price.usd).toBeGreaterThan(0);
+  for (const node of graph.nodes) {
+    expect(Number.isFinite(brief.costOf(node))).toBe(true);
+    expect(Number.isFinite(brief.shareOf(node, view))).toBe(true);
+  }
+  for (const group of roots.groups) {
+    for (const entry of brief.nextExperiments(group, view)) {
+      // The ranking is a sort key: one NaN and the order is undefined.
+      expect(Number.isFinite(entry.score)).toBe(true);
+    }
+  }
 });
